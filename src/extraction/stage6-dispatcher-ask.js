@@ -1410,12 +1410,15 @@ async function buildResolvedBody({
   if (verdict.kind === 'auto_resolve' || verdict.kind === 'partial_resolve') {
     const dispatched = [];
     const dispatchedSlots = new Set();
+    const successfulDispatchedSlots = new Set();
+    const dispatchSlotKey = (write) =>
+      `${write?.tool ?? ''}\u0000${write?.field ?? ''}\u0000${write?.circuit ?? ''}\u0000${
+        write?.board_id ?? contextBoardId ?? ''
+      }`;
     const dispatchWrites = async (writes, producer) => {
       const newlyDispatched = [];
       for (const write of Array.isArray(writes) ? writes : []) {
-        const slotKey = `${write?.tool ?? ''}\u0000${write?.field ?? ''}\u0000${
-          write?.circuit ?? ''
-        }\u0000${write?.board_id ?? contextBoardId ?? ''}`;
+        const slotKey = dispatchSlotKey(write);
         // A clarification may restate a circuit already resolved by the first
         // pass. One logical slot must still dispatch/read back exactly once.
         if (dispatchedSlots.has(slotKey)) continue;
@@ -1434,6 +1437,12 @@ async function buildResolvedBody({
           };
           dispatched.push(dispatchRecord);
           newlyDispatched.push(dispatchRecord);
+          if (ok) successfulDispatchedSlots.add(slotKey);
+          // The write hook can commit successfully and cancel the generation
+          // before its promise settles. Never return a normal/full tool result
+          // from that cancelled generation; the caller decides whether any
+          // genuinely unfinished target warrants an interruption terminal.
+          throwIfStage6Cancelled(signal);
           // Plan 2A channel 3 — a resolved write which fails is independently
           // audible. PLAN-2B reuses the same path for writes resolved after a
           // server-brokered multi-description clarification.
@@ -1447,23 +1456,9 @@ async function buildResolvedBody({
         } catch (err) {
           // Cancellation / ownership failure is control flow, not a failed
           // certificate write. Never stage a lying `write_failed` notice or
-          // continue dispatching after it. If an earlier sibling already
-          // landed, reduced finalization still needs a generation-owned line
-          // explaining that the remaining targets were not completed.
+          // continue dispatching after it. The caller owns the terminal
+          // decision because only it can tell whether targets genuinely remain.
           if (isStage6FatalControlFlowError(err)) {
-            if (dispatched.some((record) => record.ok === true)) {
-              queuePendingValueApology(
-                session,
-                MULTI_DESCRIPTION_INTERRUPTED_APOLOGY,
-                generationId
-              );
-              logger?.info?.('stage6.multi_description_terminal_queued', {
-                sessionId,
-                turnId,
-                tool_call_id: toolCallId,
-                reason: 'write_dispatch_interrupted_fatal',
-              });
-            }
             throw err;
           }
           stageAskAutoResolveFailure(stagePartialFailureNotice, {
@@ -1497,7 +1492,29 @@ async function buildResolvedBody({
       return newlyDispatched;
     };
 
-    await dispatchWrites(verdict.writes, 'ask_auto_resolve_circuit');
+    try {
+      await dispatchWrites(verdict.writes, 'ask_auto_resolve_circuit');
+    } catch (err) {
+      const unfinishedInitialTarget =
+        (Array.isArray(verdict.writes) ? verdict.writes : []).some(
+          (write) => !successfulDispatchedSlots.has(dispatchSlotKey(write))
+        ) ||
+        (Array.isArray(verdict.unresolved) && verdict.unresolved.length > 0);
+      if (
+        isStage6FatalControlFlowError(err) &&
+        unfinishedInitialTarget &&
+        dispatched.some((record) => record.ok === true)
+      ) {
+        queuePendingValueApology(session, MULTI_DESCRIPTION_INTERRUPTED_APOLOGY, generationId);
+        logger?.info?.('stage6.multi_description_terminal_queued', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          reason: 'write_dispatch_interrupted_fatal',
+        });
+      }
+      throw err;
+    }
 
     // PLAN-2B §3.3 — disposition:'ask' is executable, not metadata handed
     // back to the model. All ambiguous/fuzzy/count-mismatch spans are grouped
@@ -1514,7 +1531,31 @@ async function buildResolvedBody({
     let multiDescriptionTerminalQueued = false;
     const queueMultiDescriptionTerminal = (text, reason) => {
       if (multiDescriptionTerminalQueued) return;
-      throwIfStage6Cancelled(signal);
+      try {
+        throwIfStage6Cancelled(signal);
+      } catch (err) {
+        // A cancellation can race the answered/no-progress reconciliation:
+        // the last selected write has landed, but the signal flips before the
+        // ordinary unresolved terminal is queued. Reduced finalization still
+        // owes both truths. Queue exactly one generation-owned interruption
+        // line, then preserve fatal control flow; with no landed sibling there
+        // is deliberately no normal cancelled fallback.
+        if (
+          isStage6FatalControlFlowError(err) &&
+          dispatched.some((record) => record.ok === true) &&
+          !multiDescriptionTerminalQueued
+        ) {
+          queuePendingValueApology(session, MULTI_DESCRIPTION_INTERRUPTED_APOLOGY, generationId);
+          multiDescriptionTerminalQueued = true;
+          logger?.info?.('stage6.multi_description_terminal_queued', {
+            sessionId,
+            turnId,
+            tool_call_id: toolCallId,
+            reason: `${reason}_interrupted_fatal`,
+          });
+        }
+        throw err;
+      }
       queuePendingValueApology(session, text, generationId);
       multiDescriptionTerminalQueued = true;
       logger?.info?.('stage6.multi_description_terminal_queued', {
@@ -1530,6 +1571,8 @@ async function buildResolvedBody({
           (existing) =>
             existing?.identity === entry?.identity &&
             existing?.span_kind === entry?.span_kind &&
+            (existing?.segment_ordinal ?? null) === (entry?.segment_ordinal ?? null) &&
+            (existing?.required_count ?? null) === (entry?.required_count ?? null) &&
             existing?.disposition === entry?.disposition &&
             existing?.reason === entry?.reason &&
             existing?.scope?.field === entry?.scope?.field &&
@@ -1632,10 +1675,66 @@ async function buildResolvedBody({
                 write?.tool !== 'record_reading' ||
                 (Number.isInteger(write?.circuit) && knownRefs.has(write.circuit))
             );
-            const followDispatches = await dispatchWrites(
-              followWrites,
-              'ask_auto_resolve_multi_description_followup'
-            );
+            const collectSuccessfulSelectedRefs = () => {
+              if (pendingWrite.tool === 'record_board_reading') {
+                const collapsedBoardSlotSucceeded = followWrites.some((write) =>
+                  successfulDispatchedSlots.has(dispatchSlotKey(write))
+                );
+                if (!collapsedBoardSlotSucceeded) return [];
+                return [
+                  ...new Set(
+                    (Array.isArray(followVerdict.selected_circuit_refs)
+                      ? followVerdict.selected_circuit_refs
+                      : []
+                    ).filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
+                  ),
+                ];
+              }
+              return [
+                ...new Set(
+                  followWrites
+                    .filter((write) => successfulDispatchedSlots.has(dispatchSlotKey(write)))
+                    .map((write) => write?.circuit)
+                    .filter(Number.isInteger)
+                ),
+              ];
+            };
+            try {
+              await dispatchWrites(followWrites, 'ask_auto_resolve_multi_description_followup');
+            } catch (err) {
+              const successfulSelectedRefs = collectSuccessfulSelectedRefs();
+              const satisfiedOriginalIndexes = reconcileMultiDescriptionAskEntries({
+                entries: askEntries,
+                successfulSelectedRefs,
+              });
+              const unfinishedFollowupTarget =
+                followWrites.some(
+                  (write) => !successfulDispatchedSlots.has(dispatchSlotKey(write))
+                ) ||
+                (Array.isArray(followVerdict.unresolved) && followVerdict.unresolved.length > 0) ||
+                satisfiedOriginalIndexes.size < askEntries.length;
+              if (
+                isStage6FatalControlFlowError(err) &&
+                unfinishedFollowupTarget &&
+                dispatched.some((record) => record.ok === true) &&
+                !multiDescriptionTerminalQueued
+              ) {
+                queuePendingValueApology(
+                  session,
+                  MULTI_DESCRIPTION_INTERRUPTED_APOLOGY,
+                  generationId
+                );
+                multiDescriptionTerminalQueued = true;
+                logger?.info?.('stage6.multi_description_terminal_queued', {
+                  sessionId,
+                  turnId,
+                  tool_call_id: toolCallId,
+                  reason: 'followup_write_dispatch_interrupted_fatal',
+                });
+              }
+              throw err;
+            }
+            const successfulSelectedRefs = collectSuccessfulSelectedRefs();
 
             if (Array.isArray(followVerdict.unresolved)) {
               appendUniqueUnresolved(
@@ -1648,41 +1747,17 @@ async function buildResolvedBody({
               );
             }
 
-            // Reconcile the GROUPED question by actual NEW dispatch attempts,
-            // not by syntactic writes. Candidate membership is CAPACITY-aware:
-            // two writes from one quantified span first consume two original
-            // entries only when both entries admit those refs. Once every
-            // candidate-bearing entry for a ref is already satisfied, an extra
-            // dispatch for the same candidate family belongs to that satisfied
-            // span and must NOT consume an unrelated fuzzy/count-mismatch span.
-            const satisfiedOriginalIndexes = new Set();
-            for (const dispatch of followDispatches) {
-              const candidateIndexes = askEntries
-                .map((entry, index) => ({ entry, index }))
-                .filter(
-                  ({ entry }) =>
-                    Number.isInteger(dispatch?.circuit) &&
-                    Array.isArray(entry?.candidates) &&
-                    entry.candidates.includes(dispatch.circuit)
-                )
-                .map(({ index }) => index);
-              const availableCandidateIndex = candidateIndexes.find(
-                (index) => !satisfiedOriginalIndexes.has(index)
-              );
-              if (availableCandidateIndex !== undefined) {
-                satisfiedOriginalIndexes.add(availableCandidateIndex);
-                continue;
-              }
-              if (candidateIndexes.length > 0) {
-                // This dispatch belongs to an already-satisfied quantified
-                // candidate group; it cannot satisfy a different span.
-                continue;
-              }
-              const fallbackIndex = askEntries.findIndex(
-                (_entry, index) => !satisfiedOriginalIndexes.has(index)
-              );
-              if (fallbackIndex >= 0) satisfiedOriginalIndexes.add(fallbackIndex);
-            }
+            // Reconcile the GROUPED question against successful logical slots,
+            // including a slot that landed before the clarification and was
+            // therefore dedupe-skipped on the follow-up. Each source segment
+            // owns a stable ordinal and a required capacity. An entry is
+            // satisfied only when its complete ref assignment is forced in
+            // every maximum capacitated matching; overlapping alternatives
+            // stay unresolved instead of silently discarding a possible ref.
+            const satisfiedOriginalIndexes = reconcileMultiDescriptionAskEntries({
+              entries: askEntries,
+              successfulSelectedRefs,
+            });
             const unmatchedOriginal = askEntries.filter(
               (_entry, index) => !satisfiedOriginalIndexes.has(index)
             );
@@ -1694,7 +1769,9 @@ async function buildResolvedBody({
             if (askStillUnresolved) {
               queueMultiDescriptionTerminal(
                 MULTI_DESCRIPTION_UNRESOLVED_APOLOGY,
-                followDispatches.length === 0 ? 'answered_no_progress' : 'answered_partial_progress'
+                successfulSelectedRefs.length === 0
+                  ? 'answered_no_progress'
+                  : 'answered_partial_progress'
               );
             }
           }
@@ -1932,6 +2009,160 @@ function multiDescriptionQuestion(entries) {
         ? `${clauses[0]} and ${clauses[1]}`
         : `${clauses.slice(0, -1).join('; ')}; and ${clauses[clauses.length - 1]}`;
   return `Please restate the circuit number or numbers for ${identityList}.`;
+}
+
+/**
+ * Find one maximum ref→entry assignment for the grouped clarification.
+ *
+ * A ref which appears in any resolver candidate set may only serve one of
+ * those candidate entries. A completely new explicit ref can serve any
+ * entry: the inspector may be correcting the designation match rather than
+ * choosing from the server's suggestions. Entry capacities come from the
+ * resolver's server-only `required_count` metadata.
+ */
+function maximumMultiDescriptionAssignment(entries, refs, capacities, forbiddenEdge = null) {
+  const assignedEntryByRef = new Map();
+  const assignedRefsByEntry = entries.map(() => new Set());
+  const candidateOwnersByRef = new Map(
+    refs.map((ref) => [
+      ref,
+      entries
+        .map((entry, index) => ({ entry, index }))
+        .filter(
+          ({ entry }) =>
+            Array.isArray(entry?.candidates) &&
+            entry.candidates.filter(Number.isInteger).includes(ref)
+        )
+        .map(({ index }) => index),
+    ])
+  );
+  const sourceOrderedEntryIndexes = entries
+    .map((entry, index) => ({ index, ordinal: entry?.segment_ordinal }))
+    .sort((a, b) => a.ordinal - b.ordinal)
+    .map(({ index }) => index);
+  const hasStableSourceOrder = entries.every(
+    (entry) =>
+      Number.isInteger(entry?.segment_ordinal) &&
+      entry.segment_ordinal > 0 &&
+      entries.filter((candidate) => candidate?.segment_ordinal === entry.segment_ordinal).length ===
+        1
+  );
+  // The broker asks for one ordered list. If every source segment is one
+  // logical slot and every supplied ref is a deliberate correction outside
+  // all suggested candidates, preserve that list order against the stable
+  // source-segment order. Candidate-bearing and capacitated cases continue
+  // through the ambiguity-preserving matching below.
+  const useOrderedFallback =
+    hasStableSourceOrder &&
+    refs.length === entries.length &&
+    capacities.every((capacity) => capacity === 1) &&
+    refs.every((ref) => (candidateOwnersByRef.get(ref) ?? []).length === 0);
+  const edgesByRef = new Map(
+    refs.map((ref, refIndex) => {
+      const candidateOwners = candidateOwnersByRef.get(ref) ?? [];
+      const owners =
+        candidateOwners.length > 0
+          ? candidateOwners
+          : useOrderedFallback
+            ? [sourceOrderedEntryIndexes[refIndex]]
+            : entries.map((_entry, index) => index);
+      return [ref, owners];
+    })
+  );
+
+  const moveRef = (ref, entryIndex) => {
+    const previousEntry = assignedEntryByRef.get(ref);
+    if (previousEntry !== undefined) assignedRefsByEntry[previousEntry].delete(ref);
+    assignedEntryByRef.set(ref, entryIndex);
+    assignedRefsByEntry[entryIndex].add(ref);
+  };
+
+  const tryAssign = (ref, visitedEntries) => {
+    for (const entryIndex of edgesByRef.get(ref) ?? []) {
+      if (forbiddenEdge && forbiddenEdge.ref === ref && forbiddenEdge.entryIndex === entryIndex) {
+        continue;
+      }
+      if (visitedEntries.has(entryIndex)) continue;
+      visitedEntries.add(entryIndex);
+
+      if (assignedRefsByEntry[entryIndex].size < capacities[entryIndex]) {
+        moveRef(ref, entryIndex);
+        return true;
+      }
+
+      for (const occupyingRef of [...assignedRefsByEntry[entryIndex]]) {
+        if (tryAssign(occupyingRef, visitedEntries)) {
+          moveRef(ref, entryIndex);
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (const ref of refs) tryAssign(ref, new Set());
+  return {
+    size: assignedEntryByRef.size,
+    assignedRefsByEntry,
+  };
+}
+
+/**
+ * Return the original unresolved-entry indexes that a grouped answer proves
+ * complete. "Proves" is deliberately stronger than "a matching exists": the
+ * complete assigned ref set must be identical in every maximum assignment.
+ * This prevents overlapping sets from consuming each other by iteration
+ * order, while still letting an explicitly selected singleton count a slot
+ * that already landed and was dedupe-skipped.
+ */
+function reconcileMultiDescriptionAskEntries({ entries, successfulSelectedRefs }) {
+  const candidates = Array.isArray(entries) ? entries : [];
+  const refs = [
+    ...new Set(
+      (Array.isArray(successfulSelectedRefs) ? successfulSelectedRefs : []).filter(Number.isInteger)
+    ),
+  ];
+  if (candidates.length === 0 || refs.length === 0) return new Set();
+
+  const ordinalCounts = new Map();
+  for (const entry of candidates) {
+    const ordinal = entry?.segment_ordinal;
+    if (!Number.isInteger(ordinal) || ordinal < 1) continue;
+    ordinalCounts.set(ordinal, (ordinalCounts.get(ordinal) ?? 0) + 1);
+  }
+  const capacities = candidates.map((entry) => {
+    if (Number.isInteger(entry?.required_count) && entry.required_count > 0) {
+      return entry.required_count;
+    }
+    // Old/incomplete resolver output must fail closed for a quantified
+    // mismatch. Other ask families have always represented one logical slot.
+    return entry?.reason === 'quantifier_count_mismatch' ? refs.length + 1 : 1;
+  });
+  const baseline = maximumMultiDescriptionAssignment(candidates, refs, capacities);
+  const satisfied = new Set();
+
+  candidates.forEach((entry, entryIndex) => {
+    const stableOrdinal =
+      Number.isInteger(entry?.segment_ordinal) &&
+      entry.segment_ordinal > 0 &&
+      ordinalCounts.get(entry.segment_ordinal) === 1;
+    const assignedRefs = [...baseline.assignedRefsByEntry[entryIndex]].sort((a, b) => a - b);
+    if (!stableOrdinal || assignedRefs.length !== capacities[entryIndex]) return;
+
+    // Every edge in the baseline set must be essential to the maximum
+    // matching. If forbidding one keeps the same cardinality, another equally
+    // valid interpretation changes this entry's ref set, so retain the entry.
+    const assignmentIsForced = assignedRefs.every((ref) => {
+      const alternative = maximumMultiDescriptionAssignment(candidates, refs, capacities, {
+        ref,
+        entryIndex,
+      });
+      return alternative.size < baseline.size;
+    });
+    if (assignmentIsForced) satisfied.add(entryIndex);
+  });
+
+  return satisfied;
 }
 
 /** One brokered server ask. Registers FIRST, then emits, then awaits. */

@@ -406,6 +406,49 @@ function matchDesignation(cleaned, circuits) {
   return { kind: 'no_match', circuitRefs: [] };
 }
 
+/**
+ * Match a QUANTIFIED multi-description span against the union of exact and
+ * substring designation refs. The scalar matcher above deliberately gives an
+ * exact hit precedence, but that would under-count "all lighting circuits"
+ * when the census contains both "Lighting" and "Emergency lighting".
+ *
+ * This helper is multi-only. With no exact/substring candidates it delegates
+ * to the scalar matcher so the existing conservative fuzzy/no-match verdicts
+ * remain available (and fuzzy still fails closed before fan-out).
+ */
+function matchQuantifiedDesignations(cleaned, circuits) {
+  if (!cleaned || !Array.isArray(circuits) || circuits.length === 0) {
+    return { kind: 'no_match', circuitRefs: [] };
+  }
+  const exact = [];
+  const substring = [];
+  for (const circuit of circuits) {
+    const designation = (circuit?.circuit_designation ?? circuit?.designation ?? '')
+      .toLowerCase()
+      .trim();
+    if (!designation) continue;
+    const ref =
+      typeof circuit?.circuit_ref === 'number'
+        ? circuit.circuit_ref
+        : Number.parseInt(String(circuit?.circuit_ref), 10);
+    if (!Number.isInteger(ref)) continue;
+    if (designation === cleaned) {
+      exact.push(ref);
+    } else if (designation.includes(cleaned) || cleaned.includes(designation)) {
+      substring.push(ref);
+    }
+  }
+  const circuitRefs = [...new Set([...exact, ...substring])].sort((a, b) => a - b);
+  if (circuitRefs.length > 1) return { kind: 'ambiguous', circuitRefs };
+  if (circuitRefs.length === 1) {
+    return {
+      kind: exact.includes(circuitRefs[0]) ? 'exact' : 'unique_substring',
+      circuitRefs,
+    };
+  }
+  return matchDesignation(cleaned, circuits);
+}
+
 // ---------------------------------------------------------------------------
 // PLAN-2B §3.3 — multi-description segmentation
 // ---------------------------------------------------------------------------
@@ -471,8 +514,33 @@ function stripDescriptionLeadIn(text) {
 }
 
 /**
+ * Remove a bounded set of conversational wrappers before whole-designation
+ * matching and segmentation. Edge-only stripping is important: treating
+ * these as global stop words could alter a legitimate stored designation.
+ */
+function stripDescriptionWrappers(text) {
+  let stripped = stripPunct(String(text ?? ''));
+  for (let i = 0; i < 4; i += 1) {
+    const before = stripped;
+    stripped = stripDescriptionLeadIn(stripped);
+    stripped = stripped.replace(
+      /^(?:(?:i|we)\s+(?:think|suppose|guess|believe)(?:\s+that)?|maybe|perhaps|probably|possibly)\b[\s,]*/i,
+      ''
+    );
+    stripped = stripPunct(stripped);
+    stripped = stripped.replace(
+      /(?:[,;]?\s*)(?:(?:i|we)\s+(?:think|suppose|guess|believe)|thanks|thank\s+you|cheers)\s*$/i,
+      ''
+    );
+    stripped = stripPunct(stripped);
+    if (stripped === before) break;
+  }
+  return stripped;
+}
+
+/**
  * A correction or negation is not an enumerated target list. Fail back to the
- * shipped scalar/model path rather than turning a retracted span into a write.
+ * model rather than turning a retracted span into a write.
  * The guard is intentionally syntax-only and conservative: an unnecessary ask
  * is safer than applying "not circuit 2" to circuit 2.
  */
@@ -483,7 +551,10 @@ function hasCorrectionOrNegationSyntax(text) {
   // single-target restatement.
   const value = stripDescriptionLeadIn(String(text ?? '')).toLowerCase();
   return (
-    /\b(?:not|except|rather\s+than|instead(?:\s+of)?)\b/.test(value) ||
+    /\b(?:not|except|rather\s+than|instead(?:\s+of)?|exclude|excluding|without|leave\s+out)\b/.test(
+      value
+    ) ||
+    /\b(?:don['’]t|do\s+not)\s+use\b/.test(value) ||
     /(?:^|[,;]|\band\b|\bplus\b)\s*(?:no|wait)\b/.test(value) ||
     /(?:[,;]|\band\b|\bplus\b)\s*sorry\b/.test(value) ||
     /(?:[,;]|\band\b|\bplus\b)\s*(?:i\s+(?:mean|meant)|actually)\b/.test(value)
@@ -721,19 +792,47 @@ function canonicalUnresolvedScope(pendingWrite, contextBoardId) {
   };
 }
 
+/**
+ * A board reading is one logical mutation regardless of how many circuit
+ * descriptions established its scope. Mirror the existing "all circuits"
+ * contract by collapsing accepted multi-description fan-out to circuit 0.
+ */
+function collapseBoardWriteFanout(pendingWrite, writes, contextBoardId) {
+  if (pendingWrite?.tool !== 'record_board_reading' || writes.length === 0) return writes;
+  return [buildWrite(pendingWrite, 0, contextBoardId)];
+}
+
+/**
+ * Resolver-only scope metadata retained separately from the write array. A
+ * board write collapses to circuit 0, so downstream server reconciliation
+ * needs the validated pre-collapse refs without adding them to any wire frame.
+ */
+function selectedCircuitRefsMetadata(refs) {
+  const selectedRefs = [...new Set(refs.filter(Number.isInteger))].sort((a, b) => a - b);
+  return selectedRefs.length > 0 ? { selected_circuit_refs: selectedRefs } : {};
+}
+
 function unresolvedSpan({
   ordinal,
   disposition,
   reason,
   circuitRefs = [],
+  requiredCount = null,
   pendingWrite,
   contextBoardId,
 }) {
   const refs = [...new Set(circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
   const knownRef = refs.length === 1 ? refs[0] : null;
+  const isAsk = disposition === 'ask';
   return {
     identity: knownRef ?? ordinal,
     span_kind: knownRef != null ? 'circuit_ref' : 'segment_ordinal',
+    ...(isAsk
+      ? {
+          segment_ordinal: ordinal,
+          required_count: Number.isInteger(requiredCount) && requiredCount > 0 ? requiredCount : 1,
+        }
+      : {}),
     disposition,
     reason,
     ...(refs.length > 0 ? { candidates: refs } : {}),
@@ -750,25 +849,40 @@ function unresolvedSpan({
  * ordinal, so the dispatcher can speak without echoing untrusted text.
  */
 function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, contextBoardId }) {
-  if (!hasMultiTargetSyntax(text) || hasCorrectionOrNegationSyntax(text)) return null;
   const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
+  if (hasCorrectionOrNegationSyntax(text)) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+      available_circuits: circuits,
+    };
+  }
+  const normalisedText = stripDescriptionWrappers(text);
+  if (!hasMultiTargetSyntax(normalisedText)) return null;
 
   // Whole-designation-first preserves shipped C1 fuzzy behaviour and protects
   // a real designation containing "and" from segmentation.
-  const wholeCleaned = cleanReplyForDesignation(stripDescriptionLeadIn(text));
+  const wholeCleaned = cleanReplyForDesignation(normalisedText);
   if (wholeCleaned.length >= 2) {
     const wholeMatch = matchDesignation(wholeCleaned, circuits);
     if (isWholeReplyDesignationMatch(wholeMatch, wholeCleaned, circuits)) {
       return {
         kind: 'auto_resolve',
         match_status: 'full',
-        writes: [buildWrite(pendingWrite, wholeMatch.circuitRefs[0], contextBoardId)],
+        ...selectedCircuitRefsMetadata(wholeMatch.circuitRefs),
+        writes: collapseBoardWriteFanout(
+          pendingWrite,
+          [buildWrite(pendingWrite, wholeMatch.circuitRefs[0], contextBoardId)],
+          contextBoardId
+        ),
         unresolved: [],
       };
     }
   }
 
-  const segments = segmentDescriptionReply(text, circuits).filter(isMeaningfulDescriptionSegment);
+  const segments = segmentDescriptionReply(normalisedText, circuits).filter(
+    isMeaningfulDescriptionSegment
+  );
   if (segments.length === 0) return null;
   if (segments.length === 1) {
     const only = stripAttachedCircuitQuantifier(segments[0]);
@@ -786,7 +900,7 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
     segments.length > 1 &&
     segments.every((span) => {
       const strippedSpan = stripAttachedCircuitQuantifier(span);
-      return strippedSpan.quantifier == null && extractCircuitRef(strippedSpan.text) !== null;
+      return extractCircuitRef(strippedSpan.text) !== null;
     })
   ) {
     return null;
@@ -832,7 +946,10 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
 
     if (isConversationalFillerSpan(strippedSpan)) return;
     const cleaned = cleanReplyForDesignation(stripDescriptionLeadIn(strippedSpan));
-    const match = matchDesignation(cleaned, circuits);
+    const match =
+      quantifier === null
+        ? matchDesignation(cleaned, circuits)
+        : matchQuantifiedDesignations(cleaned, circuits);
     const refs = [...new Set(match.circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
 
     if (match.kind === 'fuzzy') {
@@ -842,6 +959,7 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
           disposition: 'ask',
           reason: 'fuzzy_match',
           circuitRefs: refs,
+          requiredCount: quantifier?.expected,
           pendingWrite,
           contextBoardId,
         })
@@ -889,6 +1007,7 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
           disposition: 'ask',
           reason: 'quantifier_count_mismatch',
           circuitRefs: refs,
+          requiredCount: quantifier.expected,
           pendingWrite,
           contextBoardId,
         })
@@ -919,7 +1038,8 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
     }
   });
 
-  const writes = [...writesByRef.values()];
+  const writes = collapseBoardWriteFanout(pendingWrite, [...writesByRef.values()], contextBoardId);
+  const selectedCircuitMetadata = selectedCircuitRefsMetadata([...writesByRef.keys()]);
   if (
     writes.length === 0 &&
     unresolved.length > 0 &&
@@ -934,9 +1054,21 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
     };
   }
   if (unresolved.length === 0) {
-    return { kind: 'auto_resolve', match_status: 'full', writes, unresolved: [] };
+    return {
+      kind: 'auto_resolve',
+      match_status: 'full',
+      ...selectedCircuitMetadata,
+      writes,
+      unresolved: [],
+    };
   }
-  return { kind: 'partial_resolve', match_status: 'partial', writes, unresolved };
+  return {
+    kind: 'partial_resolve',
+    match_status: 'partial',
+    ...selectedCircuitMetadata,
+    writes,
+    unresolved,
+  };
 }
 
 /**
@@ -951,6 +1083,14 @@ export function resolveMultiDescriptionFollowup({
   contextBoardId = null,
 }) {
   if (!pendingWrite || typeof pendingWrite !== 'object') return null;
+  const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
+  if (hasCorrectionOrNegationSyntax(userText)) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_followup_correction_or_negation',
+      available_circuits: circuits,
+    };
+  }
   const refs = parseMultiDescriptionCircuitRefs(userText);
   if (!refs) return null;
 
@@ -973,19 +1113,33 @@ export function resolveMultiDescriptionFollowup({
     }
   });
 
-  if (writes.length === 0) {
+  const selectedCircuitMetadata = selectedCircuitRefsMetadata(writes.map((write) => write.circuit));
+  const resolvedWrites = collapseBoardWriteFanout(pendingWrite, writes, contextBoardId);
+  if (resolvedWrites.length === 0) {
     return {
       kind: 'escalate',
       match_status: 'all_unmatched',
       parsed_hint: 'multi_description_followup_all_unmatched',
-      available_circuits: Array.isArray(availableCircuits) ? availableCircuits : [],
+      available_circuits: circuits,
       unresolved,
     };
   }
   if (unresolved.length === 0) {
-    return { kind: 'auto_resolve', match_status: 'full', writes, unresolved: [] };
+    return {
+      kind: 'auto_resolve',
+      match_status: 'full',
+      ...selectedCircuitMetadata,
+      writes: resolvedWrites,
+      unresolved: [],
+    };
   }
-  return { kind: 'partial_resolve', match_status: 'partial', writes, unresolved };
+  return {
+    kind: 'partial_resolve',
+    match_status: 'partial',
+    ...selectedCircuitMetadata,
+    writes: resolvedWrites,
+    unresolved,
+  };
 }
 
 /**

@@ -785,6 +785,187 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     }
   );
 
+  test('overlapping candidate capacities do not claim full from one ambiguous ref allocation', async () => {
+    const run = startMultiDispatcher({
+      session: buildSession([
+        { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+        { circuit_ref: 2, circuit_designation: 'Kitchen lighting' },
+        { circuit_ref: 5, circuit_designation: 'Kitchen sockets' },
+      ]),
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '3 lighting circuits and kitchen',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuits 1 and 2',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2]);
+    expect(body.unresolved.filter((entry) => entry.disposition === 'ask')).toEqual([
+      expect.objectContaining({
+        segment_ordinal: 1,
+        required_count: 3,
+        reason: 'quantifier_count_mismatch',
+        candidates: [1, 2],
+      }),
+      expect.objectContaining({
+        segment_ordinal: 2,
+        required_count: 1,
+        reason: 'ambiguous_match',
+        candidates: [2, 5],
+      }),
+    ]);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/couldn't place every circuit/i),
+      }),
+    ]);
+  });
+
+  test('two equally valid overlapping assignments keep both source segments unresolved', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'lighting and lighting',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuits 1 and 2',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2]);
+    expect(body.unresolved.filter((entry) => entry.disposition === 'ask')).toEqual([
+      expect.objectContaining({ segment_ordinal: 1, required_count: 1, candidates: [1, 2] }),
+      expect.objectContaining({ segment_ordinal: 2, required_count: 1, candidates: [1, 2] }),
+    ]);
+    expect(run.session.pendingVoicePrompts).toHaveLength(1);
+  });
+
+  test('a uniquely assigned reply that fills the requested capacity resolves the entry', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '3 lighting circuits and please',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuits 1, 2 and 3',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({ match_status: 'full', unresolved: [] });
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+  });
+
+  test('a successful collapsed board write reconciles its validated multi-ref answer', async () => {
+    const run = startMultiDispatcher({
+      inputOverrides: { context_field: 'earth_loop_impedance_ze' },
+      pendingWriteOverrides: {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+      },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '3 lighting circuits and please',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuits 1, 2 and 3',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({ match_status: 'full', unresolved: [] });
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({
+        tool: 'record_board_reading',
+        circuit: 0,
+        ok: true,
+      }),
+    ]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+  });
+
+  test('validated board refs do not reconcile when the collapsed board write fails', async () => {
+    const run = startMultiDispatcher({
+      autoResolveWrite: jest.fn().mockResolvedValue({ ok: false, code: 'write_failed' }),
+      inputOverrides: { context_field: 'earth_loop_impedance_ze' },
+      pendingWriteOverrides: {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+      },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '3 lighting circuits and please',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuits 1, 2 and 3',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.unresolved.filter((entry) => entry.disposition === 'ask')).toEqual([
+      expect.objectContaining({ segment_ordinal: 1, required_count: 3 }),
+    ]);
+    expect(run.session.pendingVoicePrompts).toHaveLength(1);
+  });
+
+  test('a dedupe-skipped selected singleton counts its already-landed successful slot', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '2 lighting circuits and ground floor lightng',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuit 1',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+  });
+
   test('one grouped answer cannot silently close a second unresolved description', async () => {
     const run = startMultiDispatcher();
     await tick();
@@ -834,6 +1015,12 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(body.match_status).toBe('partial');
     expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2]);
     expect(body.unresolved.filter((entry) => entry.disposition === 'ask')).toEqual([
+      expect.objectContaining({
+        segment_ordinal: 1,
+        required_count: 3,
+        candidates: [1, 2],
+        reason: 'quantifier_count_mismatch',
+      }),
       expect.objectContaining({ identity: 4, candidates: [4], reason: 'fuzzy_match' }),
     ]);
     expect(run.session.pendingVoicePrompts).toEqual([
@@ -896,6 +1083,29 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     ]);
   });
 
+  test('cancellation after the final successful fan-out write rethrows without a false terminal', async () => {
+    const ac = new AbortController();
+    let writeCount = 0;
+    const autoResolveWrite = jest.fn().mockImplementation(async () => {
+      writeCount += 1;
+      if (writeCount === 3) {
+        ac.abort(new ExtractionCancelledError('cancel-after-final-write'));
+      }
+      return { ok: true };
+    });
+    const run = startMultiDispatcher({ autoResolveWrite, signal: ac.signal });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '2 lighting circuits and the smoke alarm',
+    });
+
+    await expect(run.promise).rejects.toBeInstanceOf(ExtractionCancelledError);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(3);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+  });
+
   test('cancellation immediately before mdr emission keeps the partial result audible', async () => {
     const ac = new AbortController();
     const onAskRegistered = jest.fn((toolCallId) => {
@@ -924,6 +1134,72 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       []
     );
     expect(run.pendingAsks.size).toBe(0);
+  });
+
+  test('answered-partial cancellation queues one interruption terminal then rethrows', async () => {
+    const ac = new AbortController();
+    let writeCount = 0;
+    const autoResolveWrite = jest.fn().mockImplementation(async () => {
+      writeCount += 1;
+      if (writeCount === 2) {
+        ac.abort(new ExtractionCancelledError('cancel-after-followup-write'));
+      }
+      return { ok: true };
+    });
+    const run = startMultiDispatcher({ autoResolveWrite, signal: ac.signal });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights, ground floor lightng, and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuit 4',
+    });
+
+    await expect(run.promise).rejects.toBeInstanceOf(ExtractionCancelledError);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/recorded the matched circuits/i),
+      }),
+    ]);
+    expect(run.session.pendingVoicePrompts[0].text).not.toMatch(
+      /still couldn't place every circuit/i
+    );
+  });
+
+  test('answered-full cancellation rethrows without an unresolved-target terminal', async () => {
+    const ac = new AbortController();
+    let writeCount = 0;
+    const autoResolveWrite = jest.fn().mockImplementation(async () => {
+      writeCount += 1;
+      if (writeCount === 2) {
+        ac.abort(new ExtractionCancelledError('cancel-after-complete-followup'));
+      }
+      return { ok: true };
+    });
+    const run = startMultiDispatcher({ autoResolveWrite, signal: ac.signal });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuit 4',
+    });
+
+    await expect(run.promise).rejects.toBeInstanceOf(ExtractionCancelledError);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
   });
 
   test('a spoken mdr cancellation is an ordinary opt-out, not generation cancellation', async () => {

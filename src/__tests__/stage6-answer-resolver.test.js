@@ -670,6 +670,7 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict).toMatchObject({
       kind: 'auto_resolve',
       match_status: 'full',
+      selected_circuit_refs: [1, 2, 3],
       unresolved: [],
     });
     expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
@@ -686,6 +687,7 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
   test('a designation containing "and" stays whole under maximum coverage', () => {
     const verdict = resolveMulti('Kitchen and utility lights');
     expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.selected_circuit_refs).toEqual([4]);
     expect(verdict.writes).toEqual([
       expect.objectContaining({
         circuit: 4,
@@ -693,6 +695,24 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
         value: '0.42',
       }),
     ]);
+  });
+
+  test.each([
+    'Kitchen and utility lights I think',
+    'I think Kitchen and utility lights',
+    'Kitchen and utility lights, thanks',
+  ])('bounded wrappers in "%s" are removed before whole-designation matching', (reply) => {
+    const verdict = resolveMulti(reply, [
+      { circuit_ref: 1, circuit_designation: 'Kitchen' },
+      { circuit_ref: 4, circuit_designation: 'Kitchen and utility lights' },
+      { circuit_ref: 6, circuit_designation: 'Utility lights' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 4 })]);
   });
 
   test.each([
@@ -787,6 +807,23 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ]);
   });
 
+  test('a quantified fuzzy ask preserves the spoken clarification capacity', () => {
+    const verdict = resolveMulti('2 upstars lights circuits');
+    expect(verdict).toMatchObject({
+      kind: 'partial_resolve',
+      writes: [],
+      unresolved: [
+        expect.objectContaining({
+          segment_ordinal: 1,
+          disposition: 'ask',
+          reason: 'fuzzy_match',
+          candidates: [5],
+          required_count: 2,
+        }),
+      ],
+    });
+  });
+
   test('quantifier count mismatch asks and never guesses', () => {
     const verdict = resolveMulti('3 lighting circuits and the smoke alarm');
     expect(verdict.kind).toBe('partial_resolve');
@@ -814,6 +851,34 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       unresolved: [],
     });
     expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+  });
+
+  test.each([
+    'all lighting circuits and the smoke alarm',
+    '2 lighting circuits and the smoke alarm',
+  ])('quantified exact-plus-substring census in "%s" fans out to the deduped union', (reply) => {
+    const verdict = resolveMulti(reply, [
+      { circuit_ref: 1, circuit_designation: 'Lighting' },
+      { circuit_ref: 2, circuit_designation: 'Emergency lighting' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+  });
+
+  test('scalar designation matching keeps exact precedence over substring candidates', () => {
+    const verdict = resolveMulti('Lighting', [
+      { circuit_ref: 1, circuit_designation: 'Lighting' },
+      { circuit_ref: 2, circuit_designation: 'Emergency lighting' },
+    ]);
+    expect(verdict).toEqual({
+      kind: 'auto_resolve',
+      writes: [expect.objectContaining({ circuit: 1 })],
+    });
   });
 
   test('unquantified multi-match asks while an exact sibling survives', () => {
@@ -901,21 +966,45 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ]);
   });
 
-  test.each(['Kitchen sockets and not the cooker', 'Kitchen sockets, no, cooker'])(
-    'corrective or negated list "%s" never becomes additive writes',
-    (reply) => {
-      const verdict = resolveMulti(reply, [
-        { circuit_ref: 1, circuit_designation: 'Kitchen sockets' },
-        { circuit_ref: 2, circuit_designation: 'Cooker' },
-      ]);
-      expect(verdict.kind).toBe('escalate');
-      expect(verdict.writes).toBeUndefined();
-    }
-  );
+  test.each([
+    'Kitchen sockets and not the cooker',
+    'Kitchen sockets, no, cooker',
+    'not the cooker',
+    "don't use the cooker",
+    'do not use the cooker',
+    'exclude the cooker',
+    'excluding the cooker',
+    'without the cooker',
+    'leave out the cooker',
+  ])('corrective or negated answer "%s" explicitly escalates before scalar matching', (reply) => {
+    const verdict = resolveMulti(reply, [
+      { circuit_ref: 1, circuit_designation: 'Kitchen sockets' },
+      { circuit_ref: 2, circuit_designation: 'Cooker' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
+  });
+
+  test('a negated designation fails closed even when it is the only census target', () => {
+    const verdict = resolveMulti('not the cooker', [
+      { circuit_ref: 2, circuit_designation: 'Cooker' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+      available_circuits: [{ circuit_ref: 2, circuit_designation: 'Cooker' }],
+    });
+    expect(verdict.writes).toBeUndefined();
+  });
 
   test('an absent explicit ref uses the trusted segment ordinal, never the dictated ref', () => {
     const verdict = resolveMulti('circuit 99 and the smoke alarm');
     expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.selected_circuit_refs).toEqual([3]);
     expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
     expect(verdict.unresolved).toEqual([
       expect.objectContaining({
@@ -927,9 +1016,43 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ]);
   });
 
-  test('ordinary multi-number replies keep the shipped escalation contract', () => {
-    expect(resolveMulti('circuits 1 and 2')).toMatchObject({
-      kind: 'escalate',
+  test.each(['circuits 1 and 2', 'both circuit 1 and circuit 2', 'two circuits 1 and 2'])(
+    'explicit ref list "%s" keeps the shipped zero-write escalation contract',
+    (reply) => {
+      const verdict = resolveMulti(reply);
+      expect(verdict).toMatchObject({ kind: 'escalate' });
+      expect(verdict.writes).toBeUndefined();
+      expect(verdict.unresolved).toBeUndefined();
+    }
+  );
+
+  test('overlapping grouped asks retain segment identity and requested capacity', () => {
+    const verdict = resolveMulti('3 lighting circuits and kitchen', [
+      { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+      { circuit_ref: 2, circuit_designation: 'Kitchen lighting' },
+      { circuit_ref: 5, circuit_designation: 'Kitchen sockets' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'partial_resolve',
+      writes: [],
+      unresolved: [
+        expect.objectContaining({
+          identity: 1,
+          segment_ordinal: 1,
+          disposition: 'ask',
+          reason: 'quantifier_count_mismatch',
+          candidates: [1, 2],
+          required_count: 3,
+        }),
+        expect.objectContaining({
+          identity: 2,
+          segment_ordinal: 2,
+          disposition: 'ask',
+          reason: 'ambiguous_match',
+          candidates: [2, 5],
+          required_count: 1,
+        }),
+      ],
     });
   });
 
@@ -947,6 +1070,7 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict).toMatchObject({
       kind: 'auto_resolve',
       match_status: 'full',
+      selected_circuit_refs: [1, 2],
       unresolved: [],
     });
     expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2]);
@@ -961,6 +1085,7 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict).toMatchObject({
       kind: 'partial_resolve',
       match_status: 'partial',
+      selected_circuit_refs: [1],
       writes: [expect.objectContaining({ circuit: 1 })],
       unresolved: [
         expect.objectContaining({
@@ -972,15 +1097,72 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     });
   });
 
-  test('the mdr-only follow-up rejects additive interpretation of negation', () => {
-    expect(
-      resolveMultiDescriptionFollowup({
-        userText: 'circuit 1 and not circuit 2',
-        pendingWrite: SAMPLE_PENDING,
-        availableCircuits: MULTI_DESCRIPTION_CIRCUITS,
-      })
-    ).toBeNull();
+  test.each([
+    'circuit 1 and not circuit 2',
+    "don't use circuit 1",
+    'do not use circuit 1',
+    'exclude circuit 1',
+    'excluding circuit 1',
+    'without circuit 1',
+    'leave out circuit 1',
+  ])('the mdr-only follow-up explicitly escalates negation in "%s"', (reply) => {
+    const verdict = resolveMultiDescriptionFollowup({
+      userText: reply,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: [{ circuit_ref: 1, circuit_designation: 'Only target' }],
+    });
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_followup_correction_or_negation',
+      available_circuits: [{ circuit_ref: 1, circuit_designation: 'Only target' }],
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
   });
+
+  test.each([
+    ['initial multi-description scope', '2 lighting circuits and the smoke alarm', [1, 2, 3]],
+    ['mdr ref follow-up', 'circuits 1 and 2', [1, 2]],
+  ])(
+    'record_board_reading collapses %s to one logical write while retaining selected refs',
+    (label, reply, selectedRefs) => {
+      const pendingWrite = {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+        value: '0.42',
+        confidence: 0.95,
+        source_turn_id: 't-board',
+      };
+      const verdict =
+        label === 'initial multi-description scope'
+          ? resolveCircuitAnswer({
+              userText: reply,
+              pendingWrite,
+              availableCircuits: MULTI_DESCRIPTION_CIRCUITS,
+              contextBoardId: 'board-main',
+            })
+          : resolveMultiDescriptionFollowup({
+              userText: reply,
+              pendingWrite,
+              availableCircuits: MULTI_DESCRIPTION_CIRCUITS,
+              contextBoardId: 'board-main',
+            });
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: selectedRefs,
+        unresolved: [],
+      });
+      expect(verdict.writes).toEqual([
+        expect.objectContaining({
+          tool: 'record_board_reading',
+          field: 'earth_loop_impedance_ze',
+          circuit: 0,
+          board_id: 'board-main',
+        }),
+      ]);
+    }
+  );
 
   test('the transcript predicate accepts real targets and rejects filler', () => {
     expect(isMultiDescriptionAnswerText('circuits 1 and 2', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
