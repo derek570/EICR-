@@ -904,6 +904,20 @@ export function describePartialFailureTargets(targets, fieldLabel) {
  * key-blind), every family DISTINCT from every other family's terminal AND
  * from all twelve variants, and every line still TRUTHFUL — it says the value
  * still isn't recorded, which remains exactly the case.
+ *
+ * One further constraint, and it is the reason `write_failed` reads a little
+ * awkwardly rather than opening on the field name: **a terminal may interpolate
+ * `fieldLabel` only RAW, never through a transform.** `capitaliseFirst` is not
+ * injective, and `field_schema.json` carries a live colliding pair —
+ * `ring_r2_ohm` is labelled `r2 (ohm)` and `r2_ohm` is labelled `R2 (ohm)`.
+ * Sentence-initial capitalisation folds those two labels into one string, so
+ * two genuinely DIFFERENT identities (different keys, different counters) would
+ * render byte-identical terminals and the second would be swallowed by the very
+ * client dedupe these terminals exist to escape (Codex mini-review of the
+ * cycle-2b fix). Both fields are circuit fields on the same ring-continuity
+ * dictation, so the collision is reachable inside one 30 s window. Removing the
+ * transform is the structural close — mirroring it in the key would leave the
+ * next transform-bearing terminal free to reintroduce the hole.
  */
 export const PARTIAL_FAILURE_TERMINALS = Object.freeze({
   circuit_not_found: (t, n) =>
@@ -913,7 +927,7 @@ export const PARTIAL_FAILURE_TERMINALS = Object.freeze({
   low_conf_capability_gated: (t, n) =>
     `I still haven't got the ${t.fieldLabel} for ${t.subjectLower} — attempt ${n}; try saying just the number on its own.`,
   write_failed: (t, n) =>
-    `${capitaliseFirst(t.fieldLabel)} still hasn't saved for ${t.subjectLower} — attempt ${n} is logged.`,
+    `That's attempt ${n} — ${t.fieldLabel} still hasn't saved for ${t.subjectLower}.`,
 });
 
 /**

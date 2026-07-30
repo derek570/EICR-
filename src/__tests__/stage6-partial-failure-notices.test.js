@@ -573,6 +573,116 @@ describe('§5.A6b — repeat escalation: never a byte-repeat inside the 30 s ded
     expect(Object.keys(session.partialFailureRepeats)).toHaveLength(1);
   });
 
+  // Codex cycle-2b mini-review BLOCKER. The repeat key interpolates
+  // `descriptor.fieldLabel` RAW, so any template that renders that same label
+  // through a NON-INJECTIVE transform can fold two distinct identities onto one
+  // spoken string — two counters, both bumping independently, and the second
+  // line swallowed by the very 30 s text dedupe the terminals exist to escape.
+  // `capitaliseFirst` was exactly such a transform, and the hazard is LIVE: the
+  // circuit-field schema carries a case-colliding label pair today.
+  //
+  // Assert the invariant STRUCTURALLY (every family, every variant, and the
+  // terminal) rather than only on the one template that had the bug, so the
+  // next transform-bearing line fails here instead of in the field.
+  describe('label-case collisions never fold two identities onto one string', () => {
+    /** Every case-insensitively colliding circuit-field label pair in the schema. */
+    const collidingLabelPairs = (() => {
+      const byFolded = new Map();
+      for (const [field, def] of Object.entries(FIELD_SCHEMA.circuit_fields)) {
+        const text = def?.label;
+        if (typeof text !== 'string' || text.length === 0) continue;
+        const folded = text.toLowerCase();
+        if (!byFolded.has(folded)) byFolded.set(folded, new Map());
+        byFolded.get(folded).set(text, field);
+      }
+      const out = [];
+      for (const spellings of byFolded.values()) {
+        const distinct = [...spellings.entries()];
+        for (let i = 0; i < distinct.length; i++) {
+          for (let j = i + 1; j < distinct.length; j++) {
+            out.push([distinct[i], distinct[j]]);
+          }
+        }
+      }
+      return out;
+    })();
+
+    test('the schema still carries a live colliding pair (regression stays real)', () => {
+      // If this ever goes to zero the sweep below still runs on the synthetic
+      // pair, but the FIELD hazard has gone — worth knowing, not worth failing
+      // silently on.
+      expect(collidingLabelPairs.length).toBeGreaterThan(0);
+      // `ring_r2_ohm` => "r2 (ohm)" vs `r2_ohm` => "R2 (ohm)": both circuit
+      // fields on the same ring-continuity dictation, so both are reachable
+      // inside ONE 30 s window.
+      expect(label('ring_r2_ohm').toLowerCase()).toBe(label('r2_ohm').toLowerCase());
+      expect(label('ring_r2_ohm')).not.toBe(label('r2_ohm'));
+    });
+
+    // Synthetic pair FIRST: the invariant is structural, so it must hold even
+    // if the schema's live collision is ever renamed away.
+    const pairs = [
+      [['r2 (ohm)', '<synthetic-lower>'], ['R2 (ohm)', '<synthetic-upper>']],
+      ...collidingLabelPairs,
+    ];
+
+    test.each(
+      pairs.flatMap(([[labelA, fieldA], [labelB, fieldB]]) =>
+        Object.keys(PARTIAL_FAILURE_FAMILIES).map((family) => [
+          `${family} — ${fieldA} vs ${fieldB}`,
+          family,
+          labelA,
+          labelB,
+        ])
+      )
+    )('%s renders byte-distinct lines for both spellings', (_name, family, labelA, labelB) => {
+      const refs = [circuitTarget(4)];
+      const a = describePartialFailureTargets(refs, labelA);
+      const b = describePartialFailureTargets(refs, labelB);
+      const variants = PARTIAL_FAILURE_FAMILIES[family];
+      for (let i = 0; i < variants.length; i++) {
+        expect(variants[i](a)).not.toBe(variants[i](b));
+      }
+      // The terminal is the line that actually broke: it opened on
+      // `capitaliseFirst(fieldLabel)`, which folds "r2 (ohm)" and "R2 (ohm)"
+      // into the same bytes at the same ordinal.
+      const terminal = PARTIAL_FAILURE_TERMINALS[family];
+      for (const ordinal of [4, 5, 12]) {
+        expect(terminal(a, ordinal)).not.toBe(terminal(b, ordinal));
+      }
+    });
+
+    test('two colliding labels keep SEPARATE counters end to end', () => {
+      // The end-to-end proof: four repeats each, interleaved, all inside one
+      // window. Distinct keys AND distinct bytes — the pre-fix terminal made
+      // the 4th render of each pair identical.
+      const session = {};
+      const t0 = 7_500_000;
+      const spoken = [];
+      for (let i = 0; i < 4; i++) {
+        for (const field of ['ring_r2_ohm', 'r2_ohm']) {
+          spoken.push(
+            renderPartialFailureNoticeText(
+              session,
+              {
+                reason: 'write_failed',
+                field,
+                fieldLabel: label(field),
+                boardId: null,
+                targets: [circuitTarget(4)],
+              },
+              [circuitTarget(4)],
+              { nowMs: t0 + spoken.length * 100 }
+            )
+          );
+        }
+      }
+      expect(spoken.every((s) => typeof s === 'string')).toBe(true);
+      expect(new Set(spoken).size).toBe(spoken.length);
+      expect(Object.keys(session.partialFailureRepeats)).toHaveLength(2);
+    });
+  });
+
   test('a DIFFERENT field on the same refs is a different identity (own counter)', () => {
     const session = {};
     const t0 = 7_000_000;
