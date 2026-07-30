@@ -1119,7 +1119,14 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
     }
   );
 
-  test.each(['Add to Bedroom 2', 'Add 0.4 to Bedroom 2', 'Add to Bedroom 2 and circuit 5'])(
+  test.each([
+    'Add to Bedroom 2',
+    'Add 0.4 to Bedroom 2',
+    'Add to Bedroom 2 and circuit 5',
+    '1 circuit add 0.4 to Bedroom 2',
+    'one circuit add to Bedroom 2',
+    'all circuits add 0.4 to Bedroom 2',
+  ])(
     'real designation collision "%s" remains a moved-on command, not an mdr answer',
     (userText) => {
       const verdict = classifyOvertake(
@@ -1141,6 +1148,34 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
       expect(verdict).toEqual({ kind: 'user_moved_on' });
     }
   );
+
+  test('a regex-complete board reading overtakes an mdr ask even when field and circuit match', () => {
+    const verdict = classifyOvertake(
+      'Ze is 0.22',
+      [
+        {
+          field: 'earth_loop_impedance_ze',
+          circuit: null,
+          value: '0.22',
+        },
+      ],
+      mockPending([
+        [
+          'mdr-board-reading-collision',
+          {
+            ...mdrEntry,
+            contextField: 'earth_loop_impedance_ze',
+            pendingWrite: {
+              tool: 'record_board_reading',
+              field: 'earth_loop_impedance_ze',
+              value: '0.18',
+            },
+          },
+        ],
+      ])
+    );
+    expect(verdict).toEqual({ kind: 'user_moved_on' });
+  });
 
   test('a designation-only restatement is accepted only for the mdr namespace', () => {
     expect(

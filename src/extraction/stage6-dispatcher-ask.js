@@ -1707,6 +1707,15 @@ async function buildResolvedBody({
                         .filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
                     ),
                   ];
+            const suppliedRefsBeforeDispatch = [
+              ...new Set(
+                (Array.isArray(followVerdict.supplied_circuit_refs)
+                  ? followVerdict.supplied_circuit_refs
+                  : selectedRefsBeforeDispatch
+                ).filter(Number.isInteger)
+              ),
+            ];
+            let followupCapacityRejected = false;
             // Capacity is a PRE-MUTATION contract. The registered question may
             // require two refs, while the follow-up resolver can parse any
             // census-valid list. Reject an over-complete/unassignable list
@@ -1718,15 +1727,16 @@ async function buildResolvedBody({
             if (
               !multiDescriptionFollowupFitsAskCapacity({
                 entries: askEntries,
-                selectedRefs: selectedRefsBeforeDispatch,
+                selectedRefs: suppliedRefsBeforeDispatch,
               })
             ) {
+              followupCapacityRejected = true;
               logger?.info?.('stage6.multi_description_followup_rejected', {
                 sessionId,
                 turnId,
                 tool_call_id: toolCallId,
                 reason: 'selection_exceeds_ask_capacity',
-                selected_ref_count: selectedRefsBeforeDispatch.length,
+                selected_ref_count: suppliedRefsBeforeDispatch.length,
                 ask_entry_count: askEntries.length,
               });
               followWrites = [];
@@ -1805,10 +1815,14 @@ async function buildResolvedBody({
             const successfulSelectedRefs = collectSuccessfulSelectedRefs();
 
             if (Array.isArray(followVerdict.unresolved)) {
-              appendUniqueUnresolved(
-                noticeEntries,
-                followVerdict.unresolved.filter((candidate) => candidate?.disposition === 'notice')
-              );
+              if (!followupCapacityRejected) {
+                appendUniqueUnresolved(
+                  noticeEntries,
+                  followVerdict.unresolved.filter(
+                    (candidate) => candidate?.disposition === 'notice'
+                  )
+                );
+              }
               appendUniqueUnresolved(
                 remainingUnresolved,
                 followVerdict.unresolved.filter((candidate) => candidate?.disposition === 'ask')
@@ -2090,7 +2104,8 @@ function multiDescriptionQuestion(entries) {
       ) {
         const ordinal = Number.isInteger(entry?.segment_ordinal) ? entry.segment_ordinal : 1;
         const spokenOrdinal = MULTI_DESCRIPTION_ORDINALS[ordinal] ?? `${ordinal}`;
-        const circuitWord = entry.required_count === 1 ? 'circuit number is' : 'circuit numbers are';
+        const circuitWord =
+          entry.required_count === 1 ? 'circuit number is' : 'circuit numbers are';
         return `the ${spokenOrdinal} circuit description (I found ${speakCircuitRefs(
           candidates
         )}, but ${entry.required_count} ${circuitWord} required)`;

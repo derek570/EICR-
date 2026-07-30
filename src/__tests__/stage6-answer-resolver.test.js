@@ -1954,7 +1954,14 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     }
   );
 
-  test.each(['Add to Bedroom 2', 'Add 0.4 to Bedroom 2', 'Add to Bedroom 2 and circuit 5'])(
+  test.each([
+    'Add to Bedroom 2',
+    'Add 0.4 to Bedroom 2',
+    'Add to Bedroom 2 and circuit 5',
+    '1 circuit add 0.4 to Bedroom 2',
+    'one circuit add to Bedroom 2',
+    'all circuits add 0.4 to Bedroom 2',
+  ])(
     'a real digit-bearing designation cannot reclaim unbounded command "%s" on the scalar path',
     (reply) => {
       const verdict = resolveCircuitAnswer({
@@ -1993,6 +2000,7 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict).toMatchObject({
       kind: 'partial_resolve',
       match_status: 'partial',
+      supplied_circuit_refs: [1, 99],
       selected_circuit_refs: [1],
       writes: [expect.objectContaining({ circuit: 1 })],
       unresolved: [

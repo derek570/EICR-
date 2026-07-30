@@ -2034,6 +2034,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               if (!resolvePayload) {
                 const NEW_COMMAND_PREFIX_RE =
                   /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
+                const QUANTIFIED_CIRCUIT_COMMAND_PREFIX_RE =
+                  /^\s*(?:(?:all|both|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)(?:of\s+the\s+)?circuits?\s+(?:add|put)\b/i;
                 const BULK_SCOPE_RE = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
                 // P6 — judge the new-command gate on the CANONICAL text so the
                 // same string is gated, resolved, and re-injected (the
@@ -2041,7 +2043,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 // not disagree).
                 const wordCount = canonicalAnswerText.split(/\s+/).filter(Boolean).length;
                 const matchedImperative =
-                  wordCount >= 4 && NEW_COMMAND_PREFIX_RE.test(canonicalAnswerText);
+                  wordCount >= 4 &&
+                  (NEW_COMMAND_PREFIX_RE.test(canonicalAnswerText) ||
+                    QUANTIFIED_CIRCUIT_COMMAND_PREFIX_RE.test(canonicalAnswerText));
                 const matchedBulkScope = BULK_SCOPE_RE.test(canonicalAnswerText);
                 // §A4 (F8) round-8 channel separation — the direct
                 // ask_user_answered handler skips the new-command gate

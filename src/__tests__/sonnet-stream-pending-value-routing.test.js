@@ -193,17 +193,20 @@ function registerMultiDescriptionAsk(
     { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
     { circuit_ref: 2, circuit_designation: 'First floor lighting' },
     { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
-  ]
+  ],
+  pendingWriteOverrides = {}
 ) {
+  const pendingWrite = {
+    tool: 'record_reading',
+    field: 'number_of_points',
+    value: '4',
+    ...pendingWriteOverrides,
+  };
   entry.pendingAsks.register(toolCallId, {
-    contextField: 'number_of_points',
+    contextField: pendingWrite.field,
     contextCircuit: null,
     expectedAnswerShape: 'free_text',
-    pendingWrite: {
-      tool: 'record_reading',
-      field: 'number_of_points',
-      value: '4',
-    },
+    pendingWrite,
     multiDescriptionCircuits,
     resolve: resolveFn,
     timer: makeAskTimer(),
@@ -611,7 +614,14 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     }
   );
 
-  test.each(['Add to Bedroom 2', 'Add 0.4 to Bedroom 2', 'Add to Bedroom 2 and circuit 5'])(
+  test.each([
+    'Add to Bedroom 2',
+    'Add 0.4 to Bedroom 2',
+    'Add to Bedroom 2 and circuit 5',
+    '1 circuit add 0.4 to Bedroom 2',
+    'one circuit add to Bedroom 2',
+    'all circuits add 0.4 to Bedroom 2',
+  ])(
     'a transcript-only unbounded command "%s" cannot consume a colliding mdr designation',
     async (userText) => {
       const slug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
@@ -646,7 +656,14 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     }
   );
 
-  test.each(['Add to Bedroom 2', 'Add 0.4 to Bedroom 2', 'Add to Bedroom 2 and circuit 5'])(
+  test.each([
+    'Add to Bedroom 2',
+    'Add 0.4 to Bedroom 2',
+    'Add to Bedroom 2 and circuit 5',
+    '1 circuit add 0.4 to Bedroom 2',
+    'one circuit add to Bedroom 2',
+    'all circuits add 0.4 to Bedroom 2',
+  ])(
     'a direct-channel unbounded command "%s" overtakes and is reinjected instead of answering mdr',
     async (userText) => {
       const slug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
@@ -684,6 +701,94 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
       expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain(userText);
     }
   );
+
+  test('a pre-queue exact-regex board reading overtakes mdr and stays queued as fresh work', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-board-reading-prequeue');
+    entry.isExtracting = true;
+    let resolvedPayload = null;
+    const toolCallId = 'mdr-description-board-reading-prequeue';
+    registerMultiDescriptionAsk(
+      entry,
+      toolCallId,
+      (payload) => {
+        resolvedPayload = payload;
+      },
+      [{ circuit_ref: 1, circuit_designation: 'Main board circuit' }],
+      {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+        value: '0.18',
+      }
+    );
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Ze is 0.22',
+      utterance_id: 'u-mdr-board-reading-prequeue',
+      regexResults: [
+        {
+          field: 'earth_loop_impedance_ze',
+          circuit: null,
+          value: '0.22',
+        },
+      ],
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      response_utterance_id: 'u-mdr-board-reading-prequeue',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+    expect(entry.pendingTranscripts).toEqual([
+      expect.objectContaining({ text: 'Ze is 0.22', utterance_id: 'u-mdr-board-reading-prequeue' }),
+    ]);
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test('an in-flight exact-regex board reading rejects mdr and processes exactly once', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-board-reading-inflight');
+    let resolvedPayload = null;
+    const toolCallId = 'mdr-description-board-reading-inflight';
+    registerMultiDescriptionAsk(
+      entry,
+      toolCallId,
+      (payload) => {
+        resolvedPayload = payload;
+      },
+      [{ circuit_ref: 1, circuit_designation: 'Main board circuit' }],
+      {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+        value: '0.18',
+      }
+    );
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Ze is 0.22',
+      utterance_id: 'u-mdr-board-reading-inflight',
+      regexResults: [
+        {
+          field: 'earth_loop_impedance_ze',
+          circuit: null,
+          value: '0.22',
+        },
+      ],
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      response_utterance_id: 'u-mdr-board-reading-inflight',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
+  });
 
   test.each(['Add to circuit 5 please', 'circuit 3 without the RCD'])(
     'a direct-channel bounded scalar form "%s" reaches the registered mdr resolver',

@@ -1161,6 +1161,91 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     ]);
   });
 
+  test.each([
+    '1 circuit add 0.4 to Bedroom 2',
+    'one circuit add to Bedroom 2',
+    'all circuits add 0.4 to Bedroom 2',
+  ])('quantified command "%s" cannot reach designation fan-out', async (userText) => {
+    const run = startMultiDispatcher({
+      session: buildSession([
+        { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+        { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+      ]),
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', { answered: true, user_text: userText });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      auto_resolved: false,
+      match_status: 'escalated',
+      parsed_hint: 'multi_description_quantified_unbounded_circuit_target_command',
+    });
+    expect(run.autoResolveWrite).not.toHaveBeenCalled();
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [
+      'record_reading',
+      {
+        tool: 'record_reading',
+        field: 'number_of_points',
+        value: '4',
+      },
+    ],
+    [
+      'record_board_reading',
+      {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+        value: '0.42',
+      },
+    ],
+  ])(
+    'an absent third supplied ref fails %s capacity before every write',
+    async (_tool, pendingWriteOverrides) => {
+      const run = startMultiDispatcher({
+        session: buildSession([
+          { circuit_ref: 5, circuit_designation: 'Upstairs Lights' },
+          { circuit_ref: 6, circuit_designation: 'Garage sockets' },
+        ]),
+        pendingWriteOverrides,
+      });
+      await tick();
+      run.pendingAsks.resolve('toolu_multi', {
+        answered: true,
+        user_text: '2 upstairs light circuits',
+      });
+      await tick();
+      const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+      run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+        answered: true,
+        user_text: 'circuits 5, 6 and 99',
+      });
+      const body = JSON.parse((await run.promise).content);
+
+      expect(body.match_status).toBe('partial');
+      expect(body.resolved_writes).toEqual([]);
+      expect(body.unresolved).toEqual([
+        expect.objectContaining({
+          segment_ordinal: 1,
+          required_count: 2,
+          reason: 'quantifier_count_mismatch',
+        }),
+      ]);
+      expect(run.autoResolveWrite).not.toHaveBeenCalled();
+      expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+      expect(run.session.pendingVoicePrompts).toEqual([
+        expect.objectContaining({
+          generationId: 'gen-multi',
+          text: expect.stringMatching(/couldn't place every circuit/i),
+        }),
+      ]);
+    }
+  );
+
   test('two equally valid overlapping assignments keep both source segments unresolved', async () => {
     const run = startMultiDispatcher();
     await tick();

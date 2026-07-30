@@ -103,6 +103,8 @@ Current models used by the backend processing pipeline:
 
 ## Stage 6 Agentic Extraction (live recording path)
 
+**Round-18 PLAN-2B adversarial closure.** Three fail-closed boundaries supplement the multi-description contract below. A leading count or broadcast quantifier before `circuit(s)` does not launder command prose through quantifier stripping: *"1 circuit add 0.4 to Bedroom 2"* and *"all circuits add 0.4 to Bedroom 2"* write nothing, and both live answer channels reinject rather than consume the fresh command. A structurally complete fresh reading always overtakes an `mdr-*` scope ask before the generic exact `(field,circuit)` answer test, so even a coincident *"Ze is 0.22"* regex hit is new work. Follow-up capacity is checked against every supplied ref—including absent effective-board refs carried in resolver-only `supplied_circuit_refs`—before any mutation: a two-ref clarification answered with `5, 6, 99` dispatches zero writes, stages no partial-success notice, retains the ask, and emits one terminal. This metadata never enters a client frame.
+
 Live recording flows through the Stage 6 agentic extraction pipeline. `config/field_schema.json` is the single source of truth for every extractable field; the tool schemas (`src/extraction/stage6-tool-schemas.js`) generate `record_reading.field` / `record_board_reading.field` enums from it at module load.
 
 Sonnet's `ask_user` tool carries an OPTIONAL `pending_write` property. When the inspector says a value without enough context (e.g. "Number of points is 4" with no circuit), Sonnet attaches the buffered write to its ask. The server then:

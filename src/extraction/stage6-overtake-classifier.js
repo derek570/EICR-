@@ -133,6 +133,30 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
 
   const regex = Array.isArray(regexResults) ? regexResults : [];
 
+  // PLAN-2B mdr-* asks are asking only for circuit scope. A structurally
+  // complete reading is therefore always fresh work, even when its
+  // (field,circuit) happens to equal the stale pending_write carried by the
+  // grouped ask. Give that reading precedence before the generic exact-match
+  // loop can consume it as a description answer.
+  const hasMultiDescriptionAsk = [...pendingAsks.entries()].some(
+    ([id]) => typeof id === 'string' && id.startsWith('mdr-')
+  );
+  if (hasMultiDescriptionAsk) {
+    const hasRecordableReading = regex.some(
+      (result) =>
+        result &&
+        typeof result.field === 'string' &&
+        RECORDABLE_READING_FIELDS.has(result.field) &&
+        result.value != null
+    );
+    const structuredReading = hasRecordableReading
+      ? null
+      : detectStructuredReading(typeof newText === 'string' ? newText : '');
+    if (hasRecordableReading || (structuredReading && structuredReading.complete === true)) {
+      return { kind: 'user_moved_on' };
+    }
+  }
+
   // 1. Exact (field, circuit) match wins — iterate regex hits in order, then
   //    pending asks in insertion order. First full match returns immediately.
   for (const r of regex) {

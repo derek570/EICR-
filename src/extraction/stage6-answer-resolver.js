@@ -440,10 +440,7 @@ function matchQuantifiedDesignations(spokenSpan, circuits) {
     if (!Number.isInteger(ref)) continue;
     if (canonicalDesignation === canonicalSpoken) {
       exact.push(ref);
-    } else if (
-      canonicalDesignation.includes(canonicalSpoken) ||
-      canonicalSpoken.includes(canonicalDesignation)
-    ) {
+    } else if (canonicalDesignation.includes(canonicalSpoken)) {
       // A separator-bearing designation is one server-owned target, not a
       // bag of independently claimable components. Let its raw/exact whole
       // form win in the whole-designation pass, but do not let a quantified
@@ -1033,6 +1030,13 @@ function hasLeadingCircuitTargetCommand(rawText) {
   return /^(?:add(?:\s+it)?\s+to|put(?:\s+it)?\s+(?:on|onto))\b/i.test(trimmed);
 }
 
+function hasQuantifiedCircuitTargetCommand(rawText) {
+  const trimmed = stripMultiDescriptionRefWrappers(String(rawText ?? '').toLowerCase()).trim();
+  return /^\s*(?:(?:all|both|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)(?:of\s+the\s+)?circuits?\s+(?:add|put)\b/i.test(
+    trimmed
+  );
+}
+
 function parseBoundedMultiDescriptionCircuitRefAtom(rawAtom) {
   let atom = stripPunct(String(rawAtom ?? '').toLowerCase())
     .replace(/[‐‑‒–—]/g, '-')
@@ -1225,6 +1229,13 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       unresolved: [],
     };
   }
+  if (hasQuantifiedCircuitTargetCommand(normalisedText)) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_quantified_unbounded_circuit_target_command',
+      available_circuits: circuits,
+    };
+  }
   if (
     hasLeadingCircuitTargetCommand(normalisedText) &&
     !Number.isInteger(extractBoundedExceptionalCircuitRef(normalisedText))
@@ -1276,6 +1287,20 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
     rawExactMatch: matchRawSpanExactDesignation(rawSpan, circuits),
     attached: stripAttachedCircuitQuantifier(rawSpan),
   }));
+  if (
+    segmentStates.some(
+      ({ attached }) =>
+        attached.quantifier !== null &&
+        hasLeadingCircuitTargetCommand(attached.text) &&
+        !Number.isInteger(extractBoundedExceptionalCircuitRef(attached.text))
+    )
+  ) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_quantified_unbounded_circuit_target_command',
+      available_circuits: circuits,
+    };
+  }
 
   // An exact stored designation owns its raw words even when its name starts
   // like a count ("Two Lighting Circuits"). Only an unowned malformed count
@@ -1645,6 +1670,7 @@ export function resolveMultiDescriptionFollowup({
   }
 
   const knownRefs = availableCircuitRefSet(availableCircuits);
+  const suppliedCircuitMetadata = { supplied_circuit_refs: refs };
   const writes = [];
   const unresolved = [];
   refs.forEach((ref, index) => {
@@ -1671,6 +1697,7 @@ export function resolveMultiDescriptionFollowup({
       match_status: 'all_unmatched',
       parsed_hint: 'multi_description_followup_all_unmatched',
       available_circuits: circuits,
+      ...suppliedCircuitMetadata,
       unresolved,
     };
   }
@@ -1678,6 +1705,7 @@ export function resolveMultiDescriptionFollowup({
     return {
       kind: 'auto_resolve',
       match_status: 'full',
+      ...suppliedCircuitMetadata,
       ...selectedCircuitMetadata,
       writes: resolvedWrites,
       unresolved: [],
@@ -1686,6 +1714,7 @@ export function resolveMultiDescriptionFollowup({
   return {
     kind: 'partial_resolve',
     match_status: 'partial',
+    ...suppliedCircuitMetadata,
     ...selectedCircuitMetadata,
     writes: resolvedWrites,
     unresolved,
