@@ -44,6 +44,7 @@ const SESSION_ID = 'sess-partial-failure';
 
 const {
   PARTIAL_FAILURE_FAMILIES,
+  PARTIAL_FAILURE_TERMINALS,
   PARTIAL_FAILURE_SCOPE_FAMILIES,
   NOTICE_FIELD_IDENTITY_EXEMPT,
   canonicalPartialFailureFieldIdentity,
@@ -69,6 +70,10 @@ function primaryText(reason, targets, fieldLabel) {
 function variantTexts(reason, targets, fieldLabel) {
   const descriptor = describePartialFailureTargets(targets, fieldLabel);
   return PARTIAL_FAILURE_FAMILIES[reason].map((f) => f(descriptor));
+}
+/** The descriptor for a set of circuit refs at the default headline label. */
+function descriptorFor(refs, fieldLabel = label('measured_zs_ohm')) {
+  return describePartialFailureTargets(refs.map(circuitTarget), fieldLabel);
 }
 
 describe('§5.A1 — wording families', () => {
@@ -403,6 +408,122 @@ describe('§5.A6 — renderPartialFailureNoticeText', () => {
   });
 });
 
+describe('§5.A6b — repeat escalation: never a byte-repeat inside the 30 s dedupe window', () => {
+  // Codex diff-review cycle 2 BLOCKER. Notices ride the field-nil channel,
+  // whose client dedupe is TEXT-KEYED with a 30 s TTL. Three variants rotating
+  // mod 3 means the 4th repeat of ONE spoken identity wraps to variant 0 —
+  // byte-identical to the 1st, therefore swallowed, therefore a chimed turn
+  // goes silent with marker-② already suppressed by the queued prompt.
+  const aggregate = {
+    reason: 'circuit_not_found',
+    field: 'zs',
+    fieldLabel: label('measured_zs_ohm'),
+    boardId: null,
+    targets: [circuitTarget(7)],
+  };
+  const render = (session, nowMs, agg = aggregate, survivors = [circuitTarget(7)]) =>
+    renderPartialFailureNoticeText(session, agg, survivors, { nowMs });
+
+  test('four consecutive repeats of ONE identity render four DISTINCT strings', () => {
+    const session = {};
+    const t0 = 1_000_000;
+    const spoken = [
+      render(session, t0),
+      render(session, t0 + 1_000),
+      render(session, t0 + 2_000),
+      render(session, t0 + 3_000),
+    ];
+    for (const s of spoken) expect(typeof s).toBe('string');
+    // The assertion that fails without the terminal: #4 would equal #1.
+    expect(new Set(spoken).size).toBe(4);
+  });
+
+  test('repeats 1..3 are byte-UNCHANGED — the pinned id-112 render still leads', () => {
+    const session = {};
+    const t0 = 2_000_000;
+    expect(render(session, t0)).toBe(
+      primaryText('circuit_not_found', [circuitTarget(7)], aggregate.fieldLabel)
+    );
+    const second = render(session, t0 + 500);
+    const third = render(session, t0 + 1_000);
+    expect(second).toBe(PARTIAL_FAILURE_FAMILIES.circuit_not_found[1](descriptorFor([7])));
+    expect(third).toBe(PARTIAL_FAILURE_FAMILIES.circuit_not_found[2](descriptorFor([7])));
+  });
+
+  test('the 4th and every later repeat is the ordinal TERMINAL, distinct each time', () => {
+    const session = {};
+    const t0 = 3_000_000;
+    for (let i = 0; i < 3; i++) render(session, t0 + i * 100);
+    const fourth = render(session, t0 + 300);
+    const fifth = render(session, t0 + 400);
+    expect(fourth).toBe(PARTIAL_FAILURE_TERMINALS.circuit_not_found(descriptorFor([7]), 4));
+    expect(fifth).toBe(PARTIAL_FAILURE_TERMINALS.circuit_not_found(descriptorFor([7]), 5));
+    expect(fourth).not.toBe(fifth);
+  });
+
+  test('past the 30 s window the counter RESETS — a fresh attempt 1 is honest', () => {
+    const session = {};
+    const t0 = 4_000_000;
+    for (let i = 0; i < 4; i++) render(session, t0 + i * 100);
+    // Outside the window the earlier text is no longer in the client's dedupe
+    // store, so the primary wording is the right thing to say again.
+    const afterWindow = render(session, t0 + 40_000);
+    expect(afterWindow).not.toContain('attempt');
+  });
+
+  test('TWO BOARDS, same field and same refs, share ONE counter — no identical terminals', () => {
+    // The board never appears in the spoken sentence, so board-keying the
+    // counter would let each board reach "attempt 4" independently and emit
+    // byte-identical terminals — reopening the swallow this closes.
+    const session = {};
+    const t0 = 5_000_000;
+    const main = { ...aggregate, boardId: null };
+    const garage = { ...aggregate, boardId: 'garage' };
+    const spoken = [];
+    for (let i = 0; i < 3; i++) {
+      spoken.push(render(session, t0 + i * 200, main));
+      spoken.push(render(session, t0 + i * 200 + 50, garage));
+    }
+    for (const s of spoken) expect(typeof s).toBe('string');
+    expect(new Set(spoken).size).toBe(spoken.length);
+  });
+
+  test('INTERLEAVED identities never repeat bytes (the shared-cursor tie)', () => {
+    // X, Y, X: a shared per-family cursor can hand X the same index twice, and
+    // the per-identity one-step skip is what breaks it.
+    const session = {};
+    const t0 = 6_000_000;
+    const x = [circuitTarget(7)];
+    const y = [circuitTarget(9)];
+    const spoken = [
+      render(session, t0, aggregate, x),
+      render(session, t0 + 100, aggregate, y),
+      render(session, t0 + 200, aggregate, x),
+      render(session, t0 + 300, aggregate, y),
+      render(session, t0 + 400, aggregate, x),
+      render(session, t0 + 500, aggregate, y),
+    ];
+    for (const s of spoken) expect(typeof s).toBe('string');
+    expect(new Set(spoken).size).toBe(spoken.length);
+  });
+
+  test('a DIFFERENT field on the same refs is a different identity (own counter)', () => {
+    const session = {};
+    const t0 = 7_000_000;
+    const zs = aggregate;
+    const r1r2 = { ...aggregate, field: 'r1_plus_r2', fieldLabel: label('r1_r2_ohm') };
+    for (let i = 0; i < 3; i++) render(session, t0 + i * 100, zs);
+    // The r1+r2 notice has been spoken ZERO times, so it must NOT terminal.
+    expect(render(session, t0 + 400, r1r2)).not.toContain('attempt');
+  });
+
+  test('a null render never bumps the repeat counter', () => {
+    const session = {};
+    expect(render(session, 8_000_000, aggregate, [])).toBeNull();
+    expect(session.partialFailureRepeats).toBeUndefined();
+  });
+});
+
 describe('§5.A7 — client-dedupe distinctness sweep', () => {
   test('every rendered notice line in the inventory is mutually distinct', () => {
     // Byte-identical repeats inside the clients' 30 s text dedupe are
@@ -416,8 +537,8 @@ describe('§5.A7 — client-dedupe distinctness sweep', () => {
   test('the partial-failure families are ENROLLED (singular + plural samples)', () => {
     const inventory = renderedNoticeInventory();
     const partial = inventory.filter((e) => e.route === 'partial_failure');
-    // 4 families × 3 variants × 2 grammar samples.
-    expect(partial).toHaveLength(24);
+    // 4 families × (3 variants + 1 terminal) × 2 grammar samples.
+    expect(partial).toHaveLength(32);
     // Every family present, and BOTH grammatical numbers rendered for each —
     // the plural fill is what the id-112 headline speaks, so a template that
     // silently ignored the number slots must fail this sweep, not pass it.
@@ -426,14 +547,18 @@ describe('§5.A7 — client-dedupe distinctness sweep', () => {
     );
     for (const family of Object.keys(PARTIAL_FAILURE_FAMILIES)) {
       const rows = partial.filter((e) => e.family === family);
-      expect(rows.filter((e) => e.kind.endsWith('_singular'))).toHaveLength(3);
-      expect(rows.filter((e) => e.kind.endsWith('_plural'))).toHaveLength(3);
+      expect(rows.filter((e) => e.kind.endsWith('_singular'))).toHaveLength(4);
+      expect(rows.filter((e) => e.kind.endsWith('_plural'))).toHaveLength(4);
       // Singular and plural must be DIFFERENT bytes for every variant.
       for (let i = 0; i < 3; i++) {
         const s = rows.find((e) => e.kind === `variant_${i}_singular`);
         const p = rows.find((e) => e.kind === `variant_${i}_plural`);
         expect(s.text).not.toBe(p.text);
       }
+      // Every family carries its ordinal TERMINAL — the wrap-silence fix. A
+      // family without one can go silent on the 4th repeat inside 30 s.
+      expect(rows.find((e) => e.kind === 'terminal_singular')?.text).toBeTruthy();
+      expect(rows.find((e) => e.kind === 'terminal_plural')?.text).toBeTruthy();
     }
     // The A1a/plan-B regimes are still enrolled beside them (no clobbering).
     expect(inventory.some((e) => e.route === 'direct')).toBe(true);

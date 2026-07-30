@@ -589,6 +589,15 @@ export function renderedNoticeInventory() {
           text: v({ ...sample, fieldLabel: SAMPLE_LABEL }),
         })
       );
+      out.push({
+        family,
+        route: 'partial_failure',
+        kind: `terminal_${numberKind}`,
+        text: PARTIAL_FAILURE_TERMINALS[family](
+          { ...sample, fieldLabel: SAMPLE_LABEL },
+          SAMPLE_N
+        ),
+      });
     }
   }
   return out;
@@ -874,27 +883,132 @@ export function describePartialFailureTargets(targets, fieldLabel) {
 }
 
 /**
- * Variant selection: PRIMARY-FIRST, then strictly monotonic.
+ * Ordinal-bearing TERMINALS, one per partial-failure family, rendered from
+ * the 4th repeat of the SAME spoken identity inside the 30 s client-dedupe
+ * window (Codex diff-review cycle 2).
+ *
+ * Why they exist: three variants rotating mod 3 means the 4th repeat of one
+ * identity wraps to variant 0 — byte-identical to the 1st. Notices ride the
+ * field-nil channel, whose client dedupe is TEXT-KEYED with a 30 s TTL, so
+ * that 4th notice is swallowed and a chimed turn goes SILENT (Audio-First #1).
+ * marker-② cannot rescue it either: the queued prompt counts as speech intent,
+ * so the catch-all is already suppressed by the time the client drops it. This
+ * is the same latent wrap-to-identical-string hole plan B closed for the
+ * DIRECT regime (terminal from attempt 6) and the B-STAGED regime (from
+ * attempt 3); the plan is silent on it, so the sibling regimes decided the
+ * shape.
+ *
+ * Contract, mirroring `B_STAGED_TERMINALS`: ordinal-bearing (so consecutive
+ * repeats past the wrap are byte-distinct from each other), label-bearing
+ * (so two different slots at the same ordinal don't collide — the dedupe is
+ * key-blind), every family DISTINCT from every other family's terminal AND
+ * from all twelve variants, and every line still TRUTHFUL — it says the value
+ * still isn't recorded, which remains exactly the case.
+ */
+export const PARTIAL_FAILURE_TERMINALS = Object.freeze({
+  circuit_not_found: (t, n) =>
+    `Still nothing on this board for ${t.subjectLower} — that's attempt ${n}, and ${t.fieldLabel} remains unrecorded.`,
+  lim_capability_gated: (t, n) =>
+    `LIM for ${t.fieldLabel} still needs a newer app version — attempt ${n} for ${t.subjectLower}, and it's logged.`,
+  low_conf_capability_gated: (t, n) =>
+    `I still haven't got the ${t.fieldLabel} for ${t.subjectLower} — attempt ${n}; try saying just the number on its own.`,
+  write_failed: (t, n) =>
+    `${capitaliseFirst(t.fieldLabel)} still hasn't saved for ${t.subjectLower} — attempt ${n} is logged.`,
+});
+
+/**
+ * Bump the per-IDENTITY partial-failure repeat counter.
+ *
+ * Same 30 s reset semantics as plan B's `bumpRefusedOp` (outside the client
+ * dedupe window a byte-repeat is no longer swallowed, so a fresh "attempt 1"
+ * is honest), but an OWN session namespace: `session.refusedOps` keys are
+ * B-staged slot keys whose counts drive that regime's pool rotation and
+ * ordinals, and folding a second regime's keys in could perturb them.
+ */
+function bumpPartialFailureRepeat(session, repeatKey, nowMs) {
+  if (!session.partialFailureRepeats || typeof session.partialFailureRepeats !== 'object') {
+    session.partialFailureRepeats = {};
+  }
+  const entry = session.partialFailureRepeats[repeatKey];
+  if (!entry || nowMs - entry.lastAt > REFUSAL_REPEAT_WINDOW_MS) {
+    session.partialFailureRepeats[repeatKey] = { count: 1, lastAt: nowMs };
+    return 1;
+  }
+  entry.count += 1;
+  entry.lastAt = nowMs;
+  return entry.count;
+}
+
+/** Repeats past this many inside the dedupe window render the terminal. */
+const PARTIAL_FAILURE_TERMINAL_FROM = 4;
+
+/**
+ * Variant selection: PRIMARY-FIRST, then strictly monotonic, then TERMINAL.
  *
  * Deliberately NOT the A1a djb2-seeded scheme. §3.1 names variant 0 the
  * "gap-only primary wording" and the acceptance criterion pins the exact
  * bytes of the id-112 render, so the first selection must be index 0; a
- * turn-hashed seed would pick an arbitrary one. After that it advances by one
- * per rendered notice, so a repeat inside the clients' 30 s text dedupe is
- * byte-distinct and cannot be swallowed to silence.
+ * turn-hashed seed would pick an arbitrary one.
+ *
+ * Distinctness is defended on THREE axes, because the client dedupe is
+ * text-keyed and key-blind:
+ *   1. The rotation cursor is per-FAMILY, not per-identity, which is what
+ *      keeps two identities differing ONLY by board (same reason, same
+ *      canonical field, same refs — the board never appears in the spoken
+ *      text) from both starting at variant 0 and rendering identical bytes.
+ *      Do not "simplify" this to a per-identity cursor: that reopens exactly
+ *      that collision, and a swallowed second board is an unspoken miss.
+ *   2. A per-identity `lastIdx` breaks the residual same-identity tie a
+ *      SHARED cursor can still produce (X, Y, X interleaved can hand X the
+ *      same index twice). One extra advance is provably enough to break it:
+ *      `lastIdx` is a single value, so index+1 cannot also equal it.
+ *   3. Past `PARTIAL_FAILURE_TERMINAL_FROM` repeats of one identity inside
+ *      the 30 s window, the ordinal-bearing terminal takes over and every
+ *      further repeat is byte-distinct by its ordinal.
  *
  * Own session key (`_partialFailureRotation`) so A1a's cursor
  * (`_mandatoryNoticeRotation`) and its byte-parity pins stay untouched.
+ *
+ * @param {object} session
+ * @param {string} family
+ * @param {PartialFailureTargetDescriptor} target
+ * @param {{repeatKey?: string|null, nowMs?: number}} [opts] repeat identity for
+ *   the terminal escalation. Omitted (or key-less) ⇒ rotation only, exactly the
+ *   pre-terminal behaviour — unit tests that only exercise rotation stay valid.
  */
-export function selectPartialFailureNoticeText(session, family, target) {
+export function selectPartialFailureNoticeText(session, family, target, opts = {}) {
   const variants = PARTIAL_FAILURE_FAMILIES[family];
   if (!variants || !target) return null;
   if (!session._partialFailureRotation || typeof session._partialFailureRotation !== 'object') {
     session._partialFailureRotation = {};
   }
   const state = session._partialFailureRotation;
+  const { repeatKey = null, nowMs = null } = opts ?? {};
+
+  let repeats = 0;
+  if (typeof repeatKey === 'string' && repeatKey.length > 0 && Number.isFinite(nowMs)) {
+    repeats = bumpPartialFailureRepeat(session, repeatKey, nowMs);
+    if (repeats >= PARTIAL_FAILURE_TERMINAL_FROM) {
+      const terminal = PARTIAL_FAILURE_TERMINALS[family];
+      // The terminal replaces the variant and deliberately does NOT advance
+      // the family cursor — it consumed no variant, so the next fresh
+      // identity should still get the one it would have had.
+      if (terminal) return terminal(target, repeats);
+    }
+  }
+
   const prev = state[family];
-  const idx = typeof prev === 'number' ? (prev + 1) % variants.length : 0;
+  let idx = typeof prev === 'number' ? (prev + 1) % variants.length : 0;
+  if (typeof repeatKey === 'string' && repeatKey.length > 0) {
+    // Own session key, NOT a sub-object of the rotation state: that state is
+    // pinned by shape (`{family: index}`) and must stay a pure cursor map.
+    if (!session._partialFailureLastIdx || typeof session._partialFailureLastIdx !== 'object') {
+      session._partialFailureLastIdx = {};
+    }
+    const lastByIdentity = session._partialFailureLastIdx;
+    if (lastByIdentity[repeatKey] === idx) idx = (idx + 1) % variants.length;
+    lastByIdentity[repeatKey] = idx;
+  }
   state[family] = idx;
   return variants[idx](target);
 }
@@ -971,15 +1085,27 @@ export function stagePartialFailureNotice(perTurnWrites, spec) {
  * have consumed a rotation slot (which would make the NEXT turn's notice skip a
  * variant for no audible reason).
  *
+ * The repeat counter behind the terminal escalation is bumped here too — and
+ * deliberately NOT at stage time the way plan B's B-staged counter is. The two
+ * counters answer different questions: B's ordinal must be TRUTHFUL about how
+ * many times the inspector ATTEMPTED the operation (so a suppressed attempt
+ * still counts), whereas this one exists solely to keep consecutive SPOKEN
+ * bytes distinct inside the clients' text dedupe window — so only a notice
+ * that actually reaches the FIFO may advance it.
+ *
  * Returns null when nothing nameable survives — the caller then speaks nothing
  * for this aggregate, and marker-② still owns the turn's audibility floor.
  *
  * @param {object} session
  * @param {object} aggregate the staged aggregate
  * @param {{kind: 'circuit'|'scope', ref?: number}[]} survivingTargets
+ * @param {{nowMs?: number}} [opts] wall clock for the 30 s repeat window.
+ *   Defaults to `Date.now()`, mirroring `renderMandatoryNoticeText` — the clock
+ *   read lives in this module so the harness call site needs no clock argument;
+ *   tests inject a fake one.
  * @returns {string|null}
  */
-export function renderPartialFailureNoticeText(session, aggregate, survivingTargets) {
+export function renderPartialFailureNoticeText(session, aggregate, survivingTargets, opts = {}) {
   if (!session || !aggregate) return null;
   if (!PARTIAL_FAILURE_FAMILIES[aggregate.reason]) return null;
   const descriptor = describePartialFailureTargets(survivingTargets, aggregate.fieldLabel);
@@ -989,5 +1115,34 @@ export function renderPartialFailureNoticeText(session, aggregate, survivingTarg
   // and a future filter bug must not be able to mint a lying sentence.
   const scopeOnly = survivingTargets.every((t) => t?.kind === 'scope');
   if (scopeOnly && !PARTIAL_FAILURE_SCOPE_FAMILIES.has(aggregate.reason)) return null;
-  return selectPartialFailureNoticeText(session, aggregate.reason, descriptor);
+  return selectPartialFailureNoticeText(session, aggregate.reason, descriptor, {
+    repeatKey: partialFailureTextIdentity(aggregate, survivingTargets),
+    nowMs: Number.isFinite(opts?.nowMs) ? opts.nowMs : Date.now(),
+  });
+}
+
+/**
+ * The repeat identity for a partial-failure notice: EXACTLY the inputs that
+ * determine the rendered bytes — family, the spoken field LABEL, and the spoken
+ * target set. Nothing else.
+ *
+ * Deliberately NOT `aggregate.key`, which carries the board id: the board never
+ * appears in the spoken sentence, so two boards' notices for the same field and
+ * the same refs render identical text and MUST share one repeat counter — a
+ * board-keyed counter would let each reach "attempt 4" independently and emit
+ * byte-identical terminals, reopening the very swallow this escalation closes.
+ * Conversely the LABEL rather than the canonical field, because the label is
+ * what is spoken (two raw fields folding to one canonical field can carry
+ * different labels, and those two sentences are genuinely distinct).
+ */
+function partialFailureTextIdentity(aggregate, survivingTargets) {
+  const refs = (Array.isArray(survivingTargets) ? survivingTargets : [])
+    .filter((t) => t?.kind === 'circuit' && Number.isInteger(t.ref))
+    .map((t) => t.ref)
+    .sort((a, b) => a - b)
+    .join(',');
+  const hasScope = (Array.isArray(survivingTargets) ? survivingTargets : []).some(
+    (t) => t?.kind === 'scope'
+  );
+  return `${aggregate.reason}::${aggregate.fieldLabel ?? ''}::${refs}${hasScope ? '|scope' : ''}`;
 }
