@@ -21,7 +21,9 @@
  * dependency-DOWNSTREAM-only — it imports NOTHING from the dispatchers or the
  * harness. `stage6-dispatchers-board.js` keeps a compatibility RE-EXPORT of
  * `BOARD_CLEAR_NOTICE_FAMILIES` / `selectMandatoryNoticeText` so existing A1a
- * suites keep their import paths.
+ * suites keep their import paths. Plan 2A adds two imports, both pure
+ * ALIAS-TABLE leaves (`value-enum-validator.js` → one further leaf;
+ * `field-name-corrections.js` → none), so the direction still holds.
  *
  * TWO SELECTION REGIMES (round-13):
  *   - DIRECT (A1a) notices — no `coveredToolCallIds` — keep the exact A1a
@@ -60,7 +62,17 @@
  * repeat state on server-owned constants (`model_contract::unknown_tool`,
  * `model_contract::offschema_clear`), never the hallucinated tool name or
  * the off-schema field string.
+ *
+ * THIRD REGIME — PARTIAL-FAILURE notices (plan 2A, 2026-07-30, feedback id
+ * 112). Plan B's two regimes above both answer "the whole turn was refused";
+ * this one answers "part of the turn silently did not land". It reuses the
+ * family/rotation/inventory pattern but lives on its OWN per-turn accumulator
+ * (`perTurnWrites.partialFailureNotices`) and its OWN session rotation key
+ * (`_partialFailureRotation`) — see PARTIAL-FAILURE SEPARATION below.
  */
+
+import { canonicaliseNumericReadingField } from './value-enum-validator.js';
+import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 
 // The clients' A1(b) field-nil text dedupe window: byte-identical spoken
 // lines within this window are swallowed client-side. Every rotation /
@@ -558,5 +570,382 @@ export function renderedNoticeInventory() {
       text: B_STAGED_TERMINALS[route](SAMPLE_LABEL, SAMPLE_N),
     });
   }
+  // Plan 2A — the partial-failure families join the SAME sweeps. Rendered
+  // twice, once per grammatical number: the singular and plural fills are
+  // different spoken lines from the same template, and a template that
+  // collapsed them (e.g. one that never used the number-dependent slots)
+  // would let "circuit 7 not found" swallow "circuits 7 and 8 not found"
+  // inside the 30 s window.
+  for (const [family, variants] of Object.entries(PARTIAL_FAILURE_FAMILIES)) {
+    for (const [numberKind, sample] of [
+      ['singular', PARTIAL_FAILURE_SAMPLE_SINGULAR],
+      ['plural', PARTIAL_FAILURE_SAMPLE_PLURAL],
+    ]) {
+      variants.forEach((v, i) =>
+        out.push({
+          family,
+          route: 'partial_failure',
+          kind: `variant_${i}_${numberKind}`,
+          text: v({ ...sample, fieldLabel: SAMPLE_LABEL }),
+        })
+      );
+    }
+  }
   return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Plan 2A (2026-07-30, feedback id 112) — PARTIAL-FAILURE notices
+// ───────────────────────────────────────────────────────────────────────────
+//
+// THE DEFECT CLASS: a turn that ends with ≥1 sibling SUCCESS can still contain
+// rejections and silent skips that reach the inspector as nothing at all. The
+// A3 orphan net only fires when EVERY tool call errored (`allRejected`), and
+// the capability-gate skips return `is_error:false` so they are not even
+// rejections — so "Zs for circuits 5 to 10 is 0.4" on a board where 7 and 8
+// don't exist read back four values and said NOTHING about the two that were
+// dropped. Audio-First #1 in the zero-times direction: the hands-free
+// inspector has no way to learn a reading never landed.
+//
+// THE ANSWER: every genuine rejection or silent skip inside a turn that ends
+// with ≥1 sibling success speaks ONE aggregated notice naming what did NOT
+// land — "Circuits 7 and 8 weren't found — no Zs recorded for them."
+//
+// PARTIAL-FAILURE SEPARATION (round-2 BLOCKER, implemented structurally):
+// these notices are staged on their OWN per-turn array,
+// `perTurnWrites.partialFailureNotices`, NOT on `mandatoryNotices`. §3.1 only
+// requires that they be excluded from plan B's `coveredUnion` and
+// `stampCoveredNoticesNonDraining`, which is satisfied by staging them
+// WITHOUT `coveredToolCallIds` — but both of those helpers, and the net-0
+// drain filter, iterate `mandatoryNotices` and key on shapes a future family
+// could accidentally satisfy (the drain filter admits any entry with a string
+// `family` and `drain !== false`). A separate array makes the exclusion a
+// property of the DATA STRUCTURE rather than of a field being absent, which is
+// what the requirement actually means. Entries still carry
+// `noticeKind: 'partial_failure'` so a consumer that ever does see both
+// arrays can tell them apart.
+//
+// WHY NOT ask-coverage suppression (churn circuit-breaker, §3.1 round 6): a
+// same-turn model ask about circuit 7 alongside the notice "circuits 7 and 8
+// weren't found" repeats circuit 7 in one extra sentence, but it can never
+// HIDE circuit 8. Redundancy is fail-audible; the suppression machinery that
+// would have removed it was fail-silent-by-bug. The double-mention is
+// ACCEPTED, dated, by design (P2 precedent, 2026-07-24: "worst case an extra
+// read-back, never silence").
+
+/**
+ * P5's clear-wire exemption, HAND-MIRRORED.
+ *
+ * `stage6-event-bundler.js` owns the authoritative `CLEAR_WIRE_EXEMPT` set:
+ * `r2_ohm` must NOT be folded onto its `FIELD_CORRECTIONS` image (`r2`),
+ * because iOS maps `r2` to the R1+R2 cell and `r2_ohm` to the distinct R2
+ * end-to-end cell — collapsing them would make the two different measurements
+ * one identity.
+ *
+ * Mirrored as a literal rather than imported: the bundler is a ~1700-line
+ * module that imports the dispatchers' world, and this module's contract is to
+ * be dependency-DOWNSTREAM-only (see the header). The codebase's established
+ * answer to exactly this shape is a hand-mirrored literal plus a reciprocal
+ * DRIFT TEST (`impedance-clamp.js`, `ios-dedupe-key.js`), and that is what
+ * guards it here — `refusal-notices.test.js` asserts set equality against the
+ * bundler's export, so adding a member there without adding it here fails.
+ */
+export const NOTICE_FIELD_IDENTITY_EXEMPT = Object.freeze(new Set(['r2_ohm']));
+
+/**
+ * The ONE canonical field identity used by the partial-failure machinery, on
+ * BOTH sides of the drain's survivor test.
+ *
+ * WHY two tables (§3.1): the model may spell the same slot several ways within
+ * one turn, and a notice staged under one spelling must SUBTRACT against a
+ * later write under another, or the inspector hears "no Zs recorded for
+ * circuit 4" about a circuit 4 Zs that is sitting in the certificate — a false
+ * negative is worse than the silence this whole plan removes, because it
+ * invites the inspector to re-dictate a value that is already correct.
+ *   - `canonicaliseNumericReadingField` folds the DIALOGUE-slot aliases
+ *     (`rcd_trip_time` → `rcd_time_ms`).
+ *   - `FIELD_CORRECTIONS` folds the LEGACY WIRE names (`measured_zs_ohm` →
+ *     `zs`, `max_zs`/`ocpd_max_zs` → `ocpd_max_zs_ohm`, …).
+ * Applied in that order because the wire table is keyed on the post-dialogue
+ * spellings.
+ *
+ * Non-string input passes through untouched — the caller's trust guards decide
+ * whether such a target may be staged at all.
+ */
+export function canonicalPartialFailureFieldIdentity(field) {
+  if (typeof field !== 'string' || field.length === 0) return field;
+  const dialogueFolded = canonicaliseNumericReadingField(field);
+  if (NOTICE_FIELD_IDENTITY_EXEMPT.has(dialogueFolded)) return dialogueFolded;
+  return FIELD_CORRECTIONS[dialogueFolded] ?? dialogueFolded;
+}
+
+/**
+ * Target descriptor slots every partial-failure variant renders from. Built by
+ * `describePartialFailureTargets` so the number-dependent grammar is decided
+ * ONCE and every variant stays renderable for singular, plural and
+ * scope-level target sets.
+ *
+ * @typedef {object} PartialFailureTargetDescriptor
+ * @property {string} subject      capitalised — "Circuit 7" / "Circuits 7 and 8" / "Those circuits"
+ * @property {string} subjectLower "circuit 7" / "circuits 7 and 8" / "those circuits"
+ * @property {string} wasWere      "wasn't" / "weren't"
+ * @property {string} isAre        "isn't" / "aren't"
+ * @property {string} pronoun      "it" / "them"
+ * @property {string} fieldLabel   server-owned spoken field label (never model-controlled)
+ */
+
+/** Inventory samples — see renderedNoticeInventory. */
+const PARTIAL_FAILURE_SAMPLE_SINGULAR = Object.freeze({
+  subject: 'Circuit 7',
+  subjectLower: 'circuit 7',
+  wasWere: "wasn't",
+  isAre: "isn't",
+  pronoun: 'it',
+});
+const PARTIAL_FAILURE_SAMPLE_PLURAL = Object.freeze({
+  subject: 'Circuits 7 and 8',
+  subjectLower: 'circuits 7 and 8',
+  wasWere: "weren't",
+  isAre: "aren't",
+  pronoun: 'them',
+});
+
+/**
+ * Wording pools, ONE family per (field-independent) REASON. Variant 0 of each
+ * family is the §3.1 "gap-only primary" form — it names ONLY what did not land
+ * and never re-states what did, because the successful siblings have already
+ * been read back individually and repeating them would bury the gap.
+ *
+ * ≥3 byte-distinct variants per family, all enrolled in
+ * `renderedNoticeInventory` so the existing client-dedupe distinctness sweeps
+ * enforce mutual distinctness against every plan A1a/B line too.
+ *
+ * SCOPE-LEVEL targets ("Those circuits") are reachable ONLY through
+ * `lim_capability_gated` — the bulk `set_field_for_all_circuits` LIM gate is
+ * the one producer that rejects before its target refs exist (see
+ * stage6-dispatchers-circuit.js). `circuit_not_found` variant 2 asserts
+ * something about the board that would be a LIE for a scope target, so
+ * `stagePartialFailureNotice` REJECTS a scope target on any other family
+ * rather than trusting call sites to remember.
+ */
+export const PARTIAL_FAILURE_FAMILIES = Object.freeze({
+  // Channel 1 (record_reading circuit_not_found) + the set_field_for_all
+  // `!bucket` miss. Same user-visible truth from both producers — the circuit
+  // the inspector named is not on the board being written to.
+  circuit_not_found: Object.freeze([
+    (t) => `${t.subject} ${t.wasWere} found — no ${t.fieldLabel} recorded for ${t.pronoun}.`,
+    (t) => `I couldn't find ${t.subjectLower}, so no ${t.fieldLabel} went in for ${t.pronoun}.`,
+    (t) => `${t.subject} ${t.isAre} not on this board — ${t.fieldLabel} wasn't recorded.`,
+  ]),
+  // Channel 6a/6c — LIM accepted by the server but the client can't store it.
+  lim_capability_gated: Object.freeze([
+    (t) =>
+      `${t.subject} ${t.wasWere} recorded — this app version can't store LIM for ${t.fieldLabel}.`,
+    (t) =>
+      `This app version can't take LIM for ${t.fieldLabel}, so nothing went in for ${t.subjectLower}.`,
+    (t) => `LIM for ${t.fieldLabel} needs a newer app version — ${t.subjectLower} ${t.wasWere} saved.`,
+  ]),
+  // Channel 6b — the pre-apply low-confidence gate. Worded as MY uncertainty,
+  // never as the inspector mis-speaking, and every variant invites a repeat
+  // (unlike the capability families, saying it again is the actual fix).
+  low_conf_capability_gated: Object.freeze([
+    (t) =>
+      `I wasn't confident enough in that one — no ${t.fieldLabel} recorded for ${t.subjectLower}. Say it again?`,
+    (t) =>
+      `${t.subject} ${t.wasWere} recorded — I wasn't sure enough of the ${t.fieldLabel} value. Try that one again.`,
+    (t) => `No ${t.fieldLabel} went in for ${t.subjectLower} — I only half caught it. Repeat that one?`,
+  ]),
+  // Channel 3 — a per-circuit ok:false inside an ask fan-out's resolved_writes.
+  write_failed: Object.freeze([
+    (t) => `${t.fieldLabel} didn't save for ${t.subjectLower} — worth saying that one again.`,
+    (t) => `Couldn't record ${t.fieldLabel} for ${t.subjectLower}.`,
+    (t) => `${t.subject} ${t.wasWere} updated — ${t.fieldLabel} didn't go in for ${t.pronoun}.`,
+  ]),
+});
+
+/** The one family a scope-level (ref-less) target may render under. */
+export const PARTIAL_FAILURE_SCOPE_FAMILIES = Object.freeze(new Set(['lim_capability_gated']));
+
+/**
+ * Speak a ref list the way a person would: "7", "7 and 8", "7, 8 and 11".
+ * Ordinal-keyed targets (unmatched designation spans, scope records) never
+ * reach here — they have no ref to speak.
+ */
+function speakRefList(refs) {
+  if (refs.length === 1) return String(refs[0]);
+  const head = refs.slice(0, -1).join(', ');
+  return `${head} and ${refs[refs.length - 1]}`;
+}
+
+/**
+ * Build the grammar descriptor for one aggregate's target list.
+ *
+ * Returns null when NOTHING can be named trustworthily — a scope record with
+ * no refs is fine (it says "those circuits"), but an aggregate whose only
+ * targets are ref-less and non-scope has nothing honest to say and must not
+ * speak (fail-silent HERE is correct: the marker-② catch-all still owns the
+ * turn, so the chime is not broken).
+ *
+ * @param {{kind: 'circuit'|'scope', ref?: number}[]} targets
+ * @param {string} fieldLabel server-owned spoken label
+ * @returns {PartialFailureTargetDescriptor|null}
+ */
+export function describePartialFailureTargets(targets, fieldLabel) {
+  if (!Array.isArray(targets) || targets.length === 0) return null;
+  if (typeof fieldLabel !== 'string' || fieldLabel.trim().length === 0) return null;
+
+  const refs = [];
+  let scope = false;
+  for (const t of targets) {
+    if (t?.kind === 'scope') scope = true;
+    else if (Number.isInteger(t?.ref)) refs.push(t.ref);
+  }
+
+  if (refs.length > 0) {
+    // Deterministic, ascending — the same set of misses must speak the same
+    // bytes whatever order the dispatcher happened to reject them in, or the
+    // client's text dedupe stops recognising a genuine repeat.
+    const unique = [...new Set(refs)].sort((a, b) => a - b);
+    const plural = unique.length > 1;
+    const list = speakRefList(unique);
+    return {
+      subject: `${plural ? 'Circuits' : 'Circuit'} ${list}`,
+      subjectLower: `${plural ? 'circuits' : 'circuit'} ${list}`,
+      wasWere: plural ? "weren't" : "wasn't",
+      isAre: plural ? "aren't" : "isn't",
+      pronoun: plural ? 'them' : 'it',
+      fieldLabel,
+    };
+  }
+
+  if (scope) {
+    return {
+      subject: 'Those circuits',
+      subjectLower: 'those circuits',
+      wasWere: "weren't",
+      isAre: "aren't",
+      pronoun: 'them',
+      fieldLabel,
+    };
+  }
+  return null;
+}
+
+/**
+ * Variant selection: PRIMARY-FIRST, then strictly monotonic.
+ *
+ * Deliberately NOT the A1a djb2-seeded scheme. §3.1 names variant 0 the
+ * "gap-only primary wording" and the acceptance criterion pins the exact
+ * bytes of the id-112 render, so the first selection must be index 0; a
+ * turn-hashed seed would pick an arbitrary one. After that it advances by one
+ * per rendered notice, so a repeat inside the clients' 30 s text dedupe is
+ * byte-distinct and cannot be swallowed to silence.
+ *
+ * Own session key (`_partialFailureRotation`) so A1a's cursor
+ * (`_mandatoryNoticeRotation`) and its byte-parity pins stay untouched.
+ */
+export function selectPartialFailureNoticeText(session, family, target) {
+  const variants = PARTIAL_FAILURE_FAMILIES[family];
+  if (!variants || !target) return null;
+  if (!session._partialFailureRotation || typeof session._partialFailureRotation !== 'object') {
+    session._partialFailureRotation = {};
+  }
+  const state = session._partialFailureRotation;
+  const prev = state[family];
+  const idx = typeof prev === 'number' ? (prev + 1) % variants.length : 0;
+  state[family] = idx;
+  return variants[idx](target);
+}
+
+/**
+ * Stage one partial-failure TARGET at dispatch time.
+ *
+ * Aggregation is by `(field, reason, boardId)` per §3.1 — one notice per
+ * (what was being written, why it failed, on which board) — with each
+ * aggregate retaining its per-target list so the spoken line can name the
+ * refs. Two boards' same-numbered misses therefore never merge into one
+ * sentence claiming both.
+ *
+ * `field` may be the RAW spelling the model used — it is canonicalised HERE
+ * (see canonicalPartialFailureFieldIdentity) rather than at each producer, so
+ * an alias-spelled retry of the same slot subtracts at the drain instead of
+ * producing a false "not recorded", and no call site can forget to fold.
+ * `fieldLabel` is the server-owned spoken label; a call site that cannot
+ * produce a TRUSTED label must not call this at all (leak safety — the
+ * `unsupported_clear` precedent, stage6-dispatchers-circuit.js:579-628).
+ *
+ * Best-effort by contract: it never throws into a dispatcher's return path,
+ * and it no-ops when the accumulator is absent (mirrors
+ * `stageMandatoryNotice` — the harness owns the array's existence).
+ *
+ * @param {object} perTurnWrites
+ * @param {{reason: string, field: string, fieldLabel: string, boardId: string|null,
+ *          target: {kind: 'circuit'|'scope', ref?: number}, producer: string}} spec
+ */
+export function stagePartialFailureNotice(perTurnWrites, spec) {
+  if (!perTurnWrites || typeof perTurnWrites !== 'object') return;
+  if (!Array.isArray(perTurnWrites.partialFailureNotices)) return;
+
+  const { reason, field, fieldLabel, boardId = null, target, producer } = spec ?? {};
+  if (typeof reason !== 'string' || !PARTIAL_FAILURE_FAMILIES[reason]) return;
+  if (typeof field !== 'string' || field.length === 0) return;
+  if (typeof fieldLabel !== 'string' || fieldLabel.trim().length === 0) return;
+  if (!target || (target.kind !== 'circuit' && target.kind !== 'scope')) return;
+  if (target.kind === 'circuit' && !Number.isInteger(target.ref)) return;
+  // A scope target renders "those circuits", which only tells the truth for a
+  // whole-instruction refusal. Guarded here rather than at the call sites so a
+  // future producer cannot silently mint a lying sentence.
+  if (target.kind === 'scope' && !PARTIAL_FAILURE_SCOPE_FAMILIES.has(reason)) return;
+
+  const canonicalField = canonicalPartialFailureFieldIdentity(field);
+  const key = `${reason}::${canonicalField}::${boardId ?? ''}`;
+  let aggregate = perTurnWrites.partialFailureNotices.find((n) => n.key === key);
+  if (!aggregate) {
+    aggregate = {
+      noticeKind: 'partial_failure',
+      key,
+      reason,
+      field: canonicalField,
+      fieldLabel,
+      boardId,
+      producer,
+      targets: [],
+    };
+    perTurnWrites.partialFailureNotices.push(aggregate);
+  }
+  const dup = aggregate.targets.some(
+    (t) => t.kind === target.kind && (t.kind === 'scope' || t.ref === target.ref)
+  );
+  if (!dup) aggregate.targets.push({ ...target });
+}
+
+/**
+ * Render ONE partial-failure aggregate at drain time, from the target list
+ * that SURVIVED the drain's subtraction (never the staged list — a target that
+ * later acquired a write must not be named).
+ *
+ * Selection happens here, at the drain, for the A1a reason: staging order is a
+ * dispatcher-ordering artefact, and a notice that is dropped entirely must not
+ * have consumed a rotation slot (which would make the NEXT turn's notice skip a
+ * variant for no audible reason).
+ *
+ * Returns null when nothing nameable survives — the caller then speaks nothing
+ * for this aggregate, and marker-② still owns the turn's audibility floor.
+ *
+ * @param {object} session
+ * @param {object} aggregate the staged aggregate
+ * @param {{kind: 'circuit'|'scope', ref?: number}[]} survivingTargets
+ * @returns {string|null}
+ */
+export function renderPartialFailureNoticeText(session, aggregate, survivingTargets) {
+  if (!session || !aggregate) return null;
+  if (!PARTIAL_FAILURE_FAMILIES[aggregate.reason]) return null;
+  const descriptor = describePartialFailureTargets(survivingTargets, aggregate.fieldLabel);
+  if (!descriptor) return null;
+  // Belt-and-braces on the scope rule: the staging guard already rejects a
+  // scope target on a non-scope family, but the drain hands us a FILTERED list
+  // and a future filter bug must not be able to mint a lying sentence.
+  const scopeOnly = survivingTargets.every((t) => t?.kind === 'scope');
+  if (scopeOnly && !PARTIAL_FAILURE_SCOPE_FAMILIES.has(aggregate.reason)) return null;
+  return selectPartialFailureNoticeText(session, aggregate.reason, descriptor);
 }
