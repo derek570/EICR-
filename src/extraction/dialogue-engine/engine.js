@@ -669,15 +669,27 @@ function maskCircuitResolution(replyText, meta) {
       replyText.slice(meta.end);
     return maskCircuitSpans(masked);
   }
-  if (meta.kind === 'designation' && typeof meta.matchedDesignation === 'string') {
-    const idx = replyText.toLowerCase().indexOf(meta.matchedDesignation);
-    if (idx >= 0) {
-      const masked =
-        replyText.slice(0, idx) +
-        ' '.repeat(meta.matchedDesignation.length) +
-        replyText.slice(idx + meta.matchedDesignation.length);
-      return maskCircuitSpans(masked);
+  if (meta.kind === 'designation') {
+    if (typeof meta.matchedDesignation === 'string') {
+      const idx = replyText.toLowerCase().indexOf(meta.matchedDesignation);
+      if (idx >= 0) {
+        const masked =
+          replyText.slice(0, idx) +
+          ' '.repeat(meta.matchedDesignation.length) +
+          replyText.slice(idx + meta.matchedDesignation.length);
+        return maskCircuitSpans(masked);
+      }
     }
+    // SHORTENED designation answer (Codex cycle 1): the bidirectional
+    // substring match also fires when the NORMALISED reply is a substring
+    // of the stored designation ("the 56" against "56 sockets", "500 volt"
+    // against "500 volt control supply") — the stored string is then not
+    // findable in the reply, but the whole reply IS the resolution text.
+    // Mask it all: without this, a designation's own digits parse as the
+    // test voltage ("Did you say 56 volts?" / a silent voltage=500 write).
+    // Fail direction is the voltage ASK — audible, re-answerable — never a
+    // designation digit written as a voltage.
+    return ' '.repeat(replyText.length);
   }
   return maskCircuitSpans(replyText);
 }
@@ -2992,15 +3004,6 @@ function runActivePath({
   //    writes were spoken and stored server-side but never wire-emitted
   //    (inverse Audio-First — the client cells stayed empty).
   if (currentSlot && currentSlot.exclusiveWhenExpected) {
-    // On the circuit-resolution turn, parse the voltage from the RAW reply
-    // with the resolution text masked (whole reply for a bare numeric
-    // answer; only the `circuit N` / matched-designation span otherwise, so
-    // a separate "tested at 500" in the same reply stays parseable). On
-    // ordinary voltage-phase turns the annotated `text` path is unchanged.
-    const value = circuitResolvedThisTurn
-      ? currentSlot.parser(maskCircuitResolution(reply, circuitResolutionMeta))
-      : currentSlot.parser(text);
-
     // Group C fix 2 — exactly-once wire flush for the drained writes. Every
     // enumerated exit out of this branch calls this (writeExclusiveAndFinish
     // inlines it below; handleVoltageNoParse flushes at its top, BEFORE the
@@ -3018,138 +3021,63 @@ function runActivePath({
       }
     };
 
-    // §4.2.3 fail-audible backstop: dev/test throws if an exit is ever added
-    // that strands drained writes; prod EMITS rather than throws (a delivered
-    // frame beats a crashed turn — fail-audible-and-delivered, never
-    // fail-stop).
+    // §4.2.3 fail-audible backstop, STRUCTURAL (Codex cycle 1): the whole
+    // decision tree runs inside runExclusiveBranch below, so this assertion
+    // executes on EVERY return out of the branch — including any exit a
+    // future edit adds — not just the paths that remember to call it.
+    // Dev/test throws (NODE_ENV !== 'production'; ECS pins
+    // NODE_ENV=production in ecs/task-def-backend.json); prod EMITS rather
+    // than throws (a delivered frame beats a crashed turn —
+    // fail-audible-and-delivered, never fail-stop).
     const assertWritesFlushed = () => {
       if (exclusiveWritesFlushed || writes.length === 0) return;
-      if (process.env.NODE_ENV === 'test') {
+      if (process.env.NODE_ENV !== 'production') {
         throw new Error('dialogue-engine exclusive branch exited without flushing drained writes');
       }
       flushWritesOnce();
     };
 
-    // Local: write the parsed exclusive value (+ any derivations) and finish.
-    const writeExclusiveAndFinish = (v) => {
-      const r = applyWriteWithDerivations(session, schema, currentSlot, state.circuit_ref, v, now);
-      // Plan D — emit the EFFECTIVE (clamped) value, not the local `v`, so the
-      // frame the client renders matches what the server stored.
-      writes.push({ field: currentSlot.field, value: r.effectiveValue });
-      // Audit-2026-06-02 Phase 2 — IR voltage / similar exclusive-slot parsers
-      // don't currently have mirroring derivations, but the wire shape stays
-      // consistent across paths if a future schema declares them.
-      for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
-      for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
-      flushWritesOnce();
-      finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
-      return { handled: true, fallthrough: false };
-    };
-
-    // Group C fix 1 — the circuit answer carried NO parseable voltage: emit
-    // the voltage ask through the normal ask path instead of falling into
-    // handleVoltageNoParse (whose 30 s re-ask branch is gated on
-    // voltage_phase_entered_at, stamped only when the exclusive ask was
-    // EMITTED — never true on this path, so it silently finished). Stamping
-    // here arms the existing 30 s re-ask + onExclusiveSlotAbandoned
-    // machinery for free.
-    const emitVoltageAskAfterResolution = () => {
-      flushWritesOnce();
-      if (state.voltage_phase_entered_at == null) {
-        state.voltage_phase_entered_at = now;
-        state.voltage_reask_done = false;
-      }
-      logger?.info?.(`${schema.logEventPrefix}_voltage_ask_after_circuit_resolution`, {
-        sessionId,
-        circuit_ref: state.circuit_ref,
-        drained_writes: writes.map((w) => w.field),
-        textPreview: text.slice(0, 80),
-      });
-      safeSend(
-        ws,
-        buildScriptAsk({
-          toolCallIdPrefix: schema.toolCallIdPrefix,
-          sessionId,
-          circuit_ref: state.circuit_ref,
-          missing_field: currentSlot.field,
-          whichCircuitQuestion: schema.whichCircuitQuestion,
-          slotQuestion: currentSlot.question,
-          now,
-          kind: 'value',
-          responseEpoch,
-        })
-      );
-      assertWritesFlushed();
-      return { handled: true, fallthrough: false };
-    };
-
-    // M4 (2026-06-25, field session 6674E8C5): the voltage didn't parse to a
-    // usable value. The legacy behaviour finished the script silently here,
-    // which ATE any fresh reading the inspector dictated instead of a voltage
-    // (e.g. "old house lights 2. Live to earth is 1.8") — dropping the whole
-    // utterance AND reading back the prior circuit's stale values. This helper
-    // disambiguates three cases (called from BOTH the confirm-gate and the
-    // no-confirm-gate value===null paths so the escape hatch is never bypassed):
-    //   (1a) fresh IR reading/entry → register the prior circuit's missed
-    //        voltage (carrier), finish the prior circuit (read back its two
-    //        captured readings once), then REPROCESS the fresh transcript with
-    //        overwriteVolunteered so a same-circuit correction overwrites the
-    //        seeded snapshot value instead of being skipped at runEntry:612.
-    //   (3a) genuine silence/garble ≥30s in the voltage phase → one-shot
-    //        in-script voltage re-ask (script stays active).
-    //   else → legacy finish-and-consume (brief unparseable, no IR signal, <30s).
-    const handleVoltageNoParse = () => {
-      // Group C fix 2 — flush the drained writes FIRST (exactly-once via the
-      // latch): every one of this helper's three exits (fresh-reading
-      // finish+reprocess recursion, 30 s re-ask, legacy finish) previously
-      // returned without reaching the step-8 emit, stranding the writes.
-      // Ordinary voltage-phase turns have an empty `writes` and this no-ops.
-      flushWritesOnce();
-      // RAW reply + masked (mini-review r1) — mirrors the entry loop; the
-      // annotation must not defeat the leading patterns or feed extraction.
-      const freshVolunteered = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
-      const freshEntry = detectEntry(reply, schema).matched;
-      if (freshVolunteered.length > 0 || freshEntry) {
-        const readingSlots = schema.slots.filter((s) => !s.exclusiveWhenExpected);
-        const readingsCaptured =
-          readingSlots.length > 0 &&
-          readingSlots.every((s) => {
-            const v = state.values[s.field];
-            return v !== undefined && v !== null && v !== '';
-          });
-        if (readingsCaptured && typeof schema.onExclusiveSlotAbandoned === 'function') {
-          schema.onExclusiveSlotAbandoned(session, state.circuit_ref, now);
-        }
-        logger?.info?.(`${schema.logEventPrefix}_voltage_fresh_reading_escape`, {
-          sessionId,
-          circuit_ref: state.circuit_ref,
-          readings_captured: readingsCaptured,
-          textPreview: text.slice(0, 80),
-        });
-        finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
-        return processDialogueTurn({
-          ws,
+    const runExclusiveBranch = () => {
+      // Local: write the parsed exclusive value (+ any derivations) and finish.
+      const writeExclusiveAndFinish = (v) => {
+        const r = applyWriteWithDerivations(
           session,
-          sessionId,
-          transcriptText,
-          rawReplyText: reply,
-          schemas: [schema],
-          logger,
-          now,
-          overwriteVolunteered: true,
-          responseEpoch,
-        });
-      }
-      if (
-        state.voltage_phase_entered_at != null &&
-        !state.voltage_reask_done &&
-        now - state.voltage_phase_entered_at >= 30_000
-      ) {
-        state.voltage_reask_done = true;
-        logger?.info?.(`${schema.logEventPrefix}_voltage_reask`, {
+          schema,
+          currentSlot,
+          state.circuit_ref,
+          v,
+          now
+        );
+        // Plan D — emit the EFFECTIVE (clamped) value, not the local `v`, so the
+        // frame the client renders matches what the server stored.
+        writes.push({ field: currentSlot.field, value: r.effectiveValue });
+        // Audit-2026-06-02 Phase 2 — IR voltage / similar exclusive-slot parsers
+        // don't currently have mirroring derivations, but the wire shape stays
+        // consistent across paths if a future schema declares them.
+        for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
+        for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
+        flushWritesOnce();
+        finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
+        return { handled: true, fallthrough: false };
+      };
+
+      // Group C fix 1 — the circuit answer carried NO parseable voltage: emit
+      // the voltage ask through the normal ask path instead of falling into
+      // handleVoltageNoParse (whose 30 s re-ask branch is gated on
+      // voltage_phase_entered_at, stamped only when the exclusive ask was
+      // EMITTED — never true on this path, so it silently finished). Stamping
+      // here arms the existing 30 s re-ask + onExclusiveSlotAbandoned
+      // machinery for free.
+      const emitVoltageAskAfterResolution = () => {
+        flushWritesOnce();
+        if (state.voltage_phase_entered_at == null) {
+          state.voltage_phase_entered_at = now;
+          state.voltage_reask_done = false;
+        }
+        logger?.info?.(`${schema.logEventPrefix}_voltage_ask_after_circuit_resolution`, {
           sessionId,
           circuit_ref: state.circuit_ref,
-          ms_in_phase: now - state.voltage_phase_entered_at,
+          drained_writes: writes.map((w) => w.field),
           textPreview: text.slice(0, 80),
         });
         safeSend(
@@ -3167,47 +3095,192 @@ function runActivePath({
           })
         );
         return { handled: true, fallthrough: false };
-      }
-      finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
-      return { handled: true, fallthrough: false };
-    };
+      };
 
-    // Standard-value confirm gate (#1 — field report 2026-06-24, session
-    // B0F28CFB). When the slot declares `confirmWhenNotIn` and the parsed value
-    // is outside that set (a misheard "fifty" for "two fifty"), do NOT
-    // write+finish. Re-ask as a one-shot confirmation and STAY in the slot so a
-    // spoken correction ("No, 250") lands IN-LOOP on the active circuit. Pre-
-    // fix the script finished on the misheard value, so the correction arrived
-    // with no active script, fell to Haiku, and was mis-attributed to the
-    // most-recently-focused circuit (4) instead of the IR circuit (2). This is
-    // the live-engine port of the legacy script's item #2a (which never ran —
-    // it lived in the dead insulation-resistance-script.js).
-    const confirmSet = currentSlot.confirmWhenNotIn ?? null;
-    if (confirmSet) {
-      const pending = state.slotPendingConfirm ?? null;
-      if (pending !== null) {
-        // Replying to a "Did you say N volts?" confirm.
-        if (value !== null && value !== undefined && Number(value) === Number(pending)) {
-          // Repeated the SAME non-standard value → genuine meter reading, accept.
-          state.slotPendingConfirm = null;
-          return writeExclusiveAndFinish(value);
+      // M4 (2026-06-25, field session 6674E8C5): the voltage didn't parse to a
+      // usable value. The legacy behaviour finished the script silently here,
+      // which ATE any fresh reading the inspector dictated instead of a voltage
+      // (e.g. "old house lights 2. Live to earth is 1.8") — dropping the whole
+      // utterance AND reading back the prior circuit's stale values. This helper
+      // disambiguates three cases (called from BOTH the confirm-gate and the
+      // no-confirm-gate value===null paths so the escape hatch is never bypassed):
+      //   (1a) fresh IR reading/entry → register the prior circuit's missed
+      //        voltage (carrier), finish the prior circuit (read back its two
+      //        captured readings once), then REPROCESS the fresh transcript with
+      //        overwriteVolunteered so a same-circuit correction overwrites the
+      //        seeded snapshot value instead of being skipped at runEntry:612.
+      //   (3a) genuine silence/garble ≥30s in the voltage phase → one-shot
+      //        in-script voltage re-ask (script stays active).
+      //   else → legacy finish-and-consume (brief unparseable, no IR signal, <30s).
+      const handleVoltageNoParse = () => {
+        // Group C fix 2 — flush the drained writes FIRST (exactly-once via the
+        // latch): every one of this helper's three exits (fresh-reading
+        // finish+reprocess recursion, 30 s re-ask, legacy finish) previously
+        // returned without reaching the step-8 emit, stranding the writes.
+        // Ordinary voltage-phase turns have an empty `writes` and this no-ops.
+        flushWritesOnce();
+        // RAW reply + masked (mini-review r1) — mirrors the entry loop; the
+        // annotation must not defeat the leading patterns or feed extraction.
+        const freshVolunteered = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+        const freshEntry = detectEntry(reply, schema).matched;
+        if (freshVolunteered.length > 0 || freshEntry) {
+          const readingSlots = schema.slots.filter((s) => !s.exclusiveWhenExpected);
+          const readingsCaptured =
+            readingSlots.length > 0 &&
+            readingSlots.every((s) => {
+              const v = state.values[s.field];
+              return v !== undefined && v !== null && v !== '';
+            });
+          if (readingsCaptured && typeof schema.onExclusiveSlotAbandoned === 'function') {
+            schema.onExclusiveSlotAbandoned(session, state.circuit_ref, now);
+          }
+          logger?.info?.(`${schema.logEventPrefix}_voltage_fresh_reading_escape`, {
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            readings_captured: readingsCaptured,
+            textPreview: text.slice(0, 80),
+          });
+          finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
+          return processDialogueTurn({
+            ws,
+            session,
+            sessionId,
+            transcriptText,
+            rawReplyText: reply,
+            schemas: [schema],
+            logger,
+            now,
+            overwriteVolunteered: true,
+            responseEpoch,
+          });
         }
-        if (value !== null && value !== undefined) {
-          // A DIFFERENT value ("No, 250") → clear the pending flag and fall
-          // through to the standard decision below so the corrected value is
-          // accepted (or re-confirmed if it too is non-standard).
-          state.slotPendingConfirm = null;
-        } else if (AFFIRMATIVE_RE.test(text)) {
-          state.slotPendingConfirm = null;
-          return writeExclusiveAndFinish(pending);
-        } else if (NEGATIVE_RE.test(text)) {
-          // Bare "no" with no value → re-ask, stay active (don't strand empty).
-          // Group C fix 2 — flush first (legitimately empty `writes` on this
-          // second-turn path; the latch's conditional makes it a no-op, but
-          // the exit is enumerated so no future reordering can strand a
-          // drained write here).
+        if (
+          state.voltage_phase_entered_at != null &&
+          !state.voltage_reask_done &&
+          now - state.voltage_phase_entered_at >= 30_000
+        ) {
+          state.voltage_reask_done = true;
+          logger?.info?.(`${schema.logEventPrefix}_voltage_reask`, {
+            sessionId,
+            circuit_ref: state.circuit_ref,
+            ms_in_phase: now - state.voltage_phase_entered_at,
+            textPreview: text.slice(0, 80),
+          });
+          safeSend(
+            ws,
+            buildScriptAsk({
+              toolCallIdPrefix: schema.toolCallIdPrefix,
+              sessionId,
+              circuit_ref: state.circuit_ref,
+              missing_field: currentSlot.field,
+              whichCircuitQuestion: schema.whichCircuitQuestion,
+              slotQuestion: currentSlot.question,
+              now,
+              kind: 'value',
+              responseEpoch,
+            })
+          );
+          return { handled: true, fallthrough: false };
+        }
+        finishScript({ ws, session, sessionId, schema, logger, now, responseEpoch });
+        return { handled: true, fallthrough: false };
+      };
+
+      // On the circuit-resolution turn, parse the voltage from the RAW reply
+      // with the resolution text masked (whole reply for a bare numeric
+      // answer; only the `circuit N` / matched-designation span otherwise, so
+      // a separate "tested at 500" in the same reply stays parseable). On
+      // ordinary voltage-phase turns the annotated `text` path is unchanged.
+      //
+      // Classify BEFORE the exclusive parse (Codex cycle 1): a NAMED IR
+      // reading in the circuit answer ("circuit 4, live to earth is 500") is a
+      // fresh reading/correction, not a test voltage — parseVoltage would
+      // otherwise grab its in-range magnitude and write the WRONG field, then
+      // finish. Route it through the M4 escape hatch, which flushes the
+      // drained writes, finishes the prior episode audibly, and reprocesses
+      // the fresh transcript. "tested at 500" carries no named-extractor hit,
+      // so rows (e)/(g)/(h) are untouched.
+      let value;
+      if (circuitResolvedThisTurn) {
+        const resolutionMasked = maskCircuitResolution(reply, circuitResolutionMeta);
+        if (extractNamedFieldValues(resolutionMasked, schema.slots).length > 0) {
+          return handleVoltageNoParse();
+        }
+        value = currentSlot.parser(resolutionMasked);
+      } else {
+        value = currentSlot.parser(text);
+      }
+
+      // Standard-value confirm gate (#1 — field report 2026-06-24, session
+      // B0F28CFB). When the slot declares `confirmWhenNotIn` and the parsed value
+      // is outside that set (a misheard "fifty" for "two fifty"), do NOT
+      // write+finish. Re-ask as a one-shot confirmation and STAY in the slot so a
+      // spoken correction ("No, 250") lands IN-LOOP on the active circuit. Pre-
+      // fix the script finished on the misheard value, so the correction arrived
+      // with no active script, fell to Haiku, and was mis-attributed to the
+      // most-recently-focused circuit (4) instead of the IR circuit (2). This is
+      // the live-engine port of the legacy script's item #2a (which never ran —
+      // it lived in the dead insulation-resistance-script.js).
+      const confirmSet = currentSlot.confirmWhenNotIn ?? null;
+      if (confirmSet) {
+        const pending = state.slotPendingConfirm ?? null;
+        if (pending !== null) {
+          // Replying to a "Did you say N volts?" confirm.
+          if (value !== null && value !== undefined && Number(value) === Number(pending)) {
+            // Repeated the SAME non-standard value → genuine meter reading, accept.
+            state.slotPendingConfirm = null;
+            return writeExclusiveAndFinish(value);
+          }
+          if (value !== null && value !== undefined) {
+            // A DIFFERENT value ("No, 250") → clear the pending flag and fall
+            // through to the standard decision below so the corrected value is
+            // accepted (or re-confirmed if it too is non-standard).
+            state.slotPendingConfirm = null;
+          } else if (AFFIRMATIVE_RE.test(text)) {
+            state.slotPendingConfirm = null;
+            return writeExclusiveAndFinish(pending);
+          } else if (NEGATIVE_RE.test(text)) {
+            // Bare "no" with no value → re-ask, stay active (don't strand empty).
+            // Group C fix 2 — flush first (legitimately empty `writes` on this
+            // second-turn path; the latch's conditional makes it a no-op, but
+            // the exit is enumerated so no future reordering can strand a
+            // drained write here).
+            flushWritesOnce();
+            state.slotPendingConfirm = null;
+            state.last_turn_at = now;
+            safeSend(
+              ws,
+              buildScriptAsk({
+                toolCallIdPrefix: schema.toolCallIdPrefix,
+                sessionId,
+                circuit_ref: state.circuit_ref,
+                missing_field: currentSlot.field,
+                slotQuestion: currentSlot.question,
+                now,
+                kind: 'value',
+                responseEpoch,
+              })
+            );
+            return { handled: true, fallthrough: false };
+          } else {
+            // Unrecognised reply to the confirm (value===null, not yes/no). Could
+            // be a FRESH reading dictated instead of confirming — route through the
+            // M4 escape hatch (fresh-reading reprocess / 30s re-ask / finish)
+            // rather than always finishing on the unconfirmed value.
+            state.slotPendingConfirm = null;
+            return handleVoltageNoParse();
+          }
+        }
+        // Standard decision (no pending, or just cleared after a different value).
+        if (value !== null && value !== undefined && !confirmSet.has(Number(value))) {
+          // Group C fix 2 — the confirm-gate prompt return is a write-stranding
+          // exit on the circuit-resolution turn: "circuit 4 at 350" drains
+          // LL/LE then hits confirmWhenNotIn, and the LATER confirm turn has a
+          // fresh empty `writes` local — flush the drained readings NOW, on
+          // the turn they were drained (§6 row (g): exactly one extraction
+          // frame here; the confirm resolution later writes only the voltage).
           flushWritesOnce();
-          state.slotPendingConfirm = null;
+          state.slotPendingConfirm = Number(value);
           state.last_turn_at = now;
           safeSend(
             ws,
@@ -3216,64 +3289,42 @@ function runActivePath({
               sessionId,
               circuit_ref: state.circuit_ref,
               missing_field: currentSlot.field,
-              slotQuestion: currentSlot.question,
+              slotQuestion:
+                typeof currentSlot.confirmQuestion === 'function'
+                  ? currentSlot.confirmQuestion(value)
+                  : currentSlot.question,
               now,
               kind: 'value',
               responseEpoch,
             })
           );
-          return { handled: true, fallthrough: false };
-        } else {
-          // Unrecognised reply to the confirm (value===null, not yes/no). Could
-          // be a FRESH reading dictated instead of confirming — route through the
-          // M4 escape hatch (fresh-reading reprocess / 30s re-ask / finish)
-          // rather than always finishing on the unconfirmed value.
-          state.slotPendingConfirm = null;
-          return handleVoltageNoParse();
-        }
-      }
-      // Standard decision (no pending, or just cleared after a different value).
-      if (value !== null && value !== undefined && !confirmSet.has(Number(value))) {
-        // Group C fix 2 — the confirm-gate prompt return is a write-stranding
-        // exit on the circuit-resolution turn: "circuit 4 at 350" drains
-        // LL/LE then hits confirmWhenNotIn, and the LATER confirm turn has a
-        // fresh empty `writes` local — flush the drained readings NOW, on
-        // the turn they were drained (§6 row (g): exactly one extraction
-        // frame here; the confirm resolution later writes only the voltage).
-        flushWritesOnce();
-        state.slotPendingConfirm = Number(value);
-        state.last_turn_at = now;
-        safeSend(
-          ws,
-          buildScriptAsk({
-            toolCallIdPrefix: schema.toolCallIdPrefix,
+          logger?.info?.(`${schema.logEventPrefix}_value_confirm_prompted`, {
             sessionId,
             circuit_ref: state.circuit_ref,
-            missing_field: currentSlot.field,
-            slotQuestion:
-              typeof currentSlot.confirmQuestion === 'function'
-                ? currentSlot.confirmQuestion(value)
-                : currentSlot.question,
-            now,
-            kind: 'value',
-            responseEpoch,
-          })
-        );
-        logger?.info?.(`${schema.logEventPrefix}_value_confirm_prompted`, {
-          sessionId,
-          circuit_ref: state.circuit_ref,
-          field: currentSlot.field,
-          pending_value: value,
-        });
-        return { handled: true, fallthrough: false };
+            field: currentSlot.field,
+            pending_value: value,
+          });
+          return { handled: true, fallthrough: false };
+        }
+        // Standard value → write + finish. Unparseable on the circuit-
+        // resolution turn → the voltage ask (Group C fix 1 — the reply's job
+        // was to resolve the circuit; absence of a voltage draws the ask,
+        // never handleVoltageNoParse's silent finish). Unparseable on an
+        // ordinary voltage-phase turn → M4 escape hatch (fresh-reading
+        // reprocess / 30s re-ask / finish) instead of a silent finish that
+        // would eat a fresh reading.
+        if (value !== null && value !== undefined) {
+          return writeExclusiveAndFinish(value);
+        }
+        if (circuitResolvedThisTurn) {
+          return emitVoltageAskAfterResolution();
+        }
+        return handleVoltageNoParse();
       }
-      // Standard value → write + finish. Unparseable on the circuit-
-      // resolution turn → the voltage ask (Group C fix 1 — the reply's job
-      // was to resolve the circuit; absence of a voltage draws the ask,
-      // never handleVoltageNoParse's silent finish). Unparseable on an
-      // ordinary voltage-phase turn → M4 escape hatch (fresh-reading
-      // reprocess / 30s re-ask / finish) instead of a silent finish that
-      // would eat a fresh reading.
+
+      // No confirm gate declared — write (if any) + finish; unparseable → the
+      // voltage ask on the circuit-resolution turn, else the same M4 escape
+      // hatch.
       if (value !== null && value !== undefined) {
         return writeExclusiveAndFinish(value);
       }
@@ -3281,18 +3332,13 @@ function runActivePath({
         return emitVoltageAskAfterResolution();
       }
       return handleVoltageNoParse();
-    }
+    };
 
-    // No confirm gate declared — write (if any) + finish; unparseable → the
-    // voltage ask on the circuit-resolution turn, else the same M4 escape
-    // hatch.
-    if (value !== null && value !== undefined) {
-      return writeExclusiveAndFinish(value);
-    }
-    if (circuitResolvedThisTurn) {
-      return emitVoltageAskAfterResolution();
-    }
-    return handleVoltageNoParse();
+    // The ONE structural exit of the exclusive branch — the assertion runs
+    // on every path out of runExclusiveBranch (§4.2.3, Codex cycle 1).
+    const exclusiveResult = runExclusiveBranch();
+    assertWritesFlushed();
+    return exclusiveResult;
   }
 
   // 7. Named-field extraction — multiple slots can fill from one

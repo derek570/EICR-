@@ -855,3 +855,230 @@ describe('schema-scan risk pins', () => {
     expect(bsAsk).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Codex cycle-1 additions — the §6 rows the first commit omitted
+// ---------------------------------------------------------------------------
+
+describe('cycle 1 — connector positives + gap-rule orderings', () => {
+  test.each([
+    ['0.43 across the neutrals', 'Rn 0.43'],
+    ['0.78 at the CPC', 'R2 0.78'],
+    ['0.85 down the lives', 'R1 0.85'],
+    ['0.86 onto the neutrals', 'Rn 0.86'],
+    ['0.9 to the lives', 'R1 0.9'],
+  ])('connector positive %p amends (%p spoken)', (utterance, expected) => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    enterRingConfirmation(ws, session);
+    ringTurn(ws, session, utterance, 2000);
+    const reconfirm = askFrames(ws).find((f) => (f.question ?? '').includes('All correct?'));
+    expect(reconfirm.question).toContain(expected);
+  });
+
+  test('gap ordering "0.85 on the lives, lives 0.43": tie (8 vs 8) → field-first wins → R1 0.43', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    enterRingConfirmation(ws, session);
+    ringTurn(ws, session, '0.85 on the lives, lives 0.43', 2000);
+    const reconfirm = askFrames(ws).find((f) => (f.question ?? '').includes('All correct?'));
+    expect(reconfirm.question).toContain('R1 0.43');
+  });
+
+  test('reverse ordering "lives 0.43, 0.85 on the lives": field-first gap 1 < value-first 8 → R1 0.43', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    enterRingConfirmation(ws, session);
+    ringTurn(ws, session, 'lives 0.43, 0.85 on the lives', 2000);
+    const reconfirm = askFrames(ws).find((f) => (f.question ?? '').includes('All correct?'));
+    expect(reconfirm.question).toContain('R1 0.43');
+  });
+});
+
+describe('cycle 1 — retained-value clearing on the remaining lifecycle exits', () => {
+  function retainValue(ws, session) {
+    enterRingConfirmation(ws, session);
+    ringTurn(ws, session, 'No. 0.85', 2000);
+    expect(session.dialogueScriptState.confirmation_pending_value).toBe('0.85');
+    ws.sent = [];
+  }
+
+  test('circuit switch (5a seed) clears — the new episode never inherits the value', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {}, 13: {} });
+    retainValue(ws, session);
+    ringTurn(ws, session, 'Ring continuity for circuit 5, lives are 0.9', 3000);
+    expect(session.dialogueScriptState?.confirmation_pending_value ?? null).toBeNull();
+  });
+
+  test('topic-switch fallthrough clears (whole state dies)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    retainValue(ws, session);
+    ringTurn(ws, session, 'Zs is 0.62.', 3000);
+    expect(session.dialogueScriptState).toBeFalsy();
+  });
+
+  test('cancel/reset clears (whole state dies)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    retainValue(ws, session);
+    ringTurn(ws, session, 'never mind', 3000);
+    expect(session.dialogueScriptState).toBeFalsy();
+  });
+
+  test('hard timeout clears (whole state dies)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    retainValue(ws, session);
+    ringTurn(ws, session, 'hello there', 2000 + 180_001);
+    expect(session.dialogueScriptState?.confirmation_pending_value ?? null).toBeNull();
+  });
+});
+
+describe('cycle 1 — numeric-designation resolution masking (group C)', () => {
+  test('shortened numeric designation "the 56" resolves + voltage ask — never "Did you say 56 volts?"', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: '56 sockets' } });
+    irTurn(ws, session, 'Insulation resistance. Live to live 200, live to earth 200.', 1000);
+    ws.sent = [];
+    irTurn(ws, session, 'the 56', 2000, 'the 56');
+    expect(session.dialogueScriptState?.circuit_ref).toBe(7);
+    expect(askFrames(ws).some((f) => (f.question ?? '').includes('Did you say'))).toBe(false);
+    expect(askFrames(ws).some((f) => (f.question ?? '').includes('test voltage'))).toBe(true);
+    // Drained writes emitted exactly once; the designation digits are NEVER a voltage write.
+    const frames = extractionFrames(ws);
+    expect(frames).toHaveLength(1);
+    expect(readingsOf(frames[0]).some((r) => r.field === 'ir_test_voltage')).toBe(false);
+  });
+
+  test('shortened numeric designation "500 volt" (stored "500 volt control supply") never silently writes voltage=500', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: '500 volt control supply' } });
+    irTurn(ws, session, 'Insulation resistance. Live to live 200, live to earth 200.', 1000);
+    ws.sent = [];
+    irTurn(ws, session, '500 volt', 2000, '500 volt');
+    expect(session.dialogueScriptState?.circuit_ref).toBe(7);
+    const frames = extractionFrames(ws);
+    expect(frames).toHaveLength(1);
+    expect(readingsOf(frames[0]).some((r) => r.field === 'ir_test_voltage')).toBe(false);
+    expect(askFrames(ws).some((f) => (f.question ?? '').includes('test voltage'))).toBe(true);
+    expect(session.dialogueScriptState?.active).toBe(true);
+  });
+});
+
+describe('cycle 1 — classify-before-exclusive on the resolution turn (group C)', () => {
+  test('"circuit 4, live to earth is 500" is a NAMED fresh reading — never written as test voltage', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    irTurn(ws, session, 'Insulation resistance. Live to live 200, live to earth 200.', 1000);
+    ws.sent = [];
+    const out = irTurn(
+      ws,
+      session,
+      'circuit 4, live to earth is 500',
+      2000,
+      'circuit 4, live to earth is 500'
+    );
+    // Drained writes flushed exactly once; 500 is NEVER the voltage.
+    const frames = extractionFrames(ws);
+    expect(frames).toHaveLength(1);
+    expect(readingsOf(frames[0]).some((r) => r.field === 'ir_test_voltage')).toBe(false);
+    // The M4 escape finished the prior episode audibly and handed the fresh
+    // reading onward (reprocess found no entry → model owns it).
+    const finish = askFrames(ws).find((f) => (f.question ?? '').startsWith('Got it.'));
+    expect(finish).toBeTruthy();
+    expect(out.handled === false || out.fallthrough === true).toBe(true);
+  });
+});
+
+describe('cycle 1 — row (e) full ordered wire sequence (byte-level)', () => {
+  test('volunteer-both → "It is circuit 4, tested at 500": exactly [extraction, finish-info], complete shapes', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    irTurn(ws, session, 'Insulation resistance. Live to live 200, live to earth 200.', 1000);
+    ws.sent = [];
+    irTurn(ws, session, 'It is circuit 4, tested at 500', 2000, 'It is circuit 4, tested at 500');
+    expect(ws.sent).toEqual([
+      {
+        type: 'extraction',
+        result: {
+          readings: [
+            {
+              field: 'insulation_resistance_l_l',
+              circuit: 4,
+              value: '200',
+              confidence: 1,
+              source: 'ir_script',
+            },
+            {
+              field: 'insulation_resistance_l_e',
+              circuit: 4,
+              value: '200',
+              confidence: 1,
+              source: 'ir_script',
+            },
+            {
+              field: 'ir_test_voltage',
+              circuit: 4,
+              value: '500',
+              confidence: 1,
+              source: 'ir_script',
+            },
+          ],
+          observations: [],
+          questions: [],
+        },
+      },
+      {
+        type: 'ask_user_started',
+        tool_call_id: 'srv-irs-sess_correction_paths-done-2000',
+        question: 'Got it. L-L 200, L-E 200, voltage 500.',
+        reason: 'info',
+        context_field: null,
+        context_circuit: null,
+        expected_answer_shape: 'none',
+      },
+    ]);
+  });
+});
+
+describe('cycle 1 — RCD decision-table rows the entry-guard suite omitted', () => {
+  test.each([
+    'No RCD protection on circuit 4',
+    'No RCD protection on the lighting circuits.',
+    'I would say the general condition of the installation is satisfactory but there is no RCD protection.',
+    'The RCD tripped.',
+  ])('falls through to the model for %p', (transcriptText) => {
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const out = processDialogueTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      logger: null,
+      now: 1000,
+    });
+    expect(session.dialogueScriptState).toBeFalsy();
+    expect(ws.sent.length).toBe(0);
+    expect(out.handled === false || out.fallthrough === true).toBe(true);
+  });
+
+  test('observation phrasing "Add an observation: no RCD protection…" stays with the model (pre-filter pinned)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const out = processDialogueTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Add an observation: no RCD protection on the lighting circuits.',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      logger: null,
+      now: 1000,
+    });
+    expect(session.dialogueScriptState).toBeFalsy();
+    expect(out.handled === false || out.fallthrough === true).toBe(true);
+  });
+});
