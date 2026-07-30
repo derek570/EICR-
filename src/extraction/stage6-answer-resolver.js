@@ -172,7 +172,9 @@ function parseCardinalQuantifier(word) {
   if (
     parts.length === 2 &&
     Object.prototype.hasOwnProperty.call(TENS, parts[0]) &&
-    Object.prototype.hasOwnProperty.call(ONES, parts[1])
+    Number.isInteger(ONES[parts[1]]) &&
+    ONES[parts[1]] >= 1 &&
+    ONES[parts[1]] <= 9
   ) {
     return TENS[parts[0]] + ONES[parts[1]];
   }
@@ -460,7 +462,7 @@ function matchQuantifiedDesignations(cleaned, circuits) {
 // the reply carries multi-target syntax. Single-target replies keep the
 // pre-2B path and result shape byte-for-byte.
 
-const ENUMERATED_SEPARATOR_RE = /,|\band\b|\bplus\b/gi;
+const ENUMERATED_SEPARATOR_RE = /,|&|\+|\band\b|\bplus\b/gi;
 const MULTI_TARGET_FILLER_PHRASES = new Set([
   'all done',
   'cheers',
@@ -504,10 +506,10 @@ function stripDescriptionLeadIn(text) {
   // markers in the MIDDLE of a list are rejected separately below.
   for (let i = 0; i < 4; i += 1) {
     const before = stripped;
-    stripped = stripped.replace(/^i\s+(?:said|mean|meant)\s+/i, '');
-    stripped = stripped.replace(/^it(?:['’]?s|\s+is)\s+/i, '');
-    stripped = stripped.replace(/^(?:actually|sorry)\b[\s,]*/i, '');
-    stripped = stripped.replace(/^for\s+/i, '');
+    stripped = stripped.replace(/^i\s+(?:said|mean|meant)\b[\s,;:.…-]*/i, '');
+    stripped = stripped.replace(/^it(?:['’]?s|\s+is)\b[\s,;:.…-]*/i, '');
+    stripped = stripped.replace(/^(?:actually|sorry)\b[\s,;:.…-]*/i, '');
+    stripped = stripped.replace(/^for\b[\s,;:.…-]*/i, '');
     if (stripped === before) break;
   }
   return stripped;
@@ -561,6 +563,20 @@ function hasCorrectionOrNegationSyntax(text) {
   );
 }
 
+/**
+ * Detect a correction/negation that directly governs a numeric circuit
+ * target. The ordinary numeric resolver intentionally accepts qualifiers
+ * after the target ("circuit 3 without the RCD"), but must never turn a
+ * leading retraction such as "not circuit 3" into a write.
+ */
+function hasLeadingNegatedNumericCircuitTarget(text) {
+  const value = stripPunct(stripDescriptionLeadIn(String(text ?? ''))).toLowerCase();
+  const match = value.match(
+    /^(?:(?:don['’]?t|do\s+not)\s+use|not|except(?:\s+for)?|rather\s+than|instead(?:\s+of)?|exclude|excluding|without|leave\s+out|no|wait)\b[\s,;:.…-]+([\s\S]+)$/i
+  );
+  return Boolean(match && extractCircuitRef(match[1]) !== null);
+}
+
 function normaliseMultiTargetFiller(text) {
   return String(text ?? '')
     .toLowerCase()
@@ -583,6 +599,58 @@ function isConversationalFillerSpan(text) {
 }
 
 /**
+ * Consume one leading cardinal while retaining the unconsumed suffix.
+ *
+ * TENS+ONES must be inspected before a standalone TENS token: accepting
+ * "twenty" first would leave "one" behind and turn a 21-circuit quantifier
+ * into 20. This helper is shared by plain and "all <count>" quantifiers so
+ * both forms obey the same ordering.
+ *
+ * @param {string} text
+ * @returns {{value: number, rest: string}|null}
+ */
+function consumeLeadingCardinal(text) {
+  const hyphenated = String(text ?? '').match(/^\s*([a-z]+)-([a-z]+)(?:\s+|$)([\s\S]*)$/i);
+  if (hyphenated) {
+    const tens = TENS[hyphenated[1].toLowerCase()];
+    const unit = ONES[hyphenated[2].toLowerCase()];
+    if (Number.isInteger(tens) && Number.isInteger(unit) && unit >= 1 && unit <= 9) {
+      return { value: tens + unit, rest: hyphenated[3] ?? '' };
+    }
+  }
+
+  const first = consumeLeadingToken(text);
+  if (!first) return null;
+
+  if (/^\d+$/.test(first.token)) {
+    return { value: Number.parseInt(first.token, 10), rest: first.rest };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(TENS, first.token)) {
+    const second = consumeLeadingToken(first.rest);
+    if (second) {
+      const unit = ONES[second.token];
+      if (Number.isInteger(unit) && unit >= 1 && unit <= 9) {
+        return { value: TENS[first.token] + unit, rest: second.rest };
+      }
+      // A second numeric token outside one..nine is malformed English, not a
+      // standalone TENS count followed by a designation. Decline the entire
+      // quantifier so "twenty ten" can never degrade into count=20.
+      if (
+        /^\d+$/.test(second.token) ||
+        Object.prototype.hasOwnProperty.call(ONES, second.token) ||
+        Object.prototype.hasOwnProperty.call(TENS, second.token)
+      ) {
+        return null;
+      }
+    }
+  }
+
+  const value = parseCardinalQuantifier(first.token);
+  return value === null ? null : { value, rest: first.rest };
+}
+
+/**
  * Parse and remove an attached count/all quantifier from a designation span.
  *
  * A quantifier is recognised only when the same span also contains the
@@ -599,47 +667,25 @@ function stripAttachedCircuitQuantifier(rawSpan) {
 
   let working = stripDescriptionLeadIn(original).replace(/^\s*the\s+/i, '');
   let first = consumeLeadingToken(working);
-  if (!first) return { text: original, quantifier: null };
 
   let quantifier = null;
-  let consumedRest = first.rest;
-  if (first.token === 'all') {
+  let consumedRest = first?.rest ?? working;
+  if (first?.token === 'all') {
     quantifier = { kind: 'all', expected: null };
     // "all three ..." carries an explicit count; plain "all ..." means all
     // exact/substring matches and therefore has no expected integer.
-    const countFirst = consumeLeadingToken(consumedRest);
-    if (countFirst) {
-      let parsed = /^\d+$/.test(countFirst.token)
-        ? Number.parseInt(countFirst.token, 10)
-        : parseCardinalQuantifier(countFirst.token);
-      let countRest = countFirst.rest;
-      if (parsed == null && Object.prototype.hasOwnProperty.call(TENS, countFirst.token)) {
-        const countSecond = consumeLeadingToken(countFirst.rest);
-        if (countSecond) {
-          parsed = parseCardinalQuantifier(`${countFirst.token} ${countSecond.token}`);
-          if (parsed != null) countRest = countSecond.rest;
-        }
-      }
-      if (Number.isInteger(parsed) && parsed > 0) {
-        quantifier = { kind: 'count', expected: parsed };
-        consumedRest = countRest;
-      }
+    const count = consumeLeadingCardinal(consumedRest);
+    if (Number.isInteger(count?.value) && count.value > 0) {
+      quantifier = { kind: 'count', expected: count.value };
+      consumedRest = count.rest;
     }
-  } else if (first.token === 'both') {
+  } else if (first?.token === 'both') {
     quantifier = { kind: 'count', expected: 2 };
   } else {
-    let parsed = /^\d+$/.test(first.token)
-      ? Number.parseInt(first.token, 10)
-      : parseCardinalQuantifier(first.token);
-    if (parsed == null && Object.prototype.hasOwnProperty.call(TENS, first.token)) {
-      const second = consumeLeadingToken(first.rest);
-      if (second) {
-        parsed = parseCardinalQuantifier(`${first.token} ${second.token}`);
-        if (parsed != null) consumedRest = second.rest;
-      }
-    }
-    if (Number.isInteger(parsed) && parsed > 0) {
-      quantifier = { kind: 'count', expected: parsed };
+    const count = consumeLeadingCardinal(working);
+    if (Number.isInteger(count?.value) && count.value > 0) {
+      quantifier = { kind: 'count', expected: count.value };
+      consumedRest = count.rest;
     }
   }
 
@@ -684,6 +730,51 @@ function splitEnumeratedAtoms(text) {
 }
 
 /**
+ * Canonicalise only enumerated separators for whole-designation protection.
+ * Exact equivalence here is symmetric: a stored "Cooker & Hob" and spoken
+ * "Cooker and Hob", "Cooker plus Hob", or "Cooker, Hob" share one key.
+ */
+function canonicalSeparatorDesignation(text) {
+  const canonicalSeparator = '__enumerated_separator__';
+  const tokens = String(text ?? '')
+    .toLowerCase()
+    .replace(/(?:\s*(?:[,&+]|\band\b|\bplus\b)\s*)+/gi, ` ${canonicalSeparator} `)
+    .split(/\s+/)
+    .map((token) => token.replace(/^[^a-z0-9_-]+|[^a-z0-9_-]+$/g, ''))
+    .filter(Boolean)
+    .filter((token) => token === canonicalSeparator || !STOP_WORDS.has(token))
+    .map((token) => (token === canonicalSeparator ? 'and' : token));
+  return tokens.join(' ').trim();
+}
+
+/**
+ * Return exact canonical-equivalence refs only. A non-unique canonical match
+ * is deliberately ambiguous and must stop before segmentation; otherwise the
+ * component circuits could be written even though the whole name is not
+ * uniquely attributable.
+ */
+function matchCanonicalExactDesignation(text, circuits) {
+  const canonical = canonicalSeparatorDesignation(text);
+  if (!canonical || !Array.isArray(circuits)) {
+    return { kind: 'no_match', circuitRefs: [] };
+  }
+  const refs = [];
+  for (const circuit of circuits) {
+    const designation = circuit?.circuit_designation ?? circuit?.designation ?? '';
+    if (!designation || canonicalSeparatorDesignation(designation) !== canonical) continue;
+    const ref =
+      typeof circuit?.circuit_ref === 'number'
+        ? circuit.circuit_ref
+        : Number.parseInt(String(circuit?.circuit_ref), 10);
+    if (Number.isInteger(ref)) refs.push(ref);
+  }
+  const circuitRefs = [...new Set(refs)].sort((a, b) => a - b);
+  if (circuitRefs.length === 1) return { kind: 'exact', circuitRefs };
+  if (circuitRefs.length > 1) return { kind: 'ambiguous', circuitRefs };
+  return { kind: 'no_match', circuitRefs: [] };
+}
+
+/**
  * Protect a designation-internal separator by greedily taking the longest
  * contiguous atom span that is an EXACT designation. This is the
  * maximum-coverage guard for names such as "Kitchen and utility lights".
@@ -702,8 +793,14 @@ function segmentDescriptionReply(text, circuits) {
     for (let end = atoms.length - 1; end > i; end -= 1) {
       const candidate = text.slice(atoms[i].start, atoms[end].end);
       const stripped = stripAttachedCircuitQuantifier(candidate);
-      const cleaned = cleanReplyForDesignation(stripDescriptionLeadIn(stripped.text));
+      const unwrapped = stripDescriptionLeadIn(stripped.text);
+      const cleaned = cleanReplyForDesignation(unwrapped);
       if (cleaned.length < 2) continue;
+      const canonicalVerdict = matchCanonicalExactDesignation(unwrapped, circuits);
+      if (canonicalVerdict.kind === 'exact' || canonicalVerdict.kind === 'ambiguous') {
+        bestEnd = end;
+        break;
+      }
       const verdict = matchDesignation(cleaned, circuits);
       if (verdict.kind === 'exact') {
         bestEnd = end;
@@ -862,6 +959,28 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
 
   // Whole-designation-first preserves shipped C1 fuzzy behaviour and protects
   // a real designation containing "and" from segmentation.
+  const canonicalWholeMatch = matchCanonicalExactDesignation(normalisedText, circuits);
+  if (canonicalWholeMatch.kind === 'ambiguous') {
+    return {
+      kind: 'escalate',
+      parsed_hint: `ambiguous_designation_match:${canonicalWholeMatch.circuitRefs.join(',')}`,
+      available_circuits: circuits,
+    };
+  }
+  if (canonicalWholeMatch.kind === 'exact') {
+    return {
+      kind: 'auto_resolve',
+      match_status: 'full',
+      ...selectedCircuitRefsMetadata(canonicalWholeMatch.circuitRefs),
+      writes: collapseBoardWriteFanout(
+        pendingWrite,
+        [buildWrite(pendingWrite, canonicalWholeMatch.circuitRefs[0], contextBoardId)],
+        contextBoardId
+      ),
+      unresolved: [],
+    };
+  }
+
   const wholeCleaned = cleanReplyForDesignation(normalisedText);
   if (wholeCleaned.length >= 2) {
     const wholeMatch = matchDesignation(wholeCleaned, circuits);
@@ -945,11 +1064,18 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
     }
 
     if (isConversationalFillerSpan(strippedSpan)) return;
-    const cleaned = cleanReplyForDesignation(stripDescriptionLeadIn(strippedSpan));
-    const match =
+    const unwrappedSpan = stripDescriptionLeadIn(strippedSpan);
+    const cleaned = cleanReplyForDesignation(unwrappedSpan);
+    const canonicalSpanMatch =
       quantifier === null
-        ? matchDesignation(cleaned, circuits)
-        : matchQuantifiedDesignations(cleaned, circuits);
+        ? matchCanonicalExactDesignation(unwrappedSpan, circuits)
+        : { kind: 'no_match', circuitRefs: [] };
+    const match =
+      canonicalSpanMatch.kind !== 'no_match'
+        ? canonicalSpanMatch
+        : quantifier === null
+          ? matchDesignation(cleaned, circuits)
+          : matchQuantifiedDesignations(cleaned, circuits);
     const refs = [...new Set(match.circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
 
     if (match.kind === 'fuzzy') {
@@ -1295,6 +1421,14 @@ export function resolveCircuitAnswer({
     contextBoardId,
   });
   if (multiDescriptionVerdict) return multiDescriptionVerdict;
+
+  if (hasLeadingNegatedNumericCircuitTarget(lower)) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+      available_circuits: availableCircuits ?? [],
+    };
+  }
 
   // Numeric path: bare digit ("2"), word ("two"), "circuit 2", "circuit two".
   const numericRef = extractCircuitRef(lower);

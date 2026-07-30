@@ -697,6 +697,107 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ]);
   });
 
+  test.each(['Cooker and Hob', 'Cooker plus Hob', 'Cooker, Hob', 'Cooker & Hob', 'Cooker + Hob'])(
+    'whole designation separator variant "%s" resolves before component segmentation',
+    (reply) => {
+      const verdict = resolveMulti(reply, [
+        { circuit_ref: 1, circuit_designation: 'Cooker' },
+        { circuit_ref: 2, circuit_designation: 'Hob' },
+        { circuit_ref: 3, circuit_designation: 'Cooker & Hob' },
+      ]);
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: [3],
+        unresolved: [],
+      });
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    }
+  );
+
+  test('a non-unique canonical whole designation asks before component segmentation', () => {
+    const verdict = resolveMulti('Cooker plus Hob', [
+      { circuit_ref: 1, circuit_designation: 'Cooker' },
+      { circuit_ref: 2, circuit_designation: 'Hob' },
+      { circuit_ref: 3, circuit_designation: 'Cooker & Hob' },
+      { circuit_ref: 4, circuit_designation: 'Cooker and Hob' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'ambiguous_designation_match:3,4',
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
+  });
+
+  test('an embedded composite designation is protected before resolving its sibling', () => {
+    const verdict = resolveMulti('Cooker plus Hob and Smoke alarm', [
+      { circuit_ref: 1, circuit_designation: 'Cooker' },
+      { circuit_ref: 2, circuit_designation: 'Hob' },
+      { circuit_ref: 3, circuit_designation: 'Cooker & Hob' },
+      { circuit_ref: 4, circuit_designation: 'Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [3, 4],
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([3, 4]);
+  });
+
+  test('a stored plus-symbol composite resolves inside a longer target list', () => {
+    const verdict = resolveMulti('Cooker and Hob plus Smoke alarm', [
+      { circuit_ref: 1, circuit_designation: 'Cooker' },
+      { circuit_ref: 2, circuit_designation: 'Hob' },
+      { circuit_ref: 3, circuit_designation: 'Cooker + Hob' },
+      { circuit_ref: 4, circuit_designation: 'Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [3, 4],
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([3, 4]);
+  });
+
+  test('an ambiguous embedded canonical composite stays whole and asks', () => {
+    const verdict = resolveMulti('Cooker plus Hob and Smoke alarm', [
+      { circuit_ref: 1, circuit_designation: 'Cooker' },
+      { circuit_ref: 2, circuit_designation: 'Hob' },
+      { circuit_ref: 3, circuit_designation: 'Cooker & Hob' },
+      { circuit_ref: 4, circuit_designation: 'Cooker + Hob' },
+      { circuit_ref: 5, circuit_designation: 'Smoke Alarm' },
+    ]);
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 5 })]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        identity: 1,
+        span_kind: 'segment_ordinal',
+        disposition: 'ask',
+        reason: 'ambiguous_match',
+        candidates: [3, 4],
+      }),
+    ]);
+  });
+
+  test('separator words remain separate targets when no composite designation exists', () => {
+    const verdict = resolveMulti('Cooker plus Hob and Smoke alarm', [
+      { circuit_ref: 1, circuit_designation: 'Cooker' },
+      { circuit_ref: 2, circuit_designation: 'Hob' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [1, 2, 3],
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+  });
+
   test.each([
     'Kitchen and utility lights I think',
     'I think Kitchen and utility lights',
@@ -800,6 +901,59 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     });
   });
 
+  test.each([
+    'not circuit 3',
+    'do not use circuit 3',
+    'except circuit 3',
+    'except for circuit 3',
+    'rather than circuit 3',
+    'instead circuit 3',
+    'instead of circuit 3',
+    'exclude circuit 3',
+    'excluding circuit 3',
+    'without circuit 3',
+    'leave out circuit 3',
+    'no circuit 3',
+    'wait, circuit 3',
+    'not. circuit 3',
+  ])('leading numeric-target correction "%s" fails closed', (reply) => {
+    const verdict = resolveMulti(reply);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
+  });
+
+  test.each(['not 3', 'without three'])(
+    'leading correction with bare numeric target "%s" fails closed',
+    (reply) => {
+      const verdict = resolveMulti(reply);
+      expect(verdict).toMatchObject({
+        kind: 'escalate',
+        parsed_hint: 'multi_description_correction_or_negation',
+      });
+      expect(verdict.writes).toBeUndefined();
+      expect(verdict.unresolved).toBeUndefined();
+    }
+  );
+
+  test.each([
+    'I mean not circuit 3',
+    'actually… except for 3',
+    "it's for instead of three",
+    'Sorry, wait, circuit 3',
+  ])('wrapped leading correction "%s" still fails closed', (reply) => {
+    const verdict = resolveMulti(reply);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
+  });
+
   test('whole-reply C1 fuzzy still resolves one circuit', () => {
     const verdict = resolveMulti('upstars lights');
     expect(verdict.kind).toBe('auto_resolve');
@@ -865,6 +1019,102 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       unresolved: [],
     });
     expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+  });
+
+  test.each([
+    'twenty one kitchen lighting circuits',
+    'twenty-one kitchen lighting circuits',
+    'all twenty one kitchen lighting circuits',
+    'all twenty-one kitchen lighting circuits',
+  ])('compound count in "%s" fans out to all 21 exact/substring candidates', (reply) => {
+    const circuits = Array.from({ length: 21 }, (_, index) => ({
+      circuit_ref: index + 1,
+      circuit_designation: `Kitchen lighting ${index + 1}`,
+    }));
+    const verdict = resolveMulti(reply, circuits);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: Array.from({ length: 21 }, (_, index) => index + 1),
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual(
+      Array.from({ length: 21 }, (_, index) => index + 1)
+    );
+  });
+
+  test('a hyphenated twenty-two quantifier fans out to 22 candidates', () => {
+    const circuits = Array.from({ length: 22 }, (_, index) => ({
+      circuit_ref: index + 1,
+      circuit_designation: `Kitchen lighting ${index + 1}`,
+    }));
+    const verdict = resolveMulti('twenty-two kitchen lighting circuits', circuits);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: Array.from({ length: 22 }, (_, index) => index + 1),
+      unresolved: [],
+    });
+    expect(verdict.writes).toHaveLength(22);
+  });
+
+  test('all twenty-one asks for the missing candidate instead of accepting 20', () => {
+    const circuits = Array.from({ length: 20 }, (_, index) => ({
+      circuit_ref: index + 1,
+      circuit_designation: `Kitchen lighting ${index + 1}`,
+    }));
+    const verdict = resolveMulti('all twenty-one kitchen lighting circuits', circuits);
+    expect(verdict).toMatchObject({
+      kind: 'partial_resolve',
+      match_status: 'partial',
+      writes: [],
+      unresolved: [
+        expect.objectContaining({
+          disposition: 'ask',
+          reason: 'quantifier_count_mismatch',
+          candidates: Array.from({ length: 20 }, (_, index) => index + 1),
+          required_count: 21,
+        }),
+      ],
+    });
+  });
+
+  test.each(['twenty ten', 'twenty nineteen'])(
+    'malformed compound count "%s" never becomes a fan-out count',
+    (count) => {
+      const circuits = Array.from({ length: 30 }, (_, index) => ({
+        circuit_ref: index + 1,
+        circuit_designation: `Kitchen lighting ${index + 1}`,
+      }));
+      const verdict = resolveMulti(`${count} kitchen lighting circuits`, circuits);
+      expect(verdict.kind).toBe('escalate');
+      expect(verdict.writes).toBeUndefined();
+    }
+  );
+
+  test('a malformed numeric follower cannot degrade into a standalone TENS fan-out', () => {
+    const circuits = Array.from({ length: 20 }, (_, index) => ({
+      circuit_ref: index + 1,
+      circuit_designation: `Ten kitchen lighting ${index + 1}`,
+    }));
+    const verdict = resolveMulti('twenty ten kitchen lighting circuits', circuits);
+    expect(verdict.kind).toBe('escalate');
+    expect(verdict.writes).toBeUndefined();
+  });
+
+  test('a standalone twenty quantifier remains a count of 20', () => {
+    const circuits = Array.from({ length: 20 }, (_, index) => ({
+      circuit_ref: index + 1,
+      circuit_designation: `Kitchen lighting ${index + 1}`,
+    }));
+    const verdict = resolveMulti('twenty kitchen lighting circuits', circuits);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: Array.from({ length: 20 }, (_, index) => index + 1),
+      unresolved: [],
+    });
+    expect(verdict.writes).toHaveLength(20);
   });
 
   test.each([
