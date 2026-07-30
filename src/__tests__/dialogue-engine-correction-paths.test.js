@@ -1104,3 +1104,51 @@ describe('mini-review c1 — whitespace-variant designation + voltage', () => {
     expect(session.dialogueScriptState).toBeFalsy();
   });
 });
+
+describe('cycle 2 — discriminating intent-direction + numeric-designation-with-voltage rows', () => {
+  test('"test the RCD" (no circuit, intent BEFORE token) enters and asks which circuit', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {} });
+    const out = processDialogueTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'test the RCD',
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      logger: null,
+      now: 1000,
+    });
+    expect(out.handled).toBe(true);
+    const whichCircuit = askFrames(ws).find((f) =>
+      (f.question ?? '').includes('Which circuit is the RCD for?')
+    );
+    expect(whichCircuit).toBeTruthy();
+  });
+
+  test('the intent-BEFORE trigger matches "test the RCD" on its own (not via the circuit-scoped pattern)', () => {
+    // Pattern order in rcd.js: [circuit-scoped, intent-after, intent-before].
+    expect(rcdSchema.triggers[0].test('test the RCD')).toBe(false);
+    expect(rcdSchema.triggers[1].test('test the RCD')).toBe(false);
+    expect(rcdSchema.triggers[2].test('test the RCD')).toBe(true);
+  });
+
+  test('numeric designation + SEPARATE voltage in one reply: designation span masked, 250 written — never the designation 500', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: '500 volt control supply' } });
+    irTurn(ws, session, 'Insulation resistance. Live to live 200, live to earth 200.', 1000);
+    ws.sent = [];
+    irTurn(
+      ws,
+      session,
+      '500 volt control supply, tested at 250',
+      2000,
+      '500 volt control supply, tested at 250'
+    );
+    expect(session.dialogueScriptState).toBeFalsy();
+    const frames = extractionFrames(ws);
+    expect(frames).toHaveLength(1);
+    const voltage = readingsOf(frames[0]).find((r) => r.field === 'ir_test_voltage');
+    expect(voltage).toBeTruthy();
+    expect(voltage.value).toBe('250');
+  });
+});
