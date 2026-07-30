@@ -754,6 +754,35 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
+  test('a failed board-write sibling cannot mint a partial-success description notice', async () => {
+    const run = startMultiDispatcher({
+      autoResolveWrite: jest.fn().mockResolvedValue({
+        ok: false,
+        body: { error: { code: 'invalid_type', field: 'value' } },
+      }),
+      inputOverrides: { context_field: 'manufacturer' },
+      pendingWriteOverrides: {
+        tool: 'record_board_reading',
+        field: 'manufacturer',
+        value: 'Hager',
+      },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'the attic circuit and the smoke alarm',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      match_status: 'partial',
+      resolved_writes: [expect.objectContaining({ field: 'manufacturer', ok: false })],
+    });
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'designation_no_match' })
+    );
+  });
+
   test('terminal conversational filler writes once without a false no-match notice', async () => {
     const run = startMultiDispatcher({
       session: buildSession([

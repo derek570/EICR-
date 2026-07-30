@@ -136,6 +136,17 @@ const require = createRequire(import.meta.url);
 // rejection to Sonnet so the re-ask-once-then-move-on rule can fire
 // instead of looping the same prompt verbatim.
 const FIELD_SCHEMA = require('../../config/field_schema.json');
+// PLAN-2B §3.3 — record_board_reading follows the same deterministic
+// description resolver as record_reading, so a partial board-write result
+// needs a trusted server-owned label too. Keep the board-side namespaces
+// separate from circuit_fields: overlapping names are valid, while spreading
+// every schema family together would let an unrelated later namespace replace
+// the circuit label used by the long-shipped record_reading path.
+const BOARD_READING_PARTIAL_FAILURE_FIELDS = Object.freeze({
+  ...(FIELD_SCHEMA.board_fields ?? {}),
+  ...(FIELD_SCHEMA.supply_characteristics_fields ?? {}),
+  ...(FIELD_SCHEMA.installation_details_fields ?? {}),
+});
 
 /**
  * STA-03 — exported so test override and Phase 5 tuning have a single knob.
@@ -1799,7 +1810,9 @@ async function buildResolvedBody({
     const successfulSibling = dispatched.some((write) => write.ok === true);
     if (successfulSibling && typeof stagePartialFailureNotice === 'function') {
       const fieldLabel = resolvePartialFailureFieldLabel(
-        FIELD_SCHEMA.circuit_fields,
+        pendingWrite.tool === 'record_board_reading'
+          ? BOARD_READING_PARTIAL_FAILURE_FIELDS
+          : FIELD_SCHEMA.circuit_fields,
         pendingWrite.field
       );
       if (fieldLabel !== null) {
@@ -1823,6 +1836,12 @@ async function buildResolvedBody({
             boardId: resolveEffectiveBoardId(session, requestedBoardId) ?? null,
             target,
             producer: 'ask_multi_description_no_match',
+            // The harness callback uses the winning board-write journal stamp
+            // to scope this notice. Board fields may be GLOBAL (effective
+            // board null) even when the ask named the current board, so merely
+            // re-running the circuit-board resolver here would strand the
+            // notice against the wrong drain identity.
+            boardReading: pendingWrite.tool === 'record_board_reading',
             // The dispatcher has observed an immediate success. The 2A drain
             // re-checks this at turn finalisation so a later clear cannot turn
             // the notice into a false "partial success" claim.

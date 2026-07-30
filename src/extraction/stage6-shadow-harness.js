@@ -1146,16 +1146,48 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // `perTurnWrites` accumulator itself: the ask dispatcher has never held
         // the accumulator, and handing it one just to reach a single array would
         // also hand it every other per-turn channel. Closed over THIS turn's
-        // accumulator here, and the board id is resolved with the write
-        // dispatchers' own formula so the drain's surviving-write subtraction can
-        // match an unscoped-write target against the winner it produced.
+        // accumulator here. Circuit writes use the circuit dispatcher's
+        // effective-board formula; board writes read the dispatcher-stamped
+        // winner identity below, so the drain compares each notice with the
+        // exact scope its sibling actually mutated.
         // The SHADOW composition site deliberately gets nothing — it supplies no
         // `autoResolveWrite`, so no auto-resolved write ever runs there.
-        stagePartialFailureNotice: (spec) =>
+        stagePartialFailureNotice: (spec) => {
+          const requestedEffectiveBoardId =
+            resolveEffectiveBoardId(liveSession, spec?.boardId) ?? null;
+          let noticeBoardId = requestedEffectiveBoardId;
+
+          // PLAN-2B §3.3 — a record_board_reading winner carries the
+          // scope-CONDITIONED EFFECTIVE_BOARD_SLOT identity chosen by the
+          // board dispatcher. In particular Ze/PFC are global and therefore
+          // stamped with boardId:null even when the ask originated on "main"
+          // or a selected sub-board. Re-resolving the raw ask id with the
+          // circuit formula would stage the sibling notice under the selected
+          // board and the drain would (correctly) suppress it as winnerless.
+          // Prefer the exact scoped winner, then the global winner; never
+          // borrow another concrete board's write for this notice.
+          if (spec?.boardReading === true) {
+            const canonicalField = canonicalPartialFailureFieldIdentity(spec?.field);
+            const boardWinnerSlots = projectBoardReadingWinners(perTurnWrites)
+              .map((winner) => winner?.value?.[EFFECTIVE_BOARD_SLOT] ?? null)
+              .filter(
+                (slot) =>
+                  slot != null &&
+                  canonicalPartialFailureFieldIdentity(slot.field) === canonicalField
+              );
+            const exactWinner = boardWinnerSlots.find(
+              (slot) => (slot.boardId ?? null) === requestedEffectiveBoardId
+            );
+            const globalWinner = boardWinnerSlots.find((slot) => slot.boardId == null);
+            const effectiveWinner = exactWinner ?? globalWinner ?? null;
+            if (effectiveWinner) noticeBoardId = effectiveWinner.boardId ?? null;
+          }
+
           stagePartialFailureNotice(perTurnWrites, {
             ...spec,
-            boardId: resolveEffectiveBoardId(liveSession, spec?.boardId) ?? null,
-          }),
+            boardId: noticeBoardId,
+          });
+        },
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -3196,11 +3228,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // inspector back to re-dictate a correct reading. A false negative
           // here is worse than the silence this whole plan removes.
           //
-          // Survivor source is the A2 write JOURNAL (`projectReadingWinners`),
-          // NEVER a raw `readings`-Map scan: post-A2 the raw Map is
-          // board-AMBIGUOUS by construction (record_reading omits board_id in
-          // the common case), so a Map scan would subtract a garage write
-          // against a MAIN-board miss for the same ref.
+          // Survivor sources are the A2 write JOURNALS
+          // (`projectReadingWinners` + `projectBoardReadingWinners`), NEVER
+          // raw Map scans: post-A2 both raw Maps are board-AMBIGUOUS by
+          // construction, so a Map scan could claim a garage write as the
+          // sibling for a MAIN-board miss.
           //
           // Field identity is CANONICALISED on BOTH sides, so an
           // alias-spelled retry (`measured_zs_ohm` skipped, then `zs`
@@ -3217,6 +3249,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               }`
             );
           }
+          const survivingBoardReadingScopes = new Set();
+          for (const w of projectBoardReadingWinners(perTurnWrites)) {
+            const effectiveSlot = w?.value?.[EFFECTIVE_BOARD_SLOT];
+            // Symbol-less legacy board writes have no safe board attribution.
+            // They cannot prove a sibling for a scoped partial-success claim.
+            if (!effectiveSlot || effectiveSlot.field == null) continue;
+            survivingBoardReadingScopes.add(
+              `${canonicalPartialFailureFieldIdentity(effectiveSlot.field)}::${
+                effectiveSlot.boardId ?? ''
+              }`
+            );
+          }
           for (const aggregate of drainablePartial) {
             // PLAN-2B §3.3 — an unmatched DESCRIPTION span is a partial
             // failure only while a sibling write for the same field + board
@@ -3227,9 +3271,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             if (aggregate?.requiresSurvivingSibling === true) {
               const prefix = `${aggregate.field}::`;
               const suffix = `::${aggregate.boardId ?? ''}`;
-              const hasSurvivingSibling = [...survivingReadingSlots].some(
-                (slot) => slot.startsWith(prefix) && slot.endsWith(suffix)
-              );
+              const hasSurvivingSibling =
+                [...survivingReadingSlots].some(
+                  (slot) => slot.startsWith(prefix) && slot.endsWith(suffix)
+                ) ||
+                survivingBoardReadingScopes.has(`${aggregate.field}::${aggregate.boardId ?? ''}`);
               if (!hasSurvivingSibling) {
                 log.info?.('stage6.partial_failure_notice_suppressed_no_sibling', {
                   sessionId: session.sessionId,
