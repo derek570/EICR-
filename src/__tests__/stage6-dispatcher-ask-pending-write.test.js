@@ -21,6 +21,19 @@ import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
 const F7_OPEN_WS = { readyState: 1, OPEN: 1, send() {} };
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
 
+const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+function capturingWs() {
+  return {
+    readyState: 1,
+    OPEN: 1,
+    sent: [],
+    send(raw) {
+      this.sent.push(JSON.parse(raw));
+    },
+  };
+}
+
 const validInput = (overrides = {}) => ({
   question: 'Which circuit is the 4 points for?',
   reason: 'missing_context',
@@ -544,5 +557,232 @@ describe('createAskDispatcher — pending_write validation', () => {
     pendingAsks.resolve('toolu_p2d_c', { answered: true, user_text: 'unrelated text' });
     const env = await callPromise;
     expect(env.is_error).toBeFalsy();
+  });
+});
+
+describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
+  const multiCircuits = [
+    { circuit_ref: 1, circuit_designation: 'Lighting' },
+    { circuit_ref: 2, circuit_designation: 'Lighting' },
+    { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+    { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+  ];
+
+  function startMultiDispatcher({
+    autoResolveWrite = jest.fn().mockResolvedValue({ ok: true }),
+    stagePartialFailureNotice = jest.fn(),
+    onAskUserStarted = jest.fn(),
+    onAskRegistered = jest.fn(),
+  } = {}) {
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = capturingWs();
+    const dispatcher = createAskDispatcher(
+      buildSession(multiCircuits),
+      noopLogger(),
+      'turn-multi',
+      pendingAsks,
+      ws,
+      {
+        autoResolveWrite,
+        stagePartialFailureNotice,
+        onAskUserStarted,
+        onAskRegistered,
+      }
+    );
+    const promise = dispatcher(
+      {
+        tool_call_id: 'toolu_multi',
+        name: 'ask_user',
+        input: validInput({ pending_write: validPendingWrite() }),
+      },
+      {}
+    );
+    return {
+      promise,
+      pendingAsks,
+      ws,
+      autoResolveWrite,
+      stagePartialFailureNotice,
+      onAskUserStarted,
+      onAskRegistered,
+    };
+  }
+
+  test('verbatim id-104 answer dispatches all three writes', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: "I said it's for 2 lighting circuits and the smoke alarm",
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      auto_resolved: true,
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(3);
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual(
+      []
+    );
+  });
+
+  test('partial no-match stages one ordinal notice only after a sibling write succeeds', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'the attic circuit and the smoke alarm',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.resolved_writes).toEqual([expect.objectContaining({ circuit: 3, ok: true })]);
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledTimes(1);
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'designation_no_match',
+        target: { kind: 'ordinal', ordinal: 1 },
+        requiresSurvivingSibling: true,
+      })
+    );
+  });
+
+  test('an explicit absent ref is noticed by trusted circuit number', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'circuit 99 and the smoke alarm',
+    });
+    await run.promise;
+
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'designation_no_match',
+        target: { kind: 'circuit', ref: 99 },
+      })
+    );
+  });
+
+  test('all-unmatched escalates with zero writes, notices, or brokered asks', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'the attic circuit and the garage circuit',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      auto_resolved: false,
+      match_status: 'all_unmatched',
+      parsed_hint: 'multi_description_all_unmatched',
+    });
+    expect(run.autoResolveWrite).not.toHaveBeenCalled();
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual(
+      []
+    );
+  });
+
+  test('fuzzy disposition emits one registered mdr-* ask and dispatches its answer', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the smoke alarm',
+    });
+    await tick();
+
+    const frames = run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({
+      type: 'ask_user_started',
+      expected_answer_shape: 'free_text',
+      context_field: 'number_of_points',
+    });
+    expect(frames[0].question).toMatch(/circuit 4/i);
+    expect(frames[0].question).not.toMatch(/upstars/i);
+    const mdrId = frames[0].tool_call_id;
+    expect([...run.pendingAsks.entries()].some(([id]) => id === mdrId)).toBe(true);
+    expect(run.onAskRegistered).toHaveBeenCalledWith(mdrId);
+    expect(run.onAskUserStarted).toHaveBeenCalledWith({
+      toolCallId: mdrId,
+      source: 'multi_description',
+    });
+
+    run.pendingAsks.resolve(mdrId, { answered: true, user_text: 'circuit 4' });
+    const body = JSON.parse((await run.promise).content);
+    expect(body.match_status).toBe('full');
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([3, 4]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
+  });
+
+  test('a retry success makes its sibling no-match notice eligible', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the attic circuit',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuit 4',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.resolved_writes).toEqual([expect.objectContaining({ circuit: 4, ok: true })]);
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'designation_no_match',
+        target: { kind: 'ordinal', ordinal: 2 },
+      })
+    );
+  });
+
+  test('the mdr clarification is bounded to one ask when its answer stays ambiguous', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'lighting and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'lighting and lighting',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.unresolved.some((entry) => entry.disposition === 'ask')).toBe(true);
+    expect(
+      run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))
+    ).toHaveLength(1);
+  });
+
+  test('an unmatched notice is not staged when every sibling write fails', async () => {
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: false, code: 'write_failed' });
+    const run = startMultiDispatcher({ autoResolveWrite });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'the attic circuit and the smoke alarm',
+    });
+    await run.promise;
+
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'write_failed' })
+    );
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'designation_no_match' })
+    );
   });
 });

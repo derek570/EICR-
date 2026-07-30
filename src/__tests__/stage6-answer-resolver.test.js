@@ -630,3 +630,222 @@ describe('resolveCircuitAnswer — §C1 conservative fuzzy designation match', (
     expect(tie.kind).toBe('escalate');
   });
 });
+
+// ---------------------------------------------------------------------------
+// PLAN-2B §3.3 — multi-description resolution (feedback id 104)
+// ---------------------------------------------------------------------------
+
+const MULTI_DESCRIPTION_CIRCUITS = [
+  { circuit_ref: 1, circuit_designation: 'Lighting' },
+  { circuit_ref: 2, circuit_designation: 'Lighting' },
+  { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+  { circuit_ref: 4, circuit_designation: 'Kitchen and utility lights' },
+  { circuit_ref: 5, circuit_designation: 'Upstairs Lights' },
+  { circuit_ref: 6, circuit_designation: 'Kitchen sockets' },
+  { circuit_ref: 7, circuit_designation: 'Kitchen lighting' },
+];
+
+function resolveMulti(reply, circuits = MULTI_DESCRIPTION_CIRCUITS) {
+  return resolveCircuitAnswer({
+    userText: reply,
+    pendingWrite: {
+      ...SAMPLE_PENDING,
+      field: 'measured_zs_ohm',
+      value: '0.42',
+    },
+    availableCircuits: circuits,
+    contextBoardId: 'board-main',
+  });
+}
+
+describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
+  test.each([
+    '2 lighting circuits and the smoke alarm',
+    'the two lighting circuits and the smoke alarm',
+    "I said it's for 2 lighting circuits and the smoke alarm",
+  ])('verbatim id-104 shape "%s" resolves all three targets', (reply) => {
+    const verdict = resolveMulti(reply);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+    expect(
+      verdict.writes.every(
+        (write) =>
+          write.field === 'measured_zs_ohm' &&
+          write.value === '0.42' &&
+          write.board_id === 'board-main'
+      )
+    ).toBe(true);
+  });
+
+  test('a designation containing "and" stays whole under maximum coverage', () => {
+    const verdict = resolveMulti('Kitchen and utility lights');
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toEqual([
+      expect.objectContaining({
+        circuit: 4,
+        field: 'measured_zs_ohm',
+        value: '0.42',
+      }),
+    ]);
+  });
+
+  test('a whole designation cannot swallow a residual unmatched span', () => {
+    const verdict = resolveMulti('Kitchen and utility lights and the attic circuit');
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 4 })]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        identity: 2,
+        span_kind: 'segment_ordinal',
+        disposition: 'notice',
+        reason: 'no_match',
+      }),
+    ]);
+  });
+
+  test('an explicit circuit ref can share a multi-target list with a designation', () => {
+    const verdict = resolveMulti('circuit 2 and the smoke alarm');
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.match_status).toBe('full');
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([2, 3]);
+  });
+
+  test('bare "circuit 2" remains on the shipped scalar path', () => {
+    const verdict = resolveMulti('circuit 2');
+    expect(verdict).toEqual({
+      kind: 'auto_resolve',
+      writes: [
+        expect.objectContaining({
+          circuit: 2,
+          field: 'measured_zs_ohm',
+          value: '0.42',
+        }),
+      ],
+    });
+  });
+
+  test('whole-reply C1 fuzzy still resolves one circuit', () => {
+    const verdict = resolveMulti('upstars lights');
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 5 })]);
+  });
+
+  test('a near-spelling in a quantified span never fans out', () => {
+    const verdict = resolveMulti('2 upstars lights circuits and the smoke alarm');
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        identity: 5,
+        span_kind: 'circuit_ref',
+        disposition: 'ask',
+        reason: 'fuzzy_match',
+        candidates: [5],
+      }),
+    ]);
+  });
+
+  test('quantifier count mismatch asks and never guesses', () => {
+    const verdict = resolveMulti('3 lighting circuits and the smoke alarm');
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        identity: 1,
+        span_kind: 'segment_ordinal',
+        disposition: 'ask',
+        reason: 'quantifier_count_mismatch',
+        candidates: [1, 2],
+      }),
+    ]);
+  });
+
+  test('unquantified multi-match asks while an exact sibling survives', () => {
+    const verdict = resolveMulti('lighting and the smoke alarm');
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        identity: 1,
+        span_kind: 'segment_ordinal',
+        disposition: 'ask',
+        reason: 'ambiguous_match',
+        candidates: [1, 2],
+      }),
+    ]);
+  });
+
+  test('one unmatched description becomes a notice disposition beside a write', () => {
+    const verdict = resolveMulti('the attic circuit and the smoke alarm');
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.match_status).toBe('partial');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        identity: 1,
+        span_kind: 'segment_ordinal',
+        disposition: 'notice',
+        reason: 'no_match',
+        scope: {
+          tool: 'record_reading',
+          field: 'measured_zs_ohm',
+          board_id: 'board-main',
+        },
+      }),
+    ]);
+  });
+
+  test('multiple unmatched descriptions retain stable one-based ordinals', () => {
+    const verdict = resolveMulti('the attic circuit, the garage circuit, and the smoke alarm');
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        identity: 1,
+        span_kind: 'segment_ordinal',
+        disposition: 'notice',
+      }),
+      expect.objectContaining({
+        identity: 2,
+        span_kind: 'segment_ordinal',
+        disposition: 'notice',
+      }),
+    ]);
+  });
+
+  test('all-unmatched escalates and does not claim partial success', () => {
+    const verdict = resolveMulti('the attic circuit and the garage circuit');
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      match_status: 'all_unmatched',
+      parsed_hint: 'multi_description_all_unmatched',
+      unresolved: [
+        expect.objectContaining({ disposition: 'notice', identity: 1 }),
+        expect.objectContaining({ disposition: 'notice', identity: 2 }),
+      ],
+    });
+    expect(verdict.writes).toBeUndefined();
+  });
+
+  test('mixed fuzzy and no-match retains ask/notice dispositions independently', () => {
+    const verdict = resolveMulti('upstars lights and the attic circuit');
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.writes).toEqual([]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        disposition: 'ask',
+        reason: 'fuzzy_match',
+        identity: 5,
+      }),
+      expect.objectContaining({
+        disposition: 'notice',
+        reason: 'no_match',
+        identity: 2,
+      }),
+    ]);
+  });
+});

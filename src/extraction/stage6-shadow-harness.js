@@ -860,10 +860,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // outcome text CANNOT. So we capture POSITIVE emission at the SOURCE:
     // this Set holds the tool_call_id of every ask_user_started that actually
     // crossed the wire. onAskUserStarted is fired ONLY on a successful send
-    // by (a) the initial ask dispatcher (source:'initial'), (b) the pvr-*
-    // broker (source:'pvr'), and (c) the dialogue engine's single send choke
-    // point safeSend (source:'dialogue_script', via the ws-attached observer
-    // below). Best-effort OBSERVATION hook — it never alters registration,
+    // by (a) the initial ask dispatcher (source:'initial'), (b) registered
+    // brokers (`pvr-*` source:'pvr', `mdr-*` source:'multi_description'), and
+    // (c) the dialogue engine's single send choke point safeSend
+    // (source:'dialogue_script', via the ws-attached observer below).
+    // Best-effort OBSERVATION hook — it never alters registration,
     // questionEmitted, send classification, or the pending Promise.
     // generationId (minted in sonnet-stream, threaded via options) correlates
     // the emission/fallback/ios_send_attempt rows across the ship-gate join.
@@ -962,7 +963,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         });
       }
     };
-    const VALID_EMISSION_SOURCES = new Set(['initial', 'pvr', 'dialogue_script']);
+    const VALID_EMISSION_SOURCES = new Set([
+      'initial',
+      'pvr',
+      'multi_description',
+      'dialogue_script',
+    ]);
     const onAskUserStarted = ({ toolCallId, source } = {}) => {
       if (toolCallId == null) return;
       // Record emission evidence FIRST so a logger throw below cannot erase
@@ -3204,6 +3210,30 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             );
           }
           for (const aggregate of stagedPartial) {
+            // PLAN-2B §3.3 — an unmatched DESCRIPTION span is a partial
+            // failure only while a sibling write for the same field + board
+            // survives the turn. The dispatcher stages this family only after
+            // an immediate sibling success; this drain-time guard closes the
+            // later-clear/overwrite gap so a notice can never claim "part of
+            // that landed" after its last successful sibling disappeared.
+            if (aggregate?.requiresSurvivingSibling === true) {
+              const prefix = `${aggregate.field}::`;
+              const suffix = `::${aggregate.boardId ?? ''}`;
+              const hasSurvivingSibling = [...survivingReadingSlots].some(
+                (slot) => slot.startsWith(prefix) && slot.endsWith(suffix)
+              );
+              if (!hasSurvivingSibling) {
+                log.info?.('stage6.partial_failure_notice_suppressed_no_sibling', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  generationId,
+                  reason: aggregate?.reason ?? null,
+                  field: aggregate?.field ?? null,
+                  board: aggregate?.boardId ?? null,
+                });
+                continue;
+              }
+            }
             // A SCOPE target ("all circuits") can never acquire a per-circuit
             // write, so it always survives rule (2) and always speaks.
             const survivors = (Array.isArray(aggregate?.targets) ? aggregate.targets : []).filter(
@@ -3260,6 +3290,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               spoken_refs: survivors
                 .filter((t) => t?.kind === 'circuit')
                 .map((t) => t.ref)
+                .join(','),
+              spoken_ordinals: survivors
+                .filter((t) => t?.kind === 'ordinal')
+                .map((t) => t.ordinal)
                 .join(','),
               textPreview: partialText.slice(0, 80),
             });

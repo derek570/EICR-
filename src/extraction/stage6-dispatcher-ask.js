@@ -1396,60 +1396,200 @@ async function buildResolvedBody({
     contextBoardId,
   });
 
-  if (verdict.kind === 'auto_resolve') {
-    // Dispatch each resolved write through the normal write path. Failures
-    // here are swallowed (logged) and downgraded to escalation — we don't
-    // want a single bad dispatch to break the answer return.
+  if (verdict.kind === 'auto_resolve' || verdict.kind === 'partial_resolve') {
     const dispatched = [];
-    for (const write of verdict.writes) {
-      try {
-        // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
-        throwIfStage6Cancelled(signal);
-        const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
-        const ok = result?.ok !== false;
-        dispatched.push({
-          tool: write.tool,
-          field: write.field,
-          circuit: write.circuit,
-          value: write.value,
-          ok,
-        });
-        // Plan 2A channel 3, Codex diff-review cycle 1 (lens 3) — this is the
-        // THIRD auto-resolve loop in this file and it was the one the original
-        // wiring missed. Same silence class as the other two: the inspector
-        // dictated a value, ANSWERED the "which circuit?" ask, the resolved
-        // write then failed, and without this the turn says nothing about it.
-        if (!ok) {
-          stageAskAutoResolveFailure(stagePartialFailureNotice, {
-            write,
-            result,
-            producer: 'ask_auto_resolve_circuit',
-          });
-        }
-      } catch (err) {
-        stageAskAutoResolveFailure(stagePartialFailureNotice, {
-          write,
-          result: null,
-          producer: 'ask_auto_resolve_circuit_throw',
-        });
-        if (logger?.warn) {
-          logger.warn('stage6.ask_user_auto_resolve_dispatch_failed', {
-            sessionId,
-            turnId,
-            tool_call_id: toolCallId,
+    const dispatchedSlots = new Set();
+    const dispatchWrites = async (writes, producer) => {
+      for (const write of Array.isArray(writes) ? writes : []) {
+        const slotKey = `${write?.tool ?? ''}\u0000${write?.field ?? ''}\u0000${
+          write?.circuit ?? ''
+        }\u0000${write?.board_id ?? contextBoardId ?? ''}`;
+        // A clarification may restate a circuit already resolved by the first
+        // pass. One logical slot must still dispatch/read back exactly once.
+        if (dispatchedSlots.has(slotKey)) continue;
+        dispatchedSlots.add(slotKey);
+        try {
+          // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
+          throwIfStage6Cancelled(signal);
+          const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+          const ok = result?.ok !== false;
+          dispatched.push({
+            tool: write.tool,
             field: write.field,
             circuit: write.circuit,
+            value: write.value,
+            ok,
+          });
+          // Plan 2A channel 3 — a resolved write which fails is independently
+          // audible. PLAN-2B reuses the same path for writes resolved after a
+          // server-brokered multi-description clarification.
+          if (!ok) {
+            stageAskAutoResolveFailure(stagePartialFailureNotice, {
+              write,
+              result,
+              producer,
+            });
+          }
+        } catch (err) {
+          stageAskAutoResolveFailure(stagePartialFailureNotice, {
+            write,
+            result: null,
+            producer: `${producer}_throw`,
+          });
+          if (logger?.warn) {
+            logger.warn('stage6.ask_user_auto_resolve_dispatch_failed', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              field: write.field,
+              circuit: write.circuit,
+              producer,
+              error: err?.message || String(err),
+            });
+          }
+          dispatched.push({
+            tool: write.tool,
+            field: write.field,
+            circuit: write.circuit,
+            value: write.value,
+            ok: false,
             error: err?.message || String(err),
           });
         }
-        dispatched.push({
-          tool: write.tool,
-          field: write.field,
-          circuit: write.circuit,
-          value: write.value,
-          ok: false,
-          error: err?.message || String(err),
+      }
+    };
+
+    await dispatchWrites(verdict.writes, 'ask_auto_resolve_circuit');
+
+    // PLAN-2B §3.3 — disposition:'ask' is executable, not metadata handed
+    // back to the model. All ambiguous/fuzzy/count-mismatch spans are grouped
+    // into ONE registered mdr-* restatement question. One bounded follow-up
+    // covers both single-ref and multi-ref answers without stacking an
+    // unbounded sequence of blocking asks under the extraction watchdog.
+    // Successful sibling writes have already gone through the normal path and
+    // retain their read-backs while this broker waits for the missing scope.
+    const unresolved = Array.isArray(verdict.unresolved) ? [...verdict.unresolved] : [];
+    const remainingUnresolved = [];
+    const noticeEntries = unresolved.filter((entry) => entry?.disposition === 'notice');
+    const askEntries = unresolved.filter((entry) => entry?.disposition === 'ask');
+    if (askEntries.length > 0) {
+      if (!pendingAsks) {
+        remainingUnresolved.push(...askEntries);
+      } else {
+        const { outcome: askOutcome } = await brokerRegisteredAsk({
+          idPrefix: 'mdr',
+          emissionSource: 'multi_description',
+          pendingAsks,
+          ws,
+          logger,
+          sessionId,
+          turnId,
+          question: multiDescriptionQuestion(askEntries),
+          contextField: pendingWrite.field,
+          contextCircuit: null,
+          expectedAnswerShape: 'free_text',
+          pendingValue: null,
+          pendingWrite,
+          purpose: 'multi_description',
+          onAskUserStarted,
+          onAskAnswered,
+          onAskRegistered,
+          signal,
+          responseEpochRef,
         });
+        throwIfStage6Cancelled(signal);
+        if (!askOutcome?.answered) {
+          remainingUnresolved.push(...askEntries);
+        } else {
+          const followVerdict = resolveCircuitAnswer({
+            userText: askOutcome.user_text,
+            pendingWrite,
+            availableCircuits,
+            contextBoardId,
+          });
+          if (followVerdict.kind !== 'cancel') {
+            const knownRefs = new Set(
+              availableCircuits
+                .map((circuit) => {
+                  const ref =
+                    typeof circuit?.circuit_ref === 'number'
+                      ? circuit.circuit_ref
+                      : Number.parseInt(String(circuit?.circuit_ref), 10);
+                  return Number.isInteger(ref) ? ref : null;
+                })
+                .filter(Number.isInteger)
+            );
+            const followWrites = (
+              Array.isArray(followVerdict.writes) ? followVerdict.writes : []
+            ).filter(
+              (write) =>
+                write?.tool !== 'record_reading' ||
+                (Number.isInteger(write?.circuit) && knownRefs.has(write.circuit))
+            );
+            await dispatchWrites(followWrites, 'ask_auto_resolve_multi_description_followup');
+
+            if (Array.isArray(followVerdict.unresolved)) {
+              noticeEntries.push(
+                ...followVerdict.unresolved.filter(
+                  (candidate) => candidate?.disposition === 'notice'
+                )
+              );
+              remainingUnresolved.push(
+                ...followVerdict.unresolved.filter((candidate) => candidate?.disposition === 'ask')
+              );
+            }
+
+            // A scalar follow-up can resolve syntactically yet name a circuit
+            // absent from the current server-owned census. Never dispatch it;
+            // retain the original ask-required verdict so the tool result is
+            // honest about the unresolved scope.
+            if (
+              followWrites.length === 0 &&
+              !Array.isArray(followVerdict.unresolved) &&
+              followVerdict.kind !== 'cancel'
+            ) {
+              remainingUnresolved.push(...askEntries);
+            } else if (
+              followVerdict.kind === 'escalate' ||
+              followVerdict.kind === 'no_pending_write'
+            ) {
+              remainingUnresolved.push(...askEntries);
+            }
+          }
+        }
+      }
+    }
+    remainingUnresolved.push(...noticeEntries);
+
+    const successfulSibling = dispatched.some((write) => write.ok === true);
+    if (successfulSibling && typeof stagePartialFailureNotice === 'function') {
+      const fieldLabel = resolvePartialFailureFieldLabel(
+        FIELD_SCHEMA.circuit_fields,
+        pendingWrite.field
+      );
+      if (fieldLabel !== null) {
+        for (const entry of noticeEntries) {
+          if (entry?.reason !== 'no_match' || !Number.isInteger(entry.identity)) continue;
+          const target =
+            entry.span_kind === 'circuit_ref'
+              ? { kind: 'circuit', ref: entry.identity }
+              : entry.span_kind === 'segment_ordinal'
+                ? { kind: 'ordinal', ordinal: entry.identity }
+                : null;
+          if (!target) continue;
+          stagePartialFailureNotice({
+            reason: 'designation_no_match',
+            field: pendingWrite.field,
+            fieldLabel,
+            boardId: pendingWrite.board_id ?? contextBoardId ?? null,
+            target,
+            producer: 'ask_multi_description_no_match',
+            // The dispatcher has observed an immediate success. The 2A drain
+            // re-checks this at turn finalisation so a later clear cannot turn
+            // the notice into a false "partial success" claim.
+            requiresSurvivingSibling: true,
+          });
+        }
       }
     }
     if (logger?.info) {
@@ -1459,15 +1599,24 @@ async function buildResolvedBody({
         tool_call_id: toolCallId,
         write_count: dispatched.length,
         all_ok: dispatched.every((d) => d.ok),
+        match_status:
+          verdict.match_status ?? (remainingUnresolved.length > 0 ? 'partial' : 'auto_resolved'),
+        unresolved_count: remainingUnresolved.length,
       });
     }
     return {
       answered: true,
       untrusted_user_text: outcome.user_text,
       // NOTE (P3): skip over-reporting is a pre-existing follow-up (see enum branch).
-      auto_resolved: true,
-      match_status: 'auto_resolved',
+      auto_resolved: dispatched.length > 0,
+      match_status:
+        verdict.match_status == null
+          ? 'auto_resolved'
+          : remainingUnresolved.length === 0
+            ? 'full'
+            : 'partial',
       resolved_writes: dispatched,
+      ...(verdict.match_status != null ? { unresolved: remainingUnresolved } : {}),
     };
   }
 
@@ -1501,10 +1650,11 @@ async function buildResolvedBody({
       answered: true,
       untrusted_user_text: outcome.user_text,
       auto_resolved: false,
-      match_status: 'escalated',
+      match_status: verdict.match_status ?? 'escalated',
       parsed_hint: verdict.parsed_hint,
       pending_write: pendingWrite,
       available_circuits: verdict.available_circuits,
+      ...(Array.isArray(verdict.unresolved) ? { unresolved: verdict.unresolved } : {}),
     };
   }
 
@@ -1580,8 +1730,63 @@ export function advanceResponseEpoch(responseEpochRef, outcome) {
   if (epoch) responseEpochRef.current = epoch;
 }
 
+const MULTI_DESCRIPTION_ORDINALS = Object.freeze([
+  'zeroth',
+  'first',
+  'second',
+  'third',
+  'fourth',
+  'fifth',
+  'sixth',
+  'seventh',
+  'eighth',
+  'ninth',
+  'tenth',
+]);
+
+function speakMultiDescriptionIdentity(entry) {
+  if (entry?.span_kind === 'circuit_ref' && Number.isInteger(entry.identity)) {
+    return `circuit ${entry.identity}`;
+  }
+  const ordinal = Number.isInteger(entry?.identity) ? entry.identity : 1;
+  const spoken = MULTI_DESCRIPTION_ORDINALS[ordinal] ?? `${ordinal}`;
+  return `the ${spoken} circuit description`;
+}
+
+function speakCandidateRefs(candidates) {
+  const refs = [
+    ...new Set((Array.isArray(candidates) ? candidates : []).filter(Number.isInteger)),
+  ].sort((a, b) => a - b);
+  if (refs.length === 0) return '';
+  if (refs.length === 1) return ` (possible match: circuit ${refs[0]})`;
+  const head = refs.slice(0, -1).join(', ');
+  return ` (possible matches: circuits ${head} and ${refs[refs.length - 1]})`;
+}
+
+/**
+ * Server-owned clarification wording for a multi-description ask verdict.
+ * The raw dictated span is intentionally unavailable here; the resolver
+ * exports only integer refs/ordinals and candidate refs.
+ */
+function multiDescriptionQuestion(entries) {
+  const clauses = (Array.isArray(entries) ? entries : [])
+    .map(
+      (entry) => `${speakMultiDescriptionIdentity(entry)}${speakCandidateRefs(entry?.candidates)}`
+    )
+    .filter(Boolean);
+  const identityList =
+    clauses.length <= 1
+      ? (clauses[0] ?? 'that circuit description')
+      : clauses.length === 2
+        ? `${clauses[0]} and ${clauses[1]}`
+        : `${clauses.slice(0, -1).join('; ')}; and ${clauses[clauses.length - 1]}`;
+  return `Please restate the circuit number or numbers for ${identityList}.`;
+}
+
 /** One brokered server ask. Registers FIRST, then emits, then awaits. */
-async function brokerDeterministicAsk({
+async function brokerRegisteredAsk({
+  idPrefix,
+  emissionSource,
   pendingAsks,
   ws,
   logger,
@@ -1592,13 +1797,17 @@ async function brokerDeterministicAsk({
   contextCircuit,
   expectedAnswerShape,
   pendingValue,
+  pendingWrite = null,
+  purpose = 'pending_value',
   onAskUserStarted = null,
   onAskAnswered = null,
   onAskRegistered = null,
   signal = null,
   responseEpochRef = null,
 }) {
-  const pvrId = `pvr-${randomUUID().slice(0, 13)}`;
+  const safePrefix =
+    typeof idPrefix === 'string' && /^[a-z][a-z0-9_-]*$/i.test(idPrefix) ? idPrefix : 'broker';
+  const brokerId = `${safePrefix}-${randomUUID().slice(0, 13)}`;
   const askStartedAt = Date.now();
   // F7 Item 3 — never broker a NEW registration on a cancelled generation
   // (belt-and-suspenders alongside the chain-loop-top guard). The throw
@@ -1608,14 +1817,14 @@ async function brokerDeterministicAsk({
   let hookError = null;
   const outcome = await new Promise((resolve) => {
     const timer = setTimeout(() => {
-      pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+      pendingAsks.resolve(brokerId, { answered: false, reason: 'timeout' });
     }, ASK_USER_TIMEOUT_MS);
     try {
-      pendingAsks.register(pvrId, {
+      pendingAsks.register(brokerId, {
         contextField,
         contextCircuit,
         expectedAnswerShape,
-        pendingWrite: null,
+        pendingWrite,
         pendingValue: pendingValue ?? null,
         resolve,
         timer,
@@ -1628,21 +1837,21 @@ async function brokerDeterministicAsk({
       resolve({ answered: false, reason: 'broker_register_failed', error: err?.message });
       return;
     }
-    // F7 Item 3 — CONTROL hook, fired immediately after a successful pvr-*
-    // register and BEFORE the emit. Same fail-closed / stale-generation
+    // F7 Item 3 — CONTROL hook, fired immediately after a successful broker
+    // registration and BEFORE the emit. Same fail-closed / stale-generation
     // contract as the initial dispatch.
     if (onAskRegistered) {
       let owns;
       try {
-        owns = onAskRegistered(pvrId);
+        owns = onAskRegistered(brokerId);
       } catch (hookErr) {
         hookError = new AskRegistrationHookError('onAskRegistered threw', { cause: hookErr });
-        pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+        pendingAsks.resolve(brokerId, { answered: false, reason: 'timeout' });
         try {
           logger?.info?.('stage6.ask_registration_hook_error', {
             sessionId,
             turnId,
-            tool_call_id: pvrId,
+            tool_call_id: brokerId,
           });
         } catch {
           // swallow logger failure — the fatal error still propagates
@@ -1650,7 +1859,7 @@ async function brokerDeterministicAsk({
         return;
       }
       if (owns === false) {
-        pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+        pendingAsks.resolve(brokerId, { answered: false, reason: 'timeout' });
         return;
       }
     }
@@ -1666,13 +1875,13 @@ async function brokerDeterministicAsk({
         ws.send(
           JSON.stringify({
             type: 'ask_user_started',
-            tool_call_id: pvrId,
+            tool_call_id: brokerId,
             question,
             reason: 'missing_context',
             context_field: contextField,
             context_circuit: contextCircuit,
             expected_answer_shape: expectedAnswerShape,
-            // PLAN-C P4d (row 4) — stamp the brokered pvr re-ask QUESTION frame
+            // PLAN-C P4d (row 4) — stamp the brokered re-ask QUESTION frame
             // with the current response epoch at emit time (P4c already advanced
             // the ref after the initial await, so this carries whichever
             // utterance owns the loop now). Non-empty only.
@@ -1687,28 +1896,33 @@ async function brokerDeterministicAsk({
       }
     }
     if (!questionEmitted) {
-      pendingAsks.resolve(pvrId, { answered: false, reason: 'broker_emit_failed' });
+      pendingAsks.resolve(brokerId, { answered: false, reason: 'broker_emit_failed' });
       return;
     }
-    // F7 Item 2 — the brokered pvr-* question really crossed the wire. Report
-    // it to the per-turn emission audit (source:'pvr'). Best-effort: own
+    // F7 Item 2 — the brokered question really crossed the wire. Report it to
+    // the per-turn emission audit under the caller's source. Best-effort: own
     // try/catch, never alters the questionEmitted classification or dispatch.
     if (onAskUserStarted) {
       try {
-        onAskUserStarted({ toolCallId: pvrId, source: 'pvr' });
+        onAskUserStarted({ toolCallId: brokerId, source: emissionSource });
       } catch {
         // best-effort observer — never propagate
       }
     }
-    logger?.info?.('stage6.pending_value_reask_sent', {
-      sessionId,
-      turnId,
-      tool_call_id: pvrId,
-      context_field: contextField,
-      context_circuit: contextCircuit,
-      expected_answer_shape: expectedAnswerShape,
-      has_pending_value: pendingValue != null,
-    });
+    logger?.info?.(
+      purpose === 'multi_description'
+        ? 'stage6.multi_description_reask_sent'
+        : 'stage6.pending_value_reask_sent',
+      {
+        sessionId,
+        turnId,
+        tool_call_id: brokerId,
+        context_field: contextField,
+        context_circuit: contextCircuit,
+        expected_answer_shape: expectedAnswerShape,
+        has_pending_value: pendingValue != null,
+      }
+    );
   });
   // F7 Item 3 — fail-closed: a stored ask-registration hook error propagates as
   // a FATAL control-flow error (never masked as a broker outcome).
@@ -1719,8 +1933,8 @@ async function brokerDeterministicAsk({
   // await). A timeout / broker_emit_failed / user_moved_on-without-id leaves
   // the reference untouched.
   advanceResponseEpoch(responseEpochRef, outcome);
-  // P4 (ask-decline-ack-net) — stamp this brokered pvr-* ask's resolution into
-  // the per-turn ledger (source:'pvr'). A brokered ask that IS answered but
+  // P4 (ask-decline-ack-net) — stamp this brokered ask's resolution into the
+  // per-turn ledger under the caller's source. A brokered ask that IS answered but
   // whose continuation produces nothing audible is exactly the answered-ask
   // silent case the net covers; a broker_* / timeout / user_moved_on carries
   // answered:false and is excluded. Best-effort observer — the emission is
@@ -1728,16 +1942,30 @@ async function brokerDeterministicAsk({
   if (onAskAnswered) {
     try {
       onAskAnswered({
-        toolCallId: pvrId,
+        toolCallId: brokerId,
         answered: outcome.answered === true,
         declineClass: outcome.answered === true ? classifyDeclineReply(outcome.user_text) : null,
-        source: 'pvr',
+        source: emissionSource,
       });
     } catch {
       // best-effort observer — never propagate
     }
   }
-  return { pvrId, outcome };
+  return { brokerId, outcome };
+}
+
+/**
+ * Existing A4 pending-value broker facade. Keeping this wrapper preserves the
+ * pvr-* identifier and return shape byte-for-byte while PLAN-2B uses the
+ * generic registered primitive with its own mdr-* namespace.
+ */
+async function brokerDeterministicAsk(args) {
+  const { brokerId, outcome } = await brokerRegisteredAsk({
+    ...args,
+    idPrefix: 'pvr',
+    emissionSource: 'pvr',
+  });
+  return { pvrId: brokerId, outcome };
 }
 
 /**

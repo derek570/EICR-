@@ -104,6 +104,8 @@ const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.
 
 // ── Helpers (pattern lifted from sonnet-stream-ask-routing.test.js) ──────────
 
+const openedWebSockets = [];
+
 function makeFakeWs() {
   const sent = [];
   const ws = {
@@ -131,6 +133,7 @@ function makeFakeWs() {
 
 function connect(wss, userId = 'user-1') {
   const ws = makeFakeWs();
+  openedWebSockets.push(ws);
   wss.emit('connection', ws, { headers: {} }, userId);
   return ws;
 }
@@ -182,6 +185,22 @@ function registerPendingValueAsk(entry, toolCallId, resolveFn) {
   });
 }
 
+function registerMultiDescriptionAsk(entry, toolCallId, resolveFn) {
+  entry.pendingAsks.register(toolCallId, {
+    contextField: 'number_of_points',
+    contextCircuit: null,
+    expectedAnswerShape: 'free_text',
+    pendingWrite: {
+      tool: 'record_reading',
+      field: 'number_of_points',
+      value: '4',
+    },
+    resolve: resolveFn,
+    timer: makeAskTimer(),
+    askStartedAt: Date.now(),
+  });
+}
+
 /** Flush the microtask/macrotask queue until the shadow harness fires (or give up). */
 async function flushUntilHarnessCalled(maxTicks = 50) {
   for (let i = 0; i < maxTicks && runShadowHarnessSpy.mock.calls.length === 0; i += 1) {
@@ -213,9 +232,14 @@ beforeEach(() => {
   wss = initSonnetStream(null, getKey, verifyToken);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Remove the session entry first so the production close handler clears its
+  // 30 s ping interval without arming the 5-minute reconnect timer.
   activeSessions.clear();
   sonnetSessionStore.clear();
+  while (openedWebSockets.length > 0) {
+    await openedWebSockets.pop()._emit('close');
+  }
   // Clear ask timers a test deliberately left pending (see makeAskTimer).
   while (askTimers.length > 0) clearTimeout(askTimers.pop());
   jest.useRealTimers();
@@ -488,6 +512,56 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
     });
 
     // Reinjected exactly once through the normal transcript path.
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
+  });
+});
+
+describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
+  test('a transcript-only designation restatement resolves mdr pre-queue', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-1');
+    entry.isExtracting = true;
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-1', (payload) => {
+      resolvedPayload = payload;
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'circuits 1 and 2',
+      utterance_id: 'u-mdr-1',
+      regexResults: [],
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: true,
+      user_text: 'circuits 1 and 2',
+      response_utterance_id: 'u-mdr-1',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+    expect(entry.pendingTranscripts).toHaveLength(0);
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test('a direct-channel fresh reading overtakes mdr and is reinjected', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-2');
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-2', (payload) => {
+      resolvedPayload = payload;
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'mdr-description-2',
+      user_text: 'Ze is 0.22',
+      consumed_utterance_id: 'u-mdr-2',
+    });
+
+    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(entry.pendingAsks.size).toBe(0);
     await flushUntilHarnessCalled();
     expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
     expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');

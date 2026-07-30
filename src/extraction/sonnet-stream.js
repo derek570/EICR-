@@ -2051,9 +2051,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 // re-inject through the normal transcript path ("Ze is
                 // 0.22", "earthing arrangement is TT", "customer name is
                 // David" all get WRITTEN, never burned — audio-first
-                // invariant 2). Scoped to pendingValue-class asks + the
-                // brokered pvr-* asks so ordinary toolu_* concrete-field
-                // asks keep today's behaviour byte-for-byte.
+                // invariant 2). Scoped to pendingValue-class asks plus the
+                // registered pvr-* and mdr-* brokers so ordinary toolu_*
+                // concrete-field asks keep today's behaviour byte-for-byte.
                 const pendingValueClassAsk =
                   askEntry?.pendingValue != null ||
                   // Codex r4-#1 — an ELIGIBLE original ask whose capture
@@ -2063,7 +2063,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   // DIRECT channel would be consumed as the old ask's
                   // answer instead of overtaking + reinjecting.
                   askEntry?.pendingValueEligible === true ||
-                  (typeof msg.tool_call_id === 'string' && msg.tool_call_id.startsWith('pvr-'));
+                  (typeof msg.tool_call_id === 'string' &&
+                    (msg.tool_call_id.startsWith('pvr-') || msg.tool_call_id.startsWith('mdr-')));
                 const structuredAnswer = pendingValueClassAsk
                   ? detectStructuredReading(canonicalAnswerText)
                   : null;

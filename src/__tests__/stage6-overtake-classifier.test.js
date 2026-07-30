@@ -1038,3 +1038,48 @@ describe('classifyOvertake — §A4 pendingValue continuation + pvr-* value asks
     expect(verdict.kind).toBe('user_moved_on');
   });
 });
+
+describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
+  const mdrEntry = {
+    contextField: 'number_of_points',
+    contextCircuit: null,
+    expectedAnswerShape: 'free_text',
+    pendingWrite: {
+      tool: 'record_reading',
+      field: 'number_of_points',
+      value: '4',
+    },
+  };
+
+  test('transcript-only multi-ref restatement answers the registered mdr ask', () => {
+    const verdict = classifyOvertake(
+      'circuits 1 and 2',
+      [],
+      mockPending([['mdr-multi-description-1', mdrEntry]])
+    );
+    expect(verdict).toEqual({
+      kind: 'answers',
+      toolCallId: 'mdr-multi-description-1',
+      userText: 'circuits 1 and 2',
+    });
+  });
+
+  test('a designation-only restatement is accepted only for the mdr namespace', () => {
+    expect(
+      classifyOvertake('upstairs lights', [], mockPending([['mdr-multi-description-2', mdrEntry]]))
+    ).toMatchObject({ kind: 'answers', toolCallId: 'mdr-multi-description-2' });
+
+    expect(
+      classifyOvertake('upstairs lights', [], mockPending([['toolu-ordinary-free-text', mdrEntry]]))
+    ).toEqual({ kind: 'user_moved_on' });
+  });
+
+  test('a structurally complete fresh reading overtakes mdr instead of being consumed', () => {
+    const verdict = classifyOvertake(
+      'Zs circuit 4 is 0.30',
+      [],
+      mockPending([['mdr-multi-description-3', mdrEntry]])
+    );
+    expect(verdict).toEqual({ kind: 'user_moved_on' });
+  });
+});

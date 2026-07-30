@@ -261,6 +261,23 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
       }
     }
 
+    // PLAN-2B §3.3 — mdr-* is a bounded, server-owned free-text
+    // clarification for one or more circuit descriptions. The generic
+    // free_text branch remains deliberately conservative; this prefix makes
+    // the new flow unambiguous. The typed detector above already gives a
+    // structurally complete fresh reading `user_moved_on` precedence.
+    for (const [id, entry] of pendingAsks.entries()) {
+      if (
+        typeof id === 'string' &&
+        id.startsWith('mdr-') &&
+        entry.expectedAnswerShape === 'free_text' &&
+        typeof newText === 'string' &&
+        newText.trim().length > 0
+      ) {
+        return { kind: 'answers', toolCallId: id, userText: newText };
+      }
+    }
+
     // §A4 round-10 — brokered pvr-* VALUE asks (concrete context_field,
     // numeric/sentinel reply expected). classifyOvertake only accepted
     // yes/no + circuit-ref no-regex shapes, so a transcript-first numeric

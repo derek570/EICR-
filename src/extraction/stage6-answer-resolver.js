@@ -33,10 +33,7 @@
 
 import { createRequire } from 'node:module';
 import { isEvasionMarker, isValidSentinel } from './value-normalise.js';
-import {
-  NUMERIC_READING_FIELDS,
-  canonicaliseNumericReadingField,
-} from './value-enum-validator.js';
+import { NUMERIC_READING_FIELDS, canonicaliseNumericReadingField } from './value-enum-validator.js';
 
 // JSON-import via createRequire mirrors the canonical pattern used by
 // stage6-tool-schemas.js (lines 33-42) — under this project's ES-modules +
@@ -141,6 +138,36 @@ function parseNumberWord(word) {
   if (Object.prototype.hasOwnProperty.call(ONES, w)) return ONES[w];
   if (Object.prototype.hasOwnProperty.call(TENS, w)) return TENS[w];
   // "twenty one", "thirty four", etc.
+  const parts = w.split(' ');
+  if (
+    parts.length === 2 &&
+    Object.prototype.hasOwnProperty.call(TENS, parts[0]) &&
+    Object.prototype.hasOwnProperty.call(ONES, parts[1])
+  ) {
+    return TENS[parts[0]] + ONES[parts[1]];
+  }
+  return null;
+}
+
+/**
+ * Parse a CARDINAL count for an attached plural quantifier.
+ *
+ * Deliberately excludes ORDINALS. "The second circuit" is a shipped scalar
+ * circuit-reference reply, not a request to fan a value out across two
+ * circuits. Reusing parseNumberWord here would therefore steal that reply
+ * from the legacy scalar path before extractCircuitRef can resolve it.
+ *
+ * @param {string} word
+ * @returns {number|null}
+ */
+function parseCardinalQuantifier(word) {
+  const w = String(word ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, ' ');
+  if (!w) return null;
+  if (Object.prototype.hasOwnProperty.call(ONES, w)) return ONES[w];
+  if (Object.prototype.hasOwnProperty.call(TENS, w)) return TENS[w];
   const parts = w.split(' ');
   if (
     parts.length === 2 &&
@@ -380,6 +407,411 @@ function matchDesignation(cleaned, circuits) {
 }
 
 // ---------------------------------------------------------------------------
+// PLAN-2B §3.3 — multi-description segmentation
+// ---------------------------------------------------------------------------
+//
+// A reply such as "2 lighting circuits and the smoke alarm" used to enter the
+// scalar-number path below first. `extractCircuitRef()` saw the leading 2 and
+// the resolver silently discarded the rest of the answer, so only circuit 2
+// received the buffered reading. The helpers in this section run ONLY when
+// the reply carries multi-target syntax. Single-target replies keep the
+// pre-2B path and result shape byte-for-byte.
+
+const ENUMERATED_SEPARATOR_RE = /,|\band\b|\bplus\b/gi;
+
+/**
+ * Consume one leading word/digit token while preserving the remaining text.
+ *
+ * @param {string} text
+ * @returns {{token: string, rest: string}|null}
+ */
+function consumeLeadingToken(text) {
+  const match = String(text ?? '').match(/^\s*([a-z]+|\d+)(?:\s+|$)([\s\S]*)$/i);
+  if (!match) return null;
+  return { token: match[1].toLowerCase(), rest: match[2] ?? '' };
+}
+
+/**
+ * Remove only the bounded conversational lead-in seen in feedback id 104.
+ * This is intentionally local to multi-target spans: globally treating "it"
+ * or "said" as stop words could corrupt a legitimate circuit designation.
+ */
+function stripMultiTargetLeadIn(text) {
+  return String(text ?? '').replace(/^(?:i\s+said\s+)?(?:(?:it(?:['’]?s|\s+is))\s+)?for\s+/i, '');
+}
+
+/**
+ * Parse and remove an attached count/all quantifier from a designation span.
+ *
+ * A quantifier is recognised only when the same span also contains the
+ * `circuit`/`circuits` noun. That containment is the guard that prevents a
+ * designation beginning with a number from being rewritten merely because it
+ * starts with a numeric-looking token.
+ *
+ * @param {string} rawSpan
+ * @returns {{text: string, quantifier: null|{kind: 'count'|'all', expected: number|null}}}
+ */
+function stripAttachedCircuitQuantifier(rawSpan) {
+  const original = stripPunct(String(rawSpan ?? '').toLowerCase());
+  if (!/\bcircuits?\b/i.test(original)) return { text: original, quantifier: null };
+
+  let working = stripMultiTargetLeadIn(original).replace(/^\s*the\s+/i, '');
+  let first = consumeLeadingToken(working);
+  if (!first) return { text: original, quantifier: null };
+
+  let quantifier = null;
+  let consumedRest = first.rest;
+  if (first.token === 'all') {
+    quantifier = { kind: 'all', expected: null };
+    // "all three ..." carries an explicit count; plain "all ..." means all
+    // exact/substring matches and therefore has no expected integer.
+    const countFirst = consumeLeadingToken(consumedRest);
+    if (countFirst) {
+      let parsed = /^\d+$/.test(countFirst.token)
+        ? Number.parseInt(countFirst.token, 10)
+        : parseCardinalQuantifier(countFirst.token);
+      let countRest = countFirst.rest;
+      if (parsed == null && Object.prototype.hasOwnProperty.call(TENS, countFirst.token)) {
+        const countSecond = consumeLeadingToken(countFirst.rest);
+        if (countSecond) {
+          parsed = parseCardinalQuantifier(`${countFirst.token} ${countSecond.token}`);
+          if (parsed != null) countRest = countSecond.rest;
+        }
+      }
+      if (Number.isInteger(parsed) && parsed > 0) {
+        quantifier = { kind: 'count', expected: parsed };
+        consumedRest = countRest;
+      }
+    }
+  } else if (first.token === 'both') {
+    quantifier = { kind: 'count', expected: 2 };
+  } else {
+    let parsed = /^\d+$/.test(first.token)
+      ? Number.parseInt(first.token, 10)
+      : parseCardinalQuantifier(first.token);
+    if (parsed == null && Object.prototype.hasOwnProperty.call(TENS, first.token)) {
+      const second = consumeLeadingToken(first.rest);
+      if (second) {
+        parsed = parseCardinalQuantifier(`${first.token} ${second.token}`);
+        if (parsed != null) consumedRest = second.rest;
+      }
+    }
+    if (Number.isInteger(parsed) && parsed > 0) {
+      quantifier = { kind: 'count', expected: parsed };
+    }
+  }
+
+  if (!quantifier) return { text: original, quantifier: null };
+
+  // Natural variants: "both of the lighting circuits", "all of the sockets".
+  working = consumedRest.replace(/^\s*of\b/i, '').replace(/^\s*the\b/i, '');
+  working = working.replace(/\bcircuits?\b/gi, ' ');
+  return {
+    text: working.replace(/\s+/g, ' ').trim(),
+    quantifier,
+  };
+}
+
+function hasMultiTargetSyntax(text) {
+  ENUMERATED_SEPARATOR_RE.lastIndex = 0;
+  if (ENUMERATED_SEPARATOR_RE.test(text)) return true;
+  return stripAttachedCircuitQuantifier(text).quantifier !== null;
+}
+
+/**
+ * Split on enumerated separators while preserving source offsets. The offsets
+ * let maximum-coverage matching reconstitute the exact original substring,
+ * including an internal "and" in a designation.
+ *
+ * @param {string} text
+ * @returns {Array<{text: string, start: number, end: number}>}
+ */
+function splitEnumeratedAtoms(text) {
+  const atoms = [];
+  let start = 0;
+  ENUMERATED_SEPARATOR_RE.lastIndex = 0;
+  let match;
+  while ((match = ENUMERATED_SEPARATOR_RE.exec(text)) !== null) {
+    const raw = text.slice(start, match.index);
+    if (raw.trim()) atoms.push({ text: raw.trim(), start, end: match.index });
+    start = match.index + match[0].length;
+  }
+  const tail = text.slice(start);
+  if (tail.trim()) atoms.push({ text: tail.trim(), start, end: text.length });
+  return atoms;
+}
+
+/**
+ * Protect a designation-internal separator by greedily taking the longest
+ * contiguous atom span that is an EXACT designation. This is the
+ * maximum-coverage guard for names such as "Kitchen and utility lights".
+ *
+ * @param {string} text
+ * @param {Array<object>} circuits
+ * @returns {string[]}
+ */
+function segmentDescriptionReply(text, circuits) {
+  const atoms = splitEnumeratedAtoms(text);
+  if (atoms.length <= 1) return atoms.map((a) => a.text);
+
+  const segments = [];
+  for (let i = 0; i < atoms.length; ) {
+    let bestEnd = i;
+    for (let end = atoms.length - 1; end > i; end -= 1) {
+      const candidate = text.slice(atoms[i].start, atoms[end].end);
+      const stripped = stripAttachedCircuitQuantifier(candidate);
+      const cleaned = cleanReplyForDesignation(stripped.text);
+      if (cleaned.length < 2) continue;
+      const verdict = matchDesignation(cleaned, circuits);
+      if (verdict.kind === 'exact') {
+        bestEnd = end;
+        break;
+      }
+    }
+    segments.push(text.slice(atoms[i].start, atoms[bestEnd].end).trim());
+    i = bestEnd + 1;
+  }
+  return segments;
+}
+
+function designationForRef(circuits, ref) {
+  const circuit = (Array.isArray(circuits) ? circuits : []).find((c) => {
+    const candidate =
+      typeof c?.circuit_ref === 'number'
+        ? c.circuit_ref
+        : Number.parseInt(String(c?.circuit_ref), 10);
+    return candidate === ref;
+  });
+  return (circuit?.circuit_designation ?? circuit?.designation ?? '').toLowerCase().trim();
+}
+
+/**
+ * `matchDesignation` intentionally treats BOTH substring directions as a
+ * unique-substring match. On a multi-target reply, however, a designation
+ * being merely contained inside the whole reply is not evidence that the
+ * WHOLE reply names only that circuit ("lighting and smoke alarm" contains
+ * "smoke alarm"). Preserve the useful opposite direction — a shortened reply
+ * contained by one designation — and reject the lossy direction here.
+ */
+function isWholeReplyDesignationMatch(match, cleaned, circuits) {
+  if (match.kind === 'exact' || match.kind === 'fuzzy') return true;
+  if (match.kind !== 'unique_substring' || match.circuitRefs.length !== 1) return false;
+  const designation = designationForRef(circuits, match.circuitRefs[0]);
+  return Boolean(designation && designation.includes(cleaned));
+}
+
+function canonicalUnresolvedScope(pendingWrite, contextBoardId) {
+  return {
+    tool: pendingWrite.tool,
+    field: pendingWrite.field,
+    board_id: pendingWrite.board_id ?? contextBoardId ?? null,
+  };
+}
+
+function unresolvedSpan({
+  ordinal,
+  disposition,
+  reason,
+  circuitRefs = [],
+  pendingWrite,
+  contextBoardId,
+}) {
+  const refs = [...new Set(circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
+  const knownRef = refs.length === 1 ? refs[0] : null;
+  return {
+    identity: knownRef ?? ordinal,
+    span_kind: knownRef != null ? 'circuit_ref' : 'segment_ordinal',
+    disposition,
+    reason,
+    ...(refs.length > 0 ? { candidates: refs } : {}),
+    scope: canonicalUnresolvedScope(pendingWrite, contextBoardId),
+  };
+}
+
+/**
+ * Resolve a reply that demonstrably contains multiple description targets.
+ * Returns null when the legacy scalar/single-designation path should own it.
+ *
+ * Raw spans never leave this pure function. Every unresolved identity is
+ * either a known integer circuit ref or the server-owned one-based segment
+ * ordinal, so the dispatcher can speak without echoing untrusted text.
+ */
+function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, contextBoardId }) {
+  if (!hasMultiTargetSyntax(text)) return null;
+  const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
+
+  // Whole-designation-first preserves shipped C1 fuzzy behaviour and protects
+  // a real designation containing "and" from segmentation.
+  const wholeCleaned = cleanReplyForDesignation(text);
+  if (wholeCleaned.length >= 2) {
+    const wholeMatch = matchDesignation(wholeCleaned, circuits);
+    if (isWholeReplyDesignationMatch(wholeMatch, wholeCleaned, circuits)) {
+      return {
+        kind: 'auto_resolve',
+        writes: [buildWrite(pendingWrite, wholeMatch.circuitRefs[0], contextBoardId)],
+      };
+    }
+  }
+
+  const segments = segmentDescriptionReply(text, circuits);
+  // Preserve the shipped multiple-number safety verdict. PLAN-2B owns
+  // description lists, not a semantic change to "circuit 2 and 3", which the
+  // scalar resolver has always escalated as ambiguous. Mixed ref+description
+  // lists still use this pipeline.
+  if (
+    segments.length > 1 &&
+    segments.every((span) => {
+      const strippedSpan = stripAttachedCircuitQuantifier(span);
+      return strippedSpan.quantifier == null && extractCircuitRef(strippedSpan.text) !== null;
+    })
+  ) {
+    return null;
+  }
+  const writesByRef = new Map();
+  const unresolved = [];
+
+  segments.forEach((rawSpan, index) => {
+    const ordinal = index + 1;
+    const { text: strippedSpan, quantifier } = stripAttachedCircuitQuantifier(rawSpan);
+
+    // A detected list may mix designations with an explicit scalar ref:
+    // "circuit 2 and the smoke alarm". Once the top-level separator diverts
+    // the reply away from the legacy scalar path, each span must retain that
+    // same deterministic ref interpretation. Validate it against the
+    // server-owned circuit census before writing.
+    const explicitRef = quantifier == null ? extractCircuitRef(strippedSpan) : null;
+    if (explicitRef !== null) {
+      const exists = circuits.some((c) => {
+        const ref =
+          typeof c?.circuit_ref === 'number'
+            ? c.circuit_ref
+            : Number.parseInt(String(c?.circuit_ref), 10);
+        return ref === explicitRef;
+      });
+      if (exists) {
+        if (!writesByRef.has(explicitRef)) {
+          writesByRef.set(explicitRef, buildWrite(pendingWrite, explicitRef, contextBoardId));
+        }
+      } else {
+        unresolved.push(
+          unresolvedSpan({
+            ordinal,
+            disposition: 'notice',
+            reason: 'no_match',
+            circuitRefs: [explicitRef],
+            pendingWrite,
+            contextBoardId,
+          })
+        );
+      }
+      return;
+    }
+
+    const cleaned = cleanReplyForDesignation(strippedSpan);
+    const match = matchDesignation(cleaned, circuits);
+    const refs = [...new Set(match.circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
+
+    if (match.kind === 'fuzzy') {
+      unresolved.push(
+        unresolvedSpan({
+          ordinal,
+          disposition: 'ask',
+          reason: 'fuzzy_match',
+          circuitRefs: refs,
+          pendingWrite,
+          contextBoardId,
+        })
+      );
+      return;
+    }
+
+    if (match.kind === 'no_match') {
+      unresolved.push(
+        unresolvedSpan({
+          ordinal,
+          disposition: 'notice',
+          reason: 'no_match',
+          pendingWrite,
+          contextBoardId,
+        })
+      );
+      return;
+    }
+
+    const canUseAllMatches =
+      match.kind === 'exact' || match.kind === 'unique_substring' || match.kind === 'ambiguous';
+    if (!canUseAllMatches || refs.length === 0) {
+      unresolved.push(
+        unresolvedSpan({
+          ordinal,
+          disposition: 'ask',
+          reason: 'ambiguous_match',
+          circuitRefs: refs,
+          pendingWrite,
+          contextBoardId,
+        })
+      );
+      return;
+    }
+
+    if (quantifier?.kind === 'count' && refs.length !== quantifier.expected) {
+      unresolved.push(
+        unresolvedSpan({
+          ordinal,
+          disposition: 'ask',
+          reason: 'quantifier_count_mismatch',
+          circuitRefs: refs,
+          pendingWrite,
+          contextBoardId,
+        })
+      );
+      return;
+    }
+
+    if (!quantifier && refs.length > 1) {
+      unresolved.push(
+        unresolvedSpan({
+          ordinal,
+          disposition: 'ask',
+          reason: 'ambiguous_match',
+          circuitRefs: refs,
+          pendingWrite,
+          contextBoardId,
+        })
+      );
+      return;
+    }
+
+    // Quantified plural spans deliberately fan out to EVERY exact/substring
+    // match when the explicit count agrees (or the quantifier is plain "all").
+    for (const ref of refs) {
+      if (!writesByRef.has(ref)) {
+        writesByRef.set(ref, buildWrite(pendingWrite, ref, contextBoardId));
+      }
+    }
+  });
+
+  const writes = [...writesByRef.values()];
+  if (
+    writes.length === 0 &&
+    unresolved.length > 0 &&
+    unresolved.every((entry) => entry.reason === 'no_match')
+  ) {
+    return {
+      kind: 'escalate',
+      match_status: 'all_unmatched',
+      parsed_hint: 'multi_description_all_unmatched',
+      available_circuits: circuits,
+      unresolved,
+    };
+  }
+  if (unresolved.length === 0) {
+    return { kind: 'auto_resolve', match_status: 'full', writes, unresolved: [] };
+  }
+  return { kind: 'partial_resolve', match_status: 'partial', writes, unresolved };
+}
+
+// ---------------------------------------------------------------------------
 // Top-level resolver
 // ---------------------------------------------------------------------------
 
@@ -389,6 +821,11 @@ function matchDesignation(cleaned, circuits) {
  *   { kind: 'auto_resolve', writes: [{tool, field, circuit, value, confidence, source_turn_id}] }
  *     — server should dispatch each write directly. `writes` is an array so
  *       broadcast ("all circuits") expands into one write per circuit.
+ *
+ *   { kind: 'partial_resolve', writes: [...], unresolved: [...] }
+ *     — server dispatches the deterministic sibling writes, stages no-match
+ *       notices only for surviving writes, and emits one bounded registered
+ *       clarification for ask-required entries.
  *
  *   { kind: 'cancel' }
  *     — the user said "skip" / "never mind". Server discards the pending
@@ -489,6 +926,17 @@ export function resolveCircuitAnswer({
       available_circuits: availableCircuits ?? [],
     };
   }
+
+  // PLAN-2B step 0 — detect multi-target syntax BEFORE `extractCircuitRef`.
+  // The old ordering turned "2 lighting circuits and the smoke alarm" into a
+  // single write for circuit 2 and silently discarded the rest.
+  const multiDescriptionVerdict = resolveMultiDescriptionAnswer({
+    text: lower,
+    pendingWrite,
+    availableCircuits,
+    contextBoardId,
+  });
+  if (multiDescriptionVerdict) return multiDescriptionVerdict;
 
   // Numeric path: bare digit ("2"), word ("two"), "circuit 2", "circuit two".
   const numericRef = extractCircuitRef(lower);
@@ -1414,7 +1862,10 @@ export function resolveEnumAnswer({
     const optionSet = new Set(field.options);
     // normalised WHOLE reply (trailing punctuation stripped, whitespace
     // collapsed) — used for the STRICTER option-A test.
-    const normWhole = lower.replace(/[.,!?]+$/g, '').replace(/\s+/g, ' ').trim();
+    const normWhole = lower
+      .replace(/[.,!?]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
     // reply after stripping enumerated lead-ins — form (i) whole-residue test.
     const residue = normWhole
       .replace(/^(?:it['’]s|it is|the)\s+/, '')

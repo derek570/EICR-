@@ -577,10 +577,16 @@ export function renderedNoticeInventory() {
   // would let "circuit 7 not found" swallow "circuits 7 and 8 not found"
   // inside the 30 s window.
   for (const [family, variants] of Object.entries(PARTIAL_FAILURE_FAMILIES)) {
-    for (const [numberKind, sample] of [
-      ['singular', PARTIAL_FAILURE_SAMPLE_SINGULAR],
-      ['plural', PARTIAL_FAILURE_SAMPLE_PLURAL],
-    ]) {
+    const samples = PARTIAL_FAILURE_ORDINAL_FAMILIES.has(family)
+      ? [
+          ['ordinal_singular', PARTIAL_FAILURE_SAMPLE_ORDINAL_SINGULAR],
+          ['ordinal_plural', PARTIAL_FAILURE_SAMPLE_ORDINAL_PLURAL],
+        ]
+      : [
+          ['singular', PARTIAL_FAILURE_SAMPLE_SINGULAR],
+          ['plural', PARTIAL_FAILURE_SAMPLE_PLURAL],
+        ];
+    for (const [numberKind, sample] of samples) {
       variants.forEach((v, i) =>
         out.push({
           family,
@@ -593,10 +599,7 @@ export function renderedNoticeInventory() {
         family,
         route: 'partial_failure',
         kind: `terminal_${numberKind}`,
-        text: PARTIAL_FAILURE_TERMINALS[family](
-          { ...sample, fieldLabel: SAMPLE_LABEL },
-          SAMPLE_N
-        ),
+        text: PARTIAL_FAILURE_TERMINALS[family]({ ...sample, fieldLabel: SAMPLE_LABEL }, SAMPLE_N),
       });
     }
   }
@@ -760,6 +763,20 @@ const PARTIAL_FAILURE_SAMPLE_PLURAL = Object.freeze({
   isAre: "aren't",
   pronoun: 'them',
 });
+const PARTIAL_FAILURE_SAMPLE_ORDINAL_SINGULAR = Object.freeze({
+  subject: 'The second circuit description',
+  subjectLower: 'the second circuit description',
+  wasWere: "wasn't",
+  isAre: "isn't",
+  pronoun: 'it',
+});
+const PARTIAL_FAILURE_SAMPLE_ORDINAL_PLURAL = Object.freeze({
+  subject: 'The second and third circuit descriptions',
+  subjectLower: 'the second and third circuit descriptions',
+  wasWere: "weren't",
+  isAre: "aren't",
+  pronoun: 'them',
+});
 
 /**
  * Wording pools, ONE family per (field-independent) REASON. Variant 0 of each
@@ -794,7 +811,8 @@ export const PARTIAL_FAILURE_FAMILIES = Object.freeze({
       `${t.subject} ${t.wasWere} recorded — this app version can't store LIM for ${t.fieldLabel}.`,
     (t) =>
       `This app version can't take LIM for ${t.fieldLabel}, so nothing went in for ${t.subjectLower}.`,
-    (t) => `LIM for ${t.fieldLabel} needs a newer app version — ${t.subjectLower} ${t.wasWere} saved.`,
+    (t) =>
+      `LIM for ${t.fieldLabel} needs a newer app version — ${t.subjectLower} ${t.wasWere} saved.`,
   ]),
   // Channel 6b — the pre-apply low-confidence gate. Worded as MY uncertainty,
   // never as the inspector mis-speaking, and every variant invites a repeat
@@ -804,7 +822,8 @@ export const PARTIAL_FAILURE_FAMILIES = Object.freeze({
       `I wasn't confident enough in that one — no ${t.fieldLabel} recorded for ${t.subjectLower}. Say it again?`,
     (t) =>
       `${t.subject} ${t.wasWere} recorded — I wasn't sure enough of the ${t.fieldLabel} value. Try that one again.`,
-    (t) => `No ${t.fieldLabel} went in for ${t.subjectLower} — I only half caught it. Repeat that one?`,
+    (t) =>
+      `No ${t.fieldLabel} went in for ${t.subjectLower} — I only half caught it. Repeat that one?`,
   ]),
   // Channel 3 — a per-circuit ok:false inside an ask fan-out's resolved_writes.
   write_failed: Object.freeze([
@@ -812,10 +831,23 @@ export const PARTIAL_FAILURE_FAMILIES = Object.freeze({
     (t) => `Couldn't record ${t.fieldLabel} for ${t.subjectLower}.`,
     (t) => `${t.subject} ${t.wasWere} updated — ${t.fieldLabel} didn't go in for ${t.pronoun}.`,
   ]),
+  // PLAN-2B §3.3 — a no-match designation span inside an otherwise-successful
+  // multi-description answer. The raw dictated span is deliberately absent:
+  // only the server-owned one-based segment ordinal reaches these templates.
+  designation_no_match: Object.freeze([
+    (t) =>
+      `I couldn't match ${t.subjectLower}, so no ${t.fieldLabel} was recorded for ${t.pronoun}.`,
+    (t) =>
+      `${t.subject} didn't match a circuit on this board — ${t.fieldLabel} wasn't added for ${t.pronoun}.`,
+    (t) =>
+      `No circuit matched ${t.subjectLower}, so ${t.fieldLabel} didn't go in for ${t.pronoun}.`,
+  ]),
 });
 
 /** The one family a scope-level (ref-less) target may render under. */
 export const PARTIAL_FAILURE_SCOPE_FAMILIES = Object.freeze(new Set(['lim_capability_gated']));
+/** The one family a server-owned segment ordinal may render under. */
+export const PARTIAL_FAILURE_ORDINAL_FAMILIES = Object.freeze(new Set(['designation_no_match']));
 
 /**
  * Speak a ref list the way a person would: "7", "7 and 8", "7, 8 and 11".
@@ -828,6 +860,53 @@ function speakRefList(refs) {
   return `${head} and ${refs[refs.length - 1]}`;
 }
 
+const SPOKEN_ORDINALS = Object.freeze([
+  'zeroth',
+  'first',
+  'second',
+  'third',
+  'fourth',
+  'fifth',
+  'sixth',
+  'seventh',
+  'eighth',
+  'ninth',
+  'tenth',
+  'eleventh',
+  'twelfth',
+  'thirteenth',
+  'fourteenth',
+  'fifteenth',
+  'sixteenth',
+  'seventeenth',
+  'eighteenth',
+  'nineteenth',
+  'twentieth',
+]);
+
+function speakOrdinal(ordinal) {
+  if (SPOKEN_ORDINALS[ordinal]) return SPOKEN_ORDINALS[ordinal];
+  const mod100 = ordinal % 100;
+  const suffix =
+    mod100 >= 11 && mod100 <= 13
+      ? 'th'
+      : ordinal % 10 === 1
+        ? 'st'
+        : ordinal % 10 === 2
+          ? 'nd'
+          : ordinal % 10 === 3
+            ? 'rd'
+            : 'th';
+  return `${ordinal}${suffix}`;
+}
+
+function speakOrdinalList(ordinals) {
+  const words = ordinals.map(speakOrdinal);
+  if (words.length === 1) return words[0];
+  const head = words.slice(0, -1).join(', ');
+  return `${head} and ${words[words.length - 1]}`;
+}
+
 /**
  * Build the grammar descriptor for one aggregate's target list.
  *
@@ -837,7 +916,7 @@ function speakRefList(refs) {
  * speak (fail-silent HERE is correct: the marker-② catch-all still owns the
  * turn, so the chime is not broken).
  *
- * @param {{kind: 'circuit'|'scope', ref?: number}[]} targets
+ * @param {{kind: 'circuit'|'scope'|'ordinal', ref?: number, ordinal?: number}[]} targets
  * @param {string} fieldLabel server-owned spoken label
  * @returns {PartialFailureTargetDescriptor|null}
  */
@@ -846,10 +925,14 @@ export function describePartialFailureTargets(targets, fieldLabel) {
   if (typeof fieldLabel !== 'string' || fieldLabel.trim().length === 0) return null;
 
   const refs = [];
+  const ordinals = [];
   let scope = false;
   for (const t of targets) {
     if (t?.kind === 'scope') scope = true;
     else if (Number.isInteger(t?.ref)) refs.push(t.ref);
+    else if (t?.kind === 'ordinal' && Number.isInteger(t?.ordinal) && t.ordinal > 0) {
+      ordinals.push(t.ordinal);
+    }
   }
 
   if (refs.length > 0) {
@@ -862,6 +945,20 @@ export function describePartialFailureTargets(targets, fieldLabel) {
     return {
       subject: `${plural ? 'Circuits' : 'Circuit'} ${list}`,
       subjectLower: `${plural ? 'circuits' : 'circuit'} ${list}`,
+      wasWere: plural ? "weren't" : "wasn't",
+      isAre: plural ? "aren't" : "isn't",
+      pronoun: plural ? 'them' : 'it',
+      fieldLabel,
+    };
+  }
+
+  if (ordinals.length > 0) {
+    const unique = [...new Set(ordinals)].sort((a, b) => a - b);
+    const plural = unique.length > 1;
+    const list = speakOrdinalList(unique);
+    return {
+      subject: `The ${list} circuit ${plural ? 'descriptions' : 'description'}`,
+      subjectLower: `the ${list} circuit ${plural ? 'descriptions' : 'description'}`,
       wasWere: plural ? "weren't" : "wasn't",
       isAre: plural ? "aren't" : "isn't",
       pronoun: plural ? 'them' : 'it',
@@ -928,6 +1025,8 @@ export const PARTIAL_FAILURE_TERMINALS = Object.freeze({
     `I still haven't got the ${t.fieldLabel} for ${t.subjectLower} — attempt ${n}; try saying just the number on its own.`,
   write_failed: (t, n) =>
     `That's attempt ${n} — ${t.fieldLabel} still hasn't saved for ${t.subjectLower}.`,
+  designation_no_match: (t, n) =>
+    `That's attempt ${n} — I still can't match ${t.subjectLower}, and ${t.fieldLabel} remains unrecorded for ${t.pronoun}.`,
 });
 
 /**
@@ -1047,22 +1146,39 @@ export function selectPartialFailureNoticeText(session, family, target, opts = {
  *
  * @param {object} perTurnWrites
  * @param {{reason: string, field: string, fieldLabel: string, boardId: string|null,
- *          target: {kind: 'circuit'|'scope', ref?: number}, producer: string}} spec
+ *          target: {kind: 'circuit'|'scope'|'ordinal', ref?: number, ordinal?: number},
+ *          producer: string, requiresSurvivingSibling?: boolean}} spec
  */
 export function stagePartialFailureNotice(perTurnWrites, spec) {
   if (!perTurnWrites || typeof perTurnWrites !== 'object') return;
   if (!Array.isArray(perTurnWrites.partialFailureNotices)) return;
 
-  const { reason, field, fieldLabel, boardId = null, target, producer } = spec ?? {};
+  const {
+    reason,
+    field,
+    fieldLabel,
+    boardId = null,
+    target,
+    producer,
+    requiresSurvivingSibling = false,
+  } = spec ?? {};
   if (typeof reason !== 'string' || !PARTIAL_FAILURE_FAMILIES[reason]) return;
   if (typeof field !== 'string' || field.length === 0) return;
   if (typeof fieldLabel !== 'string' || fieldLabel.trim().length === 0) return;
-  if (!target || (target.kind !== 'circuit' && target.kind !== 'scope')) return;
+  if (
+    !target ||
+    (target.kind !== 'circuit' && target.kind !== 'scope' && target.kind !== 'ordinal')
+  ) {
+    return;
+  }
   if (target.kind === 'circuit' && !Number.isInteger(target.ref)) return;
+  if (target.kind === 'ordinal' && (!Number.isInteger(target.ordinal) || target.ordinal < 1))
+    return;
   // A scope target renders "those circuits", which only tells the truth for a
   // whole-instruction refusal. Guarded here rather than at the call sites so a
   // future producer cannot silently mint a lying sentence.
   if (target.kind === 'scope' && !PARTIAL_FAILURE_SCOPE_FAMILIES.has(reason)) return;
+  if (target.kind === 'ordinal' && !PARTIAL_FAILURE_ORDINAL_FAMILIES.has(reason)) return;
 
   const canonicalField = canonicalPartialFailureFieldIdentity(field);
   const key = `${reason}::${canonicalField}::${boardId ?? ''}`;
@@ -1076,12 +1192,19 @@ export function stagePartialFailureNotice(perTurnWrites, spec) {
       fieldLabel,
       boardId,
       producer,
+      requiresSurvivingSibling: requiresSurvivingSibling === true,
       targets: [],
     };
     perTurnWrites.partialFailureNotices.push(aggregate);
+  } else if (requiresSurvivingSibling === true) {
+    aggregate.requiresSurvivingSibling = true;
   }
   const dup = aggregate.targets.some(
-    (t) => t.kind === target.kind && (t.kind === 'scope' || t.ref === target.ref)
+    (t) =>
+      t.kind === target.kind &&
+      (t.kind === 'scope' ||
+        (t.kind === 'ordinal' && t.ordinal === target.ordinal) ||
+        (t.kind === 'circuit' && t.ref === target.ref))
   );
   if (!dup) aggregate.targets.push({ ...target });
 }
@@ -1109,7 +1232,7 @@ export function stagePartialFailureNotice(perTurnWrites, spec) {
  *
  * @param {object} session
  * @param {object} aggregate the staged aggregate
- * @param {{kind: 'circuit'|'scope', ref?: number}[]} survivingTargets
+ * @param {{kind: 'circuit'|'scope'|'ordinal', ref?: number, ordinal?: number}[]} survivingTargets
  * @param {{nowMs?: number}} [opts] wall clock for the 30 s repeat window.
  *   Defaults to `Date.now()`, mirroring `renderMandatoryNoticeText` — the clock
  *   read lives in this module so the harness call site needs no clock argument;
@@ -1126,6 +1249,8 @@ export function renderPartialFailureNoticeText(session, aggregate, survivingTarg
   // and a future filter bug must not be able to mint a lying sentence.
   const scopeOnly = survivingTargets.every((t) => t?.kind === 'scope');
   if (scopeOnly && !PARTIAL_FAILURE_SCOPE_FAMILIES.has(aggregate.reason)) return null;
+  const ordinalOnly = survivingTargets.every((t) => t?.kind === 'ordinal');
+  if (ordinalOnly && !PARTIAL_FAILURE_ORDINAL_FAMILIES.has(aggregate.reason)) return null;
   return selectPartialFailureNoticeText(session, aggregate.reason, descriptor, {
     repeatKey: partialFailureTextIdentity(aggregate, descriptor),
     nowMs: Number.isFinite(opts?.nowMs) ? opts.nowMs : Date.now(),

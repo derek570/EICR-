@@ -44,6 +44,7 @@ const SESSION_ID = 'sess-partial-failure';
 
 const {
   PARTIAL_FAILURE_FAMILIES,
+  PARTIAL_FAILURE_ORDINAL_FAMILIES,
   PARTIAL_FAILURE_TERMINALS,
   PARTIAL_FAILURE_SCOPE_FAMILIES,
   NOTICE_FIELD_IDENTITY_EXEMPT,
@@ -59,6 +60,7 @@ const { CLEAR_WIRE_EXEMPT } = await import('../extraction/stage6-event-bundler.j
 const { createPerTurnWrites } = await import('../extraction/stage6-per-turn-writes.js');
 
 const circuitTarget = (ref) => ({ kind: 'circuit', ref });
+const ordinalTarget = (ordinal) => ({ kind: 'ordinal', ordinal });
 const SCOPE_TARGET = { kind: 'scope' };
 
 /** The §3.1 gap-only PRIMARY render for a (reason, targets, field) triple. */
@@ -96,9 +98,7 @@ describe('§5.A1 — wording families', () => {
       [circuitTarget(7), circuitTarget(8)],
       label('measured_zs_ohm')
     );
-    expect(text).toBe(
-      "Circuits 7 and 8 weren't found — no Measured Zs (ohm) recorded for them."
-    );
+    expect(text).toBe("Circuits 7 and 8 weren't found — no Measured Zs (ohm) recorded for them.");
   });
 
   test('the field label is ALWAYS the server-owned schema label (leak safety)', () => {
@@ -149,6 +149,23 @@ describe('§5.A2 — describePartialFailureTargets', () => {
     expect(describePartialFailureTargets([SCOPE_TARGET, circuitTarget(4)], 'X').subject).toBe(
       'Circuit 4'
     );
+  });
+
+  test('ordinal targets speak trusted description positions, never raw spans', () => {
+    const one = describePartialFailureTargets([ordinalTarget(2)], 'X');
+    expect(one).toMatchObject({
+      subject: 'The second circuit description',
+      subjectLower: 'the second circuit description',
+      pronoun: 'it',
+    });
+    const many = describePartialFailureTargets(
+      [ordinalTarget(3), ordinalTarget(2), ordinalTarget(2)],
+      'X'
+    );
+    expect(many).toMatchObject({
+      subject: 'The second and third circuit descriptions',
+      pronoun: 'them',
+    });
   });
 
   test('returns null when nothing can be named honestly', () => {
@@ -266,12 +283,32 @@ describe('§5.A4 — stagePartialFailureNotice: guards + aggregation', () => {
     const ptw = createPerTurnWrites();
     stagePartialFailureNotice(ptw, spec({ target: SCOPE_TARGET }));
     expect(ptw.partialFailureNotices).toHaveLength(0);
-    stagePartialFailureNotice(
-      ptw,
-      spec({ reason: 'lim_capability_gated', target: SCOPE_TARGET })
-    );
+    stagePartialFailureNotice(ptw, spec({ reason: 'lim_capability_gated', target: SCOPE_TARGET }));
     expect(ptw.partialFailureNotices).toHaveLength(1);
     expect([...PARTIAL_FAILURE_SCOPE_FAMILIES]).toEqual(['lim_capability_gated']);
+  });
+
+  test('ordinal targets are accepted only for designation_no_match and coalesce', () => {
+    const ptw = createPerTurnWrites();
+    stagePartialFailureNotice(ptw, spec({ target: ordinalTarget(2) }));
+    expect(ptw.partialFailureNotices).toHaveLength(0);
+
+    const ordinalSpec = spec({
+      reason: 'designation_no_match',
+      target: ordinalTarget(2),
+      requiresSurvivingSibling: true,
+    });
+    stagePartialFailureNotice(ptw, ordinalSpec);
+    stagePartialFailureNotice(ptw, ordinalSpec);
+    stagePartialFailureNotice(ptw, { ...ordinalSpec, target: ordinalTarget(3) });
+    expect(ptw.partialFailureNotices).toEqual([
+      expect.objectContaining({
+        reason: 'designation_no_match',
+        requiresSurvivingSibling: true,
+        targets: [ordinalTarget(2), ordinalTarget(3)],
+      }),
+    ]);
+    expect([...PARTIAL_FAILURE_ORDINAL_FAMILIES]).toEqual(['designation_no_match']);
   });
 });
 
@@ -498,9 +535,7 @@ describe('§5.A6b — repeat escalation: never a byte-repeat inside the 30 s ded
   const interleavings = (() => {
     const out = [];
     for (let mask = 0; mask < 32; mask++) {
-      out.push(
-        Array.from({ length: 5 }, (_, i) => ((mask >> i) & 1 ? 'Y' : 'X'))
-      );
+      out.push(Array.from({ length: 5 }, (_, i) => ((mask >> i) & 1 ? 'Y' : 'X')));
     }
     return out;
   })();
@@ -622,7 +657,10 @@ describe('§5.A6b — repeat escalation: never a byte-repeat inside the 30 s ded
     // Synthetic pair FIRST: the invariant is structural, so it must hold even
     // if the schema's live collision is ever renamed away.
     const pairs = [
-      [['r2 (ohm)', '<synthetic-lower>'], ['R2 (ohm)', '<synthetic-upper>']],
+      [
+        ['r2 (ohm)', '<synthetic-lower>'],
+        ['R2 (ohm)', '<synthetic-upper>'],
+      ],
       ...collidingLabelPairs,
     ];
 
@@ -713,8 +751,11 @@ describe('§5.A7 — client-dedupe distinctness sweep', () => {
   test('the partial-failure families are ENROLLED (singular + plural samples)', () => {
     const inventory = renderedNoticeInventory();
     const partial = inventory.filter((e) => e.route === 'partial_failure');
-    // 4 families × (3 variants + 1 terminal) × 2 grammar samples.
-    expect(partial).toHaveLength(32);
+    const expectedRows = Object.values(PARTIAL_FAILURE_FAMILIES).reduce(
+      (count, variants) => count + (variants.length + 1) * 2,
+      0
+    );
+    expect(partial).toHaveLength(expectedRows);
     // Every family present, and BOTH grammatical numbers rendered for each —
     // the plural fill is what the id-112 headline speaks, so a template that
     // silently ignored the number slots must fail this sweep, not pass it.
@@ -723,18 +764,24 @@ describe('§5.A7 — client-dedupe distinctness sweep', () => {
     );
     for (const family of Object.keys(PARTIAL_FAILURE_FAMILIES)) {
       const rows = partial.filter((e) => e.family === family);
-      expect(rows.filter((e) => e.kind.endsWith('_singular'))).toHaveLength(4);
-      expect(rows.filter((e) => e.kind.endsWith('_plural'))).toHaveLength(4);
+      const numberPrefix = PARTIAL_FAILURE_ORDINAL_FAMILIES.has(family) ? 'ordinal_' : '';
+      const variants = PARTIAL_FAILURE_FAMILIES[family];
+      expect(rows.filter((e) => e.kind.endsWith(`_${numberPrefix}singular`))).toHaveLength(
+        variants.length + 1
+      );
+      expect(rows.filter((e) => e.kind.endsWith(`_${numberPrefix}plural`))).toHaveLength(
+        variants.length + 1
+      );
       // Singular and plural must be DIFFERENT bytes for every variant.
-      for (let i = 0; i < 3; i++) {
-        const s = rows.find((e) => e.kind === `variant_${i}_singular`);
-        const p = rows.find((e) => e.kind === `variant_${i}_plural`);
+      for (let i = 0; i < variants.length; i++) {
+        const s = rows.find((e) => e.kind === `variant_${i}_${numberPrefix}singular`);
+        const p = rows.find((e) => e.kind === `variant_${i}_${numberPrefix}plural`);
         expect(s.text).not.toBe(p.text);
       }
       // Every family carries its ordinal TERMINAL — the wrap-silence fix. A
       // family without one can go silent on the 4th repeat inside 30 s.
-      expect(rows.find((e) => e.kind === 'terminal_singular')?.text).toBeTruthy();
-      expect(rows.find((e) => e.kind === 'terminal_plural')?.text).toBeTruthy();
+      expect(rows.find((e) => e.kind === `terminal_${numberPrefix}singular`)?.text).toBeTruthy();
+      expect(rows.find((e) => e.kind === `terminal_${numberPrefix}plural`)?.text).toBeTruthy();
     }
     // The A1a/plan-B regimes are still enrolled beside them (no clobbering).
     expect(inventory.some((e) => e.route === 'direct')).toBe(true);
@@ -917,6 +964,10 @@ const suppressedRows = (logger) =>
   logger.info.mock.calls.filter(
     ([ev]) => ev === 'stage6.partial_failure_notices_suppressed_all_rejected'
   );
+const noSiblingRows = (logger) =>
+  logger.info.mock.calls.filter(
+    ([ev]) => ev === 'stage6.partial_failure_notice_suppressed_no_sibling'
+  );
 
 /** No generic "say that again" line may ride alongside a specific notice. */
 function assertNoGenericApologies(result, logger) {
@@ -950,6 +1001,7 @@ beforeEach(() => {
 afterEach(() => {
   activeSessions.delete(SESSION_ID);
   delete process.env.LIM_RANGED_WRITE_DISABLED;
+  jest.useRealTimers();
 });
 
 // ---------------------------------------------------------------------------
@@ -968,12 +1020,7 @@ describe('§5.B1 — channel 1: record_reading circuit_not_found (the id-112 sha
       reading(8, 'measured_zs_ohm', '0.4'),
     ]);
     const opts = baseOpts();
-    const result = await runShadowHarness(
-      session,
-      'Zs for circuits 5 to 8 is 0.4.',
-      [],
-      opts
-    );
+    const result = await runShadowHarness(session, 'Zs for circuits 5 to 8 is 0.4.', [], opts);
 
     // The successes are still read back — this net is ADDITIVE, never a gate.
     expect(session.stateSnapshot.circuits[5].measured_zs_ohm).toBe('0.4');
@@ -1015,7 +1062,13 @@ describe('§5.B1 — channel 1: record_reading circuit_not_found (the id-112 sha
     expect(texts.some((t) => t.includes(label('measured_zs_ohm')))).toBe(true);
     expect(texts.some((t) => t.includes(label('r1_r2_ohm')))).toBe(true);
     // Same family twice in one turn ⇒ byte-distinct variants (rotation).
-    const noticeTexts = texts.filter((t) => t.includes("weren't") || t.includes("wasn't") || t.includes('couldn’t') || t.includes("couldn't"));
+    const noticeTexts = texts.filter(
+      (t) =>
+        t.includes("weren't") ||
+        t.includes("wasn't") ||
+        t.includes('couldn’t') ||
+        t.includes("couldn't")
+    );
     expect(new Set(noticeTexts).size).toBe(noticeTexts.length);
     assertNoGenericApologies(result, opts.logger);
   });
@@ -1025,7 +1078,12 @@ describe('§5.B1 — channel 1: record_reading circuit_not_found (the id-112 sha
       circuits: { 4: { circuit_designation: 'Sockets' } },
       boards: [
         { id: 'main', designation: 'DB-1', board_type: 'main' },
-        { id: 'sub-1', designation: 'Garage', board_type: 'sub_distribution', parent_board_id: 'main' },
+        {
+          id: 'sub-1',
+          designation: 'Garage',
+          board_type: 'sub_distribution',
+          parent_board_id: 'main',
+        },
       ],
     });
     loopDispatching([
@@ -1062,10 +1120,7 @@ describe('§5.B2 — rule (1): an ALL-REJECTED turn stays byte-identical to plan
   test('multi-call all-rejected ⇒ still exactly ONE generic line, zero notices', async () => {
     const session = makeSession({ circuits: { 4: {} } });
     registerEntry(['lim_ranged_write_v1', 'low_conf_readback_v1']);
-    loopDispatching([
-      reading(7, 'measured_zs_ohm', '0.4'),
-      reading(8, 'measured_zs_ohm', '0.4'),
-    ]);
+    loopDispatching([reading(7, 'measured_zs_ohm', '0.4'), reading(8, 'measured_zs_ohm', '0.4')]);
     const opts = baseOpts();
     const result = await runShadowHarness(session, 'Record those two.', [], opts);
 
@@ -1093,18 +1148,16 @@ describe('§5.B3 — rule (2): a surviving same-slot write SUBTRACTS its target'
     // A false "didn't save" over a value that DID land is the worst outcome
     // this net can produce — the read-back must be the only thing spoken.
     for (const c of audibleConfs(result)) {
-      expect(variantTexts('lim_capability_gated', [circuitTarget(4)], label('measured_zs_ohm')))
-        .not.toContain(c.text);
+      expect(
+        variantTexts('lim_capability_gated', [circuitTarget(4)], label('measured_zs_ohm'))
+      ).not.toContain(c.text);
     }
     assertNoGenericApologies(result, opts.logger);
   });
 
   test('write then skip (reverse dispatch order) subtracts identically', async () => {
     const session = makeSession({ circuits: { 4: { circuit_designation: 'Sockets' } } });
-    loopDispatching([
-      reading(4, 'measured_zs_ohm', '0.50'),
-      reading(4, 'measured_zs_ohm', 'LIM'),
-    ]);
+    loopDispatching([reading(4, 'measured_zs_ohm', '0.50'), reading(4, 'measured_zs_ohm', 'LIM')]);
     const opts = baseOpts();
     await runShadowHarness(session, 'Zs on 4 is 0.50.', [], opts);
     expect(noticeRows(opts.logger)).toHaveLength(0);
@@ -1116,10 +1169,7 @@ describe('§5.B3 — rule (2): a surviving same-slot write SUBTRACTS its target'
     // write's raw Map key carries the schema spelling. If the drain compared
     // raw-to-canonical it would miss and speak a FALSE "not recorded".
     const session = makeSession({ circuits: { 4: { circuit_designation: 'Sockets' } } });
-    loopDispatching([
-      reading(4, 'measured_zs_ohm', 'LIM'),
-      reading(4, 'measured_zs_ohm', '0.50'),
-    ]);
+    loopDispatching([reading(4, 'measured_zs_ohm', 'LIM'), reading(4, 'measured_zs_ohm', '0.50')]);
     const opts = baseOpts();
     await runShadowHarness(session, 'Zs on 4.', [], opts);
     expect(subtractedRows(opts.logger)[0][1]).toMatchObject({ field: 'zs' });
@@ -1149,10 +1199,7 @@ describe('§5.B3 — rule (2): a surviving same-slot write SUBTRACTS its target'
 
   test('a DIFFERENT field’s write never subtracts the notice', async () => {
     const session = makeSession({ circuits: { 4: { circuit_designation: 'Sockets' } } });
-    loopDispatching([
-      reading(4, 'measured_zs_ohm', 'LIM'),
-      reading(4, 'r1_r2_ohm', '0.60'),
-    ]);
+    loopDispatching([reading(4, 'measured_zs_ohm', 'LIM'), reading(4, 'r1_r2_ohm', '0.60')]);
     const opts = baseOpts();
     const result = await runShadowHarness(session, 'Zs LIM, R1 R2 0.6 on 4.', [], opts);
     soleNotice(result, [
@@ -1194,6 +1241,64 @@ describe('§5.B3 — rule (2): a surviving same-slot write SUBTRACTS its target'
   });
 });
 
+describe('PLAN-2B — unmatched-description notices require a surviving sibling', () => {
+  function stageOrdinalFromAskFactory() {
+    createAskDispatcherSpy.mockImplementationOnce(
+      (_session, _logger, _turnId, _pendingAsks, _ws, opts) => {
+        opts.stagePartialFailureNotice({
+          reason: 'designation_no_match',
+          field: 'measured_zs_ohm',
+          fieldLabel: label('measured_zs_ohm'),
+          boardId: 'main',
+          target: ordinalTarget(2),
+          producer: 'ask_multi_description_no_match',
+          requiresSurvivingSibling: true,
+        });
+        return askSentinel;
+      }
+    );
+  }
+
+  test('same field + board survivor speaks the trusted ordinal notice', async () => {
+    jest.useFakeTimers();
+    const session = makeSession({
+      circuits: { 4: { circuit_designation: 'Smoke alarm' } },
+    });
+    stageOrdinalFromAskFactory();
+    loopDispatching([reading(4, 'measured_zs_ohm', '0.40')]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'Smoke alarm and the other one.', [], opts);
+
+    soleNotice(result, [
+      primaryText('designation_no_match', [ordinalTarget(2)], label('measured_zs_ohm')),
+    ]);
+    expect(noticeRows(opts.logger)[0][1]).toMatchObject({
+      reason: 'designation_no_match',
+      spoken_ordinals: '2',
+    });
+    expect(noSiblingRows(opts.logger)).toHaveLength(0);
+    await jest.runAllTimersAsync();
+  });
+
+  test('a different-field survivor cannot make the description notice truthful', async () => {
+    jest.useFakeTimers();
+    const session = makeSession({
+      circuits: { 4: { circuit_designation: 'Smoke alarm' } },
+    });
+    stageOrdinalFromAskFactory();
+    loopDispatching([reading(4, 'r1_r2_ohm', '0.60')]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'Smoke alarm and the other one.', [], opts);
+
+    expect(noticeRows(opts.logger)).toHaveLength(0);
+    expect(noSiblingRows(opts.logger)).toHaveLength(1);
+    expect(
+      audibleConfs(result).some((confirmation) => confirmation.text.includes('circuit description'))
+    ).toBe(false);
+    await jest.runAllTimersAsync();
+  });
+});
+
 // ---------------------------------------------------------------------------
 describe('§5.B4 — channel 6a/6b: capability-gate skips are audible (is_error:false)', () => {
   test('SKIP-ONLY turn speaks the notice — the class marker-② cannot see', async () => {
@@ -1220,16 +1325,16 @@ describe('§5.B4 — channel 6a/6b: capability-gate skips are audible (is_error:
     const session = makeSession({
       circuits: { 4: { circuit_designation: 'Sockets' }, 7: { circuit_designation: 'Lights' } },
     });
-    loopDispatching([
-      reading(7, 'measured_zs_ohm', 'LIM'),
-      reading(4, 'r1_r2_ohm', '0.60'),
-    ]);
+    loopDispatching([reading(7, 'measured_zs_ohm', 'LIM'), reading(4, 'r1_r2_ohm', '0.60')]);
     const opts = baseOpts();
     const result = await runShadowHarness(session, 'Zs on 7 LIM, R1 R2 on 4 is 0.6.', [], opts);
 
     expect(session.stateSnapshot.circuits[4].r1_r2_ohm).toBe('0.60');
     expect(audibleConfs(result).some((c) => c.field === 'r1_r2_ohm')).toBe(true);
-    soleNotice(result, variantTexts('lim_capability_gated', [circuitTarget(7)], label('measured_zs_ohm')));
+    soleNotice(
+      result,
+      variantTexts('lim_capability_gated', [circuitTarget(7)], label('measured_zs_ohm'))
+    );
     assertNoGenericApologies(result, opts.logger);
   });
 
@@ -1251,7 +1356,10 @@ describe('§5.B4 — channel 6a/6b: capability-gate skips are audible (is_error:
     loopDispatching([reading(4, 'measured_zs_ohm', 'LIM')]);
     const opts = baseOpts();
     const result = await runShadowHarness(session, 'Zs on 4 is LIM.', [], opts);
-    soleNotice(result, variantTexts('lim_capability_gated', [circuitTarget(4)], label('measured_zs_ohm')));
+    soleNotice(
+      result,
+      variantTexts('lim_capability_gated', [circuitTarget(4)], label('measured_zs_ohm'))
+    );
   });
 
   test('channel 6b: the low-confidence pre-apply gate speaks a REPEAT-inviting notice', async () => {
@@ -1320,9 +1428,7 @@ describe('§5.B5 — channel 6c + the set_field_for_all_circuits bucket miss', (
     const result = await runShadowHarness(session, 'R1 R2 is 0.6 on all circuits.', [], opts);
 
     expect(session.stateSnapshot.circuits[4].r1_r2_ohm).toBe('0.60');
-    soleNotice(result, [
-      primaryText('circuit_not_found', [circuitTarget(9)], label('r1_r2_ohm')),
-    ]);
+    soleNotice(result, [primaryText('circuit_not_found', [circuitTarget(9)], label('r1_r2_ohm'))]);
     expect(noticeRows(opts.logger)[0][1]).toMatchObject({
       producer: 'set_field_for_all_circuits_bucket_miss',
       spoken_refs: '9',
@@ -1404,7 +1510,10 @@ describe('§5.B6 — net interactions', () => {
     const result = await runShadowHarness(session, 'Zs on 4 is LIM.', [], opts);
     // The notice still speaks — declining to speak is the failure mode that
     // matters, and the ask dispatcher is mocked here so only the notice lands.
-    soleNotice(result, variantTexts('lim_capability_gated', [circuitTarget(4)], label('measured_zs_ohm')));
+    soleNotice(
+      result,
+      variantTexts('lim_capability_gated', [circuitTarget(4)], label('measured_zs_ohm'))
+    );
   });
 
   test('confirmations OFF ⇒ no notice (the whole channel is a spoken one)', async () => {
