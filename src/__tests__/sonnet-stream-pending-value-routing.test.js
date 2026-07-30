@@ -567,6 +567,73 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ['ambiguous designation', 'lighting'],
+    ['fuzzy designation', 'upstars lights'],
+  ])(
+    'a transcript-only %s restatement is consumed immediately for bounded mdr resolution',
+    async (slug, userText) => {
+      const sessionSlug = slug.replaceAll(' ', '-');
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${sessionSlug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${sessionSlug}`;
+      registerMultiDescriptionAsk(entry, toolCallId, (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: `u-mdr-transcript-${sessionSlug}`,
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        response_utterance_id: `u-mdr-transcript-${sessionSlug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    ['ambiguous designation', 'lighting'],
+    ['fuzzy designation', 'upstars lights'],
+  ])(
+    'a direct-channel %s restatement is consumed immediately for bounded mdr resolution',
+    async (slug, userText) => {
+      const sessionSlug = slug.replaceAll(' ', '-');
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${sessionSlug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${sessionSlug}`;
+      registerMultiDescriptionAsk(entry, toolCallId, (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        consumed_utterance_id: `u-mdr-direct-${sessionSlug}`,
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        utterance_id: `u-mdr-direct-${sessionSlug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
   test.each(waitingChatter)(
     'transcript waiting chatter (%s) neither consumes the mdr ask nor dispatches work',
     async (slug, userText) => {

@@ -1457,6 +1457,8 @@ export function resolveMultiDescriptionFollowup({
 }) {
   if (!pendingWrite || typeof pendingWrite !== 'object') return null;
   const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
+  const stripped = stripPunct(String(userText ?? '').toLowerCase());
+  if (CANCEL_PHRASES.includes(stripped)) return { kind: 'cancel' };
   if (hasCorrectionOrNegationSyntax(userText)) {
     return {
       kind: 'escalate',

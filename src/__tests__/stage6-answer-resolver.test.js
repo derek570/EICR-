@@ -1681,6 +1681,19 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     });
   });
 
+  test.each(['skip', 'never mind', 'cancel'])(
+    'the mdr-only follow-up preserves spoken cancellation for "%s"',
+    (reply) => {
+      expect(
+        resolveMultiDescriptionFollowup({
+          userText: reply,
+          pendingWrite: SAMPLE_PENDING,
+          availableCircuits: MULTI_DESCRIPTION_CIRCUITS,
+        })
+      ).toEqual({ kind: 'cancel' });
+    }
+  );
+
   test.each([
     ['lighting', 'multi_description_followup_ambiguous_designation:1,2'],
     ['upstars lights', 'multi_description_followup_fuzzy_designation:5'],
