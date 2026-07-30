@@ -670,13 +670,22 @@ function maskCircuitResolution(replyText, meta) {
     return maskCircuitSpans(masked);
   }
   if (meta.kind === 'designation') {
-    if (typeof meta.matchedDesignation === 'string') {
-      const idx = replyText.toLowerCase().indexOf(meta.matchedDesignation);
-      if (idx >= 0) {
+    if (typeof meta.matchedDesignation === 'string' && meta.matchedDesignation) {
+      // Whitespace-TOLERANT span search (mini-review c1): the resolver
+      // compares whitespace-collapsed strings, so the raw reply may hold the
+      // designation with different spacing ("upstairs  sockets") — a plain
+      // indexOf would miss it and over-mask, dropping a dictated voltage in
+      // the same reply. Escape regex metachars, then let each space match
+      // any whitespace run.
+      const spanPattern = meta.matchedDesignation
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/ /g, '\\s+');
+      const m = replyText.match(new RegExp(spanPattern, 'i'));
+      if (m) {
         const masked =
-          replyText.slice(0, idx) +
-          ' '.repeat(meta.matchedDesignation.length) +
-          replyText.slice(idx + meta.matchedDesignation.length);
+          replyText.slice(0, m.index) +
+          ' '.repeat(m[0].length) +
+          replyText.slice(m.index + m[0].length);
         return maskCircuitSpans(masked);
       }
     }
@@ -3336,7 +3345,18 @@ function runActivePath({
 
     // The ONE structural exit of the exclusive branch — the assertion runs
     // on every path out of runExclusiveBranch (§4.2.3, Codex cycle 1).
-    const exclusiveResult = runExclusiveBranch();
+    // Exceptional exits (mini-review c1): a thrown parser/writer must not
+    // strand drained writes either — prod flushes BEFORE the error
+    // propagates (fail-audible-and-delivered); dev/test rethrows the
+    // ORIGINAL error un-masked (the assertion must never shadow the real
+    // failure).
+    let exclusiveResult;
+    try {
+      exclusiveResult = runExclusiveBranch();
+    } catch (err) {
+      if (process.env.NODE_ENV === 'production') flushWritesOnce();
+      throw err;
+    }
     assertWritesFlushed();
     return exclusiveResult;
   }

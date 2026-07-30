@@ -1082,3 +1082,25 @@ describe('cycle 1 — RCD decision-table rows the entry-guard suite omitted', ()
     expect(out.handled === false || out.fallthrough === true).toBe(true);
   });
 });
+
+describe('mini-review c1 — whitespace-variant designation + voltage', () => {
+  test('"upstairs  sockets, tested at 500" (double space) resolves, masks only the designation span, and WRITES 500', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: 'Upstairs sockets' } });
+    irTurn(ws, session, 'Insulation resistance. Live to live 200, live to earth 200.', 1000);
+    ws.sent = [];
+    irTurn(
+      ws,
+      session,
+      'upstairs  sockets, tested at 500',
+      2000,
+      'upstairs  sockets, tested at 500'
+    );
+    const frames = extractionFrames(ws);
+    expect(frames).toHaveLength(1);
+    expect(readingsOf(frames[0]).map((r) => `${r.field}=${r.value}`)).toEqual(
+      expect.arrayContaining(['ir_test_voltage=500'])
+    );
+    expect(session.dialogueScriptState).toBeFalsy();
+  });
+});
