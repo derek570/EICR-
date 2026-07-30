@@ -418,10 +418,13 @@ function matchDesignation(cleaned, circuits) {
  * to the scalar matcher so the existing conservative fuzzy/no-match verdicts
  * remain available (and fuzzy still fails closed before fan-out).
  */
-function matchQuantifiedDesignations(cleaned, circuits) {
+function matchQuantifiedDesignations(spokenSpan, circuits) {
+  const cleaned = cleanReplyForDesignation(spokenSpan);
   if (!cleaned || !Array.isArray(circuits) || circuits.length === 0) {
     return { kind: 'no_match', circuitRefs: [] };
   }
+  const canonicalSpoken = canonicalSeparatorDesignation(spokenSpan);
+  const spokenHasSeparator = hasEnumeratedSeparator(spokenSpan);
   const exact = [];
   const substring = [];
   for (const circuit of circuits) {
@@ -429,24 +432,25 @@ function matchQuantifiedDesignations(cleaned, circuits) {
       .toLowerCase()
       .trim();
     if (!designation) continue;
+    const canonicalDesignation = canonicalSeparatorDesignation(designation);
     const ref =
       typeof circuit?.circuit_ref === 'number'
         ? circuit.circuit_ref
         : Number.parseInt(String(circuit?.circuit_ref), 10);
     if (!Number.isInteger(ref)) continue;
-    if (designation === cleaned) {
+    if (canonicalDesignation === canonicalSpoken) {
       exact.push(ref);
-    } else if (designation.includes(cleaned) || cleaned.includes(designation)) {
+    } else if (
+      canonicalDesignation.includes(canonicalSpoken) ||
+      canonicalSpoken.includes(canonicalDesignation)
+    ) {
       // A separator-bearing designation is one server-owned target, not a
       // bag of independently claimable components. Let its raw/exact whole
       // form win in the whole-designation pass, but do not let a quantified
       // component such as "2 lighting circuits" silently claim
       // "Lighting and Smoke Alarm" merely because it contains "lighting".
-      ENUMERATED_SEPARATOR_RE.lastIndex = 0;
-      const designationIsComposite = ENUMERATED_SEPARATOR_RE.test(designation);
-      ENUMERATED_SEPARATOR_RE.lastIndex = 0;
-      const cleanedIsComposite = ENUMERATED_SEPARATOR_RE.test(cleaned);
-      if (designationIsComposite && !cleanedIsComposite) continue;
+      const designationIsComposite = hasEnumeratedSeparator(designation);
+      if (designationIsComposite && !spokenHasSeparator) continue;
       substring.push(ref);
     }
   }
@@ -458,7 +462,12 @@ function matchQuantifiedDesignations(cleaned, circuits) {
       circuitRefs,
     };
   }
-  return matchDesignation(cleaned, circuits);
+  // Only borrow the scalar matcher's conservative FUZZY verdict. An
+  // exact/substring/ambiguous result here was deliberately excluded by the
+  // canonical loop above (most importantly, a bare component must not reclaim
+  // a separator-bearing composite designation through this fallback).
+  const fallback = matchDesignation(cleaned, circuits);
+  return fallback.kind === 'fuzzy' ? fallback : { kind: 'no_match', circuitRefs: [] };
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +482,12 @@ function matchQuantifiedDesignations(cleaned, circuits) {
 // pre-2B path and result shape byte-for-byte.
 
 const ENUMERATED_SEPARATOR_RE = /,|&|\+|\band\b|\bplus\b/gi;
+
+function hasEnumeratedSeparator(text) {
+  ENUMERATED_SEPARATOR_RE.lastIndex = 0;
+  return ENUMERATED_SEPARATOR_RE.test(String(text ?? ''));
+}
+
 const MULTI_TARGET_FILLER_PHRASES = new Set([
   'all done',
   'cheers',
@@ -590,8 +605,8 @@ function hasLeadingRetractionSyntax(text) {
 }
 
 function hasExplicitCorrectionCommand(text) {
-  const value = stripLeadingRetractionWrappers(text);
-  return /^(?:scratch(?:\s+that)?|forget(?:\s+that)?|correction|make\s+that)\b/i.test(value);
+  const value = stripPunct(String(text ?? '')).toLowerCase();
+  return /\b(?:scratch(?:\s+that)?|forget(?:\s+that)?|correction|make\s+that)\b/i.test(value);
 }
 
 /**
@@ -976,7 +991,7 @@ function stripMultiDescriptionRefWrappers(rawAtom) {
       ''
     );
     atom = atom.replace(
-      /[\s,;:.!?…()[\]{}"'“”‘’\-–—]*(?:thank\s+you|thanks|cheers|please|yeah|yep|yes|okay|ok|right)\s*$/i,
+      /[\s,;:.!?…()[\]{}"'“”‘’\-–—]*(?:(?:and\s+)?(?:all\s+done|done|finished|thank\s+you|thanks|cheers|please|yeah|yep|yes|okay|ok|right))\s*$/i,
       ''
     );
     atom = stripDescriptionWrappers(atom);
@@ -1172,7 +1187,7 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
   }
 
   const wholeCleaned = cleanReplyForDesignation(normalisedText);
-  if (wholeCleaned.length >= 2) {
+  if (wholeAttached.quantifier === null && wholeCleaned.length >= 2) {
     const wholeMatch = matchDesignation(wholeCleaned, circuits);
     if (isWholeReplyDesignationMatch(wholeMatch, wholeCleaned, circuits)) {
       return {
@@ -1322,7 +1337,7 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
         ? canonicalSpanMatch
         : quantifier === null
           ? matchDesignation(cleaned, circuits)
-          : matchQuantifiedDesignations(cleaned, circuits);
+          : matchQuantifiedDesignations(unwrappedSpan, circuits);
     const refs = [...new Set(match.circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
 
     if (match.kind === 'fuzzy') {
@@ -1445,6 +1460,24 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
 }
 
 /**
+ * Match one registered MDR follow-up against the server-owned designation
+ * census. All consumers use this helper so wrapper stripping and canonical
+ * separator equivalence cannot diverge between the live answer gate and the
+ * resolver that ultimately executes the answer.
+ */
+function matchMultiDescriptionFollowupDesignation(userText, availableCircuits) {
+  const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
+  const designationText = stripDescriptionWrappers(String(userText ?? '').toLowerCase());
+  const canonicalMatch = matchCanonicalExactDesignation(designationText, circuits);
+  const cleaned = cleanReplyForDesignation(designationText);
+  return {
+    canonicalMatch,
+    match:
+      canonicalMatch.kind !== 'no_match' ? canonicalMatch : matchDesignation(cleaned, circuits),
+  };
+}
+
+/**
  * Resolve the answer to the ONE registered multi-description clarification.
  * Explicit ref lists are accepted here only; the ordinary scalar resolver's
  * legacy multi-number escalation remains unchanged.
@@ -1467,13 +1500,8 @@ export function resolveMultiDescriptionFollowup({
     };
   }
 
-  const designationText = stripDescriptionWrappers(String(userText ?? '').toLowerCase());
-  const cleanedDesignation = cleanReplyForDesignation(designationText);
-  const canonicalDesignationMatch = matchCanonicalExactDesignation(designationText, circuits);
-  const designationMatch =
-    canonicalDesignationMatch.kind !== 'no_match'
-      ? canonicalDesignationMatch
-      : matchDesignation(cleanedDesignation, circuits);
+  const { canonicalMatch: canonicalDesignationMatch, match: designationMatch } =
+    matchMultiDescriptionFollowupDesignation(userText, circuits);
 
   // Raw/exact server-owned designations get first refusal, including names
   // that resemble discourse filler or contain a digit. This is the same
@@ -1621,10 +1649,7 @@ function hasExplicitCircuitRefAnchor(userText) {
 }
 
 function hasKnownDesignationAnchor(userText, availableCircuits) {
-  const match = matchDesignation(
-    cleanReplyForDesignation(String(userText ?? '')),
-    Array.isArray(availableCircuits) ? availableCircuits : []
-  );
+  const { match } = matchMultiDescriptionFollowupDesignation(userText, availableCircuits);
   return match.kind !== 'no_match';
 }
 
@@ -1658,11 +1683,7 @@ export function isMultiDescriptionAnswerText(userText, availableCircuits) {
     // here would delete the pending ask before that notice can be produced.
     return refs.length > 0;
   }
-  const cleaned = cleanReplyForDesignation(
-    stripDescriptionLeadIn(stripPunct(String(userText ?? '').toLowerCase()))
-  );
-  if (cleaned.length < 2) return false;
-  const match = matchDesignation(cleaned, circuits);
+  const { match } = matchMultiDescriptionFollowupDesignation(userText, circuits);
   return match.kind !== 'no_match';
 }
 
@@ -1793,6 +1814,17 @@ export function resolveCircuitAnswer({
       available_circuits: availableCircuits ?? [],
     };
   }
+  // Explicit correction commands govern the reply wherever they occur. This
+  // must precede numeric extraction: an unanchored "circuit 2 scratch that"
+  // previously committed circuit 2 before the later correction guard ran.
+  // Other postfix qualifiers retain their narrow scalar exception below.
+  if (hasExplicitCorrectionCommand(lower)) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+      available_circuits: availableCircuits ?? [],
+    };
+  }
 
   // PLAN-2B step 0 — detect multi-target syntax BEFORE `extractCircuitRef`.
   // The old ordering turned "2 lighting circuits and the smoke alarm" into a
@@ -1804,6 +1836,27 @@ export function resolveCircuitAnswer({
     contextBoardId,
   });
   if (multiDescriptionVerdict) return multiDescriptionVerdict;
+
+  // A unique server-owned whole designation has first refusal over the scalar
+  // number grammar. Census names routinely carry room/flat numbers whose
+  // embedded digit is not their circuit ref ("Flat 2 sockets" may be ref 7).
+  const scalarWholeDesignation = matchCanonicalExactDesignation(
+    stripDescriptionWrappers(lower),
+    availableCircuits ?? []
+  );
+  if (scalarWholeDesignation.kind === 'exact') {
+    return {
+      kind: 'auto_resolve',
+      writes: [buildWrite(pendingWrite, scalarWholeDesignation.circuitRefs[0], contextBoardId)],
+    };
+  }
+  if (scalarWholeDesignation.kind === 'ambiguous') {
+    return {
+      kind: 'escalate',
+      parsed_hint: `ambiguous_designation_match:${scalarWholeDesignation.circuitRefs.join(',')}`,
+      available_circuits: availableCircuits ?? [],
+    };
+  }
 
   // Numeric path: bare digit ("2"), word ("two"), "circuit 2", "circuit two".
   const numericRef = extractCircuitRef(lower);
@@ -1879,28 +1932,31 @@ export function resolveCircuitAnswer({
  * @returns {number|null}
  */
 export function extractCircuitRef(lowerText) {
-  // Strip trailing sentence punctuation up front. STT routinely appends "."
-  // to short answers ("circuit 2."), and the digit-match regex's
-  // decimal-rejection lookahead `(?![\d.])` treats a trailing "." as a
-  // decimal-point separator — wrongly rejecting "circuit 2." while
-  // correctly rejecting "0.4". Stripping ONLY the trailing run preserves
-  // the decimal guard (".4", "0.4", "1.23" still fail because the dot is
-  // internal, not trailing) while letting sentence-ending punctuation
-  // through. Mirrors stripPunct's intent without the leading-strip
-  // (callers already lower-case; leading word chars are what we want to
-  // see).
-  const trimmed = lowerText.replace(/[.,!?;:\s]+$/, '');
-  // Strict digit match: a single integer 1..200, optionally preceded by
-  // "circuit" / "circuit number". Reject decimals.
-  const digit = trimmed.match(/(?:^|[^\d.])(\d{1,3})(?![\d.])/);
+  // Parse only a bounded whole reply. The old unanchored digit scan accepted
+  // any lone integer anywhere in prose, so "Bedroom 2" silently became
+  // circuit 2. Edge-only discourse wrappers remain supported for the shipped
+  // "circuit 2, please" / "circuit 3 and done" forms.
+  const trimmed = stripMultiDescriptionRefWrappers(String(lowerText ?? '').toLowerCase()).trim();
+
+  // Narrow shipped exception: a postfix RCD qualifier still belongs to its
+  // explicit numeric circuit target. Other correction/negation syntax is
+  // rejected by resolveCircuitAnswer before this parser runs.
+  const qualifiedDigit = trimmed.match(
+    /^(?:the\s+)?(?:circuit|cct)(?:\s+(?:number|no\.?))?\s+(\d{1,3})\s+without\s+(?:the\s+)?rcd(?:\s+qualifier)?$/i
+  );
+  if (qualifiedDigit) {
+    const n = Number.parseInt(qualifiedDigit[1], 10);
+    return n >= 1 && n <= 200 ? n : null;
+  }
+
+  // Strict digit grammar: a single integer 1..200, optionally wrapped by a
+  // circuit noun. Anchoring rejects decimals, prose, and multiple numbers.
+  const digit = trimmed.match(
+    /^(?:(?:the\s+)?(?:circuit|cct)(?:\s+(?:number|no\.?))?\s+)?(\d{1,3})(?:\s+(?:circuit|cct))?$/i
+  );
   if (digit) {
     const n = Number.parseInt(digit[1], 10);
-    if (n >= 1 && n <= 200) {
-      // Make sure there's only ONE numeric token. Multiple → escalate.
-      const allNums = lowerText.match(/\d+/g) || [];
-      if (allNums.length === 1) return n;
-      return null;
-    }
+    if (n >= 1 && n <= 200) return n;
   }
 
   // Word number. Strip stop-word tokens up front so leading "circuit" /
@@ -1912,7 +1968,7 @@ export function extractCircuitRef(lowerText) {
   // null because the parts.length === 2 check failed. That's the bug
   // P2-B fixes: the JSDoc claimed support for ordinals + compound number
   // patterns that no test ever exercised.
-  const allTokens = lowerText.match(/[a-z]+/g) || [];
+  const allTokens = trimmed.match(/[a-z]+/g) || [];
   const tokens = allTokens.filter((t) => !STOP_WORDS.has(t));
   if (tokens.length === 0) return null;
 

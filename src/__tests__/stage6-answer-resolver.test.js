@@ -762,6 +762,48 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.unresolved).toBeUndefined();
   });
 
+  test.each([
+    '2 Kitchen & Utility Lights circuits and Smoke Alarm',
+    '2 Kitchen + Utility Lights circuits and Smoke Alarm',
+    '2 Kitchen and Utility Lights circuits and Smoke Alarm',
+    '2 Kitchen plus Utility Lights circuits and Smoke Alarm',
+    '2 Kitchen, Utility Lights circuits and Smoke Alarm',
+  ])(
+    'quantified canonical separator variant "%s" fans out to both duplicate composite owners',
+    (reply) => {
+      const verdict = resolveMulti(reply, [
+        { circuit_ref: 1, circuit_designation: 'Kitchen & Utility Lights' },
+        { circuit_ref: 2, circuit_designation: 'Kitchen & Utility Lights' },
+        { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+      ]);
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: [1, 2, 3],
+        unresolved: [],
+      });
+      expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+    }
+  );
+
+  test('a quantified component cannot claim separator-bearing composite designations', () => {
+    const verdict = resolveMulti('2 Kitchen circuits and Smoke Alarm', [
+      { circuit_ref: 1, circuit_designation: 'Kitchen & Utility Lights' },
+      { circuit_ref: 2, circuit_designation: 'Kitchen & Utility Lights' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'partial_resolve',
+      writes: [expect.objectContaining({ circuit: 3 })],
+      unresolved: [
+        expect.objectContaining({
+          disposition: 'notice',
+          reason: 'no_match',
+        }),
+      ],
+    });
+  });
+
   test('an embedded composite designation is protected before resolving its sibling', () => {
     const verdict = resolveMulti('Cooker plus Hob and Smoke alarm', [
       { circuit_ref: 1, circuit_designation: 'Cooker' },
@@ -991,6 +1033,34 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes.map((write) => write.circuit)).toEqual([7, 3]);
   });
 
+  test.each([
+    ['Flat 2 sockets', 7],
+    ['Bedroom 2', 9],
+  ])(
+    'bare digit-bearing designation "%s" is owned by its unique census ref before scalar numeric parsing',
+    (designation, expectedRef) => {
+      const verdict = resolveMulti(designation, [
+        { circuit_ref: 2, circuit_designation: 'First floor lighting' },
+        { circuit_ref: expectedRef, circuit_designation: designation },
+      ]);
+      expect(verdict).toEqual({
+        kind: 'auto_resolve',
+        writes: [expect.objectContaining({ circuit: expectedRef })],
+      });
+    }
+  );
+
+  test.each(['Flat 2 sockets', 'Bedroom 2'])(
+    'unowned digit-bearing prose "%s" never degrades into circuit 2',
+    (reply) => {
+      const verdict = resolveMulti(reply, [
+        { circuit_ref: 2, circuit_designation: 'First floor lighting' },
+      ]);
+      expect(verdict.kind).toBe('escalate');
+      expect(verdict.writes).toBeUndefined();
+    }
+  );
+
   test('bare "circuit 2" remains on the shipped scalar path', () => {
     const verdict = resolveMulti('circuit 2');
     expect(verdict).toEqual({
@@ -1042,6 +1112,20 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     });
     expect(verdict.writes).toBeUndefined();
     expect(verdict.unresolved).toBeUndefined();
+  });
+
+  test.each([
+    'circuit 2 scratch that',
+    'circuit 2 forget that',
+    'circuit 2 correction',
+    'circuit 2 make that',
+  ])('postfix correction command "%s" fails closed before scalar numeric parsing', (reply) => {
+    const verdict = resolveMulti(reply);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+    });
+    expect(verdict.writes).toBeUndefined();
   });
 
   test.each(['not 3', 'without three'])(
@@ -1145,6 +1229,28 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       ],
     });
   });
+
+  test.each(['2 upstairs light circuits', 'two upstairs light circuits'])(
+    'attached digit/word count "%s" has identical mismatch semantics and cannot take the whole-reply shortcut',
+    (reply) => {
+      const verdict = resolveMulti(reply, [
+        { circuit_ref: 5, circuit_designation: 'Upstairs Lights' },
+      ]);
+      expect(verdict).toMatchObject({
+        kind: 'partial_resolve',
+        match_status: 'partial',
+        writes: [],
+        unresolved: [
+          expect.objectContaining({
+            disposition: 'ask',
+            reason: 'quantifier_count_mismatch',
+            candidates: [5],
+            required_count: 2,
+          }),
+        ],
+      });
+    }
+  );
 
   test('quantifier count mismatch asks and never guesses', () => {
     const verdict = resolveMulti('3 lighting circuits and the smoke alarm');
@@ -1679,6 +1785,54 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       unresolved: [],
       writes: [expect.objectContaining({ circuit: expectedRef, board_id: 'board-main' })],
     });
+  });
+
+  test.each([
+    ['Cooker plus Hob', 7],
+    ['I mean Cooker + Hob', 7],
+    ['Cooker, Hob, thanks', 7],
+  ])(
+    'the shared canonical follow-up matcher resolves wrapped separator variant "%s"',
+    (reply, expectedRef) => {
+      const circuits = [
+        ...MULTI_DESCRIPTION_CIRCUITS,
+        { circuit_ref: expectedRef, circuit_designation: 'Cooker & Hob' },
+      ];
+      const verdict = resolveMultiDescriptionFollowup({
+        userText: reply,
+        pendingWrite: SAMPLE_PENDING,
+        availableCircuits: circuits,
+        contextBoardId: 'board-main',
+      });
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: [expectedRef],
+        unresolved: [],
+        writes: [expect.objectContaining({ circuit: expectedRef, board_id: 'board-main' })],
+      });
+      expect(isMultiDescriptionAnswerText(reply, circuits)).toBe(true);
+    }
+  );
+
+  test('the shared canonical follow-up matcher exposes ambiguous separator variants to clarification', () => {
+    const circuits = [
+      ...MULTI_DESCRIPTION_CIRCUITS,
+      { circuit_ref: 7, circuit_designation: 'Cooker & Hob' },
+      { circuit_ref: 8, circuit_designation: 'Cooker and Hob' },
+    ];
+    const verdict = resolveMultiDescriptionFollowup({
+      userText: 'I mean Cooker plus Hob',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: circuits,
+    });
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_followup_ambiguous_designation:7,8',
+      available_circuits: circuits,
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(isMultiDescriptionAnswerText('I mean Cooker plus Hob', circuits)).toBe(true);
   });
 
   test.each(['skip', 'never mind', 'cancel'])(

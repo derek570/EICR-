@@ -185,7 +185,16 @@ function registerPendingValueAsk(entry, toolCallId, resolveFn) {
   });
 }
 
-function registerMultiDescriptionAsk(entry, toolCallId, resolveFn) {
+function registerMultiDescriptionAsk(
+  entry,
+  toolCallId,
+  resolveFn,
+  multiDescriptionCircuits = [
+    { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+    { circuit_ref: 2, circuit_designation: 'First floor lighting' },
+    { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+  ]
+) {
   entry.pendingAsks.register(toolCallId, {
     contextField: 'number_of_points',
     contextCircuit: null,
@@ -195,11 +204,7 @@ function registerMultiDescriptionAsk(entry, toolCallId, resolveFn) {
       field: 'number_of_points',
       value: '4',
     },
-    multiDescriptionCircuits: [
-      { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
-      { circuit_ref: 2, circuit_designation: 'First floor lighting' },
-      { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
-    ],
+    multiDescriptionCircuits,
     resolve: resolveFn,
     timer: makeAskTimer(),
     askStartedAt: Date.now(),
@@ -627,6 +632,93 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
         answered: true,
         user_text: userText,
         utterance_id: `u-mdr-direct-${sessionSlug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    ['unique-canonical', [{ circuit_ref: 7, circuit_designation: 'Cooker & Hob' }]],
+    [
+      'ambiguous-canonical',
+      [
+        { circuit_ref: 7, circuit_designation: 'Cooker & Hob' },
+        { circuit_ref: 8, circuit_designation: 'Cooker and Hob' },
+      ],
+    ],
+  ])(
+    'a transcript-only %s separator variant reaches the registered mdr resolver',
+    async (slug, circuits) => {
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        circuits
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: 'I mean Cooker plus Hob',
+        utterance_id: `u-mdr-transcript-${slug}`,
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: 'I mean Cooker plus Hob',
+        response_utterance_id: `u-mdr-transcript-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    ['unique-canonical', [{ circuit_ref: 7, circuit_designation: 'Cooker & Hob' }]],
+    [
+      'ambiguous-canonical',
+      [
+        { circuit_ref: 7, circuit_designation: 'Cooker & Hob' },
+        { circuit_ref: 8, circuit_designation: 'Cooker and Hob' },
+      ],
+    ],
+  ])(
+    'a direct-channel %s separator variant reaches the registered mdr resolver',
+    async (slug, circuits) => {
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        circuits
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: 'I mean Cooker plus Hob',
+        consumed_utterance_id: `u-mdr-direct-${slug}`,
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: 'I mean Cooker plus Hob',
+        utterance_id: `u-mdr-direct-${slug}`,
       });
       expect(entry.pendingAsks.size).toBe(0);
       expect(entry.pendingTranscripts).toHaveLength(0);
