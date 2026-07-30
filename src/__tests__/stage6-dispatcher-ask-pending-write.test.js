@@ -641,6 +641,38 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
+  test('a wrapped leading retraction escalates without a write while a postfix qualifier still targets its circuit', async () => {
+    const retractionRun = startMultiDispatcher();
+    await tick();
+    retractionRun.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: "— maybe I didn't mean circuit 3 —",
+    });
+    const retractionBody = JSON.parse((await retractionRun.promise).content);
+
+    expect(retractionBody).toMatchObject({
+      auto_resolved: false,
+      match_status: 'escalated',
+      parsed_hint: 'multi_description_correction_or_negation',
+    });
+    expect(retractionRun.autoResolveWrite).not.toHaveBeenCalled();
+
+    const postfixRun = startMultiDispatcher();
+    await tick();
+    postfixRun.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'circuit 3 without the RCD',
+    });
+    const postfixBody = JSON.parse((await postfixRun.promise).content);
+
+    expect(postfixBody).toMatchObject({
+      auto_resolved: true,
+      match_status: 'auto_resolved',
+      resolved_writes: [expect.objectContaining({ circuit: 3, ok: true })],
+    });
+    expect(postfixRun.autoResolveWrite).toHaveBeenCalledTimes(1);
+  });
+
   test('verbatim id-104 crosses the real write hook and bundles one grouped read-back', async () => {
     const session = buildSession(multiCircuits.slice(0, 3));
     const perTurnWrites = createPerTurnWrites();

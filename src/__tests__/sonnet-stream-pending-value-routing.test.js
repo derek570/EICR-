@@ -532,6 +532,13 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
 });
 
 describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
+  const waitingChatter = [
+    ['give-me-seconds', 'give me 2 seconds'],
+    ['hold-on-minutes', 'hold on for 2 minutes'],
+    ['just-seconds', 'just 2 secs'],
+    ['need-minutes', 'I need 2 minutes'],
+  ];
+
   test('a transcript-only designation restatement resolves mdr pre-queue', async () => {
     const { ws, entry } = await startSession(wss, 'sess-mdr-1');
     entry.isExtracting = true;
@@ -558,48 +565,56 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
-  test('transcript filler neither consumes the mdr ask nor starts a competing turn', async () => {
-    const { ws, entry } = await startSession(wss, 'sess-mdr-filler');
-    entry.isExtracting = true;
-    let resolvedPayload = null;
-    registerMultiDescriptionAsk(entry, 'mdr-description-filler', (payload) => {
-      resolvedPayload = payload;
-    });
-    runShadowHarnessSpy.mockClear();
+  test.each(waitingChatter)(
+    'transcript waiting chatter (%s) neither consumes the mdr ask nor dispatches work',
+    async (slug, userText) => {
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${slug}`;
+      registerMultiDescriptionAsk(entry, toolCallId, (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
 
-    await sendFrame(ws, {
-      type: 'transcript',
-      text: 'hold on a second',
-      utterance_id: 'u-mdr-filler',
-      regexResults: [],
-    });
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: `u-mdr-transcript-${slug}`,
+        regexResults: [],
+      });
 
-    expect(resolvedPayload).toBeNull();
-    expect(entry.pendingAsks.size).toBe(1);
-    expect(entry.pendingTranscripts).toEqual([
-      expect.objectContaining({ text: 'hold on a second' }),
-    ]);
-    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
-  });
+      expect(resolvedPayload).toBeNull();
+      expect([...entry.pendingAsks.entries()].map(([id]) => id)).toEqual([toolCallId]);
+      expect(entry.pendingTranscripts).toEqual([expect.objectContaining({ text: userText })]);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
 
-  test('direct-channel filler preserves the registered mdr ask', async () => {
-    const { ws, entry } = await startSession(wss, 'sess-mdr-direct-filler');
-    let resolvedPayload = null;
-    registerMultiDescriptionAsk(entry, 'mdr-description-direct-filler', (payload) => {
-      resolvedPayload = payload;
-    });
+  test.each(waitingChatter)(
+    'direct-channel waiting chatter (%s) preserves the registered mdr ask without dispatch',
+    async (slug, userText) => {
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${slug}`;
+      registerMultiDescriptionAsk(entry, toolCallId, (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
 
-    await sendFrame(ws, {
-      type: 'ask_user_answered',
-      tool_call_id: 'mdr-description-direct-filler',
-      user_text: 'hold on a second',
-      consumed_utterance_id: 'u-mdr-direct-filler',
-    });
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        consumed_utterance_id: `u-mdr-direct-${slug}`,
+      });
 
-    expect(resolvedPayload).toBeNull();
-    expect(entry.pendingAsks.size).toBe(1);
-    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
-  });
+      expect(resolvedPayload).toBeNull();
+      expect([...entry.pendingAsks.entries()].map(([id]) => id)).toEqual([toolCallId]);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
 
   test('a direct-channel fresh reading overtakes mdr and is reinjected', async () => {
     const { ws, entry } = await startSession(wss, 'sess-mdr-2');
