@@ -793,6 +793,65 @@ function stripAttachedCircuitQuantifier(rawSpan) {
 }
 
 /**
+ * Strip a quantifier which governs an enumerated designation LIST rather than
+ * one `... circuit(s)` span.
+ *
+ * Whole stored designations get first refusal before this helper runs. That
+ * ordering lets a genuine count-looking name keep its words, while forms such
+ * as "both Ground floor lighting and First floor lighting" and
+ * "all three A, B and C" carry one count contract across the whole list even
+ * though no segment contains the literal circuit noun.
+ */
+function stripWholeListQuantifier(rawText) {
+  const original = stripPunct(String(rawText ?? '').toLowerCase());
+  if (!hasEnumeratedSeparator(original)) {
+    return { text: original, quantifier: null, malformed_quantifier: false };
+  }
+
+  const working = stripDescriptionLeadIn(original).replace(/^\s*the\s+/i, '');
+  const first = consumeLeadingToken(working);
+  let quantifier = null;
+  let consumedRest = first?.rest ?? working;
+
+  if (first?.token === 'both') {
+    quantifier = { kind: 'count', expected: 2, source: 'both' };
+  } else if (first?.token === 'all') {
+    quantifier = { kind: 'all', expected: null, source: 'all' };
+    const count = consumeLeadingCardinal(consumedRest);
+    if (count?.malformed) {
+      return { text: original, quantifier: null, malformed_quantifier: true };
+    }
+    if (Number.isInteger(count?.value) && count.value > 0) {
+      quantifier = { kind: 'count', expected: count.value, source: 'all' };
+      consumedRest = count.rest;
+    }
+  } else {
+    const count = consumeLeadingCardinal(working);
+    if (count?.malformed) {
+      return { text: original, quantifier: null, malformed_quantifier: true };
+    }
+    if (Number.isInteger(count?.value) && count.value > 0) {
+      quantifier = { kind: 'count', expected: count.value, source: 'count' };
+      consumedRest = count.rest;
+    }
+  }
+
+  if (!quantifier) {
+    return { text: original, quantifier: null, malformed_quantifier: false };
+  }
+
+  const text = consumedRest
+    .replace(/^\s*of\b/i, '')
+    .replace(/^\s*the\b/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text || !hasEnumeratedSeparator(text)) {
+    return { text: original, quantifier: null, malformed_quantifier: false };
+  }
+  return { text, quantifier, malformed_quantifier: false };
+}
+
+/**
  * A quantified circuit noun is a hard right boundary for stripped
  * maximum-coverage matching. The raw exact pass still gets first refusal,
  * but once "2 lighting circuits" is recognised, a following list separator
@@ -1260,9 +1319,24 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       available_circuits: circuits,
     };
   }
+  const wholeList =
+    wholeAttached.quantifier === null
+      ? stripWholeListQuantifier(normalisedText)
+      : { text: normalisedText, quantifier: null, malformed_quantifier: false };
+  if (wholeList.malformed_quantifier) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_malformed_quantifier',
+      available_circuits: circuits,
+    };
+  }
 
   const wholeCleaned = cleanReplyForDesignation(normalisedText);
-  if (wholeAttached.quantifier === null && wholeCleaned.length >= 2) {
+  if (
+    wholeAttached.quantifier === null &&
+    wholeList.quantifier === null &&
+    wholeCleaned.length >= 2
+  ) {
     const wholeMatch = matchDesignation(wholeCleaned, circuits);
     if (isWholeReplyDesignationMatch(wholeMatch, wholeCleaned, circuits)) {
       return {
@@ -1279,7 +1353,8 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
     }
   }
 
-  const segments = segmentDescriptionReply(normalisedText, circuits).filter((segment) =>
+  const segmentationText = wholeList.quantifier === null ? normalisedText : wholeList.text;
+  const segments = segmentDescriptionReply(segmentationText, circuits).filter((segment) =>
     isMeaningfulDescriptionSegment(segment, circuits)
   );
   if (segments.length === 0) return null;
@@ -1516,6 +1591,42 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       }
     }
   });
+
+  if (
+    wholeList.quantifier?.kind === 'count' &&
+    (writesByRef.size !== wholeList.quantifier.expected || unresolved.length > 0)
+  ) {
+    const candidates = [
+      ...writesByRef.keys(),
+      ...unresolved.flatMap((entry) =>
+        Array.isArray(entry?.candidates) ? entry.candidates.filter(Number.isInteger) : []
+      ),
+    ];
+    const alreadyHasCountMismatch = unresolved.some(
+      (entry) => entry?.reason === 'quantifier_count_mismatch'
+    );
+    return {
+      kind: 'partial_resolve',
+      match_status: 'partial',
+      writes: [],
+      unresolved: [
+        ...unresolved,
+        ...(alreadyHasCountMismatch
+          ? []
+          : [
+              unresolvedSpan({
+                ordinal: 1,
+                disposition: 'ask',
+                reason: 'quantifier_count_mismatch',
+                circuitRefs: candidates,
+                requiredCount: wholeList.quantifier.expected,
+                pendingWrite,
+                contextBoardId,
+              }),
+            ]),
+      ],
+    };
+  }
 
   const writes = collapseBoardWriteFanout(pendingWrite, [...writesByRef.values()], contextBoardId);
   const selectedCircuitMetadata = selectedCircuitRefsMetadata([...writesByRef.keys()]);
@@ -2066,9 +2177,19 @@ export function extractCircuitRef(lowerText) {
   const exceptionalRef = extractBoundedExceptionalCircuitRef(trimmed);
   if (Number.isInteger(exceptionalRef)) return exceptionalRef;
 
+  // Preserve ordinary scalar-answer lead-ins the old single-integer scan
+  // accepted, but only when they introduce an EXPLICIT circuit noun. The
+  // noun lookahead keeps digit-bearing designations/prose ("Bedroom 2") out,
+  // while the anchored prefix keeps negations ("do not use circuit 2") and
+  // value-bearing commands ("Add 0.4 to circuit 2") rejected.
+  const boundedScalarReply = trimmed.replace(
+    /^(?:(?:use|choose|pick)|go\s+with|the\s+answer\s+is|i(?:['’]d|\s+would)\s+(?:use|choose|pick|go\s+with)|i(?:['’]ll|\s+will)\s+(?:use|choose|pick))\s+(?=(?:the\s+)?(?:circuit|cct)\b)/i,
+    ''
+  );
+
   // Strict digit grammar: a single integer 1..200, optionally wrapped by a
   // circuit noun. Anchoring rejects decimals, prose, and multiple numbers.
-  const digit = trimmed.match(
+  const digit = boundedScalarReply.match(
     /^(?:(?:the\s+)?(?:circuit|cct)(?:\s+(?:number|no\.?))?\s+)?(\d{1,3})(?:\s+(?:circuit|cct))?$/i
   );
   if (digit) {
@@ -2085,7 +2206,7 @@ export function extractCircuitRef(lowerText) {
   // null because the parts.length === 2 check failed. That's the bug
   // P2-B fixes: the JSDoc claimed support for ordinals + compound number
   // patterns that no test ever exercised.
-  const allTokens = trimmed.match(/[a-z]+/g) || [];
+  const allTokens = boundedScalarReply.match(/[a-z]+/g) || [];
   const tokens = allTokens.filter((t) => !STOP_WORDS.has(t));
   if (tokens.length === 0) return null;
 

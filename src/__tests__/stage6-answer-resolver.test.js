@@ -79,6 +79,11 @@ describe('resolveCircuitAnswer — numeric replies', () => {
     ['Add to circuit 2 please', 2],
     ['Put it on circuit 2', 2],
     ['Put onto cct no. 2, thanks', 2],
+    ['Use circuit 2', 2],
+    ['Go with circuit 2', 2],
+    ['The answer is circuit 2', 2],
+    ["I'd go with circuit 2", 2],
+    ["I'll use circuit 2", 2],
   ])('bounded imperative circuit-ref answer "%s" resolves to %i', (reply, expectedRef) => {
     expect(extractCircuitRef(reply)).toBe(expectedRef);
     const r = resolveCircuitAnswer({
@@ -96,6 +101,9 @@ describe('resolveCircuitAnswer — numeric replies', () => {
     'Add to Bedroom 2 please',
     'Add 0.4 to circuit 2 please',
     'Add to circuit 2 and circuit 3 please',
+    'Do not use circuit 2',
+    "Don't use circuit 2",
+    'Use Bedroom 2',
   ])('imperative-looking prose "%s" cannot bypass the bounded circuit-ref grammar', (reply) => {
     expect(extractCircuitRef(reply)).toBeNull();
   });
@@ -896,6 +904,51 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       unresolved: [],
     });
     expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+  });
+
+  test('a noun-less "both" quantifier governs the complete exact-designation list', () => {
+    const verdict = resolveMulti('both Ground floor lighting and First floor lighting');
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [1, 2],
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2]);
+  });
+
+  test.each([
+    'all three Ground floor lighting, First floor lighting and Smoke Alarm',
+    'three Ground floor lighting, First floor lighting and Smoke Alarm',
+    '3 Ground floor lighting, First floor lighting and Smoke Alarm',
+  ])('noun-less whole-list count in "%s" resolves exactly that many refs', (reply) => {
+    const verdict = resolveMulti(reply);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [1, 2, 3],
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+  });
+
+  test('a noun-less whole-list count mismatch asks before every write', () => {
+    const verdict = resolveMulti(
+      'both Ground floor lighting, First floor lighting and Smoke Alarm'
+    );
+    expect(verdict).toMatchObject({
+      kind: 'partial_resolve',
+      match_status: 'partial',
+      writes: [],
+      unresolved: [
+        expect.objectContaining({
+          disposition: 'ask',
+          reason: 'quantifier_count_mismatch',
+          required_count: 2,
+          candidates: [1, 2, 3],
+        }),
+      ],
+    });
   });
 
   test.each([

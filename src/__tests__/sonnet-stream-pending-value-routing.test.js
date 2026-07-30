@@ -622,25 +622,59 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     'one circuit add to Bedroom 2',
     'all circuits add 0.4 to Bedroom 2',
   ])(
-    'a transcript-only unbounded command "%s" cannot consume a colliding mdr designation',
+    'a transcript-only unbounded command "%s" releases mdr and processes exactly once',
     async (userText) => {
       const slug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
       const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
-      entry.isExtracting = true;
       let resolvedPayload = null;
       const toolCallId = `mdr-description-transcript-${slug}`;
-      registerMultiDescriptionAsk(
-        entry,
-        toolCallId,
-        (payload) => {
-          resolvedPayload = payload;
-        },
-        [
-          { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
-          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
-        ]
-      );
       runShadowHarnessSpy.mockClear();
+
+      let signalAskRegistered;
+      const askRegistered = new Promise((resolve) => {
+        signalAskRegistered = resolve;
+      });
+      runShadowHarnessSpy
+        .mockImplementationOnce(
+          async () =>
+            new Promise((releaseFirstTurn) => {
+              registerMultiDescriptionAsk(
+                entry,
+                toolCallId,
+                (payload) => {
+                  resolvedPayload = payload;
+                  releaseFirstTurn({
+                    extracted_readings: [],
+                    questions_for_user: [],
+                    observations: [],
+                    confirmations: [],
+                  });
+                },
+                [
+                  { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+                  { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+                ]
+              );
+              signalAskRegistered();
+            })
+        )
+        .mockImplementationOnce(async () => ({
+          extracted_readings: [],
+          questions_for_user: [],
+          observations: [],
+          confirmations: [],
+        }));
+
+      // The first turn remains genuinely in flight, suspended on the same
+      // registry entry a production ask_user dispatcher awaits.
+      const firstTurn = sendFrame(ws, {
+        type: 'transcript',
+        text: 'Zs circuit 3 is 0.3',
+        utterance_id: `u-mdr-original-${slug}`,
+        regexResults: [{ field: 'measured_zs_ohm', circuit: 3, value: 0.3 }],
+      });
+      await askRegistered;
+      expect(entry.isExtracting).toBe(true);
 
       await sendFrame(ws, {
         type: 'transcript',
@@ -649,10 +683,17 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
         regexResults: [],
       });
 
-      expect(resolvedPayload).toBeNull();
-      expect([...entry.pendingAsks.entries()].map(([id]) => id)).toEqual([toolCallId]);
-      expect(entry.pendingTranscripts).toEqual([expect.objectContaining({ text: userText })]);
-      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+      await firstTurn;
+      expect(resolvedPayload).toMatchObject({
+        answered: false,
+        reason: 'user_moved_on',
+        response_utterance_id: `u-mdr-transcript-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).toHaveBeenCalledTimes(2);
+      expect(runShadowHarnessSpy.mock.calls[0][1]).toContain('Zs circuit 3 is 0.3');
+      expect(runShadowHarnessSpy.mock.calls[1][1]).toContain(userText);
     }
   );
 

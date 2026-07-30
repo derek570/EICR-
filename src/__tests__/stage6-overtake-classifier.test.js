@@ -544,6 +544,52 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
     });
   });
 
+  test.each(['Use circuit 2', 'Go with circuit 2', 'The answer is circuit 2'])(
+    'STA-04c-circuit-ref bounded scalar lead-in "%s" remains an answer',
+    (userText) => {
+      const verdict = classifyOvertake(
+        userText,
+        [],
+        mockPending([
+          [
+            'ask_disambig',
+            {
+              contextField: 'ir_live_earth_mohm',
+              contextCircuit: null,
+              expectedAnswerShape: 'circuit_ref',
+            },
+          ],
+        ])
+      );
+      expect(verdict).toEqual({
+        kind: 'answers',
+        toolCallId: 'ask_disambig',
+        userText,
+      });
+    }
+  );
+
+  test.each(['Do not use circuit 2', 'Add 0.4 to circuit 2', 'Bedroom 2'])(
+    'STA-04c-circuit-ref unsafe scalar prose "%s" remains moved on',
+    (userText) => {
+      const verdict = classifyOvertake(
+        userText,
+        [],
+        mockPending([
+          [
+            'ask_disambig',
+            {
+              contextField: 'ir_live_earth_mohm',
+              contextCircuit: null,
+              expectedAnswerShape: 'circuit_ref',
+            },
+          ],
+        ])
+      );
+      expect(verdict).toEqual({ kind: 'user_moved_on' });
+    }
+  );
+
   test('STA-04c-circuit-ref-word: circuit_ref ask + "two" → answers', () => {
     const verdict = classifyOvertake(
       'two',
@@ -1145,7 +1191,10 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
           ],
         ])
       );
-      expect(verdict).toEqual({ kind: 'user_moved_on' });
+      expect(verdict).toEqual({
+        kind: 'user_moved_on',
+        evidence: 'mdr_new_command',
+      });
     }
   );
 

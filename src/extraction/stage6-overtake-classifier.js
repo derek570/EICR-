@@ -126,6 +126,31 @@ function normaliseForYesNo(text) {
     .replace(/[\s"'`.,;:!?(){}[\]-]+$/, '');
 }
 
+/**
+ * Classify bounded fresh-command grammar shared by transcript and direct
+ * ask-answer channels. The caller still decides whether the pending ask class
+ * permits an overtake; this helper only prevents the two channels from
+ * disagreeing about the lexical evidence.
+ */
+export function classifyFreshCommandText(text) {
+  const value = typeof text === 'string' ? text : '';
+  const newCommandPrefix =
+    /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
+  const quantifiedCircuitCommandPrefix =
+    /^\s*(?:(?:all|both|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)(?:of\s+the\s+)?circuits?\s+(?:add|put)\b/i;
+  const bulkScope = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
+  const wordCount = value.split(/\s+/).filter(Boolean).length;
+  const matchedImperative =
+    wordCount >= 4 && (newCommandPrefix.test(value) || quantifiedCircuitCommandPrefix.test(value));
+  const matchedBulkScope = bulkScope.test(value);
+  return {
+    isFreshCommand: matchedImperative || matchedBulkScope,
+    matchedImperative,
+    matchedBulkScope,
+    wordCount,
+  };
+}
+
 export function classifyOvertake(newText, regexResults, pendingAsks) {
   if (!pendingAsks || pendingAsks.size === 0) {
     return { kind: 'no_pending_asks' };
@@ -142,6 +167,17 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     ([id]) => typeof id === 'string' && id.startsWith('mdr-')
   );
   if (hasMultiDescriptionAsk) {
+    const isBoundedMultiDescriptionAnswer = [...pendingAsks.entries()].some(
+      ([id, entry]) =>
+        typeof id === 'string' &&
+        id.startsWith('mdr-') &&
+        entry?.expectedAnswerShape === 'free_text' &&
+        isMultiDescriptionAnswerText(newText, entry.multiDescriptionCircuits)
+    );
+    const freshCommand = classifyFreshCommandText(newText);
+    if (freshCommand.isFreshCommand && !isBoundedMultiDescriptionAnswer) {
+      return { kind: 'user_moved_on', evidence: 'mdr_new_command' };
+    }
     const hasRecordableReading = regex.some(
       (result) =>
         result &&

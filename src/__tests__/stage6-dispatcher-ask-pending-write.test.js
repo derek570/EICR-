@@ -641,6 +641,54 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
+  test('noun-less "both" dispatches both exact designation writes with no notice', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'both Ground floor lighting and First floor lighting',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      auto_resolved: true,
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+  });
+
+  test('noun-less whole-list count mismatch asks before every dispatcher mutation', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'both Ground floor lighting, First floor lighting and Smoke Alarm',
+    });
+    await tick();
+
+    expect(run.autoResolveWrite).not.toHaveBeenCalled();
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual([
+      expect.objectContaining({
+        type: 'ask_user_started',
+        question: expect.stringMatching(/2 circuit numbers are required/i),
+      }),
+    ]);
+
+    const followupId = [...run.pendingAsks.entries()]
+      .map(([id]) => id)
+      .find((id) => id.startsWith('mdr-'));
+    run.pendingAsks.resolve(followupId, { answered: false, reason: 'cancelled' });
+    const body = JSON.parse((await run.promise).content);
+    expect(body).toMatchObject({
+      match_status: 'partial',
+      resolved_writes: [],
+    });
+  });
+
   test('a wrapped leading retraction escalates without a write while a postfix qualifier still targets its circuit', async () => {
     const retractionRun = startMultiDispatcher();
     await tick();

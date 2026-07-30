@@ -120,7 +120,7 @@ import {
 import { createPendingAsksRegistry } from './stage6-pending-asks-registry.js';
 import { ASK_USER_TIMEOUT_MS } from './stage6-dispatcher-ask.js';
 import { ExtractionCancelledError } from './stage6-control-flow-errors.js';
-import { classifyOvertake } from './stage6-overtake-classifier.js';
+import { classifyFreshCommandText, classifyOvertake } from './stage6-overtake-classifier.js';
 
 // F7 Item 3 — extraction-watchdog constants, DERIVED (never hardcoded). The
 // no-ask deadline stays 30s; the absolute ceiling is sized for the longest
@@ -2032,21 +2032,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
               // STAGE 2 — only runs if stage 1 didn't already build resolvePayload.
               if (!resolvePayload) {
-                const NEW_COMMAND_PREFIX_RE =
-                  /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
-                const QUANTIFIED_CIRCUIT_COMMAND_PREFIX_RE =
-                  /^\s*(?:(?:all|both|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)(?:of\s+the\s+)?circuits?\s+(?:add|put)\b/i;
-                const BULK_SCOPE_RE = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
                 // P6 — judge the new-command gate on the CANONICAL text so the
                 // same string is gated, resolved, and re-injected (the
                 // structured-reading detector below is canonical too — they must
                 // not disagree).
-                const wordCount = canonicalAnswerText.split(/\s+/).filter(Boolean).length;
-                const matchedImperative =
-                  wordCount >= 4 &&
-                  (NEW_COMMAND_PREFIX_RE.test(canonicalAnswerText) ||
-                    QUANTIFIED_CIRCUIT_COMMAND_PREFIX_RE.test(canonicalAnswerText));
-                const matchedBulkScope = BULK_SCOPE_RE.test(canonicalAnswerText);
+                const freshCommand = classifyFreshCommandText(canonicalAnswerText);
+                const { matchedImperative, matchedBulkScope, wordCount } = freshCommand;
                 // §A4 (F8) round-8 channel separation — the direct
                 // ask_user_answered handler skips the new-command gate
                 // whenever the classifier returns "answers", so an
@@ -2079,7 +2070,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   : null;
                 const matchedStructuredReading =
                   structuredAnswer != null && structuredAnswer.complete === true;
-                if (matchedImperative || matchedBulkScope || matchedStructuredReading) {
+                if (freshCommand.isFreshCommand || matchedStructuredReading) {
                   logger.warn('stage6.ask_user_answered_rejected_new_command', {
                     sessionId: currentSessionId,
                     tool_call_id: msg.tool_call_id,
@@ -4132,7 +4123,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const structuredPre = hasRecordablePre
           ? null
           : detectStructuredReading(canonicalTranscriptText);
-        if (hasRecordablePre || (structuredPre && structuredPre.complete === true)) {
+        const matchedMdrNewCommand = preVerdict.evidence === 'mdr_new_command';
+        if (
+          hasRecordablePre ||
+          (structuredPre && structuredPre.complete === true) ||
+          matchedMdrNewCommand
+        ) {
           // PLAN-C P4c — this fresh transcript SUPERSEDES the pending ask, so
           // it is now the response epoch: any residual speech the awoken
           // dispatcher emits belongs to THIS utterance. Carry its id into the
@@ -4143,7 +4139,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           });
           logger.info('stage6.transcript_pre_queue_moved_on', {
             sessionId,
-            evidence: hasRecordablePre ? 'recordable_regex' : 'structured_reading',
+            evidence: hasRecordablePre
+              ? 'recordable_regex'
+              : matchedMdrNewCommand
+                ? 'mdr_new_command'
+                : 'structured_reading',
             textPreview: String(msg.text || '').slice(0, 80),
           });
         }
