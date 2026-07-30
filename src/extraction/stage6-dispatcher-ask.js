@@ -1683,13 +1683,54 @@ async function buildResolvedBody({
                 })
                 .filter(Number.isInteger)
             );
-            const followWrites = (
+            let followWrites = (
               Array.isArray(followVerdict.writes) ? followVerdict.writes : []
             ).filter(
               (write) =>
                 write?.tool !== 'record_reading' ||
                 (Number.isInteger(write?.circuit) && knownRefs.has(write.circuit))
             );
+            const selectedRefsBeforeDispatch =
+              pendingWrite.tool === 'record_board_reading'
+                ? [
+                    ...new Set(
+                      (Array.isArray(followVerdict.selected_circuit_refs)
+                        ? followVerdict.selected_circuit_refs
+                        : followWrites.map((write) => write?.circuit)
+                      ).filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
+                    ),
+                  ]
+                : [
+                    ...new Set(
+                      followWrites
+                        .map((write) => write?.circuit)
+                        .filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
+                    ),
+                  ];
+            // Capacity is a PRE-MUTATION contract. The registered question may
+            // require two refs, while the follow-up resolver can parse any
+            // census-valid list. Reject an over-complete/unassignable list
+            // before dispatching even one write; otherwise three supplied refs
+            // could all land and only then be labelled unresolved by the
+            // reconciliation below. Unquantified ambiguous-match expansion is
+            // retained through the preflight helper's exclusive-candidate
+            // capacity widening.
+            if (
+              !multiDescriptionFollowupFitsAskCapacity({
+                entries: askEntries,
+                selectedRefs: selectedRefsBeforeDispatch,
+              })
+            ) {
+              logger?.info?.('stage6.multi_description_followup_rejected', {
+                sessionId,
+                turnId,
+                tool_call_id: toolCallId,
+                reason: 'selection_exceeds_ask_capacity',
+                selected_ref_count: selectedRefsBeforeDispatch.length,
+                ask_entry_count: askEntries.length,
+              });
+              followWrites = [];
+            }
             const collectSuccessfulSelectedRefs = () => {
               if (pendingWrite.tool === 'record_board_reading') {
                 const successfulBoardWrites = followWrites.filter((write) =>
@@ -2168,6 +2209,72 @@ function maximumMultiDescriptionAssignment(entries, refs, capacities, forbiddenE
   };
 }
 
+function multiDescriptionCandidateOwners(entries, refs) {
+  const ownersByRef = new Map();
+  for (const ref of refs) {
+    const owners = new Set();
+    entries.forEach((entry, entryIndex) => {
+      if (
+        Array.isArray(entry?.candidates) &&
+        entry.candidates.filter(Number.isInteger).includes(ref)
+      ) {
+        owners.add(entryIndex);
+      }
+    });
+    ownersByRef.set(ref, owners);
+  }
+  return ownersByRef;
+}
+
+function multiDescriptionEntryCapacities(
+  entries,
+  refs,
+  { allowExclusiveAmbiguousExpansion = false } = {}
+) {
+  const ownersByRef = multiDescriptionCandidateOwners(entries, refs);
+  return entries.map((entry, entryIndex) => {
+    const baseCapacity =
+      Number.isInteger(entry?.required_count) && entry.required_count > 0
+        ? entry.required_count
+        : entry?.reason === 'quantifier_count_mismatch'
+          ? refs.length + 1
+          : 1;
+    if (
+      !allowExclusiveAmbiguousExpansion ||
+      entry?.reason !== 'ambiguous_match' ||
+      baseCapacity !== 1
+    ) {
+      return baseCapacity;
+    }
+    const exclusiveCandidateCount = refs.filter(
+      (ref) =>
+        Array.isArray(entry?.candidates) &&
+        entry.candidates.includes(ref) &&
+        ownersByRef.get(ref)?.size === 1 &&
+        ownersByRef.get(ref)?.has(entryIndex)
+    ).length;
+    return Math.max(baseCapacity, exclusiveCandidateCount);
+  });
+}
+
+/**
+ * Decide whether every selected ref can participate in the grouped ask before
+ * any certificate mutation occurs. Only the documented unquantified
+ * ambiguous-match expansion widens a one-slot entry, and only for candidate
+ * refs exclusively owned by that entry.
+ */
+function multiDescriptionFollowupFitsAskCapacity({ entries, selectedRefs }) {
+  const candidates = Array.isArray(entries) ? entries : [];
+  const refs = [
+    ...new Set((Array.isArray(selectedRefs) ? selectedRefs : []).filter(Number.isInteger)),
+  ];
+  if (candidates.length === 0 || refs.length === 0) return true;
+  const capacities = multiDescriptionEntryCapacities(candidates, refs, {
+    allowExclusiveAmbiguousExpansion: true,
+  });
+  return maximumMultiDescriptionAssignment(candidates, refs, capacities).size === refs.length;
+}
+
 /**
  * Return the original unresolved-entry indexes that a grouped answer proves
  * complete. "Proves" is deliberately stronger than "a matching exists": the
@@ -2191,14 +2298,9 @@ function reconcileMultiDescriptionAskEntries({ entries, successfulSelectedRefs }
     if (!Number.isInteger(ordinal) || ordinal < 1) continue;
     ordinalCounts.set(ordinal, (ordinalCounts.get(ordinal) ?? 0) + 1);
   }
-  const capacities = candidates.map((entry) => {
-    if (Number.isInteger(entry?.required_count) && entry.required_count > 0) {
-      return entry.required_count;
-    }
-    // Old/incomplete resolver output must fail closed for a quantified
-    // mismatch. Other ask families have always represented one logical slot.
-    return entry?.reason === 'quantifier_count_mismatch' ? refs.length + 1 : 1;
-  });
+  // Old/incomplete resolver output must fail closed for a quantified mismatch.
+  // Other ask families have always represented one logical slot.
+  const capacities = multiDescriptionEntryCapacities(candidates, refs);
   const baseline = maximumMultiDescriptionAssignment(candidates, refs, capacities);
   const satisfied = new Set();
   const candidateOwnersByRef = new Map();

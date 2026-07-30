@@ -1061,6 +1061,42 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       const fullBody = JSON.parse((await fullRun.promise).content);
       expect(fullBody).toMatchObject({ match_status: 'full', unresolved: [] });
       expect(fullBody.resolved_writes.map((write) => write.circuit)).toEqual([5, 6]);
+
+      const overRun = startMultiDispatcher({
+        session: buildSession([
+          { circuit_ref: 5, circuit_designation: 'Upstairs Lights' },
+          { circuit_ref: 6, circuit_designation: 'Garage sockets' },
+          { circuit_ref: 7, circuit_designation: 'Cooker' },
+        ]),
+      });
+      await tick();
+      overRun.pendingAsks.resolve('toolu_multi', { answered: true, user_text: userText });
+      await tick();
+      const overFrame = overRun.ws.sent.find((frame) =>
+        String(frame.tool_call_id).startsWith('mdr-')
+      );
+
+      overRun.pendingAsks.resolve(overFrame.tool_call_id, {
+        answered: true,
+        user_text: 'circuits 5, 6 and 7',
+      });
+      const overBody = JSON.parse((await overRun.promise).content);
+      expect(overBody.match_status).toBe('partial');
+      expect(overBody.resolved_writes).toEqual([]);
+      expect(overBody.unresolved).toEqual([
+        expect.objectContaining({
+          segment_ordinal: 1,
+          required_count: 2,
+          reason: 'quantifier_count_mismatch',
+        }),
+      ]);
+      expect(overRun.autoResolveWrite).not.toHaveBeenCalled();
+      expect(overRun.session.pendingVoicePrompts).toEqual([
+        expect.objectContaining({
+          generationId: 'gen-multi',
+          text: expect.stringMatching(/couldn't place every circuit/i),
+        }),
+      ]);
     }
   );
 
