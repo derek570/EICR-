@@ -824,6 +824,32 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
   });
 
+  test('choosing both candidates for one ambiguous description completes without an apology', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'lighting and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    expect(mdrFrame.question).toMatch(/circuits 1 and 2/i);
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuits 1 and 2',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([3, 1, 2]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(3);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+  });
+
   test.each([
     ['response_utterance_id', { response_utterance_id: 'u-mdr-transcript' }, 'u-mdr-transcript'],
     ['utterance_id', { utterance_id: 'u-mdr-direct' }, 'u-mdr-direct'],

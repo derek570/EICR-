@@ -2155,12 +2155,43 @@ function reconcileMultiDescriptionAskEntries({ entries, successfulSelectedRefs }
   });
   const baseline = maximumMultiDescriptionAssignment(candidates, refs, capacities);
   const satisfied = new Set();
+  const candidateOwnersByRef = new Map();
+  candidates.forEach((entry, entryIndex) => {
+    for (const ref of Array.isArray(entry?.candidates)
+      ? entry.candidates.filter(Number.isInteger)
+      : []) {
+      if (!candidateOwnersByRef.has(ref)) candidateOwnersByRef.set(ref, new Set());
+      candidateOwnersByRef.get(ref).add(entryIndex);
+    }
+  });
 
   candidates.forEach((entry, entryIndex) => {
     const stableOrdinal =
       Number.isInteger(entry?.segment_ordinal) &&
       entry.segment_ordinal > 0 &&
       ordinalCounts.get(entry.segment_ordinal) === 1;
+    const selectedExclusiveCandidates = refs.filter(
+      (ref) =>
+        Array.isArray(entry?.candidates) &&
+        entry.candidates.includes(ref) &&
+        candidateOwnersByRef.get(ref)?.size === 1
+    );
+    // An unquantified ambiguous description is one logical source segment,
+    // but the inspector may explicitly expand it to several of its suggested
+    // circuits in the clarification ("lighting" → "circuits 1 and 2").
+    // Those writes all belong to that same segment, so there is no meaningful
+    // per-ref permutation to prove. Accept the expansion only when at least
+    // one successfully written candidate is exclusive to this entry; shared
+    // candidate sets still use the forced-assignment rule below.
+    if (
+      stableOrdinal &&
+      capacities[entryIndex] === 1 &&
+      entry?.reason === 'ambiguous_match' &&
+      selectedExclusiveCandidates.length > 0
+    ) {
+      satisfied.add(entryIndex);
+      return;
+    }
     const assignedRefs = [...baseline.assignedRefsByEntry[entryIndex]].sort((a, b) => a - b);
     if (!stableOrdinal || assignedRefs.length !== capacities[entryIndex]) return;
 
