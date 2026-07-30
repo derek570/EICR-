@@ -126,6 +126,55 @@ const FAIL_ALIASES = new Set(['fail', 'failed']);
 
 const NOMINAL_VOLTAGE_FIELDS = new Set(['nominal_voltage_u', 'nominal_voltage_uo']);
 
+// §3.4 (2026-07-30, feedback id 103, session BE1C53C0 sibling) — ref_method
+// spoken-form coercion. field_schema `ref_method` options are
+// ["A".."G", "100".."103"] and validation is exact case-sensitive Set.has
+// (stage6-dispatch-validation.js), so the model emitting bare "c", the
+// article-led "method C" / "reference method C", or the WORD form
+// "one hundred" for the buried-cable methods silently fails
+// value_not_in_options — the exact deterministic dead-end id 103 reported
+// ("did not set the reference method on the first try"). ENUMERATED only
+// (no fuzzy — parity §3E): a recognised spoken form maps to its canonical
+// option and is upper-cased BEFORE the validator's Set.has; anything
+// unrecognised passes through verbatim for the validator to reject.
+//
+// P6's `a_hundred` transcript rule digit-ises only the ARTICLE form
+// upstream, and only in a reading-shaped clause — it does NOT touch a bare
+// ref_method answer, so the word-number entries here are the coverage for
+// the model-emitted word forms.
+const REF_METHOD_LETTERS = new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
+const REF_METHOD_WORD_NUMBERS = new Map([
+  ['one hundred', '100'],
+  ['a hundred', '100'],
+  ['hundred', '100'],
+  ['one hundred and one', '101'],
+  ['one hundred one', '101'],
+  ['one hundred and two', '102'],
+  ['one hundred two', '102'],
+  ['one hundred and three', '103'],
+  ['one hundred three', '103'],
+]);
+
+/**
+ * Coerce a spoken/model-emitted ref_method value to its canonical
+ * field_schema option, or return the input verbatim when unrecognised.
+ * Pure. Strips ONLY enumerated lead-ins ("it's", "the", "reference
+ * method", "method", "ref method") and trailing sentence punctuation; the
+ * residue must equal a canonical letter, a canonical digit run, or a
+ * whole enumerated word-number — never a fuzzy/partial match.
+ */
+export function coerceRefMethodValue(value) {
+  if (typeof value !== 'string') return value;
+  let v = value.trim().toLowerCase().replace(/[.,!?]+$/g, '');
+  v = v.replace(/^(?:it['’]s|it is|the)\s+/, '');
+  v = v.replace(/^(?:reference\s+method|ref\s+method|method)\s+/, '');
+  v = v.trim();
+  if (REF_METHOD_LETTERS.has(v)) return v.toUpperCase();
+  if (REF_METHOD_WORD_NUMBERS.has(v)) return REF_METHOD_WORD_NUMBERS.get(v);
+  if (/^10[0-3]$/.test(v)) return v;
+  return value;
+}
+
 // PASS/FAIL/LIM/N/A check fields (board side) — 2026-06-12 field report
 // (session 15B88D6B, voiceFeedbackId 21): inspector said "Bonding is 10
 // millimeters to both the water and to the gas"; Sonnet recorded
@@ -202,6 +251,13 @@ export function coerceRecordReadingValue(field, value) {
     const canonical = parseBsCode(value);
     if (canonical) return canonical;
     return value;
+  }
+
+  // §3.4 (id 103) — ref_method canonicalisation. Runs before the numeric /
+  // Y-N branches (ref_method is neither) so a "method C" / "one hundred"
+  // reaches the validator as "C" / "100".
+  if (field === 'ref_method') {
+    return coerceRefMethodValue(value);
   }
 
   if (NUMERIC_READING_FIELDS.has(field)) {

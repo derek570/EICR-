@@ -1401,6 +1401,103 @@ export function resolveEnumAnswer({
     };
   }
 
+  // §3.4 (2026-07-30, feedback id 103) — ref_method A–G / 100–103 answer
+  // resolution. The generic paths below deterministically CANNOT resolve a
+  // letter answer: ref_method has digit options (100–103) so it is barred
+  // from WORD_ANCHORED_ENUM_FIELDS (that branch requires digit-free
+  // options), and the digit matcher finds no digit in "C" → invalid_value
+  // forever. This branch is CONTEXT-GATED (contextField === 'ref_method'),
+  // which is also the severity-collision guard: a bare "C" only resolves
+  // when the pending ask is about ref_method, never when it is an
+  // observation-severity clarify (C1/C2/C3). ENUMERATED only (parity §3E).
+  if (contextField === 'ref_method') {
+    const optionSet = new Set(field.options);
+    // normalised WHOLE reply (trailing punctuation stripped, whitespace
+    // collapsed) — used for the STRICTER option-A test.
+    const normWhole = lower.replace(/[.,!?]+$/g, '').replace(/\s+/g, ' ').trim();
+    // reply after stripping enumerated lead-ins — form (i) whole-residue test.
+    const residue = normWhole
+      .replace(/^(?:it['’]s|it is|the)\s+/, '')
+      .replace(/^(?:reference\s+method|ref\s+method|method)\s+/, '')
+      .trim();
+
+    const candidates = new Set();
+
+    // Digit methods 100–103: any digit run present in the reply (covers
+    // "method 100", "it's a buried run, 100", "one hundred and one" via the
+    // word-number map below).
+    for (const m of lower.matchAll(/\b(10[0-3])\b/g)) {
+      if (optionSet.has(m[1])) candidates.add(m[1]);
+    }
+    // Word-number forms, LONGEST-first with span consumption so "one
+    // hundred and two" matches 102 only (the "one hundred" prefix is
+    // consumed before its own shorter pattern is tested — otherwise both
+    // 102 AND 100 would register as candidates and force a false ambiguity).
+    const REF_METHOD_WORD_NUMBERS_RESOLVER = [
+      ['one hundred and one', '101'],
+      ['one hundred one', '101'],
+      ['one hundred and two', '102'],
+      ['one hundred two', '102'],
+      ['one hundred and three', '103'],
+      ['one hundred three', '103'],
+      ['one hundred', '100'],
+    ];
+    let wordNumWork = lower;
+    for (const [phrase, canon] of REF_METHOD_WORD_NUMBERS_RESOLVER) {
+      const re = new RegExp(`\\b${phrase}\\b`);
+      if (optionSet.has(canon) && re.test(wordNumWork)) {
+        candidates.add(canon);
+        wordNumWork = wordNumWork.replace(re, ' ');
+      }
+    }
+
+    // Letters B–G — form (i): the whole residue equals a single letter;
+    // form (ii): a letter token immediately preceded by method/reference
+    // method anywhere in the reply. A is DELIBERATELY excluded from both
+    // loose forms (the indefinite article "a" is not a method letter).
+    if (/^[b-g]$/.test(residue) && optionSet.has(residue.toUpperCase())) {
+      candidates.add(residue.toUpperCase());
+    }
+    for (const m of lower.matchAll(/\b(?:reference\s+method|method)\s+([b-g])\b/g)) {
+      const L = m[1].toUpperCase();
+      if (optionSet.has(L)) candidates.add(L);
+    }
+
+    // Option A — STRICTER: only the whole reply "a", or a TERMINAL exact
+    // "method a" / "reference method a" (nothing after it). The general
+    // preceded-letter rule never applies to A when more prose follows, so
+    // "reference method a buried run, 100" resolves to 100, never A.
+    if (
+      optionSet.has('A') &&
+      (normWhole === 'a' ||
+        normWhole === 'method a' ||
+        normWhole === 'reference method a' ||
+        normWhole === 'ref method a')
+    ) {
+      candidates.add('A');
+    }
+
+    if (candidates.size === 1) {
+      return {
+        kind: 'auto_resolve',
+        writes: buildWrites([...candidates][0], 0.9),
+      };
+    }
+    if (candidates.size > 1) {
+      // Multiple genuine enum candidates ("C or D", "method b, 100") — ask
+      // rather than guess. invalid_value drives the dispatcher's re-ask
+      // path (the model owns the follow-up question).
+      return {
+        kind: 'invalid_value',
+        received: text,
+        valid_options: field.options,
+      };
+    }
+    // Zero candidates — fall through to the generic digit path, which
+    // surfaces invalid_value / did_you_mean for a non-matching reply (a
+    // re-ask, never a wrong write).
+  }
+
   // Word-anchored enum match: select fields whose options ALL contain no
   // digits AND that are explicitly enrolled in the word-anchored
   // matcher. The allowlist keeps polarity_confirmed (Y/N/OK with
