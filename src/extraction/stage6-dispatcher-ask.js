@@ -122,6 +122,7 @@ import {
   isUnscopedBoardId,
   listCircuitRefsInBoard,
 } from './stage6-multi-board-shape.js';
+import { resolveEffectiveBoardId } from './stage6-dispatchers-circuit.js';
 // Plan 2A (partial-failure notices, 2026-07-30) — the shared raw-then-canonical
 // label resolver. Pure and dependency-downstream-only; see its docstring for why
 // the lookup order is load-bearing.
@@ -1815,7 +1816,11 @@ async function buildResolvedBody({
             reason: 'designation_no_match',
             field: pendingWrite.field,
             fieldLabel,
-            boardId: pendingWrite.board_id ?? contextBoardId ?? null,
+            // Use the record_reading dispatcher's ONE effective-board
+            // formula. A normal main-board ask commonly omits both raw ids;
+            // staging that as null while the successful sibling is journaled
+            // under "main" makes the drain suppress the truthful notice.
+            boardId: resolveEffectiveBoardId(session, requestedBoardId) ?? null,
             target,
             producer: 'ask_multi_description_no_match',
             // The dispatcher has observed an immediate success. The 2A drain

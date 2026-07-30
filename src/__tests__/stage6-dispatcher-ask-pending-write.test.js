@@ -747,6 +747,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
       expect.objectContaining({
         reason: 'designation_no_match',
+        boardId: 'main',
         target: { kind: 'ordinal', ordinal: 1 },
         requiresSurvivingSibling: true,
       })
@@ -1454,6 +1455,46 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     for (const [write] of run.autoResolveWrite.mock.calls) {
       expect(write.board_id).toBe('sub-b');
     }
+  });
+
+  test('a sub-board partial notice keeps the same effective board as its sibling write', async () => {
+    const session = {
+      sessionId: 'sess-test',
+      stateSnapshot: {
+        currentBoardId: 'sub-b',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'sub-b', board_type: 'sub_distribution', parent_board_id: 'main' },
+        ],
+        circuits: {
+          'sub-b::3': {
+            circuit: 3,
+            board_id: 'sub-b',
+            circuit_designation: 'Smoke Alarm',
+          },
+        },
+      },
+    };
+    const run = startMultiDispatcher({
+      session,
+      inputOverrides: { context_board_id: 'sub-b' },
+      pendingWriteOverrides: { board_id: 'sub-b' },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'the attic circuit and the smoke alarm',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.resolved_writes).toEqual([expect.objectContaining({ circuit: 3, ok: true })]);
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'designation_no_match',
+        boardId: 'sub-b',
+        target: { kind: 'ordinal', ordinal: 1 },
+      })
+    );
   });
 
   test('main-board designations cannot be borrowed by a sub-board ask', async () => {
