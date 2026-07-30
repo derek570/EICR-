@@ -3236,6 +3236,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // clients' 30 s text dedupe.
             const partialText = renderPartialFailureNoticeText(session, aggregate, survivors);
             if (typeof partialText !== 'string' || partialText.trim().length === 0) continue;
+            // Lazily materialise the FIFO exactly as every other net does. A
+            // session that has queued no prompt yet carries no array at all,
+            // and under the fail-open catch below a `push` on `undefined`
+            // would swallow the notice in COMPLETE SILENCE — precisely the
+            // defect this net exists to remove.
+            if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
             session.pendingVoicePrompts.push({ text: partialText, generationId });
             // Own telemetry row — never reuse mandatory_notice_emitted; the
             // three notice regimes must stay separable in CloudWatch.
