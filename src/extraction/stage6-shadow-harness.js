@@ -176,7 +176,7 @@ import {
   tryEnterScriptFromWrites,
   ALL_DIALOGUE_SCHEMAS,
 } from './dialogue-engine/index.js';
-import { extractNamedFieldValues } from './dialogue-engine/helpers/extraction.js';
+import { extractNamedFieldValues, maskCircuitSpans } from './dialogue-engine/helpers/extraction.js';
 // F7 Item 2 — the single dialogue-engine send choke point fires the ask
 // emission observer attached to the live WS under this Symbol.
 import { ASK_STARTED_OBSERVER } from './dialogue-engine/helpers/wire-emit.js';
@@ -576,7 +576,15 @@ export function reparseSingleCompleteReading(transcriptText, schemas) {
       }
     }
     if (circuit === null) continue;
-    const volunteered = extractNamedFieldValues(text, schema.slots);
+    // Feedback id 109 wave (2026-07-29): mask `circuit N` spans
+    // (length-preserving) BEFORE extraction. The ring slots' value-first
+    // extractor arm is now live, and this call previously received the RAW
+    // text — "ring continuity for circuit 13 on the lives" would bind the
+    // circuit number 13 as the R1 VALUE ("13 [connector] the lives" matches
+    // value-first). The circuit was already derived from the trigger's
+    // explicit digit capture above, so masking loses nothing. Same canonical
+    // maskCircuitSpans the engine's own extraction call sites use.
+    const volunteered = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
     for (const v of volunteered) {
       if (v && v.field && v.value !== undefined && v.value !== null && v.value !== '') {
         tuples.push({ slotField: v.field, circuit, value: v.value });

@@ -435,6 +435,59 @@ describe('replay — ring continuity', () => {
     const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
     expectIdentical(engineRun, legacyRun);
   });
+
+  // ── Feedback ids 109/110b (2026-07-29) — VALUE-FIRST extraction replay
+  // scenarios. The legacy twin has implemented bidirectional extraction
+  // since 2026-05-21 (ring-continuity-script.js:517-567); the live engine
+  // catching up (namedExtractorCandidates port) RESTORES parity with zero
+  // twin edits — these scenarios lock that. Deliberately constrained to
+  // NUMERIC values in conductor-word forms ("on the lives/neutrals/CPC")
+  // only: the twin's VAL lacks the P3 LIM alternates and converts sentinels
+  // to ∞ where the live parseOhms nulls them, and its value-first mirror
+  // covers conductor words only (no `r\s*1` aliases) — those variants are
+  // engine-only committed tests in
+  // dialogue-engine-correction-paths.test.js, same class as the
+  // retained-value machine and the RCD decision table (no legacy RCD twin
+  // exists).
+  test('value-first: mid-collection "0.85 on the lives" fills R1 on BOTH paths', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.85 on the lives', now: 2000 },
+      { text: '0.86 on the neutrals', now: 3000 },
+      { text: '0.91 on the CPC', now: 4000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test("value-first: the twin's mixed-direction tested literal binds identically on BOTH paths", () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: 'lives 0.43, 0.43 on the neutrals, and CPC is 0.78.', now: 2000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
+
+  test('value-first: confirmation amend "0.85 on the lives" overwrites R1 on BOTH paths', () => {
+    const transcripts = [
+      { text: 'Ring continuity for circuit 13.', now: 1000 },
+      { text: '0.43', now: 2000 },
+      { text: '0.44', now: 3000 },
+      { text: '0.45', now: 4000 },
+      // awaiting_confirmation — the id-109 class: a value-first amend.
+      { text: '0.85 on the lives', now: 5000 },
+      { text: 'yes', now: 6000 },
+    ];
+    const initialCircuits = { 13: {} };
+    const engineRun = runScenario(engineRing, transcripts, initialCircuits);
+    const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
+    expectIdentical(engineRun, legacyRun);
+  });
 });
 
 // ---------------------------------------------------------------------------

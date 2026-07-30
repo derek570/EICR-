@@ -53,22 +53,23 @@ function buildSession(circuits = {}) {
 }
 
 describe('Phase 6.1 — RCD entry guard (imperative + denial cases)', () => {
-  describe('positive — imperative phrases co-occurring with RCD must NOT enter the script', () => {
+  // Feedback id 113 (2026-07-29) — the intent-gated triggers changed the
+  // ROUTE for guard-class utterances that carry no intent term and no
+  // circuit clause: they no longer trigger-match at all, so the
+  // `rcd_entry_guard_skipped` telemetry legitimately never fires — the
+  // utterance falls through to Sonnet EARLIER, before the guard is
+  // consulted. The invariant that matters (no script entry, model owns the
+  // turn) is unchanged and still asserted for every row. Rows that DO carry
+  // an intent term still trigger-match, still hit the P1 guard, and still
+  // log — split below so the guard telemetry keeps a live pin.
+  describe('positive — imperative phrases WITH test intent still hit the P1 guard (logged)', () => {
     test.each([
-      'please delete RCD',
       "why haven't you deleted the RCD trip time",
-      'undo the RCD',
-      'cancel the RCD entry',
-      'fix the RCD reading',
-      'stop asking about the RCD',
-      'remove the RCD',
-      'clear the RCD details',
-      // C4 — the "ICD" garble alias must compose with this guard: an
-      // imperative alongside the garble spelling falls through to
-      // Sonnet exactly like the clean spelling (the guard keys on the
-      // schema's trigger having matched, not on the literal "RCD").
-      'please delete the ICD',
-    ])('does not enter RCD script for %p', (transcriptText) => {
+      'please delete the RCD test reading',
+      // Denial + intent term — the denial guard also still fires when the
+      // gate lets the utterance trigger-match.
+      "That's wrong, the RCD trip time is different",
+    ])('does not enter RCD script for %p (guard fires + logs)', (transcriptText) => {
       const ws = new FakeWS();
       const logger = new RecordingLogger();
       const session = buildSession({ 1: {}, 2: {}, 3: {} });
@@ -95,8 +96,18 @@ describe('Phase 6.1 — RCD entry guard (imperative + denial cases)', () => {
     });
   });
 
-  describe('positive — denial / complaint phrases co-occurring with RCD must NOT enter', () => {
+  describe('positive — imperative/denial phrases WITHOUT intent never enter (gate rejects pre-guard)', () => {
     test.each([
+      'please delete RCD',
+      'undo the RCD',
+      'cancel the RCD entry',
+      'fix the RCD reading',
+      'stop asking about the RCD',
+      'remove the RCD',
+      'clear the RCD details',
+      // C4 — the "ICD" garble alias composes with the gate exactly like
+      // the clean spelling.
+      'please delete the ICD',
       'What are you doing with the RCD?',
       "I didn't say RCD",
       "That's wrong, the RCD reading is different",
@@ -115,18 +126,18 @@ describe('Phase 6.1 — RCD entry guard (imperative + denial cases)', () => {
         now: 1000,
       });
 
+      // Falls through to Sonnet — no script state; the intent gate means
+      // the trigger never matched, so no guard telemetry is expected.
       expect(session.dialogueScriptState).toBeFalsy();
-      expect(logger.events.find((e) => e.name === 'rcd_entry_guard_skipped')).toBeTruthy();
       expect(out.handled === false || out.fallthrough === true).toBe(true);
     });
   });
 
-  describe('negative — plain RCD utterances still enter the script', () => {
+  describe('negative — test-intent RCD utterances still enter the script', () => {
     test.each([
       'RCD on circuit 4',
       'RCD trip time for circuit 5 is 25 ms',
       'check the RCD on circuit 2',
-      'the RCD is type A',
       // C4 (field session 6B6FE011 F8) — "ICD" garble of "RCD" and the
       // "triptan" garble of "trip time" enter the schema like their
       // clean spellings (enumerated aliases in rcd.js).
@@ -154,6 +165,40 @@ describe('Phase 6.1 — RCD entry guard (imperative + denial cases)', () => {
       // bypass. (The active script state being set OR an out.handled
       // is enough; some inputs may pivot to other schemas.)
       expect(out.handled === true || session.dialogueScriptState != null).toBe(true);
+    });
+  });
+
+  describe('id 113 — descriptive RCD mentions no longer hijack the session (intent gate)', () => {
+    // "the RCD is type A" moved here from the enters-script group above:
+    // under the 2026-07-29 intent gate a bare descriptive mention (no
+    // circuit clause, no enumerated intent term) fail-forwards to the
+    // model, which owns record_reading for RCD fields and can ask —
+    // instead of fail-hijacking into a mute script that discards the rest
+    // of the sentence (Derek: "if you ever mention an RCD, it just enters
+    // the RCD loop").
+    test.each([
+      'the RCD is type A',
+      'There is an RCD in the consumer unit.',
+      'The board has an RCD main switch.',
+      'RCD tested fine.',
+      'The RCD is a 30 milliamp type A.',
+    ])('falls through to the model for %p', (transcriptText) => {
+      const ws = new FakeWS();
+      const logger = new RecordingLogger();
+      const session = buildSession({ 1: {}, 2: {}, 3: {} });
+      const out = processDialogueTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText,
+        schemas: ALL_DIALOGUE_SCHEMAS,
+        logger,
+        now: 1000,
+      });
+
+      expect(session.dialogueScriptState).toBeFalsy();
+      expect(ws.sent.length).toBe(0);
+      expect(out.handled === false || out.fallthrough === true).toBe(true);
     });
   });
 });

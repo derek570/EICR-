@@ -30,11 +30,35 @@ import { getCircuitBucket, listCircuitRefsInBoard } from '../../stage6-multi-boa
  * Returns the integer or null. Excludes 0 and negatives.
  */
 export function parseCircuitDigit(text) {
+  return parseCircuitDigitWithSpan(text)?.ref ?? null;
+}
+
+/**
+ * Span-bearing variant of `parseCircuitDigit` (feedback id 105, 2026-07-29,
+ * group C fix 1). ADDITIVE — the scalar API above delegates here and is
+ * byte-identical for every caller. Returns
+ * `{ref, start, end, wholeReply}` or null:
+ *   - `start`/`end` — the matched span within `text` (the resolution text
+ *     the IR exclusive-voltage masking rule blanks before parseVoltage runs
+ *     on the reply remainder);
+ *   - `wholeReply: true` — the bare whole-utterance numeric alternative
+ *     matched (e.g. "56" answering "Which circuit?"), meaning the ENTIRE
+ *     reply is the circuit reference and the masking rule masks it all — a
+ *     bare "56" on a 56-circuit board must resolve the circuit and draw the
+ *     voltage ask, never parse as a voltage.
+ */
+export function parseCircuitDigitWithSpan(text) {
   if (typeof text !== 'string' || !text) return null;
   const m = text.match(/\bcircuit\s*(\d{1,3})\b|^\s*(\d{1,3})\s*\.?\s*$/i);
   if (!m) return null;
   const ref = Number(m[1] ?? m[2]);
-  return Number.isInteger(ref) && ref > 0 ? ref : null;
+  if (!Number.isInteger(ref) || ref <= 0) return null;
+  return {
+    ref,
+    start: m.index,
+    end: m.index + m[0].length,
+    wholeReply: m[1] === undefined,
+  };
 }
 
 /**
@@ -176,6 +200,14 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
     matched: candidates.length === 1 ? candidates[0] : null,
     candidates,
     sharedDesignation,
+    // Feedback id 105 (2026-07-29, group C fix 1) — ADDITIVE resolution
+    // metadata: the normalised designation string of the UNIQUE match (null
+    // otherwise). The IR exclusive-voltage masking rule blanks this text out
+    // of the reply before parseVoltage runs on the remainder, so a
+    // designation answer that ALSO carries "tested at 500" keeps the
+    // voltage parseable while the resolution text itself cannot be misread.
+    matchedDesignation:
+      candidates.length === 1 ? (designationsByRef.get(candidates[0]) ?? null) : null,
   };
 }
 

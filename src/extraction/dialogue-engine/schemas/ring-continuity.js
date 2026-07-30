@@ -33,17 +33,43 @@ import { formatCorrectionClause } from '../../confirmation-text.js';
 const RING_VALUE_GROUP =
   '\\d*\\.?\\d+|infinite|open|discontinuous|infinity|lim|limb|limp|limitation';
 
-// KNOWN LIMITATION (orig. 2026-05-21 session 293F074F; "dead code" claim
-// corrected 2026-06-16): this schema IS the live ring-continuity path
-// (sonnet-stream.js → dialogue-engine/index.js → engine.js + this schema;
-// the legacy `ring-continuity-script.js` survives only as the
-// replay-corpus reference). The legacy script was bidirectional-fixed to
-// catch value-first phrasings ("0.21 on the lives"); the directional
-// namedExtractor below has NOT been ported, so value-first ring phrasing
-// still falls through to Sonnet. To close it: port the bidirectional
-// pattern from `extractNamedFieldValues` in ring-continuity-script.js and
-// either accept a second capture group in `helpers/extraction.js` or add
-// a `namedExtractorMirror` field per slot. (Out of scope for F1AC26FB.)
+// Value-first connector words (feedback ids 109/110b, 2026-07-29 — the
+// bidirectional port from the legacy twin, ring-continuity-script.js:517-567,
+// closing the KNOWN LIMITATION block that used to sit here). The connector is
+// MANDATORY and there is NO free gap before it: an optional-connector arm
+// would let the Rn regex leftmost-match "0.85, Rn" inside "R1 0.85, Rn 0.86,
+// R2 0.91" and steal R1's value, and "circuit 13. Lives 0.43" must never
+// match value-first as "13 [...] Lives" (circuit numbers / way numbers don't
+// get mis-classified as readings — the twin's own comment).
+const VALUE_FIRST_CONNECTOR =
+  '\\s*(?:ohms?|Ω)?\\s*(?:on|for|across|at|down|onto|to)\\s+(?:the\\s+)?';
+
+// Two-candidate directional extractors per slot. Field-first captures the
+// filler gap in group 1 and the value in group 2; value-first captures the
+// value in group 1 and the connector phrase (the gap) in group 2. The helper
+// (helpers/extraction.js) runs BOTH and picks the smaller field↔value gap,
+// field-first winning ties — byte-matching the twin's ff[1]/vf[2] comparison
+// ("lives 0.43, 0.43 on the neutrals, CPC 0.78": for `neutrals`, field-first
+// skips 13 chars of ", and CPC is " to reach 0.78 while value-first reaches
+// 0.43 across 8 chars of " on the " — value-first wins on proximity).
+function ringCandidates(wordAlternation) {
+  return [
+    {
+      regex: new RegExp(`\\b${wordAlternation}\\b([^\\d∞]{0,30}?)(${RING_VALUE_GROUP})`, 'i'),
+      gapGroup: 1,
+      valueGroup: 2,
+    },
+    {
+      regex: new RegExp(
+        `(${RING_VALUE_GROUP})(${VALUE_FIRST_CONNECTOR})\\b${wordAlternation}\\b`,
+        'i'
+      ),
+      valueGroup: 1,
+      gapGroup: 2,
+    },
+  ];
+}
+
 const slots = [
   {
     field: 'ring_r1_ohm',
@@ -56,7 +82,7 @@ const slots = [
     // gate matched nothing and the first correction was dropped, costing two
     // wasted Sonnet round-trips. `r\s*1` also matches "r1"/"r 1" — mirrors
     // the existing c\s*p\s*c spacing tolerance for Deepgram.
-    namedExtractor: new RegExp(`\\b(?:lives?|r\\s*1)\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`, 'i'),
+    namedExtractorCandidates: ringCandidates('(?:lives?|r\\s*1)'),
     acceptsBareValue: true,
   },
   {
@@ -64,10 +90,7 @@ const slots = [
     label: 'neutrals',
     question: 'What are the neutrals?',
     parser: parseOhms,
-    namedExtractor: new RegExp(
-      `\\b(?:neutrals?|r\\s*n)\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`,
-      'i'
-    ),
+    namedExtractorCandidates: ringCandidates('(?:neutrals?|r\\s*n)'),
     acceptsBareValue: true,
   },
   {
@@ -75,10 +98,7 @@ const slots = [
     label: 'CPC',
     question: "What's the CPC?",
     parser: parseOhms,
-    namedExtractor: new RegExp(
-      `\\b(?:earths?|cpc|c\\s*p\\s*c|r\\s*2)\\b[^\\d∞]{0,30}?(${RING_VALUE_GROUP})`,
-      'i'
-    ),
+    namedExtractorCandidates: ringCandidates('(?:earths?|cpc|c\\s*p\\s*c|r\\s*2)'),
     acceptsBareValue: true,
   },
 ];
