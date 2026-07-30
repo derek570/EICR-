@@ -1028,6 +1028,11 @@ function extractBoundedExceptionalCircuitRef(rawText) {
   return null;
 }
 
+function hasLeadingCircuitTargetCommand(rawText) {
+  const trimmed = stripMultiDescriptionRefWrappers(String(rawText ?? '').toLowerCase()).trim();
+  return /^(?:add(?:\s+it)?\s+to|put(?:\s+it)?\s+(?:on|onto))\b/i.test(trimmed);
+}
+
 function parseBoundedMultiDescriptionCircuitRefAtom(rawAtom) {
   let atom = stripPunct(String(rawAtom ?? '').toLowerCase())
     .replace(/[‐‑‒–—]/g, '-')
@@ -1101,6 +1106,24 @@ function isWholeReplyDesignationMatch(match, cleaned, circuits) {
   if (match.kind !== 'unique_substring' || match.circuitRefs.length !== 1) return false;
   const designation = designationForRef(circuits, match.circuitRefs[0]);
   return Boolean(designation && designation.includes(cleaned));
+}
+
+/**
+ * A shortened reply may name one longer census designation ("utility
+ * lights" -> "Kitchen & Utility Lights"). The inverse direction is unsafe:
+ * wider command/value prose merely containing a designation ("Add 0.4 to
+ * Bedroom 2") is not a designation answer. Keep ambiguous/fuzzy verdicts
+ * intact so their existing ask semantics survive; filter only the unsafe
+ * unique-substring direction.
+ */
+function safeDesignationAnswerMatch(match, cleaned, circuits) {
+  if (
+    match.kind === 'unique_substring' &&
+    !isWholeReplyDesignationMatch(match, cleaned, circuits)
+  ) {
+    return { kind: 'no_match', circuitRefs: [] };
+  }
+  return match;
 }
 
 function canonicalUnresolvedScope(pendingWrite, contextBoardId) {
@@ -1200,6 +1223,16 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
         contextBoardId
       ),
       unresolved: [],
+    };
+  }
+  if (
+    hasLeadingCircuitTargetCommand(normalisedText) &&
+    !Number.isInteger(extractBoundedExceptionalCircuitRef(normalisedText))
+  ) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_unbounded_circuit_target_command',
+      available_circuits: circuits,
     };
   }
 
@@ -1363,12 +1396,14 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       quantifier === null
         ? matchCanonicalExactDesignation(unwrappedSpan, circuits)
         : { kind: 'no_match', circuitRefs: [] };
-    const match =
+    const rawMatch =
       canonicalSpanMatch.kind !== 'no_match'
         ? canonicalSpanMatch
         : quantifier === null
           ? matchDesignation(cleaned, circuits)
           : matchQuantifiedDesignations(unwrappedSpan, circuits);
+    const match =
+      quantifier === null ? safeDesignationAnswerMatch(rawMatch, cleaned, circuits) : rawMatch;
     const refs = [...new Set(match.circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
 
     if (match.kind === 'fuzzy') {
@@ -1501,10 +1536,12 @@ function matchMultiDescriptionFollowupDesignation(userText, availableCircuits) {
   const designationText = stripDescriptionWrappers(String(userText ?? '').toLowerCase());
   const canonicalMatch = matchCanonicalExactDesignation(designationText, circuits);
   const cleaned = cleanReplyForDesignation(designationText);
+  const rawMatch =
+    canonicalMatch.kind !== 'no_match' ? canonicalMatch : matchDesignation(cleaned, circuits);
   return {
     canonicalMatch,
-    match:
-      canonicalMatch.kind !== 'no_match' ? canonicalMatch : matchDesignation(cleaned, circuits),
+    rawMatch,
+    match: safeDesignationAnswerMatch(rawMatch, cleaned, circuits),
   };
 }
 
@@ -1557,6 +1594,13 @@ export function resolveMultiDescriptionFollowup({
     return {
       kind: 'escalate',
       parsed_hint: `multi_description_followup_ambiguous_designation:${canonicalDesignationMatch.circuitRefs.join(',')}`,
+      available_circuits: circuits,
+    };
+  }
+  if (hasLeadingCircuitTargetCommand(userText) && !Number.isInteger(boundedExceptionalRef)) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'multi_description_followup_unbounded_circuit_target_command',
       available_circuits: circuits,
     };
   }
@@ -1681,8 +1725,8 @@ function hasExplicitCircuitRefAnchor(userText) {
 }
 
 function hasKnownDesignationAnchor(userText, availableCircuits) {
-  const { match } = matchMultiDescriptionFollowupDesignation(userText, availableCircuits);
-  return match.kind !== 'no_match';
+  const { rawMatch } = matchMultiDescriptionFollowupDesignation(userText, availableCircuits);
+  return rawMatch.kind !== 'no_match';
 }
 
 /**
@@ -1695,7 +1739,16 @@ function hasKnownDesignationAnchor(userText, availableCircuits) {
 export function isMultiDescriptionAnswerText(userText, availableCircuits) {
   const stripped = stripPunct(String(userText ?? '').toLowerCase());
   if (CANCEL_PHRASES.includes(stripped)) return true;
+  const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
+  const designationVerdict = matchMultiDescriptionFollowupDesignation(userText, circuits);
+  if (
+    designationVerdict.match.kind === 'exact' ||
+    designationVerdict.canonicalMatch.kind === 'ambiguous'
+  ) {
+    return true;
+  }
   if (Number.isInteger(extractBoundedExceptionalCircuitRef(userText))) return true;
+  if (hasLeadingCircuitTargetCommand(userText)) return false;
   // A bounded correction is a substantive answer to the registered mdr ask:
   // consume it so the dispatcher can reach its fail-closed correction verdict
   // and speak a terminal immediately. Require an explicit ref or census
@@ -1708,7 +1761,6 @@ export function isMultiDescriptionAnswerText(userText, availableCircuits) {
       hasKnownDesignationAnchor(userText, availableCircuits)
     );
   }
-  const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
   const refs = parseMultiDescriptionCircuitRefs(userText);
   if (refs) {
     // Shape gate only. The follow-up resolver performs the census validation
@@ -1716,8 +1768,7 @@ export function isMultiDescriptionAnswerText(userText, availableCircuits) {
     // here would delete the pending ask before that notice can be produced.
     return refs.length > 0;
   }
-  const { match } = matchMultiDescriptionFollowupDesignation(userText, circuits);
-  return match.kind !== 'no_match';
+  return designationVerdict.match.kind !== 'no_match';
 }
 
 // ---------------------------------------------------------------------------
@@ -1890,6 +1941,14 @@ export function resolveCircuitAnswer({
       available_circuits: availableCircuits ?? [],
     };
   }
+  const boundedExceptionalRef = extractBoundedExceptionalCircuitRef(lower);
+  if (hasLeadingCircuitTargetCommand(lower) && !Number.isInteger(boundedExceptionalRef)) {
+    return {
+      kind: 'escalate',
+      parsed_hint: 'unbounded_circuit_target_command',
+      available_circuits: availableCircuits ?? [],
+    };
+  }
 
   // Numeric path: bare digit ("2"), word ("two"), "circuit 2", "circuit two".
   const numericRef = extractCircuitRef(lower);
@@ -1925,7 +1984,11 @@ export function resolveCircuitAnswer({
       available_circuits: availableCircuits ?? [],
     };
   }
-  const match = matchDesignation(cleaned, availableCircuits ?? []);
+  const match = safeDesignationAnswerMatch(
+    matchDesignation(cleaned, availableCircuits ?? []),
+    cleaned,
+    availableCircuits ?? []
+  );
   // §C1 — 'fuzzy' is the new conservative Levenshtein verdict (plural/typo
   // variants of a real designation, strict margin). Treated exactly like the
   // deterministic matches: the write auto-resolves to that circuit.

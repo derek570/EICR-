@@ -1127,6 +1127,40 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
   });
 
+  test('an unbounded command cannot reclaim a real designation inside an mdr follow-up', async () => {
+    const run = startMultiDispatcher({
+      session: buildSession([
+        { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+        { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+        { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+        { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+      ]),
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'Add to Bedroom 2 and circuit 5',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([3]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/couldn't place every circuit/i),
+      }),
+    ]);
+  });
+
   test('two equally valid overlapping assignments keep both source segments unresolved', async () => {
     const run = startMultiDispatcher();
     await tick();

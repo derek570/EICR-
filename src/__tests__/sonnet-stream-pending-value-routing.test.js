@@ -611,6 +611,80 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     }
   );
 
+  test.each(['Add to Bedroom 2', 'Add 0.4 to Bedroom 2', 'Add to Bedroom 2 and circuit 5'])(
+    'a transcript-only unbounded command "%s" cannot consume a colliding mdr designation',
+    async (userText) => {
+      const slug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: `u-mdr-transcript-${slug}`,
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toBeNull();
+      expect([...entry.pendingAsks.entries()].map(([id]) => id)).toEqual([toolCallId]);
+      expect(entry.pendingTranscripts).toEqual([expect.objectContaining({ text: userText })]);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(['Add to Bedroom 2', 'Add 0.4 to Bedroom 2', 'Add to Bedroom 2 and circuit 5'])(
+    'a direct-channel unbounded command "%s" overtakes and is reinjected instead of answering mdr',
+    async (userText) => {
+      const slug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        consumed_utterance_id: `u-mdr-direct-${slug}`,
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: false,
+        reason: 'user_moved_on',
+        utterance_id: `u-mdr-direct-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      await flushUntilHarnessCalled();
+      expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+      expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain(userText);
+    }
+  );
+
   test.each(['Add to circuit 5 please', 'circuit 3 without the RCD'])(
     'a direct-channel bounded scalar form "%s" reaches the registered mdr resolver',
     async (userText) => {

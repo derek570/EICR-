@@ -1119,6 +1119,29 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
     }
   );
 
+  test.each(['Add to Bedroom 2', 'Add 0.4 to Bedroom 2', 'Add to Bedroom 2 and circuit 5'])(
+    'real designation collision "%s" remains a moved-on command, not an mdr answer',
+    (userText) => {
+      const verdict = classifyOvertake(
+        userText,
+        [],
+        mockPending([
+          [
+            'mdr-command-collision',
+            {
+              ...mdrEntry,
+              multiDescriptionCircuits: [
+                { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+                { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+              ],
+            },
+          ],
+        ])
+      );
+      expect(verdict).toEqual({ kind: 'user_moved_on' });
+    }
+  );
+
   test('a designation-only restatement is accepted only for the mdr namespace', () => {
     expect(
       classifyOvertake('upstairs lights', [], mockPending([['mdr-multi-description-2', mdrEntry]]))

@@ -1932,16 +1932,17 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
 
   test.each([
     ['Add to Bedroom 2', false],
-    ['Add 0.42 to circuit 5', false],
-    ['Add to circuit 5 and circuit 6', false],
+    ['Add 0.4 to Bedroom 2', false],
+    ['Add to Bedroom 2 and circuit 5', false],
     ['circuit 3 without sockets', true],
   ])(
     'the mdr-only exceptional ref grammar rejects out-of-bounds form "%s"',
     (reply, shouldConsumeAsCorrection) => {
-      const circuits = Array.from({ length: 6 }, (_, index) => ({
-        circuit_ref: index + 1,
-        circuit_designation: `Target ${index + 1}`,
-      }));
+      const circuits = [
+        { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+        { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+        { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+      ];
       const verdict = resolveMultiDescriptionFollowup({
         userText: reply,
         pendingWrite: SAMPLE_PENDING,
@@ -1950,6 +1951,22 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       expect(verdict).toMatchObject({ kind: 'escalate' });
       expect(verdict.writes).toBeUndefined();
       expect(isMultiDescriptionAnswerText(reply, circuits)).toBe(shouldConsumeAsCorrection);
+    }
+  );
+
+  test.each(['Add to Bedroom 2', 'Add 0.4 to Bedroom 2', 'Add to Bedroom 2 and circuit 5'])(
+    'a real digit-bearing designation cannot reclaim unbounded command "%s" on the scalar path',
+    (reply) => {
+      const verdict = resolveCircuitAnswer({
+        userText: reply,
+        pendingWrite: SAMPLE_PENDING,
+        availableCircuits: [
+          { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ],
+      });
+      expect(verdict).toMatchObject({ kind: 'escalate' });
+      expect(verdict.writes).toBeUndefined();
     }
   );
 
