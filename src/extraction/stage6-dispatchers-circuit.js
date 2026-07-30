@@ -113,6 +113,7 @@ import {
   stageMandatoryNotice,
   spokenBoardOrdinal,
   stagePartialFailureNotice,
+  resolvePartialFailureFieldLabel,
 } from './refusal-notices.js';
 import {
   CLEAR_BOARD_READING_FIELD_ENUM,
@@ -245,8 +246,10 @@ function stageScopePartialFailure(ctx, { reason, field, boardId, producer }) {
 function stagePartialFailureTarget(ctx, { reason, field, boardId, producer, target }) {
   const { session, perTurnWrites } = ctx;
   if (typeof field !== 'string') return false;
-  const schemaLabel = FIELD_SCHEMA.circuit_fields?.[field]?.label;
-  if (typeof schemaLabel !== 'string' || schemaLabel.trim().length === 0) return false;
+  // Raw spelling first, canonical identity only as a fallback — see
+  // resolvePartialFailureFieldLabel for why that order is load-bearing.
+  const schemaLabel = resolvePartialFailureFieldLabel(FIELD_SCHEMA.circuit_fields, field);
+  if (schemaLabel === null) return false;
   return stagePartialFailureNotice(perTurnWrites, {
     reason,
     field,

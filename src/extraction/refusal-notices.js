@@ -680,6 +680,48 @@ export function canonicalPartialFailureFieldIdentity(field) {
 }
 
 /**
+ * Resolve the TRUSTED spoken label for a partial-failure target, RAW SPELLING
+ * FIRST and the canonical identity only as a fallback.
+ *
+ * The ORDER is the safety property, and it is the opposite way round from the
+ * subtraction identity above — hence this helper, so the order is stated once
+ * with its reasoning instead of being re-derived at each call site.
+ *
+ * WHY raw first (Codex diff-review cycle 1): canonicalisation is NOT
+ * label-preserving, and it loses labels far more often than it gains them.
+ * `measured_zs_ohm` ("Measured Zs (ohm)") canonicalises to `zs`, which has NO
+ * schema label at all — so canonicalising before the lookup would stage
+ * NOTHING for the headline id-112 utterance and leave exactly the silence this
+ * plan exists to remove. Same for `rcd_time_ms`, `r1_r2_ohm`,
+ * `ir_live_live_mohm`.
+ *
+ * WHY a canonical fallback at all: a few aliases run the other way — bare
+ * `max_zs` / `ocpd_max_zs` carry no label of their own but canonicalise to
+ * `ocpd_max_zs_ohm` ("Max Zs (ohm)"), which does. Without the fallback a model
+ * using the short spelling would go silent for a field the schema can name
+ * perfectly well.
+ *
+ * Both branches read `field_schema.json` labels, so every rendered string stays
+ * SERVER-OWNED — a model-supplied field name is never itself spoken, and a
+ * field neither spelling can name stages nothing (the caller's trust guard).
+ *
+ * @param {object|undefined} circuitFields `FIELD_SCHEMA.circuit_fields` — passed
+ *   in rather than imported so this module stays dependency-downstream-only.
+ * @param {string} field raw, model-supplied field name
+ * @returns {string|null} a non-blank trusted label, or null if neither spelling has one
+ */
+export function resolvePartialFailureFieldLabel(circuitFields, field) {
+  if (typeof field !== 'string' || field.length === 0) return null;
+  const raw = circuitFields?.[field]?.label;
+  if (typeof raw === 'string' && raw.trim().length > 0) return raw;
+  const canonical = canonicalPartialFailureFieldIdentity(field);
+  if (canonical === field) return null;
+  const folded = circuitFields?.[canonical]?.label;
+  if (typeof folded === 'string' && folded.trim().length > 0) return folded;
+  return null;
+}
+
+/**
  * Target descriptor slots every partial-failure variant renders from. Built by
  * `describePartialFailureTargets` so the number-dependent grammar is decided
  * ONCE and every variant stays renderable for singular, plural and

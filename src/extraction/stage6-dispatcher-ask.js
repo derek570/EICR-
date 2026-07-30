@@ -116,6 +116,10 @@ import {
   resolveFieldNameAnswer,
   detectStructuredReading,
 } from './stage6-pending-value.js';
+// Plan 2A (partial-failure notices, 2026-07-30) — the shared raw-then-canonical
+// label resolver. Pure and dependency-downstream-only; see its docstring for why
+// the lookup order is load-bearing.
+import { resolvePartialFailureFieldLabel } from './refusal-notices.js';
 
 const require = createRequire(import.meta.url);
 // Schema-driven enum validation for select-typed asks (Bug B from session
@@ -915,8 +919,10 @@ function stageAskAutoResolveFailure(stageFn, { write, result, producer }) {
   if (body?.error?.code === 'circuit_not_found') return;
   if (write?.tool !== 'record_reading') return;
   if (!Number.isInteger(write?.circuit)) return;
-  const label = FIELD_SCHEMA.circuit_fields?.[write.field]?.label;
-  if (typeof label !== 'string' || label.trim().length === 0) return;
+  // Raw spelling first, canonical identity only as a fallback — see
+  // resolvePartialFailureFieldLabel for why that order is load-bearing.
+  const label = resolvePartialFailureFieldLabel(FIELD_SCHEMA.circuit_fields, write.field);
+  if (label === null) return;
   stageFn({
     reason: 'write_failed',
     field: write.field,
@@ -1400,14 +1406,32 @@ async function buildResolvedBody({
         // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
         throwIfStage6Cancelled(signal);
         const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+        const ok = result?.ok !== false;
         dispatched.push({
           tool: write.tool,
           field: write.field,
           circuit: write.circuit,
           value: write.value,
-          ok: result?.ok !== false,
+          ok,
         });
+        // Plan 2A channel 3, Codex diff-review cycle 1 (lens 3) — this is the
+        // THIRD auto-resolve loop in this file and it was the one the original
+        // wiring missed. Same silence class as the other two: the inspector
+        // dictated a value, ANSWERED the "which circuit?" ask, the resolved
+        // write then failed, and without this the turn says nothing about it.
+        if (!ok) {
+          stageAskAutoResolveFailure(stagePartialFailureNotice, {
+            write,
+            result,
+            producer: 'ask_auto_resolve_circuit',
+          });
+        }
       } catch (err) {
+        stageAskAutoResolveFailure(stagePartialFailureNotice, {
+          write,
+          result: null,
+          producer: 'ask_auto_resolve_circuit_throw',
+        });
         if (logger?.warn) {
           logger.warn('stage6.ask_user_auto_resolve_dispatch_failed', {
             sessionId,

@@ -52,6 +52,7 @@ const {
   stagePartialFailureNotice,
   renderPartialFailureNoticeText,
   renderedNoticeInventory,
+  resolvePartialFailureFieldLabel,
 } = await import('../extraction/refusal-notices.js');
 const { CLEAR_WIRE_EXEMPT } = await import('../extraction/stage6-event-bundler.js');
 const { createPerTurnWrites } = await import('../extraction/stage6-per-turn-writes.js');
@@ -308,6 +309,57 @@ describe('§5.A5 — canonical field identity (the drain’s subtraction key)', 
     // members or a notice and its write would key differently.
     expect([...NOTICE_FIELD_IDENTITY_EXEMPT].sort()).toEqual([...CLEAR_WIRE_EXEMPT].sort());
     expect(canonicalPartialFailureFieldIdentity('r2_ohm')).toBe('r2_ohm');
+  });
+});
+
+describe('§5.A5b — resolvePartialFailureFieldLabel: RAW first, canonical only as fallback', () => {
+  // Codex diff-review cycle 1 (lens 2) proposed canonicalising BEFORE the label
+  // lookup. These tests exist because that would have silenced the headline
+  // id-112 utterance: canonicalisation is not label-preserving and loses far
+  // more labels than it gains.
+  const circuitFields = FIELD_SCHEMA.circuit_fields;
+
+  test('the headline field keeps its RAW label — canonicalising first would stage NOTHING', () => {
+    expect(resolvePartialFailureFieldLabel(circuitFields, 'measured_zs_ohm')).toBe(
+      'Measured Zs (ohm)'
+    );
+    // The proof that the order matters: the canonical identity has no label.
+    const canonical = canonicalPartialFailureFieldIdentity('measured_zs_ohm');
+    expect(canonical).toBe('zs');
+    expect(circuitFields?.[canonical]?.label).toBeUndefined();
+  });
+
+  test('every raw-labelled alias whose canonical form is label-LESS still resolves', () => {
+    for (const raw of ['measured_zs_ohm', 'rcd_time_ms', 'r1_r2_ohm', 'ir_live_live_mohm']) {
+      const label = resolvePartialFailureFieldLabel(circuitFields, raw);
+      expect(typeof label).toBe('string');
+      expect(label.trim().length).toBeGreaterThan(0);
+      expect(label).toBe(circuitFields[raw].label);
+    }
+  });
+
+  test('the FALLBACK rescues the opposite direction — a short spelling with no label of its own', () => {
+    // `max_zs` / `ocpd_max_zs` carry no schema label; their canonical form does.
+    // Before the fallback these staged nothing and the turn went silent.
+    for (const short of ['max_zs', 'ocpd_max_zs']) {
+      expect(circuitFields?.[short]?.label).toBeUndefined();
+      expect(canonicalPartialFailureFieldIdentity(short)).toBe('ocpd_max_zs_ohm');
+      expect(resolvePartialFailureFieldLabel(circuitFields, short)).toBe(
+        circuitFields.ocpd_max_zs_ohm.label
+      );
+    }
+  });
+
+  test('a field NEITHER spelling can name returns null — the caller then stages nothing', () => {
+    expect(resolvePartialFailureFieldLabel(circuitFields, 'not_a_field')).toBeNull();
+    expect(resolvePartialFailureFieldLabel(circuitFields, '')).toBeNull();
+    expect(resolvePartialFailureFieldLabel(circuitFields, undefined)).toBeNull();
+    expect(resolvePartialFailureFieldLabel(undefined, 'measured_zs_ohm')).toBeNull();
+  });
+
+  test('LEAK SAFETY — the resolved label is always a schema string, never the model’s own', () => {
+    // A model-supplied name that happens to differ only in case must not leak.
+    expect(resolvePartialFailureFieldLabel(circuitFields, 'MEASURED_ZS_OHM')).toBeNull();
   });
 });
 

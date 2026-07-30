@@ -74,6 +74,31 @@ const enumAsk = (overrides = {}) => ({
 });
 
 /**
+ * The "which circuit?" shape: a value is ALREADY buffered on `pending_write`
+ * and the ask exists only to resolve the circuit it belongs to. Answering it
+ * runs the THIRD auto-resolve loop (`resolveCircuitAnswer`) — the one Codex
+ * diff-review cycle 1 (lens 3) found unwired.
+ */
+const circuitAsk = (overrides = {}) => ({
+  question: 'Which circuit was that Zs for?',
+  reason: 'missing_context',
+  context_field: 'measured_zs_ohm',
+  expected_answer_shape: 'circuit_ref',
+  // The validation gate (stage6-dispatch-validation.js) requires the FULL
+  // pending_write shape — a STRING value, a numeric confidence and a string
+  // source_turn_id. A partial literal is rejected as
+  // `invalid_pending_write_value` before resolution ever runs.
+  pending_write: {
+    tool: 'record_reading',
+    field: 'measured_zs_ohm',
+    value: '0.86',
+    confidence: 0.9,
+    source_turn_id: 'turn-1',
+  },
+  ...overrides,
+});
+
+/**
  * Drive a full dispatcher cycle with a scripted `autoResolveWrite`.
  * @param {(write: object) => object|Promise<object>} resolveImpl
  */
@@ -177,6 +202,53 @@ describe('§5.C1 — channel 3 stages the genuinely-uncovered residue', () => {
     expect(stagePartialFailureNotice.mock.calls[0][0]).toMatchObject({
       producer: 'ask_auto_resolve_enum_throw',
     });
+  });
+
+  test('the CIRCUIT resolve path stages too — the loop Codex cycle 1 found unwired', async () => {
+    // The silence this closes: the inspector dictated 0.86, ANSWERED "which
+    // circuit?" with "circuit 5", and the resolved write then failed. Before
+    // this wiring the turn said nothing at all about it.
+    const { body, stagePartialFailureNotice } = await runAsk({
+      userText: 'circuit 5',
+      input: circuitAsk(),
+      resolveImpl: () => FAIL({ error: { code: 'wrong_board', field: 'measured_zs_ohm' } }),
+    });
+
+    expect(body.resolved_writes[0]).toMatchObject({ circuit: 5, ok: false });
+    expect(stagePartialFailureNotice).toHaveBeenCalledTimes(1);
+    expect(stagePartialFailureNotice).toHaveBeenCalledWith({
+      reason: 'write_failed',
+      field: 'measured_zs_ohm',
+      fieldLabel: label('measured_zs_ohm'),
+      boardId: null,
+      target: { kind: 'circuit', ref: 5 },
+      producer: 'ask_auto_resolve_circuit',
+    });
+  });
+
+  test('a THROW on the circuit resolve path stages with its own producer', async () => {
+    const { stagePartialFailureNotice } = await runAsk({
+      userText: 'circuit 5',
+      input: circuitAsk(),
+      resolveImpl: () => {
+        throw new Error('kaboom');
+      },
+    });
+    expect(stagePartialFailureNotice.mock.calls[0][0]).toMatchObject({
+      reason: 'write_failed',
+      producer: 'ask_auto_resolve_circuit_throw',
+      target: { kind: 'circuit', ref: 5 },
+    });
+  });
+
+  test('a SUCCESSFUL circuit resolve stages nothing', async () => {
+    const { body, stagePartialFailureNotice } = await runAsk({
+      userText: 'circuit 5',
+      input: circuitAsk(),
+      resolveImpl: OK,
+    });
+    expect(body.resolved_writes[0]).toMatchObject({ circuit: 5, ok: true });
+    expect(stagePartialFailureNotice).not.toHaveBeenCalled();
   });
 
   test('FAN-OUT: one reply, two writes, one failure ⇒ exactly the failing circuit is staged', async () => {
