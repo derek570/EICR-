@@ -955,7 +955,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
   });
 
-  test('an exact-designation board follow-up uses its successful census ref without metadata', async () => {
+  test('an exact-designation board follow-up reuses its successful logical board slot', async () => {
     const run = startMultiDispatcher({
       inputOverrides: { context_field: 'earth_loop_impedance_ze' },
       pendingWriteOverrides: {
@@ -966,7 +966,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and please',
+      user_text: 'upstars lights and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -981,7 +981,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(body.resolved_writes).toEqual([
       expect.objectContaining({
         tool: 'record_board_reading',
-        circuit: 4,
+        circuit: 0,
         ok: true,
       }),
     ]);

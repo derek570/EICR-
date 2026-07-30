@@ -1411,10 +1411,13 @@ async function buildResolvedBody({
     const dispatched = [];
     const dispatchedSlots = new Set();
     const successfulDispatchedSlots = new Set();
-    const dispatchSlotKey = (write) =>
-      `${write?.tool ?? ''}\u0000${write?.field ?? ''}\u0000${write?.circuit ?? ''}\u0000${
+    const dispatchSlotKey = (write) => {
+      const logicalCircuit =
+        write?.tool === 'record_board_reading' ? 'board' : (write?.circuit ?? '');
+      return `${write?.tool ?? ''}\u0000${write?.field ?? ''}\u0000${logicalCircuit}\u0000${
         write?.board_id ?? contextBoardId ?? ''
       }`;
+    };
     const dispatchWrites = async (writes, producer) => {
       const newlyDispatched = [];
       for (const write of Array.isArray(writes) ? writes : []) {
