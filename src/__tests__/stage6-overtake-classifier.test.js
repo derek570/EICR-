@@ -522,6 +522,28 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
     expect(verdict.userText).toBe('circuit 2.');
   });
 
+  test('STA-04c-circuit-ref-imperative-wrapper: real classifier accepts "Add to circuit 5 please"', () => {
+    const verdict = classifyOvertake(
+      'Add to circuit 5 please',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          {
+            contextField: 'ir_live_earth_mohm',
+            contextCircuit: null,
+            expectedAnswerShape: 'circuit_ref',
+          },
+        ],
+      ])
+    );
+    expect(verdict).toEqual({
+      kind: 'answers',
+      toolCallId: 'ask_disambig',
+      userText: 'Add to circuit 5 please',
+    });
+  });
+
   test('STA-04c-circuit-ref-word: circuit_ref ask + "two" → answers', () => {
     const verdict = classifyOvertake(
       'two',

@@ -3,6 +3,7 @@
 // (number_of_points = 4, user answered "the cooker circuit", never written).
 
 import {
+  extractCircuitRef,
   isMultiDescriptionAnswerText,
   resolveCircuitAnswer,
   resolveMultiDescriptionFollowup,
@@ -72,6 +73,31 @@ describe('resolveCircuitAnswer — numeric replies', () => {
     });
     expect(r.kind).toBe('auto_resolve');
     expect(r.writes[0].circuit).toBe(2);
+  });
+
+  test.each([
+    ['Add to circuit 2 please', 2],
+    ['Put it on circuit 2', 2],
+    ['Put onto cct no. 2, thanks', 2],
+  ])('bounded imperative circuit-ref answer "%s" resolves to %i', (reply, expectedRef) => {
+    expect(extractCircuitRef(reply)).toBe(expectedRef);
+    const r = resolveCircuitAnswer({
+      userText: reply,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r).toMatchObject({
+      kind: 'auto_resolve',
+      writes: [expect.objectContaining({ circuit: expectedRef })],
+    });
+  });
+
+  test.each([
+    'Add to Bedroom 2 please',
+    'Add 0.4 to circuit 2 please',
+    'Add to circuit 2 and circuit 3 please',
+  ])('imperative-looking prose "%s" cannot bypass the bounded circuit-ref grammar', (reply) => {
+    expect(extractCircuitRef(reply)).toBeNull();
   });
 
   test('word number "two"', () => {

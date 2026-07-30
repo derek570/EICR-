@@ -1949,6 +1949,19 @@ export function extractCircuitRef(lowerText) {
     return n >= 1 && n <= 200 ? n : null;
   }
 
+  // Shipped direct-answer exception: an explicit imperative wrapper still
+  // belongs to the circuit-ref ask it answers. Keep the grammar enumerated,
+  // anchored, digit-only and circuit-noun-owned: the old free prose scan made
+  // "Bedroom 2" a circuit-2 answer, while iOS legitimately sends phrases such
+  // as "Add to circuit 5 please" (edge politeness was stripped above).
+  const imperativeDigit = trimmed.match(
+    /^(?:add(?:\s+it)?\s+to|put(?:\s+it)?\s+(?:on|onto))\s+(?:the\s+)?(?:circuit|cct)(?:\s+(?:number|no\.?))?\s+(\d{1,3})$/i
+  );
+  if (imperativeDigit) {
+    const n = Number.parseInt(imperativeDigit[1], 10);
+    return n >= 1 && n <= 200 ? n : null;
+  }
+
   // Strict digit grammar: a single integer 1..200, optionally wrapped by a
   // circuit noun. Anchoring rejects decimals, prose, and multiple numbers.
   const digit = trimmed.match(
