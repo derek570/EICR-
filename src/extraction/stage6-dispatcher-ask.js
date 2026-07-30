@@ -104,6 +104,7 @@ import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import {
   resolveCircuitAnswer,
+  resolveMultiDescriptionFollowup,
   resolveValueAnswer,
   resolveEnumAnswer,
   resolveBoardIdAnswer,
@@ -1400,6 +1401,7 @@ async function buildResolvedBody({
     const dispatched = [];
     const dispatchedSlots = new Set();
     const dispatchWrites = async (writes, producer) => {
+      const newlyDispatched = [];
       for (const write of Array.isArray(writes) ? writes : []) {
         const slotKey = `${write?.tool ?? ''}\u0000${write?.field ?? ''}\u0000${
           write?.circuit ?? ''
@@ -1413,13 +1415,15 @@ async function buildResolvedBody({
           throwIfStage6Cancelled(signal);
           const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
           const ok = result?.ok !== false;
-          dispatched.push({
+          const dispatchRecord = {
             tool: write.tool,
             field: write.field,
             circuit: write.circuit,
             value: write.value,
             ok,
-          });
+          };
+          dispatched.push(dispatchRecord);
+          newlyDispatched.push(dispatchRecord);
           // Plan 2A channel 3 — a resolved write which fails is independently
           // audible. PLAN-2B reuses the same path for writes resolved after a
           // server-brokered multi-description clarification.
@@ -1447,16 +1451,19 @@ async function buildResolvedBody({
               error: err?.message || String(err),
             });
           }
-          dispatched.push({
+          const dispatchRecord = {
             tool: write.tool,
             field: write.field,
             circuit: write.circuit,
             value: write.value,
             ok: false,
             error: err?.message || String(err),
-          });
+          };
+          dispatched.push(dispatchRecord);
+          newlyDispatched.push(dispatchRecord);
         }
       }
+      return newlyDispatched;
     };
 
     await dispatchWrites(verdict.writes, 'ask_auto_resolve_circuit');
@@ -1472,9 +1479,38 @@ async function buildResolvedBody({
     const remainingUnresolved = [];
     const noticeEntries = unresolved.filter((entry) => entry?.disposition === 'notice');
     const askEntries = unresolved.filter((entry) => entry?.disposition === 'ask');
+    let followupCancelled = false;
+    let multiDescriptionTerminalQueued = false;
+    const queueMultiDescriptionTerminal = (text, reason) => {
+      if (multiDescriptionTerminalQueued) return;
+      throwIfStage6Cancelled(signal);
+      queuePendingValueApology(session, text, generationId);
+      multiDescriptionTerminalQueued = true;
+      logger?.info?.('stage6.multi_description_terminal_queued', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        reason,
+      });
+    };
+    const appendUniqueUnresolved = (target, entries) => {
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        const duplicate = target.some(
+          (existing) =>
+            existing?.identity === entry?.identity &&
+            existing?.span_kind === entry?.span_kind &&
+            existing?.disposition === entry?.disposition &&
+            existing?.reason === entry?.reason &&
+            existing?.scope?.field === entry?.scope?.field &&
+            (existing?.scope?.board_id ?? null) === (entry?.scope?.board_id ?? null)
+        );
+        if (!duplicate) target.push(entry);
+      }
+    };
     if (askEntries.length > 0) {
       if (!pendingAsks) {
         remainingUnresolved.push(...askEntries);
+        queueMultiDescriptionTerminal(MULTI_DESCRIPTION_ASK_FAILED_APOLOGY, 'registry_unavailable');
       } else {
         const { outcome: askOutcome } = await brokerRegisteredAsk({
           idPrefix: 'mdr',
@@ -1490,6 +1526,7 @@ async function buildResolvedBody({
           expectedAnswerShape: 'free_text',
           pendingValue: null,
           pendingWrite,
+          multiDescriptionCircuits: availableCircuits,
           purpose: 'multi_description',
           onAskUserStarted,
           onAskAnswered,
@@ -1500,14 +1537,29 @@ async function buildResolvedBody({
         throwIfStage6Cancelled(signal);
         if (!askOutcome?.answered) {
           remainingUnresolved.push(...askEntries);
+          if (
+            askOutcome?.reason === 'broker_register_failed' ||
+            askOutcome?.reason === 'broker_emit_failed'
+          ) {
+            queueMultiDescriptionTerminal(MULTI_DESCRIPTION_ASK_FAILED_APOLOGY, askOutcome.reason);
+          }
         } else {
-          const followVerdict = resolveCircuitAnswer({
-            userText: askOutcome.user_text,
-            pendingWrite,
-            availableCircuits,
-            contextBoardId,
-          });
-          if (followVerdict.kind !== 'cancel') {
+          const followVerdict =
+            resolveMultiDescriptionFollowup({
+              userText: askOutcome.user_text,
+              pendingWrite,
+              availableCircuits,
+              contextBoardId,
+            }) ??
+            resolveCircuitAnswer({
+              userText: askOutcome.user_text,
+              pendingWrite,
+              availableCircuits,
+              contextBoardId,
+            });
+          if (followVerdict.kind === 'cancel') {
+            followupCancelled = true;
+          } else {
             const knownRefs = new Set(
               availableCircuits
                 .map((circuit) => {
@@ -1526,34 +1578,50 @@ async function buildResolvedBody({
                 write?.tool !== 'record_reading' ||
                 (Number.isInteger(write?.circuit) && knownRefs.has(write.circuit))
             );
-            await dispatchWrites(followWrites, 'ask_auto_resolve_multi_description_followup');
+            const followDispatches = await dispatchWrites(
+              followWrites,
+              'ask_auto_resolve_multi_description_followup'
+            );
 
             if (Array.isArray(followVerdict.unresolved)) {
-              noticeEntries.push(
-                ...followVerdict.unresolved.filter(
-                  (candidate) => candidate?.disposition === 'notice'
-                )
+              appendUniqueUnresolved(
+                noticeEntries,
+                followVerdict.unresolved.filter((candidate) => candidate?.disposition === 'notice')
               );
-              remainingUnresolved.push(
-                ...followVerdict.unresolved.filter((candidate) => candidate?.disposition === 'ask')
+              appendUniqueUnresolved(
+                remainingUnresolved,
+                followVerdict.unresolved.filter((candidate) => candidate?.disposition === 'ask')
               );
             }
 
-            // A scalar follow-up can resolve syntactically yet name a circuit
-            // absent from the current server-owned census. Never dispatch it;
-            // retain the original ask-required verdict so the tool result is
-            // honest about the unresolved scope.
-            if (
-              followWrites.length === 0 &&
-              !Array.isArray(followVerdict.unresolved) &&
-              followVerdict.kind !== 'cancel'
-            ) {
-              remainingUnresolved.push(...askEntries);
-            } else if (
-              followVerdict.kind === 'escalate' ||
-              followVerdict.kind === 'no_pending_write'
-            ) {
-              remainingUnresolved.push(...askEntries);
+            // Reconcile the GROUPED question by actual NEW dispatch attempts,
+            // not by syntactic writes. A reply that names an already-written
+            // sibling is de-duplicated above and therefore cannot make a
+            // different unresolved description disappear. Prefer the original
+            // span whose server-owned candidate set contains the dispatched
+            // ref, then fall back to question order; one attempt can satisfy at
+            // most one span and every remainder stays explicit.
+            const unmatchedOriginal = [...askEntries];
+            for (const dispatch of followDispatches) {
+              if (unmatchedOriginal.length === 0) break;
+              const candidateIndex = unmatchedOriginal.findIndex(
+                (entry) =>
+                  Number.isInteger(dispatch?.circuit) &&
+                  Array.isArray(entry?.candidates) &&
+                  entry.candidates.includes(dispatch.circuit)
+              );
+              unmatchedOriginal.splice(candidateIndex >= 0 ? candidateIndex : 0, 1);
+            }
+            appendUniqueUnresolved(remainingUnresolved, unmatchedOriginal);
+
+            const askStillUnresolved = remainingUnresolved.some(
+              (entry) => entry?.disposition === 'ask'
+            );
+            if (askStillUnresolved) {
+              queueMultiDescriptionTerminal(
+                MULTI_DESCRIPTION_UNRESOLVED_APOLOGY,
+                followDispatches.length === 0 ? 'answered_no_progress' : 'answered_partial_progress'
+              );
             }
           }
         }
@@ -1592,6 +1660,13 @@ async function buildResolvedBody({
         }
       }
     }
+    const finalMatchStatus = followupCancelled
+      ? 'partial'
+      : verdict.match_status == null
+        ? 'auto_resolved'
+        : remainingUnresolved.length === 0
+          ? 'full'
+          : 'partial';
     if (logger?.info) {
       logger.info('stage6.ask_user_auto_resolved', {
         sessionId,
@@ -1599,8 +1674,7 @@ async function buildResolvedBody({
         tool_call_id: toolCallId,
         write_count: dispatched.length,
         all_ok: dispatched.every((d) => d.ok),
-        match_status:
-          verdict.match_status ?? (remainingUnresolved.length > 0 ? 'partial' : 'auto_resolved'),
+        match_status: finalMatchStatus,
         unresolved_count: remainingUnresolved.length,
       });
     }
@@ -1609,12 +1683,7 @@ async function buildResolvedBody({
       untrusted_user_text: outcome.user_text,
       // NOTE (P3): skip over-reporting is a pre-existing follow-up (see enum branch).
       auto_resolved: dispatched.length > 0,
-      match_status:
-        verdict.match_status == null
-          ? 'auto_resolved'
-          : remainingUnresolved.length === 0
-            ? 'full'
-            : 'partial',
+      match_status: finalMatchStatus,
       resolved_writes: dispatched,
       ...(verdict.match_status != null ? { unresolved: remainingUnresolved } : {}),
     };
@@ -1770,9 +1839,16 @@ function speakCandidateRefs(candidates) {
  */
 function multiDescriptionQuestion(entries) {
   const clauses = (Array.isArray(entries) ? entries : [])
-    .map(
-      (entry) => `${speakMultiDescriptionIdentity(entry)}${speakCandidateRefs(entry?.candidates)}`
-    )
+    .map((entry) => {
+      const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
+      const repeatsIdentity =
+        entry?.span_kind === 'circuit_ref' &&
+        candidates.length === 1 &&
+        candidates[0] === entry.identity;
+      return `${speakMultiDescriptionIdentity(entry)}${
+        repeatsIdentity ? '' : speakCandidateRefs(candidates)
+      }`;
+    })
     .filter(Boolean);
   const identityList =
     clauses.length <= 1
@@ -1798,6 +1874,7 @@ async function brokerRegisteredAsk({
   expectedAnswerShape,
   pendingValue,
   pendingWrite = null,
+  multiDescriptionCircuits = null,
   purpose = 'pending_value',
   onAskUserStarted = null,
   onAskAnswered = null,
@@ -1826,6 +1903,7 @@ async function brokerRegisteredAsk({
         expectedAnswerShape,
         pendingWrite,
         pendingValue: pendingValue ?? null,
+        multiDescriptionCircuits,
         resolve,
         timer,
         askStartedAt,
@@ -1985,6 +2063,11 @@ function queuePendingValueApology(session, text, generationId = null) {
   // suppress the current fallback or be spoken on the wrong turn).
   session.pendingVoicePrompts.push({ text, generationId });
 }
+
+const MULTI_DESCRIPTION_ASK_FAILED_APOLOGY =
+  "Sorry, I couldn't ask which circuits that reading was for. Please say the reading and circuit numbers together again.";
+const MULTI_DESCRIPTION_UNRESOLVED_APOLOGY =
+  "Sorry, I still couldn't place every circuit. Please say the reading and the remaining circuit number or numbers together again.";
 
 /**
  * Codex r2-#1 — eligibility for pendingValue capture: ONLY the A4 inverted

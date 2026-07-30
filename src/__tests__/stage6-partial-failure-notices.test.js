@@ -168,6 +168,19 @@ describe('§5.A2 — describePartialFailureTargets', () => {
     });
   });
 
+  test('mixed refs and ordinals are coalesced without dropping either identity class', () => {
+    const mixed = describePartialFailureTargets(
+      [circuitTarget(99), ordinalTarget(2), circuitTarget(99)],
+      'X'
+    );
+    expect(mixed).toMatchObject({
+      subject: 'Circuit 99 and the second circuit description',
+      subjectLower: 'circuit 99 and the second circuit description',
+      wasWere: "weren't",
+      pronoun: 'them',
+    });
+  });
+
   test('returns null when nothing can be named honestly', () => {
     expect(describePartialFailureTargets([], 'X')).toBeNull();
     expect(describePartialFailureTargets([{ kind: 'circuit' }], 'X')).toBeNull();
@@ -442,6 +455,19 @@ describe('§5.A6 — renderPartialFailureNoticeText', () => {
 
   test('belt-and-braces: a scope-only survivor on a non-scope family renders nothing', () => {
     expect(renderPartialFailureNoticeText({}, aggregate, [SCOPE_TARGET])).toBeNull();
+  });
+
+  test('the final rendered notice keeps mixed circuit-ref and ordinal identities audible', () => {
+    const mixedAggregate = {
+      ...aggregate,
+      reason: 'designation_no_match',
+      targets: [circuitTarget(99), ordinalTarget(2)],
+    };
+    const text = renderPartialFailureNoticeText({}, mixedAggregate, mixedAggregate.targets);
+
+    expect(text).toMatch(/circuit 99/i);
+    expect(text).toContain('the second circuit description');
+    expect(text).not.toContain('attic');
   });
 });
 

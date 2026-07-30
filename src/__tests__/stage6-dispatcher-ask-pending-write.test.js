@@ -573,22 +573,18 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     stagePartialFailureNotice = jest.fn(),
     onAskUserStarted = jest.fn(),
     onAskRegistered = jest.fn(),
+    ws = capturingWs(),
+    generationId = 'gen-multi',
   } = {}) {
     const pendingAsks = createPendingAsksRegistry();
-    const ws = capturingWs();
-    const dispatcher = createAskDispatcher(
-      buildSession(multiCircuits),
-      noopLogger(),
-      'turn-multi',
-      pendingAsks,
-      ws,
-      {
-        autoResolveWrite,
-        stagePartialFailureNotice,
-        onAskUserStarted,
-        onAskRegistered,
-      }
-    );
+    const session = buildSession(multiCircuits);
+    const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-multi', pendingAsks, ws, {
+      autoResolveWrite,
+      stagePartialFailureNotice,
+      onAskUserStarted,
+      onAskRegistered,
+      generationId,
+    });
     const promise = dispatcher(
       {
         tool_call_id: 'toolu_multi',
@@ -599,6 +595,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
     return {
       promise,
+      session,
       pendingAsks,
       ws,
       autoResolveWrite,
@@ -668,6 +665,24 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
+  test('mixed absent-ref and unmatched-description targets are both staged', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'circuit 99, the attic circuit, and the smoke alarm',
+    });
+    await run.promise;
+
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledTimes(2);
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { kind: 'circuit', ref: 99 } })
+    );
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({ target: { kind: 'ordinal', ordinal: 2 } })
+    );
+  });
+
   test('all-unmatched escalates with zero writes, notices, or brokered asks', async () => {
     const run = startMultiDispatcher();
     await tick();
@@ -722,6 +737,71 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
   });
 
+  test.each([
+    ['transcript-origin', { response_utterance_id: 'u-mdr-transcript' }],
+    ['direct-channel', { response_utterance_id: 'u-mdr-direct' }],
+  ])(
+    'the %s mdr answer accepts the requested circuit-number list',
+    async (_origin, outcomePatch) => {
+      const run = startMultiDispatcher();
+      await tick();
+      run.pendingAsks.resolve('toolu_multi', {
+        answered: true,
+        user_text: 'upstars lights and smke alarm',
+      });
+      await tick();
+      const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+      run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+        answered: true,
+        user_text: 'circuits 1 and 2',
+        ...outcomePatch,
+      });
+      const body = JSON.parse((await run.promise).content);
+
+      expect(body).toMatchObject({
+        match_status: 'full',
+        unresolved: [],
+      });
+      expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2]);
+      expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
+      expect(
+        run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))
+      ).toHaveLength(1);
+      expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+    }
+  );
+
+  test('one grouped answer cannot silently close a second unresolved description', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and smke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuit 3',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.resolved_writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    expect(body.unresolved.filter((entry) => entry.disposition === 'ask')).toEqual([
+      expect.objectContaining({ identity: 4, candidates: [4] }),
+    ]);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/couldn't place every circuit/i),
+      }),
+    ]);
+    expect(run.session.pendingVoicePrompts[0].text).toMatch(/say the reading/i);
+  });
+
   test('a retry success makes its sibling no-match notice eligible', async () => {
     const run = startMultiDispatcher();
     await tick();
@@ -766,6 +846,52 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(
       run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))
     ).toHaveLength(1);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/couldn't place every circuit/i),
+      }),
+    ]);
+    expect(run.session.pendingVoicePrompts[0].text).toMatch(/say the reading/i);
+  });
+
+  test.each([
+    ['closed socket', (run) => (run.ws.readyState = 0)],
+    [
+      'throwing send',
+      (run) => {
+        run.ws.send = () => {
+          throw new Error('send failed');
+        };
+      },
+    ],
+    [
+      'register failure',
+      (run) => {
+        run.pendingAsks.register = () => {
+          throw new Error('register failed');
+        };
+      },
+    ],
+  ])('a broker %s queues one truthful terminal and leaks no ask', async (_name, breakBroker) => {
+    const run = startMultiDispatcher();
+    await tick();
+    breakBroker(run);
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the attic circuit',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(run.pendingAsks.size).toBe(0);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/couldn't ask which circuits that reading was for/i),
+      }),
+    ]);
+    expect(run.session.pendingVoicePrompts[0].text).toMatch(/say the reading/i);
   });
 
   test('an unmatched notice is not staged when every sibling write fails', async () => {

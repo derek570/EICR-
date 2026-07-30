@@ -195,6 +195,11 @@ function registerMultiDescriptionAsk(entry, toolCallId, resolveFn) {
       field: 'number_of_points',
       value: '4',
     },
+    multiDescriptionCircuits: [
+      { circuit_ref: 1, circuit_designation: 'Lighting' },
+      { circuit_ref: 2, circuit_designation: 'Lighting' },
+      { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+    ],
     resolve: resolveFn,
     timer: makeAskTimer(),
     askStartedAt: Date.now(),
@@ -545,6 +550,30 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
+  test('transcript filler neither consumes the mdr ask nor starts a competing turn', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-filler');
+    entry.isExtracting = true;
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-filler', (payload) => {
+      resolvedPayload = payload;
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'hold on a second',
+      utterance_id: 'u-mdr-filler',
+      regexResults: [],
+    });
+
+    expect(resolvedPayload).toBeNull();
+    expect(entry.pendingAsks.size).toBe(1);
+    expect(entry.pendingTranscripts).toEqual([
+      expect.objectContaining({ text: 'hold on a second' }),
+    ]);
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
   test('a direct-channel fresh reading overtakes mdr and is reinjected', async () => {
     const { ws, entry } = await startSession(wss, 'sess-mdr-2');
     let resolvedPayload = null;
@@ -565,5 +594,26 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     await flushUntilHarnessCalled();
     expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
     expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
+  });
+
+  test('a direct-channel multi-ref restatement resolves the registered mdr ask', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-3');
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-3', (payload) => {
+      resolvedPayload = payload;
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'mdr-description-3',
+      user_text: 'circuits 1 and 2',
+      consumed_utterance_id: 'u-mdr-3',
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: true,
+      user_text: 'circuits 1 and 2',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
   });
 });

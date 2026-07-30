@@ -73,7 +73,7 @@
  * Requirement: STA-04.
  */
 
-import { extractCircuitRef } from './stage6-answer-resolver.js';
+import { extractCircuitRef, isMultiDescriptionAnswerText } from './stage6-answer-resolver.js';
 import { RECORDABLE_READING_FIELDS } from './recordable-reading-fields.js';
 // §A4 (field-feedback-2026-07-14, F8) — typed structurally-complete-reading
 // detector. Pure import; guards the pendingValue free-text acceptance below
@@ -261,18 +261,20 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
       }
     }
 
-    // PLAN-2B §3.3 — mdr-* is a bounded, server-owned free-text
-    // clarification for one or more circuit descriptions. The generic
-    // free_text branch remains deliberately conservative; this prefix makes
-    // the new flow unambiguous. The typed detector above already gives a
-    // structurally complete fresh reading `user_moved_on` precedence.
+    // PLAN-2B §3.3 — mdr-* is a bounded, server-owned clarification for one
+    // or more circuit descriptions. Prefix alone is NOT enough: accepting any
+    // non-empty prose resurrects the retired free_text bug where "hold on a
+    // second" consumes and deletes the pending ask. The broker stores a
+    // server-owned circuit census; accept only a valid ref/list or an
+    // exact/unique designation from that census. The typed detector above
+    // still gives a structurally complete fresh reading overtake precedence.
     for (const [id, entry] of pendingAsks.entries()) {
       if (
         typeof id === 'string' &&
         id.startsWith('mdr-') &&
         entry.expectedAnswerShape === 'free_text' &&
         typeof newText === 'string' &&
-        newText.trim().length > 0
+        isMultiDescriptionAnswerText(newText, entry.multiDescriptionCircuits)
       ) {
         return { kind: 'answers', toolCallId: id, userText: newText };
       }

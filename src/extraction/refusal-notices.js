@@ -935,6 +935,26 @@ export function describePartialFailureTargets(targets, fieldLabel) {
     }
   }
 
+  if (refs.length > 0 && ordinals.length > 0) {
+    const uniqueRefs = [...new Set(refs)].sort((a, b) => a - b);
+    const uniqueOrdinals = [...new Set(ordinals)].sort((a, b) => a - b);
+    const refList = speakRefList(uniqueRefs);
+    const ordinalList = speakOrdinalList(uniqueOrdinals);
+    const refSubject = `${uniqueRefs.length > 1 ? 'Circuits' : 'Circuit'} ${refList}`;
+    const refSubjectLower = `${uniqueRefs.length > 1 ? 'circuits' : 'circuit'} ${refList}`;
+    const ordinalSubject = `the ${ordinalList} circuit ${
+      uniqueOrdinals.length > 1 ? 'descriptions' : 'description'
+    }`;
+    return {
+      subject: `${refSubject} and ${ordinalSubject}`,
+      subjectLower: `${refSubjectLower} and ${ordinalSubject}`,
+      wasWere: "weren't",
+      isAre: "aren't",
+      pronoun: 'them',
+      fieldLabel,
+    };
+  }
+
   if (refs.length > 0) {
     // Deterministic, ascending — the same set of misses must speak the same
     // bytes whatever order the dispatcher happened to reject them in, or the

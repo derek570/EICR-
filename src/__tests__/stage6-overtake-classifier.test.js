@@ -1049,6 +1049,11 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
       field: 'number_of_points',
       value: '4',
     },
+    multiDescriptionCircuits: [
+      { circuit_ref: 1, circuit_designation: 'Lighting' },
+      { circuit_ref: 2, circuit_designation: 'Lighting' },
+      { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+    ],
   };
 
   test('transcript-only multi-ref restatement answers the registered mdr ask', () => {
@@ -1081,5 +1086,24 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
       mockPending([['mdr-multi-description-3', mdrEntry]])
     );
     expect(verdict).toEqual({ kind: 'user_moved_on' });
+  });
+
+  test('conversational filler cannot consume and delete the registered mdr ask', () => {
+    expect(
+      classifyOvertake('hold on a second', [], mockPending([['mdr-multi-description-4', mdrEntry]]))
+    ).toEqual({ kind: 'user_moved_on' });
+  });
+
+  test('a syntactically valid absent ref reaches the resolver for a trusted no-match result', () => {
+    expect(
+      classifyOvertake(
+        'circuits 4 and 99',
+        [],
+        mockPending([['mdr-multi-description-5', mdrEntry]])
+      )
+    ).toMatchObject({
+      kind: 'answers',
+      toolCallId: 'mdr-multi-description-5',
+    });
   });
 });
