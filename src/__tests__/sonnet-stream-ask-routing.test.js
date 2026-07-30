@@ -1850,6 +1850,7 @@ describe('user_text sanitisation on ask_user_answered (Plan 03-10 Task 2)', () =
     expect(resolveSpy).toHaveBeenCalledWith('toolu_normal', {
       answered: true,
       user_text: 'clean answer',
+      utterance_id: 'u-clean',
     });
   });
 
@@ -1944,6 +1945,7 @@ describe('user_text sanitisation on ask_user_answered (Plan 03-10 Task 2)', () =
       answered: true,
       user_text: 'cleanvaluetext',
       sanitisation: { truncated: false, stripped: true },
+      utterance_id: 'u-ctrl',
     });
   });
 });

@@ -117,6 +117,11 @@ import {
   resolveFieldNameAnswer,
   detectStructuredReading,
 } from './stage6-pending-value.js';
+import {
+  getCircuitBucket,
+  isUnscopedBoardId,
+  listCircuitRefsInBoard,
+} from './stage6-multi-board-shape.js';
 // Plan 2A (partial-failure notices, 2026-07-30) — the shared raw-then-canonical
 // label resolver. Pure and dependency-downstream-only; see its docstring for why
 // the lookup order is load-bearing.
@@ -1389,7 +1394,12 @@ async function buildResolvedBody({
     return { answered: true, untrusted_user_text: outcome.user_text };
   }
 
-  const availableCircuits = collectAvailableCircuits(session);
+  const requestedBoardId = !isUnscopedBoardId(pendingWrite.board_id)
+    ? pendingWrite.board_id
+    : !isUnscopedBoardId(contextBoardId)
+      ? contextBoardId
+      : null;
+  const availableCircuits = collectAvailableCircuits(session, requestedBoardId);
   const verdict = resolveCircuitAnswer({
     userText: outcome.user_text,
     pendingWrite,
@@ -1435,6 +1445,27 @@ async function buildResolvedBody({
             });
           }
         } catch (err) {
+          // Cancellation / ownership failure is control flow, not a failed
+          // certificate write. Never stage a lying `write_failed` notice or
+          // continue dispatching after it. If an earlier sibling already
+          // landed, reduced finalization still needs a generation-owned line
+          // explaining that the remaining targets were not completed.
+          if (isStage6FatalControlFlowError(err)) {
+            if (dispatched.some((record) => record.ok === true)) {
+              queuePendingValueApology(
+                session,
+                MULTI_DESCRIPTION_INTERRUPTED_APOLOGY,
+                generationId
+              );
+              logger?.info?.('stage6.multi_description_terminal_queued', {
+                sessionId,
+                turnId,
+                tool_call_id: toolCallId,
+                reason: 'write_dispatch_interrupted_fatal',
+              });
+            }
+            throw err;
+          }
           stageAskAutoResolveFailure(stagePartialFailureNotice, {
             write,
             result: null,
@@ -1512,29 +1543,52 @@ async function buildResolvedBody({
         remainingUnresolved.push(...askEntries);
         queueMultiDescriptionTerminal(MULTI_DESCRIPTION_ASK_FAILED_APOLOGY, 'registry_unavailable');
       } else {
-        const { outcome: askOutcome } = await brokerRegisteredAsk({
-          idPrefix: 'mdr',
-          emissionSource: 'multi_description',
-          pendingAsks,
-          ws,
-          logger,
-          sessionId,
-          turnId,
-          question: multiDescriptionQuestion(askEntries),
-          contextField: pendingWrite.field,
-          contextCircuit: null,
-          expectedAnswerShape: 'free_text',
-          pendingValue: null,
-          pendingWrite,
-          multiDescriptionCircuits: availableCircuits,
-          purpose: 'multi_description',
-          onAskUserStarted,
-          onAskAnswered,
-          onAskRegistered,
-          signal,
-          responseEpochRef,
-        });
-        throwIfStage6Cancelled(signal);
+        let askOutcome;
+        try {
+          ({ outcome: askOutcome } = await brokerRegisteredAsk({
+            idPrefix: 'mdr',
+            emissionSource: 'multi_description',
+            pendingAsks,
+            ws,
+            logger,
+            sessionId,
+            turnId,
+            question: multiDescriptionQuestion(askEntries),
+            contextField: pendingWrite.field,
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+            pendingValue: null,
+            pendingWrite,
+            multiDescriptionCircuits: availableCircuits,
+            purpose: 'multi_description',
+            onAskUserStarted,
+            onAskAnswered,
+            onAskRegistered,
+            signal,
+            responseEpochRef,
+          }));
+          throwIfStage6Cancelled(signal);
+        } catch (err) {
+          // A successful sibling is an irreversible certificate mutation even
+          // when the generation is then cancelled or the broker crashes. Queue
+          // a CURRENT-generation terminal before rethrowing so reduced
+          // finalization speaks both truths: the landed read-back and the
+          // unresolved remainder. This FIFO is cancellation-safe; unlike a
+          // fresh ask/write it drains only on the generation that owns it.
+          if (dispatched.some((write) => write.ok === true)) {
+            queuePendingValueApology(session, MULTI_DESCRIPTION_INTERRUPTED_APOLOGY, generationId);
+            multiDescriptionTerminalQueued = true;
+            logger?.info?.('stage6.multi_description_terminal_queued', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              reason: isStage6FatalControlFlowError(err)
+                ? 'broker_interrupted_fatal'
+                : 'broker_interrupted_error',
+            });
+          }
+          throw err;
+        }
         if (!askOutcome?.answered) {
           remainingUnresolved.push(...askEntries);
           if (
@@ -1595,23 +1649,43 @@ async function buildResolvedBody({
             }
 
             // Reconcile the GROUPED question by actual NEW dispatch attempts,
-            // not by syntactic writes. A reply that names an already-written
-            // sibling is de-duplicated above and therefore cannot make a
-            // different unresolved description disappear. Prefer the original
-            // span whose server-owned candidate set contains the dispatched
-            // ref, then fall back to question order; one attempt can satisfy at
-            // most one span and every remainder stays explicit.
-            const unmatchedOriginal = [...askEntries];
+            // not by syntactic writes. Candidate membership is CAPACITY-aware:
+            // two writes from one quantified span first consume two original
+            // entries only when both entries admit those refs. Once every
+            // candidate-bearing entry for a ref is already satisfied, an extra
+            // dispatch for the same candidate family belongs to that satisfied
+            // span and must NOT consume an unrelated fuzzy/count-mismatch span.
+            const satisfiedOriginalIndexes = new Set();
             for (const dispatch of followDispatches) {
-              if (unmatchedOriginal.length === 0) break;
-              const candidateIndex = unmatchedOriginal.findIndex(
-                (entry) =>
-                  Number.isInteger(dispatch?.circuit) &&
-                  Array.isArray(entry?.candidates) &&
-                  entry.candidates.includes(dispatch.circuit)
+              const candidateIndexes = askEntries
+                .map((entry, index) => ({ entry, index }))
+                .filter(
+                  ({ entry }) =>
+                    Number.isInteger(dispatch?.circuit) &&
+                    Array.isArray(entry?.candidates) &&
+                    entry.candidates.includes(dispatch.circuit)
+                )
+                .map(({ index }) => index);
+              const availableCandidateIndex = candidateIndexes.find(
+                (index) => !satisfiedOriginalIndexes.has(index)
               );
-              unmatchedOriginal.splice(candidateIndex >= 0 ? candidateIndex : 0, 1);
+              if (availableCandidateIndex !== undefined) {
+                satisfiedOriginalIndexes.add(availableCandidateIndex);
+                continue;
+              }
+              if (candidateIndexes.length > 0) {
+                // This dispatch belongs to an already-satisfied quantified
+                // candidate group; it cannot satisfy a different span.
+                continue;
+              }
+              const fallbackIndex = askEntries.findIndex(
+                (_entry, index) => !satisfiedOriginalIndexes.has(index)
+              );
+              if (fallbackIndex >= 0) satisfiedOriginalIndexes.add(fallbackIndex);
             }
+            const unmatchedOriginal = askEntries.filter(
+              (_entry, index) => !satisfiedOriginalIndexes.has(index)
+            );
             appendUniqueUnresolved(remainingUnresolved, unmatchedOriginal);
 
             const askStillUnresolved = remainingUnresolved.some(
@@ -1733,30 +1807,31 @@ async function buildResolvedBody({
 }
 
 /**
- * Pull the (circuit_ref, designation) pairs out of stateSnapshot so the
- * resolver can match designations against what currently exists. Skips the
- * circuits[0] bucket (the legacy supply/board namespace) and any entry
- * without a designation.
+ * Pull the (circuit_ref, designation) pairs for ONE effective board out of
+ * stateSnapshot so the resolver cannot match a main-board name and then stamp
+ * that ref onto a sub-board write. The dual-shape helpers own legacy-main vs
+ * composite-sub-board routing.
  *
  * @param {object} session
+ * @param {string|null} boardId explicit ask/write scope, or null for current board
  * @returns {Array<{circuit_ref: number, circuit_designation: string}>}
  */
-function collectAvailableCircuits(session) {
-  const circuits = session?.stateSnapshot?.circuits;
-  if (!circuits || typeof circuits !== 'object') return [];
-  const out = [];
-  for (const [refStr, bucket] of Object.entries(circuits)) {
-    const ref = Number.parseInt(refStr, 10);
-    if (!Number.isFinite(ref) || ref < 1) continue; // 0 is the board bucket
+function collectAvailableCircuits(session, boardId = null) {
+  const snapshot = session?.stateSnapshot;
+  if (!snapshot?.circuits || typeof snapshot.circuits !== 'object') return [];
+  const scopedBoardId = isUnscopedBoardId(boardId) ? undefined : boardId;
+  return listCircuitRefsInBoard(snapshot, scopedBoardId).flatMap((ref) => {
+    const bucket = getCircuitBucket(snapshot, ref, scopedBoardId);
     // Read the canonical snapshot key first, fall back to the legacy key
     // for resume-across-deploy compat (snapshots created by pre-fix
     // upsertCircuitMeta still carry `.designation`). See
     // stage6-snapshot-mutators.js comment + prod session 286D500D-2026-05-24.
     const designation = (bucket?.circuit_designation ?? bucket?.designation ?? '').toString();
-    if (!designation) continue;
-    out.push({ circuit_ref: ref, circuit_designation: designation });
-  }
-  return out;
+    // Keep unnamed refs in the census: designation matching ignores a blank
+    // label, while a later explicit "circuit N" answer still needs the
+    // server-owned ref to be recognised as valid.
+    return [{ circuit_ref: ref, circuit_designation: designation }];
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2068,6 +2143,8 @@ const MULTI_DESCRIPTION_ASK_FAILED_APOLOGY =
   "Sorry, I couldn't ask which circuits that reading was for. Please say the reading and circuit numbers together again.";
 const MULTI_DESCRIPTION_UNRESOLVED_APOLOGY =
   "Sorry, I still couldn't place every circuit. Please say the reading and the remaining circuit number or numbers together again.";
+const MULTI_DESCRIPTION_INTERRUPTED_APOLOGY =
+  "I recorded the matched circuits, but couldn't finish placing the remaining circuit descriptions. Please say the remaining reading and circuit numbers again.";
 
 /**
  * Codex r2-#1 — eligibility for pendingValue capture: ONLY the A4 inverted

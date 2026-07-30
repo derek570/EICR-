@@ -73,6 +73,7 @@ jest.unstable_mockModule('../extraction/loaded-barrel-speculator.js', () => ({
 
 const { runShadowHarness } = await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
+const { stagePartialFailureNotice } = await import('../extraction/refusal-notices.js');
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -181,6 +182,49 @@ describe('F7 Item 3 — cancellation-finalization contract', () => {
       (c) => c.field == null && /couldn.t action that/i.test(c.text || '')
     );
     expect(fallback).toHaveLength(0);
+  });
+
+  test('a staged unmatched-description obligation drains beside its surviving sibling', async () => {
+    throwOnLoop = true;
+    populateWrites = (w) => {
+      w.readings.set('measured_zs_ohm::1', {
+        value: '0.62',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      });
+      stagePartialFailureNotice(w, {
+        reason: 'designation_no_match',
+        field: 'measured_zs_ohm',
+        fieldLabel: 'Measured Zs (ohm)',
+        boardId: null,
+        target: { kind: 'ordinal', ordinal: 2 },
+        producer: 'ask_multi_description_no_match',
+        requiresSurvivingSibling: true,
+      });
+    };
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(
+      makeSession(),
+      'smoke alarm and the other circuit',
+      [],
+      opts
+    );
+
+    expect((result.confirmations ?? []).filter((c) => c.field === 'measured_zs_ohm')).toHaveLength(
+      1
+    );
+    const notices = (result.confirmations ?? []).filter(
+      (c) => c.field == null && /second circuit description/i.test(c.text || '')
+    );
+    expect(notices).toHaveLength(1);
+    expect(
+      (result.confirmations ?? []).filter((c) => /couldn.t action that/i.test(c.text || ''))
+    ).toHaveLength(0);
+    expect(
+      opts.logger.info.mock.calls.filter(
+        ([event]) => event === 'stage6.partial_failure_notice_emitted'
+      )
+    ).toHaveLength(1);
   });
 
   test('a CURRENT-generation queued apology is still drained on cancellation (+ one ios_send_attempt)', async () => {

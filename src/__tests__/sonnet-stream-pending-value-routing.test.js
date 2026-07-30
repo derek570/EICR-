@@ -196,8 +196,8 @@ function registerMultiDescriptionAsk(entry, toolCallId, resolveFn) {
       value: '4',
     },
     multiDescriptionCircuits: [
-      { circuit_ref: 1, circuit_designation: 'Lighting' },
-      { circuit_ref: 2, circuit_designation: 'Lighting' },
+      { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+      { circuit_ref: 2, circuit_designation: 'First floor lighting' },
       { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
     ],
     resolve: resolveFn,
@@ -445,7 +445,11 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
 
     // Never consumed as the answer: the ask resolves user_moved_on so the
     // tool loop unblocks (Sonnet re-asks or moves on).
-    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      utterance_id: 'u-pv-4',
+    });
     expect(resolvedPayload.user_text).toBeUndefined();
     expect(entry.pendingAsks.size).toBe(0);
 
@@ -505,7 +509,11 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
 
     // Stale ask resolves user_moved_on — the fresh reading is never burned
     // as the answer.
-    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      utterance_id: 'u-pv-5',
+    });
     expect(entry.pendingAsks.size).toBe(0);
     const rejectedRows = loggerModule.warn.mock.calls.filter(
       (c) => c[0] === 'stage6.ask_user_answered_rejected_new_command'
@@ -574,6 +582,25 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
+  test('direct-channel filler preserves the registered mdr ask', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-direct-filler');
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-direct-filler', (payload) => {
+      resolvedPayload = payload;
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'mdr-description-direct-filler',
+      user_text: 'hold on a second',
+      consumed_utterance_id: 'u-mdr-direct-filler',
+    });
+
+    expect(resolvedPayload).toBeNull();
+    expect(entry.pendingAsks.size).toBe(1);
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
   test('a direct-channel fresh reading overtakes mdr and is reinjected', async () => {
     const { ws, entry } = await startSession(wss, 'sess-mdr-2');
     let resolvedPayload = null;
@@ -589,7 +616,11 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
       consumed_utterance_id: 'u-mdr-2',
     });
 
-    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      utterance_id: 'u-mdr-2',
+    });
     expect(entry.pendingAsks.size).toBe(0);
     await flushUntilHarnessCalled();
     expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
@@ -613,6 +644,29 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(resolvedPayload).toMatchObject({
       answered: true,
       user_text: 'circuits 1 and 2',
+      utterance_id: 'u-mdr-3',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+  });
+
+  test('a direct-channel cancellation reaches the mdr resolver instead of looking like filler', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-cancel');
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-cancel', (payload) => {
+      resolvedPayload = payload;
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'mdr-description-cancel',
+      user_text: 'skip',
+      consumed_utterance_id: 'u-mdr-cancel',
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: true,
+      user_text: 'skip',
+      utterance_id: 'u-mdr-cancel',
     });
     expect(entry.pendingAsks.size).toBe(0);
   });

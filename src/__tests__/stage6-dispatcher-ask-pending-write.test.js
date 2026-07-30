@@ -15,6 +15,7 @@
 
 import { jest } from '@jest/globals';
 import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
+import { ExtractionCancelledError } from '../extraction/stage6-control-flow-errors.js';
 // F7 Item 2 step 3b — a null/closed ws now fast-fails the initial ask, so
 // these resolution-logic tests use an OPEN ws to keep the ask pending until
 // the external resolve drives buildResolvedBody.
@@ -562,8 +563,8 @@ describe('createAskDispatcher — pending_write validation', () => {
 
 describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
   const multiCircuits = [
-    { circuit_ref: 1, circuit_designation: 'Lighting' },
-    { circuit_ref: 2, circuit_designation: 'Lighting' },
+    { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+    { circuit_ref: 2, circuit_designation: 'First floor lighting' },
     { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
     { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
   ];
@@ -575,21 +576,30 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     onAskRegistered = jest.fn(),
     ws = capturingWs(),
     generationId = 'gen-multi',
+    session = buildSession(multiCircuits),
+    inputOverrides = {},
+    pendingWriteOverrides = {},
+    responseEpochRef = null,
+    signal = null,
   } = {}) {
     const pendingAsks = createPendingAsksRegistry();
-    const session = buildSession(multiCircuits);
     const dispatcher = createAskDispatcher(session, noopLogger(), 'turn-multi', pendingAsks, ws, {
       autoResolveWrite,
       stagePartialFailureNotice,
       onAskUserStarted,
       onAskRegistered,
       generationId,
+      responseEpochRef,
+      signal,
     });
     const promise = dispatcher(
       {
         tool_call_id: 'toolu_multi',
         name: 'ask_user',
-        input: validInput({ pending_write: validPendingWrite() }),
+        input: validInput({
+          ...inputOverrides,
+          pending_write: validPendingWrite(pendingWriteOverrides),
+        }),
       },
       {}
     );
@@ -602,6 +612,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       stagePartialFailureNotice,
       onAskUserStarted,
       onAskRegistered,
+      responseEpochRef,
     };
   }
 
@@ -648,7 +659,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
-  test('an explicit absent ref is noticed by trusted circuit number', async () => {
+  test('an explicit absent ref is noticed by trusted segment ordinal', async () => {
     const run = startMultiDispatcher();
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
@@ -660,7 +671,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
       expect.objectContaining({
         reason: 'designation_no_match',
-        target: { kind: 'circuit', ref: 99 },
+        target: { kind: 'ordinal', ordinal: 1 },
       })
     );
   });
@@ -676,7 +687,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
 
     expect(run.stagePartialFailureNotice).toHaveBeenCalledTimes(2);
     expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
-      expect.objectContaining({ target: { kind: 'circuit', ref: 99 } })
+      expect.objectContaining({ target: { kind: 'ordinal', ordinal: 1 } })
     );
     expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
       expect.objectContaining({ target: { kind: 'ordinal', ordinal: 2 } })
@@ -738,12 +749,13 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
   });
 
   test.each([
-    ['transcript-origin', { response_utterance_id: 'u-mdr-transcript' }],
-    ['direct-channel', { response_utterance_id: 'u-mdr-direct' }],
+    ['response_utterance_id', { response_utterance_id: 'u-mdr-transcript' }, 'u-mdr-transcript'],
+    ['utterance_id', { utterance_id: 'u-mdr-direct' }, 'u-mdr-direct'],
   ])(
-    'the %s mdr answer accepts the requested circuit-number list',
-    async (_origin, outcomePatch) => {
-      const run = startMultiDispatcher();
+    'an mdr registry outcome carrying %s accepts the list and advances its epoch',
+    async (_outcomeField, outcomePatch, expectedEpoch) => {
+      const responseEpochRef = { current: 'u-opening' };
+      const run = startMultiDispatcher({ responseEpochRef });
       await tick();
       run.pendingAsks.resolve('toolu_multi', {
         answered: true,
@@ -769,6 +781,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
         run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))
       ).toHaveLength(1);
       expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+      expect(responseEpochRef.current).toBe(expectedEpoch);
     }
   );
 
@@ -800,6 +813,262 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       }),
     ]);
     expect(run.session.pendingVoicePrompts[0].text).toMatch(/say the reading/i);
+  });
+
+  test('multiple writes for one candidate group cannot consume an unrelated unresolved span', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '3 lighting circuits and upstars lights',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuits 1 and 2',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2]);
+    expect(body.unresolved.filter((entry) => entry.disposition === 'ask')).toEqual([
+      expect.objectContaining({ identity: 4, candidates: [4], reason: 'fuzzy_match' }),
+    ]);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/couldn't place every circuit/i),
+      }),
+    ]);
+  });
+
+  test('cancellation after a sibling write queues a generation-owned unresolved terminal', async () => {
+    const ac = new AbortController();
+    const autoResolveWrite = jest.fn().mockImplementation(async () => {
+      ac.abort(new ExtractionCancelledError('cancel-after-sibling'));
+      return { ok: true };
+    });
+    const run = startMultiDispatcher({ autoResolveWrite, signal: ac.signal });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the smoke alarm',
+    });
+
+    await expect(run.promise).rejects.toBeInstanceOf(ExtractionCancelledError);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/recorded the matched circuits/i),
+      }),
+    ]);
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual(
+      []
+    );
+  });
+
+  test('fatal cancellation between fan-out writes is not mislabeled as write_failed', async () => {
+    const ac = new AbortController();
+    const autoResolveWrite = jest.fn().mockImplementation(async () => {
+      ac.abort(new ExtractionCancelledError('cancel-between-writes'));
+      return { ok: true };
+    });
+    const run = startMultiDispatcher({ autoResolveWrite, signal: ac.signal });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '2 lighting circuits and the smoke alarm',
+    });
+
+    await expect(run.promise).rejects.toBeInstanceOf(ExtractionCancelledError);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'write_failed' })
+    );
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/remaining circuit descriptions/i),
+      }),
+    ]);
+  });
+
+  test('cancellation immediately before mdr emission keeps the partial result audible', async () => {
+    const ac = new AbortController();
+    const onAskRegistered = jest.fn((toolCallId) => {
+      if (String(toolCallId).startsWith('mdr-')) {
+        ac.abort(new ExtractionCancelledError('cancel-before-mdr-emit'));
+        return false;
+      }
+      return true;
+    });
+    const run = startMultiDispatcher({ onAskRegistered, signal: ac.signal });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the smoke alarm',
+    });
+
+    await expect(run.promise).rejects.toBeInstanceOf(ExtractionCancelledError);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/remaining circuit descriptions/i),
+      }),
+    ]);
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual(
+      []
+    );
+    expect(run.pendingAsks.size).toBe(0);
+  });
+
+  test('a spoken mdr cancellation is an ordinary opt-out, not generation cancellation', async () => {
+    const ac = new AbortController();
+    const run = startMultiDispatcher({ signal: ac.signal });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'skip',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.resolved_writes).toEqual([expect.objectContaining({ circuit: 3, ok: true })]);
+    expect(ac.signal.aborted).toBe(false);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+  });
+
+  test('the effective board owns both designation matching and emitted write scope', async () => {
+    const session = {
+      sessionId: 'sess-test',
+      stateSnapshot: {
+        currentBoardId: 'sub-b',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'sub-b', board_type: 'sub_distribution', parent_board_id: 'main' },
+        ],
+        circuits: {
+          1: { circuit_designation: 'Cooker' },
+          2: { circuit_designation: 'Shower' },
+          3: { circuit_designation: 'Garage' },
+          'sub-b::1': {
+            circuit: 1,
+            board_id: 'sub-b',
+            circuit_designation: 'Ground floor lighting',
+          },
+          'sub-b::2': {
+            circuit: 2,
+            board_id: 'sub-b',
+            circuit_designation: 'First floor lighting',
+          },
+          'sub-b::3': {
+            circuit: 3,
+            board_id: 'sub-b',
+            circuit_designation: 'Smoke Alarm',
+          },
+        },
+      },
+    };
+    const run = startMultiDispatcher({
+      session,
+      inputOverrides: { context_board_id: 'sub-b' },
+      pendingWriteOverrides: { board_id: 'sub-b' },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '2 lighting circuits and the smoke alarm',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('full');
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(3);
+    for (const [write] of run.autoResolveWrite.mock.calls) {
+      expect(write.board_id).toBe('sub-b');
+    }
+  });
+
+  test('main-board designations cannot be borrowed by a sub-board ask', async () => {
+    const session = {
+      sessionId: 'sess-test',
+      stateSnapshot: {
+        currentBoardId: 'sub-b',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'sub-b', board_type: 'sub_distribution', parent_board_id: 'main' },
+        ],
+        circuits: {
+          1: { circuit_designation: 'Ground floor lighting' },
+          2: { circuit_designation: 'First floor lighting' },
+          3: { circuit_designation: 'Smoke Alarm' },
+          'sub-b::1': { circuit: 1, board_id: 'sub-b', circuit_designation: 'Cooker' },
+          'sub-b::2': { circuit: 2, board_id: 'sub-b', circuit_designation: 'Shower' },
+          'sub-b::3': { circuit: 3, board_id: 'sub-b', circuit_designation: 'Garage' },
+        },
+      },
+    };
+    const run = startMultiDispatcher({
+      session,
+      inputOverrides: { context_board_id: 'sub-b' },
+      pendingWriteOverrides: { board_id: 'sub-b' },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '2 lighting circuits and the smoke alarm',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('all_unmatched');
+    expect(run.autoResolveWrite).not.toHaveBeenCalled();
+  });
+
+  test('an unnamed server-owned ref remains valid in an explicit mixed answer', async () => {
+    const session = {
+      sessionId: 'sess-test',
+      stateSnapshot: {
+        currentBoardId: 'sub-b',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'sub-b', board_type: 'sub_distribution', parent_board_id: 'main' },
+        ],
+        circuits: {
+          'sub-b::2': { circuit: 2, board_id: 'sub-b', circuit_designation: '' },
+          'sub-b::3': {
+            circuit: 3,
+            board_id: 'sub-b',
+            circuit_designation: 'Smoke Alarm',
+          },
+        },
+      },
+    };
+    const run = startMultiDispatcher({
+      session,
+      inputOverrides: { context_board_id: 'sub-b' },
+      pendingWriteOverrides: { board_id: 'sub-b' },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'circuit 2 and the smoke alarm',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('full');
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([2, 3]);
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
   });
 
   test('a retry success makes its sibling no-match notice eligible', async () => {

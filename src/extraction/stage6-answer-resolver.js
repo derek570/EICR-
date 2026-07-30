@@ -304,7 +304,7 @@ function cleanReplyForDesignation(reply) {
  *
  * @param {string} cleaned        cleanReplyForDesignation() output
  * @param {Array<{circuit_ref: number|string, circuit_designation?: string, designation?: string}>} circuits
- * @returns {{kind: 'exact'|'unique_substring'|'fuzzy'|'ambiguous'|'no_match', circuitRefs: number[], matchBasis?: 'exact'|'substring'}}
+ * @returns {{kind: 'exact'|'unique_substring'|'fuzzy'|'ambiguous'|'no_match', circuitRefs: number[]}}
  */
 // §C1 (field-feedback-2026-07-14) — normalise a designation token stream for
 // the fuzzy pass: lowercase (already), then singularise trailing plurals so
@@ -355,13 +355,9 @@ function matchDesignation(cleaned, circuits) {
     }
   }
   if (exact.length === 1) return { kind: 'exact', circuitRefs: exact };
-  if (exact.length > 1) {
-    return { kind: 'ambiguous', circuitRefs: exact, matchBasis: 'exact' };
-  }
+  if (exact.length > 1) return { kind: 'ambiguous', circuitRefs: exact };
   if (substr.length === 1) return { kind: 'unique_substring', circuitRefs: substr };
-  if (substr.length > 1) {
-    return { kind: 'ambiguous', circuitRefs: substr, matchBasis: 'substring' };
-  }
+  if (substr.length > 1) return { kind: 'ambiguous', circuitRefs: substr };
 
   // §C1 (field-feedback-2026-07-14, F4-class + "ref method 101" C61473FD) —
   // CONSERVATIVE fuzzy pass, exact+substring having both missed. Runs ONLY in
@@ -460,10 +456,38 @@ function consumeLeadingToken(text) {
  */
 function stripDescriptionLeadIn(text) {
   let stripped = String(text ?? '');
-  stripped = stripped.replace(/^i\s+said\s+/i, '');
-  stripped = stripped.replace(/^it(?:['’]?s|\s+is)\s+/i, '');
-  stripped = stripped.replace(/^for\s+/i, '');
+  // Bounded correction-free wrappers are safe to discard. Repeat because
+  // natural answers stack them ("Sorry, I mean it's for ..."). Correction
+  // markers in the MIDDLE of a list are rejected separately below.
+  for (let i = 0; i < 4; i += 1) {
+    const before = stripped;
+    stripped = stripped.replace(/^i\s+(?:said|mean|meant)\s+/i, '');
+    stripped = stripped.replace(/^it(?:['’]?s|\s+is)\s+/i, '');
+    stripped = stripped.replace(/^(?:actually|sorry)\b[\s,]*/i, '');
+    stripped = stripped.replace(/^for\s+/i, '');
+    if (stripped === before) break;
+  }
   return stripped;
+}
+
+/**
+ * A correction or negation is not an enumerated target list. Fail back to the
+ * shipped scalar/model path rather than turning a retracted span into a write.
+ * The guard is intentionally syntax-only and conservative: an unnecessary ask
+ * is safer than applying "not circuit 2" to circuit 2.
+ */
+function hasCorrectionOrNegationSyntax(text) {
+  // Strip only a bounded reply-opening wrapper first. The same words after a
+  // real target separator remain correction syntax ("Kitchen, sorry,
+  // cooker"), while "Sorry, I mean it's for Kitchen..." stays a harmless
+  // single-target restatement.
+  const value = stripDescriptionLeadIn(String(text ?? '')).toLowerCase();
+  return (
+    /\b(?:not|except|rather\s+than|instead(?:\s+of)?)\b/.test(value) ||
+    /(?:^|[,;]|\band\b|\bplus\b)\s*(?:no|wait)\b/.test(value) ||
+    /(?:[,;]|\band\b|\bplus\b)\s*sorry\b/.test(value) ||
+    /(?:[,;]|\band\b|\bplus\b)\s*(?:i\s+(?:mean|meant)|actually)\b/.test(value)
+  );
 }
 
 function normaliseMultiTargetFiller(text) {
@@ -475,7 +499,16 @@ function normaliseMultiTargetFiller(text) {
 }
 
 function isConversationalFillerSpan(text) {
-  return MULTI_TARGET_FILLER_PHRASES.has(normaliseMultiTargetFiller(text));
+  const normalised = normaliseMultiTargetFiller(text);
+  if (MULTI_TARGET_FILLER_PHRASES.has(normalised)) return true;
+  // Bounded grammatical hedge classes, not an open-ended word blacklist.
+  // They let "circuit 2, I think" remain the shipped scalar answer while an
+  // unmatched noun phrase such as "attic lights" remains a real target that
+  // must be surfaced as unresolved.
+  return (
+    /^(?:i|we)\s+(?:think|suppose|guess|believe)(?:\s+(?:so|that))?$/.test(normalised) ||
+    /^(?:maybe|perhaps|probably|possibly)$/.test(normalised)
+  );
 }
 
 /**
@@ -642,7 +675,7 @@ function availableCircuitRefSet(circuits) {
  */
 function parseMultiDescriptionCircuitRefs(userText) {
   const text = stripPunct(String(userText ?? '').toLowerCase());
-  if (!text) return null;
+  if (!text || hasCorrectionOrNegationSyntax(text)) return null;
   const atoms = splitEnumeratedAtoms(text).filter((atom) => !isConversationalFillerSpan(atom.text));
   if (atoms.length === 0) return null;
   const refs = [];
@@ -717,7 +750,7 @@ function unresolvedSpan({
  * ordinal, so the dispatcher can speak without echoing untrusted text.
  */
 function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, contextBoardId }) {
-  if (!hasMultiTargetSyntax(text)) return null;
+  if (!hasMultiTargetSyntax(text) || hasCorrectionOrNegationSyntax(text)) return null;
   const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
 
   // Whole-designation-first preserves shipped C1 fuzzy behaviour and protects
@@ -789,7 +822,6 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
             ordinal,
             disposition: 'notice',
             reason: 'no_match',
-            circuitRefs: [explicitRef],
             pendingWrite,
             contextBoardId,
           })
@@ -830,16 +862,12 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       return;
     }
 
-    // A matching quantifier promotes duplicate EXACT designations (the two
-    // circuits genuinely share the same name). It must never promote an
-    // ambiguous SUBSTRING family: "two kitchen circuits" is still too broad
-    // when the census contains kitchen sockets, kitchen lighting and cooker.
-    const quantifierPromotesExactDuplicates =
-      quantifier !== null && match.kind === 'ambiguous' && match.matchBasis === 'exact';
+    // A quantifier makes an otherwise-ambiguous exact/substring candidate set
+    // decidable only when its explicit count agrees below. Fuzzy matches never
+    // reach this branch, so near-spellings cannot fan out.
+    const quantifierPromotesAmbiguous = quantifier !== null && match.kind === 'ambiguous';
     const canUseAllMatches =
-      match.kind === 'exact' ||
-      match.kind === 'unique_substring' ||
-      quantifierPromotesExactDuplicates;
+      match.kind === 'exact' || match.kind === 'unique_substring' || quantifierPromotesAmbiguous;
     if (!canUseAllMatches || refs.length === 0) {
       unresolved.push(
         unresolvedSpan({
@@ -938,7 +966,6 @@ export function resolveMultiDescriptionFollowup({
           ordinal: index + 1,
           disposition: 'notice',
           reason: 'no_match',
-          circuitRefs: [ref],
           pendingWrite,
           contextBoardId,
         })
@@ -969,6 +996,9 @@ export function resolveMultiDescriptionFollowup({
  * and delete the pending clarification.
  */
 export function isMultiDescriptionAnswerText(userText, availableCircuits) {
+  const stripped = stripPunct(String(userText ?? '').toLowerCase());
+  if (CANCEL_PHRASES.includes(stripped)) return true;
+  if (hasCorrectionOrNegationSyntax(userText)) return false;
   const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
   const refs = parseMultiDescriptionCircuitRefs(userText);
   if (refs) {

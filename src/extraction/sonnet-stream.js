@@ -1740,6 +1740,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               break;
             }
             const entry = activeSessions.get(currentSessionId);
+            const directResponseUtteranceId =
+              typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id
+                ? msg.consumed_utterance_id
+                : null;
             if (typeof msg.tool_call_id !== 'string' || typeof msg.user_text !== 'string') {
               ws.send(
                 JSON.stringify({
@@ -1989,6 +1993,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               // but iteration is O(n) on a registry that holds at most
               // single-digit pending entries, so the cost is negligible).
               let askEntry = null;
+              let directShapeVerdict = null;
               for (const [id, e] of entry.pendingAsks.entries()) {
                 if (id === msg.tool_call_id) {
                   askEntry = e;
@@ -2002,8 +2007,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     yield [msg.tool_call_id, askEntry];
                   },
                 };
-                const shapeVerdict = classifyOvertake(canonicalAnswerText, [], singleAskRegistry);
-                if (shapeVerdict.kind === 'answers') {
+                directShapeVerdict = classifyOvertake(canonicalAnswerText, [], singleAskRegistry);
+                if (directShapeVerdict.kind === 'answers') {
                   // Shape match — fall through to the resolve path below
                   // without running the imperative gate. The matched answer
                   // (yes/no for yes_no asks; extractCircuitRef-parsed integer
@@ -2091,6 +2096,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   entry.pendingAsks.resolve(msg.tool_call_id, {
                     answered: false,
                     reason: 'user_moved_on',
+                    ...(directResponseUtteranceId
+                      ? { utterance_id: directResponseUtteranceId }
+                      : {}),
                   });
 
                   // Re-inject the text as a transcript so the new command flows
@@ -2123,6 +2131,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 }
               }
 
+              // PLAN-2B: an mdr-* free-text clarification is shape-checked
+              // against its server-owned census. Non-answer prose such as
+              // "hold on a second" is neither an answer nor a new command, so
+              // keep the registered ask alive for the next real response.
+              // The structured/imperative path above still resolves
+              // user_moved_on and re-injects genuine work.
+              if (
+                askEntry &&
+                typeof msg.tool_call_id === 'string' &&
+                msg.tool_call_id.startsWith('mdr-') &&
+                directShapeVerdict?.kind !== 'answers'
+              ) {
+                logger.info('stage6.ask_user_answered_ignored_non_answer', {
+                  sessionId: currentSessionId,
+                  tool_call_id: msg.tool_call_id,
+                  ask_shape: askEntry.expectedAnswerShape ?? null,
+                  utterance_id: directResponseUtteranceId,
+                });
+                break;
+              }
+
               // Thread sanitisation flags through the resolve payload so the
               // dispatcher's logAskUser row carries them. Only emit the
               // sanitisation sub-object when at least one flag is true —
@@ -2146,6 +2175,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               }
             }
 
+            // PLAN-C P4c / PLAN-2B: every direct resolution outcome carries
+            // the utterance that answered the ask. The broker advances its
+            // response epoch from this value so confirmations disarm the
+            // answering utterance's watchdog, not the question's old epoch.
+            if (resolvePayload && directResponseUtteranceId) {
+              resolvePayload.utterance_id = directResponseUtteranceId;
+            }
             const resolved = entry.pendingAsks.resolve(msg.tool_call_id, resolvePayload);
 
             // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption

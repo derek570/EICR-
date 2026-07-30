@@ -3160,11 +3160,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       const stagedPartial = Array.isArray(perTurnWrites?.partialFailureNotices)
         ? perTurnWrites.partialFailureNotices
         : [];
+      // PLAN-2B cancellation exception: the §3.3 description family is staged
+      // only after a sibling write has landed, and that mutation survives the
+      // reduced cancellation-finalization path. Let this one generation-local
+      // obligation drain on cancellation so the inspector never hears only the
+      // success and mistakes a partial application for a complete one. Every
+      // other Plan-2A family keeps the shipped cancelled-generation suppression.
+      const drainablePartial = cancelled
+        ? stagedPartial.filter((notice) => notice?.requiresSurvivingSibling === true)
+        : stagedPartial;
       if (
-        stagedPartial.length > 0 &&
+        drainablePartial.length > 0 &&
         options.confirmationsEnabled === true &&
-        options.chimeObserved === true &&
-        !cancelled
+        options.chimeObserved === true
       ) {
         // ── Drain rule (1) — allRejected ⇒ DROP EVERY partial notice.
         // A whole-turn rejection is plan B's / A3's to speak: it emits
@@ -3176,7 +3184,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             sessionId: session.sessionId,
             turnId,
             generationId,
-            aggregate_count: stagedPartial.length,
+            aggregate_count: drainablePartial.length,
           });
         } else {
           // ── Drain rule (2) — subtract any READING target that has a
@@ -3209,7 +3217,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               }`
             );
           }
-          for (const aggregate of stagedPartial) {
+          for (const aggregate of drainablePartial) {
             // PLAN-2B §3.3 — an unmatched DESCRIPTION span is a partial
             // failure only while a sibling write for the same field + board
             // survives the turn. The dispatcher stages this family only after

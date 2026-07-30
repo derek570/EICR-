@@ -640,13 +640,11 @@ describe('resolveCircuitAnswer — §C1 conservative fuzzy designation match', (
 // ---------------------------------------------------------------------------
 
 const MULTI_DESCRIPTION_CIRCUITS = [
-  { circuit_ref: 1, circuit_designation: 'Lighting' },
-  { circuit_ref: 2, circuit_designation: 'Lighting' },
+  { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+  { circuit_ref: 2, circuit_designation: 'First floor lighting' },
   { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
   { circuit_ref: 4, circuit_designation: 'Kitchen and utility lights' },
   { circuit_ref: 5, circuit_designation: 'Upstairs Lights' },
-  { circuit_ref: 6, circuit_designation: 'Kitchen sockets' },
-  { circuit_ref: 7, circuit_designation: 'Kitchen lighting' },
 ];
 
 function resolveMulti(reply, circuits = MULTI_DESCRIPTION_CIRCUITS) {
@@ -700,6 +698,7 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
   test.each([
     ['circuit 2, please', 2],
     ['circuit 3 and done', 3],
+    ['circuit 2, I think', 2],
   ])('scalar filler in "%s" stays on the shipped scalar path', (reply, ref) => {
     const verdict = resolveMulti(reply);
     expect(verdict.kind).toBe('auto_resolve');
@@ -718,8 +717,12 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
   });
 
-  test('a bounded lead-in does not split a designation containing "and"', () => {
-    const verdict = resolveMulti('it is Kitchen and utility lights');
+  test.each([
+    'it is Kitchen and utility lights',
+    'I mean Kitchen and utility lights',
+    "Sorry, I mean it's for Kitchen and utility lights",
+  ])('the bounded lead-in in "%s" does not split an internal "and"', (reply) => {
+    const verdict = resolveMulti(reply);
     expect(verdict).toMatchObject({
       kind: 'auto_resolve',
       match_status: 'full',
@@ -799,21 +802,18 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ]);
   });
 
-  test('a matching count never promotes ambiguous substring matches', () => {
+  test('a matching count promotes every distinct substring match', () => {
     const verdict = resolveMulti('2 kitchen circuits and the smoke alarm', [
       { circuit_ref: 1, circuit_designation: 'Kitchen sockets' },
       { circuit_ref: 2, circuit_designation: 'Kitchen lighting' },
       { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
     ]);
-    expect(verdict.kind).toBe('partial_resolve');
-    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
-    expect(verdict.unresolved).toEqual([
-      expect.objectContaining({
-        disposition: 'ask',
-        reason: 'ambiguous_match',
-        candidates: [1, 2],
-      }),
-    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
   });
 
   test('unquantified multi-match asks while an exact sibling survives', () => {
@@ -901,6 +901,32 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ]);
   });
 
+  test.each(['Kitchen sockets and not the cooker', 'Kitchen sockets, no, cooker'])(
+    'corrective or negated list "%s" never becomes additive writes',
+    (reply) => {
+      const verdict = resolveMulti(reply, [
+        { circuit_ref: 1, circuit_designation: 'Kitchen sockets' },
+        { circuit_ref: 2, circuit_designation: 'Cooker' },
+      ]);
+      expect(verdict.kind).toBe('escalate');
+      expect(verdict.writes).toBeUndefined();
+    }
+  );
+
+  test('an absent explicit ref uses the trusted segment ordinal, never the dictated ref', () => {
+    const verdict = resolveMulti('circuit 99 and the smoke alarm');
+    expect(verdict.kind).toBe('partial_resolve');
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    expect(verdict.unresolved).toEqual([
+      expect.objectContaining({
+        identity: 1,
+        span_kind: 'segment_ordinal',
+        disposition: 'notice',
+        reason: 'no_match',
+      }),
+    ]);
+  });
+
   test('ordinary multi-number replies keep the shipped escalation contract', () => {
     expect(resolveMulti('circuits 1 and 2')).toMatchObject({
       kind: 'escalate',
@@ -926,7 +952,7 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2]);
   });
 
-  test('the mdr-only follow-up keeps absent refs server-owned and unresolved', () => {
+  test('the mdr-only follow-up represents absent refs by trusted ordinals', () => {
     const verdict = resolveMultiDescriptionFollowup({
       userText: 'circuits 1 and 99',
       pendingWrite: SAMPLE_PENDING,
@@ -938,12 +964,22 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       writes: [expect.objectContaining({ circuit: 1 })],
       unresolved: [
         expect.objectContaining({
-          identity: 99,
-          span_kind: 'circuit_ref',
+          identity: 2,
+          span_kind: 'segment_ordinal',
           disposition: 'notice',
         }),
       ],
     });
+  });
+
+  test('the mdr-only follow-up rejects additive interpretation of negation', () => {
+    expect(
+      resolveMultiDescriptionFollowup({
+        userText: 'circuit 1 and not circuit 2',
+        pendingWrite: SAMPLE_PENDING,
+        availableCircuits: MULTI_DESCRIPTION_CIRCUITS,
+      })
+    ).toBeNull();
   });
 
   test('the transcript predicate accepts real targets and rejects filler', () => {
@@ -952,5 +988,9 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(isMultiDescriptionAnswerText('hold on a second', MULTI_DESCRIPTION_CIRCUITS)).toBe(
       false
     );
+    expect(
+      isMultiDescriptionAnswerText('circuit 1 and not circuit 2', MULTI_DESCRIPTION_CIRCUITS)
+    ).toBe(false);
+    expect(isMultiDescriptionAnswerText('skip', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
   });
 });
