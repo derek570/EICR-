@@ -684,6 +684,38 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ).toBe(true);
   });
 
+  test('a quantified circuit noun bounds maximum coverage before the following target', () => {
+    const verdict = resolveMulti('2 lighting circuits and smoke alarm', [
+      { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+      { circuit_ref: 2, circuit_designation: 'First floor lighting' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+      { circuit_ref: 4, circuit_designation: 'Lighting and Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [1, 2, 3],
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
+  });
+
+  test('a raw exact whole designation still owns a quantified-looking reply', () => {
+    const verdict = resolveMulti('2 lighting circuits and smoke alarm', [
+      { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+      { circuit_ref: 2, circuit_designation: 'First floor lighting' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+      { circuit_ref: 9, circuit_designation: '2 Lighting Circuits and Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [9],
+      unresolved: [],
+    });
+    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 9 })]);
+  });
+
   test('a designation containing "and" stays whole under maximum coverage', () => {
     const verdict = resolveMulti('Kitchen and utility lights');
     expect(verdict.kind).toBe('auto_resolve');
@@ -838,6 +870,39 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
   });
 
+  test.each(['Right', 'OK', 'Done'])(
+    'server-owned filler-like designation "%s" matches before filler removal',
+    (designation) => {
+      const verdict = resolveMulti(`Smoke Alarm and ${designation}`, [
+        { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+        { circuit_ref: 6, circuit_designation: designation },
+      ]);
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: [3, 6],
+        unresolved: [],
+      });
+      expect(verdict.writes.map((write) => write.circuit)).toEqual([3, 6]);
+    }
+  );
+
+  test.each(['right', 'ok', 'done'])(
+    'true conversational filler "%s" remains ignored without a census owner',
+    (filler) => {
+      const verdict = resolveMulti(`Smoke Alarm and ${filler}`, [
+        { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+      ]);
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: [3],
+        unresolved: [],
+      });
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+    }
+  );
+
   test.each(["Kitchen sockets and that's all", 'Kitchen sockets and that is all'])(
     'terminal conversational filler in "%s" never becomes a no-match span',
     (reply) => {
@@ -888,6 +953,42 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.kind).toBe('auto_resolve');
     expect(verdict.match_status).toBe('full');
     expect(verdict.writes.map((write) => write.circuit)).toEqual([2, 3]);
+  });
+
+  test('digit-bearing prose is not reinterpreted as a mixed-list circuit ref', () => {
+    const verdict = resolveMulti('Flat 2 sockets and Smoke Alarm', [
+      { circuit_ref: 2, circuit_designation: 'First floor lighting' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'partial_resolve',
+      selected_circuit_refs: [3],
+      writes: [expect.objectContaining({ circuit: 3 })],
+      unresolved: [
+        expect.objectContaining({
+          identity: 1,
+          span_kind: 'segment_ordinal',
+          disposition: 'notice',
+          reason: 'no_match',
+        }),
+      ],
+    });
+    expect(verdict.writes).not.toContainEqual(expect.objectContaining({ circuit: 2 }));
+  });
+
+  test('an exact digit-bearing designation wins before the bounded list-ref grammar', () => {
+    const verdict = resolveMulti('Bedroom 2 and Smoke Alarm', [
+      { circuit_ref: 2, circuit_designation: 'First floor lighting' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+      { circuit_ref: 7, circuit_designation: 'Bedroom 2' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [3, 7],
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual([7, 3]);
   });
 
   test('bare "circuit 2" remains on the shipped scalar path', () => {
@@ -1427,6 +1528,12 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     'Kitchen sockets and not the cooker',
     'Kitchen sockets, no, cooker',
     'not the cooker',
+    'scratch that',
+    'forget that',
+    'correction',
+    'make that the cooker',
+    'Actually scratch that',
+    'Kitchen sockets and correction, the cooker',
     "don't use the cooker",
     'do not use the cooker',
     'exclude the cooker',
@@ -1549,6 +1656,47 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       unresolved: [],
     });
     expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2]);
+  });
+
+  test.each([
+    ['Smoke Alarm', 'an exact designation', 3],
+    ['utility lights', 'a unique substring', 4],
+    ['Right', 'an exact filler-like designation', 6],
+  ])('the mdr-only follow-up resolves %s as %s', (reply, _label, expectedRef) => {
+    const verdict = resolveMultiDescriptionFollowup({
+      userText: reply,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: [
+        ...MULTI_DESCRIPTION_CIRCUITS,
+        { circuit_ref: 6, circuit_designation: 'Right' },
+      ],
+      contextBoardId: 'board-main',
+    });
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [expectedRef],
+      unresolved: [],
+      writes: [expect.objectContaining({ circuit: expectedRef, board_id: 'board-main' })],
+    });
+  });
+
+  test.each([
+    ['lighting', 'multi_description_followup_ambiguous_designation:1,2'],
+    ['upstars lights', 'multi_description_followup_fuzzy_designation:5'],
+    ['attic circuit', 'multi_description_followup_no_designation_match'],
+  ])('the mdr-only follow-up fails closed for designation reply "%s"', (reply, parsedHint) => {
+    const verdict = resolveMultiDescriptionFollowup({
+      userText: reply,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: MULTI_DESCRIPTION_CIRCUITS,
+    });
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: parsedHint,
+      available_circuits: MULTI_DESCRIPTION_CIRCUITS,
+    });
+    expect(verdict.writes).toBeUndefined();
   });
 
   test.each([
@@ -1690,6 +1838,11 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
   test('the transcript predicate accepts real targets and rejects filler', () => {
     expect(isMultiDescriptionAnswerText('circuits 1 and 2', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
     expect(isMultiDescriptionAnswerText('upstairs lights', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
+    expect(isMultiDescriptionAnswerText('lighting', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
+    expect(isMultiDescriptionAnswerText('upstars lights', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
+    expect(isMultiDescriptionAnswerText('Actually scratch that', MULTI_DESCRIPTION_CIRCUITS)).toBe(
+      true
+    );
     expect(
       isMultiDescriptionAnswerText('circuit 1 and not circuit 2', MULTI_DESCRIPTION_CIRCUITS)
     ).toBe(true);
