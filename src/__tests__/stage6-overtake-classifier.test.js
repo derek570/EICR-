@@ -1092,6 +1092,23 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
     expect(
       classifyOvertake('hold on a second', [], mockPending([['mdr-multi-description-4', mdrEntry]]))
     ).toEqual({ kind: 'user_moved_on' });
+    expect(
+      classifyOvertake('wait 2 minutes', [], mockPending([['mdr-multi-description-4', mdrEntry]]))
+    ).toEqual({ kind: 'user_moved_on' });
+  });
+
+  test('a target-bearing correction reaches the registered mdr resolver', () => {
+    expect(
+      classifyOvertake(
+        'circuit 1 and not circuit 2',
+        [],
+        mockPending([['mdr-multi-description-correction', mdrEntry]])
+      )
+    ).toEqual({
+      kind: 'answers',
+      toolCallId: 'mdr-multi-description-correction',
+      userText: 'circuit 1 and not circuit 2',
+    });
   });
 
   test('a syntactically valid absent ref reaches the resolver for a trusted no-match result', () => {

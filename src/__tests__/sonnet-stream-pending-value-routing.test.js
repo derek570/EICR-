@@ -537,6 +537,8 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     ['hold-on-minutes', 'hold on for 2 minutes'],
     ['just-seconds', 'just 2 secs'],
     ['need-minutes', 'I need 2 minutes'],
+    ['wait-minutes', 'wait 2 minutes'],
+    ['negative-wait-minutes', 'not yet, give me 2 minutes'],
   ];
 
   test('a transcript-only designation restatement resolves mdr pre-queue', async () => {
@@ -660,6 +662,54 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
       answered: true,
       user_text: 'circuits 1 and 2',
       utterance_id: 'u-mdr-3',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+  });
+
+  test('a transcript correction reaches the mdr resolver instead of waiting for timeout', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-correction-transcript');
+    entry.isExtracting = true;
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-correction-transcript', (payload) => {
+      resolvedPayload = payload;
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'circuit 1 and not circuit 2',
+      utterance_id: 'u-mdr-correction-transcript',
+      regexResults: [],
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: true,
+      user_text: 'circuit 1 and not circuit 2',
+      response_utterance_id: 'u-mdr-correction-transcript',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+    expect(entry.pendingTranscripts).toHaveLength(0);
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test('a direct-channel correction reaches the mdr resolver instead of being ignored', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-correction-direct');
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-correction-direct', (payload) => {
+      resolvedPayload = payload;
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'mdr-description-correction-direct',
+      user_text: 'circuit 1 and not circuit 2',
+      consumed_utterance_id: 'u-mdr-correction-direct',
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: true,
+      user_text: 'circuit 1 and not circuit 2',
+      utterance_id: 'u-mdr-correction-direct',
     });
     expect(entry.pendingAsks.size).toBe(0);
   });

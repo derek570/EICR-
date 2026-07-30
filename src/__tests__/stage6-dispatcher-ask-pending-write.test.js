@@ -673,6 +673,24 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(postfixRun.autoResolveWrite).toHaveBeenCalledTimes(1);
   });
 
+  test.each([
+    'all circuits apart from the smoke alarm',
+    'all circuits all but the smoke alarm',
+  ])('subtractive target reply "%s" escalates with zero deterministic writes', async (userText) => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', { answered: true, user_text: userText });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      auto_resolved: false,
+      match_status: 'escalated',
+      parsed_hint: 'multi_description_correction_or_negation',
+    });
+    expect(run.autoResolveWrite).not.toHaveBeenCalled();
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+  });
+
   test('verbatim id-104 crosses the real write hook and bundles one grouped read-back', async () => {
     const session = buildSession(multiCircuits.slice(0, 3));
     const perTurnWrites = createPerTurnWrites();
@@ -732,6 +750,32 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
         target: { kind: 'ordinal', ordinal: 1 },
         requiresSurvivingSibling: true,
       })
+    );
+  });
+
+  test("terminal conversational filler writes once without a false no-match notice", async () => {
+    const run = startMultiDispatcher({
+      session: buildSession([
+        { circuit_ref: 1, circuit_designation: 'Kitchen sockets' },
+        { circuit_ref: 2, circuit_designation: 'Cooker' },
+      ]),
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: "Kitchen sockets and that's all",
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      match_status: 'full',
+      unresolved: [],
+      resolved_writes: [expect.objectContaining({ circuit: 1, ok: true })],
+    });
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual(
+      []
     );
   });
 
@@ -1534,6 +1578,34 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       }),
     ]);
     expect(run.session.pendingVoicePrompts[0].text).toMatch(/say the reading/i);
+  });
+
+  test('a corrective mdr answer terminates immediately with zero correction writes', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and smke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuit 1 and not circuit 2',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(body.resolved_writes).toEqual([]);
+    expect(run.autoResolveWrite).not.toHaveBeenCalled();
+    expect(run.pendingAsks.size).toBe(0);
+    expect(run.session.pendingVoicePrompts).toEqual([
+      expect.objectContaining({
+        generationId: 'gen-multi',
+        text: expect.stringMatching(/couldn't place every circuit/i),
+      }),
+    ]);
   });
 
   test.each([

@@ -838,6 +838,23 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
   });
 
+  test.each(["Kitchen sockets and that's all", 'Kitchen sockets and that is all'])(
+    'terminal conversational filler in "%s" never becomes a no-match span',
+    (reply) => {
+      const verdict = resolveMulti(reply, [
+        { circuit_ref: 1, circuit_designation: 'Kitchen sockets' },
+        { circuit_ref: 2, circuit_designation: 'Cooker' },
+      ]);
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: [1],
+        unresolved: [],
+      });
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 1 })]);
+    }
+  );
+
   test.each([
     'it is Kitchen and utility lights',
     'I mean Kitchen and utility lights',
@@ -1429,6 +1446,24 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.unresolved).toBeUndefined();
   });
 
+  test.each([
+    'all circuits apart from the smoke alarm',
+    'all circuits all but the smoke alarm',
+    'Kitchen sockets and Cooker, apart from Cooker',
+  ])('subtractive target phrase "%s" fails closed before fan-out', (reply) => {
+    const verdict = resolveMulti(reply, [
+      { circuit_ref: 1, circuit_designation: 'Kitchen sockets' },
+      { circuit_ref: 2, circuit_designation: 'Cooker' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_correction_or_negation',
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
+  });
+
   test('a negated designation fails closed even when it is the only census target', () => {
     const verdict = resolveMulti('not the cooker', [
       { circuit_ref: 2, circuit_designation: 'Cooker' },
@@ -1655,12 +1690,21 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
   test('the transcript predicate accepts real targets and rejects filler', () => {
     expect(isMultiDescriptionAnswerText('circuits 1 and 2', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
     expect(isMultiDescriptionAnswerText('upstairs lights', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
-    expect(isMultiDescriptionAnswerText('hold on a second', MULTI_DESCRIPTION_CIRCUITS)).toBe(
-      false
-    );
     expect(
       isMultiDescriptionAnswerText('circuit 1 and not circuit 2', MULTI_DESCRIPTION_CIRCUITS)
-    ).toBe(false);
+    ).toBe(true);
+    expect(isMultiDescriptionAnswerText('not the smoke alarm', MULTI_DESCRIPTION_CIRCUITS)).toBe(
+      true
+    );
+    for (const filler of [
+      'hold on a second',
+      'wait 2 minutes',
+      'wait, 2 minutes',
+      'no, I need 2 minutes',
+      'not yet, give me 2 minutes',
+    ]) {
+      expect(isMultiDescriptionAnswerText(filler, MULTI_DESCRIPTION_CIRCUITS)).toBe(false);
+    }
     expect(isMultiDescriptionAnswerText('skip', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
   });
 });

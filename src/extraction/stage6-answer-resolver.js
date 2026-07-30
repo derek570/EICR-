@@ -475,7 +475,9 @@ const MULTI_TARGET_FILLER_PHRASES = new Set([
   'thank you',
   'thanks',
   'thanx',
+  'that is all',
   'that is it',
+  'thats all',
   'thats it',
   'yeah',
   'yep',
@@ -572,7 +574,7 @@ function stripLeadingRetractionWrappers(text) {
  */
 function hasLeadingRetractionSyntax(text) {
   const value = stripLeadingRetractionWrappers(text);
-  return /^(?:(?:(?:i|we)\s+)?(?:don['’]?t|didn['’]?t|do\s+not|did\s+not)\s+(?:mean|want|use|put|pick)|not|except(?:\s+for)?|rather\s+than|instead(?:\s+of)?|exclude|excluding|without|leave\s+out|no|wait)\b/i.test(
+  return /^(?:(?:(?:i|we)\s+)?(?:don['’]?t|didn['’]?t|do\s+not|did\s+not)\s+(?:mean|want|use|put|pick)|not|apart\s+from|except(?:\s+for)?|all\s+but|rather\s+than|instead(?:\s+of)?|exclude|excluding|without|leave\s+out|no|wait)\b/i.test(
     value
   );
 }
@@ -591,7 +593,10 @@ function hasCorrectionOrNegationSyntax(text) {
   const value = stripDescriptionLeadIn(String(text ?? '')).toLowerCase();
   return (
     hasLeadingRetractionSyntax(text) ||
-    /\b(?:not|except|rather\s+than|instead(?:\s+of)?|exclude|excluding|without|leave\s+out)\b/.test(
+    // Keep the bulk-subtraction vocabulary aligned with
+    // sonnet-stream.js BULK_EXCLUDE_PATTERN. These replies are corrections,
+    // never affirmative description lists.
+    /\b(?:not|apart\s+from|except|all\s+but|rather\s+than|instead(?:\s+of)?|exclude|excluding|without|leave\s+out)\b/.test(
       value
     ) ||
     /\b(?:don['’]t|do\s+not)\s+use\b/.test(value) ||
@@ -1460,17 +1465,67 @@ export function resolveMultiDescriptionFollowup({
   };
 }
 
+function hasExplicitCircuitRefAnchor(userText) {
+  const tokens = String(userText ?? '')
+    .toLowerCase()
+    .match(/[a-z0-9-]+/g);
+  if (!tokens) return false;
+
+  const isValidRefTokens = (candidateTokens) => {
+    if (candidateTokens.length === 0) return false;
+    const candidate = candidateTokens.join(' ');
+    const ref = /^\d+$/.test(candidate)
+      ? Number.parseInt(candidate, 10)
+      : parseNumberWord(candidate);
+    return Number.isInteger(ref) && ref >= 1 && ref <= 200;
+  };
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!/^(?:circuit|circuits|cct|ccts)$/.test(tokens[index])) continue;
+
+    let after = index + 1;
+    if (/^(?:number|numbers|no)$/.test(tokens[after] ?? '')) after += 1;
+    if (
+      isValidRefTokens(tokens.slice(after, after + 1)) ||
+      isValidRefTokens(tokens.slice(after, after + 2)) ||
+      isValidRefTokens(tokens.slice(Math.max(0, index - 1), index)) ||
+      isValidRefTokens(tokens.slice(Math.max(0, index - 2), index))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasKnownDesignationAnchor(userText, availableCircuits) {
+  const match = matchDesignation(
+    cleanReplyForDesignation(String(userText ?? '')),
+    Array.isArray(availableCircuits) ? availableCircuits : []
+  );
+  return match.kind !== 'no_match';
+}
+
 /**
  * Conservative transcript-channel predicate for a registered mdr ask.
  * Direct ask_user_answered frames remain authoritative; transcript-origin
- * speech is accepted only when it is a valid census ref/list or an
- * exact/unique designation. Filler such as "hold on" therefore cannot consume
- * and delete the pending clarification.
+ * speech is accepted only when it is a valid census ref/list, a known
+ * designation, or a target-bearing correction. Filler such as "hold on"
+ * therefore cannot consume and delete the pending clarification.
  */
 export function isMultiDescriptionAnswerText(userText, availableCircuits) {
   const stripped = stripPunct(String(userText ?? '').toLowerCase());
   if (CANCEL_PHRASES.includes(stripped)) return true;
-  if (hasCorrectionOrNegationSyntax(userText)) return false;
+  // A bounded correction is a substantive answer to the registered mdr ask:
+  // consume it so the dispatcher can reach its fail-closed correction verdict
+  // and speak a terminal immediately. Require an explicit ref or census
+  // designation anchor so targetless waiting chatter such as "wait 2 minutes"
+  // still preserves the ask.
+  if (hasCorrectionOrNegationSyntax(userText)) {
+    return (
+      hasExplicitCircuitRefAnchor(userText) ||
+      hasKnownDesignationAnchor(userText, availableCircuits)
+    );
+  }
   const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
   const refs = parseMultiDescriptionCircuitRefs(userText);
   if (refs) {

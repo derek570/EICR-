@@ -265,9 +265,10 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
     // or more circuit descriptions. Prefix alone is NOT enough: accepting any
     // non-empty prose resurrects the retired free_text bug where "hold on a
     // second" consumes and deletes the pending ask. The broker stores a
-    // server-owned circuit census; accept only a valid ref/list or an
-    // exact/unique designation from that census. The typed detector above
-    // still gives a structurally complete fresh reading overtake precedence.
+    // server-owned circuit census; accept only a valid ref/list, a known
+    // designation, or a bounded correction carrying one of those target
+    // anchors. The typed detector above still gives a structurally complete
+    // fresh reading overtake precedence.
     for (const [id, entry] of pendingAsks.entries()) {
       if (
         typeof id === 'string' &&
