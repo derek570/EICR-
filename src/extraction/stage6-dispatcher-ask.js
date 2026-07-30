@@ -2023,6 +2023,16 @@ function speakCandidateRefs(candidates) {
   return ` (possible matches: circuits ${head} and ${refs[refs.length - 1]})`;
 }
 
+function speakCircuitRefs(candidates) {
+  const refs = [
+    ...new Set((Array.isArray(candidates) ? candidates : []).filter(Number.isInteger)),
+  ].sort((a, b) => a - b);
+  if (refs.length === 0) return 'no possible circuit numbers';
+  if (refs.length === 1) return `only circuit ${refs[0]}`;
+  const head = refs.slice(0, -1).join(', ');
+  return `only circuits ${head} and ${refs[refs.length - 1]}`;
+}
+
 /**
  * Server-owned clarification wording for a multi-description ask verdict.
  * The raw dictated span is intentionally unavailable here; the resolver
@@ -2032,6 +2042,18 @@ function multiDescriptionQuestion(entries) {
   const clauses = (Array.isArray(entries) ? entries : [])
     .map((entry) => {
       const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
+      if (
+        entry?.reason === 'quantifier_count_mismatch' &&
+        Number.isInteger(entry?.required_count) &&
+        entry.required_count > 0
+      ) {
+        const ordinal = Number.isInteger(entry?.segment_ordinal) ? entry.segment_ordinal : 1;
+        const spokenOrdinal = MULTI_DESCRIPTION_ORDINALS[ordinal] ?? `${ordinal}`;
+        const circuitWord = entry.required_count === 1 ? 'circuit number is' : 'circuit numbers are';
+        return `the ${spokenOrdinal} circuit description (I found ${speakCircuitRefs(
+          candidates
+        )}, but ${entry.required_count} ${circuitWord} required)`;
+      }
       const repeatsIdentity =
         entry?.span_kind === 'circuit_ref' &&
         candidates.length === 1 &&

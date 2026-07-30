@@ -1007,6 +1007,63 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     ]);
   });
 
+  test.each(['2 upstairs light circuits', 'two upstairs light circuits'])(
+    'the spoken count-mismatch ask for "%s" states and enforces the required ref count',
+    async (userText) => {
+      const session = buildSession([
+        { circuit_ref: 5, circuit_designation: 'Upstairs Lights' },
+        { circuit_ref: 6, circuit_designation: 'Garage sockets' },
+      ]);
+      const partialRun = startMultiDispatcher({ session });
+      await tick();
+      partialRun.pendingAsks.resolve('toolu_multi', { answered: true, user_text: userText });
+      await tick();
+      const partialFrame = partialRun.ws.sent.find((frame) =>
+        String(frame.tool_call_id).startsWith('mdr-')
+      );
+
+      expect(partialFrame.question).toMatch(/first circuit description/i);
+      expect(partialFrame.question).toMatch(/found only circuit 5/i);
+      expect(partialFrame.question).toMatch(/2 circuit numbers are required/i);
+
+      partialRun.pendingAsks.resolve(partialFrame.tool_call_id, {
+        answered: true,
+        user_text: 'circuit 5',
+      });
+      const partialBody = JSON.parse((await partialRun.promise).content);
+      expect(partialBody.match_status).toBe('partial');
+      expect(partialBody.unresolved).toEqual([
+        expect.objectContaining({
+          segment_ordinal: 1,
+          required_count: 2,
+          reason: 'quantifier_count_mismatch',
+        }),
+      ]);
+
+      const fullRun = startMultiDispatcher({
+        session: buildSession([
+          { circuit_ref: 5, circuit_designation: 'Upstairs Lights' },
+          { circuit_ref: 6, circuit_designation: 'Garage sockets' },
+        ]),
+      });
+      await tick();
+      fullRun.pendingAsks.resolve('toolu_multi', { answered: true, user_text: userText });
+      await tick();
+      const fullFrame = fullRun.ws.sent.find((frame) =>
+        String(frame.tool_call_id).startsWith('mdr-')
+      );
+      expect(fullFrame.question).toMatch(/2 circuit numbers are required/i);
+
+      fullRun.pendingAsks.resolve(fullFrame.tool_call_id, {
+        answered: true,
+        user_text: 'circuits 5 and 6',
+      });
+      const fullBody = JSON.parse((await fullRun.promise).content);
+      expect(fullBody).toMatchObject({ match_status: 'full', unresolved: [] });
+      expect(fullBody.resolved_writes.map((write) => write.circuit)).toEqual([5, 6]);
+    }
+  );
+
   test('two equally valid overlapping assignments keep both source segments unresolved', async () => {
     const run = startMultiDispatcher();
     await tick();
