@@ -939,76 +939,73 @@ function bumpPartialFailureRepeat(session, repeatKey, nowMs) {
   return entry.count;
 }
 
-/** Repeats past this many inside the dedupe window render the terminal. */
-const PARTIAL_FAILURE_TERMINAL_FROM = 4;
-
 /**
- * Variant selection: PRIMARY-FIRST, then strictly monotonic, then TERMINAL.
+ * Variant selection: PRIMARY-FIRST, then one variant per repeat, then TERMINAL.
  *
  * Deliberately NOT the A1a djb2-seeded scheme. §3.1 names variant 0 the
  * "gap-only primary wording" and the acceptance criterion pins the exact
  * bytes of the id-112 render, so the first selection must be index 0; a
  * turn-hashed seed would pick an arbitrary one.
  *
- * Distinctness is defended on THREE axes, because the client dedupe is
- * text-keyed and key-blind:
- *   1. The rotation cursor is per-FAMILY, not per-identity, which is what
- *      keeps two identities differing ONLY by board (same reason, same
- *      canonical field, same refs — the board never appears in the spoken
- *      text) from both starting at variant 0 and rendering identical bytes.
- *      Do not "simplify" this to a per-identity cursor: that reopens exactly
- *      that collision, and a swallowed second board is an unspoken miss.
- *   2. A per-identity `lastIdx` breaks the residual same-identity tie a
- *      SHARED cursor can still produce (X, Y, X interleaved can hand X the
- *      same index twice). One extra advance is provably enough to break it:
- *      `lastIdx` is a single value, so index+1 cannot also equal it.
- *   3. Past `PARTIAL_FAILURE_TERMINAL_FROM` repeats of one identity inside
- *      the 30 s window, the ordinal-bearing terminal takes over and every
- *      further repeat is byte-distinct by its ordinal.
+ * The client dedupe is TEXT-keyed and key-blind, so the invariant that has to
+ * hold is: **no two renders inside the 30 s window may produce identical
+ * bytes.** The ladder is driven by the identity's OWN repeat count — its Nth
+ * render inside the window takes variant N-1, and once the pool is exhausted
+ * the ordinal-bearing terminal takes over — which makes that invariant
+ * STRUCTURAL rather than a tuned threshold:
+ *   1. Two renders of ONE identity inside the window have different counts, so
+ *      they take different variants (counts 1..len) or different ordinals
+ *      (counts > len). Neither can collide.
+ *   2. Two DIFFERENT identities can share a variant index but never share
+ *      bytes: the identity key is exactly the tuple the sentence is rendered
+ *      from — reason, SPOKEN field label, refs/scope — so distinct keys render
+ *      distinct text at equal index.
+ *   3. Two aggregates differing ONLY by board share a key (the board is never
+ *      spoken), which means they share the counter and are separated by (1).
  *
- * Own session key (`_partialFailureRotation`) so A1a's cursor
- * (`_mandatoryNoticeRotation`) and its byte-parity pins stay untouched.
+ * Cycle-2 shipped a shared per-FAMILY cursor plus a one-step per-identity
+ * skip on the reasoning that (3) needed the cursor. It did not — (3) falls out
+ * of the board-blind key — and the shared cursor made (1) UNPROVABLE: with a
+ * cursor advanced by every identity, `X, X, Y, X` selects 0, 1, 2, 0 and X's
+ * third render byte-repeats its first below the terminal (Codex cycle-2
+ * mini-review BLOCKER). A one-step skip cannot fix that class; only tying the
+ * index to the identity's own count can.
+ *
+ * The un-keyed path (no `repeatKey`/`nowMs`) keeps the per-family cursor: it
+ * has no identity to count, and callers that only exercise rotation rely on it.
+ * Production always keys (see renderPartialFailureNoticeText). Its own session
+ * key (`_partialFailureRotation`) keeps A1a's cursor (`_mandatoryNoticeRotation`)
+ * and its byte-parity pins untouched.
  *
  * @param {object} session
  * @param {string} family
  * @param {PartialFailureTargetDescriptor} target
  * @param {{repeatKey?: string|null, nowMs?: number}} [opts] repeat identity for
- *   the terminal escalation. Omitted (or key-less) ⇒ rotation only, exactly the
- *   pre-terminal behaviour — unit tests that only exercise rotation stay valid.
+ *   the escalation ladder. Omitted (or key-less) ⇒ the un-keyed family cursor.
  */
 export function selectPartialFailureNoticeText(session, family, target, opts = {}) {
   const variants = PARTIAL_FAILURE_FAMILIES[family];
   if (!variants || !target) return null;
+  const { repeatKey = null, nowMs = null } = opts ?? {};
+
+  if (typeof repeatKey === 'string' && repeatKey.length > 0 && Number.isFinite(nowMs)) {
+    const repeats = bumpPartialFailureRepeat(session, repeatKey, nowMs);
+    // Pool EXHAUSTION is the terminal trigger, not a separately-tuned constant:
+    // a constant could drift below the pool size (a variant never heard) or
+    // above it (a wrap, i.e. the byte-repeat this ladder exists to prevent).
+    if (repeats > variants.length) {
+      const terminal = PARTIAL_FAILURE_TERMINALS[family];
+      if (terminal) return terminal(target, repeats);
+    }
+    return variants[(repeats - 1) % variants.length](target);
+  }
+
   if (!session._partialFailureRotation || typeof session._partialFailureRotation !== 'object') {
     session._partialFailureRotation = {};
   }
   const state = session._partialFailureRotation;
-  const { repeatKey = null, nowMs = null } = opts ?? {};
-
-  let repeats = 0;
-  if (typeof repeatKey === 'string' && repeatKey.length > 0 && Number.isFinite(nowMs)) {
-    repeats = bumpPartialFailureRepeat(session, repeatKey, nowMs);
-    if (repeats >= PARTIAL_FAILURE_TERMINAL_FROM) {
-      const terminal = PARTIAL_FAILURE_TERMINALS[family];
-      // The terminal replaces the variant and deliberately does NOT advance
-      // the family cursor — it consumed no variant, so the next fresh
-      // identity should still get the one it would have had.
-      if (terminal) return terminal(target, repeats);
-    }
-  }
-
   const prev = state[family];
-  let idx = typeof prev === 'number' ? (prev + 1) % variants.length : 0;
-  if (typeof repeatKey === 'string' && repeatKey.length > 0) {
-    // Own session key, NOT a sub-object of the rotation state: that state is
-    // pinned by shape (`{family: index}`) and must stay a pure cursor map.
-    if (!session._partialFailureLastIdx || typeof session._partialFailureLastIdx !== 'object') {
-      session._partialFailureLastIdx = {};
-    }
-    const lastByIdentity = session._partialFailureLastIdx;
-    if (lastByIdentity[repeatKey] === idx) idx = (idx + 1) % variants.length;
-    lastByIdentity[repeatKey] = idx;
-  }
+  const idx = typeof prev === 'number' ? (prev + 1) % variants.length : 0;
   state[family] = idx;
   return variants[idx](target);
 }

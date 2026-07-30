@@ -488,24 +488,36 @@ describe('§5.A6b — repeat escalation: never a byte-repeat inside the 30 s ded
     expect(new Set(spoken).size).toBe(spoken.length);
   });
 
-  test('INTERLEAVED identities never repeat bytes (the shared-cursor tie)', () => {
-    // X, Y, X: a shared per-family cursor can hand X the same index twice, and
-    // the per-identity one-step skip is what breaks it.
-    const session = {};
-    const t0 = 6_000_000;
-    const x = [circuitTarget(7)];
-    const y = [circuitTarget(9)];
-    const spoken = [
-      render(session, t0, aggregate, x),
-      render(session, t0 + 100, aggregate, y),
-      render(session, t0 + 200, aggregate, x),
-      render(session, t0 + 300, aggregate, y),
-      render(session, t0 + 400, aggregate, x),
-      render(session, t0 + 500, aggregate, y),
-    ];
-    for (const s of spoken) expect(typeof s).toBe('string');
-    expect(new Set(spoken).size).toBe(spoken.length);
-  });
+  // Every interleaving of two identities, up to 5 renders. A shared per-family
+  // cursor (cycle 2's shape) fails `X, X, Y, X` — indices 0, 1, 2, 0 — because
+  // the cursor is advanced by the OTHER identity and the one-step skip only
+  // remembers X's immediately previous index (Codex cycle-2 mini-review
+  // BLOCKER). Tying the variant to the identity's OWN repeat count makes the
+  // invariant structural, so assert it EXHAUSTIVELY rather than on one
+  // favourable alternation.
+  const interleavings = (() => {
+    const out = [];
+    for (let mask = 0; mask < 32; mask++) {
+      out.push(
+        Array.from({ length: 5 }, (_, i) => ((mask >> i) & 1 ? 'Y' : 'X'))
+      );
+    }
+    return out;
+  })();
+
+  test.each(interleavings.map((seq) => [seq.join(''), seq]))(
+    'interleaving %s never repeats bytes inside the window',
+    (_name, seq) => {
+      const session = {};
+      const t0 = 6_000_000;
+      const refs = { X: [circuitTarget(7)], Y: [circuitTarget(9)] };
+      const spoken = seq.map((who, i) => render(session, t0 + i * 100, aggregate, refs[who]));
+      for (const s of spoken) expect(typeof s).toBe('string');
+      // All five renders land inside ONE 30 s dedupe window, so ANY duplicate
+      // here is a swallowed notice — i.e. a chimed turn that says nothing.
+      expect(new Set(spoken).size).toBe(spoken.length);
+    }
+  );
 
   test('a DIFFERENT field on the same refs is a different identity (own counter)', () => {
     const session = {};
