@@ -113,6 +113,7 @@ import {
   projectBoardReadingWinners,
   projectReadingWinners,
   readEffectiveOpBoard,
+  readingSlotPartsOf,
 } from './stage6-per-turn-writes.js';
 
 /**
@@ -148,7 +149,23 @@ import { getMainBoardId } from './stage6-multi-board-shape.js';
 // registry's ONE dispatch point (direct A1a rotation + terminals, B-staged
 // per-slot pools + terminals); the unknown-tool staging callback is bound at
 // both composition sites.
-import { renderMandatoryNoticeText, stageUnknownToolRefusal } from './refusal-notices.js';
+import {
+  renderMandatoryNoticeText,
+  stageUnknownToolRefusal,
+  // Plan 2A (2026-07-30) §3.1 — the partial-failure drain, below.
+  canonicalPartialFailureFieldIdentity,
+  renderPartialFailureNoticeText,
+  stagePartialFailureNotice,
+} from './refusal-notices.js';
+// Plan 2A channel 3 (2026-07-30) — the ask dispatcher's auto-resolved writes are
+// dispatched through the CIRCUIT write dispatcher, so their partial-failure
+// notices must key their board with the SAME formula those dispatchers use.
+// Imported rather than re-derived here so there stays exactly ONE formula: a
+// raw-vs-resolved key mismatch would make the drain's surviving-write
+// subtraction miss and speak a FALSE "didn't save" over a value that DID land.
+// Safe import — stage6-dispatchers-circuit.js is already in this module's graph
+// via stage6-dispatchers.js, and it imports nothing from this file (no cycle).
+import { resolveEffectiveBoardId } from './stage6-dispatchers-circuit.js';
 // readback-correction-optionb §3.3a/b — rolling conversational window so the
 // live model can resolve a bare "no" against the read-backs it spoke.
 import {
@@ -878,6 +895,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const isAudibleText = (t) => typeof t === 'string' && t.trim().length > 0;
     const isCurrentGenPrompt = (p) =>
       generationId == null || p?.generationId == null || p.generationId === generationId;
+    // Plan 2A (2026-07-30) §3.1 — HOISTED out of the A3 orphan block (where it
+    // was `const allRejected = …`, block-scoped) so the partial-failure drain
+    // that runs LATER in this function can read it. The classification itself
+    // is unchanged and still computed at its original site; only the
+    // declaration moved.
+    //
+    // The default is FAIL-AUDIBLE. When the enclosing orphan block never runs
+    // (no orphan tool calls at all — the ordinary success path), `allRejected`
+    // stays false, which means the partial-failure drain rule (1) does NOT
+    // drop the notices and a genuine partial failure still speaks. The
+    // opposite default would silence exactly the class this plan exists to
+    // remove.
+    let allRejected = false;
     // marker-② predicate-4 "already-spoken evidence": count of confirmations
     // PRODUCED this turn but suppressed by the backend applyConfirmationDebounce
     // (the inspector heard the same reading on a recent turn). Captured from
@@ -1105,6 +1135,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // initial/pvr await when the resolved outcome carries a non-empty epoch
         // (direct-frame `utterance_id` OR transcript-origin `response_utterance_id`).
         responseEpochRef,
+        // Plan 2A channel 3 (2026-07-30, feedback id 112) — STAGING callback for
+        // an auto-resolved write that did not land. A callback rather than the
+        // `perTurnWrites` accumulator itself: the ask dispatcher has never held
+        // the accumulator, and handing it one just to reach a single array would
+        // also hand it every other per-turn channel. Closed over THIS turn's
+        // accumulator here, and the board id is resolved with the write
+        // dispatchers' own formula so the drain's surviving-write subtraction can
+        // match an unscoped-write target against the winner it produced.
+        // The SHADOW composition site deliberately gets nothing — it supplies no
+        // `autoResolveWrite`, so no auto-resolved write ever runs there.
+        stagePartialFailureNotice: (spec) =>
+          stagePartialFailureNotice(perTurnWrites, {
+            ...spec,
+            boardId: resolveEffectiveBoardId(liveSession, spec?.boardId) ?? null,
+          }),
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -2395,7 +2440,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             return false;
           }
         };
-        const allRejected =
+        // (declared at function scope — plan 2A hoist; see the comment there)
+        allRejected =
           orphanToolCalls > 0 &&
           toolCalls.every((c) => c?.result?.is_error === true) &&
           !toolCalls.some(
@@ -3082,6 +3128,145 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         sessionId: session.sessionId,
         turnId,
         error: mandatoryErr?.message ?? String(mandatoryErr),
+      });
+    }
+
+    // ── Plan 2A (2026-07-30) §3.1 — PARTIAL-FAILURE notice drain ──────────
+    // Feedback id 112. THE DEFECT CLASS: a turn in which SOME targets landed
+    // and others were rejected or silently skipped spoke only the successes.
+    // "Zs for circuits 5 to 10 is 0.4" on a board where 7 and 8 do not exist
+    // read back four values and said NOTHING about the two misses — the
+    // inspector walks away believing six circuits were recorded. Audio-First
+    // #1 in the zero-times direction, for the half of the turn that failed.
+    //
+    // WHY HERE, between plan B's net 0 and F7: this net must run AFTER the
+    // coverage arbitration has settled (rule (1) below reads `allRejected`)
+    // and BEFORE marker-② (`survivingPromptCount`, further down), because a
+    // spoken partial-failure notice IS this turn's audible output for the
+    // failed half and must suppress the generic catch-all apology — otherwise
+    // a skip-only turn speaks both a specific notice and "I didn't catch
+    // that", which contradict each other.
+    //
+    // NOT part of plan B's `mandatoryNotices`: see the accumulator comment in
+    // stage6-per-turn-writes.js. The separation is what keeps an unclassed
+    // partial notice out of `coveredUnion` / `stampCoveredNoticesNonDraining`.
+    try {
+      const stagedPartial = Array.isArray(perTurnWrites?.partialFailureNotices)
+        ? perTurnWrites.partialFailureNotices
+        : [];
+      if (
+        stagedPartial.length > 0 &&
+        options.confirmationsEnabled === true &&
+        options.chimeObserved === true &&
+        !cancelled
+      ) {
+        // ── Drain rule (1) — allRejected ⇒ DROP EVERY partial notice.
+        // A whole-turn rejection is plan B's / A3's to speak: it emits
+        // exactly one line and every pre-2A byte of that path must be
+        // preserved. A partial notice draining beside it would double-speak
+        // the same failure in two different sentences.
+        if (allRejected) {
+          log.info?.('stage6.partial_failure_notices_suppressed_all_rejected', {
+            sessionId: session.sessionId,
+            turnId,
+            generationId,
+            aggregate_count: stagedPartial.length,
+          });
+        } else {
+          // ── Drain rule (2) — subtract any READING target that has a
+          // SURVIVING same-slot write at drain time.
+          //
+          // The turn "Zs on 7 is LIM" (capability-skipped) followed by "Zs on
+          // 7 is 0.4" (accepted) must speak the read-back ONLY: the value IS
+          // recorded, and a notice claiming otherwise would send the
+          // inspector back to re-dictate a correct reading. A false negative
+          // here is worse than the silence this whole plan removes.
+          //
+          // Survivor source is the A2 write JOURNAL (`projectReadingWinners`),
+          // NEVER a raw `readings`-Map scan: post-A2 the raw Map is
+          // board-AMBIGUOUS by construction (record_reading omits board_id in
+          // the common case), so a Map scan would subtract a garage write
+          // against a MAIN-board miss for the same ref.
+          //
+          // Field identity is CANONICALISED on BOTH sides, so an
+          // alias-spelled retry (`measured_zs_ohm` skipped, then `zs`
+          // written) subtracts. Subtraction is REGARDLESS of `derived:true`:
+          // a mirror-derived write still means the cell is populated, and
+          // "not recorded" would be a lie about it.
+          const survivingReadingSlots = new Set();
+          for (const w of projectReadingWinners(perTurnWrites)) {
+            const parts = readingSlotPartsOf(w?.rawKey, w?.value);
+            if (parts?.field == null || parts?.circuit == null) continue;
+            survivingReadingSlots.add(
+              `${canonicalPartialFailureFieldIdentity(parts.field)}::${parts.circuit}::${
+                parts.boardId ?? ''
+              }`
+            );
+          }
+          for (const aggregate of stagedPartial) {
+            // A SCOPE target ("all circuits") can never acquire a per-circuit
+            // write, so it always survives rule (2) and always speaks.
+            const survivors = (Array.isArray(aggregate?.targets) ? aggregate.targets : []).filter(
+              (t) => {
+                if (t?.kind !== 'circuit') return true;
+                return !survivingReadingSlots.has(
+                  `${aggregate.field}::${t.ref}::${aggregate.boardId ?? ''}`
+                );
+              }
+            );
+            if (survivors.length === 0) {
+              log.info?.('stage6.partial_failure_notice_subtracted', {
+                sessionId: session.sessionId,
+                turnId,
+                generationId,
+                reason: aggregate?.reason ?? null,
+                field: aggregate?.field ?? null,
+                board: aggregate?.boardId ?? null,
+                staged_target_count: Array.isArray(aggregate?.targets)
+                  ? aggregate.targets.length
+                  : 0,
+              });
+              continue;
+            }
+            // ── Drain rule (3) — speak the residual, AGGREGATED. Rendering
+            // (and therefore rotation-cursor advance) happens HERE, at the
+            // drain, never at stage time: a notice dropped by rule (1) or (2)
+            // must not consume a variant, or the next audible notice could
+            // wrap to the last-HEARD byte string and be swallowed by the
+            // clients' 30 s text dedupe.
+            const partialText = renderPartialFailureNoticeText(session, aggregate, survivors);
+            if (typeof partialText !== 'string' || partialText.trim().length === 0) continue;
+            session.pendingVoicePrompts.push({ text: partialText, generationId });
+            // Own telemetry row — never reuse mandatory_notice_emitted; the
+            // three notice regimes must stay separable in CloudWatch.
+            // PII-safe: server-owned constants, canonical field names, board
+            // ids, integer refs and counts only — never a dictated value.
+            log.info?.('stage6.partial_failure_notice_emitted', {
+              sessionId: session.sessionId,
+              turnId,
+              generationId,
+              reason: aggregate?.reason ?? null,
+              field: aggregate?.field ?? null,
+              board: aggregate?.boardId ?? null,
+              producer: aggregate?.producer ?? null,
+              staged_target_count: Array.isArray(aggregate?.targets) ? aggregate.targets.length : 0,
+              spoken_target_count: survivors.length,
+              spoken_refs: survivors
+                .filter((t) => t?.kind === 'circuit')
+                .map((t) => t.ref)
+                .join(','),
+              textPreview: partialText.slice(0, 80),
+            });
+          }
+        }
+      }
+    } catch (partialErr) {
+      // Same fail-open posture as plan B's net: a throw in the notice
+      // machinery must never take down the turn's real output.
+      log.warn?.('stage6.partial_failure_notice_net_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: partialErr?.message ?? String(partialErr),
       });
     }
 
