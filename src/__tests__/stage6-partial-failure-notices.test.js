@@ -519,6 +519,60 @@ describe('§5.A6b — repeat escalation: never a byte-repeat inside the 30 s ded
     }
   );
 
+  // Codex cycle-2-mini-review-2 BLOCKER. The repeat identity used to be
+  // re-derived from `survivingTargets` in PARALLEL with the descriptor, and the
+  // two derivations disagreed about scope: `describePartialFailureTargets` gives
+  // refs PRECEDENCE (a scope target is invisible in the rendered text whenever
+  // any ref is present), while the key appended `|scope` whenever a scope target
+  // existed at all. So these two aggregates rendered IDENTICAL bytes under two
+  // different keys — two counters, both at repeat 1, both variant 0, the second
+  // swallowed by the 30 s text dedupe. The key is now derived FROM the
+  // descriptor, so identical bytes cannot have distinct keys by construction.
+  //
+  // Reachable because `record_reading`'s LIM gate stages a CIRCUIT target while
+  // `set_field_for_all_circuits`' LIM gate stages a SCOPE target, and both fold
+  // into one reason/field/board aggregate.
+  test('a scope target that the RENDER ignores does not fork the counter', () => {
+    const session = {};
+    const t0 = 6_500_000;
+    const limAggregate = {
+      reason: 'lim_capability_gated',
+      field: 'zs',
+      fieldLabel: label('measured_zs_ohm'),
+      boardId: null,
+      targets: [circuitTarget(4)],
+    };
+    // Turn 1: the bulk path also gated, so the aggregate carries a scope target.
+    const withScope = render(session, t0, limAggregate, [SCOPE_TARGET, circuitTarget(4)]);
+    // Turn 2, inside the window: only the per-circuit path gated.
+    const withoutScope = render(session, t0 + 100, limAggregate, [circuitTarget(4)]);
+    expect(typeof withScope).toBe('string');
+    expect(typeof withoutScope).toBe('string');
+    // The refs-win grammar rule means both name circuit 4 and NEITHER says
+    // "those circuits" — the scope target is invisible to the rendered text.
+    // (Case-insensitive: the variants use `subject` or `subjectLower` per their
+    // own sentence position, which is not what this test is about.)
+    expect(withScope.toLowerCase()).toContain('circuit 4');
+    expect(withoutScope.toLowerCase()).toContain('circuit 4');
+    expect(withScope.toLowerCase()).not.toContain('those circuits');
+    // ...so they MUST NOT be byte-identical, or the second is swallowed.
+    expect(withoutScope).not.toBe(withScope);
+    // One shared counter, not two: the second render is repeat 2.
+    expect(Object.keys(session.partialFailureRepeats)).toHaveLength(1);
+    expect(Object.values(session.partialFailureRepeats)[0].count).toBe(2);
+  });
+
+  test('duplicate refs in the target list do not fork the counter either', () => {
+    // The descriptor de-duplicates and sorts refs, so [4, 4] and [4] speak the
+    // same sentence; the parallel key joined the raw list and forked.
+    const session = {};
+    const t0 = 6_700_000;
+    const first = render(session, t0, aggregate, [circuitTarget(7), circuitTarget(7)]);
+    const second = render(session, t0 + 100, aggregate, [circuitTarget(7)]);
+    expect(second).not.toBe(first);
+    expect(Object.keys(session.partialFailureRepeats)).toHaveLength(1);
+  });
+
   test('a DIFFERENT field on the same refs is a different identity (own counter)', () => {
     const session = {};
     const t0 = 7_000_000;

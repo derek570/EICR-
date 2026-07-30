@@ -1113,33 +1113,49 @@ export function renderPartialFailureNoticeText(session, aggregate, survivingTarg
   const scopeOnly = survivingTargets.every((t) => t?.kind === 'scope');
   if (scopeOnly && !PARTIAL_FAILURE_SCOPE_FAMILIES.has(aggregate.reason)) return null;
   return selectPartialFailureNoticeText(session, aggregate.reason, descriptor, {
-    repeatKey: partialFailureTextIdentity(aggregate, survivingTargets),
+    repeatKey: partialFailureTextIdentity(aggregate, descriptor),
     nowMs: Number.isFinite(opts?.nowMs) ? opts.nowMs : Date.now(),
   });
 }
 
 /**
- * The repeat identity for a partial-failure notice: EXACTLY the inputs that
- * determine the rendered bytes — family, the spoken field LABEL, and the spoken
- * target set. Nothing else.
+ * The repeat identity for a partial-failure notice: family + EXACTLY the two
+ * slots the sentence is rendered from — the spoken subject and the spoken field
+ * label. Nothing else.
+ *
+ * It is keyed off the DESCRIPTOR (the value the variant templates actually
+ * interpolate) and NOT off the raw target list, and that is the whole point.
+ * The first version re-derived the target identity from `survivingTargets` in
+ * PARALLEL with `describePartialFailureTargets`, and the two derivations
+ * disagreed — which is a byte-collision, not a cosmetic wart (Codex cycle-2
+ * mini-review BLOCKER). `describePartialFailureTargets` gives refs PRECEDENCE:
+ * when any ref is present the scope flag is ignored by the rendered text
+ * entirely. The parallel key appended `|scope` whenever a scope target existed
+ * at all, so an aggregate of `[scope, circuit 4]` (reachable: `record_reading`
+ * stages a circuit target while `set_field_for_all_circuits` stages a scope
+ * target, and both fold into one reason/field/board aggregate) and a later
+ * aggregate of `[circuit 4]` render the IDENTICAL sentence under two different
+ * keys — two counters, both at repeat 1, both variant 0, byte-identical inside
+ * the 30 s window, second one swallowed. The descriptor also de-duplicates and
+ * sorts refs, which the parallel derivation only partly mirrored (`[4, 4]`).
+ *
+ * Deriving the key from the render inputs makes the required property
+ * STRUCTURAL: identical bytes imply an identical `(reason, subject, fieldLabel)`
+ * tuple, hence an identical key, hence one shared counter. No future edit to the
+ * grammar rules can reintroduce the disagreement, because there is only one
+ * derivation left. `subject` is sufficient for the whole target set — the other
+ * grammar slots (`subjectLower`, `wasWere`, `isAre`, `pronoun`) are functions of
+ * the plurality `subject` already encodes.
  *
  * Deliberately NOT `aggregate.key`, which carries the board id: the board never
  * appears in the spoken sentence, so two boards' notices for the same field and
  * the same refs render identical text and MUST share one repeat counter — a
- * board-keyed counter would let each reach "attempt 4" independently and emit
- * byte-identical terminals, reopening the very swallow this escalation closes.
+ * board-keyed counter would let each exhaust the pool independently and emit
+ * byte-identical variants, reopening the very swallow this escalation closes.
  * Conversely the LABEL rather than the canonical field, because the label is
  * what is spoken (two raw fields folding to one canonical field can carry
  * different labels, and those two sentences are genuinely distinct).
  */
-function partialFailureTextIdentity(aggregate, survivingTargets) {
-  const refs = (Array.isArray(survivingTargets) ? survivingTargets : [])
-    .filter((t) => t?.kind === 'circuit' && Number.isInteger(t.ref))
-    .map((t) => t.ref)
-    .sort((a, b) => a - b)
-    .join(',');
-  const hasScope = (Array.isArray(survivingTargets) ? survivingTargets : []).some(
-    (t) => t?.kind === 'scope'
-  );
-  return `${aggregate.reason}::${aggregate.fieldLabel ?? ''}::${refs}${hasScope ? '|scope' : ''}`;
+function partialFailureTextIdentity(aggregate, descriptor) {
+  return `${aggregate.reason}::${descriptor.fieldLabel ?? ''}::${descriptor.subject ?? ''}`;
 }
