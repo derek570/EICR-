@@ -474,7 +474,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // Measured 22891; cap 22991 leaves ~100-token headroom (measured +
       // ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(22991);
+      expect(estimate).toBeLessThanOrEqual(23325);
     });
   });
 
@@ -1217,7 +1217,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // category-specific conflict) grew it further. Measured 17653; cap
       // 17753 leaves ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(17753);
+      expect(estimate).toBeLessThanOrEqual(18087);
     });
   });
 
@@ -2132,6 +2132,41 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           'Genuine conflict (checked ONLY when no adjacent field name applies — see (a) above) = the SAME clause carries BOTH a Ze-family anchor AND a size-family anchor (never two of the SAME family — "16 mm² CSA" is size+size, not a conflict), OR "main earth"/"main earthing conductor" vocabulary with a value fitting NEITHER the Ze pattern NOR the CSA pattern'
         );
+      }
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 21 — 2026-07-30 PLAN-2 (feedback-2026-07-27): the batched
+  // §3.2 range-expansion + §3.3 multiple-description + §3.4 ref_method
+  // steers. All land in the SHARED region so BOTH flag renders carry
+  // them (prod is flag-ON; a flag-OFF rollback must not lose them).
+  // ------------------------------------------------------------------
+  describe('Group 21 — 2026-07-30 PLAN-2 range / multi-description / ref_method steers', () => {
+    test('§3.2 — explicit range expands to EVERY member, no silent pre-filter, BOTH renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain(
+          'An explicit spoken range ("circuits 5 to 10", "1 through 4") expands to EVERY member of the range'
+        );
+        expect(rendered).toContain(
+          'do NOT silently pre-filter the range to only the circuits shown'
+        );
+      }
+    });
+    test('§3.3 — multiple descriptions in one reply write to each matched circuit, BOTH renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('MULTIPLE DESCRIPTIONS in one reply');
+        expect(rendered).toContain('one `record_reading` per matched circuit, not just the last one');
+        expect(rendered).toContain(
+          'A designation that itself contains "and" ("Kitchen and utility lights") is ONE name, not two'
+        );
+      }
+    });
+    test('§3.4 — ref_method single-token guidance with answer forms, BOTH renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('`ref_method` (BS 7671 Appendix 4 reference method)');
+        expect(rendered).toContain('Answers like "C", "method C", "reference method C" → write "C"');
+        expect(rendered).toContain('the word form "one hundred" → "100"');
       }
     });
   });
