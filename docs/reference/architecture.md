@@ -143,14 +143,22 @@ same contract before metrics, dedupe, question bookkeeping, or
 If a malformed legacy result also contains valid sibling readings, the server
 regenerates exactly one trusted read-back per surviving slot and discards
 model-authored confirmations/questions/actions that could echo the rejected
-field or value. Structural fields are refused before mutation:
+field or value. Because the raw tool input is captured before that boundary,
+any rejected turn also rebuilds its assistant-history entry from the sanitized
+result before `conversationHistory.push`; the forbidden field/value therefore
+cannot be replayed in the next sliding message window. Structural fields are
+refused before mutation:
 positive distribution-link intent is recoverable only through
 `mark_distribution_circuit`, whose same-turn success reconciles the notice;
 all hierarchy edits and legacy sub-main writes are terminal, with the latter
 directing the inspector to the Board tab. Board-attributed writes use their
 own write-scope map rather than the narrower clear-scope map, so every
 supported board field carries the server-resolved board independently of
-`board_clear_v1`. The web router is deep-compared to the committed contract
+`board_clear_v1`. When a legacy flat job has no `boards[]`, both clients
+materialise the backend's same canonical `main` identity before route
+resolution; a stamped main-board reading therefore reaches the visible board
+and summary, while every other unknown explicit id remains fail-closed. The
+web router is deep-compared to the committed contract
 and Swift pins the byte-identical fixture digest.
 
 Sonnet's `ask_user` tool carries an OPTIONAL `pending_write` property. When the inspector says a value without enough context (e.g. "Number of points is 4" with no circuit), Sonnet attaches the buffered write to its ask. The server then:

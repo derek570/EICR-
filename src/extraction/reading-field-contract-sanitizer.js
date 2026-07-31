@@ -46,17 +46,19 @@ function buildServerOwnedConfirmations(readings) {
 }
 
 /**
- * Mutates and returns `result`.
+ * Mutates `result` and returns it with the number of rejected readings.
  *
  * Idempotence is structural: after the first call the rejected readings are
  * absent, so a later egress call sees zero rejections and leaves the
  * server-owned confirmations untouched.
  */
-export function sanitizeReadingFieldContract(
+export function sanitizeReadingFieldContractWithReport(
   result,
   { sessionId = null, logger = null, confirmationsEnabled = true } = {}
 ) {
-  if (!result || !Array.isArray(result.extracted_readings)) return result;
+  if (!result || !Array.isArray(result.extracted_readings)) {
+    return { result, rejectedReadingCount: 0 };
+  }
 
   const acceptedReadings = [];
   let rejectedReadingCount = 0;
@@ -93,7 +95,7 @@ export function sanitizeReadingFieldContract(
   }
 
   result.extracted_readings = acceptedReadings;
-  if (rejectedReadingCount === 0) return result;
+  if (rejectedReadingCount === 0) return { result, rejectedReadingCount };
 
   result.confirmations =
     confirmationsEnabled === true ? buildServerOwnedConfirmations(acceptedReadings) : [];
@@ -101,5 +103,14 @@ export function sanitizeReadingFieldContract(
   result.validation_alerts = [];
   result.spoken_response = OFFSCHEMA_READING_RESPONSE;
   result.action = null;
-  return result;
+  return { result, rejectedReadingCount };
+}
+
+/**
+ * Back-compatible mutation helper used at the final egress boundary.
+ * Callers that must also repair already-captured model history use the
+ * reporting variant above.
+ */
+export function sanitizeReadingFieldContract(result, options = {}) {
+  return sanitizeReadingFieldContractWithReport(result, options).result;
 }

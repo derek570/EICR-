@@ -574,6 +574,12 @@ describe('EICRExtractionSession', () => {
       const outward = JSON.stringify(result);
       expect(outward).not.toContain(rawField);
       expect(outward).not.toContain(rawValue);
+      const storedHistory = JSON.stringify(session.conversationHistory);
+      expect(storedHistory).not.toContain(rawField);
+      expect(storedHistory).not.toContain(rawValue);
+      const nextMessageWindow = JSON.stringify(session.buildMessageWindow());
+      expect(nextMessageWindow).not.toContain(rawField);
+      expect(nextMessageWindow).not.toContain(rawValue);
     });
 
     test('should handle empty tool_use input gracefully', async () => {

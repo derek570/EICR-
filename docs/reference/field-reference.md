@@ -41,13 +41,18 @@ instead of silently retargeting the current board.
 The legacy extraction path sanitises before snapshot mutation; if a malformed
 turn also contains valid siblings, their model prose is replaced with exactly
 one server-built read-back per surviving slot, while untrusted questions,
-alerts, speech, and actions are removed. The later egress pass is idempotent.
+alerts, speech, and actions are removed. Rejected turns rebuild their stored
+assistant-history text from this sanitized result before it can enter a later
+message window. The later egress pass is idempotent.
 
 Board attribution is separate from clearing scope. The server stamps
 `board_id` on `manufacturer`, `name`, `location`, `phases`, `ze_at_db`, and
 `ipf_at_db`; the clients additionally retain the legacy `zs_at_db` board
 route. An explicit sub-board write updates only that board, while an unknown
-or ambiguous board fails closed. Web translates legacy `design_comments` only
+or ambiguous board fails closed. A legacy job with no `boards[]` materialises
+the backend-default `main` record in both clients, so the server's stamped
+identity is applied rather than mistaken for an orphan. Web translates legacy
+`design_comments` only
 into the rendered/PDF `comments` destination rather than retaining an invisible
 raw property. Web and iOS accept inspection intervals 1–10, and iOS preserves
 both true and false `supply_polarity_confirmed` values while rejecting unknown
