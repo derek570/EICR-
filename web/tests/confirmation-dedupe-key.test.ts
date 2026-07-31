@@ -23,6 +23,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildConfirmationDedupeKey,
   djb2UInt64Decimal,
+  isObservationRecodeConfirmation,
   WIRE_CLIENT_DEDUPE_TOKEN_FIELDS,
 } from '@/lib/recording/confirmation-dedupe-key';
 
@@ -351,6 +352,25 @@ describe('§A1a / PLAN-2C dedupe_token — allowlist + token-composition vectors
     expect(first).toBe('postcode_secfield_postcode_global_turn-1_ord0');
     expect(replay).toBe(first);
     expect(laterOperation).not.toBe(first);
+  });
+
+  it('field-null PLAN-3 recode tokens form a replay-stable operation key outside the field manifest', () => {
+    const confirmation = {
+      text: 'Observation re-coded C1 to C2',
+      field: null,
+      dedupe_token: 'obsrecode_turn-7_obs-1_C1_C2',
+    };
+    expect(isObservationRecodeConfirmation(confirmation)).toBe(true);
+    expect(buildConfirmationDedupeKey(confirmation)).toBe(
+      'observation_recode_obsrecode_turn-7_obs-1_C1_C2'
+    );
+    expect(
+      buildConfirmationDedupeKey({
+        ...confirmation,
+        dedupe_token: 'obsrecode_turn-8_obs-1_C1_C2',
+      })
+    ).not.toBe(buildConfirmationDedupeKey(confirmation));
+    expect(WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has('observation_recode')).toBe(false);
   });
 
   it('NEGATIVE: measured-value fields IGNORE the token — VALUE-AWARE key (id-84)', () => {

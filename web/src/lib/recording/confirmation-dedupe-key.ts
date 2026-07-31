@@ -106,12 +106,32 @@ export interface DedupeKeySource {
 }
 
 /**
+ * PLAN-3 reconnect-required severity re-code confirmations deliberately keep
+ * `field:null`, but carry a server-owned operation token. They are not members
+ * of the ordinary field-token manifest: this prefix is a separate wire lane
+ * whose job is to let an owed reconnect suffix bypass stale-frame suppression
+ * and dedupe permanently by the originating operation.
+ */
+export const OBSERVATION_RECODE_DEDUPE_PREFIX = 'obsrecode_';
+
+export function isObservationRecodeConfirmation(conf: DedupeKeySource): boolean {
+  return (
+    conf.field == null &&
+    typeof conf.dedupe_token === 'string' &&
+    conf.dedupe_token.startsWith(OBSERVATION_RECODE_DEDUPE_PREFIX)
+  );
+}
+
+/**
  * Literal port of iOS `buildConfirmationDedupeKey` branch selection:
  * token precedence for allowlisted text-op fields (every branch), then
  * single-circuit wins, then multi-circuit broadcast, then degenerate.
  */
 export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
   const field = conf.field ?? 'unknown';
+  if (isObservationRecodeConfirmation(conf)) {
+    return `observation_recode_${conf.dedupe_token}`;
+  }
   // §A1a — token precedence for the allowlisted text-op fields, in every
   // branch (single-circuit, multi-circuit AND degenerate). Empty-string
   // token treated as absent (mirrors the JS `opToken &&` falsiness in
