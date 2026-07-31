@@ -1945,6 +1945,78 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
+  test('a model-scoped unselected board cannot mint frozen auto-resolve authority', async () => {
+    const session = {
+      sessionId: 'sess-test',
+      stateSnapshot: {
+        currentBoardId: 'main',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'sub-b', board_type: 'sub_distribution', parent_board_id: 'main' },
+        ],
+        circuits: {
+          1: { circuit_designation: 'Main sockets' },
+          2: { circuit_designation: 'Main lights' },
+          'sub-b::1': {
+            circuit: 1,
+            board_id: 'sub-b',
+            circuit_designation: 'Sub sockets',
+          },
+          'sub-b::2': {
+            circuit: 2,
+            board_id: 'sub-b',
+            circuit_designation: 'Sub lights',
+          },
+        },
+      },
+    };
+    const perTurnWrites = createPerTurnWrites();
+    const realAutoResolveWrite = createAutoResolveWriteHook(
+      session,
+      noopLogger(),
+      'turn-multi',
+      perTurnWrites
+    );
+    const autoResolveResults = [];
+    const autoResolveWrite = jest.fn(async (write, ctx) => {
+      const result = await realAutoResolveWrite(write, ctx);
+      autoResolveResults.push(result);
+      return result;
+    });
+    const run = startMultiDispatcher({
+      session,
+      autoResolveWrite,
+      inputOverrides: { context_board_id: 'sub-b' },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'Sub sockets and Sub lights',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({ circuit: 1, ok: false }),
+      expect.objectContaining({ circuit: 2, ok: false }),
+    ]);
+    expect(autoResolveResults).toEqual([
+      expect.objectContaining({
+        ok: false,
+        body: { ok: false, error: expect.objectContaining({ code: 'wrong_board' }) },
+      }),
+      expect.objectContaining({
+        ok: false,
+        body: { ok: false, error: expect.objectContaining({ code: 'wrong_board' }) },
+      }),
+    ]);
+    expect(perTurnWrites.readingJournal).toHaveLength(0);
+    expect(session.stateSnapshot.circuits[1].number_of_points).toBeUndefined();
+    expect(session.stateSnapshot.circuits[2].number_of_points).toBeUndefined();
+    expect(session.stateSnapshot.circuits['sub-b::1'].number_of_points).toBeUndefined();
+    expect(session.stateSnapshot.circuits['sub-b::2'].number_of_points).toBeUndefined();
+    expect(session.stateSnapshot.currentBoardId).toBe('main');
+  });
+
   test('the effective board owns both designation matching and emitted write scope', async () => {
     const session = {
       sessionId: 'sess-test',

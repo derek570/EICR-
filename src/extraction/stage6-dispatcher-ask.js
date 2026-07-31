@@ -1489,6 +1489,14 @@ async function buildResolvedBody({
     resolveEffectiveBoardId(session, requestedBoardId) ?? requestedBoardId ?? null;
   const frozenCircuitWriteBoardId =
     pendingWrite.tool === 'record_reading' ? frozenCensusBoardId : contextBoardId;
+  // Authority to retain the frozen board after an mdr-* wait exists only when
+  // that board was genuinely selected at census time. `context_board_id` and
+  // `pending_write.board_id` are model-authored inputs; an explicit sub-board
+  // id must not mint a bypass while the inspector is still on main.
+  const frozenCircuitBoardWasSelected =
+    pendingWrite.tool === 'record_reading' &&
+    frozenCircuitWriteBoardId != null &&
+    frozenCircuitWriteBoardId === resolveEffectiveBoardId(session, null);
   const availableCircuits = collectAvailableCircuits(session, frozenCensusBoardId);
   const verdict = resolveCircuitAnswer({
     userText: outcome.user_text,
@@ -1528,6 +1536,7 @@ async function buildResolvedBody({
             // (and only that hook) to preserve this board if select_board
             // changes the mutable cursor while the clarification is open.
             frozenBoardScope:
+              frozenCircuitBoardWasSelected &&
               write?.tool === 'record_reading' &&
               write?.board_id != null &&
               write.board_id === frozenCircuitWriteBoardId,
