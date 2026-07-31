@@ -7,6 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
+import { isOpenAIModel } from './openai-vision-adapter.js';
+import { createOpenAIToolUseAdapter } from './openai-tooluse-adapter.js';
 import { CostTracker } from './cost-tracker.js';
 import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
 import {
@@ -1099,7 +1101,33 @@ export const EICR_AGENTIC_SYSTEM_PROMPT_ANSWERS = _composeAgenticPrompt(
 
 export class EICRExtractionSession {
   constructor(apiKey, sessionId, certType = 'eicr', options = {}) {
-    this.client = new Anthropic({ apiKey });
+    // Provider selection for the Stage 6 extraction loop. Default: Anthropic.
+    // When SONNET_EXTRACT_MODEL names a `gpt-*` model (e.g. GPT-5.6 Luna) AND
+    // OPENAI_API_KEY is available, route the tool-call loop through the OpenAI
+    // adapter instead — an Anthropic-shaped `messages.stream()` backed by
+    // OpenAI function calling. This is a provider A/B for the shadow-harness
+    // corpus trial; runToolLoop / the assembler / dispatchers are unchanged
+    // and the iOS/web wire contract is untouched (extraction is server-side).
+    //
+    // Guarded so the default (claude-*) path is byte-identical: if the model
+    // isn't gpt-* the branch is never taken; if it IS gpt-* but the key is
+    // missing we fall back to Anthropic and log, rather than crashing a live
+    // session. Mirrors the CCU sliding-window provider swap precedent.
+    const extractModel = (process.env.SONNET_EXTRACT_MODEL || '').trim();
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (isOpenAIModel(extractModel) && openaiKey) {
+      this.client = createOpenAIToolUseAdapter({ apiKey: openaiKey });
+      this.extractionProvider = 'openai';
+    } else {
+      if (isOpenAIModel(extractModel) && !openaiKey) {
+        logger.warn('SONNET_EXTRACT_MODEL is gpt-* but OPENAI_API_KEY missing — using Anthropic', {
+          sessionId,
+          model: extractModel,
+        });
+      }
+      this.client = new Anthropic({ apiKey });
+      this.extractionProvider = 'anthropic';
+    }
     this.sessionId = sessionId;
     this.certType = certType; // 'eicr' or 'eic'
 

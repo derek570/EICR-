@@ -181,6 +181,7 @@ EXTRACTION_MODEL
 GEMINI_CHUNK_MODEL
 GEMINI_FALLBACK_MODEL
 GEMINI_MODEL
+OPENAI_EXTRACT_REASONING_EFFORT    # in-code default 'low' (openai-tooluse-adapter.js); OpenAI extraction-provider trial only — reached when SONNET_EXTRACT_MODEL is gpt-* + OPENAI_API_KEY set; not in the live task-def
 SONNET_CACHE_TTL                   # ephemeral-cache TTL override for system + snapshot blocks; in-code default '5m' matches prod; harness sets '1h' for warm-cache across the scenario suite (eicr-extraction-session.js)
 SONNET_EXTRACT_MODEL
 SONNET_SESSION_MAX_ENTRIES
