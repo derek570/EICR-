@@ -79,8 +79,8 @@ describe('PLAN-2D web client reading contract', () => {
     ['name', 'name'],
     ['location', 'location'],
     ['phases', 'phases'],
-    ['ze_at_db', 'ze_at_db'],
-    ['zs_at_db', 'ze_at_db'],
+    ['ze_at_db', 'zs_at_db'],
+    ['zs_at_db', 'zs_at_db'],
     ['ipf_at_db', 'ipf_at_db'],
   ])('attributes %s to only the addressed board', (field, boardKey) => {
     const job = makeJob({

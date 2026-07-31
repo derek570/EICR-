@@ -319,8 +319,11 @@ const MIRROR_TO_BOARDS0: ReadonlyArray<{
   { section: 'board_info', sectionKey: 'name', boardKey: 'name' },
   { section: 'board_info', sectionKey: 'location', boardKey: 'location' },
   { section: 'board_info', sectionKey: 'phases', boardKey: 'phases' },
-  { section: 'board_info', sectionKey: 'ze_at_db', boardKey: 'ze_at_db' },
-  { section: 'board_info', sectionKey: 'zs_at_db', boardKey: 'ze_at_db' },
+  // The web Board tab's persisted property remains `zs_at_db`; iOS names the
+  // same cell `zeAtDb`. Accept both wire spellings without inventing a second
+  // unused web property.
+  { section: 'board_info', sectionKey: 'ze_at_db', boardKey: 'zs_at_db' },
+  { section: 'board_info', sectionKey: 'zs_at_db', boardKey: 'zs_at_db' },
   { section: 'board_info', sectionKey: 'ipf_at_db', boardKey: 'ipf_at_db' },
   { section: 'board_info', sectionKey: 'main_switch_bs_en', boardKey: 'main_switch_bs_en' },
   {

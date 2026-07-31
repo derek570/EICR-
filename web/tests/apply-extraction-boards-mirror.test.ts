@@ -135,22 +135,11 @@ describe('apply-extraction boards[0] mirror', () => {
       readings: [{ circuit: 0, field: 'manufacturer', value: 'Wylex' }],
     });
     const applied = applyExtractionToJob(job, result);
-    // applied is non-null because board_info.manufacturer is still
-    // set fresh (LiveFillView consumer). What we assert: the
-    // boards[0] patch does NOT clobber the inspector's value.
-    expect(applied).not.toBeNull();
-    const boards = applied!.patch.boards;
-    // If boards patch is undefined, the priority guard skipped the
-    // mirror entirely — the user-typed value stays untouched on the
-    // existing boards[0] record. Either shape is acceptable as long
-    // as the resulting merged state still has "MK". Assert the patch
-    // doesn't carry a new `manufacturer` value.
-    if (boards) {
-      const board0 = boards[0] as Record<string, unknown>;
-      // Either the patch keeps "MK" (single-board re-emit) or omits
-      // the manufacturer key entirely (priority guard short-circuit).
-      expect(board0.manufacturer === 'MK' || board0.manufacturer === undefined).toBe(true);
-    }
+    // PLAN-2D makes the main-board section + boards[] write atomic. A
+    // protected board value therefore blocks BOTH legs instead of publishing
+    // a conflicting board_info summary.
+    expect(applied).toBeNull();
+    expect(job.boards?.[0].manufacturer).toBe('MK');
   });
 
   it('does NOT mirror when the job has multiple boards', () => {
@@ -167,11 +156,10 @@ describe('apply-extraction boards[0] mirror', () => {
       readings: [{ circuit: 0, field: 'manufacturer', value: 'Wylex' }],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied).not.toBeNull();
-    // The section patch still happens (board_info.manufacturer set).
-    expect(applied!.patch.board_info).toBeDefined();
-    // But boards[] is NOT in the patch.
-    expect(applied!.patch.boards).toBeUndefined();
+    // PLAN-2D: a board-scoped reading without server attribution is
+    // ambiguous on a multi-board job, so both the summary and boards[] legs
+    // fail closed.
+    expect(applied).toBeNull();
   });
 
   it('returns no boards patch when no mirrored fields are in the reading set', () => {
