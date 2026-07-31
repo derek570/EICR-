@@ -907,10 +907,9 @@ function dispatchObservationUpdates(
 // on the next flush — no loss, no duplicates, and the audible VCR (last
 // fallible frame) is delivered EXACTLY once (P4d rows 6–7). readyState is
 // checked before EVERY frame; cost updates stay best-effort OUTSIDE the
-// ledger. The ledger OWNS the observation_update sends (round-9: the legacy
-// dispatchObservationUpdates helper swallows per-frame failures and returns
-// no status, so a cursor could not see an unsent observation frame; the
-// legacy helper survives for NON-ledger callers — the legacy batch path).
+// ledger. The ledger now owns every production observation_update send across
+// sync, batch, and reconnect paths. dispatchObservationUpdates remains only as
+// the focused _test_dispatchObservationUpdates canonical-wording seam.
 // ---------------------------------------------------------------------------
 export const EXTRACTION_EMISSION_CURSOR = Symbol('stage6.extractionEmissionCursor');
 
