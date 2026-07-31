@@ -8,7 +8,7 @@ metadata:
   generated: true
   section: installation
   field: date_of_previous_inspection
-  expect_value: '42'
+  expect_value: 31/07/2026
   synthetic_interims: true
 job_state:
   boards:
@@ -19,34 +19,34 @@ job_state:
           designation: Lighting
 transcript:
   - at_ms: 1000
-    text: Date of previous inspection is 42.
+    text: Date of previous inspection is 31/07/2026.
     isFinal: true
   - at_ms: 9000
     text: Nearly there.
     isFinal: true
   - at_ms: 17000
-    text: Um, date date of previous inspection is 42.
+    text: Um, date date of previous inspection is 31/07/2026.
     isFinal: true
 sweep:
-  dictation: Date of previous inspection is 42.
-  garbled: Um, date date of previous inspection is 42.
+  dictation: Date of previous inspection is 31/07/2026.
+  garbled: Um, date date of previous inspection is 31/07/2026.
   chitchat: Nearly there.
   field: date_of_previous_inspection
   section: installation
-  value: '42'
+  value: 31/07/2026
 mock_frames:
-  - on_transcript: Date of previous inspection is 42.
+  - on_transcript: Date of previous inspection is 31/07/2026.
     frames:
       - &ref_0
         type: extraction
         readings:
           - circuit: 0
             field: date_of_previous_inspection
-            value: '42'
+            value: 31/07/2026
         confirmations:
           - field: date_of_previous_inspection
             circuit: null
-            text: date of previous inspection 42
-  - on_transcript: Um, date date of previous inspection is 42.
+            text: date of previous inspection 31/07/2026
+  - on_transcript: Um, date date of previous inspection is 31/07/2026.
     frames:
       - *ref_0

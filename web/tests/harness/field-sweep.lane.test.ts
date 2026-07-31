@@ -111,6 +111,10 @@ describe.skipIf(!SWEEP_ENABLED)('pwa-replay — generated field sweep (mock mode
             const s = String(v ?? '')
               .trim()
               .toLowerCase();
+            const dayFirstDate = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+            if (dayFirstDate) {
+              return `${dayFirstDate[3]}-${dayFirstDate[2]}-${dayFirstDate[1]}`;
+            }
             return s === 'yes' || s === 'true' ? 'true' : s; // checkbox coercion
           };
           const x = canon(a);

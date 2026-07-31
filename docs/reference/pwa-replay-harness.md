@@ -53,7 +53,7 @@ Better fidelity: hand-author the session-START job state (final `job_snapshot.js
 
 ## CI lanes (E1)
 
-- **Per-PR mock lane** (`pwa-replay-mock-lane` in `deploy.yml`): PR-only, path-filtered to recording/harness surfaces; sweep sync-check + harness suite + full 116-field sweep in mock mode. Deterministic, zero tokens, <5 min.
+- **Per-PR mock lane** (`pwa-replay-mock-lane` in `deploy.yml`): PR-only, path-filtered to recording/harness surfaces; sweep sync-check + harness suite + full 116-field sweep in mock mode. Deterministic, zero tokens, <5 min. Type-sensitive fields use committed representative wire values rather than the generic text fallback; inspection dates use `31/07/2026`, and the assertion canonicalises that spoken form to `2026-07-31` so it exercises the real DD/MM/YYYY-to-ISO route.
 - **Nightly live lane** (`.github/workflows/pwa-replay-nightly.yml`): boots the real backend against a CI Postgres (schema bootstrap + `node-pg-migrate up`), per-run `JWT_SECRET` + `harness-mint-jwt`, Haiku + 1h-cache env, session-fixture corpus only (budget: hard cap under the confirmed **£10/month** — do NOT point it at the 116-field sweep without re-costing). ADVISORY — failure files a GitHub issue, never blocks a deploy. **Pending first green run:** requires the `ANTHROPIC_API_KEY` repo secret (human provisioning; the workflow no-ops with a notice until then) and a first `workflow_dispatch` to shake out boot issues. E1 decision (2026-07-08): GitHub Actions chosen over the launchd-on-dev-Mac fallback; revisit only if secret provisioning is refused.
 - **Pre-push hook: UNCHANGED** (E2 decision). The harness composition tests run in the default web suite; the 116-field sweep is opt-in (`PWA_SWEEP=1`) — too heavy for the hook.
 
