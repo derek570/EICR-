@@ -36,7 +36,7 @@ The first two defects are latent or prompt-shape defects, not evidence that the 
 | 04 | [Deepgram Flux Eager EOT](plan-04-deepgram-flux-eager-eot.md) | Measure and cautiously speculate before authoritative EndOfTurn | Plan 00; independent of Plans 01–03 |
 | 05 | [Safe `answer_user` pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS with the remaining Luna loop without early playback | Plans 00 and 02; Plan 03 recommended |
 | 06 | [General conversational lane](plan-06-general-conversational-lane.md) | Permit natural general conversation while isolating certificate mutation | Plan 00; Plan 05 recommended for latency |
-| 07 | [Loaded Barrel value audit](plan-07-loaded-barrel-value-audit.md) | Prove the live parked-audio path's real saving and retain, narrow or retire it | Plan 00 for any code changes; measure before Plans 02–03 alter TTS |
+| 07 | [Loaded Barrel value audit](plan-07-loaded-barrel-value-audit.md) | Playback evidence chain shipped; measure the live parked-audio saving and retain, narrow or retire it | Phase 1 complete; Plan 00 for remaining code changes; measure before Plans 02–03 alter TTS |
 
 Recommended execution sequence is `00 → 07 → 01 → 02 → 03 → 04 → 05 → 06`. Plan 07 should capture its baseline before Plans 02–03 change the TTS waterfall. Plan 04 can be refined in parallel with Plans 01–03, but its mutation-capable phase must wait for its own shadow-data gate.
 

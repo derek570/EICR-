@@ -446,7 +446,14 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
             res.write(cached.mp3Buffer);
             res.end();
             recordOutcome(cached.correlationId, 'loaded_barrel_hit', {
-              meta: { sessionId, bytes: cached.mp3Buffer.length },
+              meta: {
+                sessionId,
+                turnId,
+                field,
+                circuit,
+                boardId,
+                bytes: cached.mp3Buffer.length,
+              },
             });
             sessionsMod.promoteSpeculativeToCanonicalForSession(sessionId, cached.correlationId);
             return;
@@ -492,7 +499,14 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
               res.write(winner.buf);
               res.end();
               recordOutcome(cached.correlationId, source, {
-                meta: { sessionId, bytes: winner.buf.length },
+                meta: {
+                  sessionId,
+                  turnId,
+                  field,
+                  circuit,
+                  boardId,
+                  bytes: winner.buf.length,
+                },
               });
               sessionsMod.promoteSpeculativeToCanonicalForSession(sessionId, cached.correlationId);
               return;
@@ -581,7 +595,28 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       }
     }
 
+    // Legacy/buffered fallback still needs a correlation id: a Loaded
+    // Barrel MISS must be distinguishable from a HIT all the way through
+    // iOS playback. Older clients ignore these additive response headers.
+    let legacyCorrelationId = null;
+    let legacyTelemetry = null;
+    if (sessionId) {
+      try {
+        legacyTelemetry = await import('../extraction/voice-latency-telemetry.js');
+        legacyCorrelationId = legacyTelemetry.mintCorrelationId(sessionId, 'confirmation');
+        legacyTelemetry.recordOutcome(legacyCorrelationId, 'synth_started', {
+          meta: { sessionId, turnId: turnId || null, audio_source: 'legacy_confirmation' },
+        });
+      } catch (_telemetryErr) {
+        // Correlation telemetry is additive and must never block TTS.
+      }
+    }
+
     const voiceId = 'Fahco4VZzobUeiPqni1S'; // Archer Conversational
+    // Start BEFORE fetch: fetch resolves when response headers arrive, so
+    // stamping below it produced implausible 0-6ms "synth" measurements.
+    const synthStartMs = Date.now();
+    const synthStartNs = process.hrtime.bigint();
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: 'POST',
       headers: {
@@ -616,10 +651,17 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
         status: response.status,
         error: errorText.substring(0, 200),
       });
+      legacyTelemetry?.recordOutcome(legacyCorrelationId, 'synth_failed', {
+        meta: { sessionId, turnId: turnId || null, status: response.status },
+      });
       return res.status(response.status).json({ error: errorText });
     }
 
     res.set('Content-Type', 'audio/mpeg');
+    res.set('X-Voice-Latency-Source', 'legacy_confirmation');
+    if (legacyCorrelationId) {
+      res.set('X-Voice-Latency-Correlation-Id', legacyCorrelationId);
+    }
     // Voice-latency plan 2026-06-03 Tier 2a: replace the one-shot
     // response.arrayBuffer() with a streaming reader so we can capture
     // the FIRST byte's wall-clock relative to the synth-start. Without
@@ -628,15 +670,18 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // misattributes the gap between server-side synth-complete and
     // iOS-side audible-first-byte. The first-byte stamp is what the
     // perceived-latency dashboard's vendor_first_audio component reads.
-    const synthStartMs = Date.now();
     const reader = response.body.getReader();
     const chunks = [];
     let firstByteMs = null;
+    let firstByteNs = null;
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (firstByteMs === null) firstByteMs = Date.now() - synthStartMs;
+        if (firstByteMs === null) {
+          firstByteMs = Date.now() - synthStartMs;
+          firstByteNs = process.hrtime.bigint();
+        }
         chunks.push(value);
       }
     } finally {
@@ -645,6 +690,18 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // Node fetch returns Uint8Array chunks; Buffer.concat accepts them directly.
     const buffer = Buffer.concat(chunks);
     const totalSynthMs = Date.now() - synthStartMs;
+    if (legacyCorrelationId && firstByteNs) {
+      legacyTelemetry?.recordSpan(
+        legacyCorrelationId,
+        'vendor_first_audio',
+        synthStartNs,
+        firstByteNs,
+        { sessionId, turnId: turnId || null, audio_source: 'legacy_confirmation' }
+      );
+      legacyTelemetry?.recordOutcome(legacyCorrelationId, 'synth_first_byte', {
+        meta: { sessionId, turnId: turnId || null, first_byte_ms: firstByteMs },
+      });
+    }
 
     // Attribute the TTS character count to the live session's CostTracker
     // so per-session ElevenLabs cost is no longer zero (previously the
@@ -701,6 +758,8 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       // field on the row the `ispresent(turnId)` filter drops every
       // legacy-path entry.
       turnId: turnId || null,
+      correlationId: legacyCorrelationId,
+      audio_source: 'legacy_confirmation',
       source,
       textPreview: text.slice(0, 120),
       textLength: text.length,
@@ -736,6 +795,17 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
         textPreview: text.slice(0, 120),
       });
     }
+    legacyTelemetry?.recordOutcome(legacyCorrelationId, 'synth_complete', {
+      meta: { sessionId, turnId: turnId || null, bytes: buffer.length },
+    });
+    legacyTelemetry?.recordOutcome(legacyCorrelationId, 'sent_to_client', {
+      meta: {
+        sessionId,
+        turnId: turnId || null,
+        bytes: buffer.length,
+        audio_source: 'legacy_confirmation',
+      },
+    });
     res.send(buffer);
   } catch (error) {
     logger.error('ElevenLabs TTS proxy error', { error: error.message });

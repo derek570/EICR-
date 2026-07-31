@@ -13,6 +13,7 @@
 import { jest } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
+import logger from '../logger.js';
 
 jest.unstable_mockModule('../auth.js', () => ({
   requireAuth: (req, _res, next) => {
@@ -56,6 +57,19 @@ describe('POST /api/voice-latency/playback-ack', () => {
     expect(res.status).toBe(204);
   });
 
+  test.each([
+    'loaded_barrel_hit',
+    'loaded_barrel_hit_pending',
+    'loaded_barrel_hit_late',
+    'confirmation',
+    'legacy_confirmation',
+  ])('204 on valid additive audio_source %s', async (audio_source) => {
+    const res = await request(buildApp())
+      .post('/api/voice-latency/playback-ack')
+      .send(validBody({ audio_source }));
+    expect(res.status).toBe(204);
+  });
+
   test('204 with omitted slot (slot is optional)', async () => {
     const body = validBody();
     delete body.slot;
@@ -91,6 +105,37 @@ describe('POST /api/voice-latency/playback-ack', () => {
       .send(validBody({ source: 'unknown_source' }));
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/source/);
+  });
+
+  test('400 on invalid audio_source', async () => {
+    const res = await request(buildApp())
+      .post('/api/voice-latency/playback-ack')
+      .send(validBody({ audio_source: 'client_invented_source' }));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/audio_source/);
+  });
+
+  test('correlated ACK emits an iOS-confirmed playback_started ledger row', async () => {
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    const res = await request(buildApp())
+      .post('/api/voice-latency/playback-ack')
+      .send(
+        validBody({
+          correlation_id: 'vl_loaded_barrel_corr-1',
+          audio_source: 'loaded_barrel_hit',
+        })
+      );
+    expect(res.status).toBe(204);
+    expect(infoSpy).toHaveBeenCalledWith(
+      'voice_latency.outcome',
+      expect.objectContaining({
+        correlation_id: 'vl_loaded_barrel_corr-1',
+        outcome: 'playback_started',
+        acked_by_ios: true,
+        meta: expect.objectContaining({ audio_source: 'loaded_barrel_hit' }),
+      })
+    );
+    infoSpy.mockRestore();
   });
 
   test('400 on at_ms in the future', async () => {

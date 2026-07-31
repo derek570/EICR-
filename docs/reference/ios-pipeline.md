@@ -70,6 +70,12 @@ The fast clip and bundler safety-net share `field::circuit::board` slot identity
 
 In latency reports, **heard confirmation** is the client playback ACK/start timestamp: the point at which TTS audio actually begins playing back. It does not mean the model merely produced confirmation text or that ElevenLabs finished synthesis.
 
+### Loaded Barrel audible-start correlation
+
+The TTS proxy returns `X-Voice-Latency-Correlation-Id` plus `X-Voice-Latency-Source`. Hit sources are `loaded_barrel_hit`, `loaded_barrel_hit_pending`, and `loaded_barrel_hit_late`; canonical alternatives are `confirmation` (streaming) and `legacy_confirmation` (buffered fallback). `APIClient` returns those headers beside the MP3 instead of discarding them. `AlertManager` carries the metadata with the exact bytes through FIFO waiting and the deferred-head hold, then adds it to `/api/voice-latency/playback-ack` only after `AVAudioPlayer.play()` returns true. Network receipt, decode failure, and `play()==false` do not count as heard.
+
+The established ACK `source` remains `bundler` (delivery path); additive `audio_source` records where the bytes originated, preserving existing dashboards. Backend rows expose `ios_playback_ack_correlation_id` and `ios_playback_ack_audio_source`; the unified `voice_latency.turn_perceived_latency_ms` row exposes the same values as `ios_playback_ack_correlation_id` and `ack_audio_source`. A same-correlation `voice_latency.outcome { outcome:"playback_started", acked_by_ios:true }` provides the direct PII-safe synthesis→audible join. Missing headers remain valid for rolling deploys and older servers.
+
 **Remote config:** `RemoteConfigService.swift` + `Resources/default_config.json` — keyword boosts and validation rules can be updated without app rebuild.
 
 ---
