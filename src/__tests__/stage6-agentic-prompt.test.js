@@ -2196,6 +2196,8 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
           'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?'
         );
         expect(rendered).toContain('ask that as a later follow-up, never as a compound question');
+        expect(rendered).toContain('These facts share ONE chain');
+        expect(rendered).toContain('echo the server id on premises');
         expect(rendered).toMatch(/HMO.*care home.*purpose-built student accommodation/s);
         expect(rendered).toContain(
           'higher-risk residential building as classified under applicable legislation'
@@ -2217,6 +2219,8 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           'Is this observation about AFDD protection or surge protection?'
         );
+        expect(rendered).toContain('This topic ask is its own chain');
+        expect(rendered).toContain('never echo its id into the AFDD table');
         expect(rendered).toContain('`dual_topic_observation`');
         expect(rendered).toContain('Split them into separate `record_observation` calls');
         expect(rendered).toContain('Never cite SPD material (`443.x` or `534.x`)');

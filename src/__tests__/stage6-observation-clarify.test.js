@@ -70,6 +70,18 @@ const clarifyAsk = (id, chainId = null) => ({
   },
 });
 
+const afddAsk = (id, question, chainId = null) => ({
+  tool_call_id: id,
+  name: 'ask_user',
+  input: {
+    question,
+    reason: 'missing_context',
+    context_field: 'observation_clarify',
+    expected_answer_shape: 'free_text',
+    ...(chainId ? { clarification_chain_id: chainId } : {}),
+  },
+});
+
 const ctx = { sessionId: 'sess-d2', turnId: 'turn-1' };
 
 describe('§D2 Group A — per-observation clarification-chain ask budget', () => {
@@ -124,6 +136,52 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
     await dispatcher(clarifyAsk('toolu_x', 'obsclr-invented-999'), ctx);
     expect(seen[0].clarification_chain_id).not.toBe('obsclr-invented-999');
     expect(broker.known.has(seen[0].clarification_chain_id)).toBe(true);
+  });
+
+  test('PLAN-3 AFDD topic repair and two deciding facts use separate bounded chains without a severity ask', async () => {
+    const broker = createObsClarifyChainBroker();
+    const budget = createAskBudget({ maxAsksPerKey: 2 });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+
+    const topic = await dispatcher(
+      afddAsk('toolu_topic', 'Is this observation about AFDD protection or surge protection?'),
+      ctx
+    );
+    const topicChain = JSON.parse(topic.content).clarification_chain_id;
+
+    // Topic repair is complete. Applicability deliberately starts a fresh
+    // chain, leaving two bounded slots for the two independent AFDD facts.
+    const applicability = await dispatcher(
+      afddAsk(
+        'toolu_applicability',
+        'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?'
+      ),
+      ctx
+    );
+    const afddChain = JSON.parse(applicability.content).clarification_chain_id;
+    expect(afddChain).not.toBe(topicChain);
+
+    const premises = await dispatcher(
+      afddAsk(
+        'toolu_premises',
+        'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?',
+        afddChain
+      ),
+      ctx
+    );
+    expect(JSON.parse(premises.content)).toMatchObject({
+      answered: true,
+      clarification_chain_id: afddChain,
+    });
+
+    // The AFDD table owns severity. A model attempt to add the generic
+    // C2/C3 question to the same observation chain cannot reach the wire.
+    const severity = await dispatcher(clarifyAsk('toolu_severity', afddChain), ctx);
+    expect(JSON.parse(severity.content)).toMatchObject({
+      answered: false,
+      reason: 'ask_budget_exhausted',
+    });
+    expect(seen).toHaveLength(3);
   });
 });
 

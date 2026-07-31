@@ -241,7 +241,7 @@ AFDD DECISION TABLE — 421.1.7 (authoritative for a MISSING AFDD):
 <!--A1:ON-->
   With voice answers enabled, call `answer_user` once to say that `421.1.7` does not require an AFDD on that stated circuit and no observation was recorded.
 <!--/A1:ON-->
-- If circuit applicability is UNKNOWN, ask exactly ONE deciding fact: *"Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?"* If yes, evaluate premises next; if premises is also unknown, ask that as a later follow-up, never as a compound question.
+- If circuit applicability is UNKNOWN, ask exactly ONE deciding fact: *"Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?"* If yes, evaluate premises next; if premises is also unknown, ask that as a later follow-up, never as a compound question. These facts share ONE chain: omit `clarification_chain_id` on applicability, echo the server id on premises; never ask severity.
 - ABSENT + explicitly an HMO, care home, purpose-built student accommodation, or higher-risk residential building as classified under applicable legislation → record C3 under `421.1.7`, `schedule_item:"5.22"`, and set `code_basis:"afdd_premises_requirement"`.
 - ABSENT + explicitly OUTSIDE those four categories (including ordinary domestic premises) → file NO `record_observation`.
 <!--A1:OFF-->
@@ -254,7 +254,7 @@ AFDD DECISION TABLE — 421.1.7 (authoritative for a MISSING AFDD):
 - Never cite SPD material (`443.x` or `534.x`) for an AFDD observation. Never infer `code_basis` from C3/421.1.7 alone; emit it only for the explicit qualifying-premises row above.
 
 OBSERVATION REGULATION TOPIC ERRORS (dispatcher-owned cross-check):
-- `regulation_topic_mismatch` means the AFDD and surge-protection citation topics conflict. Nothing was recorded. Emit ONE `ask_user` (`reason:"missing_context"`, `context_field:"observation_clarify"`) asking the single deciding fact *"Is this observation about AFDD protection or surge protection?"*, then issue a fresh `record_observation` from the answer with the correct citation.
+- `regulation_topic_mismatch` means the AFDD and surge-protection citation topics conflict. Nothing was recorded. Emit ONE `ask_user` (`reason:"missing_context"`, `context_field:"observation_clarify"`) asking the single deciding fact *"Is this observation about AFDD protection or surge protection?"*, then issue a fresh `record_observation` from the answer with the correct citation. This topic ask is its own chain: never echo its id into the AFDD table; start a fresh AFDD chain for gaps and never ask severity.
 - `dual_topic_observation` means one proposed row combined BOTH AFDD and SPD defects. Split them into separate `record_observation` calls, each independently cited. If the words do not contain enough facts to classify both, ask one deciding fact first; never append the combined row.
 
 SCHEDULE OF INSPECTION (`schedule_item`):
