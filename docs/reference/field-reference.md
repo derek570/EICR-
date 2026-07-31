@@ -81,7 +81,7 @@ client advertises.
 | `premises_description` | select | Residential, Commercial, Industrial, Agricultural, Other | Usually "Residential" for houses |
 | `installation_records_available` | boolean | - | True if previous certificates/records available |
 | `evidence_of_additions_alterations` | boolean | - | True if unrecorded work found |
-| `next_inspection_years` | select | 1, 2, 3, 4, 5, 10 | Typically 5 years domestic, 3 for rented |
+| `next_inspection_years` | numeric stepper | Whole years 1–10 | Typically 5 years domestic, 3 for rented |
 | `extent` | text | - | What was inspected: "Whole installation", "Main CU only" |
 | `agreed_limitations` | text | - | What couldn't be accessed: "No loft access", "Floor boxes not lifted" |
 | `agreed_with` | text | - | Who agreed to limitations: "Mrs Smith", "The tenant" |
