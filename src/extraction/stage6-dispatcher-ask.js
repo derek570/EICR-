@@ -165,6 +165,27 @@ const BOARD_READING_PARTIAL_FAILURE_FIELDS = Object.freeze({
 export const ASK_USER_TIMEOUT_MS = 45000;
 
 /**
+ * Stable identity for one buffered write within a single model generation.
+ *
+ * Board scope is intentionally absent: an mdr-* follow-up may be abandoned
+ * after select_board has already changed the mutable session cursor. Including
+ * the effective board would make the stale model retry acquire a different key
+ * and reopen the very ask this fence is meant to suppress. The enclosing Set
+ * is generation-local, while tool/field/value/source-turn keep unrelated asks
+ * in the same generation distinct.
+ */
+function multiDescriptionPendingWriteKey(pendingWrite) {
+  if (!pendingWrite || typeof pendingWrite !== 'object') return null;
+  if (typeof pendingWrite.tool !== 'string' || typeof pendingWrite.field !== 'string') return null;
+  return JSON.stringify([
+    pendingWrite.tool,
+    pendingWrite.field,
+    pendingWrite.value ?? null,
+    pendingWrite.source_turn_id ?? null,
+  ]);
+}
+
+/**
  * Stage 6 Phase 6 Plan 06-02 r1-#1 — `opts.fallbackToLegacy` gate.
  *
  * When the activeSessions entry has `fallbackToLegacy === true` (set by
@@ -253,6 +274,13 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // staging silently no-ops, which is the pre-plan-2A behaviour exactly.
   const stagePartialFailureNotice =
     typeof opts?.stagePartialFailureNotice === 'function' ? opts.stagePartialFailureNotice : null;
+  // PLAN-2B lifecycle fence — one dispatcher instance belongs to one live
+  // model generation. When the inspector abandons the server-brokered mdr-*
+  // clarification, remember the buffered write for the rest of THIS
+  // generation so a model retry cannot immediately emit the same stale ask
+  // while the user's replacement command waits behind extraction. The set
+  // dies with the dispatcher/generation; a fresh utterance is never stranded.
+  const abandonedMultiDescriptionPendingWrites = new Set();
   return async function dispatchAskUser(call, ctx) {
     // F7 Item 3 — a cancellation can land while this ask sits in the gate
     // debounce delay (createAskGateWrapper fires the inner dispatcher on a
@@ -355,6 +383,41 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         content: JSON.stringify({
           answered: false,
           reason: 'prompt_leak_blocked',
+        }),
+        is_error: false,
+      };
+    }
+
+    const pendingWriteAbandonmentKey = multiDescriptionPendingWriteKey(input.pending_write);
+    if (
+      pendingWriteAbandonmentKey !== null &&
+      abandonedMultiDescriptionPendingWrites.has(pendingWriteAbandonmentKey)
+    ) {
+      logger?.info?.('stage6.multi_description_reask_suppressed', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        field: input.pending_write.field,
+        source_turn_id: input.pending_write.source_turn_id ?? null,
+      });
+      logAskUser(logger, {
+        sessionId,
+        turnId,
+        mode,
+        tool_call_id: toolCallId,
+        question: input.question,
+        reason: input.reason,
+        context_field: input.context_field,
+        context_circuit: input.context_circuit,
+        answer_outcome: 'user_moved_on',
+        wait_duration_ms: 0,
+      });
+      return {
+        tool_use_id: toolCallId,
+        content: JSON.stringify({
+          answered: false,
+          reason: 'user_moved_on',
+          followup_outcome: 'user_moved_on',
         }),
         is_error: false,
       };
@@ -862,6 +925,10 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // PLAN-C P4c — the pvr broker inside buildResolvedBody advances this ref
       // when a re-ask is answered by a later utterance (see resolvePendingValueFlow).
       responseEpochRef,
+      markMultiDescriptionMovedOn: (movedOnPendingWrite) => {
+        const key = multiDescriptionPendingWriteKey(movedOnPendingWrite);
+        if (key !== null) abandonedMultiDescriptionPendingWrites.add(key);
+      },
     });
 
     // §D2 (field-feedback-2026-07-14) — echo the server-assigned
@@ -994,6 +1061,7 @@ async function buildResolvedBody({
   // resolves the effective board id there. Null in shadow mode / any caller
   // that doesn't supply it — staging then no-ops.
   stagePartialFailureNotice = null,
+  markMultiDescriptionMovedOn = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
@@ -1411,12 +1479,22 @@ async function buildResolvedBody({
     : !isUnscopedBoardId(contextBoardId)
       ? contextBoardId
       : null;
-  const availableCircuits = collectAvailableCircuits(session, requestedBoardId);
+  // Freeze the effective board before the first resolver pass. A brokered
+  // mdr-* question can remain open while select_board changes the session
+  // cursor; the circuit census, all generated record_reading writes, their
+  // dedupe slots, and any notice must retain the board from which the
+  // designations/refs were resolved. Board-reading writes deliberately keep
+  // their pre-existing global/explicit scope semantics.
+  const frozenCensusBoardId =
+    resolveEffectiveBoardId(session, requestedBoardId) ?? requestedBoardId ?? null;
+  const frozenCircuitWriteBoardId =
+    pendingWrite.tool === 'record_reading' ? frozenCensusBoardId : contextBoardId;
+  const availableCircuits = collectAvailableCircuits(session, frozenCensusBoardId);
   const verdict = resolveCircuitAnswer({
     userText: outcome.user_text,
     pendingWrite,
     availableCircuits,
-    contextBoardId,
+    contextBoardId: frozenCircuitWriteBoardId,
   });
 
   if (verdict.kind === 'auto_resolve' || verdict.kind === 'partial_resolve') {
@@ -1427,7 +1505,7 @@ async function buildResolvedBody({
       const logicalCircuit =
         write?.tool === 'record_board_reading' ? 'board' : (write?.circuit ?? '');
       return `${write?.tool ?? ''}\u0000${write?.field ?? ''}\u0000${logicalCircuit}\u0000${
-        write?.board_id ?? contextBoardId ?? ''
+        write?.board_id ?? frozenCircuitWriteBoardId ?? ''
       }`;
     };
     const dispatchWrites = async (writes, producer) => {
@@ -1441,7 +1519,19 @@ async function buildResolvedBody({
         try {
           // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
           throwIfStage6Cancelled(signal);
-          const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+          const result = await autoResolveWrite(write, {
+            sessionId,
+            turnId,
+            toolCallId,
+            // The designation census and generated write were frozen together
+            // before an mdr-* wait. Authorise the internal auto-resolve hook
+            // (and only that hook) to preserve this board if select_board
+            // changes the mutable cursor while the clarification is open.
+            frozenBoardScope:
+              write?.tool === 'record_reading' &&
+              write?.board_id != null &&
+              write.board_id === frozenCircuitWriteBoardId,
+          });
           const ok = result?.ok !== false;
           const dispatchRecord = {
             tool: write.tool,
@@ -1543,6 +1633,7 @@ async function buildResolvedBody({
     const noticeEntries = unresolved.filter((entry) => entry?.disposition === 'notice');
     const askEntries = unresolved.filter((entry) => entry?.disposition === 'ask');
     let followupCancelled = false;
+    let followupMovedOn = false;
     let multiDescriptionTerminalQueued = false;
     const queueMultiDescriptionTerminal = (text, reason) => {
       if (multiDescriptionTerminalQueued) return;
@@ -1648,12 +1739,24 @@ async function buildResolvedBody({
           throw err;
         }
         if (!askOutcome?.answered) {
-          remainingUnresolved.push(...askEntries);
-          if (
-            askOutcome?.reason === 'broker_register_failed' ||
-            askOutcome?.reason === 'broker_emit_failed'
-          ) {
-            queueMultiDescriptionTerminal(MULTI_DESCRIPTION_ASK_FAILED_APOLOGY, askOutcome.reason);
+          if (askOutcome?.reason === 'user_moved_on') {
+            followupMovedOn = true;
+            markMultiDescriptionMovedOn?.(pendingWrite);
+            logger?.info?.('stage6.multi_description_followup_abandoned', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              field: pendingWrite.field,
+              source_turn_id: pendingWrite.source_turn_id ?? null,
+            });
+          } else {
+            remainingUnresolved.push(...askEntries);
+            if (
+              askOutcome?.reason === 'broker_register_failed' ||
+              askOutcome?.reason === 'broker_emit_failed'
+            ) {
+              queueMultiDescriptionTerminal(MULTI_DESCRIPTION_ASK_FAILED_APOLOGY, askOutcome.reason);
+            }
           }
         } else {
           const followVerdict =
@@ -1661,13 +1764,13 @@ async function buildResolvedBody({
               userText: askOutcome.user_text,
               pendingWrite,
               availableCircuits,
-              contextBoardId,
+              contextBoardId: frozenCircuitWriteBoardId,
             }) ??
             resolveCircuitAnswer({
               userText: askOutcome.user_text,
               pendingWrite,
               availableCircuits,
-              contextBoardId,
+              contextBoardId: frozenCircuitWriteBoardId,
             });
           if (followVerdict.kind === 'cancel') {
             followupCancelled = true;
@@ -1888,7 +1991,10 @@ async function buildResolvedBody({
             // formula. A normal main-board ask commonly omits both raw ids;
             // staging that as null while the successful sibling is journaled
             // under "main" makes the drain suppress the truthful notice.
-            boardId: resolveEffectiveBoardId(session, requestedBoardId) ?? null,
+            boardId:
+              pendingWrite.tool === 'record_reading'
+                ? frozenCircuitWriteBoardId
+                : (resolveEffectiveBoardId(session, requestedBoardId) ?? null),
             target,
             producer: 'ask_multi_description_no_match',
             // The harness callback uses the winning board-write journal stamp
@@ -1905,7 +2011,7 @@ async function buildResolvedBody({
         }
       }
     }
-    const finalMatchStatus = followupCancelled
+    const finalMatchStatus = followupCancelled || followupMovedOn
       ? 'partial'
       : verdict.match_status == null
         ? 'auto_resolved'
@@ -1931,6 +2037,7 @@ async function buildResolvedBody({
       match_status: finalMatchStatus,
       resolved_writes: dispatched,
       ...(verdict.match_status != null ? { unresolved: remainingUnresolved } : {}),
+      ...(followupMovedOn ? { followup_outcome: 'user_moved_on' } : {}),
     };
   }
 

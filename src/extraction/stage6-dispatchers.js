@@ -341,6 +341,12 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
       turnId,
       perTurnWrites,
       round,
+      // PLAN-2B — an mdr-* answer may arrive after select_board moved the
+      // session cursor. This capability is derived inside the ask dispatcher,
+      // never from model input, and authorises only the synthetic
+      // record_reading dispatcher call to retain its frozen census board.
+      allowFrozenAutoResolveBoardScope:
+        write.tool === 'record_reading' && callCtx.frozenBoardScope === true,
     });
     let body = null;
     try {

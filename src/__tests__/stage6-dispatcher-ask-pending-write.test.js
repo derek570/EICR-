@@ -608,6 +608,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
     return {
       promise,
+      dispatcher,
       session,
       pendingAsks,
       ws,
@@ -1029,7 +1030,10 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     run.pendingAsks.resolve(mdrId, { answered: true, user_text: 'circuit 4' });
     const body = JSON.parse((await run.promise).content);
     expect(body.match_status).toBe('full');
-    expect(body.resolved_writes.map((write) => write.circuit)).toEqual([3, 4]);
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({ circuit: 3, ok: true }),
+      expect.objectContaining({ circuit: 4, ok: true }),
+    ]);
     expect(run.autoResolveWrite).toHaveBeenCalledTimes(2);
   });
 
@@ -1807,6 +1811,138 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(body.resolved_writes).toEqual([expect.objectContaining({ circuit: 3, ok: true })]);
     expect(ac.signal.aborted).toBe(false);
     expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+  });
+
+  test('mdr user_moved_on abandons the follow-up and suppresses a same-generation stale re-ask', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: false,
+      reason: 'user_moved_on',
+    });
+    const firstBody = JSON.parse((await run.promise).content);
+
+    expect(firstBody).toMatchObject({
+      answered: true,
+      match_status: 'partial',
+      followup_outcome: 'user_moved_on',
+      unresolved: [],
+    });
+    expect(firstBody.resolved_writes).toEqual([
+      expect.objectContaining({ circuit: 3, ok: true }),
+    ]);
+    expect(run.pendingAsks.size).toBe(0);
+    expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
+    const emittedBeforeRetry = run.ws.sent.length;
+
+    const retryEnv = await run.dispatcher(
+      {
+        tool_call_id: 'toolu_multi_retry',
+        name: 'ask_user',
+        input: validInput({
+          pending_write: validPendingWrite(),
+        }),
+      },
+      {}
+    );
+
+    expect(JSON.parse(retryEnv.content)).toEqual({
+      answered: false,
+      reason: 'user_moved_on',
+      followup_outcome: 'user_moved_on',
+    });
+    expect(retryEnv.is_error).toBe(false);
+    expect(run.ws.sent).toHaveLength(emittedBeforeRetry);
+    expect(run.pendingAsks.size).toBe(0);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+  });
+
+  test('an in-flight mdr keeps its original board after select_board changes the cursor', async () => {
+    const session = {
+      sessionId: 'sess-test',
+      stateSnapshot: {
+        currentBoardId: 'main',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'sub-b', board_type: 'sub_distribution', parent_board_id: 'main' },
+        ],
+        circuits: {
+          3: { circuit_designation: 'Smoke Alarm' },
+          4: { circuit_designation: 'Upstairs Lights' },
+          'sub-b::3': {
+            circuit: 3,
+            board_id: 'sub-b',
+            circuit_designation: 'Garage',
+          },
+          'sub-b::4': {
+            circuit: 4,
+            board_id: 'sub-b',
+            circuit_designation: 'Kitchen',
+          },
+        },
+      },
+    };
+    const perTurnWrites = createPerTurnWrites();
+    const realAutoResolveWrite = createAutoResolveWriteHook(
+      session,
+      noopLogger(),
+      'turn-multi',
+      perTurnWrites
+    );
+    const autoResolveResults = [];
+    const autoResolveWrite = jest.fn(async (write, ctx) => {
+      const result = await realAutoResolveWrite(write, ctx);
+      autoResolveResults.push(result);
+      return result;
+    });
+    const run = startMultiDispatcher({ session, autoResolveWrite });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the attic circuit and the smoke alarm',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    session.stateSnapshot.currentBoardId = 'sub-b';
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'circuit 4',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(autoResolveResults).toEqual([
+      expect.objectContaining({ ok: true, body: { ok: true } }),
+      expect.objectContaining({ ok: true, body: { ok: true } }),
+    ]);
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({ circuit: 3, ok: true }),
+      expect.objectContaining({ circuit: 4, ok: true }),
+    ]);
+    expect(session.stateSnapshot.circuits[3].number_of_points).toBe('4');
+    expect(session.stateSnapshot.circuits[4].number_of_points).toBe('4');
+    expect(session.stateSnapshot.circuits['sub-b::3'].number_of_points).toBeUndefined();
+    expect(session.stateSnapshot.circuits['sub-b::4'].number_of_points).toBeUndefined();
+    expect(session.stateSnapshot.currentBoardId).toBe('sub-b');
+    expect(perTurnWrites.readingJournal).toHaveLength(2);
+    for (const entry of perTurnWrites.readingJournal) {
+      expect(entry.value.boardId).toBe('main');
+    }
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'designation_no_match',
+        boardId: 'main',
+        target: { kind: 'ordinal', ordinal: 2 },
+      })
+    );
   });
 
   test('the effective board owns both designation matching and emitted write scope', async () => {
