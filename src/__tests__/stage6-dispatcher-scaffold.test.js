@@ -118,9 +118,9 @@ describe('createWriteDispatcher()', () => {
         tool_call_id: 'tu_x',
         name: 'record_reading',
         input: {
-          field: 'Ze_ohms',
+          field: 'wiring_type',
           circuit: 3,
-          value: '0.35',
+          value: 'A',
           confidence: 1.0,
           source_turn_id: 't1',
         },
@@ -237,7 +237,7 @@ describe('scaffold integrates with Phase 1 runToolLoop (canary)', () => {
         delta: {
           type: 'input_json_delta',
           partial_json:
-            '{"field":"Ze_ohms","circuit":3,"value":"0.35","confidence":1.0,"source_turn_id":"t1"}',
+            '{"field":"wiring_type","circuit":3,"value":"A","confidence":1.0,"source_turn_id":"t1"}',
         },
       },
       { type: 'content_block_stop', index: 0 },
