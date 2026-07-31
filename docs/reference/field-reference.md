@@ -32,15 +32,22 @@ correct to `ocpd_max_zs_ohm`. The three sub-main fields are rejected with a
 Board-tab notice, and structural fields never escape as ordinary readings.
 Only positive `is_distribution_circuit` intent on a source circuit is
 recoverable via `mark_distribution_circuit`; `feeds_board_id` and all other
-structural attempts are terminal. The final egress guard drops any off-manifest
-field, strips any untrusted confirmation/action payload attached to it, and
-replaces model-authored speech with one generic server-owned refusal.
+structural attempts are terminal. All three write tools check raw membership
+before any other validation and stage one shared, covered, leak-safe refusal.
+The legacy extraction path sanitises before snapshot mutation; if a malformed
+turn also contains valid siblings, their model prose is replaced with exactly
+one server-built read-back per surviving slot, while untrusted questions,
+alerts, speech, and actions are removed. The later egress pass is idempotent.
 
 Board attribution is separate from clearing scope. The server stamps
 `board_id` on `manufacturer`, `name`, `location`, `phases`, `ze_at_db`, and
 `ipf_at_db`; the clients additionally retain the legacy `zs_at_db` board
 route. An explicit sub-board write updates only that board, while an unknown
-or ambiguous board fails closed. Web and iOS source is held for PLAN-4's
+or ambiguous board fails closed. Web translates legacy `design_comments` only
+into the rendered/PDF `comments` destination rather than retaining an invisible
+raw property. Web and iOS accept inspection intervals 1–10, and iOS preserves
+both true and false `supply_polarity_confirmed` values while rejecting unknown
+tokens. Web and iOS source is held for PLAN-4's
 wave-end deploy/TestFlight build rather than shipped independently.
 
 ## Voice clearing of board/supply/installation fields (`clear_board_reading` — plan A1a, 2026-07-27)

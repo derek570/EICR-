@@ -131,7 +131,16 @@ sub-main keys, and correction-only aliases form the other three members of a
 complete pairwise-disjoint dispatcher partition. Corrections are validated
 against the same route manifest (`cpc_csa_mm2` → `cable_size_earth`;
 `max_zs`/`ocpd_max_zs` → `ocpd_max_zs_ohm`), and a final egress guard drops
-anything still off-manifest. Structural fields are refused before mutation:
+anything still off-manifest. Every non-strict write tool performs its raw
+field-membership check immediately after input normalisation, before scope,
+circuit, confidence, coercion, or range validation, and stages the same
+leak-safe covered refusal. The legacy `record_extraction` path applies the
+same contract before metrics, dedupe, question bookkeeping, or
+`updateStateSnapshot`; a later egress pass is idempotent defence in depth.
+If a malformed legacy result also contains valid sibling readings, the server
+regenerates exactly one trusted read-back per surviving slot and discards
+model-authored confirmations/questions/actions that could echo the rejected
+field or value. Structural fields are refused before mutation:
 positive distribution-link intent is recoverable only through
 `mark_distribution_circuit`, whose same-turn success reconciles the notice;
 all hierarchy edits and legacy sub-main writes are terminal, with the latter
