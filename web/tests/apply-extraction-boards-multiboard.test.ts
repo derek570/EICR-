@@ -102,11 +102,10 @@ describe('apply-extraction multi-board board_id routing', () => {
       { circuit: 0, field: 'manufacturer', value: 'Wylex', board_id: 'does-not-exist' },
     ]);
     const applied = applyExtractionToJob(job, result);
-    // The reading still flows through section routing (manufacturer →
-    // board_info via CIRCUIT_0_SECTION) so applied is non-null. But
-    // the boards[] patch must NOT carry a phantom entry.
-    expect(applied).not.toBeNull();
-    expect(applied!.patch.boards).toBeUndefined();
+    // PLAN-2D fail-closes BOTH legs: publishing the orphan value into
+    // board_info would corrupt the canonical-main summary while the addressed
+    // board remained untouched.
+    expect(applied).toBeNull();
   });
 
   it('refuses to default-route to boards[0] when multi-board and no board_id', () => {
@@ -120,8 +119,7 @@ describe('apply-extraction multi-board board_id routing', () => {
     });
     const result = makeResult([{ circuit: 0, field: 'manufacturer', value: 'Wylex' }]);
     const applied = applyExtractionToJob(job, result);
-    expect(applied).not.toBeNull();
-    expect(applied!.patch.boards).toBeUndefined();
+    expect(applied).toBeNull();
   });
 
   it('falls back to boards[0] for single-board sessions without board_id', () => {
@@ -151,7 +149,7 @@ describe('apply-extraction multi-board board_id routing', () => {
       { circuit: 0, field: 'manufacturer', value: 'Wylex', board_id: 'sub' },
     ]);
     const applied = applyExtractionToJob(job, result);
-    // No board patch fires because the only candidate was protected.
-    expect(applied!.patch.boards).toBeUndefined();
+    // No patch fires because the only candidate was protected.
+    expect(applied).toBeNull();
   });
 });

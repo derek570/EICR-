@@ -42,6 +42,11 @@ import {
   mergePendingPhotoIntoObservations,
   type PendingObservationPhoto,
 } from './observation-photo';
+import {
+  CLIENT_ROUTABLE_READING_ROUTES,
+  clientReadingRoute,
+  type ClientReadingRoute,
+} from './client-routable-reading-fields';
 
 /**
  * Options threaded into the apply path. Currently carries the user's
@@ -293,12 +298,31 @@ const MIRROR_BOARD_TO_SUPPLY: ReadonlySet<string> = new Set([
  * the UI reads. Both sides are grep-pinned by tests in
  * `apply-extraction-boards-mirror.test.ts`.
  */
+/** PLAN-2D board-attributed voice fields. These are the only circuit-0
+ * readings whose destination is one `boards[]` record rather than a
+ * job-global section value. */
+const BOARD_SCOPED_READING_FIELDS: ReadonlySet<string> = new Set([
+  'manufacturer',
+  'name',
+  'location',
+  'phases',
+  'ze_at_db',
+  'zs_at_db',
+  'ipf_at_db',
+]);
+
 const MIRROR_TO_BOARDS0: ReadonlyArray<{
   section: Section;
   sectionKey: string;
   boardKey: string;
 }> = [
   { section: 'board_info', sectionKey: 'manufacturer', boardKey: 'manufacturer' },
+  { section: 'board_info', sectionKey: 'name', boardKey: 'name' },
+  { section: 'board_info', sectionKey: 'location', boardKey: 'location' },
+  { section: 'board_info', sectionKey: 'phases', boardKey: 'phases' },
+  { section: 'board_info', sectionKey: 'ze_at_db', boardKey: 'ze_at_db' },
+  { section: 'board_info', sectionKey: 'zs_at_db', boardKey: 'ze_at_db' },
+  { section: 'board_info', sectionKey: 'ipf_at_db', boardKey: 'ipf_at_db' },
   { section: 'board_info', sectionKey: 'main_switch_bs_en', boardKey: 'main_switch_bs_en' },
   {
     section: 'supply_characteristics',
@@ -306,7 +330,6 @@ const MIRROR_TO_BOARDS0: ReadonlyArray<{
     boardKey: 'earthing_arrangement',
   },
   { section: 'supply_characteristics', sectionKey: 'ze', boardKey: 'ze' },
-  { section: 'supply_characteristics', sectionKey: 'zs_at_db', boardKey: 'zs_at_db' },
   // Ambiguous board fields — wire name doesn't match the board record
   // key the Board tab reads. The wire is iOS-legacy
   // (`FIELD_CORRECTIONS` rewrite, sonnet-stream.js:774-848): Sonnet's
@@ -353,11 +376,18 @@ const CIRCUIT_0_SECTION: Record<string, Section> = {
   bonding_structural_steel: 'supply_characteristics',
   bonding_lightning: 'supply_characteristics',
   bonding_other: 'supply_characteristics',
+  bonding_conductor_material: 'supply_characteristics',
+  bonding_conductor_csa: 'supply_characteristics',
+  bonding_conductor_continuity: 'supply_characteristics',
+  bonding_other_na: 'supply_characteristics',
   earth_electrode_type: 'supply_characteristics',
   earth_electrode_resistance: 'supply_characteristics',
   earth_electrode_location: 'supply_characteristics',
   earthing_conductor_material: 'supply_characteristics',
+  earthing_conductor_csa: 'supply_characteristics',
   earthing_conductor_continuity: 'supply_characteristics',
+  means_earthing_distributor: 'supply_characteristics',
+  means_earthing_electrode: 'supply_characteristics',
   main_bonding_material: 'supply_characteristics',
   main_bonding_continuity: 'supply_characteristics',
   supply_voltage: 'supply_characteristics',
@@ -369,7 +399,7 @@ const CIRCUIT_0_SECTION: Record<string, Section> = {
   supply_polarity_confirmed: 'supply_characteristics',
   live_conductors: 'supply_characteristics',
   number_of_supplies: 'supply_characteristics',
-  zs_at_db: 'supply_characteristics',
+  zs_at_db: 'board_info',
   // Board / Main Switch / SPD
   main_switch_bs_en: 'board_info',
   main_switch_current: 'board_info',
@@ -382,11 +412,23 @@ const CIRCUIT_0_SECTION: Record<string, Section> = {
   rcd_operating_current: 'board_info',
   rcd_time_delay: 'board_info',
   rcd_operating_time: 'board_info',
+  rcd_operating_current_test: 'supply_characteristics',
+  rcd_time_delay_test: 'supply_characteristics',
+  rcd_operating_time_test: 'supply_characteristics',
   spd_bs_en: 'board_info',
   spd_type_supply: 'board_info',
   spd_short_circuit: 'board_info',
   spd_rated_current: 'board_info',
   manufacturer: 'board_info',
+  name: 'board_info',
+  location: 'board_info',
+  phases: 'board_info',
+  ze_at_db: 'board_info',
+  ipf_at_db: 'board_info',
+  surge_spd_present: 'supply_characteristics',
+  surge_spd_type: 'supply_characteristics',
+  surge_spd_bs_en: 'supply_characteristics',
+  surge_status_indicator: 'supply_characteristics',
   // Installation
   address: 'installation_details',
   postcode: 'installation_details',
@@ -408,9 +450,15 @@ const CIRCUIT_0_SECTION: Record<string, Section> = {
   general_condition: 'installation_details',
   next_inspection_years: 'installation_details',
   premises_description: 'installation_details',
+  installation_records_available: 'installation_details',
+  evidence_of_additions_alterations: 'installation_details',
+  agreed_limitations: 'installation_details',
+  agreed_with: 'installation_details',
+  operational_limitations: 'installation_details',
   // Extent (EIC)
   extent_of_installation: 'extent_and_type',
   installation_type: 'extent_and_type',
+  extent: 'extent_and_type',
   // EIC divert-to-comments (obs-#49, backend PR #66/#68) — the RULE 0
   // EIC observation path diverts spoken defect notes into the
   // installation-level comments field. Routed here for field_clears;
@@ -420,7 +468,8 @@ const CIRCUIT_0_SECTION: Record<string, Section> = {
   // Design (EIC)
   departures_from_bs7671: 'design_construction',
   departure_details: 'design_construction',
-  design_comments: 'design_construction',
+  // Both clients' legacy model stores design comments beside EIC extent.
+  design_comments: 'extent_and_type',
 };
 
 function routeSupplyField(field: string): Section {
@@ -434,6 +483,27 @@ function routeSupplyField(field: string): Section {
  *  default-routed and alias-translated fields exist on both sides). */
 export function __circuit0SectionRoutesForTests(): Readonly<Record<string, Section>> {
   return CIRCUIT_0_SECTION;
+}
+
+/** Semantic view of the actual web apply router. The manifest is used only as
+ * the field iteration surface here; each destination is independently derived
+ * from the circuit-row path, board-scoped planner, section map, and deliberate
+ * board→supply mirrors. Contract tests deep-compare the result with both the
+ * live runtime allowlist and the committed cross-client fixture. */
+export function __liveClientReadingRoutesForTests(): Readonly<Record<string, ClientReadingRoute>> {
+  const routes: Record<string, ClientReadingRoute> = {};
+  for (const [field, declaredRoute] of Object.entries(CLIENT_ROUTABLE_READING_ROUTES)) {
+    if (declaredRoute === 'circuit') {
+      routes[field] = 'circuit';
+    } else if (BOARD_SCOPED_READING_FIELDS.has(field)) {
+      routes[field] = 'board_info';
+    } else if (MIRROR_BOARD_TO_SUPPLY.has(field)) {
+      routes[field] = 'supply_characteristics';
+    } else {
+      routes[field] = routeSupplyField(field);
+    }
+  }
+  return routes;
 }
 
 /** Non-empty / non-null check used by the 3-tier priority guard. */
@@ -612,50 +682,93 @@ export function mergeNarrativeValue(
  * Keyed by reading IDENTITY (the objects are stable for the life of one apply
  * call), so no field/board tuple has to be re-derived in agreement twice.
  */
-type FlaggedBoardPlan = {
+type BoardReadingPlan = {
   /** Write the section leg at all. */
   section: boolean;
   /** Index into `job.boards[]` for the boards leg, or null for no boards leg. */
   boardIdx: number | null;
   /** Whether the section leg may include the `board_info` target. */
   allowBoardInfo: boolean;
+  /** Only a server-collapsed clear→write may bypass fill-only guards. */
+  bypassFillOnly: boolean;
 };
 
-function planFlaggedBoardReplacements(
+function planBoardReadingRoutes(
   job: JobDetail,
   readings: ExtractedReading[]
-): Map<ExtractedReading, FlaggedBoardPlan> {
-  const plans = new Map<ExtractedReading, FlaggedBoardPlan>();
+): Map<ExtractedReading, BoardReadingPlan> {
+  const plans = new Map<ExtractedReading, BoardReadingPlan>();
   const boards = (job.boards as Record<string, unknown>[] | undefined) ?? [];
   const canonicalMainId = resolveCanonicalMainBoardId(boards as MainBoardCandidate[]);
 
   for (const reading of readings) {
     if (reading.circuit !== 0 || !reading.field) continue;
-    if (reading.replaces_cleared !== true) continue;
+    const boardScoped = BOARD_SCOPED_READING_FIELDS.has(reading.field);
+    const replacesCleared = reading.replaces_cleared === true;
+    if (!replacesCleared && !boardScoped) continue;
 
     const mirror = MIRROR_TO_BOARDS0.find((m) => m.sectionKey === reading.field);
     if (!mirror) {
       // Not a board-mirrored field (client_name, address, …). One leg only;
       // nothing to keep atomic.
-      plans.set(reading, { section: true, boardIdx: null, allowBoardInfo: true });
+      plans.set(reading, {
+        section: true,
+        boardIdx: null,
+        allowBoardInfo: true,
+        bypassFillOnly: replacesCleared,
+      });
       continue;
     }
 
-    const scopedTo = reading.board_id;
+    let scopedTo = reading.board_id;
     if (scopedTo == null || scopedTo === '') {
-      // Global-scoped by construction (see the header). Section-only.
-      plans.set(reading, { section: true, boardIdx: null, allowBoardInfo: true });
-      pipelineLog('apply_flagged_board_replacement_section_only', {
-        field: reading.field,
-        boards_count: boards.length,
-      });
-      continue;
+      if (boardScoped && boards.length === 0 && !replacesCleared) {
+        // Legacy flat web jobs have no boards[] evidence yet. Leave ordinary
+        // writes unplanned so the established mirror path can synthesise the
+        // sole main board; there is no second board to misattribute it to.
+        continue;
+      }
+      if (boardScoped && boards.length > 1) {
+        // PLAN-2D: a per-board field on a multi-board job is never guessed.
+        plans.set(reading, {
+          section: false,
+          boardIdx: null,
+          allowBoardInfo: false,
+          bypassFillOnly: replacesCleared,
+        });
+        pipelineLog('apply_board_reading_ambiguous_board_ref', {
+          field: reading.field,
+          boards_count: boards.length,
+        });
+        continue;
+      }
+      if (boardScoped && boards.length === 1 && typeof boards[0]?.id === 'string') {
+        scopedTo = boards[0].id as string;
+      } else {
+        // Global-scoped by construction (see the header). Section-only.
+        plans.set(reading, {
+          section: true,
+          boardIdx: null,
+          allowBoardInfo: true,
+          bypassFillOnly: replacesCleared,
+        });
+        pipelineLog('apply_flagged_board_replacement_section_only', {
+          field: reading.field,
+          boards_count: boards.length,
+        });
+        continue;
+      }
     }
 
     const boardIdx = boards.findIndex((b) => typeof b?.id === 'string' && b.id === scopedTo);
     if (boardIdx < 0) {
       // Named a board we do not have — decline BOTH legs.
-      plans.set(reading, { section: false, boardIdx: null, allowBoardInfo: false });
+      plans.set(reading, {
+        section: false,
+        boardIdx: null,
+        allowBoardInfo: false,
+        bypassFillOnly: replacesCleared,
+      });
       pipelineLog('apply_flagged_board_replacement_orphan_board_ref', {
         field: reading.field,
         board_id: scopedTo,
@@ -667,14 +780,49 @@ function planFlaggedBoardReplacements(
     // A sole board is the canonical main whatever it calls itself, so the
     // single-board job keeps its two-leg behaviour.
     const isPrimary = boards.length <= 1 || scopedTo === canonicalMainId;
-    plans.set(reading, { section: true, boardIdx, allowBoardInfo: isPrimary });
-    pipelineLog('apply_flagged_board_replacement_planned', {
-      field: reading.field,
-      board_id: scopedTo,
-      target_index: boardIdx,
-      is_primary_board: isPrimary,
-      section: mirror.section,
-    });
+    const plan: BoardReadingPlan = {
+      section: true,
+      boardIdx,
+      allowBoardInfo: isPrimary,
+      bypassFillOnly: replacesCleared,
+    };
+
+    // Ordinary board writes remain fill-only. Decide the two-leg guard here so
+    // a main-board write cannot fill `board_info` while a pre-existing
+    // `boards[main]` value blocks the matching board leg (or vice versa).
+    // Sub-board writes deliberately ignore the main-board summary.
+    if (!replacesCleared) {
+      const pwaColumn = LEGACY_TO_PWA_SECTION_FIELD[reading.field];
+      const sourceSection = job[mirror.section] as Record<string, unknown> | undefined;
+      const boardValue = boards[boardIdx]?.[mirror.boardKey];
+      const sectionHasValue =
+        isPrimary &&
+        sourceSection != null &&
+        (hasValue(sourceSection[reading.field]) ||
+          (pwaColumn != null && hasValue(sourceSection[pwaColumn])));
+      if (hasValue(boardValue) || sectionHasValue) {
+        plan.section = false;
+        plan.boardIdx = null;
+        pipelineLog('apply_board_reading_user_value_kept', {
+          field: reading.field,
+          board_id: scopedTo,
+          board_value_present: hasValue(boardValue),
+          section_value_present: sectionHasValue,
+        });
+      }
+    }
+
+    plans.set(reading, plan);
+    pipelineLog(
+      replacesCleared ? 'apply_flagged_board_replacement_planned' : 'apply_board_reading_planned',
+      {
+        field: reading.field,
+        board_id: scopedTo,
+        target_index: boardIdx,
+        is_primary_board: isPrimary,
+        section: mirror.section,
+      }
+    );
   }
 
   return plans;
@@ -685,7 +833,7 @@ function planFlaggedBoardReplacements(
 function applyCircuit0Readings(
   job: JobDetail,
   readings: ExtractedReading[],
-  flaggedPlans: Map<ExtractedReading, FlaggedBoardPlan>
+  boardPlans: Map<ExtractedReading, BoardReadingPlan>
 ): Partial<Record<Section, Record<string, unknown>>> {
   const bySection: Partial<Record<Section, Record<string, unknown>>> = {};
 
@@ -708,7 +856,7 @@ function applyCircuit0Readings(
     }
 
     // A2-multiboard item 7 — the SECTION leg of the flagged-replacement
-    // preflight (`planFlaggedBoardReplacements`). Three outcomes, all decided
+    // preflight (`planBoardReadingRoutes`). Three outcomes, all decided
     // there so this leg and the `boards[]` leg cannot disagree:
     //
     //   plan.section === false   the preflight declined BOTH legs (an orphan
@@ -721,15 +869,15 @@ function applyCircuit0Readings(
     //                            only one, this is a legitimate boards[]-only
     //                            write and the section leg is empty.
     //   otherwise                proceed, and bypass the fill-only gate below.
-    const flaggedPlan = flaggedPlans.get(reading);
-    if (flaggedPlan && !flaggedPlan.section) {
+    const boardPlan = boardPlans.get(reading);
+    if (boardPlan && !boardPlan.section) {
       pipelineLog('apply_section_reading_flagged_declined', {
         wire_field: reading.field,
         board_id: reading.board_id ?? null,
       });
       continue;
     }
-    if (flaggedPlan && !flaggedPlan.allowBoardInfo) {
+    if (boardPlan && !boardPlan.allowBoardInfo) {
       const withheld = targets.indexOf('board_info');
       if (withheld >= 0) targets.splice(withheld, 1);
       pipelineLog('apply_section_reading_board_info_withheld', {
@@ -848,7 +996,7 @@ function applyCircuit0Readings(
         break;
       }
     }
-    if (userValueKept && flaggedPlan) {
+    if (userValueKept && boardPlan?.bypassFillOnly) {
       // A2-multiboard item 7 — a `replaces_cleared` write is not a fresh fill
       // racing a manual edit; it is the SURVIVOR of a same-turn clear→write
       // pair the server already collapsed. The cell is still populated with
@@ -2424,7 +2572,7 @@ function diffCircuitKeys(
 function mirrorReadingsToBoards(
   job: JobDetail,
   readings: ExtractedReading[],
-  flaggedPlans: Map<ExtractedReading, FlaggedBoardPlan>
+  boardPlans: Map<ExtractedReading, BoardReadingPlan>
 ): Record<string, unknown>[] | null {
   const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
   // Index existing boards by id for O(1) lookup. Skip entries without
@@ -2454,29 +2602,34 @@ function mirrorReadingsToBoards(
     // protected reading doesn't sneak into boards[] via the
     // reading-driven path.
     // A2-multiboard item 7 — the BOARDS leg of the flagged-replacement
-    // preflight. When `planFlaggedBoardReplacements` resolved a concrete
+    // preflight. When `planBoardReadingRoutes` resolved a concrete
     // target it has ALREADY done the routing (and rejected the orphan case),
     // so this leg takes the planned index verbatim rather than re-deriving
     // it: two independent derivations of the same answer is exactly how the
     // two legs would drift apart. A planned `boardIdx` also bypasses the two
     // fill-only gates below, in lock-step with the section leg's bypass.
-    const flaggedPlan = flaggedPlans.get(reading);
-    if (flaggedPlan) {
-      if (flaggedPlan.boardIdx == null) {
+    const boardPlan = boardPlans.get(reading);
+    if (boardPlan) {
+      if (boardPlan.boardIdx == null) {
         // Section-only (a global-scoped `ze`/`pfc`) or declined (orphan).
         // Either way there is no board copy to write; both were logged by
         // the preflight.
         continue;
       }
-      const idx = flaggedPlan.boardIdx;
+      const idx = boardPlan.boardIdx;
       const pending = updatesByIndex.get(idx) ?? {};
       pending[mirror.boardKey] = reading.value;
       updatesByIndex.set(idx, pending);
-      pipelineLog('apply_boards_mirror_replaces_cleared_bypass', {
-        target_index: idx,
-        board_key: mirror.boardKey,
-        board_id: reading.board_id ?? null,
-      });
+      pipelineLog(
+        boardPlan.bypassFillOnly
+          ? 'apply_boards_mirror_replaces_cleared_bypass'
+          : 'apply_boards_mirror_board_scoped',
+        {
+          target_index: idx,
+          board_key: mirror.boardKey,
+          board_id: reading.board_id ?? null,
+        }
+      );
       continue;
     }
 
@@ -2593,7 +2746,15 @@ export function applyExtractionToJob(
   result: ExtractionResult,
   options: ApplyExtractionOptions = {}
 ): AppliedExtraction | null {
-  const readings = result.readings ?? [];
+  const readings = (result.readings ?? []).filter((reading) => {
+    if (clientReadingRoute(reading.field) != null) return true;
+    pipelineLog('apply_reading_off_manifest_dropped', {
+      field: reading.field,
+      circuit: reading.circuit,
+      board_id: reading.board_id ?? null,
+    });
+    return false;
+  });
   const circuitUpdates = result.circuit_updates ?? [];
   const fieldClears = result.field_clears ?? [];
   const observations = result.observations ?? [];
@@ -2614,10 +2775,10 @@ export function applyExtractionToJob(
   // derived "should I bypass, and onto which board?" for themselves, a
   // divergence would leave the Supply/Board tab and the boards[] record
   // disagreeing about what the inspector just said.
-  const flaggedPlans = planFlaggedBoardReplacements(job, readings);
+  const boardPlans = planBoardReadingRoutes(job, readings);
 
   // Circuit 0 readings — split by section.
-  const supplyPatches = applyCircuit0Readings(job, readings, flaggedPlans);
+  const supplyPatches = applyCircuit0Readings(job, readings, boardPlans);
   for (const section of Object.keys(supplyPatches) as Section[]) {
     const merged = supplyPatches[section];
     if (merged) patch[section] = merged;
@@ -2751,7 +2912,7 @@ export function applyExtractionToJob(
   // each one's `board_id` controls which board record receives the
   // value. Multi-board jobs without a board_id are deliberately
   // skipped — the apply path refuses to guess.
-  const newBoards = mirrorReadingsToBoards(job, readings, flaggedPlans);
+  const newBoards = mirrorReadingsToBoards(job, readings, boardPlans);
   if (newBoards) patch.boards = newBoards;
 
   // M7 — EIC cert-type guards. iOS `applySonnetObservations :5473`
