@@ -21,6 +21,7 @@ import {
   ConfirmationDedupeStore,
   FIELD_NIL_CONFIRMATION_TTL_MS,
 } from '@/lib/recording/confirmation-dedupe-store';
+import { buildConfirmationDedupeKey } from '@/lib/recording/confirmation-dedupe-key';
 import {
   enqueueConfirmation,
   setOnDiscarded,
@@ -49,6 +50,31 @@ describe('ConfirmationDedupeStore — three-store semantics (iOS A1(b) canon)', 
     store.markPlaybackStarted('measured_zs_ohm_3');
     now += FIELD_NIL_CONFIRMATION_TTL_MS * 10;
     expect(store.isLive('measured_zs_ohm_3', false)).toBe(true); // never expires
+  });
+
+  it('postcode replay stays suppressed beyond 30 s while a distinct token remains speakable', () => {
+    const firstKey = buildConfirmationDedupeKey({
+      text: 'Postcode RG1 5QA',
+      field: 'postcode',
+      dedupe_token: 'secfield_postcode_global_turn-1_ord0',
+    });
+    const replayKey = buildConfirmationDedupeKey({
+      text: 'Postcode RG1 5QA',
+      field: 'postcode',
+      dedupe_token: 'secfield_postcode_global_turn-1_ord0',
+    });
+    const laterOperationKey = buildConfirmationDedupeKey({
+      text: 'Postcode RG1 5QA',
+      field: 'postcode',
+      dedupe_token: 'secfield_postcode_global_turn-2_ord0',
+    });
+
+    store.reserve(firstKey, false);
+    store.markPlaybackStarted(firstKey);
+    now += FIELD_NIL_CONFIRMATION_TTL_MS * 10;
+
+    expect(store.isLive(replayKey, false)).toBe(true);
+    expect(store.isLive(laterOperationKey, false)).toBe(false);
   });
 
   it('field-nil apology: suppressed within 30 s of being HEARD, speaks again after', () => {
