@@ -616,8 +616,6 @@ const INSPECTION_DATE_FIELDS: ReadonlySet<string> = new Set([
   'date_of_previous_inspection',
 ]);
 
-const NEXT_INSPECTION_YEAR_OPTIONS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5, 10]);
-
 type NormalisedSectionValue =
   | { ok: true; value: unknown }
   | { ok: false; reason: 'invalid_boolean' | 'invalid_date' | 'invalid_number' };
@@ -667,7 +665,7 @@ function normaliseSectionReadingValue(field: string, raw: unknown): NormalisedSe
 
   if (field === 'next_inspection_years') {
     const value = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim());
-    return Number.isInteger(value) && NEXT_INSPECTION_YEAR_OPTIONS.has(value)
+    return Number.isInteger(value) && value >= 1 && value <= 10
       ? { ok: true, value }
       : { ok: false, reason: 'invalid_number' };
   }

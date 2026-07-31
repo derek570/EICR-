@@ -198,16 +198,21 @@ describe('PLAN-2D web client reading contract', () => {
   it('stores a validated next-inspection interval as a number', () => {
     const applied = applyExtractionToJob(
       makeJob(),
-      resultFor({ circuit: 0, field: 'next_inspection_years', value: '5' })
+      resultFor({ circuit: 0, field: 'next_inspection_years', value: '7' })
     );
-    const invalid = applyExtractionToJob(
+    const decorated = applyExtractionToJob(
       makeJob(),
       resultFor({ circuit: 0, field: 'next_inspection_years', value: '5 years' })
     );
+    const outOfRange = applyExtractionToJob(
+      makeJob(),
+      resultFor({ circuit: 0, field: 'next_inspection_years', value: '11' })
+    );
     expect(
       (applied?.patch.installation_details as Record<string, unknown>).next_inspection_years
-    ).toBe(5);
-    expect(invalid?.patch.installation_details).toBeUndefined();
+    ).toBe(7);
+    expect(decorated?.patch.installation_details).toBeUndefined();
+    expect(outOfRange?.patch.installation_details).toBeUndefined();
   });
 
   it.each([
