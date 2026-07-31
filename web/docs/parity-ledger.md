@@ -28,6 +28,13 @@ monorepo — not tracked inside it). Web paths are relative to the
 
 ---
 
+## PLAN-3 observation-regulation integrity — 2026-07-31
+
+| id | iOS source | PWA counterpart | status | last-verified | owner | notes |
+| --- | ---------- | --------------- | ------ | ------------- | ----- | ----- |
+| inspection/afdd-5-22 | `Constants.swift` + `EICRHTMLTemplate.swift` EICR Section 5 | `lib/constants/inspection-schedule.ts` + `lib/pdf/template/inspection-items.ts` | match | 2026-07-31 | Derek | PLAN-3 appends `5.22 AFDD fitted where required (421.1.7)?` to the editable schedule and legal-document renderer using the existing outcome enum; no EIC schedule change. Held for PLAN-4's wave-end client delivery. |
+| recording/async-observation-recode-turn | `ClaudeExtractionResult.turnId` decode + confirmation handling in `DeepgramRecordingViewModel` | `sonnet-session.ts` turn-id preservation + session-scoped `extraction-turn-ledger.ts` in `recording-context.tsx` | match | 2026-07-31 | Derek | A supplemental re-code extraction frame applies and speaks normally but closes `processingCount` only if its server-owned `turn_id` has not already closed that turn. Reconnect retains the ledger; stop/start resets by client session id; legacy no-id frames keep historical behaviour. Held for PLAN-4's wave-end client delivery. |
+
 ## Dashboard & Alerts
 
 Landing screen (dashboard) + global alerts bell + alerts page + guided tour.

@@ -77,6 +77,34 @@ describe('SonnetSession', () => {
     vi.restoreAllMocks();
   });
 
+  describe('PLAN-3 extraction turn identity', () => {
+    it('preserves turn_id while normalising a supplemental extraction frame', async () => {
+      const onExtraction = vi.fn();
+      const session = new SonnetSession({ onExtraction });
+      session.connect({ sessionId: 'client-turn', jobId: 'job-turn', certificateType: 'EICR' });
+      await server.connected;
+
+      server.send(
+        JSON.stringify({
+          type: 'extraction',
+          result: {
+            turn_id: 'legacy-123',
+            confirmations: [{ field: null, circuit: null, text: 'Observation re-coded C3 to C2.' }],
+          },
+        })
+      );
+      await Promise.resolve();
+
+      expect(onExtraction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          turn_id: 'legacy-123',
+          readings: [],
+          confirmations: [expect.objectContaining({ text: 'Observation re-coded C3 to C2.' })],
+        })
+      );
+    });
+  });
+
   // ────────────────────────────────────────────────────────────────────────
   // Commit A — sessionId capture from session_ack
   // ────────────────────────────────────────────────────────────────────────

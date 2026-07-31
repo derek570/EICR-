@@ -297,6 +297,10 @@ export const EICR_SCHEDULE: ScheduleSection[] = [
         description:
           'Single-pole switching or protective devices in line conductors only (132.14.1; 530.3.3)',
       },
+      {
+        ref: '5.22',
+        description: 'AFDD fitted where required (421.1.7)?',
+      },
     ],
   },
   {

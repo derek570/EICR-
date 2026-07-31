@@ -466,6 +466,9 @@
   "web/src/lib/ccu/pending-extraction-queue.ts": [
     "ccu-flow/circuitstab-272"
   ],
+  "web/src/lib/constants/inspection-schedule.ts": [
+    "inspection/afdd-5-22"
+  ],
   "web/src/lib/defaults/job-creation.ts": [
     "dashboard/job-creation-defaults-flow"
   ],
@@ -515,6 +518,7 @@
     "pdf/pdf-fidelity"
   ],
   "web/src/lib/pdf/template/inspection-items.ts": [
+    "inspection/afdd-5-22",
     "pdf/pdf-fidelity"
   ],
   "web/src/lib/pdf/template/types.ts": [
@@ -527,6 +531,7 @@
     "crosscutting/uiimpactfeedbackgenerator",
     "observations/obs-photo-autolink",
     "recording/assistant-answers",
+    "recording/async-observation-recode-turn",
     "recording/cancel-pending-tts",
     "recording/fast-path-tts",
     "recording/flux-kill-switch",
@@ -570,6 +575,9 @@
   "web/src/lib/recording/elevenlabs-tts.ts": [
     "recording/tts-fifo"
   ],
+  "web/src/lib/recording/extraction-turn-ledger.ts": [
+    "recording/async-observation-recode-turn"
+  ],
   "web/src/lib/recording/in-flight-question.ts": [
     "recording/cancel-pending-tts",
     "recording/transcript-gate"
@@ -585,6 +593,7 @@
   ],
   "web/src/lib/recording/sonnet-session.ts": [
     "observations/obs-card-canonical-wording",
+    "recording/async-observation-recode-turn",
     "recording/board-clear-denial-notice",
     "recording/cancel-pending-tts",
     "recording/capability-advertising",

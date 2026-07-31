@@ -202,6 +202,7 @@ export function inspectionScheduleItems(): InspectionItem[] {
       '5.21',
       'Single-pole switching or protective devices in line conductors only (132.14.1; 530.3.3)'
     ),
+    item('5.22', 'AFDD fitted where required (421.1.7)?'),
 
     // Section 6
     header('6. Location(s) containing a bath or shower'),
