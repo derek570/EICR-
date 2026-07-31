@@ -171,7 +171,7 @@ export async function refineObservation(openai, obs, context = {}) {
     '  applicability is unknown, the live extractor asks that deciding fact first.',
     '- A MISSING AFDD on such an applicable circuit is C3 under 421.1.7 only',
     '  where the stated premises is a',
-    '  higher-risk residential building (>18 m or at least 6 storeys), HMO,',
+    '  higher-risk residential building as classified under applicable legislation, HMO,',
     '  purpose-built student accommodation, or care home.',
     '- Outside those four premises categories AFDD provision is a recommendation;',
     '  the live extractor files no observation and gives an informational note.',

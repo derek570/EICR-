@@ -2198,8 +2198,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain('ask that as a later follow-up, never as a compound question');
         expect(rendered).toMatch(/HMO.*care home.*purpose-built student accommodation/s);
         expect(rendered).toContain(
-          'higher-risk residential building (>18 m OR at least 6 storeys)'
+          'higher-risk residential building as classified under applicable legislation'
         );
+        expect(rendered).toContain('Do not infer HRRB status from an uncited height/storey shortcut');
         expect(rendered).toContain('file NO `record_observation`');
         expect(rendered).toContain('premises category UNKNOWN');
         expect(rendered).toContain('code_basis:"afdd_premises_requirement"');

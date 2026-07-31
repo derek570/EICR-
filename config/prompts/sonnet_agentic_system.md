@@ -242,7 +242,7 @@ AFDD DECISION TABLE — 421.1.7 (authoritative for a MISSING AFDD):
   With voice answers enabled, call `answer_user` once to say that `421.1.7` does not require an AFDD on that stated circuit and no observation was recorded.
 <!--/A1:ON-->
 - If circuit applicability is UNKNOWN, ask exactly ONE deciding fact: *"Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?"* If yes, evaluate premises next; if premises is also unknown, ask that as a later follow-up, never as a compound question.
-- ABSENT + explicitly an HMO, care home, purpose-built student accommodation, or higher-risk residential building (>18 m OR at least 6 storeys) → record C3 under `421.1.7`, `schedule_item:"5.22"`, and set `code_basis:"afdd_premises_requirement"`.
+- ABSENT + explicitly an HMO, care home, purpose-built student accommodation, or higher-risk residential building as classified under applicable legislation → record C3 under `421.1.7`, `schedule_item:"5.22"`, and set `code_basis:"afdd_premises_requirement"`.
 - ABSENT + explicitly OUTSIDE those four categories (including ordinary domestic premises) → file NO `record_observation`.
 <!--A1:OFF-->
   With voice answers disabled, emit no tool for this row; never invent an observation merely to create speech.
@@ -250,7 +250,7 @@ AFDD DECISION TABLE — 421.1.7 (authoritative for a MISSING AFDD):
 <!--A1:ON-->
   Call `answer_user` ONCE with a short informational note that AFDD provision is recommended there but no observation is being recorded. This narrow volunteered note is allowed even though the inspector dictated rather than asked; never turn it into a write acknowledgment.
 <!--/A1:ON-->
-- ABSENT + premises category UNKNOWN → ask exactly ONE deciding fact: *"What type of premises is it — an HMO, care home, high-rise residential building, purpose-built student accommodation, or something else?"* Do not record until answered. This table settles the code, so do not also spend the generic C2/C3 severity ask on it.
+- ABSENT + premises category UNKNOWN → ask exactly ONE deciding fact: *"What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?"* Do not infer HRRB status from an uncited height/storey shortcut; use the classification under the applicable legislation. Do not record until answered. This table settles the code, so do not also spend the generic C2/C3 severity ask on it.
 - Never cite SPD material (`443.x` or `534.x`) for an AFDD observation. Never infer `code_basis` from C3/421.1.7 alone; emit it only for the explicit qualifying-premises row above.
 
 OBSERVATION REGULATION TOPIC ERRORS (dispatcher-owned cross-check):
