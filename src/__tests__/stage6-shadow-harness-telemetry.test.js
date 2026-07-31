@@ -398,6 +398,72 @@ describe('§A1a / PLAN-2C — ios_send_attempt emitted post-debounce for all enr
 });
 
 describe('Codex r8-#2 — safety-net confirmations get telemetry rows (emission runs AFTER all appenders)', () => {
+  test('recovered pending value speaks only the successful read-back, never its stale terminal apology', async () => {
+    const session = makeSession();
+    session.pendingVoicePrompts = [
+      {
+        text: "Sorry, I couldn't place that reading — could you say the field and value together again?",
+        promptKind: 'pending_value_terminal',
+        pendingField: null,
+        pendingValue: '16',
+        pendingCircuit: null,
+        pendingBoardId: null,
+      },
+    ];
+    populateWrites = (writes) => {
+      recordBoardReadingWrite(writes, 'earthing_conductor_csa', {
+        value: '16',
+        confidence: 0.72,
+        source_turn_id: 'turn-recovered-pending-value',
+      });
+    };
+    const opts = baseOpts();
+
+    const result = await runShadowHarness(session, 'main earth is 16', [], opts);
+
+    expect(
+      (result.confirmations ?? []).filter((c) => c.field === 'earthing_conductor_csa')
+    ).toHaveLength(1);
+    expect((result.confirmations ?? []).filter((c) => c.field == null)).toHaveLength(0);
+    expect(
+      opts.logger.info.mock.calls.filter(
+        ([event]) => event === 'stage6.pending_value_apology_superseded'
+      )
+    ).toHaveLength(1);
+    expect(attemptsOf(opts.logger).filter((row) => row.field == null)).toHaveLength(0);
+  });
+
+  test('a different successful value does not erase a genuine pending-value terminal', async () => {
+    const session = makeSession();
+    session.pendingVoicePrompts = [
+      {
+        text: "Sorry, I couldn't place that reading — could you say the field and value together again?",
+        promptKind: 'pending_value_terminal',
+        pendingField: null,
+        pendingValue: '16',
+        pendingCircuit: null,
+        pendingBoardId: null,
+      },
+    ];
+    populateWrites = (writes) => {
+      recordBoardReadingWrite(writes, 'bonding_conductor_csa', {
+        value: '10',
+        confidence: 0.9,
+        source_turn_id: 'turn-unrelated-write',
+      });
+    };
+    const opts = baseOpts();
+
+    const result = await runShadowHarness(session, 'bonding is 10', [], opts);
+
+    expect((result.confirmations ?? []).filter((c) => c.field == null)).toHaveLength(1);
+    expect(
+      opts.logger.info.mock.calls.filter(
+        ([event]) => event === 'stage6.pending_value_apology_superseded'
+      )
+    ).toHaveLength(0);
+  });
+
   test('A4 terminal-apology drain: the field-null prompt reaches the wire WITH exactly one ios_send_attempt row', async () => {
     const session = makeSession();
     session.pendingVoicePrompts = [

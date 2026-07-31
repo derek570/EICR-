@@ -109,6 +109,7 @@ import {
   boardSlotKey,
   EFFECTIVE_CIRCUIT_SLOT,
   circuitDesignationKey,
+  decodeBoardReadingKey,
   decodeReadingKey,
   rawCircuitSlot,
   projectBoardReadingWinners,
@@ -116,6 +117,63 @@ import {
   readEffectiveOpBoard,
   readingSlotPartsOf,
 } from './stage6-per-turn-writes.js';
+
+/**
+ * Turn-local pending-value terminals are provisional: the agent can recover in
+ * a later model round and write the reading after the apology was queued. A
+ * truthful read-back then supersedes the failure line. Values are compared as
+ * trimmed, case-insensitive strings because dispatcher writes preserve numeric
+ * strings (the production repro is "16" on both sides); null stays
+ * non-comparable so an unrelated write can never erase a value-less failure.
+ */
+function pendingPromptComparableValue(value) {
+  if (value == null) return null;
+  const comparable = String(value).trim().toLowerCase();
+  return comparable.length > 0 ? comparable : null;
+}
+
+function pendingValuePromptWasRecovered(prompt, perTurnWrites) {
+  if (prompt?.promptKind !== 'pending_value_terminal') return false;
+  const pendingValue = pendingPromptComparableValue(prompt.pendingValue);
+  if (pendingValue == null) return false;
+
+  const pendingField =
+    typeof prompt.pendingField === 'string' && prompt.pendingField.trim()
+      ? canonicalPartialFailureFieldIdentity(prompt.pendingField)
+      : null;
+  const pendingCircuit = Number.isInteger(prompt.pendingCircuit) ? prompt.pendingCircuit : null;
+  const pendingBoardId = prompt.pendingBoardId ?? null;
+
+  const matchesIdentity = ({ field, circuit = null, boardId = null, value }) => {
+    if (pendingPromptComparableValue(value) !== pendingValue) return false;
+    if (pendingField != null && canonicalPartialFailureFieldIdentity(field) !== pendingField) {
+      return false;
+    }
+    if (pendingCircuit != null && circuit !== pendingCircuit) return false;
+    if (pendingBoardId != null && boardId !== pendingBoardId) return false;
+    return true;
+  };
+
+  for (const winner of projectReadingWinners(perTurnWrites)) {
+    const slot = readingSlotPartsOf(winner.rawKey, winner.value);
+    if (matchesIdentity({ ...slot, value: winner.value?.value })) return true;
+  }
+  for (const winner of projectBoardReadingWinners(perTurnWrites)) {
+    const effective = winner.value?.[EFFECTIVE_BOARD_SLOT];
+    const decoded = effective ?? decodeBoardReadingKey(String(winner.rawKey));
+    if (
+      matchesIdentity({
+        field: decoded.field,
+        circuit: null,
+        boardId: decoded.boardId ?? null,
+        value: winner.value?.value,
+      })
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * A2-multiboard item 3 — read the server-authoritative designation for a
@@ -3071,10 +3129,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           const survivingDistributionSlots = new Set();
           if (Array.isArray(perTurnWrites?.boardOps)) {
             for (const op of perTurnWrites.boardOps) {
-              if (
-                op?.op === 'mark_distribution_circuit' &&
-                Number.isInteger(op.circuit_ref)
-              ) {
+              if (op?.op === 'mark_distribution_circuit' && Number.isInteger(op.circuit_ref)) {
                 survivingDistributionSlots.add(
                   rawCircuitSlot('distribution_link', op.circuit_ref, op.source_board_id ?? null)
                 );
@@ -3755,6 +3810,24 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // a whitespace-only prompt must NOT reach the wire. Pre-fix this guard
         // only checked `!p.text`, so "   " slipped through.
         if (!p || typeof p.text !== 'string' || p.text.trim().length === 0) continue;
+        // A pending-value terminal is queued at the point a bounded broker
+        // attempt fails, but the model loop can continue. If a later round in
+        // this SAME generation writes the matching value, the successful
+        // read-back owns the turn and the provisional failure is no longer
+        // true. Drop it before the wire; the metadata is server-owned and is
+        // never exposed to either client. Other prompt families, value-less
+        // failures, different values and other generations remain unchanged.
+        if (pendingValuePromptWasRecovered(p, perTurnWrites)) {
+          log.info?.('stage6.pending_value_apology_superseded', {
+            sessionId: session.sessionId,
+            turnId,
+            pending_field: p.pendingField ?? null,
+            pending_circuit: p.pendingCircuit ?? null,
+            pending_board_id: p.pendingBoardId ?? null,
+            pending_value: p.pendingValue ?? null,
+          });
+          continue;
+        }
         result.confirmations.push({
           text: p.text,
           field: null,
