@@ -254,9 +254,9 @@ export interface Confirmation {
    *  (Loaded Barrel Phase 1.B; omitted on single-board sessions). Mirrors
    *  iOS `ValueConfirmation.boardId`. */
   board_id?: string | null;
-  /** field-feedback-2026-07-14 §A1a — backend-stamped operation identity
-   *  for the five text-op confirmation fields (circuit_op, observation,
-   *  observation_deletion, field_cleared, circuit_designation). When
+  /** Backend-stamped operation identity for the wire/client-enrolled
+   *  confirmation fields (circuit_op, observation, observation_deletion,
+   *  field_cleared, circuit_designation, postcode). When
    *  present AND the field is allowlisted, the dedupe key is
    *  `${field}_${dedupe_token}` (see confirmation-dedupe-key.ts). Absent
    *  on every measured-value confirmation. Mirrors iOS
