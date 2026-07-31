@@ -165,7 +165,12 @@ export async function refineObservation(openai, obs, context = {}) {
     "- professional_text must NEVER add facts the inspector didn't state. Faithful rewrite only.",
     '',
     'AFDD DECISION TABLE (BS 7671:2018+A2:2022 Regulation 421.1.7):',
-    '- A MISSING AFDD is C3 under 421.1.7 only where the stated premises is a',
+    '- The missing-AFDD table applies only to a single-phase AC final circuit',
+    '  supplying socket-outlets rated not exceeding 32 A. Lighting-only,',
+    '  non-socket, and over-32-A circuits get no 421.1.7 observation; if circuit',
+    '  applicability is unknown, the live extractor asks that deciding fact first.',
+    '- A MISSING AFDD on such an applicable circuit is C3 under 421.1.7 only',
+    '  where the stated premises is a',
     '  higher-risk residential building (>18 m or at least 6 storeys), HMO,',
     '  purpose-built student accommodation, or care home.',
     '- Outside those four premises categories AFDD provision is a recommendation;',
@@ -176,6 +181,7 @@ export async function refineObservation(openai, obs, context = {}) {
     ...(afddPremisesRequirement
       ? [
           '- SERVER DECISION: this row is a confirmed missing-AFDD premises requirement.',
+          '  The live decision established both circuit applicability and premises.',
           '  Keep its existing C3 code and 421.1.7 citation; refine wording/schedule only.',
         ]
       : []),

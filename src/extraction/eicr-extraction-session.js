@@ -2449,8 +2449,12 @@ export class EICRExtractionSession {
    * batch fires (buffer full) or when flushed via timeout/stop.
    */
   async extractFromUtterance(transcriptText, regexResults = [], options = {}) {
-    // Add to buffer
-    this.utteranceBuffer.push({ transcriptText, regexResults, options });
+    // PLAN-3 review closure — identity belongs to the accepted utterance, not
+    // the later model response. A timeout-flushed result must reuse the same
+    // id as this immediate placeholder or the web completion ledger can close
+    // a newer turn when the delayed result arrives.
+    const turnId = `legacy-${randomUUID()}`;
+    this.utteranceBuffer.push({ transcriptText, regexResults, options, turnId });
 
     // Clear any existing flush timeout
     if (this.batchTimeoutHandle) {
@@ -2482,6 +2486,7 @@ export class EICRExtractionSession {
       validation_alerts: [],
       questions_for_user: [],
       confirmations: [],
+      turn_id: turnId,
     };
   }
 
@@ -2515,9 +2520,14 @@ export class EICRExtractionSession {
       }
       return null;
     })();
+    // A batch's real result answers the newest buffered utterance. Earlier
+    // items already closed their own processing slots via their placeholders;
+    // the newest item did not receive a placeholder because it fired the batch.
+    const lastBufferedTurnId = batch[batch.length - 1]?.turnId ?? null;
     const combinedOptions = {
       confirmationsEnabled: batch.some((b) => b.options?.confirmationsEnabled),
       utteranceId: lastBufferedUtteranceId,
+      turnId: lastBufferedTurnId,
     };
 
     logger.info(
@@ -2915,7 +2925,9 @@ export class EICRExtractionSession {
     // turn identity. Mint it once on the raw result before any egress or
     // buffering so a delayed supplemental recode extraction can identify its
     // originating turn on both clients and reconnect replay stays stable.
-    if (typeof result.turn_id !== 'string' || result.turn_id.length === 0) {
+    if (typeof options?.turnId === 'string' && options.turnId.length > 0) {
+      result.turn_id = options.turnId;
+    } else if (typeof result.turn_id !== 'string' || result.turn_id.length === 0) {
       result.turn_id = `legacy-${randomUUID()}`;
     }
 

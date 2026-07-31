@@ -54,6 +54,12 @@ const IOS_SCHEDULE_PATH = path.join(
 const PYTHON_PDF_PATH = path.join(__dirname, '..', '..', 'python', 'eicr_pdf_generator.py');
 const PYTHON_EDITOR_PATH = path.join(__dirname, '..', '..', 'python', 'eicr_editor.py');
 const AFDD_ROW_TEXT = 'AFDD fitted where required (421.1.7)?';
+// PLAN-3 2026-07-31: the reviewed iOS 5.22 source is deliberately held for
+// PLAN-4's coordinated TestFlight build. Backend CI has no nested iOS clone,
+// but a maintainer's dual-repo checkout must remain pushable during this
+// sanctioned source-drift window. Remove 5.22 when PLAN-4 lands the held iOS
+// branch; the dedicated PLAN-3 tests still pin all seven reviewed copies.
+const HELD_IOS_PENDING_REFS = new Set(['5.22']);
 
 /**
  * Extract the ITEM refs from the iOS Swift source. Each
@@ -94,6 +100,17 @@ function parseMarkdownItemRefs(src) {
   return refs;
 }
 
+function computeScheduleRefDrift(swiftRefs, mdRefs) {
+  const swiftSet = new Set(swiftRefs);
+  const mdSet = new Set(mdRefs);
+  return {
+    onlyInSwift: swiftRefs.filter((r) => !mdSet.has(r)).sort(),
+    onlyInMarkdown: mdRefs
+      .filter((r) => !swiftSet.has(r) && !HELD_IOS_PENDING_REFS.has(r))
+      .sort(),
+  };
+}
+
 describe('BS 7671 Schedule of Inspections — iOS ↔ server sync', () => {
   const iosPresent = fssync.existsSync(IOS_SCHEDULE_PATH);
 
@@ -117,15 +134,9 @@ describe('BS 7671 Schedule of Inspections — iOS ↔ server sync', () => {
     expect(swiftRefs.length).toBeGreaterThan(80);
     expect(mdRefs.length).toBeGreaterThan(80);
 
-    const swiftSet = new Set(swiftRefs);
-    const mdSet = new Set(mdRefs);
-
-    const onlyInSwift = swiftRefs.filter((r) => !mdSet.has(r)).sort();
-    const onlyInMarkdown = mdRefs.filter((r) => !swiftSet.has(r)).sort();
-
     // Wrap the diff in a single object so a Jest failure shows BOTH
     // sides at once — easier triage than two separate expectations.
-    expect({ onlyInSwift, onlyInMarkdown }).toEqual({
+    expect(computeScheduleRefDrift(swiftRefs, mdRefs)).toEqual({
       onlyInSwift: [],
       onlyInMarkdown: [],
     });
@@ -146,6 +157,17 @@ describe('BS 7671 Schedule of Inspections — iOS ↔ server sync', () => {
 });
 
 describe('PLAN-3 — AFDD Section-5 row on server/Python legal-document surfaces', () => {
+  test('held iOS drift allowance is exactly 5.22 and does not hide another missing ref', () => {
+    expect(computeScheduleRefDrift(['5.21'], ['5.21', '5.22'])).toEqual({
+      onlyInSwift: [],
+      onlyInMarkdown: [],
+    });
+    expect(computeScheduleRefDrift(['5.21'], ['5.21', '5.22', '5.23'])).toEqual({
+      onlyInSwift: [],
+      onlyInMarkdown: ['5.23'],
+    });
+  });
+
   test('5.22 is appended after 5.21 in the server prompt and before Section 6', () => {
     const src = fssync.readFileSync(SERVER_SCHEDULE_PATH, 'utf8');
     const row = `- 5.22 — ${AFDD_ROW_TEXT}`;

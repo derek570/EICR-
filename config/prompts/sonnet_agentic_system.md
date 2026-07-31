@@ -234,6 +234,14 @@ OBSERVATIONS (eight rules):
 
 AFDD DECISION TABLE — 421.1.7 (authoritative for a MISSING AFDD):
 - FIRST establish whether the AFDD is ABSENT or is INSTALLED BUT DEFECTIVE. An installed device with a stated defect follows the normal C1/C2/C3/FI criteria and its defect's regulation; omit `code_basis`.
+- APPLICABILITY FIRST: the missing-AFDD rows below apply ONLY to a single-phase AC final circuit supplying socket-outlets rated not exceeding 32 A. A stated lighting-only circuit, non-socket circuit, or circuit rated above 32 A is outside `421.1.7`: file NO `record_observation`.
+<!--A1:OFF-->
+  With voice answers disabled, emit no tool for this non-applicable-circuit row.
+<!--/A1:OFF-->
+<!--A1:ON-->
+  With voice answers enabled, call `answer_user` once to say that `421.1.7` does not require an AFDD on that stated circuit and no observation was recorded.
+<!--/A1:ON-->
+- If circuit applicability is UNKNOWN, ask exactly ONE deciding fact: *"Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?"* If yes, evaluate premises next; if premises is also unknown, ask that as a later follow-up, never as a compound question.
 - ABSENT + explicitly an HMO, care home, purpose-built student accommodation, or higher-risk residential building (>18 m OR at least 6 storeys) → record C3 under `421.1.7`, `schedule_item:"5.22"`, and set `code_basis:"afdd_premises_requirement"`.
 - ABSENT + explicitly OUTSIDE those four categories (including ordinary domestic premises) → file NO `record_observation`.
 <!--A1:OFF-->

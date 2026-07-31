@@ -380,6 +380,7 @@ describe('EICRExtractionSession', () => {
       // First call: buffers, returns empty
       const r1 = await session.extractFromUtterance('Zs is nought point three five');
       expect(r1.extracted_readings).toEqual([]);
+      expect(r1.turn_id).toMatch(/^legacy-/);
       expect(session.utteranceBuffer).toHaveLength(1);
       expect(mockCreate).not.toHaveBeenCalled();
     });
@@ -460,13 +461,14 @@ describe('EICRExtractionSession', () => {
       });
 
       session.start(null);
-      await session.extractFromUtterance('R2 is 0.12 on circuit 2');
+      const placeholder = await session.extractFromUtterance('R2 is 0.12 on circuit 2');
       expect(mockCreate).not.toHaveBeenCalled();
 
       // Flush the partial batch
       const result = await session.flushUtteranceBuffer();
       expect(mockCreate).toHaveBeenCalledTimes(1);
       expect(result.extracted_readings).toHaveLength(1);
+      expect(result.turn_id).toBe(placeholder.turn_id);
       expect(session.utteranceBuffer).toHaveLength(0);
     });
 

@@ -473,12 +473,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // clause-locality, category-specific conflict) grew it further.
       // Measured 22891; cap 22991 leaves ~100-token headroom (measured +
       // ~100, P8 precedent).
-      // PLAN-3 (2026-07-31, feedback id 107): the four-row AFDD premises
-      // decision table plus deterministic mismatch/split recovery contract is
-      // shared by both renders. Measured 23767; cap 23867 retains the same
-      // ~100-token maintenance headroom.
+      // PLAN-3 (2026-07-31, feedback id 107): the AFDD circuit-applicability +
+      // premises decision table and deterministic mismatch/split recovery
+      // contract are shared by both renders. Review closure added the explicit
+      // <=32 A socket-final-circuit gate and sequential applicability/premises
+      // asks. Measured 23961; cap 24061 retains ~100-token headroom.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(23867);
+      expect(estimate).toBeLessThanOrEqual(24061);
     });
   });
 
@@ -1220,10 +1221,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (negation-safe anchors, adjacent-field precedence, clause-locality,
       // category-specific conflict) grew it further. Measured 17653; cap
       // 17753 leaves ~100-token headroom (measured + ~100, P8 precedent).
-      // PLAN-3 AFDD table + mismatch recovery: measured 18530; cap 18630
-      // leaves ~100 tokens while pinning the complete reviewed decision table.
+      // PLAN-3 AFDD table + mismatch recovery, including review-closure circuit
+      // applicability: measured 18712; cap 18812 leaves ~100 tokens while
+      // pinning the complete reviewed decision table.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(18630);
+      expect(estimate).toBeLessThanOrEqual(18812);
     });
   });
 
@@ -2182,9 +2184,18 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   });
 
   describe('Group 22 — 2026-07-31 PLAN-3 AFDD decision and citation integrity', () => {
-    test('the four-row AFDD decision table is present in BOTH flag renders', () => {
+    test('the circuit-applicability and premises AFDD table is present in BOTH flag renders', () => {
       for (const rendered of [renderedOn, renderedOff]) {
         expect(rendered).toContain('AFDD DECISION TABLE — 421.1.7');
+        expect(rendered).toContain(
+          'single-phase AC final circuit supplying socket-outlets rated not exceeding 32 A'
+        );
+        expect(rendered).toContain('A stated lighting-only circuit');
+        expect(rendered).toContain('circuit rated above 32 A');
+        expect(rendered).toContain(
+          'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?'
+        );
+        expect(rendered).toContain('ask that as a later follow-up, never as a compound question');
         expect(rendered).toMatch(/HMO.*care home.*purpose-built student accommodation/s);
         expect(rendered).toContain(
           'higher-risk residential building (>18 m OR at least 6 storeys)'

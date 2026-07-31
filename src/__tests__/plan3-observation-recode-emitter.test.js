@@ -71,6 +71,7 @@ describe('emitObservationRecode — exactly-once two-frame contract', () => {
       expect.objectContaining({
         field: null,
         circuit: null,
+        dedupe_token: 'obsrecode_turn-origin-1_obs-1_C1_C2',
         text: expect.stringMatching(/C1.*C2/),
       }),
     ]);
@@ -110,6 +111,9 @@ describe('emitObservationRecode — exactly-once two-frame contract', () => {
     const replay = wsThatThrowsOn();
     expect(emit({ ws: replay, state }).ok).toBe(true);
     expect(replay.sent.map((frame) => frame.type)).toEqual(['extraction']);
+    expect(replay.sent[0].result.confirmations[0].dedupe_token).toBe(
+      'obsrecode_turn-origin-1_obs-1_C1_C2'
+    );
   });
 
   test('a completed emission is terminal and cannot double-send after completion', () => {
@@ -162,6 +166,9 @@ describe('Rule-6 ledger and regulation preservation', () => {
       'observation_recode_confirmation',
     ]);
     expect(frames[2].body.result.turn_id).toBe('legacy-turn-7');
+    expect(frames[2].body.result.confirmations[0].dedupe_token).toBe(
+      'obsrecode_legacy-turn-7_obs-r6_C3_C2'
+    );
     expect(JSON.stringify(frames)).not.toContain('previous_code');
   });
 

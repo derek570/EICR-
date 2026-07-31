@@ -471,7 +471,18 @@ export function _test_buildObservationUpdatePayload(obs, refined, source) {
   return buildObservationUpdatePayload(obs, refined, source);
 }
 
-function minimalRecodeExtractionFrame(turnId, text) {
+function observationRecodeDedupeToken(turnId, update, previousCode) {
+  const tokenPart = (value, fallback) => encodeURIComponent(String(value ?? fallback));
+  return [
+    'obsrecode',
+    tokenPart(turnId, 'missing-turn'),
+    tokenPart(update?.observation_id, 'missing-observation'),
+    tokenPart(previousCode, 'missing-code'),
+    tokenPart(update?.code, 'missing-code'),
+  ].join('_');
+}
+
+function minimalRecodeExtractionFrame(turnId, text, dedupeToken) {
   const result = {
     extracted_readings: [],
     field_clears: [],
@@ -484,6 +495,7 @@ function minimalRecodeExtractionFrame(turnId, text) {
         expanded_text: text,
         field: null,
         circuit: null,
+        dedupe_token: dedupeToken,
         expects_ios_ack: false,
       },
     ],
@@ -539,7 +551,13 @@ export function emitObservationRecode({
     if (rendered) {
       frames.push({
         kind: 'observation_recode_confirmation',
-        json: JSON.stringify(minimalRecodeExtractionFrame(turnId, rendered)),
+        json: JSON.stringify(
+          minimalRecodeExtractionFrame(
+            turnId,
+            rendered,
+            observationRecodeDedupeToken(turnId, update, previousCode)
+          )
+        ),
       });
     }
   }
@@ -801,6 +819,9 @@ async function replayPendingRefinements(entry, sessionId) {
  * sees the code change (e.g. "make that a C2") without waiting for the web
  * search.
  */
+// No production caller since PLAN-3 consolidated every observation-update
+// egress onto buildResultFrameLedger. Retained only for the existing focused
+// `_test_dispatchObservationUpdates` canonical-wording seam.
 function dispatchObservationUpdates(
   ws,
   sessionId,
