@@ -34,7 +34,7 @@
  * telemetry computes `expected_dedupe_key` with the same algorithm and
  * reconciles byte-for-byte against client reality.
  *
- * ── Operation dedupe tokens (field-feedback-2026-07-14 §A1a) ──
+ * ── Operation dedupe tokens (field-feedback-2026-07-14 §A1a + PLAN-2C) ──
  * Five TEXT-OP confirmation fields collide under ALL of the positional
  * shapes above: every "Observation deleted" is circuit:null +
  * byte-identical text (the degenerate branch hashes identically), and a
@@ -49,22 +49,26 @@
  * confirmation can reach. Measured-value fields IGNORE the token — their
  * VALUE-AWARE `${field}_${circuit}_${djb2(text)}` single-circuit shape
  * (id-84) separates a correction from a duplicate on its own. Token absent
- * (pre-token backend) → the positional shapes, byte-unchanged.
+ * (pre-token backend) → the positional shapes, byte-unchanged. PLAN-2C adds
+ * `postcode`: two distinct same-text postcode amendments must not collide in
+ * the session-permanent field-key store.
  */
 
 /**
- * The exact synchronized allowlist of text-op confirmation fields that
- * carry a backend-emitted `dedupe_token`. Mirrors
- * `src/extraction/ios-dedupe-key.js` `DEDUPE_TOKEN_FIELDS` and iOS
- * `DeepgramRecordingViewModel.dedupeTokenFields`; the drift tests on all
- * three sides pin membership + per-op token composition.
+ * The exact synchronized WIRE/CLIENT allowlist of confirmation fields whose
+ * backend-emitted `dedupe_token` takes precedence. Mirrors
+ * `src/extraction/ios-dedupe-key.js`
+ * `WIRE_CLIENT_DEDUPE_TOKEN_FIELDS` and iOS
+ * `DeepgramRecordingViewModel.wireClientDedupeTokenFields`; the drift tests
+ * on all three sides pin membership + token composition.
  */
-export const DEDUPE_TOKEN_FIELDS: ReadonlySet<string> = new Set([
+export const WIRE_CLIENT_DEDUPE_TOKEN_FIELDS: ReadonlySet<string> = new Set([
   'circuit_op',
   'observation',
   'observation_deletion',
   'field_cleared',
   'circuit_designation',
+  'postcode',
 ]);
 
 // BigInt() constructor calls (not `5381n` literals) — the web tsconfig
@@ -97,8 +101,25 @@ export interface DedupeKeySource {
   circuit?: number | null;
   circuits?: number[] | null;
   board_id?: string | null;
-  /** §A1a backend-stamped operation token (five text-op fields only). */
+  /** Backend-stamped operation token (wire/client-enrolled fields only). */
   dedupe_token?: string | null;
+}
+
+/**
+ * PLAN-3 reconnect-required severity re-code confirmations deliberately keep
+ * `field:null`, but carry a server-owned operation token. They are not members
+ * of the ordinary field-token manifest: this prefix is a separate wire lane
+ * whose job is to let an owed reconnect suffix bypass stale-frame suppression
+ * and dedupe permanently by the originating operation.
+ */
+export const OBSERVATION_RECODE_DEDUPE_PREFIX = 'obsrecode_';
+
+export function isObservationRecodeConfirmation(conf: DedupeKeySource): boolean {
+  return (
+    conf.field == null &&
+    typeof conf.dedupe_token === 'string' &&
+    conf.dedupe_token.startsWith(OBSERVATION_RECODE_DEDUPE_PREFIX)
+  );
 }
 
 /**
@@ -108,11 +129,14 @@ export interface DedupeKeySource {
  */
 export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
   const field = conf.field ?? 'unknown';
+  if (isObservationRecodeConfirmation(conf)) {
+    return `observation_recode_${conf.dedupe_token}`;
+  }
   // §A1a — token precedence for the allowlisted text-op fields, in every
   // branch (single-circuit, multi-circuit AND degenerate). Empty-string
   // token treated as absent (mirrors the JS `opToken &&` falsiness in
   // ios-dedupe-key.js and the Swift `!token.isEmpty` guard).
-  if (conf.dedupe_token && conf.field && DEDUPE_TOKEN_FIELDS.has(conf.field)) {
+  if (conf.dedupe_token && conf.field && WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has(conf.field)) {
     return `${conf.field}_${conf.dedupe_token}`;
   }
   if (conf.circuit != null) {

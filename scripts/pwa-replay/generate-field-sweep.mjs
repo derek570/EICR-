@@ -95,6 +95,8 @@ const VALUE_OVERRIDES = {
   earth_electrode_resistance: '21',
   next_inspection_years: '5',
   estimated_age_of_installation: '25',
+  date_of_inspection: '31/07/2026',
+  date_of_previous_inspection: '31/07/2026',
   client_name: 'Michael Hayden',
   address: '19 Ivy Dean Road',
   postcode: 'RG30 4TN',

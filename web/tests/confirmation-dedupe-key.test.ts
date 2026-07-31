@@ -23,7 +23,8 @@ import { describe, it, expect } from 'vitest';
 import {
   buildConfirmationDedupeKey,
   djb2UInt64Decimal,
-  DEDUPE_TOKEN_FIELDS,
+  isObservationRecodeConfirmation,
+  WIRE_CLIENT_DEDUPE_TOKEN_FIELDS,
 } from '@/lib/recording/confirmation-dedupe-key';
 
 describe('djb2UInt64Decimal — parity vectors vs src/extraction/ios-dedupe-key.js', () => {
@@ -186,14 +187,15 @@ describe('dedupe outcomes (session-Set semantics, iOS parity)', () => {
 // (Tests/CertMateUnifiedTests/Recording/ConfirmationDedupeKeyTests.swift)
 // and the backend drift test (src/__tests__/ios-dedupe-key.test.js). A
 // change on any side must consciously update all three.
-describe('§A1a dedupe_token — allowlist + token-composition vectors (backend-mirror generated)', () => {
-  it('the allowlist is EXACTLY the five collision-prone text-op fields', () => {
-    expect([...DEDUPE_TOKEN_FIELDS].sort()).toEqual([
+describe('§A1a / PLAN-2C dedupe_token — allowlist + token-composition vectors', () => {
+  it('the WIRE/CLIENT allowlist is EXACTLY the five text ops plus postcode', () => {
+    expect([...WIRE_CLIENT_DEDUPE_TOKEN_FIELDS].sort()).toEqual([
       'circuit_designation',
       'circuit_op',
       'field_cleared',
       'observation',
       'observation_deletion',
+      'postcode',
     ]);
   });
 
@@ -329,6 +331,46 @@ describe('§A1a dedupe_token — allowlist + token-composition vectors (backend-
         },
       ])
     ).toEqual([0, 1]);
+  });
+
+  it('postcode section tokens separate distinct same-text operations while replay stays stable', () => {
+    const first = buildConfirmationDedupeKey({
+      text: 'Postcode RG1 5QA',
+      field: 'postcode',
+      dedupe_token: 'secfield_postcode_global_turn-1_ord0',
+    });
+    const replay = buildConfirmationDedupeKey({
+      text: 'Postcode RG1 5QA',
+      field: 'postcode',
+      dedupe_token: 'secfield_postcode_global_turn-1_ord0',
+    });
+    const laterOperation = buildConfirmationDedupeKey({
+      text: 'Postcode RG1 5QA',
+      field: 'postcode',
+      dedupe_token: 'secfield_postcode_global_turn-2_ord0',
+    });
+    expect(first).toBe('postcode_secfield_postcode_global_turn-1_ord0');
+    expect(replay).toBe(first);
+    expect(laterOperation).not.toBe(first);
+  });
+
+  it('field-null PLAN-3 recode tokens form a replay-stable operation key outside the field manifest', () => {
+    const confirmation = {
+      text: 'Observation re-coded C1 to C2',
+      field: null,
+      dedupe_token: 'obsrecode_turn-7_obs-1_C1_C2',
+    };
+    expect(isObservationRecodeConfirmation(confirmation)).toBe(true);
+    expect(buildConfirmationDedupeKey(confirmation)).toBe(
+      'observation_recode_obsrecode_turn-7_obs-1_C1_C2'
+    );
+    expect(
+      buildConfirmationDedupeKey({
+        ...confirmation,
+        dedupe_token: 'obsrecode_turn-8_obs-1_C1_C2',
+      })
+    ).not.toBe(buildConfirmationDedupeKey(confirmation));
+    expect(WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has('observation_recode')).toBe(false);
   });
 
   it('NEGATIVE: measured-value fields IGNORE the token — VALUE-AWARE key (id-84)', () => {

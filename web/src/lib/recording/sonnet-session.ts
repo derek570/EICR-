@@ -254,9 +254,9 @@ export interface Confirmation {
    *  (Loaded Barrel Phase 1.B; omitted on single-board sessions). Mirrors
    *  iOS `ValueConfirmation.boardId`. */
   board_id?: string | null;
-  /** field-feedback-2026-07-14 §A1a — backend-stamped operation identity
-   *  for the five text-op confirmation fields (circuit_op, observation,
-   *  observation_deletion, field_cleared, circuit_designation). When
+  /** Backend-stamped operation identity for the wire/client-enrolled
+   *  confirmation fields (circuit_op, observation, observation_deletion,
+   *  field_cleared, circuit_designation, postcode). When
    *  present AND the field is allowlisted, the dedupe key is
    *  `${field}_${dedupe_token}` (see confirmation-dedupe-key.ts). Absent
    *  on every measured-value confirmation. Mirrors iOS
@@ -303,6 +303,9 @@ export type BoardOp =
 /** Shape of the `result` payload on `type: 'extraction'` messages. Note
  *  the server renames `extracted_readings` → `readings` before sending. */
 export interface ExtractionResult {
+  /** Stable server-owned identity shared by every extraction frame belonging
+   *  to one turn, including delayed observation re-code confirmations. */
+  turn_id?: string;
   readings: ExtractedReading[];
   field_clears?: FieldClear[];
   circuit_updates?: CircuitUpdate[];
@@ -1746,6 +1749,7 @@ export class SonnetSession {
           const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
           const boardOps = Array.isArray(result.board_ops) ? result.board_ops : [];
           const normalised: ExtractionResult = {
+            turn_id: typeof result.turn_id === 'string' ? result.turn_id : undefined,
             readings,
             field_clears: fieldClears,
             circuit_updates: circuitUpdates,
@@ -1786,6 +1790,7 @@ export class SonnetSession {
             validation_alerts: validationAlerts.length,
             confirmations: confirmations.length,
             board_ops: boardOps.length,
+            has_turn_id: typeof normalised.turn_id === 'string',
             extraction_failed: !!normalised.extraction_failed,
             hasErrorMessage: typeof normalised.error_message === 'string',
             circuit_update_shapes: circuitUpdateShapes,
