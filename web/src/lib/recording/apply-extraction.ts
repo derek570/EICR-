@@ -30,7 +30,11 @@ import type {
 import type { ScheduleOutcome } from '@/lib/constants/inspection-schedule';
 import { EIC_SCHEDULE, EICR_SCHEDULE } from '@/lib/constants/inspection-schedule';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
-import { resolveCanonicalMainBoardId, type MainBoardCandidate } from '@/lib/boards/canonical-main';
+import {
+  BACKEND_DEFAULT_MAIN_BOARD_ID,
+  resolveCanonicalMainBoardId,
+  type MainBoardCandidate,
+} from '@/lib/boards/canonical-main';
 import {
   applyDefaultsToCircuit,
   clampImpedance,
@@ -328,6 +332,19 @@ const BOARD_SCOPED_READING_FIELDS: ReadonlySet<string> = new Set([
   'zs_at_db',
   'ipf_at_db',
 ]);
+
+/**
+ * Board-attribution view shared by the section preflight and boards[] mirror.
+ * The backend synthesises id `main` when a legacy flat job has no boards[];
+ * PLAN-2D stamps that identity onto board-scoped readings. Materialising the
+ * same record here lets both client legs resolve the stamp atomically while
+ * every other unknown id remains fail-closed.
+ */
+function boardRoutingView(job: JobDetail): Record<string, unknown>[] {
+  const boards = (job.boards as Record<string, unknown>[] | undefined) ?? [];
+  if (boards.length > 0) return boards;
+  return [{ id: BACKEND_DEFAULT_MAIN_BOARD_ID, board_type: 'main' }];
+}
 
 const MIRROR_TO_BOARDS0: ReadonlyArray<{
   section: Section;
@@ -790,7 +807,7 @@ function planBoardReadingRoutes(
   readings: ExtractedReading[]
 ): Map<ExtractedReading, BoardReadingPlan> {
   const plans = new Map<ExtractedReading, BoardReadingPlan>();
-  const boards = (job.boards as Record<string, unknown>[] | undefined) ?? [];
+  const boards = boardRoutingView(job);
   const canonicalMainId = resolveCanonicalMainBoardId(boards as MainBoardCandidate[]);
 
   for (const reading of readings) {
@@ -814,12 +831,6 @@ function planBoardReadingRoutes(
 
     let scopedTo = reading.board_id;
     if (scopedTo == null || scopedTo === '') {
-      if (boardScoped && boards.length === 0 && !replacesCleared) {
-        // Legacy flat web jobs have no boards[] evidence yet. Leave ordinary
-        // writes unplanned so the established mirror path can synthesise the
-        // sole main board; there is no second board to misattribute it to.
-        continue;
-      }
       if (boardScoped && boards.length > 1) {
         // PLAN-2D: a per-board field on a multi-board job is never guessed.
         plans.set(reading, {
@@ -2662,10 +2673,9 @@ function diffCircuitKeys(
  *     `boards.length > 1` AND the reading is targetable (in
  *     MIRROR_BOARD_KEYS), skip and log: ambiguous default routing on
  *     a multi-board job needs an explicit board_id, never a guess.
- *   - `boards.length === 0` AND fall-back path → synthesise
- *     `boards[0]` with `{id: UUID, board_type: 'main'}` and the
- *     qualifying mirror values. Matches the Board tab's `newBoard()`
- *     shape.
+ *   - legacy flat job with no `boards[]` → start from the backend's canonical
+ *     synthetic `{id: 'main', board_type: 'main'}` record. This is the exact
+ *     id PLAN-2D stamps on the wire, so explicit and fallback routing agree.
  *
  * Per-reading priority guard: never overwrites a value already typed
  * into the matching board record under the same key.
@@ -2679,7 +2689,7 @@ function mirrorReadingsToBoards(
   readings: ExtractedReading[],
   boardPlans: Map<ExtractedReading, BoardReadingPlan>
 ): Record<string, unknown>[] | null {
-  const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
+  const existingBoards = boardRoutingView(job).slice();
   // Index existing boards by id for O(1) lookup. Skip entries without
   // an id (shouldn't happen but be defensive).
   const indexById = new Map<string, number>();
@@ -2691,10 +2701,6 @@ function mirrorReadingsToBoards(
   // Resolved per-board updates accumulator. Keyed by board index so
   // multiple readings on the same board coalesce into one patch.
   const updatesByIndex = new Map<number, Record<string, unknown>>();
-  // Tracks whether we've already synthesised a default board[0] so a
-  // second fall-back reading lands on the same synthesised record.
-  let syntheticDefaultIdx: number | null = null;
-
   for (const reading of readings) {
     if (reading.circuit !== 0 || !reading.field) continue;
     const mirror = MIRROR_TO_BOARDS0.find((m) => m.sectionKey === reading.field);
@@ -2771,18 +2777,7 @@ function mirrorReadingsToBoards(
         });
         continue;
       }
-      if (existingBoards.length === 0) {
-        // Synthesise boards[0] on first fall-back reading.
-        if (syntheticDefaultIdx == null) {
-          const id = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
-          existingBoards.push({ id, board_type: 'main' });
-          syntheticDefaultIdx = existingBoards.length - 1;
-          pipelineLog('apply_boards_mirror_synthesized_board0', { id });
-        }
-        targetIdx = syntheticDefaultIdx;
-      } else {
-        targetIdx = 0;
-      }
+      targetIdx = 0;
     }
 
     // Priority guard — read the live target board (including any
