@@ -123,6 +123,44 @@ Current models used by the backend processing pipeline:
 
 Live recording flows through the Stage 6 agentic extraction pipeline. `config/field_schema.json` is the single source of truth for every extractable field; the tool schemas (`src/extraction/stage6-tool-schemas.js`) generate `record_reading.field` / `record_board_reading.field` enums from it at module load.
 
+**Client-routing and structural rejection contract (PLAN-2D §3.6).** The live
+field schema is no longer trusted as proof that a client can apply a reading.
+`client-routable-reading-fields.js` commits the destination of every allowed
+wire field, while structural keys, the three deliberately unroutable
+sub-main keys, and correction-only aliases form the other three members of a
+complete pairwise-disjoint dispatcher partition. Corrections are validated
+against the same route manifest (`cpc_csa_mm2` → `cable_size_earth`;
+`max_zs`/`ocpd_max_zs` → `ocpd_max_zs_ohm`), and a final egress guard drops
+anything still off-manifest. Every non-strict write tool performs its raw
+field-membership check at the first dispatcher boundary, before scope,
+circuit, confidence, coercion, or range validation, and stages the same
+leak-safe covered refusal. Circuit writers retain their established
+empty-board-id normalisation; authoritative `record_board_reading` does not,
+so an injected empty id still fails `wrong_board` rather than silently
+retargeting the current board. The legacy `record_extraction` path applies the
+same contract before metrics, dedupe, question bookkeeping, or
+`updateStateSnapshot`; a later egress pass is idempotent defence in depth.
+If a malformed legacy result also contains valid sibling readings, the server
+regenerates exactly one trusted read-back per surviving slot and discards
+model-authored confirmations/questions/actions that could echo the rejected
+field or value. Because the raw tool input is captured before that boundary,
+any rejected turn also rebuilds its assistant-history entry from the sanitized
+result before `conversationHistory.push`; the forbidden field/value therefore
+cannot be replayed in the next sliding message window. Structural fields are
+refused before mutation:
+positive distribution-link intent is recoverable only through
+`mark_distribution_circuit`, whose same-turn success reconciles the notice;
+all hierarchy edits and legacy sub-main writes are terminal, with the latter
+directing the inspector to the Board tab. Board-attributed writes use their
+own write-scope map rather than the narrower clear-scope map, so every
+supported board field carries the server-resolved board independently of
+`board_clear_v1`. When a legacy flat job has no `boards[]`, both clients
+materialise the backend's same canonical `main` identity before route
+resolution; a stamped main-board reading therefore reaches the visible board
+and summary, while every other unknown explicit id remains fail-closed. The
+web router is deep-compared to the committed contract
+and Swift pins the byte-identical fixture digest.
+
 Sonnet's `ask_user` tool carries an OPTIONAL `pending_write` property. When the inspector says a value without enough context (e.g. "Number of points is 4" with no circuit), Sonnet attaches the buffered write to its ask. The server then:
 
 1. Holds the user's reply.

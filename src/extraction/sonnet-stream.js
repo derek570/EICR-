@@ -24,8 +24,7 @@ import {
 import { sonnetSessionStore } from './sonnet-session-store.js';
 import * as storage from '../storage.js';
 import logger from '../logger.js';
-import { FIELD_CORRECTIONS, applyFieldNameCorrection } from './field-name-corrections.js';
-import { KNOWN_FIELDS } from './known-fields.js';
+import { sanitizeReadingFieldContract } from './reading-field-contract-sanitizer.js';
 // Stage 5 — dialog-state filledSlots pre-flight filter. Extracted to its own
 // module so it can be unit-tested without loading storage.js. Docstring in
 // ./filled-slots-filter.js.
@@ -1116,30 +1115,12 @@ function normaliseWiringType(value) {
 }
 
 function validateAndCorrectFields(result, sessionId) {
-  if (!result.extracted_readings) return result;
-  for (const reading of result.extracted_readings) {
-    if (!reading.field) continue;
-    if (KNOWN_FIELDS.has(reading.field)) continue;
-    // Audit-2026-06-02 Phase 3 — delegate the canonical → legacy rewrite
-    // to the leaf helper (field-name-corrections.js) so the
-    // dialogue-engine emit path can apply the same logic via
-    // buildExtractionPayload without circularly importing sonnet-stream's
-    // WS handler graph. The helper is a no-op when no entry exists, so
-    // we can still inspect FIELD_CORRECTIONS to decide whether the
-    // unknown-field warn fires (the warn-branch only applies on the
-    // Sonnet emission path; dialogue engine emits names it itself
-    // produced and so doesn't need the same telemetry).
-    const hadCorrection = FIELD_CORRECTIONS[reading.field] !== undefined;
-    applyFieldNameCorrection(reading, sessionId, logger);
-    if (!hadCorrection) {
-      logger.warn('Unknown field name from Sonnet', {
-        sessionId,
-        field: reading.field,
-        circuit: reading.circuit,
-        value: reading.value,
-      });
-    }
-  }
+  sanitizeReadingFieldContract(result, {
+    sessionId,
+    logger,
+    confirmationsEnabled: true,
+  });
+  if (!Array.isArray(result.extracted_readings)) return result;
   // Normalise wiring_type values from descriptions to letter codes
   for (const reading of result.extracted_readings) {
     if (reading.field === 'wiring_type' && reading.value) {

@@ -31,6 +31,7 @@ const runToolLoopSpy = jest.fn(async () => ({
   usage: {},
   terminal_reason: 'end_turn',
 }));
+let lastLoopPerTurnWrites = null;
 
 const validateSpy = jest.fn();
 const createSpeculatorSpy = jest.fn(() => ({
@@ -172,6 +173,8 @@ function baseOpts(overrides = {}) {
 /** Mock the loop to dispatch the given calls through the REAL dispatcher. */
 function loopDispatching(calls) {
   runToolLoopSpy.mockImplementation(async (opts) => {
+    lastLoopPerTurnWrites =
+      typeof opts.perTurnWritesRef === 'function' ? opts.perTurnWritesRef() : null;
     const toolCalls = [];
     for (let i = 0; i < calls.length; i += 1) {
       const c = calls[i];
@@ -255,6 +258,7 @@ beforeEach(() => {
   createAskDispatcherSpy.mockClear();
   runToolLoopSpy.mockClear();
   createSpeculatorSpy.mockClear();
+  lastLoopPerTurnWrites = null;
   registerEntry(false); // default DARK — the headline C06B9904 state
 });
 
@@ -784,6 +788,372 @@ describe('§5.10 — A1a DIRECT-denial terminals (attempt 6+) + shared-helper pa
     expect(selectMandatoryNoticeText(session2, 'board_clear_disabled', 'turn-77', 'Ze')).toBe(
       seen[0]
     );
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('PLAN-2D — structural and unroutable reading refusals', () => {
+  const boardReadingCall = (field, value, id) => ({
+    name: 'record_board_reading',
+    input: {
+      field,
+      value,
+      confidence: 0.95,
+      source_turn_id: 't-plan2d',
+    },
+    id,
+  });
+  const circuitReadingCall = (field, value, id) => ({
+    name: 'record_reading',
+    input: {
+      field,
+      circuit: 4,
+      value,
+      confidence: 0.95,
+      source_turn_id: 't-plan2d',
+    },
+    id,
+  });
+  const markDistributionCall = (id) => ({
+    name: 'mark_distribution_circuit',
+    input: { circuit: 4, feeds_board_id: 'sub-1', board_id: 'main' },
+    id,
+  });
+  const twoBoardSession = () =>
+    makeSession({
+      circuits: { 4: { designation: 'Sub-board feed' } },
+      boards: [
+        { id: 'main', designation: 'DB-1', board_type: 'main' },
+        { id: 'sub-1', designation: 'Garage CU', board_type: 'sub_distribution' },
+      ],
+      currentBoardId: 'main',
+    });
+
+  test.each(['sub_main_cable_material', 'sub_main_cable_csa', 'sub_main_cpc_csa'])(
+    '%s solo refusal names the Board tab and suppresses the generic retry prompt',
+    async (field) => {
+      const session = twoBoardSession();
+      loopDispatching([boardReadingCall(field, 'test-value', `toolu_${field}`)]);
+      const opts = baseOpts();
+      const result = await runShadowHarness(session, `Set ${field}.`, [], opts);
+
+      const speakers = audibleConfs(result);
+      expect(speakers).toHaveLength(1);
+      expect(speakers[0].text).toMatch(/Board tab/i);
+      assertNoGenericApologies(result, opts.logger);
+      expect(mandatoryRows(opts.logger)[0][1]).toMatchObject({
+        family: 'unroutable_board_reading',
+        covered_count: 1,
+      });
+    }
+  );
+
+  test('mixed sub-main rejection + surviving write speaks both outcomes', async () => {
+    const session = twoBoardSession();
+    loopDispatching([
+      boardReadingCall('sub_main_cable_material', 'SWA', 'toolu_unroutable'),
+      readingCall('toolu_success'),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(
+      session,
+      'Sub-main cable is SWA and circuit 4 Zs is 0.86.',
+      [],
+      opts
+    );
+
+    const speakers = audibleConfs(result);
+    expect(speakers).toHaveLength(2);
+    expect(speakers.some((c) => /Board tab/i.test(c.text))).toBe(true);
+    expect(speakers.some((c) => c.field === 'measured_zs_ohm')).toBe(true);
+    assertNoGenericApologies(result, opts.logger);
+  });
+
+  test('third same-slot unroutable attempt carries an ordinal instead of deduping to silence', async () => {
+    const session = twoBoardSession();
+    const heard = [];
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      loopDispatching([
+        boardReadingCall('sub_main_cable_csa', '16', `toolu_unroutable_${attempt}`),
+      ]);
+      const result = await runShadowHarness(session, 'Sub-main cable size is 16.', [], baseOpts());
+      heard.push(...audibleConfs(result).map((c) => c.text));
+    }
+    expect(heard).toHaveLength(3);
+    expect(new Set(heard).size).toBe(3);
+    expect(heard[2]).toMatch(/attempt 3/i);
+  });
+
+  test.each([
+    ['board', 'board_type', 'sub_distribution'],
+    ['board', 'parent_board_id', 'main'],
+    ['board', 'feed_circuit_ref', '4'],
+    ['board', 'sort_order', '2'],
+    ['circuit', 'circuit_ref', '5'],
+    ['circuit', 'feeds_board_id', 'sub-1'],
+    ['circuit', 'is_distribution_circuit', 'no'],
+  ])('%s structural member %s is terminal and never mutates', async (kind, field, value) => {
+    const session = twoBoardSession();
+    const before = structuredClone(session.stateSnapshot);
+    const call =
+      kind === 'board'
+        ? boardReadingCall(field, value, `toolu_terminal_${field}`)
+        : circuitReadingCall(field, value, `toolu_terminal_${field}`);
+    loopDispatching([call]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, `Set ${field}.`, [], opts);
+
+    const speakers = audibleConfs(result);
+    expect(speakers).toHaveLength(1);
+    expect(speakers[0].text).toMatch(/screen|reading/i);
+    expect(session.stateSnapshot).toEqual(before);
+    expect(result.extracted_readings ?? []).toEqual([]);
+    expect(lastLoopPerTurnWrites?.readings.size).toBe(0);
+    expect(lastLoopPerTurnWrites?.boardReadings.size).toBe(0);
+    expect(lastLoopPerTurnWrites?.readingJournal).toEqual([]);
+    expect(lastLoopPerTurnWrites?.boardReadingJournal).toEqual([]);
+    assertNoGenericApologies(result, opts.logger);
+    expect(mandatoryRows(opts.logger)[0][1]).toMatchObject({
+      family: 'unsupported_structural_reading',
+      covered_count: 1,
+    });
+  });
+
+  test('recoverable distribution-link reading names mark_distribution_circuit', async () => {
+    const session = twoBoardSession();
+    loopDispatching([
+      circuitReadingCall('is_distribution_circuit', 'yes', 'toolu_wrong_structure'),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'Circuit 4 feeds the sub-board.', [], opts);
+    const speakers = audibleConfs(result);
+    expect(speakers).toHaveLength(1);
+    expect(speakers[0].text).toContain('mark_distribution_circuit');
+    expect(session.stateSnapshot.circuits[4].is_distribution_circuit).toBeUndefined();
+    assertNoGenericApologies(result, opts.logger);
+  });
+
+  test.each(['reject-first', 'success-first'])(
+    'same-turn mark_distribution_circuit success reconciles the recoverable notice (%s)',
+    async (order) => {
+      const session = twoBoardSession();
+      const rejected = circuitReadingCall(
+        'is_distribution_circuit',
+        'yes',
+        `toolu_wrong_structure_${order}`
+      );
+      const success = markDistributionCall(`toolu_mark_${order}`);
+      loopDispatching(order === 'reject-first' ? [rejected, success] : [success, rejected]);
+      const opts = baseOpts();
+      const result = await runShadowHarness(session, 'Circuit 4 feeds the garage board.', [], opts);
+
+      const speakers = audibleConfs(result);
+      expect(speakers).toHaveLength(1);
+      expect(speakers[0].text).toBe('Circuit 4 marked as feeding the sub-board');
+      expect(speakers[0].text).not.toContain('mark_distribution_circuit');
+      expect(session.stateSnapshot.circuits[4]).toMatchObject({
+        is_distribution_circuit: 'yes',
+        feeds_board_id: 'sub-1',
+      });
+      expect(mandatoryRows(opts.logger)).toHaveLength(0);
+      assertNoGenericApologies(result, opts.logger);
+    }
+  );
+
+  test.each(['reject-first', 'success-first'])(
+    'feeds_board_id stays terminal beside mark_distribution_circuit success (%s)',
+    async (order) => {
+      const session = twoBoardSession();
+      const rejected = circuitReadingCall(
+        'feeds_board_id',
+        'sub-other',
+        `toolu_terminal_link_${order}`
+      );
+      const success = markDistributionCall(`toolu_mark_terminal_${order}`);
+      loopDispatching(order === 'reject-first' ? [rejected, success] : [success, rejected]);
+      const opts = baseOpts();
+      const result = await runShadowHarness(
+        session,
+        'Circuit 4 feeds another board; mark it as feeding the garage board.',
+        [],
+        opts
+      );
+
+      const speakers = audibleConfs(result);
+      expect(speakers).toHaveLength(2);
+      expect(speakers.some((c) => /screen|reading/i.test(c.text))).toBe(true);
+      expect(speakers.some((c) => c.text === 'Circuit 4 marked as feeding the sub-board')).toBe(
+        true
+      );
+      expect(session.stateSnapshot.circuits[4]).toMatchObject({
+        is_distribution_circuit: 'yes',
+        feeds_board_id: 'sub-1',
+      });
+      expect(mandatoryRows(opts.logger)[0][1]).toMatchObject({
+        family: 'unsupported_structural_reading',
+        covered_count: 1,
+      });
+      assertNoGenericApologies(result, opts.logger);
+    }
+  );
+
+  test('off-enum record_reading is rejected before mutation and speaks one leak-safe refusal', async () => {
+    const session = twoBoardSession();
+    const before = structuredClone(session.stateSnapshot);
+    const rawField = '__private_model_field__';
+    const rawValue = 'secret-model-value';
+    loopDispatching([
+      {
+        ...circuitReadingCall(rawField, rawValue, 'toolu_offschema_record'),
+        input: {
+          ...circuitReadingCall(rawField, rawValue, 'toolu_offschema_record').input,
+          circuit: 999,
+          confidence: 2,
+          board_id: 'sub-1',
+        },
+      },
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, `${rawField} is ${rawValue}.`, [], opts);
+
+    expect(session.stateSnapshot).toEqual(before);
+    expect(result.extracted_readings).toEqual([]);
+    expect(result.confirmations).toHaveLength(1);
+    expect(result.confirmations[0].text).toMatch(/field I recognise|field I know|known field/i);
+    const wire = JSON.stringify(result);
+    expect(wire).not.toContain(rawField);
+    expect(wire).not.toContain(rawValue);
+    expect(lastLoopPerTurnWrites?.readings.size).toBe(0);
+    expect(lastLoopPerTurnWrites?.boardReadings.size).toBe(0);
+    expect(lastLoopPerTurnWrites?.readingJournal).toEqual([]);
+    expect(lastLoopPerTurnWrites?.boardReadingJournal).toEqual([]);
+    expect(mandatoryRows(opts.logger)[0][1]).toMatchObject({
+      family: 'model_contract',
+      route: 'offschema_record',
+      covered_count: 1,
+    });
+    assertNoGenericApologies(result, opts.logger);
+  });
+
+  test.each([
+    [
+      'record_board_reading',
+      {
+        name: 'record_board_reading',
+        input: {
+          field: '__private_board_field__',
+          value: 'secret-board-value',
+          confidence: 2,
+          source_turn_id: 't-plan2d',
+          board_id: 'sub-1',
+        },
+        id: 'toolu_offschema_board',
+      },
+      '__private_board_field__',
+      'secret-board-value',
+    ],
+    [
+      'set_field_for_all_circuits',
+      {
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: '__private_bulk_field__',
+          value: 'secret-bulk-value',
+          confidence: 2,
+          source_turn_id: 't-plan2d',
+          scope: 'invalid_scope',
+          board_id: 'missing-board',
+        },
+        id: 'toolu_offschema_bulk',
+      },
+      '__private_bulk_field__',
+      'secret-bulk-value',
+    ],
+  ])(
+    '%s off-enum field outranks malformed companion arguments and stays leak-free',
+    async (_tool, call, rawField, rawValue) => {
+      const session = twoBoardSession();
+      const before = structuredClone(session.stateSnapshot);
+      loopDispatching([call]);
+      const opts = baseOpts();
+      const result = await runShadowHarness(session, `${rawField} is ${rawValue}.`, [], opts);
+
+      expect(session.stateSnapshot).toEqual(before);
+      expect(result.extracted_readings ?? []).toEqual([]);
+      expect(result.confirmations).toHaveLength(1);
+      expect(result.confirmations[0].text).toMatch(/field I recognise|field I know|known field/i);
+      const wire = JSON.stringify(result);
+      expect(wire).not.toContain(rawField);
+      expect(wire).not.toContain(rawValue);
+      expect(lastLoopPerTurnWrites?.readings.size).toBe(0);
+      expect(lastLoopPerTurnWrites?.boardReadings.size).toBe(0);
+      expect(lastLoopPerTurnWrites?.readingJournal).toEqual([]);
+      expect(lastLoopPerTurnWrites?.boardReadingJournal).toEqual([]);
+      expect(mandatoryRows(opts.logger)[0][1]).toMatchObject({
+        family: 'model_contract',
+        route: 'offschema_record',
+        covered_count: 1,
+      });
+      assertNoGenericApologies(result, opts.logger);
+    }
+  );
+
+  test('mixed off-schema calls coalesce leak-free beside one surviving read-back', async () => {
+    const session = twoBoardSession();
+    const rawField = '__private_mixed_field__';
+    const rawValue = 'secret-mixed-value';
+    loopDispatching([
+      {
+        ...circuitReadingCall(rawField, rawValue, 'toolu_mixed_circuit'),
+        input: {
+          ...circuitReadingCall(rawField, rawValue, 'toolu_mixed_circuit').input,
+          circuit: 999,
+          confidence: 2,
+        },
+      },
+      {
+        ...boardReadingCall(rawField, rawValue, 'toolu_mixed_board'),
+        input: {
+          ...boardReadingCall(rawField, rawValue, 'toolu_mixed_board').input,
+          confidence: 2,
+          board_id: 'sub-1',
+        },
+      },
+      {
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: rawField,
+          value: rawValue,
+          confidence: 2,
+          source_turn_id: 't-plan2d',
+          scope: 'invalid_scope',
+        },
+        id: 'toolu_mixed_bulk',
+      },
+      readingCall('toolu_mixed_success'),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'Mixed model output.', [], opts);
+
+    const speakers = audibleConfs(result);
+    expect(speakers).toHaveLength(2);
+    expect(speakers.some((c) => c.field === 'measured_zs_ohm')).toBe(true);
+    expect(speakers.some((c) => /field I recognise|field I know|known field/i.test(c.text))).toBe(
+      true
+    );
+    const wire = JSON.stringify(result);
+    expect(wire).not.toContain(rawField);
+    expect(wire).not.toContain(rawValue);
+    expect(lastLoopPerTurnWrites?.readings.size).toBe(1);
+    expect(lastLoopPerTurnWrites?.boardReadings.size).toBe(0);
+    expect(lastLoopPerTurnWrites?.readingJournal).toHaveLength(1);
+    expect(lastLoopPerTurnWrites?.boardReadingJournal).toEqual([]);
+    expect(mandatoryRows(opts.logger)[0][1]).toMatchObject({
+      family: 'model_contract',
+      route: 'offschema_record',
+      covered_count: 3,
+    });
+    assertNoGenericApologies(result, opts.logger);
   });
 });
 

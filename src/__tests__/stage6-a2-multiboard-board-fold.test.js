@@ -66,8 +66,37 @@ jest.unstable_mockModule('../extraction/loaded-barrel-speculator.js', () => ({
   createSpeculator: createSpeculatorSpy,
 }));
 
+// `sonnet-stream.js` imports storage at module load. The PLAN-2D tests below
+// need only its pure final-egress validator, so keep the existing harness
+// isolated from filesystem/S3 side effects.
+jest.unstable_mockModule('../storage.js', () => ({
+  getJobPrefix: jest.fn(() => ''),
+  uploadFile: jest.fn(async () => {}),
+  uploadBytes: jest.fn(async () => {}),
+  uploadText: jest.fn(async () => {}),
+  uploadJson: jest.fn(async () => {}),
+  downloadFile: jest.fn(async () => {}),
+  downloadBytes: jest.fn(async () => null),
+  downloadText: jest.fn(async () => null),
+  downloadJson: jest.fn(async () => null),
+  fileExists: jest.fn(async () => false),
+  deleteFile: jest.fn(async () => {}),
+  copyObject: jest.fn(async () => {}),
+  deletePrefix: jest.fn(async () => {}),
+  listFiles: jest.fn(async () => []),
+  listDirectories: jest.fn(async () => []),
+  listJobFolders: jest.fn(async () => []),
+  getFileUrl: jest.fn(async () => ''),
+  getJobFiles: jest.fn(async () => []),
+  uploadJobFile: jest.fn(async () => {}),
+  downloadJobFile: jest.fn(async () => null),
+  isUsingS3: jest.fn(() => false),
+  getBucketName: jest.fn(() => 'test-bucket'),
+}));
+
 const { runShadowHarness } = await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
+const { _test_validateAndCorrectFields } = await import('../extraction/sonnet-stream.js');
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -228,5 +257,46 @@ describe('item 7 — the collapse flag survives the circuit:0 compatibility fold
     // A spurious flag here would tell the client to overwrite on a turn that
     // cleared nothing — the inverse defect.
     expect(folded[0]).not.toHaveProperty('replaces_cleared');
+  });
+});
+
+describe('PLAN-2D — folded board correction keys reach their final client wire names', () => {
+  test.each([
+    ['earth_loop_impedance_ze', 'ze', '0.35'],
+    ['prospective_fault_current', 'pfc', '2.1'],
+  ])('%s folds raw, then final egress rewrites it to %s', async (rawField, wireField, value) => {
+    const session = makeSession();
+    driveToolCalls([
+      {
+        tool_call_id: `toolu_plan2d_${rawField}`,
+        name: 'record_board_reading',
+        input: {
+          field: rawField,
+          value,
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
+      },
+    ]);
+
+    const result = await runShadowHarness(
+      session,
+      `${rawField} is ${value}.`,
+      [],
+      baseOpts()
+    );
+
+    // The compatibility fold is deliberately raw. This is the exact seam
+    // where accidentally enrolling the raw correction key in KNOWN_FIELDS
+    // would disable the rewrite below.
+    expect(result.extracted_board_readings).toBeUndefined();
+    expect(result.extracted_readings).toEqual([
+      expect.objectContaining({ field: rawField, circuit: 0, value }),
+    ]);
+
+    _test_validateAndCorrectFields(result, 'plan2d-board-fold');
+    expect(result.extracted_readings).toEqual([
+      expect.objectContaining({ field: wireField, circuit: 0, value }),
+    ]);
   });
 });

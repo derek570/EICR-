@@ -355,9 +355,9 @@ describe('dispatchers against a sub-board target', () => {
         tool_call_id: 'tu_1',
         name: 'record_reading',
         input: {
-          field: 'earth_loop_impedance_ze',
+          field: 'wiring_type',
           circuit: 3,
-          value: '0.42',
+          value: 'A',
           confidence: 0.9,
           source_turn_id: 't1',
         },
@@ -369,7 +369,7 @@ describe('dispatchers against a sub-board target', () => {
     expect(session.stateSnapshot.circuits['sub-1::3']).toMatchObject({
       circuit: 3,
       board_id: 'sub-1',
-      earth_loop_impedance_ze: '0.42',
+      wiring_type: 'A',
     });
   });
 
@@ -387,7 +387,10 @@ describe('dispatchers against a sub-board target', () => {
         tool_call_id: 'tu_2',
         name: 'record_reading',
         input: {
-          field: 'earth_loop_impedance_ze',
+          // Use a genuine circuit field so this fixture reaches the
+          // composite-namespace existence guard under PLAN-2D's new
+          // authoritative field boundary.
+          field: 'measured_zs_ohm',
           circuit: 3,
           value: '0.42',
           confidence: 0.9,

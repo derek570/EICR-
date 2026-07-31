@@ -1,4 +1,4 @@
-> Last updated: 2026-02-18
+> Last updated: 2026-07-31
 > Related: [Architecture](architecture.md) | [iOS Pipeline](ios-pipeline.md) | [Deployment](deployment.md) | [File Structure](file-structure.md) | [Deployment History](deployment-history.md)
 > Hub: [../../CLAUDE.md](../../CLAUDE.md)
 
@@ -12,6 +12,52 @@
 2. The schema includes `ai_guidance` for each field telling the AI how to extract it
 3. Update the relevant table below to document the change
 4. The AI will automatically use the updated schema for extraction
+
+## Voice-reading route contract (PLAN-2D, 2026-07-31)
+
+`src/extraction/client-routable-reading-fields.js` is the authoritative
+server-to-client route manifest for every Stage-6 reading that may leave the
+backend. Its committed JSON mirror at
+`tests/fixtures/test-contracts/client-routable-reading-fields.json` is
+byte-identical to the Swift test fixture and deep-compared with the live web
+router. Each field names one destination: `circuit`, `board_info`,
+`supply_characteristics`, `installation_details`, `extent_and_type`, or
+`design_construction`.
+
+The dispatcher field universe must remain a complete, pairwise-disjoint
+partition of client-routable readings, deliberately unroutable legacy
+sub-main fields, structural/hierarchy fields, and correction-only aliases.
+`cpc_csa_mm2` corrects to `cable_size_earth`; `max_zs` and `ocpd_max_zs`
+correct to `ocpd_max_zs_ohm`. The three sub-main fields are rejected with a
+Board-tab notice, and structural fields never escape as ordinary readings.
+Only positive `is_distribution_circuit` intent on a source circuit is
+recoverable via `mark_distribution_circuit`; `feeds_board_id` and all other
+structural attempts are terminal. All three write tools check raw membership
+at their first dispatcher boundary before any other validation and stage one
+shared, covered, leak-safe refusal. Ordinary circuit writes first normalise an
+empty board scope to absent; authoritative board writes retain it so
+`record_board_reading` still rejects an injected empty id as `wrong_board`
+instead of silently retargeting the current board.
+The legacy extraction path sanitises before snapshot mutation; if a malformed
+turn also contains valid siblings, their model prose is replaced with exactly
+one server-built read-back per surviving slot, while untrusted questions,
+alerts, speech, and actions are removed. Rejected turns rebuild their stored
+assistant-history text from this sanitized result before it can enter a later
+message window. The later egress pass is idempotent.
+
+Board attribution is separate from clearing scope. The server stamps
+`board_id` on `manufacturer`, `name`, `location`, `phases`, `ze_at_db`, and
+`ipf_at_db`; the clients additionally retain the legacy `zs_at_db` board
+route. An explicit sub-board write updates only that board, while an unknown
+or ambiguous board fails closed. A legacy job with no `boards[]` materialises
+the backend-default `main` record in both clients, so the server's stamped
+identity is applied rather than mistaken for an orphan. Web translates legacy
+`design_comments` only
+into the rendered/PDF `comments` destination rather than retaining an invisible
+raw property. Web and iOS accept inspection intervals 1–10, and iOS preserves
+both true and false `supply_polarity_confirmed` values while rejecting unknown
+tokens. Web and iOS source is held for PLAN-4's
+wave-end deploy/TestFlight build rather than shipped independently.
 
 ## Voice clearing of board/supply/installation fields (`clear_board_reading` — plan A1a, 2026-07-27)
 
@@ -51,7 +97,7 @@ client advertises.
 | `premises_description` | select | Residential, Commercial, Industrial, Agricultural, Other | Usually "Residential" for houses |
 | `installation_records_available` | boolean | - | True if previous certificates/records available |
 | `evidence_of_additions_alterations` | boolean | - | True if unrecorded work found |
-| `next_inspection_years` | select | 1, 2, 3, 4, 5, 10 | Typically 5 years domestic, 3 for rented |
+| `next_inspection_years` | numeric stepper | Whole years 1–10 | Typically 5 years domestic, 3 for rented |
 | `extent` | text | - | What was inspected: "Whole installation", "Main CU only" |
 | `agreed_limitations` | text | - | What couldn't be accessed: "No loft access", "Floor boxes not lifted" |
 | `agreed_with` | text | - | Who agreed to limitations: "Mrs Smith", "The tenant" |

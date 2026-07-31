@@ -30,6 +30,7 @@ import {
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import { sanitizeReadingFieldContractWithReport } from './reading-field-contract-sanitizer.js';
 import logger from '../logger.js';
 
 // 2026-06-01 — single point of control for the ephemeral-cache TTL on
@@ -2660,6 +2661,26 @@ export class EICRExtractionSession {
       // existing sliding-window code (which treats assistant turns as text) keeps
       // working without needing to replay tool_use/tool_result pairs back to the API.
       assistantHistoryText = JSON.stringify(toolUseBlock.input);
+    }
+
+    // PLAN-2D: legacy record_extraction bypasses the live write dispatcher.
+    // Enforce the committed client-routing contract BEFORE metrics, question
+    // bookkeeping, dedupe and—critically—updateStateSnapshot. The later
+    // sonnet-stream egress call is an idempotent defence-in-depth pass, not
+    // the first boundary.
+    const { rejectedReadingCount } = sanitizeReadingFieldContractWithReport(result, {
+      sessionId: this.sessionId,
+      logger,
+      confirmationsEnabled: options.confirmationsEnabled === true,
+    });
+    // The tool input was captured above before the field-contract boundary.
+    // If that boundary rejected anything, retaining the raw JSON in assistant
+    // history would replay the forbidden field/value/question/action into the
+    // next sliding window and teach later turns that it had been accepted.
+    // Rebuild only rejected turns from the sanitized result; valid turns keep
+    // their established byte shape.
+    if (rejectedReadingCount > 0) {
+      assistantHistoryText = JSON.stringify(result);
     }
 
     // ALWAYS push to conversation history (even on extraction failure) to keep context in sync

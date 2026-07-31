@@ -180,7 +180,7 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
 
   test('Map insertion-order preservation: record-different-slot + correction leaves the other slot intact', async () => {
     // Guard against a refactor that swaps Map for an object or non-ordered
-    // structure: clearing measured_zs_ohm::1 must not touch amps::1.
+    // structure: clearing measured_zs_ohm::1 must not touch wiring_type::1.
     const session = makeSession();
     const logger = makeLogger();
     const perTurnWrites = createPerTurnWrites();
@@ -190,7 +190,13 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
       {
         tool_call_id: 'toolu_a',
         name: 'record_reading',
-        input: { field: 'amps', circuit: 1, value: '10', confidence: 1.0, source_turn_id: 't2' },
+        input: {
+          field: 'wiring_type',
+          circuit: 1,
+          value: 'A',
+          confidence: 1.0,
+          source_turn_id: 't2',
+        },
       },
       {}
     );
@@ -218,18 +224,18 @@ describe('Stage 6 Phase 2 — STT-09 same-turn correction', () => {
     );
 
     expect(perTurnWrites.readings.size).toBe(1);
-    expect(perTurnWrites.readings.has(encodeReadingKey('amps', 1))).toBe(true);
+    expect(perTurnWrites.readings.has(encodeReadingKey('wiring_type', 1))).toBe(true);
     expect(perTurnWrites.readings.has(encodeReadingKey('measured_zs_ohm', 1))).toBe(false);
     expect(perTurnWrites.cleared).toHaveLength(1);
 
     const bundled = bundleToolCallsIntoResult(perTurnWrites, { questions: [] });
     expect(bundled.extracted_readings).toHaveLength(1);
     expect(bundled.extracted_readings[0]).toMatchObject({
-      field: 'amps',
+      field: 'wiring_type',
       // Codex Phase-2 review MAJOR #2 fix: bundler now round-trips integer
       // circuit_refs back to Number (was a string side-effect of the Map key).
       circuit: 1,
-      value: '10',
+      value: 'A',
       source: 'tool_call',
     });
     expect(bundled.cleared_readings).toEqual([

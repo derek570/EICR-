@@ -111,6 +111,7 @@ import { classifyBoardClear } from './stage6-dispatchers-board.js';
 // arbitrates (and can drop) it later.
 import {
   stageMandatoryNotice,
+  stageOffschemaRecordRefusal,
   spokenBoardOrdinal,
   stagePartialFailureNotice,
   resolvePartialFailureFieldLabel,
@@ -121,6 +122,10 @@ import {
   CLEAR_READING_FIELD_ENUM,
 } from './stage6-tool-schemas.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
+import {
+  classifyStructuralReading,
+  STRUCTURAL_READING_FIELDS,
+} from './client-routable-reading-fields.js';
 
 // Field schema is loaded once at module init (same pattern as
 // stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
@@ -129,6 +134,8 @@ import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 // blast radius is every circuit at once.
 const fieldSchemaRequire = createRequire(import.meta.url);
 const FIELD_SCHEMA = fieldSchemaRequire('../../config/field_schema.json');
+const CIRCUIT_FIELD_SET = new Set(CIRCUIT_FIELD_ENUM);
+const CLEAR_READING_FIELD_SET = new Set(CLEAR_READING_FIELD_ENUM);
 
 /**
  * Format a dispatcher return envelope. `content` is JSON-stringified here so
@@ -137,6 +144,73 @@ const FIELD_SCHEMA = fieldSchemaRequire('../../config/field_schema.json');
  */
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
+}
+
+/**
+ * PLAN-2D — reject hierarchy/identity fields before snapshot mutation.
+ *
+ * Positive distribution-link intents are recoverable through
+ * mark_distribution_circuit and share one effective source-circuit slot so a
+ * same-turn successful tool call can reconcile this notice away. Every other
+ * structural reading is terminal: there is no in-place tool that writes the
+ * requested slot safely.
+ */
+function stageStructuralReadingRefusal(
+  call,
+  ctx,
+  input,
+  { bulk = false, forceTerminal = false } = {}
+) {
+  const disposition =
+    forceTerminal && STRUCTURAL_READING_FIELDS.has(input.field)
+      ? 'terminal'
+      : classifyStructuralReading(input.field, input.value);
+  if (disposition == null) return null;
+
+  const { session, perTurnWrites, turnId } = ctx;
+  const boardId = resolveEffectiveBoardId(session, input.board_id) ?? null;
+  const label = FIELD_SCHEMA.circuit_fields?.[input.field]?.label;
+  const boardOrdinal = spokenBoardOrdinal(session?.stateSnapshot, boardId);
+  const boardRenderable =
+    boardId == null || !Array.isArray(session?.stateSnapshot?.boards) || boardOrdinal != null;
+  const circuitRenderable = bulk || Number.isInteger(input.circuit);
+
+  if (
+    typeof label === 'string' &&
+    label.trim().length > 0 &&
+    boardRenderable &&
+    circuitRenderable &&
+    call.tool_call_id != null
+  ) {
+    const boardClause = boardOrdinal == null ? '' : ` on board ${boardOrdinal}`;
+    const targetClause = bulk ? ' for all circuits' : ` for circuit ${input.circuit}`;
+    const slotField =
+      disposition === 'recoverable_mark_distribution' ? 'distribution_link' : input.field;
+    const slotKey = rawCircuitSlot(slotField, bulk ? 'all' : input.circuit, boardId);
+    const route =
+      disposition === 'recoverable_mark_distribution'
+        ? 'mark_distribution_required'
+        : 'unsupported_structural_reading';
+    stageMandatoryNotice(perTurnWrites, session, {
+      family: route,
+      slotKey,
+      turnId,
+      friendly: `${label}${targetClause}${boardClause}`,
+      field: input.field,
+      boardId,
+      reason: route,
+      coveredToolCallIds: [call.tool_call_id],
+      route,
+      repeatKey: `${route}::${slotKey}`,
+    });
+  }
+  return {
+    code:
+      disposition === 'recoverable_mark_distribution'
+        ? 'use_mark_distribution_circuit'
+        : 'structural_field_not_recordable',
+    field: 'field',
+  };
 }
 
 // ---- P5 same-turn clear→write slot identity (2026-07-23) --------------------
@@ -279,7 +353,32 @@ export async function dispatchRecordReading(call, ctx) {
   // while `validateBoardScope` compared it to the current board id and rejected
   // the whole call as `wrong_board`. Doing this at the dispatcher boundary means
   // every seam below sees the one spelling they already agree on — absent.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input ?? {});
+
+  // PLAN-2D: non-strict tool sampling makes the dispatcher the first
+  // authoritative enum boundary. This check deliberately precedes coercion,
+  // clamps, capability gates and scope/circuit/confidence validation: no
+  // malformed companion argument may turn an off-schema record into an
+  // uncovered rejection.
+  if (typeof input.field !== 'string' || !CIRCUIT_FIELD_SET.has(input.field)) {
+    const fieldErr = { code: 'invalid_field', field: 'field' };
+    stageOffschemaRecordRefusal(perTurnWrites, session, {
+      turnId,
+      toolCallId: call.tool_call_id,
+    });
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: fieldErr,
+      input_summary: { field: null, circuit: input.circuit ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: fieldErr }, true);
+  }
   // readback-correction-optionb §6 — capability flag threaded via the
   // write dispatcher's extraCtx (stage6-shadow-harness.js sources it from
   // entry.voiceLatency.capabilities.hasLowConfReadbackV1). Absent/false on
@@ -422,6 +521,22 @@ export async function dispatchRecordReading(call, ctx) {
       });
     }
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  const structuralErr = stageStructuralReadingRefusal(call, ctx, input);
+  if (structuralErr) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: structuralErr,
+      input_summary: { field: input.field, circuit: input.circuit },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: structuralErr }, true);
   }
 
   // Bug 2 (2026-06-03 observation-correctness sprint): warn-only metric
@@ -655,8 +770,6 @@ export async function dispatchRecordReading(call, ctx) {
 const CANONICAL_BOARD_CLEARABLE = new Set(
   CLEAR_BOARD_READING_FIELD_ENUM.map((m) => FIELD_CORRECTIONS[m] ?? m)
 );
-const CIRCUIT_FIELD_SET = new Set(CIRCUIT_FIELD_ENUM);
-const CLEAR_READING_FIELD_SET = new Set(CLEAR_READING_FIELD_ENUM);
 
 /**
  * Plan B §3.2 — stage the dispatcher-authored structural refusal for a
@@ -1980,6 +2093,32 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // through untouched to the per-board fan-out below.
   const input = normaliseBoardScopeInput(call.input ?? {});
 
+  if (typeof input.field !== 'string' || !CIRCUIT_FIELD_SET.has(input.field)) {
+    const fieldErr = {
+      code:
+        typeof input.field === 'string' && input.field.length > 0
+          ? 'unknown_field'
+          : 'invalid_field',
+      field: 'field',
+    };
+    stageOffschemaRecordRefusal(perTurnWrites, session, {
+      turnId,
+      toolCallId: call.tool_call_id,
+    });
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'set_field_for_all_circuits',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: fieldErr,
+      input_summary: { field: null, scope: input.scope ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: fieldErr }, true);
+  }
+
   const err = validateSetFieldForAllCircuits(input);
   if (err) {
     logToolCall(logger, {
@@ -1994,6 +2133,28 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
+
+  // A bulk hierarchy write has no single in-place structural tool equivalent:
+  // even `is_distribution_circuit=yes` lacks the per-source target board that
+  // mark_distribution_circuit requires. Refuse the whole blast radius.
+  const structuralErr = stageStructuralReadingRefusal(call, ctx, input, {
+    bulk: true,
+    forceTerminal: true,
+  });
+  if (structuralErr) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'set_field_for_all_circuits',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: structuralErr,
+      input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: structuralErr }, true);
   }
 
   // P3 (2026-07-23, feedback id 86) — the bulk applier previously skipped BOTH
@@ -2267,11 +2428,7 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
           writable: true,
         });
       }
-      recordReadingWrite(
-        perTurnWrites,
-        encodeReadingKey(input.field, ref, boardId),
-        bulkMirror
-      );
+      recordReadingWrite(perTurnWrites, encodeReadingKey(input.field, ref, boardId), bulkMirror);
       applied.push({
         circuit: ref,
         field: input.field,

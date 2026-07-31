@@ -138,9 +138,9 @@ describe('Stage 6 Phase 2 — STT-03 multi-round integration', () => {
           id: 'toolu_2',
           name: 'record_reading',
           input: {
-            field: 'volts',
+            field: 'wiring_type',
             circuit: 1,
-            value: '230',
+            value: 'A',
             confidence: 1.0,
             source_turn_id: 't1',
           },
@@ -170,14 +170,14 @@ describe('Stage 6 Phase 2 — STT-03 multi-round integration', () => {
     // structurally identical. (Without it, tool's create::2 op causes a
     // circuit_ops_diff divergence.)
     const legacyResult = {
-      extracted_readings: [{ field: 'volts', circuit: 1, value: '230' }],
+      extracted_readings: [{ field: 'wiring_type', circuit: 1, value: 'A' }],
       observations: [{ id: 'legacy-uuid-1', code: 'C2', text: 'RCD type AC' }],
       circuit_updates: [{ op: 'create', circuit_ref: 2 }],
       questions: [],
     };
 
     const s = makeSession(streams, legacyResult, 'shadow');
-    const result = await runShadowHarness(s, 'voltage on sockets is two thirty', [], { logger });
+    const result = await runShadowHarness(s, 'socket wiring type is A', [], { logger });
 
     // 1. iOS byte-identical: LEGACY is returned.
     expect(result).toBe(legacyResult);
@@ -203,7 +203,7 @@ describe('Stage 6 Phase 2 — STT-03 multi-round integration', () => {
 
     // 5. Bundler output shape observed via tool_slots projection.
     //    (serialised via Object.fromEntries + spread arrays)
-    expect(payload.tool_slots.readings).toEqual({ 'volts::1': '230' });
+    expect(payload.tool_slots.readings).toEqual({ 'wiring_type::1': 'A' });
     expect(payload.tool_slots.observations).toEqual(['C2::RCD type AC']);
     expect(payload.tool_slots.circuit_ops).toEqual(['create::2']);
     expect(payload.tool_slots.cleared).toEqual([]);

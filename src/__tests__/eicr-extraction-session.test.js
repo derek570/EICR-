@@ -521,6 +521,67 @@ describe('EICRExtractionSession', () => {
       expect(session.turnCount).toBe(1);
     });
 
+    test('PLAN-2D sanitises legacy fields before state mutation and regenerates one safe sibling read-back', async () => {
+      const rawField = '__legacy_private_field__';
+      const rawValue = 'secret-legacy-value';
+      mockCreate.mockResolvedValue({
+        content: toolUseContent({
+          extracted_readings: [
+            { circuit: 1, field: 'zs', value: '0.42', confidence: 0.9 },
+            { circuit: 1, field: rawField, value: rawValue, confidence: 0.9 },
+          ],
+          field_clears: [],
+          circuit_updates: [],
+          observations: [],
+          validation_alerts: [{ field: rawField, message: `${rawValue} needs review` }],
+          questions_for_user: [
+            { field: rawField, circuit: 1, question: `Was ${rawValue} correct?` },
+          ],
+          confirmations: [{ field: null, circuit: null, text: `Saved ${rawField} as ${rawValue}` }],
+          spoken_response: `Saved ${rawField} as ${rawValue}`,
+          action: { type: 'set_field', field: rawField, value: rawValue },
+        }),
+        usage: { input_tokens: 20, output_tokens: 10 },
+        stop_reason: 'tool_use',
+      });
+
+      session.start({
+        circuits: [{ ref: '1', designation: 'Kitchen sockets' }],
+      });
+      await session.extractFromUtterance(
+        'Kitchen sockets Zs is 0.42 plus malformed model output',
+        [],
+        { confirmationsEnabled: true }
+      );
+      const result = await session.flushUtteranceBuffer();
+
+      expect(result.extracted_readings).toEqual([
+        expect.objectContaining({ circuit: 1, field: 'zs', value: '0.42' }),
+      ]);
+      expect(session.stateSnapshot.circuits[1].measured_zs_ohm).toBe('0.42');
+      expect(session.stateSnapshot.circuits[1]).not.toHaveProperty(rawField);
+      expect(result.confirmations).toHaveLength(1);
+      expect(result.confirmations[0]).toMatchObject({
+        field: 'zs',
+        circuit: 1,
+        value: '0.42',
+      });
+      expect(result.confirmations[0].text).toContain('0.42');
+      expect(result.questions_for_user).toEqual([]);
+      expect(result.validation_alerts).toEqual([]);
+      expect(result.action).toBeNull();
+      expect(result.spoken_response).toMatch(/didn't match a field I recognise/i);
+      const outward = JSON.stringify(result);
+      expect(outward).not.toContain(rawField);
+      expect(outward).not.toContain(rawValue);
+      const storedHistory = JSON.stringify(session.conversationHistory);
+      expect(storedHistory).not.toContain(rawField);
+      expect(storedHistory).not.toContain(rawValue);
+      const nextMessageWindow = JSON.stringify(session.buildMessageWindow());
+      expect(nextMessageWindow).not.toContain(rawField);
+      expect(nextMessageWindow).not.toContain(rawValue);
+    });
+
     test('should handle empty tool_use input gracefully', async () => {
       mockCreate.mockResolvedValue({
         content: toolUseContent({}),

@@ -60,7 +60,7 @@
  * CONFIRMATION_FRIENDLY_NAMES, board ORDINALS — never a model-controlled
  * string). The `model_contract` routes render NO label at all and key their
  * repeat state on server-owned constants (`model_contract::unknown_tool`,
- * `model_contract::offschema_clear`), never the hallucinated tool name or
+ * `model_contract::offschema_record`, `model_contract::offschema_clear`), never the hallucinated tool name or
  * the off-schema field string.
  *
  * THIRD REGIME — PARTIAL-FAILURE notices (plan 2A, 2026-07-30, feedback id
@@ -208,10 +208,33 @@ export const B_STAGED_POOLS = Object.freeze({
     (f) =>
       `${capitaliseFirst(f)} is still recorded — the clear didn't route correctly here; it's logged.`,
   ]),
+  mark_distribution_required: Object.freeze([
+    (f) =>
+      `${capitaliseFirst(f)} wasn't saved as a reading — use mark_distribution_circuit for that link.`,
+    (f) =>
+      `That distribution link for ${f} needs the mark_distribution_circuit action, so the reading wasn't saved.`,
+    (f) =>
+      `I didn't write ${f} as a normal reading — mark_distribution_circuit is the supported route.`,
+  ]),
+  unsupported_structural_reading: Object.freeze([
+    (f) => `${capitaliseFirst(f)} can't be changed through a normal reading — edit it on screen.`,
+    (f) => `That structural field for ${f} isn't voice-editable here — update it on screen.`,
+    (f) => `I can't safely write ${f} as a reading — make that structural change on screen.`,
+  ]),
+  unroutable_board_reading: Object.freeze([
+    (f) => `${capitaliseFirst(f)} needs to be entered on the Board tab for now.`,
+    (f) => `Voice can't route ${f} safely yet — enter it on the Board tab for now.`,
+    (f) => `I didn't save ${f}; please put it in on the Board tab for now.`,
+  ]),
   unknown_tool: Object.freeze([
     () => `I hit an internal snag with that one — it's logged.`,
     () => `Something went wrong on my side with that request — it's been logged.`,
     () => `That ran into an internal problem here — it's logged for review.`,
+  ]),
+  offschema_record: Object.freeze([
+    () => `That reading didn't match a field I recognise — it's logged.`,
+    () => `I couldn't match that reading to a field I know — it's been logged.`,
+    () => `That reading didn't line up with any known field — it's logged for review.`,
   ]),
   offschema_clear: Object.freeze([
     () => `That clear request didn't match a field I recognise — it's logged.`,
@@ -262,7 +285,15 @@ export const B_STAGED_TERMINALS = Object.freeze({
     `Still can't clear ${f} — that's attempt ${n}; it isn't voice-CLEARABLE in this build.`,
   wrong_tool_clear: (f, n) =>
     `${capitaliseFirst(f)} has NOT been cleared — attempt ${n} hit a routing snag, and it's logged.`,
+  mark_distribution_required: (f, n) =>
+    `${capitaliseFirst(f)} still needs mark_distribution_circuit — attempt ${n} wasn't saved as a reading.`,
+  unsupported_structural_reading: (f, n) =>
+    `${capitaliseFirst(f)} still can't be changed through a reading — attempt ${n}; use the screen.`,
+  unroutable_board_reading: (f, n) =>
+    `${capitaliseFirst(f)} still needs the Board tab — attempt ${n} wasn't saved by voice.`,
   unknown_tool: (f, n) => `That one hit the same internal snag again — attempt ${n} is logged.`,
+  offschema_record: (f, n) =>
+    `That reading keeps missing a field I recognise — attempt ${n} is logged.`,
   offschema_clear: (f, n) =>
     `That clear request keeps missing a field I recognise — attempt ${n} is logged.`,
   board_clear_capability_missing: (f, n) =>
@@ -470,6 +501,30 @@ export function stageUnknownToolRefusal(perTurnWrites, session, { turnId, toolCa
     coveredToolCallIds: [toolCallId],
     route: 'unknown_tool',
     repeatKey: 'model_contract::unknown_tool',
+  });
+}
+
+/**
+ * PLAN-2D leak-safe covered refusal for every write tool whose sampled field
+ * is outside its committed enum. Callers run this immediately after input
+ * normalisation, before scope/value/confidence validation, so malformed
+ * companion arguments cannot steal precedence and turn an off-schema write
+ * into a silent generic retry. Only server-owned constants enter the audible
+ * channel; the raw model field/value stay out of notices and wire payloads.
+ */
+export function stageOffschemaRecordRefusal(perTurnWrites, session, { turnId, toolCallId }) {
+  if (toolCallId == null) return;
+  stageMandatoryNotice(perTurnWrites, session, {
+    family: 'model_contract',
+    slotKey: 'offschema_record',
+    turnId,
+    friendly: null,
+    field: null,
+    boardId: null,
+    reason: 'offschema_record',
+    coveredToolCallIds: [toolCallId],
+    route: 'offschema_record',
+    repeatKey: 'model_contract::offschema_record',
   });
 }
 
