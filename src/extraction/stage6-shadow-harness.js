@@ -860,10 +860,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // outcome text CANNOT. So we capture POSITIVE emission at the SOURCE:
     // this Set holds the tool_call_id of every ask_user_started that actually
     // crossed the wire. onAskUserStarted is fired ONLY on a successful send
-    // by (a) the initial ask dispatcher (source:'initial'), (b) the pvr-*
-    // broker (source:'pvr'), and (c) the dialogue engine's single send choke
-    // point safeSend (source:'dialogue_script', via the ws-attached observer
-    // below). Best-effort OBSERVATION hook — it never alters registration,
+    // by (a) the initial ask dispatcher (source:'initial'), (b) registered
+    // brokers (`pvr-*` source:'pvr', `mdr-*` source:'multi_description'), and
+    // (c) the dialogue engine's single send choke point safeSend
+    // (source:'dialogue_script', via the ws-attached observer below).
+    // Best-effort OBSERVATION hook — it never alters registration,
     // questionEmitted, send classification, or the pending Promise.
     // generationId (minted in sonnet-stream, threaded via options) correlates
     // the emission/fallback/ios_send_attempt rows across the ship-gate join.
@@ -962,7 +963,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         });
       }
     };
-    const VALID_EMISSION_SOURCES = new Set(['initial', 'pvr', 'dialogue_script']);
+    const VALID_EMISSION_SOURCES = new Set([
+      'initial',
+      'pvr',
+      'multi_description',
+      'dialogue_script',
+    ]);
     const onAskUserStarted = ({ toolCallId, source } = {}) => {
       if (toolCallId == null) return;
       // Record emission evidence FIRST so a logger throw below cannot erase
@@ -1140,16 +1146,48 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // `perTurnWrites` accumulator itself: the ask dispatcher has never held
         // the accumulator, and handing it one just to reach a single array would
         // also hand it every other per-turn channel. Closed over THIS turn's
-        // accumulator here, and the board id is resolved with the write
-        // dispatchers' own formula so the drain's surviving-write subtraction can
-        // match an unscoped-write target against the winner it produced.
+        // accumulator here. Circuit writes use the circuit dispatcher's
+        // effective-board formula; board writes read the dispatcher-stamped
+        // winner identity below, so the drain compares each notice with the
+        // exact scope its sibling actually mutated.
         // The SHADOW composition site deliberately gets nothing — it supplies no
         // `autoResolveWrite`, so no auto-resolved write ever runs there.
-        stagePartialFailureNotice: (spec) =>
+        stagePartialFailureNotice: (spec) => {
+          const requestedEffectiveBoardId =
+            resolveEffectiveBoardId(liveSession, spec?.boardId) ?? null;
+          let noticeBoardId = requestedEffectiveBoardId;
+
+          // PLAN-2B §3.3 — a record_board_reading winner carries the
+          // scope-CONDITIONED EFFECTIVE_BOARD_SLOT identity chosen by the
+          // board dispatcher. In particular Ze/PFC are global and therefore
+          // stamped with boardId:null even when the ask originated on "main"
+          // or a selected sub-board. Re-resolving the raw ask id with the
+          // circuit formula would stage the sibling notice under the selected
+          // board and the drain would (correctly) suppress it as winnerless.
+          // Prefer the exact scoped winner, then the global winner; never
+          // borrow another concrete board's write for this notice.
+          if (spec?.boardReading === true) {
+            const canonicalField = canonicalPartialFailureFieldIdentity(spec?.field);
+            const boardWinnerSlots = projectBoardReadingWinners(perTurnWrites)
+              .map((winner) => winner?.value?.[EFFECTIVE_BOARD_SLOT] ?? null)
+              .filter(
+                (slot) =>
+                  slot != null &&
+                  canonicalPartialFailureFieldIdentity(slot.field) === canonicalField
+              );
+            const exactWinner = boardWinnerSlots.find(
+              (slot) => (slot.boardId ?? null) === requestedEffectiveBoardId
+            );
+            const globalWinner = boardWinnerSlots.find((slot) => slot.boardId == null);
+            const effectiveWinner = exactWinner ?? globalWinner ?? null;
+            if (effectiveWinner) noticeBoardId = effectiveWinner.boardId ?? null;
+          }
+
           stagePartialFailureNotice(perTurnWrites, {
             ...spec,
-            boardId: resolveEffectiveBoardId(liveSession, spec?.boardId) ?? null,
-          }),
+            boardId: noticeBoardId,
+          });
+        },
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -3154,11 +3192,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       const stagedPartial = Array.isArray(perTurnWrites?.partialFailureNotices)
         ? perTurnWrites.partialFailureNotices
         : [];
+      // PLAN-2B cancellation exception: the §3.3 description family is staged
+      // only after a sibling write has landed, and that mutation survives the
+      // reduced cancellation-finalization path. Let this one generation-local
+      // obligation drain on cancellation so the inspector never hears only the
+      // success and mistakes a partial application for a complete one. Every
+      // other Plan-2A family keeps the shipped cancelled-generation suppression.
+      const drainablePartial = cancelled
+        ? stagedPartial.filter((notice) => notice?.requiresSurvivingSibling === true)
+        : stagedPartial;
       if (
-        stagedPartial.length > 0 &&
+        drainablePartial.length > 0 &&
         options.confirmationsEnabled === true &&
-        options.chimeObserved === true &&
-        !cancelled
+        options.chimeObserved === true
       ) {
         // ── Drain rule (1) — allRejected ⇒ DROP EVERY partial notice.
         // A whole-turn rejection is plan B's / A3's to speak: it emits
@@ -3170,7 +3216,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             sessionId: session.sessionId,
             turnId,
             generationId,
-            aggregate_count: stagedPartial.length,
+            aggregate_count: drainablePartial.length,
           });
         } else {
           // ── Drain rule (2) — subtract any READING target that has a
@@ -3182,11 +3228,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // inspector back to re-dictate a correct reading. A false negative
           // here is worse than the silence this whole plan removes.
           //
-          // Survivor source is the A2 write JOURNAL (`projectReadingWinners`),
-          // NEVER a raw `readings`-Map scan: post-A2 the raw Map is
-          // board-AMBIGUOUS by construction (record_reading omits board_id in
-          // the common case), so a Map scan would subtract a garage write
-          // against a MAIN-board miss for the same ref.
+          // Survivor sources are the A2 write JOURNALS
+          // (`projectReadingWinners` + `projectBoardReadingWinners`), NEVER
+          // raw Map scans: post-A2 both raw Maps are board-AMBIGUOUS by
+          // construction, so a Map scan could claim a garage write as the
+          // sibling for a MAIN-board miss.
           //
           // Field identity is CANONICALISED on BOTH sides, so an
           // alias-spelled retry (`measured_zs_ohm` skipped, then `zs`
@@ -3203,7 +3249,45 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               }`
             );
           }
-          for (const aggregate of stagedPartial) {
+          const survivingBoardReadingScopes = new Set();
+          for (const w of projectBoardReadingWinners(perTurnWrites)) {
+            const effectiveSlot = w?.value?.[EFFECTIVE_BOARD_SLOT];
+            // Symbol-less legacy board writes have no safe board attribution.
+            // They cannot prove a sibling for a scoped partial-success claim.
+            if (!effectiveSlot || effectiveSlot.field == null) continue;
+            survivingBoardReadingScopes.add(
+              `${canonicalPartialFailureFieldIdentity(effectiveSlot.field)}::${
+                effectiveSlot.boardId ?? ''
+              }`
+            );
+          }
+          for (const aggregate of drainablePartial) {
+            // PLAN-2B §3.3 — an unmatched DESCRIPTION span is a partial
+            // failure only while a sibling write for the same field + board
+            // survives the turn. The dispatcher stages this family only after
+            // an immediate sibling success; this drain-time guard closes the
+            // later-clear/overwrite gap so a notice can never claim "part of
+            // that landed" after its last successful sibling disappeared.
+            if (aggregate?.requiresSurvivingSibling === true) {
+              const prefix = `${aggregate.field}::`;
+              const suffix = `::${aggregate.boardId ?? ''}`;
+              const hasSurvivingSibling =
+                [...survivingReadingSlots].some(
+                  (slot) => slot.startsWith(prefix) && slot.endsWith(suffix)
+                ) ||
+                survivingBoardReadingScopes.has(`${aggregate.field}::${aggregate.boardId ?? ''}`);
+              if (!hasSurvivingSibling) {
+                log.info?.('stage6.partial_failure_notice_suppressed_no_sibling', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  generationId,
+                  reason: aggregate?.reason ?? null,
+                  field: aggregate?.field ?? null,
+                  board: aggregate?.boardId ?? null,
+                });
+                continue;
+              }
+            }
             // A SCOPE target ("all circuits") can never acquire a per-circuit
             // write, so it always survives rule (2) and always speaks.
             const survivors = (Array.isArray(aggregate?.targets) ? aggregate.targets : []).filter(
@@ -3260,6 +3344,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               spoken_refs: survivors
                 .filter((t) => t?.kind === 'circuit')
                 .map((t) => t.ref)
+                .join(','),
+              spoken_ordinals: survivors
+                .filter((t) => t?.kind === 'ordinal')
+                .map((t) => t.ordinal)
                 .join(','),
               textPreview: partialText.slice(0, 80),
             });

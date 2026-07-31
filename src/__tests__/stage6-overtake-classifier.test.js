@@ -522,6 +522,74 @@ describe('classifyOvertake — STA-04c shape-aware no-regex branch', () => {
     expect(verdict.userText).toBe('circuit 2.');
   });
 
+  test('STA-04c-circuit-ref-imperative-wrapper: real classifier accepts "Add to circuit 5 please"', () => {
+    const verdict = classifyOvertake(
+      'Add to circuit 5 please',
+      [],
+      mockPending([
+        [
+          'ask_disambig',
+          {
+            contextField: 'ir_live_earth_mohm',
+            contextCircuit: null,
+            expectedAnswerShape: 'circuit_ref',
+          },
+        ],
+      ])
+    );
+    expect(verdict).toEqual({
+      kind: 'answers',
+      toolCallId: 'ask_disambig',
+      userText: 'Add to circuit 5 please',
+    });
+  });
+
+  test.each(['Use circuit 2', 'Go with circuit 2', 'The answer is circuit 2'])(
+    'STA-04c-circuit-ref bounded scalar lead-in "%s" remains an answer',
+    (userText) => {
+      const verdict = classifyOvertake(
+        userText,
+        [],
+        mockPending([
+          [
+            'ask_disambig',
+            {
+              contextField: 'ir_live_earth_mohm',
+              contextCircuit: null,
+              expectedAnswerShape: 'circuit_ref',
+            },
+          ],
+        ])
+      );
+      expect(verdict).toEqual({
+        kind: 'answers',
+        toolCallId: 'ask_disambig',
+        userText,
+      });
+    }
+  );
+
+  test.each(['Do not use circuit 2', 'Add 0.4 to circuit 2', 'Bedroom 2'])(
+    'STA-04c-circuit-ref unsafe scalar prose "%s" remains moved on',
+    (userText) => {
+      const verdict = classifyOvertake(
+        userText,
+        [],
+        mockPending([
+          [
+            'ask_disambig',
+            {
+              contextField: 'ir_live_earth_mohm',
+              contextCircuit: null,
+              expectedAnswerShape: 'circuit_ref',
+            },
+          ],
+        ])
+      );
+      expect(verdict).toEqual({ kind: 'user_moved_on' });
+    }
+  );
+
   test('STA-04c-circuit-ref-word: circuit_ref ask + "two" → answers', () => {
     const verdict = classifyOvertake(
       'two',
@@ -1036,5 +1104,256 @@ describe('classifyOvertake — §A4 pendingValue continuation + pvr-* value asks
       ])
     );
     expect(verdict.kind).toBe('user_moved_on');
+  });
+});
+
+describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
+  const mdrEntry = {
+    contextField: 'number_of_points',
+    contextCircuit: null,
+    expectedAnswerShape: 'free_text',
+    pendingWrite: {
+      tool: 'record_reading',
+      field: 'number_of_points',
+      value: '4',
+    },
+    multiDescriptionCircuits: [
+      { circuit_ref: 1, circuit_designation: 'Lighting' },
+      { circuit_ref: 2, circuit_designation: 'Lighting' },
+      { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+    ],
+  };
+
+  test('transcript-only multi-ref restatement answers the registered mdr ask', () => {
+    const verdict = classifyOvertake(
+      'circuits 1 and 2',
+      [],
+      mockPending([['mdr-multi-description-1', mdrEntry]])
+    );
+    expect(verdict).toEqual({
+      kind: 'answers',
+      toolCallId: 'mdr-multi-description-1',
+      userText: 'circuits 1 and 2',
+    });
+  });
+
+  test.each([
+    'Add to circuit 5 please',
+    'circuit 3 without the RCD',
+    'Use circuit 2',
+    'Choose circuit 2',
+    'Pick circuit 2',
+    'Go with circuit 2',
+    'The answer is circuit 2',
+    "I'd use circuit 2",
+    "I'll use circuit 2",
+  ])(
+    'bounded scalar form "%s" remains an answer to the registered mdr ask',
+    (userText) => {
+      const verdict = classifyOvertake(
+        userText,
+        [],
+        mockPending([
+          [
+            'mdr-bounded-scalar',
+            {
+              ...mdrEntry,
+              multiDescriptionCircuits: [
+                ...mdrEntry.multiDescriptionCircuits,
+                { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+                { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+              ],
+            },
+          ],
+        ])
+      );
+      expect(verdict).toEqual({
+        kind: 'answers',
+        toolCallId: 'mdr-bounded-scalar',
+        userText,
+      });
+    }
+  );
+
+  test.each([
+    ['Bedroom 2', { kind: 'user_moved_on' }],
+    [
+      'Do not use circuit 2',
+      {
+        kind: 'answers',
+        toolCallId: 'mdr-negative-control',
+        userText: 'Do not use circuit 2',
+      },
+    ],
+    ['Add 0.4 to circuit 2', { kind: 'user_moved_on', evidence: 'mdr_new_command' }],
+  ])('mdr scalar negative control "%s" stays fail-closed', (userText, expected) => {
+    const verdict = classifyOvertake(
+      userText,
+      [],
+      mockPending([
+        [
+          'mdr-negative-control',
+          {
+            ...mdrEntry,
+            multiDescriptionCircuits: [
+              { circuit_ref: 2, circuit_designation: 'Kitchen sockets' },
+            ],
+          },
+        ],
+      ])
+    );
+    expect(verdict).toEqual(expected);
+  });
+
+  test.each([
+    'Add to Bedroom 2',
+    'Add 0.4 to Bedroom 2',
+    'Add to Bedroom 2 and circuit 5',
+    '1 circuit add 0.4 to Bedroom 2',
+    'one circuit add to Bedroom 2',
+    'all circuits add 0.4 to Bedroom 2',
+    'Delete Ze',
+    'delete circuit 3',
+    'remove smoke alarm',
+  ])(
+    'real designation collision "%s" remains a moved-on command, not an mdr answer',
+    (userText) => {
+      const verdict = classifyOvertake(
+        userText,
+        [],
+        mockPending([
+          [
+            'mdr-command-collision',
+            {
+              ...mdrEntry,
+              multiDescriptionCircuits: [
+                { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+                { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+              ],
+            },
+          ],
+        ])
+      );
+      expect(verdict).toEqual({
+        kind: 'user_moved_on',
+        evidence: 'mdr_new_command',
+      });
+    }
+  );
+
+  test.each([
+    'delete',
+    'remove',
+    'clear',
+    'delete please',
+    'remove, please',
+    'clear please',
+    'delete right',
+    'clear yes',
+  ])(
+    'targetless short action "%s" does not claim the bounded mdr-new-command evidence lane',
+    (userText) => {
+      expect(
+        classifyOvertake(
+          userText,
+          [],
+          mockPending([
+            [
+              'mdr-targetless-action',
+              {
+                ...mdrEntry,
+                multiDescriptionCircuits: [
+                  { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+                  { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+                ],
+              },
+            ],
+          ])
+        )
+      ).toEqual({ kind: 'user_moved_on' });
+    }
+  );
+
+  test('a regex-complete board reading overtakes an mdr ask even when field and circuit match', () => {
+    const verdict = classifyOvertake(
+      'Ze is 0.22',
+      [
+        {
+          field: 'earth_loop_impedance_ze',
+          circuit: null,
+          value: '0.22',
+        },
+      ],
+      mockPending([
+        [
+          'mdr-board-reading-collision',
+          {
+            ...mdrEntry,
+            contextField: 'earth_loop_impedance_ze',
+            pendingWrite: {
+              tool: 'record_board_reading',
+              field: 'earth_loop_impedance_ze',
+              value: '0.18',
+            },
+          },
+        ],
+      ])
+    );
+    expect(verdict).toEqual({ kind: 'user_moved_on' });
+  });
+
+  test('a designation-only restatement is accepted only for the mdr namespace', () => {
+    expect(
+      classifyOvertake('upstairs lights', [], mockPending([['mdr-multi-description-2', mdrEntry]]))
+    ).toMatchObject({ kind: 'answers', toolCallId: 'mdr-multi-description-2' });
+
+    expect(
+      classifyOvertake('upstairs lights', [], mockPending([['toolu-ordinary-free-text', mdrEntry]]))
+    ).toEqual({ kind: 'user_moved_on' });
+  });
+
+  test('a structurally complete fresh reading overtakes mdr instead of being consumed', () => {
+    const verdict = classifyOvertake(
+      'Zs circuit 4 is 0.30',
+      [],
+      mockPending([['mdr-multi-description-3', mdrEntry]])
+    );
+    expect(verdict).toEqual({ kind: 'user_moved_on' });
+  });
+
+  test('conversational filler cannot consume and delete the registered mdr ask', () => {
+    expect(
+      classifyOvertake('hold on a second', [], mockPending([['mdr-multi-description-4', mdrEntry]]))
+    ).toEqual({ kind: 'user_moved_on' });
+    expect(
+      classifyOvertake('wait 2 minutes', [], mockPending([['mdr-multi-description-4', mdrEntry]]))
+    ).toEqual({ kind: 'user_moved_on' });
+  });
+
+  test('a target-bearing correction reaches the registered mdr resolver', () => {
+    expect(
+      classifyOvertake(
+        'circuit 1 and not circuit 2',
+        [],
+        mockPending([['mdr-multi-description-correction', mdrEntry]])
+      )
+    ).toEqual({
+      kind: 'answers',
+      toolCallId: 'mdr-multi-description-correction',
+      userText: 'circuit 1 and not circuit 2',
+    });
+  });
+
+  test('a syntactically valid absent ref reaches the resolver for a trusted no-match result', () => {
+    expect(
+      classifyOvertake(
+        'circuits 4 and 99',
+        [],
+        mockPending([['mdr-multi-description-5', mdrEntry]])
+      )
+    ).toMatchObject({
+      kind: 'answers',
+      toolCallId: 'mdr-multi-description-5',
+    });
   });
 });

@@ -115,9 +115,29 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 // passthrough; per-test mockImplementationOnce overrides for the specific
 // verdicts we're asserting on.
 const classifyOvertakeSpy = jest.fn(() => ({ kind: 'no_pending_asks' }));
+const classifyFreshCommandTextSpy = jest.fn((text) => {
+  const value = typeof text === 'string' ? text : '';
+  const wordCount = value.split(/\s+/).filter(Boolean).length;
+  const matchedImperative =
+    wordCount >= 4 &&
+    (/^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i.test(
+      value
+    ) ||
+      /^\s*(?:(?:all|both|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)(?:of\s+the\s+)?circuits?\s+(?:add|put)\b/i.test(
+        value
+      ));
+  const matchedBulkScope = /\bfor (?:all|every|each) (?:the )?circuits?\b/i.test(value);
+  return {
+    isFreshCommand: matchedImperative || matchedBulkScope,
+    matchedImperative,
+    matchedBulkScope,
+    wordCount,
+  };
+});
 
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: classifyOvertakeSpy,
+  classifyFreshCommandText: classifyFreshCommandTextSpy,
 }));
 
 // ── Dynamic import AFTER mocks ────────────────────────────────────────────────
@@ -1850,6 +1870,7 @@ describe('user_text sanitisation on ask_user_answered (Plan 03-10 Task 2)', () =
     expect(resolveSpy).toHaveBeenCalledWith('toolu_normal', {
       answered: true,
       user_text: 'clean answer',
+      utterance_id: 'u-clean',
     });
   });
 
@@ -1944,6 +1965,7 @@ describe('user_text sanitisation on ask_user_answered (Plan 03-10 Task 2)', () =
       answered: true,
       user_text: 'cleanvaluetext',
       sanitisation: { truncated: false, stripped: true },
+      utterance_id: 'u-ctrl',
     });
   });
 });

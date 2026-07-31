@@ -47,6 +47,7 @@ export function createPendingAsksRegistry() {
         pendingWrite,
         pendingValue,
         pendingValueEligible,
+        multiDescriptionCircuits,
         resolve,
         timer,
         askStartedAt,
@@ -88,6 +89,14 @@ export function createPendingAsksRegistry() {
         // (field resolved from the reply, NO captured value → brokered
         // VALUE ask) is reachable for ORIGINAL asks, not just pvr-* ones.
         pendingValueEligible: pendingValueEligible === true,
+        // PLAN-2B §3.3 — server-owned circuit census for the transcript
+        // classifier's conservative mdr answer-shape predicate. Direct
+        // ask_user_answered frames are already scoped by tool_call_id; the
+        // transcript channel needs this data to accept real refs/designations
+        // without consuming filler such as "hold on a second".
+        multiDescriptionCircuits: Array.isArray(multiDescriptionCircuits)
+          ? multiDescriptionCircuits.map((circuit) => ({ ...circuit }))
+          : null,
         askStartedAt,
       });
     },
@@ -167,8 +176,7 @@ export function createPendingAsksRegistry() {
       }
       asks.clear(); // 2 — make re-entrant reads see an empty registry
       const now = Date.now();
-      const patch =
-        outcomePatch && typeof outcomePatch === 'object' ? outcomePatch : {};
+      const patch = outcomePatch && typeof outcomePatch === 'object' ? outcomePatch : {};
       for (const entry of snapshot) {
         // 3 — wake awaiting dispatchers. A throw here must NOT leave the
         // registry inconsistent (it's already cleared), so we let the

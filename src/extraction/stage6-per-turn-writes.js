@@ -463,7 +463,12 @@ function projectWinners(journal, liveMap, slotKeyOf) {
   const live = [];
   for (const [slot, entry] of winnerBySlot) {
     if (!map.has(entry.rawKey)) continue;
-    live.push({ slot, order: firstSeenAt.get(slot) ?? 0, rawKey: entry.rawKey, value: entry.value });
+    live.push({
+      slot,
+      order: firstSeenAt.get(slot) ?? 0,
+      rawKey: entry.rawKey,
+      value: entry.value,
+    });
   }
   live.sort((a, b) => a.order - b.order);
 
@@ -657,7 +662,9 @@ export function createPerTurnWrites() {
     // per-target list retained, so a spoken line can name refs ("circuits 7
     // and 8") and two boards' same-numbered misses never merge.
     // Entries: { noticeKind: 'partial_failure', key, reason, field, fieldLabel,
-    //            boardId, producer, targets: [{kind:'circuit', ref}|{kind:'scope'}] }.
+    //            boardId, producer, requiresSurvivingSibling?,
+    //            targets: [{kind:'circuit', ref}|{kind:'scope'}|
+    //                      {kind:'ordinal', ordinal}] }.
     partialFailureNotices: [],
     // A1 agentic-voice (2026-07-23) — turn-local answer state
     // (PLAN Item 4 `turnAnswerState`). Fed by the answer_user AND

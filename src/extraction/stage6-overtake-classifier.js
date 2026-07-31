@@ -73,7 +73,7 @@
  * Requirement: STA-04.
  */
 
-import { extractCircuitRef } from './stage6-answer-resolver.js';
+import { extractCircuitRef, isMultiDescriptionAnswerText } from './stage6-answer-resolver.js';
 import { RECORDABLE_READING_FIELDS } from './recordable-reading-fields.js';
 // §A4 (field-feedback-2026-07-14, F8) — typed structurally-complete-reading
 // detector. Pure import; guards the pendingValue free-text acceptance below
@@ -126,12 +126,110 @@ function normaliseForYesNo(text) {
     .replace(/[\s"'`.,;:!?(){}[\]-]+$/, '');
 }
 
+/**
+ * Classify bounded fresh-command grammar shared by transcript and direct
+ * ask-answer channels. The caller still decides whether the pending ask class
+ * permits an overtake; this helper only prevents the two channels from
+ * disagreeing about the lexical evidence.
+ */
+export function classifyFreshCommandText(text) {
+  const value = typeof text === 'string' ? text : '';
+  const newCommandPrefix =
+    /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
+  // Short destructive commands are high-confidence only when the complete
+  // utterance contains both a bounded action and a bounded target. Keep this
+  // separate from the broad prefix lane so "delete" alone and short generic
+  // fragments cannot steal a registered ask, while real commands such as
+  // "Delete Ze", "delete circuit 3", and "remove smoke alarm" move on now.
+  const shortCircuitTarget =
+    /^\s*(?:delete|remove|clear)\s+(?:the\s+)?(?:circuit|cct)(?:\s+(?:number|no\.?))?\s+\d{1,3}\s*[.!?]*\s*$/i;
+  const shortGenericTarget =
+    /^\s*(?:delete|remove|clear)\s+(?:the\s+)?([a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*){0,2})\s*[.!?]*\s*$/i.exec(
+      value
+    );
+  const shortTargetFiller = new Set([
+    'please',
+    'thanks',
+    'thank',
+    'you',
+    'cheers',
+    'ok',
+    'okay',
+    'yes',
+    'yeah',
+    'yep',
+    'right',
+    'now',
+    'it',
+    'this',
+    'that',
+    'there',
+    'then',
+    'just',
+  ]);
+  const hasGenericTarget = (
+    shortGenericTarget?.[1]?.toLowerCase().match(/[a-z0-9_-]+/g) ?? []
+  ).some((token) => !shortTargetFiller.has(token));
+  const quantifiedCircuitCommandPrefix =
+    /^\s*(?:(?:all|both|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)(?:of\s+the\s+)?circuits?\s+(?:add|put)\b/i;
+  const bulkScope = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
+  const wordCount = value.split(/\s+/).filter(Boolean).length;
+  const matchedShortActionTarget = shortCircuitTarget.test(value) || hasGenericTarget;
+  const matchedImperative =
+    matchedShortActionTarget ||
+    (wordCount >= 4 &&
+      (newCommandPrefix.test(value) || quantifiedCircuitCommandPrefix.test(value)));
+  const matchedBulkScope = bulkScope.test(value);
+  return {
+    isFreshCommand: matchedImperative || matchedBulkScope,
+    matchedImperative,
+    matchedShortActionTarget,
+    matchedBulkScope,
+    wordCount,
+  };
+}
+
 export function classifyOvertake(newText, regexResults, pendingAsks) {
   if (!pendingAsks || pendingAsks.size === 0) {
     return { kind: 'no_pending_asks' };
   }
 
   const regex = Array.isArray(regexResults) ? regexResults : [];
+
+  // PLAN-2B mdr-* asks are asking only for circuit scope. A structurally
+  // complete reading is therefore always fresh work, even when its
+  // (field,circuit) happens to equal the stale pending_write carried by the
+  // grouped ask. Give that reading precedence before the generic exact-match
+  // loop can consume it as a description answer.
+  const hasMultiDescriptionAsk = [...pendingAsks.entries()].some(
+    ([id]) => typeof id === 'string' && id.startsWith('mdr-')
+  );
+  if (hasMultiDescriptionAsk) {
+    const isBoundedMultiDescriptionAnswer = [...pendingAsks.entries()].some(
+      ([id, entry]) =>
+        typeof id === 'string' &&
+        id.startsWith('mdr-') &&
+        entry?.expectedAnswerShape === 'free_text' &&
+        isMultiDescriptionAnswerText(newText, entry.multiDescriptionCircuits)
+    );
+    const freshCommand = classifyFreshCommandText(newText);
+    if (freshCommand.isFreshCommand && !isBoundedMultiDescriptionAnswer) {
+      return { kind: 'user_moved_on', evidence: 'mdr_new_command' };
+    }
+    const hasRecordableReading = regex.some(
+      (result) =>
+        result &&
+        typeof result.field === 'string' &&
+        RECORDABLE_READING_FIELDS.has(result.field) &&
+        result.value != null
+    );
+    const structuredReading = hasRecordableReading
+      ? null
+      : detectStructuredReading(typeof newText === 'string' ? newText : '');
+    if (hasRecordableReading || (structuredReading && structuredReading.complete === true)) {
+      return { kind: 'user_moved_on' };
+    }
+  }
 
   // 1. Exact (field, circuit) match wins — iterate regex hits in order, then
   //    pending asks in insertion order. First full match returns immediately.
@@ -256,6 +354,26 @@ export function classifyOvertake(newText, regexResults, pendingAsks) {
         entry.expectedAnswerShape === 'free_text' &&
         typeof newText === 'string' &&
         newText.trim().length > 0
+      ) {
+        return { kind: 'answers', toolCallId: id, userText: newText };
+      }
+    }
+
+    // PLAN-2B §3.3 — mdr-* is a bounded, server-owned clarification for one
+    // or more circuit descriptions. Prefix alone is NOT enough: accepting any
+    // non-empty prose resurrects the retired free_text bug where "hold on a
+    // second" consumes and deletes the pending ask. The broker stores a
+    // server-owned circuit census; accept only a valid ref/list, a known
+    // designation, or a bounded correction carrying one of those target
+    // anchors. The typed detector above still gives a structurally complete
+    // fresh reading overtake precedence.
+    for (const [id, entry] of pendingAsks.entries()) {
+      if (
+        typeof id === 'string' &&
+        id.startsWith('mdr-') &&
+        entry.expectedAnswerShape === 'free_text' &&
+        typeof newText === 'string' &&
+        isMultiDescriptionAnswerText(newText, entry.multiDescriptionCircuits)
       ) {
         return { kind: 'answers', toolCallId: id, userText: newText };
       }

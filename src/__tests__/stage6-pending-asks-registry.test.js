@@ -89,6 +89,21 @@ describe('createPendingAsksRegistry — register', () => {
     expect(() => reg.register('call_1', makeEntry())).toThrow(/duplicate_tool_call_id/);
     expect(firstResolve).not.toHaveBeenCalled();
   });
+
+  test('stores an isolated server-owned circuit census for mdr transcript attribution', () => {
+    const reg = createPendingAsksRegistry();
+    const circuits = [{ circuit_ref: 4, circuit_designation: 'Upstairs Lights' }];
+    reg.register('mdr-1', {
+      ...makeEntry(),
+      multiDescriptionCircuits: circuits,
+    });
+    circuits[0].circuit_designation = 'mutated outside registry';
+
+    const [, stored] = [...reg.entries()][0];
+    expect(stored.multiDescriptionCircuits).toEqual([
+      { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+    ]);
+  });
 });
 
 // -----------------------------------------------------------------------------

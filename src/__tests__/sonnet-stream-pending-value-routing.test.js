@@ -104,6 +104,8 @@ const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.
 
 // ── Helpers (pattern lifted from sonnet-stream-ask-routing.test.js) ──────────
 
+const openedWebSockets = [];
+
 function makeFakeWs() {
   const sent = [];
   const ws = {
@@ -131,6 +133,7 @@ function makeFakeWs() {
 
 function connect(wss, userId = 'user-1') {
   const ws = makeFakeWs();
+  openedWebSockets.push(ws);
   wss.emit('connection', ws, { headers: {} }, userId);
   return ws;
 }
@@ -182,6 +185,35 @@ function registerPendingValueAsk(entry, toolCallId, resolveFn) {
   });
 }
 
+function registerMultiDescriptionAsk(
+  entry,
+  toolCallId,
+  resolveFn,
+  multiDescriptionCircuits = [
+    { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
+    { circuit_ref: 2, circuit_designation: 'First floor lighting' },
+    { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+  ],
+  pendingWriteOverrides = {}
+) {
+  const pendingWrite = {
+    tool: 'record_reading',
+    field: 'number_of_points',
+    value: '4',
+    ...pendingWriteOverrides,
+  };
+  entry.pendingAsks.register(toolCallId, {
+    contextField: pendingWrite.field,
+    contextCircuit: null,
+    expectedAnswerShape: 'free_text',
+    pendingWrite,
+    multiDescriptionCircuits,
+    resolve: resolveFn,
+    timer: makeAskTimer(),
+    askStartedAt: Date.now(),
+  });
+}
+
 /** Flush the microtask/macrotask queue until the shadow harness fires (or give up). */
 async function flushUntilHarnessCalled(maxTicks = 50) {
   for (let i = 0; i < maxTicks && runShadowHarnessSpy.mock.calls.length === 0; i += 1) {
@@ -213,9 +245,14 @@ beforeEach(() => {
   wss = initSonnetStream(null, getKey, verifyToken);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Remove the session entry first so the production close handler clears its
+  // 30 s ping interval without arming the 5-minute reconnect timer.
   activeSessions.clear();
   sonnetSessionStore.clear();
+  while (openedWebSockets.length > 0) {
+    await openedWebSockets.pop()._emit('close');
+  }
   // Clear ask timers a test deliberately left pending (see makeAskTimer).
   while (askTimers.length > 0) clearTimeout(askTimers.pop());
   jest.useRealTimers();
@@ -416,7 +453,11 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
 
     // Never consumed as the answer: the ask resolves user_moved_on so the
     // tool loop unblocks (Sonnet re-asks or moves on).
-    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      utterance_id: 'u-pv-4',
+    });
     expect(resolvedPayload.user_text).toBeUndefined();
     expect(entry.pendingAsks.size).toBe(0);
 
@@ -476,7 +517,11 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
 
     // Stale ask resolves user_moved_on — the fresh reading is never burned
     // as the answer.
-    expect(resolvedPayload).toMatchObject({ answered: false, reason: 'user_moved_on' });
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      utterance_id: 'u-pv-5',
+    });
     expect(entry.pendingAsks.size).toBe(0);
     const rejectedRows = loggerModule.warn.mock.calls.filter(
       (c) => c[0] === 'stage6.ask_user_answered_rejected_new_command'
@@ -491,5 +536,767 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
     await flushUntilHarnessCalled();
     expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
     expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
+  });
+});
+
+describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
+  const nonAnswerSpeech = [
+    ['give-me-seconds', 'give me 2 seconds'],
+    ['hold-on-minutes', 'hold on for 2 minutes'],
+    ['just-seconds', 'just 2 secs'],
+    ['need-minutes', 'I need 2 minutes'],
+    ['wait-minutes', 'wait 2 minutes'],
+    ['negative-wait-minutes', 'not yet, give me 2 minutes'],
+    ['delete-please', 'delete please'],
+    ['remove-please', 'remove, please'],
+    ['clear-please', 'clear please'],
+    ['unowned-digit-prose', 'Bedroom 2'],
+  ];
+
+  test('a transcript-only designation restatement resolves mdr pre-queue', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-1');
+    entry.isExtracting = true;
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-1', (payload) => {
+      resolvedPayload = payload;
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'circuits 1 and 2',
+      utterance_id: 'u-mdr-1',
+      regexResults: [],
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: true,
+      user_text: 'circuits 1 and 2',
+      response_utterance_id: 'u-mdr-1',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+    expect(entry.pendingTranscripts).toHaveLength(0);
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    'Add to circuit 5 please',
+    'circuit 3 without the RCD',
+    'Use circuit 2',
+    'Choose circuit 2',
+    'Pick circuit 2',
+    'Go with circuit 2',
+    'The answer is circuit 2',
+    "I'd use circuit 2",
+    "I'll use circuit 2",
+  ])(
+    'a transcript-only bounded scalar form "%s" reaches the registered mdr resolver',
+    async (userText) => {
+      const slug = userText
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: `u-mdr-transcript-${slug}`,
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        response_utterance_id: `u-mdr-transcript-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    'Add to Bedroom 2',
+    'Add 0.4 to Bedroom 2',
+    'Add to Bedroom 2 and circuit 5',
+    'Add 0.4 to circuit 2',
+    '1 circuit add 0.4 to Bedroom 2',
+    'one circuit add to Bedroom 2',
+    'all circuits add 0.4 to Bedroom 2',
+    'Delete Ze',
+    'delete circuit 3',
+    'remove smoke alarm',
+  ])(
+    'a transcript-only unbounded command "%s" releases mdr and processes exactly once',
+    async (userText) => {
+      const slug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${slug}`;
+      runShadowHarnessSpy.mockClear();
+
+      let signalAskRegistered;
+      const askRegistered = new Promise((resolve) => {
+        signalAskRegistered = resolve;
+      });
+      runShadowHarnessSpy
+        .mockImplementationOnce(
+          async () =>
+            new Promise((releaseFirstTurn) => {
+              registerMultiDescriptionAsk(
+                entry,
+                toolCallId,
+                (payload) => {
+                  resolvedPayload = payload;
+                  releaseFirstTurn({
+                    extracted_readings: [],
+                    questions_for_user: [],
+                    observations: [],
+                    confirmations: [],
+                  });
+                },
+                [
+                  { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+                  { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+                ]
+              );
+              signalAskRegistered();
+            })
+        )
+        .mockImplementationOnce(async () => ({
+          extracted_readings: [],
+          questions_for_user: [],
+          observations: [],
+          confirmations: [],
+        }));
+
+      // The first turn remains genuinely in flight, suspended on the same
+      // registry entry a production ask_user dispatcher awaits.
+      const firstTurn = sendFrame(ws, {
+        type: 'transcript',
+        text: 'Zs circuit 3 is 0.3',
+        utterance_id: `u-mdr-original-${slug}`,
+        regexResults: [{ field: 'measured_zs_ohm', circuit: 3, value: 0.3 }],
+      });
+      await askRegistered;
+      expect(entry.isExtracting).toBe(true);
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: `u-mdr-transcript-${slug}`,
+        regexResults: [],
+      });
+
+      await firstTurn;
+      expect(resolvedPayload).toMatchObject({
+        answered: false,
+        reason: 'user_moved_on',
+        response_utterance_id: `u-mdr-transcript-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).toHaveBeenCalledTimes(2);
+      expect(runShadowHarnessSpy.mock.calls[0][1]).toContain('Zs circuit 3 is 0.3');
+      expect(runShadowHarnessSpy.mock.calls[1][1]).toContain(userText);
+    }
+  );
+
+  test.each([
+    'Add to Bedroom 2',
+    'Add 0.4 to Bedroom 2',
+    'Add to Bedroom 2 and circuit 5',
+    'Add 0.4 to circuit 2',
+    '1 circuit add 0.4 to Bedroom 2',
+    'one circuit add to Bedroom 2',
+    'all circuits add 0.4 to Bedroom 2',
+    'Delete Ze',
+    'delete circuit 3',
+    'remove smoke alarm',
+  ])(
+    'a direct-channel unbounded command "%s" overtakes and is reinjected instead of answering mdr',
+    async (userText) => {
+      const slug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        consumed_utterance_id: `u-mdr-direct-${slug}`,
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: false,
+        reason: 'user_moved_on',
+        utterance_id: `u-mdr-direct-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      await flushUntilHarnessCalled();
+      expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+      expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain(userText);
+    }
+  );
+
+  test.each(
+    ['Delete Ze', 'delete circuit 3'].flatMap((userText) =>
+      [
+        ['direct-first', true],
+        ['direct-first', false],
+        ['transcript-first', true],
+        ['transcript-first', false],
+      ].map(([order, hasUtteranceId]) => [userText, order, hasUtteranceId])
+    )
+  )(
+    '"%s" delivered %s with %s anchor reaches the harness exactly once',
+    async (userText, order, hasUtteranceId) => {
+      const anchorSlug = hasUtteranceId ? 'anchored' : 'legacy';
+      const commandSlug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
+      const sessionId = `sess-mdr-paired-${commandSlug}-${order}-${anchorSlug}`;
+      const toolCallId = `mdr-description-paired-${commandSlug}-${order}-${anchorSlug}`;
+      const utteranceId = `u-mdr-paired-${commandSlug}-${order}-${anchorSlug}`;
+      const { ws, entry } = await startSession(wss, sessionId);
+      let resolvedPayload = null;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      const directFrame = {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        ...(hasUtteranceId ? { consumed_utterance_id: utteranceId } : {}),
+      };
+      const transcriptFrame = {
+        type: 'transcript',
+        text: userText,
+        ...(hasUtteranceId ? { utterance_id: utteranceId } : {}),
+        regexResults: [],
+      };
+
+      if (order === 'direct-first') {
+        await sendFrame(ws, directFrame);
+        await sendFrame(ws, transcriptFrame);
+      } else {
+        await sendFrame(ws, transcriptFrame);
+        await sendFrame(ws, directFrame);
+      }
+
+      await flushUntilHarnessCalled();
+      expect(resolvedPayload).toMatchObject({
+        answered: false,
+        reason: expect.stringMatching(/user_moved_on|transcript_already_extracted/),
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+      expect(runShadowHarnessSpy.mock.calls[0][1]).toContain(userText);
+    }
+  );
+
+  test('a pre-queue exact-regex board reading overtakes mdr and stays queued as fresh work', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-board-reading-prequeue');
+    entry.isExtracting = true;
+    let resolvedPayload = null;
+    const toolCallId = 'mdr-description-board-reading-prequeue';
+    registerMultiDescriptionAsk(
+      entry,
+      toolCallId,
+      (payload) => {
+        resolvedPayload = payload;
+      },
+      [{ circuit_ref: 1, circuit_designation: 'Main board circuit' }],
+      {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+        value: '0.18',
+      }
+    );
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Ze is 0.22',
+      utterance_id: 'u-mdr-board-reading-prequeue',
+      regexResults: [
+        {
+          field: 'earth_loop_impedance_ze',
+          circuit: null,
+          value: '0.22',
+        },
+      ],
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      response_utterance_id: 'u-mdr-board-reading-prequeue',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+    expect(entry.pendingTranscripts).toEqual([
+      expect.objectContaining({ text: 'Ze is 0.22', utterance_id: 'u-mdr-board-reading-prequeue' }),
+    ]);
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
+  test('an in-flight exact-regex board reading rejects mdr and processes exactly once', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-board-reading-inflight');
+    let resolvedPayload = null;
+    const toolCallId = 'mdr-description-board-reading-inflight';
+    registerMultiDescriptionAsk(
+      entry,
+      toolCallId,
+      (payload) => {
+        resolvedPayload = payload;
+      },
+      [{ circuit_ref: 1, circuit_designation: 'Main board circuit' }],
+      {
+        tool: 'record_board_reading',
+        field: 'earth_loop_impedance_ze',
+        value: '0.18',
+      }
+    );
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Ze is 0.22',
+      utterance_id: 'u-mdr-board-reading-inflight',
+      regexResults: [
+        {
+          field: 'earth_loop_impedance_ze',
+          circuit: null,
+          value: '0.22',
+        },
+      ],
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      response_utterance_id: 'u-mdr-board-reading-inflight',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
+  });
+
+  test.each([
+    'Add to circuit 5 please',
+    'circuit 3 without the RCD',
+    'Use circuit 2',
+    'Choose circuit 2',
+    'Pick circuit 2',
+    'Go with circuit 2',
+    'The answer is circuit 2',
+    "I'd use circuit 2",
+    "I'll use circuit 2",
+  ])(
+    'a direct-channel bounded scalar form "%s" reaches the registered mdr resolver',
+    async (userText) => {
+      const slug = userText
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        consumed_utterance_id: `u-mdr-direct-${slug}`,
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        utterance_id: `u-mdr-direct-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    ['ambiguous designation', 'lighting'],
+    ['fuzzy designation', 'upstars lights'],
+  ])(
+    'a transcript-only %s restatement is consumed immediately for bounded mdr resolution',
+    async (slug, userText) => {
+      const sessionSlug = slug.replaceAll(' ', '-');
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${sessionSlug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${sessionSlug}`;
+      registerMultiDescriptionAsk(entry, toolCallId, (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: `u-mdr-transcript-${sessionSlug}`,
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        response_utterance_id: `u-mdr-transcript-${sessionSlug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    ['ambiguous designation', 'lighting'],
+    ['fuzzy designation', 'upstars lights'],
+  ])(
+    'a direct-channel %s restatement is consumed immediately for bounded mdr resolution',
+    async (slug, userText) => {
+      const sessionSlug = slug.replaceAll(' ', '-');
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${sessionSlug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${sessionSlug}`;
+      registerMultiDescriptionAsk(entry, toolCallId, (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        consumed_utterance_id: `u-mdr-direct-${sessionSlug}`,
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        utterance_id: `u-mdr-direct-${sessionSlug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    ['unique-canonical', [{ circuit_ref: 7, circuit_designation: 'Cooker & Hob' }]],
+    [
+      'ambiguous-canonical',
+      [
+        { circuit_ref: 7, circuit_designation: 'Cooker & Hob' },
+        { circuit_ref: 8, circuit_designation: 'Cooker and Hob' },
+      ],
+    ],
+  ])(
+    'a transcript-only %s separator variant reaches the registered mdr resolver',
+    async (slug, circuits) => {
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        circuits
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: 'I mean Cooker plus Hob',
+        utterance_id: `u-mdr-transcript-${slug}`,
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: 'I mean Cooker plus Hob',
+        response_utterance_id: `u-mdr-transcript-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each([
+    ['unique-canonical', [{ circuit_ref: 7, circuit_designation: 'Cooker & Hob' }]],
+    [
+      'ambiguous-canonical',
+      [
+        { circuit_ref: 7, circuit_designation: 'Cooker & Hob' },
+        { circuit_ref: 8, circuit_designation: 'Cooker and Hob' },
+      ],
+    ],
+  ])(
+    'a direct-channel %s separator variant reaches the registered mdr resolver',
+    async (slug, circuits) => {
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${slug}`;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        circuits
+      );
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: 'I mean Cooker plus Hob',
+        consumed_utterance_id: `u-mdr-direct-${slug}`,
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: 'I mean Cooker plus Hob',
+        utterance_id: `u-mdr-direct-${slug}`,
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(nonAnswerSpeech)(
+    'transcript non-answer (%s) neither consumes the mdr ask nor dispatches work',
+    async (slug, userText) => {
+      const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-transcript-${slug}`;
+      registerMultiDescriptionAsk(entry, toolCallId, (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: `u-mdr-transcript-${slug}`,
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toBeNull();
+      expect([...entry.pendingAsks.entries()].map(([id]) => id)).toEqual([toolCallId]);
+      expect(entry.pendingTranscripts).toEqual([expect.objectContaining({ text: userText })]);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(nonAnswerSpeech)(
+    'direct-channel non-answer (%s) preserves the registered mdr ask without dispatch',
+    async (slug, userText) => {
+      const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
+      let resolvedPayload = null;
+      const toolCallId = `mdr-description-direct-${slug}`;
+      registerMultiDescriptionAsk(entry, toolCallId, (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        consumed_utterance_id: `u-mdr-direct-${slug}`,
+      });
+
+      expect(resolvedPayload).toBeNull();
+      expect([...entry.pendingAsks.entries()].map(([id]) => id)).toEqual([toolCallId]);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test('a direct-channel fresh reading overtakes mdr and is reinjected', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-2');
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-2', (payload) => {
+      resolvedPayload = payload;
+    });
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'mdr-description-2',
+      user_text: 'Ze is 0.22',
+      consumed_utterance_id: 'u-mdr-2',
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: false,
+      reason: 'user_moved_on',
+      utterance_id: 'u-mdr-2',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+    await flushUntilHarnessCalled();
+    expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+    expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
+  });
+
+  test('a direct-channel multi-ref restatement resolves the registered mdr ask', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-3');
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-3', (payload) => {
+      resolvedPayload = payload;
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'mdr-description-3',
+      user_text: 'circuits 1 and 2',
+      consumed_utterance_id: 'u-mdr-3',
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: true,
+      user_text: 'circuits 1 and 2',
+      utterance_id: 'u-mdr-3',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
+  });
+
+  test.each(['circuit 1 and not circuit 2', 'Do not use circuit 2'])(
+    'transcript correction "%s" reaches the mdr resolver instead of waiting for timeout',
+    async (userText) => {
+      const { ws, entry } = await startSession(wss, 'sess-mdr-correction-transcript');
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      registerMultiDescriptionAsk(entry, 'mdr-description-correction-transcript', (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
+
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: 'u-mdr-correction-transcript',
+        regexResults: [],
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        response_utterance_id: 'u-mdr-correction-transcript',
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
+
+  test.each(['circuit 1 and not circuit 2', 'Do not use circuit 2'])(
+    'direct-channel correction "%s" reaches the mdr resolver instead of being ignored',
+    async (userText) => {
+      const { ws, entry } = await startSession(wss, 'sess-mdr-correction-direct');
+      let resolvedPayload = null;
+      registerMultiDescriptionAsk(entry, 'mdr-description-correction-direct', (payload) => {
+        resolvedPayload = payload;
+      });
+
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: 'mdr-description-correction-direct',
+        user_text: userText,
+        consumed_utterance_id: 'u-mdr-correction-direct',
+      });
+
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        utterance_id: 'u-mdr-correction-direct',
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+    }
+  );
+
+  test('a direct-channel cancellation reaches the mdr resolver instead of looking like filler', async () => {
+    const { ws, entry } = await startSession(wss, 'sess-mdr-cancel');
+    let resolvedPayload = null;
+    registerMultiDescriptionAsk(entry, 'mdr-description-cancel', (payload) => {
+      resolvedPayload = payload;
+    });
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'mdr-description-cancel',
+      user_text: 'skip',
+      consumed_utterance_id: 'u-mdr-cancel',
+    });
+
+    expect(resolvedPayload).toMatchObject({
+      answered: true,
+      user_text: 'skip',
+      utterance_id: 'u-mdr-cancel',
+    });
+    expect(entry.pendingAsks.size).toBe(0);
   });
 });

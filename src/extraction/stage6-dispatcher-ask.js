@@ -104,6 +104,7 @@ import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import {
   resolveCircuitAnswer,
+  resolveMultiDescriptionFollowup,
   resolveValueAnswer,
   resolveEnumAnswer,
   resolveBoardIdAnswer,
@@ -116,6 +117,12 @@ import {
   resolveFieldNameAnswer,
   detectStructuredReading,
 } from './stage6-pending-value.js';
+import {
+  getCircuitBucket,
+  isUnscopedBoardId,
+  listCircuitRefsInBoard,
+} from './stage6-multi-board-shape.js';
+import { resolveEffectiveBoardId } from './stage6-dispatchers-circuit.js';
 // Plan 2A (partial-failure notices, 2026-07-30) — the shared raw-then-canonical
 // label resolver. Pure and dependency-downstream-only; see its docstring for why
 // the lookup order is load-bearing.
@@ -129,6 +136,17 @@ const require = createRequire(import.meta.url);
 // rejection to Sonnet so the re-ask-once-then-move-on rule can fire
 // instead of looping the same prompt verbatim.
 const FIELD_SCHEMA = require('../../config/field_schema.json');
+// PLAN-2B §3.3 — record_board_reading follows the same deterministic
+// description resolver as record_reading, so a partial board-write result
+// needs a trusted server-owned label too. Keep the board-side namespaces
+// separate from circuit_fields: overlapping names are valid, while spreading
+// every schema family together would let an unrelated later namespace replace
+// the circuit label used by the long-shipped record_reading path.
+const BOARD_READING_PARTIAL_FAILURE_FIELDS = Object.freeze({
+  ...(FIELD_SCHEMA.board_fields ?? {}),
+  ...(FIELD_SCHEMA.supply_characteristics_fields ?? {}),
+  ...(FIELD_SCHEMA.installation_details_fields ?? {}),
+});
 
 /**
  * STA-03 — exported so test override and Phase 5 tuning have a single knob.
@@ -235,6 +253,16 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // staging silently no-ops, which is the pre-plan-2A behaviour exactly.
   const stagePartialFailureNotice =
     typeof opts?.stagePartialFailureNotice === 'function' ? opts.stagePartialFailureNotice : null;
+  // PLAN-2B lifecycle fence — one dispatcher instance belongs to one live
+  // model generation. When the inspector abandons the server-brokered mdr-*
+  // clarification, latch the rest of THIS generation so a model retry cannot
+  // immediately emit another stale buffered-write ask while the user's
+  // replacement command waits behind extraction. This is deliberately
+  // server-owned generation state, not an identity derived from model-authored
+  // tool/field/value/source_turn_id fields: the model may reformat the same
+  // value or mint a new source turn on retry. The latch dies with the
+  // dispatcher/generation, so a fresh utterance is never stranded.
+  let multiDescriptionGenerationAbandoned = false;
   return async function dispatchAskUser(call, ctx) {
     // F7 Item 3 — a cancellation can land while this ask sits in the gate
     // debounce delay (createAskGateWrapper fires the inner dispatcher on a
@@ -337,6 +365,37 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         content: JSON.stringify({
           answered: false,
           reason: 'prompt_leak_blocked',
+        }),
+        is_error: false,
+      };
+    }
+
+    if (input.pending_write != null && multiDescriptionGenerationAbandoned) {
+      logger?.info?.('stage6.multi_description_reask_suppressed', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        field: input.pending_write.field,
+        source_turn_id: input.pending_write.source_turn_id ?? null,
+      });
+      logAskUser(logger, {
+        sessionId,
+        turnId,
+        mode,
+        tool_call_id: toolCallId,
+        question: input.question,
+        reason: input.reason,
+        context_field: input.context_field,
+        context_circuit: input.context_circuit,
+        answer_outcome: 'user_moved_on',
+        wait_duration_ms: 0,
+      });
+      return {
+        tool_use_id: toolCallId,
+        content: JSON.stringify({
+          answered: false,
+          reason: 'user_moved_on',
+          followup_outcome: 'user_moved_on',
         }),
         is_error: false,
       };
@@ -844,6 +903,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // PLAN-C P4c — the pvr broker inside buildResolvedBody advances this ref
       // when a re-ask is answered by a later utterance (see resolvePendingValueFlow).
       responseEpochRef,
+      markMultiDescriptionMovedOn: () => {
+        multiDescriptionGenerationAbandoned = true;
+      },
     });
 
     // §D2 (field-feedback-2026-07-14) — echo the server-assigned
@@ -976,6 +1038,7 @@ async function buildResolvedBody({
   // resolves the effective board id there. Null in shadow mode / any caller
   // that doesn't supply it — staging then no-ops.
   stagePartialFailureNotice = null,
+  markMultiDescriptionMovedOn = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
@@ -1388,70 +1451,558 @@ async function buildResolvedBody({
     return { answered: true, untrusted_user_text: outcome.user_text };
   }
 
-  const availableCircuits = collectAvailableCircuits(session);
+  const requestedBoardId = !isUnscopedBoardId(pendingWrite.board_id)
+    ? pendingWrite.board_id
+    : !isUnscopedBoardId(contextBoardId)
+      ? contextBoardId
+      : null;
+  // Freeze the effective board before the first resolver pass. A brokered
+  // mdr-* question can remain open while select_board changes the session
+  // cursor; the circuit census, every generated circuit OR board write, their
+  // dedupe slots, and any notice must retain the board from which the
+  // designations/refs were resolved. A board reading is still collapsed to
+  // one logical mutation; freezing selects its target, not its fan-out shape.
+  const frozenCensusBoardId =
+    resolveEffectiveBoardId(session, requestedBoardId) ?? requestedBoardId ?? null;
+  const frozenWriteBoardId =
+    pendingWrite.tool === 'record_reading' || pendingWrite.tool === 'record_board_reading'
+      ? frozenCensusBoardId
+      : contextBoardId;
+  // Authority to retain the frozen board after an mdr-* wait exists only when
+  // that board was genuinely selected at census time. `context_board_id` and
+  // `pending_write.board_id` are model-authored inputs; an explicit sub-board
+  // id must not mint a bypass while the inspector is still on main.
+  const frozenWriteBoardWasSelected =
+    (pendingWrite.tool === 'record_reading' || pendingWrite.tool === 'record_board_reading') &&
+    frozenWriteBoardId != null &&
+    frozenWriteBoardId === resolveEffectiveBoardId(session, null);
+  const availableCircuits = collectAvailableCircuits(session, frozenCensusBoardId);
   const verdict = resolveCircuitAnswer({
     userText: outcome.user_text,
     pendingWrite,
     availableCircuits,
-    contextBoardId,
+    contextBoardId: frozenWriteBoardId,
   });
 
-  if (verdict.kind === 'auto_resolve') {
-    // Dispatch each resolved write through the normal write path. Failures
-    // here are swallowed (logged) and downgraded to escalation — we don't
-    // want a single bad dispatch to break the answer return.
+  if (verdict.kind === 'auto_resolve' || verdict.kind === 'partial_resolve') {
     const dispatched = [];
-    for (const write of verdict.writes) {
-      try {
-        // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
-        throwIfStage6Cancelled(signal);
-        const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
-        const ok = result?.ok !== false;
-        dispatched.push({
-          tool: write.tool,
-          field: write.field,
-          circuit: write.circuit,
-          value: write.value,
-          ok,
-        });
-        // Plan 2A channel 3, Codex diff-review cycle 1 (lens 3) — this is the
-        // THIRD auto-resolve loop in this file and it was the one the original
-        // wiring missed. Same silence class as the other two: the inspector
-        // dictated a value, ANSWERED the "which circuit?" ask, the resolved
-        // write then failed, and without this the turn says nothing about it.
-        if (!ok) {
+    const dispatchedSlots = new Set();
+    const successfulDispatchedSlots = new Set();
+    const dispatchSlotKey = (write) => {
+      const logicalCircuit =
+        write?.tool === 'record_board_reading' ? 'board' : (write?.circuit ?? '');
+      return `${write?.tool ?? ''}\u0000${write?.field ?? ''}\u0000${logicalCircuit}\u0000${
+        write?.board_id ?? frozenWriteBoardId ?? ''
+      }`;
+    };
+    const dispatchWrites = async (writes, producer) => {
+      const newlyDispatched = [];
+      for (const write of Array.isArray(writes) ? writes : []) {
+        const slotKey = dispatchSlotKey(write);
+        // A clarification may restate a circuit already resolved by the first
+        // pass. One logical slot must still dispatch/read back exactly once.
+        if (dispatchedSlots.has(slotKey)) continue;
+        dispatchedSlots.add(slotKey);
+        try {
+          // F7 Item 3 — do not auto-resolve a write on a cancelled generation.
+          throwIfStage6Cancelled(signal);
+          const result = await autoResolveWrite(write, {
+            sessionId,
+            turnId,
+            toolCallId,
+            // The designation census and generated write were frozen together
+            // before an mdr-* wait. Authorise the internal auto-resolve hook
+            // (and only that hook) to preserve this board if select_board
+            // changes the mutable cursor while the clarification is open.
+            frozenBoardScope:
+              frozenWriteBoardWasSelected &&
+              (write?.tool === 'record_reading' || write?.tool === 'record_board_reading') &&
+              write?.board_id != null &&
+              write.board_id === frozenWriteBoardId,
+          });
+          const ok = result?.ok !== false;
+          const dispatchRecord = {
+            tool: write.tool,
+            field: write.field,
+            circuit: write.circuit,
+            value: write.value,
+            ok,
+          };
+          dispatched.push(dispatchRecord);
+          newlyDispatched.push(dispatchRecord);
+          if (ok) successfulDispatchedSlots.add(slotKey);
+          // The write hook can commit successfully and cancel the generation
+          // before its promise settles. Never return a normal/full tool result
+          // from that cancelled generation; the caller decides whether any
+          // genuinely unfinished target warrants an interruption terminal.
+          throwIfStage6Cancelled(signal);
+          // Plan 2A channel 3 — a resolved write which fails is independently
+          // audible. PLAN-2B reuses the same path for writes resolved after a
+          // server-brokered multi-description clarification.
+          if (!ok) {
+            stageAskAutoResolveFailure(stagePartialFailureNotice, {
+              write,
+              result,
+              producer,
+            });
+          }
+        } catch (err) {
+          // Cancellation / ownership failure is control flow, not a failed
+          // certificate write. Never stage a lying `write_failed` notice or
+          // continue dispatching after it. The caller owns the terminal
+          // decision because only it can tell whether targets genuinely remain.
+          if (isStage6FatalControlFlowError(err)) {
+            throw err;
+          }
           stageAskAutoResolveFailure(stagePartialFailureNotice, {
             write,
-            result,
-            producer: 'ask_auto_resolve_circuit',
+            result: null,
+            producer: `${producer}_throw`,
           });
+          if (logger?.warn) {
+            logger.warn('stage6.ask_user_auto_resolve_dispatch_failed', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              field: write.field,
+              circuit: write.circuit,
+              producer,
+              error: err?.message || String(err),
+            });
+          }
+          const dispatchRecord = {
+            tool: write.tool,
+            field: write.field,
+            circuit: write.circuit,
+            value: write.value,
+            ok: false,
+            error: err?.message || String(err),
+          };
+          dispatched.push(dispatchRecord);
+          newlyDispatched.push(dispatchRecord);
         }
-      } catch (err) {
-        stageAskAutoResolveFailure(stagePartialFailureNotice, {
-          write,
-          result: null,
-          producer: 'ask_auto_resolve_circuit_throw',
+      }
+      return newlyDispatched;
+    };
+
+    try {
+      await dispatchWrites(verdict.writes, 'ask_auto_resolve_circuit');
+    } catch (err) {
+      const unfinishedInitialTarget =
+        (Array.isArray(verdict.writes) ? verdict.writes : []).some(
+          (write) => !successfulDispatchedSlots.has(dispatchSlotKey(write))
+        ) ||
+        (Array.isArray(verdict.unresolved) && verdict.unresolved.length > 0);
+      if (
+        isStage6FatalControlFlowError(err) &&
+        unfinishedInitialTarget &&
+        dispatched.some((record) => record.ok === true)
+      ) {
+        queuePendingValueApology(session, MULTI_DESCRIPTION_INTERRUPTED_APOLOGY, generationId);
+        logger?.info?.('stage6.multi_description_terminal_queued', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          reason: 'write_dispatch_interrupted_fatal',
         });
-        if (logger?.warn) {
-          logger.warn('stage6.ask_user_auto_resolve_dispatch_failed', {
+      }
+      throw err;
+    }
+
+    // PLAN-2B §3.3 — disposition:'ask' is executable, not metadata handed
+    // back to the model. All ambiguous/fuzzy/count-mismatch spans are grouped
+    // into ONE registered mdr-* restatement question. One bounded follow-up
+    // covers both single-ref and multi-ref answers without stacking an
+    // unbounded sequence of blocking asks under the extraction watchdog.
+    // Successful sibling writes have already gone through the normal path and
+    // retain their read-backs while this broker waits for the missing scope.
+    const unresolved = Array.isArray(verdict.unresolved) ? [...verdict.unresolved] : [];
+    const remainingUnresolved = [];
+    const noticeEntries = unresolved.filter((entry) => entry?.disposition === 'notice');
+    const askEntries = unresolved.filter((entry) => entry?.disposition === 'ask');
+    let followupCancelled = false;
+    let followupMovedOn = false;
+    let multiDescriptionTerminalQueued = false;
+    const queueMultiDescriptionTerminal = (text, reason) => {
+      if (multiDescriptionTerminalQueued) return;
+      try {
+        throwIfStage6Cancelled(signal);
+      } catch (err) {
+        // A cancellation can race the answered/no-progress reconciliation:
+        // the last selected write has landed, but the signal flips before the
+        // ordinary unresolved terminal is queued. Reduced finalization still
+        // owes both truths. Queue exactly one generation-owned interruption
+        // line, then preserve fatal control flow; with no landed sibling there
+        // is deliberately no normal cancelled fallback.
+        if (
+          isStage6FatalControlFlowError(err) &&
+          dispatched.some((record) => record.ok === true) &&
+          !multiDescriptionTerminalQueued
+        ) {
+          queuePendingValueApology(session, MULTI_DESCRIPTION_INTERRUPTED_APOLOGY, generationId);
+          multiDescriptionTerminalQueued = true;
+          logger?.info?.('stage6.multi_description_terminal_queued', {
             sessionId,
             turnId,
             tool_call_id: toolCallId,
-            field: write.field,
-            circuit: write.circuit,
-            error: err?.message || String(err),
+            reason: `${reason}_interrupted_fatal`,
           });
         }
-        dispatched.push({
-          tool: write.tool,
-          field: write.field,
-          circuit: write.circuit,
-          value: write.value,
-          ok: false,
-          error: err?.message || String(err),
-        });
+        throw err;
+      }
+      queuePendingValueApology(session, text, generationId);
+      multiDescriptionTerminalQueued = true;
+      logger?.info?.('stage6.multi_description_terminal_queued', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        reason,
+      });
+    };
+    const appendUniqueUnresolved = (target, entries) => {
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        const duplicate = target.some(
+          (existing) =>
+            existing?.identity === entry?.identity &&
+            existing?.span_kind === entry?.span_kind &&
+            (existing?.segment_ordinal ?? null) === (entry?.segment_ordinal ?? null) &&
+            (existing?.required_count ?? null) === (entry?.required_count ?? null) &&
+            existing?.disposition === entry?.disposition &&
+            existing?.reason === entry?.reason &&
+            existing?.scope?.field === entry?.scope?.field &&
+            (existing?.scope?.board_id ?? null) === (entry?.scope?.board_id ?? null)
+        );
+        if (!duplicate) target.push(entry);
+      }
+    };
+    if (askEntries.length > 0) {
+      if (!pendingAsks) {
+        remainingUnresolved.push(...askEntries);
+        queueMultiDescriptionTerminal(MULTI_DESCRIPTION_ASK_FAILED_APOLOGY, 'registry_unavailable');
+      } else {
+        let askOutcome;
+        try {
+          ({ outcome: askOutcome } = await brokerRegisteredAsk({
+            idPrefix: 'mdr',
+            emissionSource: 'multi_description',
+            pendingAsks,
+            ws,
+            logger,
+            sessionId,
+            turnId,
+            question: multiDescriptionQuestion(askEntries),
+            contextField: pendingWrite.field,
+            contextCircuit: null,
+            expectedAnswerShape: 'free_text',
+            pendingValue: null,
+            pendingWrite,
+            multiDescriptionCircuits: availableCircuits,
+            purpose: 'multi_description',
+            onAskUserStarted,
+            onAskAnswered,
+            onAskRegistered,
+            signal,
+            responseEpochRef,
+          }));
+          throwIfStage6Cancelled(signal);
+        } catch (err) {
+          // A successful sibling is an irreversible certificate mutation even
+          // when the generation is then cancelled or the broker crashes. Queue
+          // a CURRENT-generation terminal before rethrowing so reduced
+          // finalization speaks both truths: the landed read-back and the
+          // unresolved remainder. This FIFO is cancellation-safe; unlike a
+          // fresh ask/write it drains only on the generation that owns it.
+          if (dispatched.some((write) => write.ok === true)) {
+            queuePendingValueApology(session, MULTI_DESCRIPTION_INTERRUPTED_APOLOGY, generationId);
+            multiDescriptionTerminalQueued = true;
+            logger?.info?.('stage6.multi_description_terminal_queued', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              reason: isStage6FatalControlFlowError(err)
+                ? 'broker_interrupted_fatal'
+                : 'broker_interrupted_error',
+            });
+          }
+          throw err;
+        }
+        if (!askOutcome?.answered) {
+          if (askOutcome?.reason === 'user_moved_on') {
+            followupMovedOn = true;
+            markMultiDescriptionMovedOn?.(pendingWrite);
+            logger?.info?.('stage6.multi_description_followup_abandoned', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              field: pendingWrite.field,
+              source_turn_id: pendingWrite.source_turn_id ?? null,
+            });
+          } else {
+            remainingUnresolved.push(...askEntries);
+            if (
+              askOutcome?.reason === 'broker_register_failed' ||
+              askOutcome?.reason === 'broker_emit_failed'
+            ) {
+              queueMultiDescriptionTerminal(MULTI_DESCRIPTION_ASK_FAILED_APOLOGY, askOutcome.reason);
+            }
+          }
+        } else {
+          const followVerdict =
+            resolveMultiDescriptionFollowup({
+              userText: askOutcome.user_text,
+              pendingWrite,
+              availableCircuits,
+              contextBoardId: frozenWriteBoardId,
+            }) ??
+            resolveCircuitAnswer({
+              userText: askOutcome.user_text,
+              pendingWrite,
+              availableCircuits,
+              contextBoardId: frozenWriteBoardId,
+            });
+          if (followVerdict.kind === 'cancel') {
+            followupCancelled = true;
+          } else {
+            const knownRefs = new Set(
+              availableCircuits
+                .map((circuit) => {
+                  const ref =
+                    typeof circuit?.circuit_ref === 'number'
+                      ? circuit.circuit_ref
+                      : Number.parseInt(String(circuit?.circuit_ref), 10);
+                  return Number.isInteger(ref) ? ref : null;
+                })
+                .filter(Number.isInteger)
+            );
+            let followWrites = (
+              Array.isArray(followVerdict.writes) ? followVerdict.writes : []
+            ).filter(
+              (write) =>
+                write?.tool !== 'record_reading' ||
+                (Number.isInteger(write?.circuit) && knownRefs.has(write.circuit))
+            );
+            const selectedRefsBeforeDispatch =
+              pendingWrite.tool === 'record_board_reading'
+                ? [
+                    ...new Set(
+                      (Array.isArray(followVerdict.selected_circuit_refs)
+                        ? followVerdict.selected_circuit_refs
+                        : followWrites.map((write) => write?.circuit)
+                      ).filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
+                    ),
+                  ]
+                : [
+                    ...new Set(
+                      followWrites
+                        .map((write) => write?.circuit)
+                        .filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
+                    ),
+                  ];
+            const suppliedRefsBeforeDispatch = [
+              ...new Set(
+                (Array.isArray(followVerdict.supplied_circuit_refs)
+                  ? followVerdict.supplied_circuit_refs
+                  : selectedRefsBeforeDispatch
+                ).filter(Number.isInteger)
+              ),
+            ];
+            let followupCapacityRejected = false;
+            // Capacity is a PRE-MUTATION contract. The registered question may
+            // require two refs, while the follow-up resolver can parse any
+            // census-valid list. Reject an over-complete/unassignable list
+            // before dispatching even one write; otherwise three supplied refs
+            // could all land and only then be labelled unresolved by the
+            // reconciliation below. Unquantified ambiguous-match expansion is
+            // retained through the preflight helper's exclusive-candidate
+            // capacity widening.
+            if (
+              !multiDescriptionFollowupFitsAskCapacity({
+                entries: askEntries,
+                selectedRefs: suppliedRefsBeforeDispatch,
+              })
+            ) {
+              followupCapacityRejected = true;
+              logger?.info?.('stage6.multi_description_followup_rejected', {
+                sessionId,
+                turnId,
+                tool_call_id: toolCallId,
+                reason: 'selection_exceeds_ask_capacity',
+                selected_ref_count: suppliedRefsBeforeDispatch.length,
+                ask_entry_count: askEntries.length,
+              });
+              followWrites = [];
+            }
+            const collectSuccessfulSelectedRefs = () => {
+              if (pendingWrite.tool === 'record_board_reading') {
+                const successfulBoardWrites = followWrites.filter((write) =>
+                  successfulDispatchedSlots.has(dispatchSlotKey(write))
+                );
+                if (successfulBoardWrites.length === 0) return [];
+                const metadataRefs = [
+                  ...new Set(
+                    (Array.isArray(followVerdict.selected_circuit_refs)
+                      ? followVerdict.selected_circuit_refs
+                      : []
+                    ).filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
+                  ),
+                ];
+                if (metadataRefs.length > 0) return metadataRefs;
+                // Scalar designation fallback verdicts predate the
+                // multi-description metadata, but their write circuit is
+                // still census-validated. Admit only its successful positive
+                // ref; circuit 0 and absent refs can never satisfy scope.
+                return [
+                  ...new Set(
+                    successfulBoardWrites
+                      .map((write) => write?.circuit)
+                      .filter((ref) => Number.isInteger(ref) && knownRefs.has(ref))
+                  ),
+                ];
+              }
+              return [
+                ...new Set(
+                  followWrites
+                    .filter((write) => successfulDispatchedSlots.has(dispatchSlotKey(write)))
+                    .map((write) => write?.circuit)
+                    .filter(Number.isInteger)
+                ),
+              ];
+            };
+            try {
+              await dispatchWrites(followWrites, 'ask_auto_resolve_multi_description_followup');
+            } catch (err) {
+              const successfulSelectedRefs = collectSuccessfulSelectedRefs();
+              const satisfiedOriginalIndexes = reconcileMultiDescriptionAskEntries({
+                entries: askEntries,
+                successfulSelectedRefs,
+              });
+              const unfinishedFollowupTarget =
+                followWrites.some(
+                  (write) => !successfulDispatchedSlots.has(dispatchSlotKey(write))
+                ) ||
+                (Array.isArray(followVerdict.unresolved) && followVerdict.unresolved.length > 0) ||
+                satisfiedOriginalIndexes.size < askEntries.length;
+              if (
+                isStage6FatalControlFlowError(err) &&
+                unfinishedFollowupTarget &&
+                dispatched.some((record) => record.ok === true) &&
+                !multiDescriptionTerminalQueued
+              ) {
+                queuePendingValueApology(
+                  session,
+                  MULTI_DESCRIPTION_INTERRUPTED_APOLOGY,
+                  generationId
+                );
+                multiDescriptionTerminalQueued = true;
+                logger?.info?.('stage6.multi_description_terminal_queued', {
+                  sessionId,
+                  turnId,
+                  tool_call_id: toolCallId,
+                  reason: 'followup_write_dispatch_interrupted_fatal',
+                });
+              }
+              throw err;
+            }
+            const successfulSelectedRefs = collectSuccessfulSelectedRefs();
+
+            if (Array.isArray(followVerdict.unresolved)) {
+              if (!followupCapacityRejected) {
+                appendUniqueUnresolved(
+                  noticeEntries,
+                  followVerdict.unresolved.filter(
+                    (candidate) => candidate?.disposition === 'notice'
+                  )
+                );
+              }
+              appendUniqueUnresolved(
+                remainingUnresolved,
+                followVerdict.unresolved.filter((candidate) => candidate?.disposition === 'ask')
+              );
+            }
+
+            // Reconcile the GROUPED question against successful logical slots,
+            // including a slot that landed before the clarification and was
+            // therefore dedupe-skipped on the follow-up. Each source segment
+            // owns a stable ordinal and a required capacity. An entry is
+            // satisfied only when its complete ref assignment is forced in
+            // every maximum capacitated matching; overlapping alternatives
+            // stay unresolved instead of silently discarding a possible ref.
+            const satisfiedOriginalIndexes = reconcileMultiDescriptionAskEntries({
+              entries: askEntries,
+              successfulSelectedRefs,
+            });
+            const unmatchedOriginal = askEntries.filter(
+              (_entry, index) => !satisfiedOriginalIndexes.has(index)
+            );
+            appendUniqueUnresolved(remainingUnresolved, unmatchedOriginal);
+
+            const askStillUnresolved = remainingUnresolved.some(
+              (entry) => entry?.disposition === 'ask'
+            );
+            if (askStillUnresolved) {
+              queueMultiDescriptionTerminal(
+                MULTI_DESCRIPTION_UNRESOLVED_APOLOGY,
+                successfulSelectedRefs.length === 0
+                  ? 'answered_no_progress'
+                  : 'answered_partial_progress'
+              );
+            }
+          }
+        }
       }
     }
+    remainingUnresolved.push(...noticeEntries);
+
+    const successfulSibling = dispatched.some((write) => write.ok === true);
+    if (successfulSibling && typeof stagePartialFailureNotice === 'function') {
+      const fieldLabel = resolvePartialFailureFieldLabel(
+        pendingWrite.tool === 'record_board_reading'
+          ? BOARD_READING_PARTIAL_FAILURE_FIELDS
+          : FIELD_SCHEMA.circuit_fields,
+        pendingWrite.field
+      );
+      if (fieldLabel !== null) {
+        for (const entry of noticeEntries) {
+          if (entry?.reason !== 'no_match' || !Number.isInteger(entry.identity)) continue;
+          const target =
+            entry.span_kind === 'circuit_ref'
+              ? { kind: 'circuit', ref: entry.identity }
+              : entry.span_kind === 'segment_ordinal'
+                ? { kind: 'ordinal', ordinal: entry.identity }
+                : null;
+          if (!target) continue;
+          stagePartialFailureNotice({
+            reason: 'designation_no_match',
+            field: pendingWrite.field,
+            fieldLabel,
+            // Use the same frozen effective-board identity as the sibling
+            // write. A normal main-board ask commonly omits both raw ids;
+            // re-resolving against the post-broker cursor would strand the
+            // notice on a different board and suppress it at the survivor gate.
+            boardId: frozenWriteBoardId,
+            target,
+            producer: 'ask_multi_description_no_match',
+            // The harness callback uses the winning board-write journal stamp
+            // to scope this notice. Board fields may be GLOBAL (effective
+            // board null) even when the ask named the current board, so merely
+            // re-running the circuit-board resolver here would strand the
+            // notice against the wrong drain identity.
+            boardReading: pendingWrite.tool === 'record_board_reading',
+            // The dispatcher has observed an immediate success. The 2A drain
+            // re-checks this at turn finalisation so a later clear cannot turn
+            // the notice into a false "partial success" claim.
+            requiresSurvivingSibling: true,
+          });
+        }
+      }
+    }
+    const finalMatchStatus = followupCancelled || followupMovedOn
+      ? 'partial'
+      : verdict.match_status == null
+        ? 'auto_resolved'
+        : remainingUnresolved.length === 0
+          ? 'full'
+          : 'partial';
     if (logger?.info) {
       logger.info('stage6.ask_user_auto_resolved', {
         sessionId,
@@ -1459,15 +2010,19 @@ async function buildResolvedBody({
         tool_call_id: toolCallId,
         write_count: dispatched.length,
         all_ok: dispatched.every((d) => d.ok),
+        match_status: finalMatchStatus,
+        unresolved_count: remainingUnresolved.length,
       });
     }
     return {
       answered: true,
       untrusted_user_text: outcome.user_text,
       // NOTE (P3): skip over-reporting is a pre-existing follow-up (see enum branch).
-      auto_resolved: true,
-      match_status: 'auto_resolved',
+      auto_resolved: dispatched.length > 0,
+      match_status: finalMatchStatus,
       resolved_writes: dispatched,
+      ...(verdict.match_status != null ? { unresolved: remainingUnresolved } : {}),
+      ...(followupMovedOn ? { followup_outcome: 'user_moved_on' } : {}),
     };
   }
 
@@ -1501,10 +2056,11 @@ async function buildResolvedBody({
       answered: true,
       untrusted_user_text: outcome.user_text,
       auto_resolved: false,
-      match_status: 'escalated',
+      match_status: verdict.match_status ?? 'escalated',
       parsed_hint: verdict.parsed_hint,
       pending_write: pendingWrite,
       available_circuits: verdict.available_circuits,
+      ...(Array.isArray(verdict.unresolved) ? { unresolved: verdict.unresolved } : {}),
     };
   }
 
@@ -1514,30 +2070,31 @@ async function buildResolvedBody({
 }
 
 /**
- * Pull the (circuit_ref, designation) pairs out of stateSnapshot so the
- * resolver can match designations against what currently exists. Skips the
- * circuits[0] bucket (the legacy supply/board namespace) and any entry
- * without a designation.
+ * Pull the (circuit_ref, designation) pairs for ONE effective board out of
+ * stateSnapshot so the resolver cannot match a main-board name and then stamp
+ * that ref onto a sub-board write. The dual-shape helpers own legacy-main vs
+ * composite-sub-board routing.
  *
  * @param {object} session
+ * @param {string|null} boardId explicit ask/write scope, or null for current board
  * @returns {Array<{circuit_ref: number, circuit_designation: string}>}
  */
-function collectAvailableCircuits(session) {
-  const circuits = session?.stateSnapshot?.circuits;
-  if (!circuits || typeof circuits !== 'object') return [];
-  const out = [];
-  for (const [refStr, bucket] of Object.entries(circuits)) {
-    const ref = Number.parseInt(refStr, 10);
-    if (!Number.isFinite(ref) || ref < 1) continue; // 0 is the board bucket
+function collectAvailableCircuits(session, boardId = null) {
+  const snapshot = session?.stateSnapshot;
+  if (!snapshot?.circuits || typeof snapshot.circuits !== 'object') return [];
+  const scopedBoardId = isUnscopedBoardId(boardId) ? undefined : boardId;
+  return listCircuitRefsInBoard(snapshot, scopedBoardId).flatMap((ref) => {
+    const bucket = getCircuitBucket(snapshot, ref, scopedBoardId);
     // Read the canonical snapshot key first, fall back to the legacy key
     // for resume-across-deploy compat (snapshots created by pre-fix
     // upsertCircuitMeta still carry `.designation`). See
     // stage6-snapshot-mutators.js comment + prod session 286D500D-2026-05-24.
     const designation = (bucket?.circuit_designation ?? bucket?.designation ?? '').toString();
-    if (!designation) continue;
-    out.push({ circuit_ref: ref, circuit_designation: designation });
-  }
-  return out;
+    // Keep unnamed refs in the census: designation matching ignores a blank
+    // label, while a later explicit "circuit N" answer still needs the
+    // server-owned ref to be recognised as valid.
+    return [{ circuit_ref: ref, circuit_designation: designation }];
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1580,8 +2137,339 @@ export function advanceResponseEpoch(responseEpochRef, outcome) {
   if (epoch) responseEpochRef.current = epoch;
 }
 
+const MULTI_DESCRIPTION_ORDINALS = Object.freeze([
+  'zeroth',
+  'first',
+  'second',
+  'third',
+  'fourth',
+  'fifth',
+  'sixth',
+  'seventh',
+  'eighth',
+  'ninth',
+  'tenth',
+]);
+
+function speakMultiDescriptionIdentity(entry) {
+  if (entry?.span_kind === 'circuit_ref' && Number.isInteger(entry.identity)) {
+    return `circuit ${entry.identity}`;
+  }
+  const ordinal = Number.isInteger(entry?.identity) ? entry.identity : 1;
+  const spoken = MULTI_DESCRIPTION_ORDINALS[ordinal] ?? `${ordinal}`;
+  return `the ${spoken} circuit description`;
+}
+
+function speakCandidateRefs(candidates) {
+  const refs = [
+    ...new Set((Array.isArray(candidates) ? candidates : []).filter(Number.isInteger)),
+  ].sort((a, b) => a - b);
+  if (refs.length === 0) return '';
+  if (refs.length === 1) return ` (possible match: circuit ${refs[0]})`;
+  const head = refs.slice(0, -1).join(', ');
+  return ` (possible matches: circuits ${head} and ${refs[refs.length - 1]})`;
+}
+
+function speakCircuitRefs(candidates) {
+  const refs = [
+    ...new Set((Array.isArray(candidates) ? candidates : []).filter(Number.isInteger)),
+  ].sort((a, b) => a - b);
+  if (refs.length === 0) return 'no possible circuit numbers';
+  if (refs.length === 1) return `only circuit ${refs[0]}`;
+  const head = refs.slice(0, -1).join(', ');
+  return `only circuits ${head} and ${refs[refs.length - 1]}`;
+}
+
+/**
+ * Server-owned clarification wording for a multi-description ask verdict.
+ * The raw dictated span is intentionally unavailable here; the resolver
+ * exports only integer refs/ordinals and candidate refs.
+ */
+function multiDescriptionQuestion(entries) {
+  const clauses = (Array.isArray(entries) ? entries : [])
+    .map((entry) => {
+      const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
+      if (
+        entry?.reason === 'quantifier_count_mismatch' &&
+        Number.isInteger(entry?.required_count) &&
+        entry.required_count > 0
+      ) {
+        const ordinal = Number.isInteger(entry?.segment_ordinal) ? entry.segment_ordinal : 1;
+        const spokenOrdinal = MULTI_DESCRIPTION_ORDINALS[ordinal] ?? `${ordinal}`;
+        const circuitWord =
+          entry.required_count === 1 ? 'circuit number is' : 'circuit numbers are';
+        return `the ${spokenOrdinal} circuit description (I found ${speakCircuitRefs(
+          candidates
+        )}, but ${entry.required_count} ${circuitWord} required)`;
+      }
+      const repeatsIdentity =
+        entry?.span_kind === 'circuit_ref' &&
+        candidates.length === 1 &&
+        candidates[0] === entry.identity;
+      return `${speakMultiDescriptionIdentity(entry)}${
+        repeatsIdentity ? '' : speakCandidateRefs(candidates)
+      }`;
+    })
+    .filter(Boolean);
+  const identityList =
+    clauses.length <= 1
+      ? (clauses[0] ?? 'that circuit description')
+      : clauses.length === 2
+        ? `${clauses[0]} and ${clauses[1]}`
+        : `${clauses.slice(0, -1).join('; ')}; and ${clauses[clauses.length - 1]}`;
+  return `Please restate the circuit number or numbers for ${identityList}.`;
+}
+
+/**
+ * Find one maximum ref→entry assignment for the grouped clarification.
+ *
+ * A ref which appears in any resolver candidate set may only serve one of
+ * those candidate entries. A completely new explicit ref can serve any
+ * entry: the inspector may be correcting the designation match rather than
+ * choosing from the server's suggestions. Entry capacities come from the
+ * resolver's server-only `required_count` metadata.
+ */
+function maximumMultiDescriptionAssignment(entries, refs, capacities, forbiddenEdge = null) {
+  const assignedEntryByRef = new Map();
+  const assignedRefsByEntry = entries.map(() => new Set());
+  const candidateOwnersByRef = new Map(
+    refs.map((ref) => [
+      ref,
+      entries
+        .map((entry, index) => ({ entry, index }))
+        .filter(
+          ({ entry }) =>
+            Array.isArray(entry?.candidates) &&
+            entry.candidates.filter(Number.isInteger).includes(ref)
+        )
+        .map(({ index }) => index),
+    ])
+  );
+  const sourceOrderedEntryIndexes = entries
+    .map((entry, index) => ({ index, ordinal: entry?.segment_ordinal }))
+    .sort((a, b) => a.ordinal - b.ordinal)
+    .map(({ index }) => index);
+  const hasStableSourceOrder = entries.every(
+    (entry) =>
+      Number.isInteger(entry?.segment_ordinal) &&
+      entry.segment_ordinal > 0 &&
+      entries.filter((candidate) => candidate?.segment_ordinal === entry.segment_ordinal).length ===
+        1
+  );
+  // The broker asks for one ordered list. If every source segment is one
+  // logical slot and every supplied ref is a deliberate correction outside
+  // all suggested candidates, preserve that list order against the stable
+  // source-segment order. Candidate-bearing and capacitated cases continue
+  // through the ambiguity-preserving matching below.
+  const useOrderedFallback =
+    hasStableSourceOrder &&
+    refs.length === entries.length &&
+    capacities.every((capacity) => capacity === 1) &&
+    refs.every((ref) => (candidateOwnersByRef.get(ref) ?? []).length === 0);
+  const edgesByRef = new Map(
+    refs.map((ref, refIndex) => {
+      const candidateOwners = candidateOwnersByRef.get(ref) ?? [];
+      const owners =
+        candidateOwners.length > 0
+          ? candidateOwners
+          : useOrderedFallback
+            ? [sourceOrderedEntryIndexes[refIndex]]
+            : entries.map((_entry, index) => index);
+      return [ref, owners];
+    })
+  );
+
+  const moveRef = (ref, entryIndex) => {
+    const previousEntry = assignedEntryByRef.get(ref);
+    if (previousEntry !== undefined) assignedRefsByEntry[previousEntry].delete(ref);
+    assignedEntryByRef.set(ref, entryIndex);
+    assignedRefsByEntry[entryIndex].add(ref);
+  };
+
+  const tryAssign = (ref, visitedEntries) => {
+    for (const entryIndex of edgesByRef.get(ref) ?? []) {
+      if (forbiddenEdge && forbiddenEdge.ref === ref && forbiddenEdge.entryIndex === entryIndex) {
+        continue;
+      }
+      if (visitedEntries.has(entryIndex)) continue;
+      visitedEntries.add(entryIndex);
+
+      if (assignedRefsByEntry[entryIndex].size < capacities[entryIndex]) {
+        moveRef(ref, entryIndex);
+        return true;
+      }
+
+      for (const occupyingRef of [...assignedRefsByEntry[entryIndex]]) {
+        if (tryAssign(occupyingRef, visitedEntries)) {
+          moveRef(ref, entryIndex);
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (const ref of refs) tryAssign(ref, new Set());
+  return {
+    size: assignedEntryByRef.size,
+    assignedRefsByEntry,
+  };
+}
+
+function multiDescriptionCandidateOwners(entries, refs) {
+  const ownersByRef = new Map();
+  for (const ref of refs) {
+    const owners = new Set();
+    entries.forEach((entry, entryIndex) => {
+      if (
+        Array.isArray(entry?.candidates) &&
+        entry.candidates.filter(Number.isInteger).includes(ref)
+      ) {
+        owners.add(entryIndex);
+      }
+    });
+    ownersByRef.set(ref, owners);
+  }
+  return ownersByRef;
+}
+
+function multiDescriptionEntryCapacities(
+  entries,
+  refs,
+  { allowExclusiveAmbiguousExpansion = false } = {}
+) {
+  const ownersByRef = multiDescriptionCandidateOwners(entries, refs);
+  return entries.map((entry, entryIndex) => {
+    const baseCapacity =
+      Number.isInteger(entry?.required_count) && entry.required_count > 0
+        ? entry.required_count
+        : entry?.reason === 'quantifier_count_mismatch'
+          ? refs.length + 1
+          : 1;
+    if (
+      !allowExclusiveAmbiguousExpansion ||
+      entry?.reason !== 'ambiguous_match' ||
+      baseCapacity !== 1
+    ) {
+      return baseCapacity;
+    }
+    const exclusiveCandidateCount = refs.filter(
+      (ref) =>
+        Array.isArray(entry?.candidates) &&
+        entry.candidates.includes(ref) &&
+        ownersByRef.get(ref)?.size === 1 &&
+        ownersByRef.get(ref)?.has(entryIndex)
+    ).length;
+    return Math.max(baseCapacity, exclusiveCandidateCount);
+  });
+}
+
+/**
+ * Decide whether every selected ref can participate in the grouped ask before
+ * any certificate mutation occurs. Only the documented unquantified
+ * ambiguous-match expansion widens a one-slot entry, and only for candidate
+ * refs exclusively owned by that entry.
+ */
+function multiDescriptionFollowupFitsAskCapacity({ entries, selectedRefs }) {
+  const candidates = Array.isArray(entries) ? entries : [];
+  const refs = [
+    ...new Set((Array.isArray(selectedRefs) ? selectedRefs : []).filter(Number.isInteger)),
+  ];
+  if (candidates.length === 0 || refs.length === 0) return true;
+  const capacities = multiDescriptionEntryCapacities(candidates, refs, {
+    allowExclusiveAmbiguousExpansion: true,
+  });
+  return maximumMultiDescriptionAssignment(candidates, refs, capacities).size === refs.length;
+}
+
+/**
+ * Return the original unresolved-entry indexes that a grouped answer proves
+ * complete. "Proves" is deliberately stronger than "a matching exists": the
+ * complete assigned ref set must be identical in every maximum assignment.
+ * This prevents overlapping sets from consuming each other by iteration
+ * order, while still letting an explicitly selected singleton count a slot
+ * that already landed and was dedupe-skipped.
+ */
+function reconcileMultiDescriptionAskEntries({ entries, successfulSelectedRefs }) {
+  const candidates = Array.isArray(entries) ? entries : [];
+  const refs = [
+    ...new Set(
+      (Array.isArray(successfulSelectedRefs) ? successfulSelectedRefs : []).filter(Number.isInteger)
+    ),
+  ];
+  if (candidates.length === 0 || refs.length === 0) return new Set();
+
+  const ordinalCounts = new Map();
+  for (const entry of candidates) {
+    const ordinal = entry?.segment_ordinal;
+    if (!Number.isInteger(ordinal) || ordinal < 1) continue;
+    ordinalCounts.set(ordinal, (ordinalCounts.get(ordinal) ?? 0) + 1);
+  }
+  // Old/incomplete resolver output must fail closed for a quantified mismatch.
+  // Other ask families have always represented one logical slot.
+  const capacities = multiDescriptionEntryCapacities(candidates, refs);
+  const baseline = maximumMultiDescriptionAssignment(candidates, refs, capacities);
+  const satisfied = new Set();
+  const candidateOwnersByRef = new Map();
+  candidates.forEach((entry, entryIndex) => {
+    for (const ref of Array.isArray(entry?.candidates)
+      ? entry.candidates.filter(Number.isInteger)
+      : []) {
+      if (!candidateOwnersByRef.has(ref)) candidateOwnersByRef.set(ref, new Set());
+      candidateOwnersByRef.get(ref).add(entryIndex);
+    }
+  });
+
+  candidates.forEach((entry, entryIndex) => {
+    const stableOrdinal =
+      Number.isInteger(entry?.segment_ordinal) &&
+      entry.segment_ordinal > 0 &&
+      ordinalCounts.get(entry.segment_ordinal) === 1;
+    const selectedExclusiveCandidates = refs.filter(
+      (ref) =>
+        Array.isArray(entry?.candidates) &&
+        entry.candidates.includes(ref) &&
+        candidateOwnersByRef.get(ref)?.size === 1
+    );
+    // An unquantified ambiguous description is one logical source segment,
+    // but the inspector may explicitly expand it to several of its suggested
+    // circuits in the clarification ("lighting" → "circuits 1 and 2").
+    // Those writes all belong to that same segment, so there is no meaningful
+    // per-ref permutation to prove. Accept the expansion only when at least
+    // one successfully written candidate is exclusive to this entry; shared
+    // candidate sets still use the forced-assignment rule below.
+    if (
+      stableOrdinal &&
+      capacities[entryIndex] === 1 &&
+      entry?.reason === 'ambiguous_match' &&
+      selectedExclusiveCandidates.length > 0
+    ) {
+      satisfied.add(entryIndex);
+      return;
+    }
+    const assignedRefs = [...baseline.assignedRefsByEntry[entryIndex]].sort((a, b) => a - b);
+    if (!stableOrdinal || assignedRefs.length !== capacities[entryIndex]) return;
+
+    // Every edge in the baseline set must be essential to the maximum
+    // matching. If forbidding one keeps the same cardinality, another equally
+    // valid interpretation changes this entry's ref set, so retain the entry.
+    const assignmentIsForced = assignedRefs.every((ref) => {
+      const alternative = maximumMultiDescriptionAssignment(candidates, refs, capacities, {
+        ref,
+        entryIndex,
+      });
+      return alternative.size < baseline.size;
+    });
+    if (assignmentIsForced) satisfied.add(entryIndex);
+  });
+
+  return satisfied;
+}
+
 /** One brokered server ask. Registers FIRST, then emits, then awaits. */
-async function brokerDeterministicAsk({
+async function brokerRegisteredAsk({
+  idPrefix,
+  emissionSource,
   pendingAsks,
   ws,
   logger,
@@ -1592,13 +2480,18 @@ async function brokerDeterministicAsk({
   contextCircuit,
   expectedAnswerShape,
   pendingValue,
+  pendingWrite = null,
+  multiDescriptionCircuits = null,
+  purpose = 'pending_value',
   onAskUserStarted = null,
   onAskAnswered = null,
   onAskRegistered = null,
   signal = null,
   responseEpochRef = null,
 }) {
-  const pvrId = `pvr-${randomUUID().slice(0, 13)}`;
+  const safePrefix =
+    typeof idPrefix === 'string' && /^[a-z][a-z0-9_-]*$/i.test(idPrefix) ? idPrefix : 'broker';
+  const brokerId = `${safePrefix}-${randomUUID().slice(0, 13)}`;
   const askStartedAt = Date.now();
   // F7 Item 3 — never broker a NEW registration on a cancelled generation
   // (belt-and-suspenders alongside the chain-loop-top guard). The throw
@@ -1608,15 +2501,16 @@ async function brokerDeterministicAsk({
   let hookError = null;
   const outcome = await new Promise((resolve) => {
     const timer = setTimeout(() => {
-      pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+      pendingAsks.resolve(brokerId, { answered: false, reason: 'timeout' });
     }, ASK_USER_TIMEOUT_MS);
     try {
-      pendingAsks.register(pvrId, {
+      pendingAsks.register(brokerId, {
         contextField,
         contextCircuit,
         expectedAnswerShape,
-        pendingWrite: null,
+        pendingWrite,
         pendingValue: pendingValue ?? null,
+        multiDescriptionCircuits,
         resolve,
         timer,
         askStartedAt,
@@ -1628,21 +2522,21 @@ async function brokerDeterministicAsk({
       resolve({ answered: false, reason: 'broker_register_failed', error: err?.message });
       return;
     }
-    // F7 Item 3 — CONTROL hook, fired immediately after a successful pvr-*
-    // register and BEFORE the emit. Same fail-closed / stale-generation
+    // F7 Item 3 — CONTROL hook, fired immediately after a successful broker
+    // registration and BEFORE the emit. Same fail-closed / stale-generation
     // contract as the initial dispatch.
     if (onAskRegistered) {
       let owns;
       try {
-        owns = onAskRegistered(pvrId);
+        owns = onAskRegistered(brokerId);
       } catch (hookErr) {
         hookError = new AskRegistrationHookError('onAskRegistered threw', { cause: hookErr });
-        pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+        pendingAsks.resolve(brokerId, { answered: false, reason: 'timeout' });
         try {
           logger?.info?.('stage6.ask_registration_hook_error', {
             sessionId,
             turnId,
-            tool_call_id: pvrId,
+            tool_call_id: brokerId,
           });
         } catch {
           // swallow logger failure — the fatal error still propagates
@@ -1650,7 +2544,7 @@ async function brokerDeterministicAsk({
         return;
       }
       if (owns === false) {
-        pendingAsks.resolve(pvrId, { answered: false, reason: 'timeout' });
+        pendingAsks.resolve(brokerId, { answered: false, reason: 'timeout' });
         return;
       }
     }
@@ -1666,13 +2560,13 @@ async function brokerDeterministicAsk({
         ws.send(
           JSON.stringify({
             type: 'ask_user_started',
-            tool_call_id: pvrId,
+            tool_call_id: brokerId,
             question,
             reason: 'missing_context',
             context_field: contextField,
             context_circuit: contextCircuit,
             expected_answer_shape: expectedAnswerShape,
-            // PLAN-C P4d (row 4) — stamp the brokered pvr re-ask QUESTION frame
+            // PLAN-C P4d (row 4) — stamp the brokered re-ask QUESTION frame
             // with the current response epoch at emit time (P4c already advanced
             // the ref after the initial await, so this carries whichever
             // utterance owns the loop now). Non-empty only.
@@ -1687,28 +2581,33 @@ async function brokerDeterministicAsk({
       }
     }
     if (!questionEmitted) {
-      pendingAsks.resolve(pvrId, { answered: false, reason: 'broker_emit_failed' });
+      pendingAsks.resolve(brokerId, { answered: false, reason: 'broker_emit_failed' });
       return;
     }
-    // F7 Item 2 — the brokered pvr-* question really crossed the wire. Report
-    // it to the per-turn emission audit (source:'pvr'). Best-effort: own
+    // F7 Item 2 — the brokered question really crossed the wire. Report it to
+    // the per-turn emission audit under the caller's source. Best-effort: own
     // try/catch, never alters the questionEmitted classification or dispatch.
     if (onAskUserStarted) {
       try {
-        onAskUserStarted({ toolCallId: pvrId, source: 'pvr' });
+        onAskUserStarted({ toolCallId: brokerId, source: emissionSource });
       } catch {
         // best-effort observer — never propagate
       }
     }
-    logger?.info?.('stage6.pending_value_reask_sent', {
-      sessionId,
-      turnId,
-      tool_call_id: pvrId,
-      context_field: contextField,
-      context_circuit: contextCircuit,
-      expected_answer_shape: expectedAnswerShape,
-      has_pending_value: pendingValue != null,
-    });
+    logger?.info?.(
+      purpose === 'multi_description'
+        ? 'stage6.multi_description_reask_sent'
+        : 'stage6.pending_value_reask_sent',
+      {
+        sessionId,
+        turnId,
+        tool_call_id: brokerId,
+        context_field: contextField,
+        context_circuit: contextCircuit,
+        expected_answer_shape: expectedAnswerShape,
+        has_pending_value: pendingValue != null,
+      }
+    );
   });
   // F7 Item 3 — fail-closed: a stored ask-registration hook error propagates as
   // a FATAL control-flow error (never masked as a broker outcome).
@@ -1719,8 +2618,8 @@ async function brokerDeterministicAsk({
   // await). A timeout / broker_emit_failed / user_moved_on-without-id leaves
   // the reference untouched.
   advanceResponseEpoch(responseEpochRef, outcome);
-  // P4 (ask-decline-ack-net) — stamp this brokered pvr-* ask's resolution into
-  // the per-turn ledger (source:'pvr'). A brokered ask that IS answered but
+  // P4 (ask-decline-ack-net) — stamp this brokered ask's resolution into the
+  // per-turn ledger under the caller's source. A brokered ask that IS answered but
   // whose continuation produces nothing audible is exactly the answered-ask
   // silent case the net covers; a broker_* / timeout / user_moved_on carries
   // answered:false and is excluded. Best-effort observer — the emission is
@@ -1728,16 +2627,30 @@ async function brokerDeterministicAsk({
   if (onAskAnswered) {
     try {
       onAskAnswered({
-        toolCallId: pvrId,
+        toolCallId: brokerId,
         answered: outcome.answered === true,
         declineClass: outcome.answered === true ? classifyDeclineReply(outcome.user_text) : null,
-        source: 'pvr',
+        source: emissionSource,
       });
     } catch {
       // best-effort observer — never propagate
     }
   }
-  return { pvrId, outcome };
+  return { brokerId, outcome };
+}
+
+/**
+ * Existing A4 pending-value broker facade. Keeping this wrapper preserves the
+ * pvr-* identifier and return shape byte-for-byte while PLAN-2B uses the
+ * generic registered primitive with its own mdr-* namespace.
+ */
+async function brokerDeterministicAsk(args) {
+  const { brokerId, outcome } = await brokerRegisteredAsk({
+    ...args,
+    idPrefix: 'pvr',
+    emissionSource: 'pvr',
+  });
+  return { pvrId: brokerId, outcome };
 }
 
 /**
@@ -1757,6 +2670,13 @@ function queuePendingValueApology(session, text, generationId = null) {
   // suppress the current fallback or be spoken on the wrong turn).
   session.pendingVoicePrompts.push({ text, generationId });
 }
+
+const MULTI_DESCRIPTION_ASK_FAILED_APOLOGY =
+  "Sorry, I couldn't ask which circuits that reading was for. Please say the reading and circuit numbers together again.";
+const MULTI_DESCRIPTION_UNRESOLVED_APOLOGY =
+  "Sorry, I still couldn't place every circuit. Please say the reading and the remaining circuit number or numbers together again.";
+const MULTI_DESCRIPTION_INTERRUPTED_APOLOGY =
+  "I recorded the matched circuits, but couldn't finish placing the remaining circuit descriptions. Please say the remaining reading and circuit numbers again.";
 
 /**
  * Codex r2-#1 — eligibility for pendingValue capture: ONLY the A4 inverted

@@ -87,6 +87,12 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 const classifyOvertakeSpy = jest.fn(() => ({ kind: 'no_pending_asks' }));
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: classifyOvertakeSpy,
+  classifyFreshCommandText: jest.fn(() => ({
+    isFreshCommand: false,
+    matchedImperative: false,
+    matchedBulkScope: false,
+    wordCount: 0,
+  })),
 }));
 
 // pre-LLM gate spy — arg[0] is the text the gate judges. Always forward so the

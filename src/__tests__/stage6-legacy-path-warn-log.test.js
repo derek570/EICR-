@@ -121,6 +121,12 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: jest.fn(() => ({ kind: 'no_pending_asks' })),
+  classifyFreshCommandText: jest.fn(() => ({
+    isFreshCommand: false,
+    matchedImperative: false,
+    matchedBulkScope: false,
+    wordCount: 0,
+  })),
 }));
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');

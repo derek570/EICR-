@@ -63,6 +63,12 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
 const classifyOvertakeSpy = jest.fn(() => ({ kind: 'no_pending_asks' }));
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
   classifyOvertake: classifyOvertakeSpy,
+  classifyFreshCommandText: jest.fn(() => ({
+    isFreshCommand: false,
+    matchedImperative: false,
+    matchedBulkScope: false,
+    wordCount: 0,
+  })),
 }));
 
 // Gate forwards so the turn reaches the dialogue scripts. GATE_REASONS +
