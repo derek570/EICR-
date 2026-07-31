@@ -34,4 +34,17 @@ describe('PLAN-3 extraction turn completion ledger', () => {
     expect(shouldCloseProcessingTurn(ledger, 'session-a', undefined)).toBe(true);
     expect(shouldCloseProcessingTurn(ledger, 'session-a', undefined)).toBe(true);
   });
+
+  it('closes a timeout placeholder and its delayed legacy result only once', () => {
+    const ledger = createExtractionTurnLedger();
+    const acceptedTurnId = 'legacy-accepted-a';
+    expect(shouldCloseProcessingTurn(ledger, 'session-a', acceptedTurnId)).toBe(true);
+    expect(shouldCloseProcessingTurn(ledger, 'session-a', acceptedTurnId)).toBe(false);
+
+    // In a two-item batch, A already closed via its placeholder while B fired
+    // the model call and therefore closes on the real combined result.
+    const secondTurnId = 'legacy-accepted-b';
+    expect(shouldCloseProcessingTurn(ledger, 'session-a', secondTurnId)).toBe(true);
+    expect(shouldCloseProcessingTurn(ledger, 'session-a', acceptedTurnId)).toBe(false);
+  });
 });

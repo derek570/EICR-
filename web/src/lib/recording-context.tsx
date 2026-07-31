@@ -52,7 +52,10 @@ import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { shouldForward } from './recording/transcript-gate';
 import { InFlightQuestionTracker } from './recording/in-flight-question';
-import { buildConfirmationDedupeKey } from './recording/confirmation-dedupe-key';
+import {
+  buildConfirmationDedupeKey,
+  isObservationRecodeConfirmation,
+} from './recording/confirmation-dedupe-key';
 import {
   PendingReadingsBuffer,
   buildPendingReadingsQuestion,
@@ -2419,7 +2422,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // §A1b — field-nil confirmations (apologies / system prompts)
         // dedupe on the 30 s TTL store, not the permanent set. iOS canon:
         // `isConfirmationKeyLive(key, fieldIsNil:)`.
-        const fieldIsNil = conf.field == null;
+        // Re-code suffixes remain field-null on the wire, but their stable
+        // operation token belongs in the permanent store: reconnect replay of
+        // the same owed suffix dedupes, while a later re-code has a new token.
+        const fieldIsNil = conf.field == null && !isObservationRecodeConfirmation(conf);
         if (confirmationDedupeStoreRef.current.isLive(dedupeKey, fieldIsNil)) {
           clientDiagnostic('onExtraction_confirmation_deduped', {
             dedupeKey,
