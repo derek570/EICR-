@@ -3879,7 +3879,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         toolLoopOut.usage.cache_read_input_tokens > 0 ||
         toolLoopOut.usage.cache_creation_input_tokens > 0)
     ) {
-      session.costTracker.addSonnetUsage(toolLoopOut.usage, toolLoopOut.model);
+      session.costTracker.addSonnetUsage(
+        toolLoopOut.usage,
+        toolLoopOut.model,
+        toolLoopOut.service_tier
+      );
     }
 
     // Mirror the legacy `this.extractedReadingsCount += result.extracted_readings.length`
@@ -3901,6 +3905,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       rounds: toolLoopOut?.rounds ?? 0,
       aborted: cancelled || (toolLoopOut?.aborted ?? false),
       abort_reason: toolLoopOut?.aborted && toolLoopOut?.rounds >= 8 ? 'loop_cap' : null,
+      model: toolLoopOut?.model ?? null,
+      service_tier: toolLoopOut?.service_tier ?? null,
       readings: result.extracted_readings.length,
       observations: result.observations.length,
       // Token usage logged here for per-turn CloudWatch visibility (mirrors
@@ -4498,7 +4504,11 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       toolLoopOut.usage.cache_read_input_tokens > 0 ||
       toolLoopOut.usage.cache_creation_input_tokens > 0)
   ) {
-    session.costTracker.addSonnetUsage(toolLoopOut.usage, toolLoopOut.model);
+    session.costTracker.addSonnetUsage(
+      toolLoopOut.usage,
+      toolLoopOut.model,
+      toolLoopOut.service_tier
+    );
   }
 
   // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).

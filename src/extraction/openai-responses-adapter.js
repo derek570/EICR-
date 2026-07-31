@@ -341,6 +341,33 @@ function mapUsage(usage) {
   };
 }
 
+/**
+ * Resolve the source-controlled OpenAI extraction service tier. Standard is
+ * represented by omitting `service_tier`; Fast is an explicit Responses-API
+ * request property. Fail closed on a typo so a supposedly accelerated field
+ * trial cannot silently run at Standard latency.
+ */
+function resolveServiceTier(raw = process.env.OPENAI_EXTRACT_SERVICE_TIER) {
+  const tier = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (!tier || tier === 'default' || tier === 'standard') return undefined;
+  if (tier === 'fast') return 'fast';
+  throw new Error(`Unsupported OPENAI_EXTRACT_SERVICE_TIER: ${raw}`);
+}
+
+/** Preserve the provider's actual model + service tier for cost accounting. */
+function toAnthropicMessage(finalResp, fallbackModel) {
+  return {
+    content: buildAnthropicContent(finalResp),
+    usage: mapUsage(finalResp.usage),
+    stop_reason: mapStopReason(finalResp),
+    role: 'assistant',
+    model: finalResp?.model || fallbackModel,
+    service_tier: finalResp?.service_tier,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The stream object (async-iterable + finalMessage)
 // ---------------------------------------------------------------------------
@@ -380,6 +407,8 @@ function createStream(openai, streamArgs, options) {
     max_output_tokens: Math.max((max_tokens || 4096) * 4, 8192),
     reasoning: { effort: (process.env.OPENAI_EXTRACT_REASONING_EFFORT || 'low').trim() },
   };
+  const serviceTier = resolveServiceTier();
+  if (serviceTier) requestPayload.service_tier = serviceTier;
 
   let openaiStreamPromise = null;
   const getOpenaiStream = () => {
@@ -399,12 +428,7 @@ function createStream(openai, streamArgs, options) {
     async finalMessage() {
       const openaiStream = await getOpenaiStream();
       const finalResp = await openaiStream.finalResponse();
-      return {
-        content: buildAnthropicContent(finalResp),
-        usage: mapUsage(finalResp.usage),
-        stop_reason: mapStopReason(finalResp),
-        role: 'assistant',
-      };
+      return toAnthropicMessage(finalResp, model);
     },
   };
 }
@@ -440,4 +464,7 @@ export const _internals = Object.freeze({
   buildAnthropicContent,
   translateStreamingEvents,
   mapUsage,
+  resolveServiceTier,
+  toAnthropicMessage,
+  createStream,
 });

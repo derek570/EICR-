@@ -399,6 +399,10 @@ export async function runToolLoop({
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   };
+  // OpenAI Responses reports the tier it actually served (`priority` for a
+  // Fast request today). The live Luna trial uses one tier for every round;
+  // retain it so CostTracker can bill Luna at the matching published rate.
+  let serviceTier;
 
   while (rounds < maxRounds) {
     rounds += 1;
@@ -546,6 +550,17 @@ export async function runToolLoop({
       usage.output_tokens += u.output_tokens || 0;
       usage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
       usage.cache_read_input_tokens += u.cache_read_input_tokens || 0;
+    }
+    if (assistantMsg.service_tier) {
+      if (serviceTier && serviceTier !== assistantMsg.service_tier) {
+        logger?.warn?.('stage6.mixed_service_tier', {
+          sessionId: ctx?.sessionId,
+          turnId: ctx?.turnId,
+          first_service_tier: serviceTier,
+          later_service_tier: assistantMsg.service_tier,
+        });
+      }
+      serviceTier = assistantMsg.service_tier;
     }
 
     // Happy-path terminator: model said end_turn (or null / unknown — treat
@@ -1001,6 +1016,7 @@ export async function runToolLoop({
     // single-tool emission, so the mispricing is bounded; revisit if
     // the override model differs in price by an order of magnitude.
     model,
+    service_tier: serviceTier,
     // Phase 0 + Phase 2 (single-round latency sprint) — additive return fields.
     // Legacy callers ignore unknown keys, so the back-compat is preserved.
     terminal_reason: terminalReason,

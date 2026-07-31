@@ -32,7 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const REPLAY_ENV_INVENTORY_VERSION = 2;
+export const REPLAY_ENV_INVENTORY_VERSION = 3;
 
 /** Vars PINNED from ecs/task-def-backend.json (value read live from the
  *  task-def at load time so the drift test enforces itself). */
@@ -40,6 +40,7 @@ export const PINNED_FROM_TASK_DEF = Object.freeze([
   'NODE_ENV',
   'SONNET_TOOL_CALLS',
   'SONNET_EXTRACT_MODEL',
+  'OPENAI_EXTRACT_SERVICE_TIER',
   'OBSERVATION_EXTRACT_MODEL',
   'SNAPSHOT_FORMAT',
   'CIRCUIT_ORDER',

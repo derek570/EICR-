@@ -1,4 +1,4 @@
-> Last updated: 2026-02-18
+> Last updated: 2026-07-31
 > Related: [Architecture](architecture.md) | [iOS Pipeline](ios-pipeline.md) | [Field Reference](field-reference.md) | [File Structure](file-structure.md) | [Deployment History](deployment-history.md)
 > Hub: [../../CLAUDE.md](../../CLAUDE.md)
 
@@ -12,38 +12,18 @@ Why it matters: jsdom / Storage / experimental-webstorage behaviour differs acro
 
 ## Deploy Changes to Cloud
 
-The production site runs at **https://certomatic3000.co.uk**
+The production site runs at **https://certmate.uk**. Delivery is PR-only: commit on a topic branch, open and merge a PR after required checks pass, then GitHub Actions builds and deploys the ARM64 images to ECS. Do not use the local `deploy.sh`, direct ECR pushes, or out-of-band ECS task-definition registration. A backend rollout is normally about 30 minutes end-to-end.
 
-**Workflow:**
-1. Edit code locally (using Claude Code or any editor)
-2. Test locally if needed: `streamlit run python/eicr_editor.py -- --user Derek`
-3. Deploy to cloud:
+### Luna Fast field trial — rollback and verification
 
-### Deploy Frontend (Streamlit UI)
-```bash
-docker build -f Dockerfile.frontend -t eicr-frontend .
-aws ecr get-login-password --region eu-west-2 | docker login --username AWS --password-stdin 196390795898.dkr.ecr.eu-west-2.amazonaws.com
-docker tag eicr-frontend:latest 196390795898.dkr.ecr.eu-west-2.amazonaws.com/eicr-frontend:latest
-docker push 196390795898.dkr.ecr.eu-west-2.amazonaws.com/eicr-frontend:latest
-aws ecs update-service --cluster eicr-cluster-production --service eicr-frontend --force-new-deployment --region eu-west-2
-```
-
-### Deploy Backend (Job Processing)
-```bash
-docker build -f Dockerfile.backend -t eicr-backend .
-aws ecr get-login-password --region eu-west-2 | docker login --username AWS --password-stdin 196390795898.dkr.ecr.eu-west-2.amazonaws.com
-docker tag eicr-backend:latest 196390795898.dkr.ecr.eu-west-2.amazonaws.com/eicr-backend:latest
-docker push 196390795898.dkr.ecr.eu-west-2.amazonaws.com/eicr-backend:latest
-aws ecs update-service --cluster eicr-cluster-production --service eicr-backend --force-new-deployment --region eu-west-2
-```
-
-Changes go live in ~2 minutes.
-
-**Or just tell Claude Code:** "deploy" or "push to cloud"
+- **Active:** `SONNET_EXTRACT_MODEL=gpt-5.6-luna` and `OPENAI_EXTRACT_SERVICE_TIER=fast` in `ecs/task-def-backend.json`.
+- **Luna Standard rollback:** set `OPENAI_EXTRACT_SERVICE_TIER` to `standard`, commit, merge, and let CI redeploy. This omits `service_tier` while retaining the same model.
+- **Model rollback:** restore `SONNET_EXTRACT_MODEL=claude-haiku-4-5-20251001` separately. Leaving the Fast variable present is harmless because only the OpenAI Responses adapter reads it.
+- **Verify:** after rollout, inspect `stage6_live_extraction`; `model` must be `gpt-5.6-luna` and `service_tier` should be `priority` (OpenAI's response label for Fast). The session cost summary should use the `luna_fast` rates, not Sonnet rates.
 
 ### Observation-tier routing — flip & rollback (`OBSERVATION_TIER_ROUTING`)
 
-The observation-tier model router (chunk C1) ships DARK: `ecs/task-def-backend.json` sets `OBSERVATION_TIER_ROUTING=false`, so the live recording path is byte-identical to pre-C1 (all extraction on `SONNET_EXTRACT_MODEL` = Haiku). Activation and rollback are BOTH a single flag flip in source + a CI redeploy — never a live `aws ecs` mutation, and never an edit of `OBSERVATION_EXTRACT_MODEL`:
+The observation-tier model router (chunk C1) remains DARK: `ecs/task-def-backend.json` sets `OBSERVATION_TIER_ROUTING=false`, so all live extraction currently uses default Luna. Activation and rollback are both a source flag edit plus CI redeploy — never a live `aws ecs` mutation:
 
 - **Flip ON (activate):** change `OBSERVATION_TIER_ROUTING` to `"true"` in `ecs/task-def-backend.json`, commit, merge to `main` → CI re-registers the task def + rolls the service. **Flip prerequisite:** the web observation-processing TTS cue (parity-ledger `recording/observation-processing-cue`) must be live + verified first — the flag routes BOTH clients' observation turns to Sonnet (added latency), and iOS already masks it with its own cue while web does not yet. There is NO numeric latency gate (Derek: latency is masked by a processing cue, not gated on a number).
 - **Rollback:** change it back to `"false"`, commit, merge, redeploy. This restores byte-identical pre-C1 behaviour with no other change.
