@@ -59,7 +59,7 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
     // sit OUTSIDE the A1:ON block (buildSessionTools(false) advertises
     // them, so a flag-off inventory describing only 13 would contradict a
     // 17 heading).
-    expect(off).toContain('TOOLS (17):');
+    expect(off).toContain('TOOLS (18):');
     expect(off).toContain('There are NO `query_*` tools — consult the cached prefix directly.');
     expect(off).toContain(
       'If no new information was spoken, emit NO tool calls — the server handles silence.'
@@ -67,8 +67,7 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
     expect(off).not.toContain('ANSWERING QUESTIONS:');
     expect(off).not.toContain('answer_user');
     expect(off).not.toContain('inspect_session_state');
-    expect(off).not.toContain('TOOLS (19)');
-    expect(off).not.toContain('You have 18 tools');
+    expect(off).not.toContain('TOOLS (20)');
     // Round-13 parity: the four non-agentic tools ARE in the flag-off render.
     for (const name of [
       'set_field_for_all_circuits',
@@ -76,15 +75,16 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
       'select_board',
       'mark_distribution_circuit',
       'clear_board_reading',
+      'resolve_observation_clarification',
     ]) {
       expect(off).toContain(`\`${name}\``);
     }
   });
 
-  test('flag-on render carries the rewrites and the exhaustive TOOLS (19) inventory', () => {
+  test('flag-on render carries the rewrites and the exhaustive TOOLS (20) inventory', () => {
     const on = renderAgenticSystemPrompt(true);
-    expect(on).toContain('TOOLS (19):');
-    expect(on).not.toContain('TOOLS (17):');
+    expect(on).toContain('TOOLS (20):');
+    expect(on).not.toContain('TOOLS (18):');
     expect(on).toContain('ANSWERING QUESTIONS:');
     expect(on).toContain('call `inspect_session_state`');
     expect(on).not.toContain('There are NO `query_*` tools');
@@ -97,6 +97,7 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
       'answer_user',
       'inspect_session_state',
       'clear_board_reading',
+      'resolve_observation_clarification',
     ]) {
       expect(on).toContain(`\`${name}\``);
     }
@@ -104,6 +105,7 @@ describe('renderAgenticSystemPrompt — conditional marker-block render (Item 2)
     expect(on).toContain('A question turn is NOT "no new information"');
     expect(on).toContain('only `answer_user` reaches the speaker');
     expect(on).toContain('"You have 18 tools"');
+    expect(on).toContain('"You have 20 tools"');
   });
 
   test('plan A1a — both renders carry the scope-explicit clear directives and the Delete-Ze example', () => {
@@ -279,8 +281,10 @@ describe('leak filter — retained count literals + complete TOOL_KEYWORD_RE (It
       'You have 9 tools',
       'You have 12 tools',
       'You have 18 tools',
+      'You have 20 tools',
       'the header says TOOLS (12): here',
       'the header says TOOLS (18): here',
+      'the header says TOOLS (20): here',
     ]) {
       expect(checkForPromptLeak(text, { field: 'question' }).safe).toBe(false);
     }

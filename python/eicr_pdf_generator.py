@@ -123,6 +123,7 @@ INSPECTION_SCHEDULE_ITEMS = [
     ("5.19", "Suitability of accessories for external influences (512.2)", False),
     ("5.20", "Adequacy of working space/accessibility to equipment (132.12; 513.1)", False),
     ("5.21", "Single-pole switching or protective devices in line conductors only (132.14.1; 530.3.3)", False),
+    ("5.22", "AFDD fitted where required (421.1.7)?", False),
 
     # Section 6: Locations containing a bath or shower
     ("6. Location(s) containing a bath or shower", None, True),

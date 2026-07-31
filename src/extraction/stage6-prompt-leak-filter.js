@@ -225,8 +225,10 @@ const STRUCTURAL_PHRASES = [
   // model quoting a stale count); the new literal + header forms join them.
   { id: 'seventeen-tools', value: 'You have 17 tools' },
   { id: 'nineteen-tools', value: 'You have 19 tools' },
+  { id: 'twenty-tools', value: 'You have 20 tools' },
   { id: 'tools-header-seventeen', value: 'TOOLS (17)' },
   { id: 'tools-header-nineteen', value: 'TOOLS (19)' },
+  { id: 'tools-header-twenty', value: 'TOOLS (20)' },
   { id: 'no-free-text-json', value: 'Do not emit free-text JSON' },
   { id: 'silent-writes', value: 'Prefer silent writes' },
   { id: 'corrections-are-writes', value: 'Corrections are writes' },
@@ -235,14 +237,16 @@ const STRUCTURAL_PHRASES = [
 /**
  * Tool-call keyword regex — the COMPLETE advertised tool-name set (A1
  * agentic-voice, 2026-07-23: previously covered only the original 7; the
- * server now advertises 19 — plan A1a 2026-07-27 added clear_board_reading —
+ * server now advertises 20 — PLAN-3 added the silent
+ * resolve_observation_clarification lifecycle terminal after plan A1a added
+ * clear_board_reading —
  * including four that had been omitted from the
  * prompt inventory and the two new answer-feature tools). Used to
  * context-gate worked-example detection (see MARKER_EXAMPLE handling in
  * checkForPromptLeak).
  */
 const TOOL_KEYWORD_RE =
-  /\b(record_reading|clear_reading|create_circuit|rename_circuit|record_observation|delete_observation|ask_user|record_board_reading|start_dialogue_script|delete_circuit|calculate_zs|calculate_r1_plus_r2|set_field_for_all_circuits|add_board|select_board|mark_distribution_circuit|answer_user|inspect_session_state|clear_board_reading)\b/;
+  /\b(record_reading|clear_reading|create_circuit|rename_circuit|record_observation|delete_observation|ask_user|record_board_reading|start_dialogue_script|delete_circuit|calculate_zs|calculate_r1_plus_r2|set_field_for_all_circuits|add_board|select_board|mark_distribution_circuit|answer_user|inspect_session_state|clear_board_reading|resolve_observation_clarification)\b/;
 
 /**
  * Worked-example header regex: "Example 1:", "Example 2:", ...,

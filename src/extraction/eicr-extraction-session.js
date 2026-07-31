@@ -2449,8 +2449,12 @@ export class EICRExtractionSession {
    * batch fires (buffer full) or when flushed via timeout/stop.
    */
   async extractFromUtterance(transcriptText, regexResults = [], options = {}) {
-    // Add to buffer
-    this.utteranceBuffer.push({ transcriptText, regexResults, options });
+    // PLAN-3 review closure — identity belongs to the accepted utterance, not
+    // the later model response. A timeout-flushed result must reuse the same
+    // id as this immediate placeholder or the web completion ledger can close
+    // a newer turn when the delayed result arrives.
+    const turnId = `legacy-${randomUUID()}`;
+    this.utteranceBuffer.push({ transcriptText, regexResults, options, turnId });
 
     // Clear any existing flush timeout
     if (this.batchTimeoutHandle) {
@@ -2482,6 +2486,7 @@ export class EICRExtractionSession {
       validation_alerts: [],
       questions_for_user: [],
       confirmations: [],
+      turn_id: turnId,
     };
   }
 
@@ -2515,9 +2520,14 @@ export class EICRExtractionSession {
       }
       return null;
     })();
+    // A batch's real result answers the newest buffered utterance. Earlier
+    // items already closed their own processing slots via their placeholders;
+    // the newest item did not receive a placeholder because it fired the batch.
+    const lastBufferedTurnId = batch[batch.length - 1]?.turnId ?? null;
     const combinedOptions = {
       confirmationsEnabled: batch.some((b) => b.options?.confirmationsEnabled),
       utteranceId: lastBufferedUtteranceId,
+      turnId: lastBufferedTurnId,
     };
 
     logger.info(
@@ -2826,6 +2836,7 @@ export class EICRExtractionSession {
         const codeChanged = obs.code && match.code && obs.code !== match.code;
         const hasLeadIn = OBSERVATION_CORRECTION_LEAD_IN.test(text);
         if (codeChanged || hasLeadIn) {
+          const previousCode = match.code;
           // UPDATE — emit as observation_update with the original id so iOS
           // patches the existing row in place. Does NOT flow through the
           // extraction message body.
@@ -2833,6 +2844,10 @@ export class EICRExtractionSession {
             observation_id: match.id,
             observation_text: obs.observation_text,
             code: obs.code || match.code,
+            // PLAN-3 B′ — capture BEFORE mutating `match.code`; the durable
+            // two-frame emitter needs the real from→to pair for its audible
+            // correction and this value is server-internal only.
+            previous_code: previousCode,
             regulation: obs.regulation || null,
             rationale: hasLeadIn ? 'correction_lead_in' : 'code_change',
             source: 'rule_6_edit',
@@ -2840,7 +2855,7 @@ export class EICRExtractionSession {
           if (codeChanged) match.code = obs.code;
           logger.info(
             `Session ${this.sessionId} Observation update: ${match.id.slice(0, 8)} ` +
-              `${match.code || '?'}→${obs.code || '?'} (${hasLeadIn ? 'lead-in' : 'code-change'})`
+              `${previousCode || '?'}→${obs.code || previousCode || '?'} (${hasLeadIn ? 'lead-in' : 'code-change'})`
           );
           return false;
         }
@@ -2905,6 +2920,15 @@ export class EICRExtractionSession {
     // byte-identical to pre-P4d (Codex diff-review r1). Absent key == no epoch.
     if (typeof options?.utteranceId === 'string' && options.utteranceId) {
       result.utterance_id = options.utteranceId;
+    }
+    // PLAN-3 B′ — the legacy sync and timeout-batch paths previously had no
+    // turn identity. Mint it once on the raw result before any egress or
+    // buffering so a delayed supplemental recode extraction can identify its
+    // originating turn on both clients and reconnect replay stays stable.
+    if (typeof options?.turnId === 'string' && options.turnId.length > 0) {
+      result.turn_id = options.turnId;
+    } else if (typeof result.turn_id !== 'string' || result.turn_id.length === 0) {
+      result.turn_id = `legacy-${randomUUID()}`;
     }
 
     return result;

@@ -192,12 +192,13 @@
       "ref": "421.1.7",
       "section": "Section 4 - Protection for Safety",
       "title": "Protection against fire - Arc fault detection",
-      "description": "Where the risk of fire is increased due to the nature of processed or stored materials, arc fault detection devices (AFDDs) shall be provided.",
+      "description": "Arc fault detection devices (AFDDs) shall be provided for single-phase AC final circuits supplying socket-outlets rated not exceeding 32 A in higher-risk residential buildings, houses in multiple occupation, purpose-built student accommodation and care homes. For all other premises, use of AFDDs for such circuits is recommended.",
+      "source_version_note": "Reconciled to the BS 7671:2018+A2:2022 redraft of Regulation 421.1.7; the previous stored-materials wording was the superseded pre-Amendment-2 provision.",
       "common_observations": [
-        "AFDD not installed where required by risk assessment",
+        "AFDD not installed on an applicable circuit in a premises category where it is required",
         "AFDD fitted but not functional"
       ],
-      "recommended_action": "Install AFDD protection where the fire risk assessment indicates it is required."
+      "recommended_action": "Provide AFDD protection on applicable circuits where Regulation 421.1.7 requires it, or rectify a defective installed AFDD."
     },
     {
       "ref": "421.3",

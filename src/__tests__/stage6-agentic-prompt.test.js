@@ -473,8 +473,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // clause-locality, category-specific conflict) grew it further.
       // Measured 22891; cap 22991 leaves ~100-token headroom (measured +
       // ~100, P8 precedent).
+      // PLAN-3 (2026-07-31, feedback id 107): the AFDD circuit-applicability +
+      // premises decision table and deterministic mismatch/split recovery
+      // contract are shared by both renders. Review closure added the explicit
+      // <=32 A socket-final-circuit gate and sequential applicability/premises
+      // asks. PLAN-3's silent clarification terminal adds one bounded tool
+      // contract; measured 24238 and cap retains ~100-token headroom.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(23325);
+      expect(estimate).toBeLessThanOrEqual(24338);
     });
   });
 
@@ -1216,8 +1222,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (negation-safe anchors, adjacent-field precedence, clause-locality,
       // category-specific conflict) grew it further. Measured 17653; cap
       // 17753 leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // PLAN-3 AFDD table + mismatch recovery, including review-closure circuit
+      // applicability: measured 18712; cap 18812 leaves ~100 tokens while
+      // pinning the complete reviewed decision table.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(18087);
+      expect(estimate).toBeLessThanOrEqual(19088);
     });
   });
 
@@ -2156,7 +2165,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     test('§3.3 — multiple descriptions in one reply write to each matched circuit, BOTH renders', () => {
       for (const rendered of [renderedOn, renderedOff]) {
         expect(rendered).toContain('MULTIPLE DESCRIPTIONS in one reply');
-        expect(rendered).toContain('one `record_reading` per matched circuit, not just the last one');
+        expect(rendered).toContain(
+          'one `record_reading` per matched circuit, not just the last one'
+        );
         expect(rendered).toContain(
           'A designation that itself contains "and" ("Kitchen and utility lights") is ONE name, not two'
         );
@@ -2165,8 +2176,63 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     test('§3.4 — ref_method single-token guidance with answer forms, BOTH renders', () => {
       for (const rendered of [renderedOn, renderedOff]) {
         expect(rendered).toContain('`ref_method` (BS 7671 Appendix 4 reference method)');
-        expect(rendered).toContain('Answers like "C", "method C", "reference method C" → write "C"');
+        expect(rendered).toContain(
+          'Answers like "C", "method C", "reference method C" → write "C"'
+        );
         expect(rendered).toContain('the word form "one hundred" → "100"');
+      }
+    });
+  });
+
+  describe('Group 22 — 2026-07-31 PLAN-3 AFDD decision and citation integrity', () => {
+    test('the circuit-applicability and premises AFDD table is present in BOTH flag renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('AFDD DECISION TABLE — 421.1.7');
+        expect(rendered).toContain(
+          'single-phase AC final circuit supplying socket-outlets rated not exceeding 32 A'
+        );
+        expect(rendered).toContain('A stated lighting-only circuit');
+        expect(rendered).toContain('circuit rated above 32 A');
+        expect(rendered).toContain(
+          'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?'
+        );
+        expect(rendered).toContain('ask that as a later follow-up, never as a compound question');
+        expect(rendered).toContain('Use ONE chain across topic/applicability/premises');
+        expect(rendered).toContain('Only those three declared kinds are allowed');
+        expect(rendered).toContain('observation_clarification_kind:"afdd_applicability"');
+        expect(rendered).toContain('observation_clarification_kind:"afdd_premises"');
+        expect(rendered).toMatch(/HMO.*care home.*purpose-built student accommodation/s);
+        expect(rendered).toContain(
+          'higher-risk residential building as classified under applicable legislation'
+        );
+        expect(rendered).toContain('Do not infer HRRB status from an uncited height/storey shortcut');
+        expect(rendered).toContain('file NO `record_observation`');
+        expect(rendered).toContain('premises category UNKNOWN');
+        expect(rendered).toContain('code_basis:"afdd_premises_requirement"');
+        expect(rendered).toContain('INSTALLED BUT DEFECTIVE');
+        expect(rendered).toContain('`resolve_observation_clarification`');
+        expect(rendered).toContain('outcome:"afdd_not_applicable"');
+        expect(rendered).toContain('outcome:"afdd_recommendation_only"');
+      }
+      expect(renderedOn).toContain('Call `answer_user` ONCE');
+      expect(renderedOff).toContain(
+        'With voice answers disabled, after any required silent terminal emit no other tool'
+      );
+      expect(renderedOff).not.toContain('answer_user');
+    });
+
+    test('topic mismatch asks once and dual-topic prose splits before append in BOTH renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('`regulation_topic_mismatch`');
+        expect(rendered).toContain(
+          'Is this observation about AFDD protection or surge protection?'
+        );
+        expect(rendered).toContain('echo this chain id on the table questions above');
+        expect(rendered).toContain('observation_clarification_kind:"afdd_topic"');
+        expect(rendered).toContain('never start another chain or ask severity');
+        expect(rendered).toContain('`dual_topic_observation`');
+        expect(rendered).toContain('Split them into separate `record_observation` calls');
+        expect(rendered).toContain('Never cite SPD material (`443.x` or `534.x`)');
       }
     });
   });

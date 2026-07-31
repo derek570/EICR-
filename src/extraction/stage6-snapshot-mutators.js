@@ -32,6 +32,7 @@
 import { randomUUID } from 'node:crypto';
 import { getMainBoardId } from './stage6-multi-board-shape.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
+import { copyAfddPremisesRequirement } from './regulation-lookup.js';
 
 /**
  * Write a reading into stateSnapshot.circuits[circuit][field]. Auto-creates
@@ -655,9 +656,8 @@ export function clearBoardReadingFlagAware(snapshot, args) {
  *          circuit: number|null, suggested_regulation: string|null}} input
  * @returns {{id: string}}
  */
-export function appendObservation(
-  session,
-  {
+export function appendObservation(session, input) {
+  const {
     code,
     location,
     text,
@@ -670,13 +670,12 @@ export function appendObservation(
     regulation_description,
     // Plan 06-23 obs-#51 — one-clause "why this code" rationale (null if none).
     rationale,
-  }
-) {
+  } = input;
   const id = randomUUID();
   if (!Array.isArray(session.extractedObservations)) {
     session.extractedObservations = [];
   }
-  session.extractedObservations.push({
+  const stored = {
     id,
     code,
     location,
@@ -687,8 +686,10 @@ export function appendObservation(
     regulation_title: regulation_title ?? null,
     regulation_description: regulation_description ?? null,
     rationale: rationale ?? null,
-  });
-  return { id };
+  };
+  copyAfddPremisesRequirement(input, stored);
+  session.extractedObservations.push(stored);
+  return { id, observation: stored };
 }
 
 /**

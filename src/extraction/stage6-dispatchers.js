@@ -217,7 +217,7 @@ const WRITE_TOOL_NAMES = Object.freeze(new Set(Object.keys(WRITE_DISPATCHERS)));
 export function createToolDispatcher(
   writes,
   asks,
-  { answers, inspects, onUnknownToolRefusal } = {}
+  { answers, inspects, observationClarificationTerminals, onUnknownToolRefusal } = {}
 ) {
   return async function dispatchTool(call, ctx) {
     // A1 agentic-voice (2026-07-23) — dedicated routes for the two read-only
@@ -229,6 +229,12 @@ export function createToolDispatcher(
     if (call.name === 'answer_user' && typeof answers === 'function') return answers(call, ctx);
     if (call.name === 'inspect_session_state' && typeof inspects === 'function') {
       return inspects(call, ctx);
+    }
+    if (
+      call.name === 'resolve_observation_clarification' &&
+      typeof observationClarificationTerminals === 'function'
+    ) {
+      return observationClarificationTerminals(call, ctx);
     }
     // `asks` is nullable since A1: the no-pendingAsks composition path now
     // also flows through this composer (it previously used the bare writes

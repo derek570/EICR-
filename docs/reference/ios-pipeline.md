@@ -176,6 +176,8 @@ Three key shapes:
 
 For fields in `WIRE_CLIENT_DEDUPE_TOKEN_FIELDS`, a backend-stamped `dedupe_token` takes precedence in EVERY branch (`{field}_{dedupe_token}`), so identical-text REPEATS of DISTINCT operations do not collide. The backend debounce uses a deliberately separate `DEDUPE_TOKEN_FIELDS` manifest.
 
+PLAN-3 adds one deliberately separate token lane outside that field manifest: a severity re-code's supplemental confirmation remains `field:null` but carries `dedupe_token:"obsrecode_<turn>_<observation>_<old>_<new>"`. If frame one (`observation_update`) succeeds and frame two fails, reconnect replays only the owed confirmation. iOS lets only this prefix bypass the post-reconnect stale-confirmation gate and stores its operation key permanently; the same suffix therefore speaks once, while ordinary replay-burst confirmations remain suppressed. Web uses the same special key and permanent-store classification. The token does not enrol a seventh `WIRE_CLIENT_DEDUPE_TOKEN_FIELDS` member and does not change backend debounce.
+
 | Token family | Enrolled fields | Replay-stable identity |
 |--------------|-----------------|------------------------|
 | `circop_` / `obs_` / `obsdel_` / `clear_` / `desig_` | `circuit_op`, `observation`, `observation_deletion`, `field_cleared`, `circuit_designation` | operation/ref plus turn or server-owned id |

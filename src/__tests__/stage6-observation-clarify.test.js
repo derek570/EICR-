@@ -70,6 +70,19 @@ const clarifyAsk = (id, chainId = null) => ({
   },
 });
 
+const afddAsk = (id, question, chainId = null, declaredKind = null) => ({
+  tool_call_id: id,
+  name: 'ask_user',
+  input: {
+    question,
+    reason: 'missing_context',
+    context_field: 'observation_clarify',
+    expected_answer_shape: 'free_text',
+    ...(declaredKind ? { observation_clarification_kind: declaredKind } : {}),
+    ...(chainId ? { clarification_chain_id: chainId } : {}),
+  },
+});
+
 const ctx = { sessionId: 'sess-d2', turnId: 'turn-1' };
 
 describe('§D2 Group A — per-observation clarification-chain ask budget', () => {
@@ -124,6 +137,191 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
     await dispatcher(clarifyAsk('toolu_x', 'obsclr-invented-999'), ctx);
     expect(seen[0].clarification_chain_id).not.toBe('obsclr-invented-999');
     expect(broker.known.has(seen[0].clarification_chain_id)).toBe(true);
+  });
+
+  test('PLAN-3 AFDD topic repair + two deciding facts get one exact bounded 3-slot chain', async () => {
+    const broker = createObsClarifyChainBroker();
+    const budget = createAskBudget({ maxAsksPerKey: 2 });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+
+    const topic = await dispatcher(
+      afddAsk('toolu_topic', 'model wording is ignored', null, 'afdd_topic'),
+      ctx
+    );
+    const topicChain = JSON.parse(topic.content).clarification_chain_id;
+    expect(seen[0].question).toBe('Is this observation about AFDD protection or surge protection?');
+
+    // Topic repair and its two deciding facts stay on ONE chain so the D2
+    // dropped-observation net can correlate the eventual mutation.
+    const applicability = await dispatcher(
+      afddAsk(
+        'toolu_applicability',
+        'model applicability wording is ignored',
+        topicChain,
+        'afdd_applicability'
+      ),
+      ctx
+    );
+    const afddChain = JSON.parse(applicability.content).clarification_chain_id;
+    expect(afddChain).toBe(topicChain);
+
+    const premises = await dispatcher(
+      afddAsk('toolu_premises', 'model premises wording is ignored', afddChain, 'afdd_premises'),
+      ctx
+    );
+    expect(JSON.parse(premises.content)).toMatchObject({
+      answered: true,
+      clarification_chain_id: afddChain,
+    });
+    expect(seen[1].question).toBe(
+      'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?'
+    );
+    expect(seen[2].question).toBe(
+      'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?'
+    );
+
+    // The exact three-question sequence is the only cap-3 exception. The AFDD
+    // table owns severity, so a fourth generic C2/C3 ask cannot reach the wire.
+    for (const severity of [
+      await dispatcher(clarifyAsk('toolu_severity_same', afddChain), ctx),
+      await dispatcher(clarifyAsk('toolu_severity_absent'), ctx),
+      await dispatcher(clarifyAsk('toolu_severity_invented', 'invented-chain'), ctx),
+    ]) {
+      expect(JSON.parse(severity.content)).toMatchObject({
+        answered: false,
+        reason: 'ask_budget_exhausted',
+      });
+    }
+    expect(seen).toHaveLength(3);
+  });
+
+  test('PLAN-3 AFDD third-slot exception fails closed for a paraphrase or wrong order', async () => {
+    const broker = createObsClarifyChainBroker();
+    const budget = createAskBudget({ maxAsksPerKey: 2 });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+
+    const topic = await dispatcher(
+      afddAsk(
+        'toolu_topic',
+        'Is this observation about AFDD protection or surge protection?',
+        null,
+        'afdd_topic'
+      ),
+      ctx
+    );
+    const chain = JSON.parse(topic.content).clarification_chain_id;
+    await dispatcher(
+      afddAsk(
+        'toolu_applicability',
+        'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?',
+        chain,
+        'afdd_applicability'
+      ),
+      ctx
+    );
+    const paraphrase = await dispatcher(
+      afddAsk('toolu_premises', 'Which sort of building is this?', chain),
+      ctx
+    );
+    expect(JSON.parse(paraphrase.content)).toMatchObject({
+      answered: false,
+      reason: 'ask_budget_exhausted',
+    });
+    expect(seen).toHaveLength(2);
+  });
+
+  test('PLAN-3 active AFDD flow blocks severity with same, absent, or invented ids before budget exhaustion', async () => {
+    const broker = createObsClarifyChainBroker();
+    const budget = createAskBudget({ maxAsksPerKey: 2 });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const topic = await dispatcher(afddAsk('toolu_topic', 'ignored', null, 'afdd_topic'), ctx);
+    const chain = JSON.parse(topic.content).clarification_chain_id;
+    expect(budget.getCount(`observation_clarify#${chain}`)).toBe(1);
+
+    for (const attempt of [
+      clarifyAsk('toolu_severity_same', chain),
+      clarifyAsk('toolu_severity_absent'),
+      clarifyAsk('toolu_severity_invented', 'invented-chain'),
+    ]) {
+      const result = await dispatcher(attempt, ctx);
+      expect(JSON.parse(result.content)).toMatchObject({
+        answered: false,
+        reason: 'ask_budget_exhausted',
+      });
+    }
+    expect(seen).toHaveLength(1);
+
+    // A declared canonical next kind is accepted and server-forced back onto
+    // the active chain even when the model supplied an invented id.
+    const applicability = await dispatcher(
+      afddAsk('toolu_applicability', 'ignored', 'invented-chain', 'afdd_applicability'),
+      ctx
+    );
+    expect(JSON.parse(applicability.content).clarification_chain_id).toBe(chain);
+    expect(seen).toHaveLength(2);
+  });
+
+  test('PLAN-3 reserved canonical wording without a declared kind cannot start, advance, or take the third slot', async () => {
+    const broker = createObsClarifyChainBroker();
+    const budget = createAskBudget({ maxAsksPerKey: 2 });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+
+    const undeclaredTopic = await dispatcher(
+      afddAsk(
+        'toolu_undeclared_topic',
+        'Is this observation about AFDD protection or surge protection?'
+      ),
+      ctx
+    );
+    expect(JSON.parse(undeclaredTopic.content)).toMatchObject({
+      answered: false,
+      reason: 'validation_error',
+    });
+    expect(seen).toHaveLength(0);
+    expect(broker.getActiveAfddFlow()).toBeNull();
+
+    const topic = await dispatcher(
+      afddAsk('toolu_declared_topic', 'ignored', null, 'afdd_topic'),
+      ctx
+    );
+    const chain = JSON.parse(topic.content).clarification_chain_id;
+    const undeclaredApplicability = await dispatcher(
+      afddAsk(
+        'toolu_undeclared_applicability',
+        'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?',
+        chain
+      ),
+      ctx
+    );
+    expect(JSON.parse(undeclaredApplicability.content)).toMatchObject({
+      answered: false,
+      reason: 'validation_error',
+    });
+    expect(seen).toHaveLength(1);
+    expect(broker.getActiveAfddFlow()).toEqual({ chainId: chain, kinds: ['topic'] });
+
+    await dispatcher(
+      afddAsk('toolu_declared_applicability', 'ignored', chain, 'afdd_applicability'),
+      ctx
+    );
+    const undeclaredPremises = await dispatcher(
+      afddAsk(
+        'toolu_undeclared_premises',
+        'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?',
+        chain
+      ),
+      ctx
+    );
+    expect(JSON.parse(undeclaredPremises.content)).toMatchObject({
+      answered: false,
+      reason: 'validation_error',
+    });
+    expect(seen).toHaveLength(2);
+    expect(budget.getCount(`observation_clarify#${chain}`)).toBe(2);
+    expect(broker.getActiveAfddFlow()).toEqual({
+      chainId: chain,
+      kinds: ['topic', 'applicability'],
+    });
   });
 });
 
@@ -243,6 +441,26 @@ const okReading = () => ({
   input: { field: 'measured_zs_ohm', circuit: 1, value: '0.3' },
   result: { is_error: false, content: JSON.stringify({ ok: true }) },
 });
+const resolvedObservationClarification = (chainId, outcome) => ({
+  name: 'resolve_observation_clarification',
+  tool_call_id: `resolve_${outcome}`,
+  input: { clarification_chain_id: chainId, outcome },
+  result: {
+    is_error: false,
+    content: JSON.stringify({
+      ok: true,
+      code: 'observation_clarification_resolved',
+      clarification_chain_id: chainId,
+      outcome,
+    }),
+  },
+});
+const answeredUserInfo = () => ({
+  name: 'answer_user',
+  tool_call_id: 'answer_afdd_info',
+  input: { answer_text: 'AFDD provision is recommended here, but no observation was recorded.' },
+  result: { is_error: false, content: JSON.stringify({ ok: true }) },
+});
 
 function loopOut(toolCalls) {
   return {
@@ -305,6 +523,89 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
     const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
     const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
     expect(net).toBeUndefined();
+  });
+
+  test('PLAN-3 AFDD three-question chain + correlated write emits no false dropped-observation apology', async () => {
+    const chain = 'obsclr-afdd';
+    const topic = answeredClarify('toolu_afdd_topic');
+    topic.input.question = 'Is this observation about AFDD protection or surge protection?';
+    topic.input.clarification_chain_id = chain;
+    topic.input.observation_clarification_kind = 'afdd_topic';
+    const applicability = answeredClarify('toolu_afdd_applicability');
+    applicability.input.question =
+      'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?';
+    applicability.input.clarification_chain_id = chain;
+    applicability.input.observation_clarification_kind = 'afdd_applicability';
+    const premises = answeredClarify('toolu_afdd_premises');
+    premises.input.question =
+      'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?';
+    premises.input.clarification_chain_id = chain;
+    premises.input.observation_clarification_kind = 'afdd_premises';
+    const observation = okObservation();
+    observation.input.clarification_chain_id = chain;
+
+    toolLoopResult = loopOut([topic, applicability, premises, observation]);
+    const result = await runShadowHarness(makeSession(), 'an HMO', [], baseOpts());
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeUndefined();
+  });
+
+  test.each([
+    ['omitted', null],
+    ['invented', 'obsclr-invented'],
+  ])(
+    'PLAN-3 declared AFDD chain ignores a successful %s-id mutation and keeps the D2 apology',
+    async (_label, mutationChainId) => {
+      const chain = 'obsclr-afdd-strict';
+      const premises = answeredClarify('toolu_afdd_strict_premises');
+      premises.input.question =
+        'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?';
+      premises.input.clarification_chain_id = chain;
+      premises.input.observation_clarification_kind = 'afdd_premises';
+      const observation = okObservation();
+      if (mutationChainId !== null) {
+        observation.input.clarification_chain_id = mutationChainId;
+      }
+      toolLoopResult = loopOut([premises, observation]);
+
+      const result = await runShadowHarness(makeSession(), 'an HMO', [], baseOpts());
+      expect((result.confirmations ?? []).some((c) => netText.test(c.text || ''))).toBe(true);
+    }
+  );
+
+  test('PLAN-3 applicability-no silent terminal closes the chain with no write and no D2 apology', async () => {
+    const chain = 'obsclr-afdd-no';
+    const applicability = answeredClarify('toolu_afdd_applicability_no');
+    applicability.input.question =
+      'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?';
+    applicability.input.clarification_chain_id = chain;
+    applicability.input.observation_clarification_kind = 'afdd_applicability';
+    toolLoopResult = loopOut([
+      applicability,
+      resolvedObservationClarification(chain, 'afdd_not_applicable'),
+    ]);
+
+    const result = await runShadowHarness(makeSession(), 'no', [], baseOpts());
+    expect(result.observations).toEqual([]);
+    expect((result.confirmations ?? []).some((c) => netText.test(c.text || ''))).toBe(false);
+  });
+
+  test('PLAN-3 recommendation-only terminal permits the optional answer_user note without a D2 apology', async () => {
+    const chain = 'obsclr-afdd-domestic';
+    const premises = answeredClarify('toolu_afdd_premises_domestic');
+    premises.input.question =
+      'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?';
+    premises.input.clarification_chain_id = chain;
+    premises.input.observation_clarification_kind = 'afdd_premises';
+    toolLoopResult = loopOut([
+      premises,
+      resolvedObservationClarification(chain, 'afdd_recommendation_only'),
+      answeredUserInfo(),
+    ]);
+
+    const result = await runShadowHarness(makeSession(), 'ordinary domestic', [], baseOpts());
+    expect(result.observations).toEqual([]);
+    expect((result.confirmations ?? []).some((c) => netText.test(c.text || ''))).toBe(false);
   });
 
   test('NEGATIVE: answered clarify followed by an UNANSWERED continuation → no net (the question was audible)', async () => {
@@ -510,9 +811,15 @@ describe('§D2 Group B (2026-07-15) — mutation-to-chain correlation', () => {
 
   describe('(3) failed record_observation never qualifies → chain falls back', () => {
     const cases = [
-      ['(a) is_error:false + {ok:false}', { is_error: false, content: JSON.stringify({ ok: false }) }],
+      [
+        '(a) is_error:false + {ok:false}',
+        { is_error: false, content: JSON.stringify({ ok: false }) },
+      ],
       ['(b) is_error:false + malformed content', { is_error: false, content: '{not json' }],
-      ['(c) is_error:false + JSON missing ok', { is_error: false, content: JSON.stringify({ observation_id: 'x' }) }],
+      [
+        '(c) is_error:false + JSON missing ok',
+        { is_error: false, content: JSON.stringify({ observation_id: 'x' }) },
+      ],
       ['(d) is_error:true + {ok:true}', { is_error: true, content: JSON.stringify({ ok: true }) }],
     ];
     for (const [label, res] of cases) {
@@ -532,9 +839,7 @@ describe('§D2 Group B (2026-07-15) — mutation-to-chain correlation', () => {
         // the outer catch (which would emit only net_error and re-open the
         // silence path). So no net_error row must be logged.
         expect(
-          opts.logger.warn.mock.calls.filter(
-            (c) => c[0] === 'stage6.observation_clarify_net_error'
-          )
+          opts.logger.warn.mock.calls.filter((c) => c[0] === 'stage6.observation_clarify_net_error')
         ).toHaveLength(0);
       });
     }
@@ -559,7 +864,7 @@ describe('§D2 Group B (2026-07-15) — mutation-to-chain correlation', () => {
     expect(infoRows(opts, DROPPED)).toHaveLength(0);
   });
 
-  test('(5) id-less mutation, single chain → qualifies (today\'s behaviour preserved)', async () => {
+  test("(5) id-less mutation, single chain → qualifies (today's behaviour preserved)", async () => {
     toolLoopResult = loopOut([answeredChain('toolu_a', 'A'), okObsChain('obs_x', null)]);
     const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
     const net = (result.confirmations ?? []).find(

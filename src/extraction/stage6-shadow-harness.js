@@ -67,6 +67,7 @@
 import logger from '../logger.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import { copyAfddPremisesRequirement } from './regulation-lookup.js';
 import { runToolLoop } from './stage6-tool-loop.js';
 // Loaded Barrel Phase 2.B/2.C wire-up (plan v10 §C). Per-turn
 // speculator instantiation in runLiveMode. Cache state is module-
@@ -245,6 +246,7 @@ import { buildSessionTools } from './stage6-tool-schemas.js';
 import {
   createAnswerDispatcher,
   createInspectDispatcher,
+  createObservationClarificationTerminalDispatcher,
   ANSWER_FALLBACK_TEXT,
 } from './stage6-dispatchers-answer.js';
 import {
@@ -345,7 +347,7 @@ export function renameObservationsForLegacyWire(observations) {
       regulation_description: obs.regulation_description ?? null,
     };
     if (obs.circuit !== undefined) renamed.circuit = obs.circuit;
-    return renamed;
+    return copyAfddPremisesRequirement(obs, renamed);
   });
 }
 
@@ -1177,6 +1179,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const liveAgenticAnswersEnabled = liveSession?.agenticAnswersEnabled === true;
     const answers = createAnswerDispatcher(liveSession, log, turnId, perTurnWrites);
     const inspects = createInspectDispatcher(liveSession, log, turnId, perTurnWrites);
+    const observationClarificationTerminals = createObservationClarificationTerminalDispatcher(
+      liveSession,
+      log,
+      turnId
+    );
     let dispatcher;
     let sortRecords;
     let askGateForTurn = null;
@@ -1273,7 +1280,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           obsClarifyChains: liveSession.obsClarifyChains,
         });
       }
-      dispatcher = createToolDispatcher(writes, asks, { answers, inspects, onUnknownToolRefusal });
+      dispatcher = createToolDispatcher(writes, asks, {
+        answers,
+        inspects,
+        observationClarificationTerminals,
+        onUnknownToolRefusal,
+      });
       sortRecords = createSortRecordsAsksLast();
     } else {
       // A1: route through the composer even without pendingAsks so
@@ -1281,7 +1293,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // ask_user falls back to `writes` inside the composer, reproducing the
       // pre-A1 unknown_tool behaviour byte-for-byte (plan B: plus the staged
       // model_contract refusal riding beside that envelope).
-      dispatcher = createToolDispatcher(writes, null, { answers, inspects, onUnknownToolRefusal });
+      dispatcher = createToolDispatcher(writes, null, {
+        answers,
+        inspects,
+        observationClarificationTerminals,
+        onUnknownToolRefusal,
+      });
       sortRecords = undefined;
     }
 
@@ -2827,7 +2844,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // all unqualified chains into ONE count-aware fallback, and retire every
     // evaluated chain exactly once.
     //
-    // Mutation-id resolution is LENIENT on both edge cases (Derek 2026-07-15):
+    // Mutation-id resolution is LENIENT on both edge cases (Derek 2026-07-15)
+    // for legacy/non-AFDD chains:
     // an id-less mutation (D-1a) or an unknown/invented non-null id (D-1b) on
     // a SUCCESSFUL record_observation qualifies EVERY evaluated chain whose
     // anchor precedes it — literally today's suppression outcome, so older /
@@ -2836,6 +2854,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the write demonstrably succeeded (a false apology → re-dictation →
     // duplicate observation is the worse field failure). Only a NON-NULL id
     // that matches a DIFFERENT evaluated chain fails to qualify this one.
+    // PLAN-3's declared AFDD chains are the deliberate exception: their
+    // server-owned lifecycle requires an exact matched write or exact silent
+    // terminal, so null/unknown mutations never qualify them.
     //
     // F7 Item 3 — SKIP on a cancelled generation (derefs toolLoopOut.tool_calls).
     if (!cancelled)
@@ -2888,6 +2909,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // the tool_result body for it. A null/empty id groups under the legacy
         // null bucket (has no budget bucket → retirement is a no-op for it).
         const anchorByChain = new Map(); // cid(string|null) -> anchor index (latest)
+        const declaredAfddChainIds = new Set();
         for (let i = 0; i < seq.length; i += 1) {
           const c = seq[i];
           if (
@@ -2897,13 +2919,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ) {
             const cid = normaliseObsClarifyChainId(c?.input?.clarification_chain_id);
             anchorByChain.set(cid, i);
+            if (
+              cid !== null &&
+              ['afdd_topic', 'afdd_applicability', 'afdd_premises'].includes(
+                c?.input?.observation_clarification_kind
+              )
+            ) {
+              declaredAfddChainIds.add(cid);
+            }
           }
         }
 
         if (anchorByChain.size > 0) {
           // Evaluated chains in anchor-index order (telemetry contract).
           const evaluatedChains = [...anchorByChain.entries()]
-            .map(([cid, aIdx]) => ({ cid, aIdx }))
+            .map(([cid, aIdx]) => ({ cid, aIdx, isDeclaredAfdd: declaredAfddChainIds.has(cid) }))
             .sort((a, b) => a.aIdx - b.aIdx);
           const evaluatedCids = new Set(
             evaluatedChains.map((ch) => ch.cid).filter((cid) => cid !== null)
@@ -2933,24 +2963,53 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             }
           }
 
+          // PLAN-3: successful silent AFDD no-write terminals qualify ONLY
+          // their exact server-owned chain. Unlike legacy id-less observation
+          // mutations, terminals get no lenient/unknown fallback: their sole
+          // purpose is to prove that an answered clarification intentionally
+          // ended without a certificate row.
+          const successfulClarificationTerminals = [];
+          for (let i = 0; i < seq.length; i += 1) {
+            const c = seq[i];
+            if (c?.name === 'resolve_observation_clarification' && parseMutationSuccess(c)) {
+              const chainId = normaliseObsClarifyChainId(c?.input?.clarification_chain_id);
+              if (chainId !== null && evaluatedCids.has(chainId)) {
+                successfulClarificationTerminals.push({ index: i, chainId });
+              }
+            }
+          }
+
           // For each chain find the EARLIEST qualifying event (a mutation or a
           // same-chain audibly-terminated continuation) strictly after its
           // anchor. Attributing to the earliest event keeps the lenient
           // telemetry rows honest ("newly qualified BY that mutation").
-          const qualifiedInfo = new Map(); // cid -> { type:'mutation'|'continuation', mutation }
+          const qualifiedInfo = new Map(); // cid -> { type:'mutation'|'terminal'|'continuation', mutation }
           for (const ch of evaluatedChains) {
             let bestIdx = Infinity;
             let bestType = null;
             let bestMutation = null;
             for (const m of successfulMutations) {
               if (m.index <= ch.aIdx) continue;
-              // 'matched' qualifies ONLY its own chain; null/unknown are lenient
-              // and qualify any chain whose anchor precedes the mutation.
-              const qualifies = m.kind === 'matched' ? m.matchedChainId === ch.cid : true;
+              // 'matched' qualifies ONLY its own chain. Null/unknown retain
+              // the 2026-07-15 compatibility lane for legacy chains, but a
+              // declared AFDD chain is exact-correlation-only.
+              const qualifies =
+                m.kind === 'matched' ? m.matchedChainId === ch.cid : ch.isDeclaredAfdd !== true;
               if (qualifies && m.index < bestIdx) {
                 bestIdx = m.index;
                 bestType = 'mutation';
                 bestMutation = m;
+              }
+            }
+            for (const terminal of successfulClarificationTerminals) {
+              if (
+                terminal.index > ch.aIdx &&
+                terminal.chainId === ch.cid &&
+                terminal.index < bestIdx
+              ) {
+                bestIdx = terminal.index;
+                bestType = 'terminal';
+                bestMutation = null;
               }
             }
             for (let i = ch.aIdx + 1; i < seq.length; i += 1) {
@@ -4364,6 +4423,11 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const shadowAgenticAnswersEnabled = shadowSession?.agenticAnswersEnabled === true;
   const shadowAnswers = createAnswerDispatcher(shadowSession, log, turnId, perTurnWrites);
   const shadowInspects = createInspectDispatcher(shadowSession, log, turnId, perTurnWrites);
+  const shadowObservationClarificationTerminals = createObservationClarificationTerminalDispatcher(
+    shadowSession,
+    log,
+    turnId
+  );
   // 2026-04-27 — auto-resolve hook is NOT threaded into shadow mode.
   //
   // The original 2026-04-27 path-2 wiring created a `shadowAutoResolveWrite`
@@ -4446,6 +4510,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     dispatcher = createToolDispatcher(writes, asks, {
       answers: shadowAnswers,
       inspects: shadowInspects,
+      observationClarificationTerminals: shadowObservationClarificationTerminals,
       onUnknownToolRefusal: shadowOnUnknownToolRefusal,
     });
     sortRecords = createSortRecordsAsksLast();
@@ -4454,6 +4519,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     dispatcher = createToolDispatcher(writes, null, {
       answers: shadowAnswers,
       inspects: shadowInspects,
+      observationClarificationTerminals: shadowObservationClarificationTerminals,
       onUnknownToolRefusal: shadowOnUnknownToolRefusal,
     });
     sortRecords = undefined; // runToolLoop treats undefined as identity.

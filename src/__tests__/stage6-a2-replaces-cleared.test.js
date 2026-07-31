@@ -883,30 +883,19 @@ describe('A2 — wire contract (shared cross-client fixture)', () => {
     expect(JSON.parse(extractionFrames[0].json)).toEqual(wireContract);
   });
 
-  test('the OTHER production egress site emits the same extraction frame as the ledger', async () => {
-    // `session.onBatchResult` (sonnet-stream.js:2710) sends its extraction frame
-    // WITHOUT going through the ledger. Both sites are only equivalent because
-    // both call the shared projection; pin that equivalence at the frame level so
-    // re-inlining a projection at either site is a failure here rather than a
-    // client-visible divergence between the live and batch paths.
-    const session = wireContractSession();
-    const result = await runShadowHarness(session, 'insulation live live is one hundred', [], {
-      logger: mockLogger(),
-      confirmationsEnabled: true,
-      utteranceId: 'utt-a2-wire',
-    });
-    _test_validateAndCorrectFields(result, 'a2-wire');
-
-    const ledgerFrame = _test_buildResultFrameLedger(session.stateSnapshot, result).find(
-      (f) => f.kind === 'extraction'
-    ).json;
-    // The literal `:2711` send expression.
-    const batchFrame = JSON.stringify({
-      type: 'extraction',
-      result: projectExtractionResultForWire(result),
-    });
-
-    expect(JSON.parse(batchFrame)).toEqual(JSON.parse(ledgerFrame));
+  test('the batch and live production egress sites both use the shared frame ledger', () => {
+    const src = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '../extraction/sonnet-stream.js'),
+      'utf8'
+    );
+    const batchStart = src.indexOf('session.onBatchResult = (result) =>');
+    const syncStart = src.indexOf('const needsVcr = Boolean(spoken_response || action)');
+    expect(batchStart).toBeGreaterThan(-1);
+    expect(syncStart).toBeGreaterThan(-1);
+    expect(src.slice(batchStart, batchStart + 4_000)).toContain(
+      'sendResultFrameLedger(currentWs, session.stateSnapshot, result, session)'
+    );
+    expect(src.slice(syncStart, syncStart + 1_000)).toContain('sendResultFrameLedger(');
   });
 
   test('DRIFT LOCK — every extraction-frame egress site routes through the shared projection', () => {
@@ -918,18 +907,13 @@ describe('A2 — wire contract (shared cross-client fixture)', () => {
     // `result` from the seam. A re-inlined `...rest` spread at an egress site is
     // invisible to every behavioural test above (it would produce the same bytes
     // TODAY and drift the moment the seam changes), so it is caught structurally.
+    const extractionLiterals = src.match(/type: 'extraction'/g) ?? [];
     const egressSites = src.match(/type: 'extraction',\s*result: ([A-Za-z_][\w]*)/g) ?? [];
     expect(egressSites.length).toBeGreaterThanOrEqual(2);
+    expect(egressSites).toHaveLength(extractionLiterals.length);
     for (const site of egressSites) {
-      expect(site).toMatch(
-        /result: (projectExtractionResultForWire|resultWithoutQuestions|result)\b/
-      );
+      expect(site).toMatch(/result: projectExtractionResultForWire\b/);
     }
-    // And the ONE variable spelling that is not literally the seam call is
-    // assigned from it on the immediately preceding line.
-    expect(src).toMatch(
-      /const resultWithoutQuestions = projectExtractionResultForWire\(result\);\s*\n\s*currentWs\.send\(\s*JSON\.stringify\(\{ type: 'extraction', result: resultWithoutQuestions \}\)\s*\);/
-    );
   });
 
   test('the fixture itself encodes the contract: flagged replacement, bare ordinary write, surviving clear', () => {

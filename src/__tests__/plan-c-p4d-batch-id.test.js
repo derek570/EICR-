@@ -70,6 +70,7 @@ describe('P4d row 8 — batched extraction carries the last non-empty buffered u
       confirmationsEnabled: true,
     });
     expect(first.extracted_readings).toEqual([]);
+    expect(first.turn_id).toMatch(/^legacy-/);
 
     // Second fills the batch → the combined API call fires and the result
     // carries the NEWEST buffered epoch.
@@ -79,6 +80,8 @@ describe('P4d row 8 — batched extraction carries the last non-empty buffered u
     });
     expect(result).toBeTruthy();
     expect(result.utterance_id).toBe('utt-B');
+    expect(result.turn_id).toMatch(/^legacy-/);
+    expect(result.turn_id).not.toBe(first.turn_id);
     // One combined API call for the two buffered utterances.
     expect(mockCreate).toHaveBeenCalledTimes(1);
   });
@@ -98,8 +101,12 @@ describe('P4d row 8 — batched extraction carries the last non-empty buffered u
   });
 
   test('single flushed utterance also carries its id (sync-shape parity)', async () => {
-    await session.extractFromUtterance('Zs is 0.35 on circuit 1', [], { utteranceId: 'utt-solo' });
+    const placeholder = await session.extractFromUtterance('Zs is 0.35 on circuit 1', [], {
+      utteranceId: 'utt-solo',
+    });
     const result = await session.flushUtteranceBuffer();
     expect(result.utterance_id).toBe('utt-solo');
+    expect(placeholder.turn_id).toMatch(/^legacy-/);
+    expect(result.turn_id).toBe(placeholder.turn_id);
   });
 });

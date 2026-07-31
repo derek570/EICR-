@@ -186,6 +186,66 @@ export function createAnswerDispatcher(session, logger, turnId, perTurnWrites) {
   };
 }
 
+const OBSERVATION_CLARIFICATION_TERMINALS = new Set([
+  'afdd_not_applicable',
+  'afdd_recommendation_only',
+]);
+
+/**
+ * PLAN-3 final-review closure — a silent, server-validated terminal for an
+ * answered AFDD clarification that deliberately produces no certificate row.
+ * The D2 post-answer net recognises this successful terminal as the same-chain
+ * equivalent of record_observation; it stages no speech and no client write.
+ */
+export function createObservationClarificationTerminalDispatcher(session, logger, turnId) {
+  let round = 0;
+  return async (call, _ctx) => {
+    round += 1;
+    const chainId =
+      typeof call.input?.clarification_chain_id === 'string' &&
+      call.input.clarification_chain_id.length > 0
+        ? call.input.clarification_chain_id
+        : null;
+    const outcome = call.input?.outcome;
+    const validOutcome = OBSERVATION_CLARIFICATION_TERMINALS.has(outcome);
+    const activeFlow = session.obsClarifyChains?.getActiveAfddFlow?.() ?? null;
+    const lastKind = activeFlow?.kinds?.at(-1) ?? null;
+    const outcomeMatchesLastFact =
+      (outcome === 'afdd_not_applicable' && lastKind === 'applicability') ||
+      (outcome === 'afdd_recommendation_only' && lastKind === 'premises');
+    const completed =
+      validOutcome &&
+      outcomeMatchesLastFact &&
+      chainId !== null &&
+      session.obsClarifyChains?.completeAfddFlow?.(chainId) === true;
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'resolve_observation_clarification',
+      round,
+      is_error: !completed,
+      outcome: completed ? 'ok' : 'rejected',
+      validation_error: completed
+        ? undefined
+        : { code: 'invalid_observation_clarification_terminal' },
+      input_summary: { outcome: validOutcome ? outcome : null },
+    });
+    return envelope(
+      call,
+      completed
+        ? {
+            ok: true,
+            code: 'observation_clarification_resolved',
+            clarification_chain_id: chainId,
+            outcome,
+          }
+        : { ok: false, code: 'invalid_observation_clarification_terminal' },
+      !completed
+    );
+  };
+}
+
 const INSPECT_SCOPES = new Set(['summary', 'board', 'circuit', 'field']);
 
 /**

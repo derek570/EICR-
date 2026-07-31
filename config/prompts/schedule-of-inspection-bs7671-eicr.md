@@ -101,6 +101,7 @@ Section 4.
 - 5.19 — Suitability of accessories for external influences (512.2)
 - 5.20 — Adequacy of working space/accessibility to equipment (132.12; 513.1)
 - 5.21 — Single-pole switching or protective devices in line conductors only (132.14.1; 530.3.3)
+- 5.22 — AFDD fitted where required (421.1.7)?
 
 ## Section 6 — Location(s) containing a bath or shower
 
