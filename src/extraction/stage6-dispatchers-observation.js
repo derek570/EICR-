@@ -341,6 +341,41 @@ export async function dispatchRecordObservation(call, ctx) {
     );
   }
 
+  // PLAN-3 r4 review closure — an active AFDD clarification has exact-chain
+  // mutation semantics. Legacy D2 intentionally treats id-less/unknown
+  // observation writes leniently; accepting a missing or invented id here
+  // could therefore let an unrelated write suppress the AFDD chain's owed
+  // dropped-observation notice. Reject before validation/append. An unrelated
+  // id-less observation may still be recorded, but it leaves this flow active
+  // and the D2 net will not use it to qualify a declared AFDD chain.
+  const activeAfddFlow = session.obsClarifyChains?.getActiveAfddFlow?.() ?? null;
+  if (activeAfddFlow) {
+    const suppliedChainId =
+      typeof input.clarification_chain_id === 'string' && input.clarification_chain_id.length > 0
+        ? input.clarification_chain_id
+        : null;
+    const isAfddOrSpdRecord = regulationVerdict.topics.length > 0;
+    const attemptsClarificationResolution = suppliedChainId !== null;
+    const chainMismatch =
+      (isAfddOrSpdRecord || attemptsClarificationResolution) &&
+      suppliedChainId !== activeAfddFlow.chainId;
+    const exactChainButUnrelatedTopic =
+      suppliedChainId === activeAfddFlow.chainId && !isAfddOrSpdRecord;
+    if (chainMismatch || exactChainButUnrelatedTopic) {
+      const errorCode = chainMismatch
+        ? 'afdd_clarification_chain_mismatch'
+        : 'afdd_clarification_record_topic_mismatch';
+      logToolCall(logger, {
+        ...baseLogRow,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: errorCode,
+        input_summary: { code: input.code ?? null },
+      });
+      return envelope(call.tool_call_id, { ok: false, error: { code: errorCode } }, true);
+    }
+  }
+
   // 2026-06-03: validator runs AFTER the leak filter (see comment above).
   // The regulation-required check rejects coded observations (C1/C2/C3/FI)
   // with null/empty `suggested_regulation`.

@@ -549,7 +549,7 @@ const recordObservation = makeTool({
       // an unknown-id echo) — see stage6-shadow-harness.js D2 net.
       anyOf: [{ type: 'string' }, { type: 'null' }],
       description:
-        "observation_clarify chains ONLY. When this record_observation resolves an ambiguous-severity observation that you asked about, echo VERBATIM the server-issued chain id from that observation_clarify tool_result — on this eventual record_observation AND on the optional same-observation continuation ask, never on unrelated observations. Pass null for a direct/unclarified observation (no prior observation_clarify for it). Never invent one; never reuse another observation's id.",
+        "observation_clarify chains ONLY. When this record_observation resolves an ambiguous-severity observation that you asked about, echo VERBATIM the server-issued chain id from that observation_clarify tool_result — on this eventual record_observation AND on the optional same-observation continuation ask, never on unrelated observations. An active AFDD flow rejects its AFDD/SPD write before append unless this is the exact active id. Pass null for a direct/unclarified observation (no prior observation_clarify for it). Never invent one; never reuse another observation's id.",
     },
     code_basis: {
       anyOf: [{ type: 'string', enum: ['afdd_premises_requirement'] }, { type: 'null' }],
@@ -704,7 +704,7 @@ const askUser = makeTool({
         { type: 'null' },
       ],
       description:
-        'PLAN-3 AFDD decision questions only. Select the required fact; the server replaces question with the canonical wording and owns chain progression. Use null/omit for every other ask, including generic C2/C3 severity clarification.',
+        'PLAN-3 AFDD decision questions only. Select the required fact; the server replaces question with the canonical wording and owns chain progression. Canonical AFDD wording without its declared kind is a validation error. Use null/omit for every other ask, including generic C2/C3 severity clarification.',
     },
     clarification_chain_id: {
       // §D2 (field-feedback-2026-07-14) — per-OBSERVATION ask-budget

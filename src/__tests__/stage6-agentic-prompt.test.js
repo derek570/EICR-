@@ -2198,7 +2198,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         );
         expect(rendered).toContain('ask that as a later follow-up, never as a compound question');
         expect(rendered).toContain('Use ONE chain across topic/applicability/premises');
-        expect(rendered).toContain('Only those three kinds are allowed');
+        expect(rendered).toContain('Only those three declared kinds are allowed');
         expect(rendered).toContain('observation_clarification_kind:"afdd_applicability"');
         expect(rendered).toContain('observation_clarification_kind:"afdd_premises"');
         expect(rendered).toMatch(/HMO.*care home.*purpose-built student accommodation/s);

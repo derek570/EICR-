@@ -96,6 +96,125 @@ describe('dispatchRecordObservation', () => {
   });
 
   test.each([
+    ['omitted', undefined, false],
+    ['null', null, false],
+    ['invented', 'obsclr-invented', false],
+    ['different known chain', null, true],
+  ])(
+    'PLAN-3 active AFDD write rejects %s clarification identity before append',
+    async (_label, suppliedId, useDifferentKnownChain) => {
+      const session = makeSession();
+      session.obsClarifyChains = createObsClarifyChainBroker();
+      const activeChain = session.obsClarifyChains.mint();
+      session.obsClarifyChains.noteAnsweredAfddQuestion(activeChain, 'premises');
+      const differentKnownChain = useDifferentKnownChain
+        ? session.obsClarifyChains.mint()
+        : suppliedId;
+      const perTurnWrites = createPerTurnWrites();
+      const result = await WRITE_DISPATCHERS.record_observation(
+        {
+          tool_call_id: 'tu_obs_afdd_wrong_chain',
+          name: 'record_observation',
+          input: {
+            text: 'AFDD protection is absent on the HMO socket final circuit.',
+            code: 'C3',
+            location: 'Consumer unit',
+            circuit: 2,
+            suggested_regulation: '421.1.7',
+            schedule_item: '5.22',
+            rationale: 'AFDD provision applies to this premises category',
+            clarification_chain_id: differentKnownChain,
+            code_basis: 'afdd_premises_requirement',
+          },
+        },
+        makeCtx({ session, logger: makeLogger(), perTurnWrites })
+      );
+
+      expect(result.is_error).toBe(true);
+      expect(JSON.parse(result.content)).toEqual({
+        ok: false,
+        error: { code: 'afdd_clarification_chain_mismatch' },
+      });
+      expect(session.extractedObservations).toHaveLength(0);
+      expect(perTurnWrites.observations).toHaveLength(0);
+      expect(session.obsClarifyChains.getActiveAfddFlow()).toEqual({
+        chainId: activeChain,
+        kinds: ['premises'],
+      });
+    }
+  );
+
+  test('PLAN-3 unrelated id-less observation remains writable but cannot close the active AFDD flow', async () => {
+    const session = makeSession();
+    session.obsClarifyChains = createObsClarifyChainBroker();
+    const activeChain = session.obsClarifyChains.mint();
+    session.obsClarifyChains.noteAnsweredAfddQuestion(activeChain, 'premises');
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_unrelated_idless',
+        name: 'record_observation',
+        input: {
+          text: 'Socket enclosure is cracked.',
+          code: 'C3',
+          location: 'Kitchen',
+          circuit: 4,
+          suggested_regulation: '416.2.1',
+          schedule_item: null,
+          rationale: 'enclosure damage requires improvement',
+          clarification_chain_id: null,
+          code_basis: null,
+        },
+      },
+      makeCtx({ session, logger: makeLogger(), perTurnWrites })
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.extractedObservations).toHaveLength(1);
+    expect(session.obsClarifyChains.getActiveAfddFlow()).toEqual({
+      chainId: activeChain,
+      kinds: ['premises'],
+    });
+  });
+
+  test('PLAN-3 exact active chain cannot be reused by an unrelated observation topic', async () => {
+    const session = makeSession();
+    session.obsClarifyChains = createObsClarifyChainBroker();
+    const activeChain = session.obsClarifyChains.mint();
+    session.obsClarifyChains.noteAnsweredAfddQuestion(activeChain, 'premises');
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_unrelated_same_chain',
+        name: 'record_observation',
+        input: {
+          text: 'Socket enclosure is cracked.',
+          code: 'C3',
+          location: 'Kitchen',
+          circuit: 4,
+          suggested_regulation: '416.2.1',
+          schedule_item: null,
+          rationale: 'enclosure damage requires improvement',
+          clarification_chain_id: activeChain,
+          code_basis: null,
+        },
+      },
+      makeCtx({ session, logger: makeLogger(), perTurnWrites })
+    );
+
+    expect(result.is_error).toBe(true);
+    expect(JSON.parse(result.content)).toEqual({
+      ok: false,
+      error: { code: 'afdd_clarification_record_topic_mismatch' },
+    });
+    expect(session.extractedObservations).toHaveLength(0);
+    expect(session.obsClarifyChains.getActiveAfddFlow()).toEqual({
+      chainId: activeChain,
+      kinds: ['premises'],
+    });
+  });
+
+  test.each([
     ['AFDD protection is absent', '443.4'],
     ['Arc-fault detection device is missing', '534.4.1'],
     ['SPD indicator has failed', '421.1.7'],

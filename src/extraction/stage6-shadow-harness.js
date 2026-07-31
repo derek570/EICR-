@@ -1179,8 +1179,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const liveAgenticAnswersEnabled = liveSession?.agenticAnswersEnabled === true;
     const answers = createAnswerDispatcher(liveSession, log, turnId, perTurnWrites);
     const inspects = createInspectDispatcher(liveSession, log, turnId, perTurnWrites);
-    const observationClarificationTerminals =
-      createObservationClarificationTerminalDispatcher(liveSession, log, turnId);
+    const observationClarificationTerminals = createObservationClarificationTerminalDispatcher(
+      liveSession,
+      log,
+      turnId
+    );
     let dispatcher;
     let sortRecords;
     let askGateForTurn = null;
@@ -2841,7 +2844,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // all unqualified chains into ONE count-aware fallback, and retire every
     // evaluated chain exactly once.
     //
-    // Mutation-id resolution is LENIENT on both edge cases (Derek 2026-07-15):
+    // Mutation-id resolution is LENIENT on both edge cases (Derek 2026-07-15)
+    // for legacy/non-AFDD chains:
     // an id-less mutation (D-1a) or an unknown/invented non-null id (D-1b) on
     // a SUCCESSFUL record_observation qualifies EVERY evaluated chain whose
     // anchor precedes it — literally today's suppression outcome, so older /
@@ -2850,6 +2854,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the write demonstrably succeeded (a false apology → re-dictation →
     // duplicate observation is the worse field failure). Only a NON-NULL id
     // that matches a DIFFERENT evaluated chain fails to qualify this one.
+    // PLAN-3's declared AFDD chains are the deliberate exception: their
+    // server-owned lifecycle requires an exact matched write or exact silent
+    // terminal, so null/unknown mutations never qualify them.
     //
     // F7 Item 3 — SKIP on a cancelled generation (derefs toolLoopOut.tool_calls).
     if (!cancelled)
@@ -2902,6 +2909,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // the tool_result body for it. A null/empty id groups under the legacy
         // null bucket (has no budget bucket → retirement is a no-op for it).
         const anchorByChain = new Map(); // cid(string|null) -> anchor index (latest)
+        const declaredAfddChainIds = new Set();
         for (let i = 0; i < seq.length; i += 1) {
           const c = seq[i];
           if (
@@ -2911,13 +2919,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ) {
             const cid = normaliseObsClarifyChainId(c?.input?.clarification_chain_id);
             anchorByChain.set(cid, i);
+            if (
+              cid !== null &&
+              ['afdd_topic', 'afdd_applicability', 'afdd_premises'].includes(
+                c?.input?.observation_clarification_kind
+              )
+            ) {
+              declaredAfddChainIds.add(cid);
+            }
           }
         }
 
         if (anchorByChain.size > 0) {
           // Evaluated chains in anchor-index order (telemetry contract).
           const evaluatedChains = [...anchorByChain.entries()]
-            .map(([cid, aIdx]) => ({ cid, aIdx }))
+            .map(([cid, aIdx]) => ({ cid, aIdx, isDeclaredAfdd: declaredAfddChainIds.has(cid) }))
             .sort((a, b) => a.aIdx - b.aIdx);
           const evaluatedCids = new Set(
             evaluatedChains.map((ch) => ch.cid).filter((cid) => cid !== null)
@@ -2955,10 +2971,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           const successfulClarificationTerminals = [];
           for (let i = 0; i < seq.length; i += 1) {
             const c = seq[i];
-            if (
-              c?.name === 'resolve_observation_clarification' &&
-              parseMutationSuccess(c)
-            ) {
+            if (c?.name === 'resolve_observation_clarification' && parseMutationSuccess(c)) {
               const chainId = normaliseObsClarifyChainId(c?.input?.clarification_chain_id);
               if (chainId !== null && evaluatedCids.has(chainId)) {
                 successfulClarificationTerminals.push({ index: i, chainId });
@@ -2977,9 +2990,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             let bestMutation = null;
             for (const m of successfulMutations) {
               if (m.index <= ch.aIdx) continue;
-              // 'matched' qualifies ONLY its own chain; null/unknown are lenient
-              // and qualify any chain whose anchor precedes the mutation.
-              const qualifies = m.kind === 'matched' ? m.matchedChainId === ch.cid : true;
+              // 'matched' qualifies ONLY its own chain. Null/unknown retain
+              // the 2026-07-15 compatibility lane for legacy chains, but a
+              // declared AFDD chain is exact-correlation-only.
+              const qualifies =
+                m.kind === 'matched' ? m.matchedChainId === ch.cid : ch.isDeclaredAfdd !== true;
               if (qualifies && m.index < bestIdx) {
                 bestIdx = m.index;
                 bestType = 'mutation';
@@ -4408,8 +4423,11 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const shadowAgenticAnswersEnabled = shadowSession?.agenticAnswersEnabled === true;
   const shadowAnswers = createAnswerDispatcher(shadowSession, log, turnId, perTurnWrites);
   const shadowInspects = createInspectDispatcher(shadowSession, log, turnId, perTurnWrites);
-  const shadowObservationClarificationTerminals =
-    createObservationClarificationTerminalDispatcher(shadowSession, log, turnId);
+  const shadowObservationClarificationTerminals = createObservationClarificationTerminalDispatcher(
+    shadowSession,
+    log,
+    turnId
+  );
   // 2026-04-27 — auto-resolve hook is NOT threaded into shadow mode.
   //
   // The original 2026-04-27 path-2 wiring created a `shadowAutoResolveWrite`

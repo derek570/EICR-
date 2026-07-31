@@ -353,15 +353,13 @@ const AFDD_CLARIFICATION_BY_DECLARED_KIND = new Map([
   ],
 ]);
 
-const AFDD_CLARIFICATION_QUESTION_KIND = new Map(
-  [...AFDD_CLARIFICATION_BY_DECLARED_KIND.values()].map(({ kind, question }) => [question, kind])
+const RESERVED_AFDD_CLARIFICATION_QUESTIONS = new Set(
+  [...AFDD_CLARIFICATION_BY_DECLARED_KIND.values()].map(({ question }) => question)
 );
 
 function afddClarificationQuestionKind(input) {
   if (input?.context_field !== 'observation_clarify') return null;
-  const declared = AFDD_CLARIFICATION_BY_DECLARED_KIND.get(
-    input?.observation_clarification_kind
-  );
+  const declared = AFDD_CLARIFICATION_BY_DECLARED_KIND.get(input?.observation_clarification_kind);
   if (declared) {
     // The enum is model-selected; the spoken wording is not. Render the
     // canonical single-interrogative question server-side before validation,
@@ -369,7 +367,15 @@ function afddClarificationQuestionKind(input) {
     input.question = declared.question;
     return declared.kind;
   }
-  return AFDD_CLARIFICATION_QUESTION_KIND.get(String(input?.question ?? '').trim()) ?? null;
+  return null;
+}
+
+function hasUndeclaredReservedAfddQuestion(input) {
+  if (input?.context_field !== 'observation_clarify') return false;
+  if (AFDD_CLARIFICATION_BY_DECLARED_KIND.has(input?.observation_clarification_kind)) {
+    return false;
+  }
+  return RESERVED_AFDD_CLARIFICATION_QUESTIONS.has(String(input?.question ?? '').trim());
 }
 
 function askWasAnswered(result) {
@@ -698,6 +704,7 @@ export function wrapAskDispatcherWithGates(
     // PLAN-3 kind rendering must precede even the shadow-log hook: no
     // model-paraphrased AFDD question may become the auditable/spoken form.
     const afddKind = afddClarificationQuestionKind(call.input);
+    const undeclaredReservedAfddQuestion = hasUndeclaredReservedAfddQuestion(call.input);
     // (1) Shadow-log FIRST, regardless of downstream outcome.
     // Open Question #5 — Phase 7 retirement analysis needs the full trace
     // of every ask the model EMITTED, not just the asks that survived the
@@ -707,6 +714,13 @@ export function wrapAskDispatcherWithGates(
       filledSlotsShadow?.(call, ctx);
     } catch {
       /* shadow must not tear down dispatch */
+    }
+
+    // Canonical AFDD questions are reserved SERVER output, not a second model
+    // input contract. Copied wording without the closed declared-kind enum
+    // cannot start/advance the privileged flow or inherit its third slot.
+    if (undeclaredReservedAfddQuestion) {
+      return synthResultWrapped(call, 'validation_error', ctx, logger, sessionId, mode);
     }
 
     let key = deriveAskKey(call.input);
