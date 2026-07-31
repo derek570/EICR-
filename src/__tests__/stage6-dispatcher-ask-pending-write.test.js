@@ -660,12 +660,66 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
   });
 
+  test.each([
+    ['both Ground floor lighting and First floor lighting circuits', [1, 2]],
+    ['all Ground floor lighting, First floor lighting and Smoke Alarm circuits', [1, 2, 3]],
+  ])(
+    'terminal-noun whole-list reply "%s" dispatches every exact designation',
+    async (reply, refs) => {
+      const run = startMultiDispatcher();
+      await tick();
+      run.pendingAsks.resolve('toolu_multi', {
+        answered: true,
+        user_text: reply,
+      });
+      const body = JSON.parse((await run.promise).content);
+
+      expect(body).toMatchObject({
+        auto_resolved: true,
+        match_status: 'full',
+        unresolved: [],
+      });
+      expect(body.resolved_writes.map((write) => write.circuit)).toEqual(refs);
+      expect(run.autoResolveWrite).toHaveBeenCalledTimes(refs.length);
+      expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+    }
+  );
+
   test('noun-less whole-list count mismatch asks before every dispatcher mutation', async () => {
     const run = startMultiDispatcher();
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
       user_text: 'both Ground floor lighting, First floor lighting and Smoke Alarm',
+    });
+    await tick();
+
+    expect(run.autoResolveWrite).not.toHaveBeenCalled();
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual([
+      expect.objectContaining({
+        type: 'ask_user_started',
+        question: expect.stringMatching(/2 circuit numbers are required/i),
+      }),
+    ]);
+
+    const followupId = [...run.pendingAsks.entries()]
+      .map(([id]) => id)
+      .find((id) => id.startsWith('mdr-'));
+    run.pendingAsks.resolve(followupId, { answered: false, reason: 'cancelled' });
+    const body = JSON.parse((await run.promise).content);
+    expect(body).toMatchObject({
+      match_status: 'partial',
+      resolved_writes: [],
+    });
+  });
+
+  test('terminal-noun whole-list count mismatch asks before every dispatcher mutation', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: '2 Ground floor lighting, First floor lighting and Smoke Alarm circuits',
     });
     await tick();
 

@@ -743,6 +743,66 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     }
   );
 
+  test.each([
+    ['direct-first', true],
+    ['direct-first', false],
+    ['transcript-first', true],
+    ['transcript-first', false],
+  ])(
+    '%s paired mdr command delivery with %s anchor reaches the harness exactly once',
+    async (order, hasUtteranceId) => {
+      const anchorSlug = hasUtteranceId ? 'anchored' : 'legacy';
+      const sessionId = `sess-mdr-paired-${order}-${anchorSlug}`;
+      const toolCallId = `mdr-description-paired-${order}-${anchorSlug}`;
+      const utteranceId = `u-mdr-paired-${order}-${anchorSlug}`;
+      const userText = 'Add to Bedroom 2';
+      const { ws, entry } = await startSession(wss, sessionId);
+      let resolvedPayload = null;
+      registerMultiDescriptionAsk(
+        entry,
+        toolCallId,
+        (payload) => {
+          resolvedPayload = payload;
+        },
+        [
+          { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+          { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        ]
+      );
+      runShadowHarnessSpy.mockClear();
+
+      const directFrame = {
+        type: 'ask_user_answered',
+        tool_call_id: toolCallId,
+        user_text: userText,
+        ...(hasUtteranceId ? { consumed_utterance_id: utteranceId } : {}),
+      };
+      const transcriptFrame = {
+        type: 'transcript',
+        text: userText,
+        ...(hasUtteranceId ? { utterance_id: utteranceId } : {}),
+        regexResults: [],
+      };
+
+      if (order === 'direct-first') {
+        await sendFrame(ws, directFrame);
+        await sendFrame(ws, transcriptFrame);
+      } else {
+        await sendFrame(ws, transcriptFrame);
+        await sendFrame(ws, directFrame);
+      }
+
+      await flushUntilHarnessCalled();
+      expect(resolvedPayload).toMatchObject({
+        answered: false,
+        reason: expect.stringMatching(/user_moved_on|transcript_already_extracted/),
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
+      expect(runShadowHarnessSpy.mock.calls[0][1]).toContain(userText);
+    }
+  );
+
   test('a pre-queue exact-regex board reading overtakes mdr and stays queued as fresh work', async () => {
     const { ws, entry } = await startSession(wss, 'sess-mdr-board-reading-prequeue');
     entry.isExtracting = true;

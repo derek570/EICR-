@@ -954,6 +954,14 @@ export const RECENT_ASK_ANSWER_CAP = 8;
 // S3 capture — only object-spread (which we rely on here) copies it.
 const TRANSCRIPT_NORMALISED = Symbol('transcriptNormalised');
 
+// PLAN-2B round-20 — server-owned marker for the ONE synthetic transcript
+// created when a direct ask answer is actually fresh work. The direct handler
+// reserves the paired utterance id/content before reinjection so a normal
+// transcript frame cannot duplicate the command. This private marker lets only
+// the synthetic owner bypass that reservation; it survives queue spreads but
+// cannot be supplied by client JSON or leak onto the wire.
+const DIRECT_ASK_REINJECTION_OWNER = Symbol('directAskReinjectionOwner');
+
 // id 93 (cross-utterance delete, 2026-07-27) — the transcript's FIRST
 // server-arrival timestamp, stamped ONCE in handleTranscript the moment the
 // frame is accepted (before any queueing). The destructive-token window is
@@ -2088,13 +2096,54 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   // channel's `verdict.kind === 'user_moved_on'` path. Sonnet
                   // sees `{answered: false, reason: 'user_moved_on'}` in the
                   // tool_result and moves on (or re-asks).
-                  entry.pendingAsks.resolve(msg.tool_call_id, {
+                  const movedOnResolved = entry.pendingAsks.resolve(msg.tool_call_id, {
                     answered: false,
                     reason: 'user_moved_on',
                     ...(directResponseUtteranceId
                       ? { utterance_id: directResponseUtteranceId }
                       : {}),
                   });
+
+                  // A transcript-first reverse race already owns this utterance
+                  // when the registry resolve is stale. Never manufacture a
+                  // second synthetic command in that case.
+                  if (!movedOnResolved) {
+                    logger.warn('stage6.ask_user_answered_reinjection_skipped', {
+                      sessionId: currentSessionId,
+                      tool_call_id: msg.tool_call_id,
+                      utterance_id: directResponseUtteranceId,
+                      reason: 'ask_already_resolved',
+                    });
+                    break;
+                  }
+
+                  // Reserve BOTH forward-dedupe lanes before starting the
+                  // synthetic transcript. A normal paired transcript arriving
+                  // in the same tick then loses deterministically by stable id,
+                  // or by canonical content for legacy/mixed clients.
+                  if (directResponseUtteranceId) {
+                    entry.consumedAskUtterances.add(directResponseUtteranceId);
+                    if (entry.consumedAskUtterances.size > CONSUMED_UTTERANCE_CAP) {
+                      const oldest = entry.consumedAskUtterances.values().next().value;
+                      entry.consumedAskUtterances.delete(oldest);
+                    }
+                  }
+                  const reinjectionAnchor = normaliseForAskMatch(
+                    canonicalUserTextForAnchor || canonicalAnswerText
+                  );
+                  if (reinjectionAnchor.length > 0) {
+                    if (!Array.isArray(entry.recentAskAnswers)) {
+                      entry.recentAskAnswers = [];
+                    }
+                    entry.recentAskAnswers.push({
+                      normalisedText: reinjectionAnchor,
+                      expiresAt: Date.now() + RECENT_ASK_ANSWER_TTL_MS,
+                      toolCallId: msg.tool_call_id,
+                    });
+                    while (entry.recentAskAnswers.length > RECENT_ASK_ANSWER_CAP) {
+                      entry.recentAskAnswers.shift();
+                    }
+                  }
 
                   // Re-inject the text as a transcript so the new command flows
                   // through normal extraction. handleTranscript has its own
@@ -2114,6 +2163,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                     text: canonicalAnswerText,
                     utterance_id: msg.consumed_utterance_id ?? null,
                     confidence: 1.0,
+                    [DIRECT_ASK_REINJECTION_OWNER]: true,
                   };
                   handleTranscript(ws, currentSessionId, syntheticTranscript).catch((reErr) => {
                     logger.error('stage6.ask_user_answered_reinjection_failed', {
@@ -3753,6 +3803,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       });
     }
     const canonicalTranscriptText = typeof msg.text === 'string' ? normResult.text : msg.text;
+    const ownsDirectAskReinjection = msg[DIRECT_ASK_REINJECTION_OWNER] === true;
     if (normResult.rules_hit.length > 0 && !normResult.logged) {
       logger.info('stage6.transcript_normalised', {
         sessionId,
@@ -3773,6 +3824,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // side-effects (rate counter + queue slot) must not fire for a
     // suppressed utterance either.
     if (
+      !ownsDirectAskReinjection &&
       typeof msg.utterance_id === 'string' &&
       entry.consumedAskUtterances &&
       entry.consumedAskUtterances.has(msg.utterance_id)
@@ -3803,7 +3855,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // suppression of unrelated speech that happens to contain the
     // answer text as a substring (e.g. "move to three" vs ask-answer
     // "three").
-    if (Array.isArray(entry.recentAskAnswers) && entry.recentAskAnswers.length > 0) {
+    if (
+      !ownsDirectAskReinjection &&
+      Array.isArray(entry.recentAskAnswers) &&
+      entry.recentAskAnswers.length > 0
+    ) {
       const nowTs = Date.now();
       // Evict expired in-place.
       entry.recentAskAnswers = entry.recentAskAnswers.filter((a) => a.expiresAt > nowTs);

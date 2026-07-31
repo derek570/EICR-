@@ -867,6 +867,30 @@ function hasEnumeratedSeparatorAfterCircuitNoun(text) {
   return ENUMERATED_SEPARATOR_RE.test(suffix);
 }
 
+/**
+ * Detect the natural whole-list form where one trailing circuit noun governs
+ * the complete enumeration: "both A and B circuits".
+ *
+ * A circuit noun before the final separator belongs to an attached span
+ * instead ("2 lighting circuits and the smoke alarm") and must retain the
+ * per-span quantifier path.
+ */
+function hasCircuitNounOnlyAfterFinalSeparator(text) {
+  const value = String(text ?? '');
+  let finalSeparatorEnd = -1;
+  ENUMERATED_SEPARATOR_RE.lastIndex = 0;
+  let separator;
+  while ((separator = ENUMERATED_SEPARATOR_RE.exec(value)) !== null) {
+    finalSeparatorEnd = separator.index + separator[0].length;
+  }
+  const firstCircuitNoun = /\bcircuits?\b/i.exec(value);
+  return (
+    finalSeparatorEnd >= 0 &&
+    firstCircuitNoun !== null &&
+    firstCircuitNoun.index >= finalSeparatorEnd
+  );
+}
+
 function hasMultiTargetSyntax(text) {
   ENUMERATED_SEPARATOR_RE.lastIndex = 0;
   if (ENUMERATED_SEPARATOR_RE.test(text)) return true;
@@ -1319,8 +1343,10 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       available_circuits: circuits,
     };
   }
+  const terminalCircuitNounList =
+    wholeAttached.quantifier !== null && hasCircuitNounOnlyAfterFinalSeparator(normalisedText);
   const wholeList =
-    wholeAttached.quantifier === null
+    wholeAttached.quantifier === null || terminalCircuitNounList
       ? stripWholeListQuantifier(normalisedText)
       : { text: normalisedText, quantifier: null, malformed_quantifier: false };
   if (wholeList.malformed_quantifier) {

@@ -918,6 +918,23 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
   });
 
   test.each([
+    ['both Ground floor lighting and First floor lighting circuits', [1, 2]],
+    ['all Ground floor lighting, First floor lighting and Smoke Alarm circuits', [1, 2, 3]],
+  ])(
+    'a terminal circuit noun lets the leading quantifier govern the whole list in "%s"',
+    (reply, refs) => {
+      const verdict = resolveMulti(reply);
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: refs,
+        unresolved: [],
+      });
+      expect(verdict.writes.map((write) => write.circuit)).toEqual(refs);
+    }
+  );
+
+  test.each([
     'all three Ground floor lighting, First floor lighting and Smoke Alarm',
     'three Ground floor lighting, First floor lighting and Smoke Alarm',
     '3 Ground floor lighting, First floor lighting and Smoke Alarm',
@@ -935,6 +952,25 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
   test('a noun-less whole-list count mismatch asks before every write', () => {
     const verdict = resolveMulti(
       'both Ground floor lighting, First floor lighting and Smoke Alarm'
+    );
+    expect(verdict).toMatchObject({
+      kind: 'partial_resolve',
+      match_status: 'partial',
+      writes: [],
+      unresolved: [
+        expect.objectContaining({
+          disposition: 'ask',
+          reason: 'quantifier_count_mismatch',
+          required_count: 2,
+          candidates: [1, 2, 3],
+        }),
+      ],
+    });
+  });
+
+  test('a terminal circuit noun whole-list count mismatch asks before every write', () => {
+    const verdict = resolveMulti(
+      '2 Ground floor lighting, First floor lighting and Smoke Alarm circuits'
     );
     expect(verdict).toMatchObject({
       kind: 'partial_resolve',
