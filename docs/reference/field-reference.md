@@ -47,7 +47,7 @@ client advertises.
 | `client_town` | text | - | BILLING town. Derived from postcode when omitted. |
 | `client_county` | text | - | BILLING county. Derived from postcode when omitted. |
 | `address` | text | - | Full SITE/installation address. Listen for street, house number, town. |
-| `postcode` | text | - | SITE UK postcode like "RG1 1AA" |
+| `postcode` | text | - | SITE UK postcode like "RG1 1AA". The lookup-derived site `town`/`county` snapshot values are designed-silent computed consequences: the dictated postcode is read back, but those two automatic fills do not enter `perTurnWrites` or produce extra confirmations. |
 | `premises_description` | select | Residential, Commercial, Industrial, Agricultural, Other | Usually "Residential" for houses |
 | `installation_records_available` | boolean | - | True if previous certificates/records available |
 | `evidence_of_additions_alterations` | boolean | - | True if unrecorded work found |

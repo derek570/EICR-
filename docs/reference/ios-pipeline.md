@@ -166,7 +166,14 @@ Three key shapes:
 
 `boardId` is `conf.board_id ?? ''` in every shape.
 
-For the five text-op fields (`circuit_op`, `observation`, `observation_deletion`, `field_cleared`, `circuit_designation`) a backend-stamped `dedupe_token` takes precedence in EVERY branch (`{field}_{dedupe_token}`), so identical-text REPEATS of DISTINCT operations don't collide (field-feedback-2026-07-14 §A1a).
+For fields in `WIRE_CLIENT_DEDUPE_TOKEN_FIELDS`, a backend-stamped `dedupe_token` takes precedence in EVERY branch (`{field}_{dedupe_token}`), so identical-text REPEATS of DISTINCT operations do not collide. The backend debounce uses a deliberately separate `DEDUPE_TOKEN_FIELDS` manifest.
+
+| Token family | Enrolled fields | Replay-stable identity |
+|--------------|-----------------|------------------------|
+| `circop_` / `obs_` / `obsdel_` / `clear_` / `desig_` | `circuit_op`, `observation`, `observation_deletion`, `field_cleared`, `circuit_designation` | operation/ref plus turn or server-owned id |
+| `secfield_` | `postcode` only | field + effective scope + turn + per-scope ordinal |
+
+PLAN-2C keeps `postcode` OUT of the backend debounce manifest (Phase-0 candidate 1): the server's 1.5 s debounce remains token-blind, while web and iOS use the `secfield_` operation identity to stop a legitimate same-text amendment from colliding with the session-permanent field read-back key. The dispatcher stamps postcode as an installation-global operation before the per-turn write journal records it; the bundler carries that exact field/scope/ordinal identity to the confirmation instead of inferring it from optional `board_id` or the last-write-wins output. Replaying one operation retains the same token and is still suppressed.
 
 > **id-84 (2026-07-24) — value-aware single-circuit key.** The per-circuit shape was previously value-LESS (`{field}_{circuit}`) and kept that way deliberately so the iOS local correction-TTS dedupe could cross-match wire keys. But because field read-back keys are session-**permanent**, a spoken correction (a second reading on the same field+circuit with a DIFFERENT value) collided with the original key forever and was **silently swallowed** — beep-then-silence on a successful correction (session 2ACE7677: "No. It was 0.63." spoke nothing). Fix: fold djb2 of the confirmation TEXT (which encodes the value) into the single-circuit key, matching the multi-circuit branch. A correction (different text) now yields a distinct key and speaks; a genuine duplicate (same field+circuit+SAME text — e.g. the model re-recording circuit 4) still dedupes. The correction-TTS cross-match is **intentionally dropped** (worst case an extra local read-back, never silence). Derek's decisions: TEXT-HASH (not a direct value in the key, which would need wire/decoder changes), and NO new field-key TTL. iOS adds the twin fix to its own client-initiated `correctionDedupeKey`, plus the id-87 fast-path double-read-back suppression (fast clip + bundler safety-net now share a VALUE- and effective-board-aware suppression identity). Parity: `web/docs/parity-ledger.md` `recording/readback-dedup-value-aware`.
 
