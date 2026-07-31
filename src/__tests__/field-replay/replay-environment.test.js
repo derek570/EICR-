@@ -29,7 +29,7 @@ describe('drift enforcement against ecs/task-def-backend.json', () => {
     }
   });
   test('the four routing values are pinned to the task-def snapshot', () => {
-    expect(taskDef.SONNET_EXTRACT_MODEL).toBe('claude-haiku-4-5-20251001');
+    expect(taskDef.SONNET_EXTRACT_MODEL).toBe('gpt-5.6-luna');
     expect(taskDef.OBSERVATION_EXTRACT_MODEL).toBe('claude-sonnet-4-6');
     expect(taskDef.VOICE_LATENCY_ROUND1_MODEL).toBe('');
     // Observation-tier routing (C1) — 'false' in the dark PR; the flip commit
@@ -69,7 +69,7 @@ describe('load + restore semantics', () => {
     }
     const restore = loadReplayEnvironment({ lane: 'recorded' });
     try {
-      expect(process.env.SONNET_EXTRACT_MODEL).toBe('claude-haiku-4-5-20251001');
+      expect(process.env.SONNET_EXTRACT_MODEL).toBe('gpt-5.6-luna');
       expect(process.env.SNAPSHOT_FORMAT).toBe('split_blocks');
       expect(process.env.VOICE_ORPHAN_PROMPT).toBeUndefined();
       expect(process.env.VOICE_LATENCY_LOADED_BARREL).toBe('false');
@@ -117,7 +117,7 @@ describe('load + restore semantics', () => {
       encoding: 'utf8',
       cwd: process.cwd(),
     }).trim();
-    expect(out.split('\n').pop()).toBe('claude-haiku-4-5-20251001');
+    expect(out.split('\n').pop()).toBe('gpt-5.6-luna');
   });
 });
 
@@ -145,7 +145,12 @@ describe('the VERSIONED env-read inventory guard', () => {
     expect(unclassified).toEqual([]);
   });
   test('the classification sets are disjoint', () => {
-    const sets = [PINNED_FROM_TASK_DEF, DELETED_SO_DEFAULTS_APPLY, Object.keys(DELIBERATE_OVERRIDES), SECRETS];
+    const sets = [
+      PINNED_FROM_TASK_DEF,
+      DELETED_SO_DEFAULTS_APPLY,
+      Object.keys(DELIBERATE_OVERRIDES),
+      SECRETS,
+    ];
     const seen = new Set();
     for (const s of sets) {
       for (const k of s) {

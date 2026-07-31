@@ -49,7 +49,7 @@ describe('bootstrap dispatch + compatibility', () => {
       VOICE_ORPHAN_PROMPT: 'true',
     });
     const env = JSON.parse(stdout.trim());
-    expect(env.SONNET_EXTRACT_MODEL).toBe('claude-haiku-4-5-20251001');
+    expect(env.SONNET_EXTRACT_MODEL).toBe('gpt-5.6-luna');
     expect(env.SNAPSHOT_FORMAT).toBe('split_blocks');
     expect(env.VOICE_ORPHAN_PROMPT).toBeNull();
     expect(env.VOICE_LATENCY_LOADED_BARREL).toBe('false');
