@@ -25,6 +25,22 @@ describe('applyPostcodeLookupToSnapshot', () => {
     expect(snapshot.circuits[0].county).toBe('Berkshire');
   });
 
+  test('town/county lookup consequences mutate only the snapshot', () => {
+    const snapshot = buildSnapshot({ postcode: 'RG1 5QA' });
+
+    applyPostcodeLookupToSnapshot(
+      snapshot,
+      { valid: true, postcode: 'RG1 5QA', town: 'Reading', county: 'Berkshire' },
+      'sess_designed_silent'
+    );
+
+    expect(snapshot.circuits[0]).toMatchObject({
+      postcode: 'RG1 5QA',
+      town: 'Reading',
+      county: 'Berkshire',
+    });
+  });
+
   test('overrides "South East" drift with administrative county', () => {
     const snapshot = buildSnapshot({ town: 'Reading', county: 'South East' });
     applyPostcodeLookupToSnapshot(

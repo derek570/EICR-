@@ -27,7 +27,7 @@
  * The Swift uses UInt64 with overflow operators (&*, &+); JS uses BigInt to
  * preserve the same 64-bit wrap arithmetic.
  *
- * ── Operation dedupe tokens (field-feedback-2026-07-14 §A1a) ──
+ * ── Operation dedupe tokens (field-feedback-2026-07-14 §A1a + PLAN-2C) ──
  * Five TEXT-OP confirmation fields collide under the positional key shapes:
  * every "Observation deleted" is circuit:null + byte-identical text (the
  * DEGENERATE branch computes identical keys), and a repeated legitimate
@@ -45,7 +45,10 @@
  *   - field_cleared         → `clear_<field>_<circuit|board>_<turnId|legacy>_ord<N>`
  *   - circuit_op            → `circop_<turnId|noturn>_<ordinal>_<op>_<ref>`
  *   - circuit_designation   → `desig_<circuit(s)>_<turnId>`
- * Measured-value fields NEVER carry a token — their VALUE-AWARE
+ * PLAN-2C adds a sixth WIRE/CLIENT-enrolled field, `postcode`. Its spoken
+ * text can be byte-identical across two distinct amendments, so the
+ * positional text hash cannot distinguish operation identity. Ordinary
+ * measured-value fields still never carry a token — their VALUE-AWARE
  * `{field}_{circuit}_{djb2(text)}` shape separates a correction from a
  * duplicate on its own (id-84 correction-swallow fix, 2026-07-24).
  *
@@ -59,11 +62,40 @@
  */
 
 /**
- * The exact synchronized allowlist of text-op confirmation fields that carry
- * a backend-emitted `dedupe_token`. Derived from bundler output — the
- * collision-prone text operations. Mirrored in iOS
- * `buildConfirmationDedupeKey` and web `confirmation-dedupe-key.ts`; the
- * drift test pins membership.
+ * The exact synchronized WIRE/CLIENT allowlist of confirmation fields whose
+ * backend-emitted `dedupe_token` takes precedence in client keys and backend
+ * telemetry. Mirrored in iOS `buildConfirmationDedupeKey` and web
+ * `confirmation-dedupe-key.ts`; the drift test pins membership.
+ */
+export const WIRE_CLIENT_DEDUPE_TOKEN_FIELDS = new Set([
+  'circuit_op',
+  'observation',
+  'observation_deletion',
+  'field_cleared',
+  'circuit_designation',
+  'postcode',
+]);
+
+/**
+ * Dispatcher-owned scope manifest for ordinary section-field token producers.
+ *
+ * This is deliberately NOT BOARD_CLEAR_SCOPE_MAP: clearability and dedupe
+ * operation identity are separate contracts. A postcode write is installation
+ * global even when the model supplies a board_id spelling, so the dispatcher
+ * stamps `global` before the board-reading journal records the operation.
+ * Future section fields must be adjudicated individually here and bring an
+ * end-to-end producer test.
+ */
+export const WIRE_CLIENT_SECTION_DEDUPE_SCOPES = Object.freeze({
+  postcode: 'global',
+});
+
+/**
+ * Backend debounce policy is deliberately distinct from the wire/client
+ * contract. PLAN-2 Phase-0 selected candidate 1: postcode was sent by the
+ * backend and swallowed by the clients' session-permanent text key. Keeping
+ * postcode OUT here preserves today's token-blind 1.5 s server debounce while
+ * the wire/client key can distinguish later legitimate amendments.
  */
 export const DEDUPE_TOKEN_FIELDS = new Set([
   'circuit_op',
@@ -115,9 +147,9 @@ export function djb2UInt64Decimal(text) {
  * (see `correctionDedupeKey` in DeepgramRecordingViewModel.swift).
  *
  * §A1a: when the confirmation carries a `dedupe_token` AND the field is on
- * the text-op allowlist, the token key takes precedence — `{field}_{token}`.
- * Measured-value fields ignore the token; their value-aware shape does the
- * correction-vs-duplicate separation on its own.
+ * the wire/client allowlist, the token key takes precedence —
+ * `{field}_{token}`. Ordinary measured-value fields ignore the token; their
+ * value-aware shape does the correction-vs-duplicate separation on its own.
  *
  * A2-multiboard item 10 (2026-07-28): the wire `board_id` is folded into the
  * hashed string, exactly as the degenerate branch has always folded it. Two
@@ -142,7 +174,7 @@ export function djb2UInt64Decimal(text) {
  * @returns {string}
  */
 export function buildPerCircuitDedupeKey(field, circuit, text, opToken, boardId) {
-  if (opToken && DEDUPE_TOKEN_FIELDS.has(field)) {
+  if (opToken && WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has(field)) {
     return `${field}_${opToken}`;
   }
   const composite = `${text ?? ''}${boardId ?? ''}`;
@@ -168,7 +200,7 @@ export function buildMultiCircuitDedupeKey(field, circuits, text, opToken, board
   // §A1a: token takes precedence in EVERY branch an allowlisted text-op
   // confirmation can reach (a grouped circuit_designation broadcast lands
   // here, not in the per-circuit branch).
-  if (opToken && DEDUPE_TOKEN_FIELDS.has(field)) {
+  if (opToken && WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has(field)) {
     return `${field}_${opToken}`;
   }
   const sorted = [...(circuits ?? [])].sort((a, b) => a - b);
@@ -203,7 +235,7 @@ export function buildDegenerateDedupeKey(field, text, boardId, opToken) {
   // §A1a: token takes precedence — this is the branch EVERY observation
   // deletion reaches (circuit:null + constant "Observation deleted" text →
   // identical hashed keys without the token).
-  if (opToken && DEDUPE_TOKEN_FIELDS.has(field)) {
+  if (opToken && WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has(field)) {
     return `${field}_${opToken}`;
   }
   const composite = `${text ?? ''}${boardId ?? ''}`;

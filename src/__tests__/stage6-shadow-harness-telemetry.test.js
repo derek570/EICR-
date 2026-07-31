@@ -4,7 +4,8 @@
  * applyConfirmationDebounce. These are END-TO-END live-path regressions
  * (through runShadowHarness, not bundler-only) pinning:
  *
- *   1. telemetry rows cover ALL FIVE allowlisted text-op fields (the old
+ *   1. telemetry rows cover all five text-op fields plus PLAN-2C's postcode
+ *      wire/client enrolment (the old
  *      bundler-internal loop ran before stateChanges/obsAndClears merged, so
  *      circuit_op / observation / field_cleared never got a row — the
  *      forensic contract this wave's F2/F7/F10 diagnosis used was silently
@@ -28,6 +29,10 @@
 
 import { jest } from '@jest/globals';
 import { buildPerCircuitDedupeKey } from '../extraction/ios-dedupe-key.js';
+import {
+  attachSectionDedupeOperation,
+  recordBoardReadingWrite,
+} from '../extraction/stage6-per-turn-writes.js';
 
 const SESSION_ID = 'sess-a1a-telemetry';
 
@@ -39,8 +44,13 @@ const createAskDispatcherSpy = jest.fn(() => askSentinel);
 
 // Each test assigns a writer that mutates the harness-owned perTurnWrites.
 let populateWrites = null;
+let toolCallsToDispatch = [];
+const lookupPostcodeSpy = jest.fn();
 
 const runToolLoopSpy = jest.fn(async (opts) => {
+  for (const call of toolCallsToDispatch) {
+    await opts.dispatcher(call, opts.ctx);
+  }
   if (typeof populateWrites === 'function' && typeof opts.perTurnWritesRef === 'function') {
     populateWrites(opts.perTurnWritesRef());
   }
@@ -79,6 +89,10 @@ jest.unstable_mockModule('../extraction/stage6-tool-loop.js', () => ({
 
 jest.unstable_mockModule('../extraction/loaded-barrel-speculator.js', () => ({
   createSpeculator: createSpeculatorSpy,
+}));
+
+jest.unstable_mockModule('../postcode_lookup.js', () => ({
+  lookupPostcode: lookupPostcodeSpy,
 }));
 
 const { runShadowHarness } = await import('../extraction/stage6-shadow-harness.js');
@@ -141,7 +155,9 @@ beforeEach(() => {
   runToolLoopSpy.mockClear();
   createSpeculatorSpy.mockClear();
   validateSpy.mockClear();
+  lookupPostcodeSpy.mockReset();
   populateWrites = null;
+  toolCallsToDispatch = [];
   activeSessions.set(SESSION_ID, {
     session: { sessionId: SESSION_ID },
     pendingFastTtsSlots: new Map(),
@@ -155,7 +171,51 @@ afterEach(() => {
   activeSessions.delete(SESSION_ID);
 });
 
-describe('§A1a — ios_send_attempt emitted post-debounce in the harness, covering all five text-op fields', () => {
+describe('§A1a / PLAN-2C — ios_send_attempt emitted post-debounce for all enrolled fields', () => {
+  test('live postcode lookup updates town/county silently while the dictated postcode still writes and speaks', async () => {
+    lookupPostcodeSpy.mockResolvedValue({
+      postcode: 'RG1 5QA',
+      town: 'Reading',
+      county: 'Berkshire',
+    });
+    toolCallsToDispatch = [
+      {
+        tool_call_id: 'postcode-live-write',
+        name: 'record_board_reading',
+        input: {
+          field: 'postcode',
+          value: 'RG1 5QA',
+          confidence: 1,
+          source_turn_id: 'turn-postcode-live',
+        },
+      },
+    ];
+    const session = makeSession();
+    const result = await runShadowHarness(
+      session,
+      'The postcode is RG1 5QA',
+      [{ field: 'install.postcode', value: 'RG1 5QA' }],
+      baseOpts()
+    );
+
+    expect(lookupPostcodeSpy).toHaveBeenCalledWith('RG1 5QA');
+    expect(session.stateSnapshot.circuits[0]).toMatchObject({
+      postcode: 'RG1 5QA',
+      town: 'Reading',
+      county: 'Berkshire',
+    });
+    expect(result.extracted_readings).toContainEqual(
+      expect.objectContaining({ field: 'postcode', value: 'RG1 5QA' })
+    );
+    const fields = result.confirmations.map((entry) => entry.field);
+    expect(fields).toContain('postcode');
+    expect(fields).not.toContain('town');
+    expect(fields).not.toContain('county');
+    expect(result.confirmations.find((entry) => entry.field === 'postcode')).toMatchObject({
+      dedupe_token: 'secfield_postcode_global_sess-a1a-telemetry-turn-1_ord0',
+    });
+  });
+
   test('one row per surviving confirmation; token-aware keys; reading row carries confidence; no _confidence on the wire', async () => {
     populateWrites = (writes) => {
       writes.readings.set('measured_zs_ohm::1', {
@@ -187,6 +247,13 @@ describe('§A1a — ios_send_attempt emitted post-debounce in the harness, cover
         previous_value: '0.86',
         reason: 'clear_reading',
       });
+      const postcodeWrite = {
+        value: 'RG1 5QA',
+        confidence: 0.97,
+        source_turn_id: 't1',
+      };
+      attachSectionDedupeOperation(postcodeWrite, 'postcode', 'global', 0);
+      recordBoardReadingWrite(writes, 'postcode', postcodeWrite);
     };
     const opts = baseOpts();
     const session = makeSession();
@@ -196,7 +263,7 @@ describe('§A1a — ios_send_attempt emitted post-debounce in the harness, cover
     // One row per confirmation that reached the wire.
     expect(attempts.length).toBe(result.confirmations.length);
 
-    // ALL FIVE allowlisted text-op fields have telemetry rows now.
+    // All five text ops plus PLAN-2C's postcode wire/client field have rows.
     const rowFields = new Set(attempts.map((a) => a.field));
     for (const f of [
       'circuit_op',
@@ -204,6 +271,7 @@ describe('§A1a — ios_send_attempt emitted post-debounce in the harness, cover
       'observation_deletion',
       'field_cleared',
       'circuit_designation',
+      'postcode',
     ]) {
       expect(rowFields.has(f)).toBe(true);
     }
@@ -216,6 +284,7 @@ describe('§A1a — ios_send_attempt emitted post-debounce in the harness, cover
       'observation_deletion',
       'field_cleared',
       'circuit_designation',
+      'postcode',
     ]) {
       const row = attempts.find((a) => a.field === f);
       const wire = result.confirmations.find((c) => c.field === f);
@@ -224,8 +293,8 @@ describe('§A1a — ios_send_attempt emitted post-debounce in the harness, cover
       // Non-reading rows carry null confidence (no _confidence stamping on
       // state-change/obs/clear entries — deliberate, §A1a). circuit_designation
       // is the exception: it IS a record_reading and carries real confidence.
-      if (f === 'circuit_designation') {
-        expect(row.confidence).toBe(0.95);
+      if (f === 'circuit_designation' || f === 'postcode') {
+        expect(row.confidence).toBe(f === 'circuit_designation' ? 0.95 : 0.97);
       } else {
         expect(row.confidence).toBeNull();
       }

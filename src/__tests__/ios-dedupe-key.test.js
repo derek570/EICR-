@@ -19,6 +19,7 @@ import {
   buildMultiCircuitDedupeKey,
   buildDegenerateDedupeKey,
   DEDUPE_TOKEN_FIELDS,
+  WIRE_CLIENT_DEDUPE_TOKEN_FIELDS,
 } from '../extraction/ios-dedupe-key.js';
 
 describe('djb2UInt64Decimal — UInt64 wrap arithmetic mirror', () => {
@@ -145,8 +146,19 @@ describe('buildDegenerateDedupeKey — Wave 2 W2.3 shape replaces "<field>_none"
 // iOS `buildConfirmationDedupeKey`, and web `confirmation-dedupe-key.ts`
 // (whose vectors are generated from this mirror). A change on any side must
 // consciously update all four.
-describe('§A1a dedupe_token — allowlist + token composition drift test', () => {
-  test('the allowlist is EXACTLY the five collision-prone text-op fields', () => {
+describe('§A1a / PLAN-2C dedupe_token — manifests + token composition drift test', () => {
+  test('the WIRE/CLIENT manifest is EXACTLY the five text ops plus postcode', () => {
+    expect([...WIRE_CLIENT_DEDUPE_TOKEN_FIELDS].sort()).toEqual([
+      'circuit_designation',
+      'circuit_op',
+      'field_cleared',
+      'observation',
+      'observation_deletion',
+      'postcode',
+    ]);
+  });
+
+  test('candidate 1 keeps the backend-debounce manifest at exactly the five text ops', () => {
     expect([...DEDUPE_TOKEN_FIELDS].sort()).toEqual([
       'circuit_designation',
       'circuit_op',
@@ -234,6 +246,30 @@ describe('§A1a dedupe_token — allowlist + token composition drift test', () =
       'clear_r1_r2_ohm_board_t7_ord0'
     );
     expect(replay1).toBe(replay2);
+  });
+
+  test('postcode section tokens separate distinct same-text operations while replay stays stable', () => {
+    const first = buildDegenerateDedupeKey(
+      'postcode',
+      'Postcode RG1 5QA',
+      null,
+      'secfield_postcode_global_turn-1_ord0'
+    );
+    const replay = buildDegenerateDedupeKey(
+      'postcode',
+      'Postcode RG1 5QA',
+      null,
+      'secfield_postcode_global_turn-1_ord0'
+    );
+    const laterOperation = buildDegenerateDedupeKey(
+      'postcode',
+      'Postcode RG1 5QA',
+      null,
+      'secfield_postcode_global_turn-2_ord0'
+    );
+    expect(first).toBe('postcode_secfield_postcode_global_turn-1_ord0');
+    expect(replay).toBe(first);
+    expect(laterOperation).not.toBe(first);
   });
 
   test('NEGATIVE: measured-value fields IGNORE the token — VALUE-AWARE key, token 4th positional (id-84)', () => {

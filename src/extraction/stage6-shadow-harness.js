@@ -213,7 +213,8 @@ import { clampReadingForDispatch, resolveBoardAwareEarthing } from './impedance-
 // §A1a (field-feedback-2026-07-14) — the ios_send_attempt telemetry loop
 // moved here from stage6-event-bundler.js so it emits one row per SURVIVING
 // wire confirmation (after the mid-stream-canonical filter AND the token-
-// aware debounce), covering all five allowlisted text-op fields.
+// aware debounce), covering all five text-op fields plus every additional
+// WIRE/CLIENT-enrolled field (PLAN-2C adds postcode).
 import {
   buildPerCircuitDedupeKey,
   buildMultiCircuitDedupeKey,

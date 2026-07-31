@@ -221,6 +221,24 @@ describe('§A1a — token-aware confirmationDebounceKey / applyConfirmationDebou
     expect(confirmationDebounceKey(withSpurious)).toBe(confirmationDebounceKey(r));
   });
 
+  test('PLAN-2C candidate 1: postcode debounce stays token-blind', () => {
+    const first = {
+      text: 'Postcode RG1 5QA',
+      field: 'postcode',
+      circuit: null,
+      dedupe_token: 'secfield_postcode_global_turn-1_ord0',
+    };
+    const laterOperation = {
+      ...first,
+      dedupe_token: 'secfield_postcode_global_turn-2_ord0',
+    };
+    expect(confirmationDebounceKey(first)).toBe(confirmationDebounceKey(laterOperation));
+
+    const state = { lastEmittedAt: 0, lastField: null };
+    expect(applyConfirmationDebounce([first], state, { now: 1_000_000 })).toHaveLength(1);
+    expect(applyConfirmationDebounce([laterOperation], state, { now: 1_000_200 })).toHaveLength(0);
+  });
+
   test('Codex r4-#6: A, B, A replay pattern — the second A is suppressed (windowed token map, not lastKey)', () => {
     const state = { lastEmittedAt: 0, lastField: null };
     const t0 = 1_000_000;
