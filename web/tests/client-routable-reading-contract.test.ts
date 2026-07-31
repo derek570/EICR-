@@ -59,6 +59,11 @@ const SECTION_COLUMN_BY_WIRE: Readonly<Record<string, string>> = {
   design_comments: 'comments',
 };
 
+const BOARD_COLUMN_BY_WIRE: Readonly<Record<string, string>> = {
+  ze_at_db: 'zs_at_db',
+  zs_at_db: 'zs_at_db',
+};
+
 function circuitValue(field: string): string {
   if (field === 'circuit_description' || field === 'designation') return 'Kitchen sockets';
   if (field === 'wiring_type') return 'A';
@@ -282,6 +287,45 @@ describe('PLAN-2D web client reading contract', () => {
     expect(boards[0][boardKey]).toBeUndefined();
     expect(boards[1][boardKey]).toBe('garage-value');
     expect(applied?.patch.board_info).toBeUndefined();
+  });
+
+  it('routes every backend-stamped main-board field into a legacy boardless job', () => {
+    const boardFields = Object.entries(fixture)
+      .filter(([, route]) => route === 'board_info')
+      .map(([field]) => field)
+      .sort();
+
+    for (const field of boardFields) {
+      const value = sectionValue(field);
+      const applied = applyExtractionToJob(
+        makeJob({ boards: [] }),
+        resultFor({ circuit: 0, field, value, board_id: 'main' })
+      );
+      const boards = applied?.patch.boards as Array<Record<string, unknown>>;
+      const boardColumn = BOARD_COLUMN_BY_WIRE[field] ?? field;
+      expect(boards, `${field} did not create the canonical main board`).toHaveLength(1);
+      expect(boards[0]).toMatchObject({
+        id: 'main',
+        board_type: 'main',
+        [boardColumn]: value,
+      });
+      expect(
+        (applied?.patch.board_info as Record<string, unknown> | undefined)?.[field],
+        `${field} did not reach the canonical-main summary leg`
+      ).toBe(value);
+    }
+
+    const orphan = applyExtractionToJob(
+      makeJob({ boards: [] }),
+      resultFor({
+        circuit: 0,
+        field: 'manufacturer',
+        value: 'must-not-land',
+        board_id: 'unknown-board',
+      })
+    );
+    expect(orphan?.patch.boards).toBeUndefined();
+    expect(orphan?.patch.board_info).toBeUndefined();
   });
 
   it.each([
