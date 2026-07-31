@@ -141,13 +141,40 @@ export function classifyFreshCommandText(text) {
   // separate from the broad prefix lane so "delete" alone and short generic
   // fragments cannot steal a registered ask, while real commands such as
   // "Delete Ze", "delete circuit 3", and "remove smoke alarm" move on now.
-  const shortActionTarget =
-    /^\s*(?:delete|remove|clear)\s+(?:the\s+)?(?:(?:circuit|cct)(?:\s+(?:number|no\.?))?\s+\d{1,3}|[a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*){0,2})\s*[.!?]*\s*$/i;
+  const shortCircuitTarget =
+    /^\s*(?:delete|remove|clear)\s+(?:the\s+)?(?:circuit|cct)(?:\s+(?:number|no\.?))?\s+\d{1,3}\s*[.!?]*\s*$/i;
+  const shortGenericTarget =
+    /^\s*(?:delete|remove|clear)\s+(?:the\s+)?([a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*){0,2})\s*[.!?]*\s*$/i.exec(
+      value
+    );
+  const shortTargetFiller = new Set([
+    'please',
+    'thanks',
+    'thank',
+    'you',
+    'cheers',
+    'ok',
+    'okay',
+    'yes',
+    'yeah',
+    'yep',
+    'right',
+    'now',
+    'it',
+    'this',
+    'that',
+    'there',
+    'then',
+    'just',
+  ]);
+  const hasGenericTarget = (
+    shortGenericTarget?.[1]?.toLowerCase().match(/[a-z0-9_-]+/g) ?? []
+  ).some((token) => !shortTargetFiller.has(token));
   const quantifiedCircuitCommandPrefix =
     /^\s*(?:(?:all|both|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)(?:of\s+the\s+)?circuits?\s+(?:add|put)\b/i;
   const bulkScope = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
   const wordCount = value.split(/\s+/).filter(Boolean).length;
-  const matchedShortActionTarget = shortActionTarget.test(value);
+  const matchedShortActionTarget = shortCircuitTarget.test(value) || hasGenericTarget;
   const matchedImperative =
     matchedShortActionTarget ||
     (wordCount >= 4 &&

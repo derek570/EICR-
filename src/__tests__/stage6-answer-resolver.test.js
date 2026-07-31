@@ -738,6 +738,7 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ['both A and B circuits', [1, 2]],
     ['all A, B and C circuits', [1, 2, 3]],
     ['all three A, B and C', [1, 2, 3]],
+    ['the A circuit and B circuit', [1, 2]],
   ])('literal one-letter designations survive whole-list grammar in "%s"', (reply, refs) => {
     const verdict = resolveMulti(reply, [
       { circuit_ref: 1, circuit_designation: 'A' },
@@ -751,6 +752,18 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       unresolved: [],
     });
     expect(verdict.writes.map((write) => write.circuit)).toEqual(refs);
+  });
+
+  test('a wrapper-bearing literal stop-word designation retains scalar ownership', () => {
+    const verdict = resolveMulti('the A circuit', [
+      { circuit_ref: 1, circuit_designation: 'A' },
+      { circuit_ref: 2, circuit_designation: 'B' },
+      { circuit_ref: 3, circuit_designation: 'C' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      writes: [expect.objectContaining({ circuit: 1 })],
+    });
   });
 
   test('a raw exact whole designation still owns a quantified-looking reply', () => {
@@ -1921,25 +1934,35 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     });
   });
 
-  test('the mdr-only follow-up preserves a literal stop-word designation', () => {
-    const verdict = resolveMultiDescriptionFollowup({
-      userText: 'A',
-      pendingWrite: SAMPLE_PENDING,
-      availableCircuits: [
-        { circuit_ref: 1, circuit_designation: 'A' },
-        { circuit_ref: 2, circuit_designation: 'B' },
-        { circuit_ref: 3, circuit_designation: 'C' },
-      ],
-      contextBoardId: 'board-main',
-    });
-    expect(verdict).toMatchObject({
-      kind: 'auto_resolve',
-      match_status: 'full',
-      selected_circuit_refs: [1],
-      unresolved: [],
-      writes: [expect.objectContaining({ circuit: 1, board_id: 'board-main' })],
-    });
-  });
+  test.each(['A', 'the A circuit'])(
+    'the mdr-only follow-up preserves literal stop-word designation reply "%s"',
+    (userText) => {
+      const verdict = resolveMultiDescriptionFollowup({
+        userText,
+        pendingWrite: SAMPLE_PENDING,
+        availableCircuits: [
+          { circuit_ref: 1, circuit_designation: 'A' },
+          { circuit_ref: 2, circuit_designation: 'B' },
+          { circuit_ref: 3, circuit_designation: 'C' },
+        ],
+        contextBoardId: 'board-main',
+      });
+      expect(verdict).toMatchObject({
+        kind: 'auto_resolve',
+        match_status: 'full',
+        selected_circuit_refs: [1],
+        unresolved: [],
+        writes: [expect.objectContaining({ circuit: 1, board_id: 'board-main' })],
+      });
+      expect(
+        isMultiDescriptionAnswerText(userText, [
+          { circuit_ref: 1, circuit_designation: 'A' },
+          { circuit_ref: 2, circuit_designation: 'B' },
+          { circuit_ref: 3, circuit_designation: 'C' },
+        ])
+      ).toBe(true);
+    }
+  );
 
   test.each([
     ['Cooker plus Hob', 7],

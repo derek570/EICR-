@@ -1201,7 +1201,16 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
     }
   );
 
-  test.each(['delete', 'remove', 'clear'])(
+  test.each([
+    'delete',
+    'remove',
+    'clear',
+    'delete please',
+    'remove, please',
+    'clear please',
+    'delete right',
+    'clear yes',
+  ])(
     'targetless short action "%s" does not claim the bounded mdr-new-command evidence lane',
     (userText) => {
       expect(

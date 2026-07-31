@@ -1005,9 +1005,66 @@ function matchRawCanonicalExactDesignation(text, circuits) {
   return { kind: 'no_match', circuitRefs: [] };
 }
 
+/**
+ * Produce bounded wrapper-stripped candidates without ever removing a token
+ * from the designation itself. The ordinary cleaned matcher cannot preserve a
+ * literal stop-word name such as "A"; this middle lane lets "the A circuit"
+ * compare as raw "A" while raw equality still protects a real designation
+ * whose own name includes an article or the word "Circuit".
+ */
+function boundedRawDesignationCandidates(text) {
+  const initial = stripDescriptionWrappers(String(text ?? '').toLowerCase());
+  const queue = [initial];
+  const candidates = new Set();
+
+  while (queue.length > 0 && candidates.size < 16) {
+    const value = stripPunct(queue.shift());
+    if (!value || candidates.has(value)) continue;
+    candidates.add(value);
+
+    const variants = [
+      value.replace(/^(?:the|this|that)\b[\s,;:.!?…-]*/i, ''),
+      value.replace(/^(?:please)\b[\s,;:.!?…-]*/i, ''),
+      value.replace(/(?:[\s,;:.!?…-]+|^)(?:circuits?|cct)\s*$/i, ''),
+      value.replace(/(?:[\s,;:.!?…-]+|^)(?:please|thanks|thank\s+you|cheers)\s*$/i, ''),
+    ];
+    for (const variant of variants) {
+      const stripped = stripPunct(variant);
+      if (stripped && !candidates.has(stripped)) queue.push(stripped);
+    }
+  }
+
+  return [...candidates].map(canonicalRawSeparatorDesignation).filter(Boolean);
+}
+
+function matchBoundedRawExactDesignation(text, circuits) {
+  if (!Array.isArray(circuits)) return { kind: 'no_match', circuitRefs: [] };
+  const candidateKeys = new Set(boundedRawDesignationCandidates(text));
+  if (candidateKeys.size === 0) return { kind: 'no_match', circuitRefs: [] };
+
+  const refs = [];
+  for (const circuit of circuits) {
+    const designation = circuit?.circuit_designation ?? circuit?.designation ?? '';
+    if (!designation || !candidateKeys.has(canonicalRawSeparatorDesignation(designation))) continue;
+    const ref =
+      typeof circuit?.circuit_ref === 'number'
+        ? circuit.circuit_ref
+        : Number.parseInt(String(circuit?.circuit_ref), 10);
+    if (Number.isInteger(ref)) refs.push(ref);
+  }
+  const circuitRefs = [...new Set(refs)].sort((a, b) => a - b);
+  if (circuitRefs.length === 1) return { kind: 'exact', circuitRefs };
+  if (circuitRefs.length > 1) return { kind: 'ambiguous', circuitRefs };
+  return { kind: 'no_match', circuitRefs: [] };
+}
+
 function matchExactDesignationWithRawPriority(text, circuits) {
   const rawMatch = matchRawCanonicalExactDesignation(text, circuits);
-  return rawMatch.kind === 'no_match' ? matchCanonicalExactDesignation(text, circuits) : rawMatch;
+  if (rawMatch.kind !== 'no_match') return rawMatch;
+  const boundedRawMatch = matchBoundedRawExactDesignation(text, circuits);
+  return boundedRawMatch.kind === 'no_match'
+    ? matchCanonicalExactDesignation(text, circuits)
+    : boundedRawMatch;
 }
 
 function matchRawSpanExactDesignation(rawSpan, circuits) {

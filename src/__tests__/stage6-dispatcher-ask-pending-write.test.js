@@ -689,6 +689,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     ['both A and B circuits', [1, 2]],
     ['all A, B and C circuits', [1, 2, 3]],
     ['all three A, B and C', [1, 2, 3]],
+    ['the A circuit and B circuit', [1, 2]],
   ])('literal one-letter whole-list reply "%s" dispatches every write', async (reply, refs) => {
     const run = startMultiDispatcher({
       session: buildSession([

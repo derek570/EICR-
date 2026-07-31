@@ -547,6 +547,9 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     ['need-minutes', 'I need 2 minutes'],
     ['wait-minutes', 'wait 2 minutes'],
     ['negative-wait-minutes', 'not yet, give me 2 minutes'],
+    ['delete-please', 'delete please'],
+    ['remove-please', 'remove, please'],
+    ['clear-please', 'clear please'],
   ];
 
   test('a transcript-only designation restatement resolves mdr pre-queue', async () => {
