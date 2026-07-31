@@ -107,7 +107,8 @@ import logger from '../logger.js';
  * @property {Object|null} audioSummary
  *   { expected_acks, expected_acks_eligible, audio_finalizer_timeout_fired,
  *     ack_source, ios_playback_ack_at_ms, ios_playback_ack_monotonic_at_ms,
- *     ios_playback_ack_process_uptime_id, ios_playback_ack_correlation_id }
+ *     ios_playback_ack_process_uptime_id, ios_playback_ack_correlation_id,
+ *     ios_playback_ack_audio_source }
  * @property {ReturnType<typeof setTimeout>|null} ttlTimer
  * @property {number} expires_at_ms
  */
@@ -195,6 +196,8 @@ function emitUnified(entry) {
       utterance_end_at_ms: ue?.at_ms ?? null,
       ios_playback_ack_at_ms: as?.ios_playback_ack_at_ms ?? null,
       ack_source: as?.ack_source ?? null,
+      ack_audio_source: as?.ios_playback_ack_audio_source ?? null,
+      ios_playback_ack_correlation_id: as?.ios_playback_ack_correlation_id ?? null,
       expected_acks_eligible: as?.expected_acks_eligible ?? 0,
     });
   } catch (err) {
@@ -447,6 +450,10 @@ export function recordTurnAudioSummary(payload) {
         typeof payload.ios_playback_ack_correlation_id === 'string'
           ? payload.ios_playback_ack_correlation_id
           : null,
+      ios_playback_ack_audio_source:
+        typeof payload.ios_playback_ack_audio_source === 'string'
+          ? payload.ios_playback_ack_audio_source
+          : null,
     };
     maybeFire(entry);
   } catch (err) {
@@ -524,6 +531,10 @@ export function recordLatePlaybackAck(payload) {
       typeof payload.ios_playback_ack_correlation_id === 'string'
         ? payload.ios_playback_ack_correlation_id
         : existing.audioSummary.ios_playback_ack_correlation_id;
+    existing.audioSummary.ios_playback_ack_audio_source =
+      typeof payload.ios_playback_ack_audio_source === 'string'
+        ? payload.ios_playback_ack_audio_source
+        : existing.audioSummary.ios_playback_ack_audio_source;
 
     maybeFire(existing);
   } catch (err) {

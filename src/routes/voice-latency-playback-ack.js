@@ -22,6 +22,9 @@
  *       boardId: string | null,
  *     },
  *     source: 'fast_tts' | 'bundler' | 'local_fallback',
+ *     audio_source?: 'loaded_barrel_hit' | 'loaded_barrel_hit_pending' |
+ *                    'loaded_barrel_hit_late' | 'confirmation' |
+ *                    'legacy_confirmation',                  // origin of bytes
  *     at_ms: number > 0,                            // iOS-side wall-clock of playback start
  *
  *     // Voice-latency plan 2026-06-03 Tier 1.3 additions — all OPTIONAL for
@@ -49,10 +52,18 @@ import * as auth from '../auth.js';
 import logger from '../logger.js';
 import { recordPlaybackAck } from '../extraction/voice-latency-turn-summary.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
+import { recordOutcome } from '../extraction/voice-latency-telemetry.js';
 
 const router = Router();
 
 const SOURCE_ENUM = new Set(['fast_tts', 'bundler', 'local_fallback']);
+const AUDIO_SOURCE_ENUM = new Set([
+  'loaded_barrel_hit',
+  'loaded_barrel_hit_pending',
+  'loaded_barrel_hit_late',
+  'confirmation',
+  'legacy_confirmation',
+]);
 
 function validateBody(body) {
   if (!body || typeof body !== 'object') return 'body required';
@@ -121,6 +132,12 @@ function validateBody(body) {
   if (body.correlation_id !== undefined && typeof body.correlation_id !== 'string') {
     return 'correlation_id invalid';
   }
+  if (
+    body.audio_source !== undefined &&
+    (typeof body.audio_source !== 'string' || !AUDIO_SOURCE_ENUM.has(body.audio_source))
+  ) {
+    return 'audio_source invalid';
+  }
 
   return null;
 }
@@ -144,6 +161,7 @@ router.post('/voice-latency/playback-ack', auth.requireAuth, async (req, res) =>
     monotonic_at_ms,
     process_uptime_id,
     correlation_id,
+    audio_source,
   } = req.body;
   try {
     recordPlaybackAck(sessionId, turnId ?? '', {
@@ -158,6 +176,11 @@ router.post('/voice-latency/playback-ack', auth.requireAuth, async (req, res) =>
       monotonic_at_ms: monotonic_at_ms ?? null,
       process_uptime_id: process_uptime_id ?? null,
       correlation_id: correlation_id ?? null,
+      // Additive byte-origin label. `source` remains the established
+      // playback delivery path (`bundler` for queued confirmations), so
+      // existing dashboards keep their buckets while Loaded Barrel can
+      // be split from canonical fallback audio.
+      audio_source: audio_source ?? null,
     });
   } catch (errInner) {
     logger.warn('voice_latency.playback_ack_emit_error', {
@@ -167,6 +190,32 @@ router.post('/voice-latency/playback-ack', auth.requireAuth, async (req, res) =>
     });
     // Still 204 — telemetry failure must not surface to the client. The
     // ACK is fire-and-forget from iOS's perspective.
+  }
+  // Direct PII-safe correlation ledger: the same correlation id used by
+  // speculative/canonical synthesis now gains an iOS-confirmed audible
+  // start. This is deliberately a second no-throw telemetry branch so a
+  // turn-summary failure cannot erase the evidence that playback began.
+  try {
+    if (correlation_id) {
+      recordOutcome(correlation_id, 'playback_started', {
+        acked_by_ios: true,
+        meta: {
+          sessionId,
+          turnId: turnId || null,
+          source,
+          audio_source: audio_source ?? null,
+          field: slot?.field ?? null,
+          circuit: slot?.circuit ?? null,
+          boardId: slot?.boardId ?? null,
+        },
+      });
+    }
+  } catch (outcomeErr) {
+    logger.warn('voice_latency.playback_ack_outcome_error', {
+      sessionId,
+      turnId,
+      error: outcomeErr?.message || String(outcomeErr),
+    });
   }
   return res.status(204).end();
 });

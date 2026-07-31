@@ -216,9 +216,34 @@ describe('/api/proxy/elevenlabs-tts — Loaded Barrel Phase 3 cache short-circui
       });
 
     expect(res.status).toBe(200);
-    // No HIT header → fell through to live.
-    expect(res.headers['x-voice-latency-source']).toBeUndefined();
+    // No HIT → canonical buffered fallback, with its own joinable id.
+    expect(res.headers['x-voice-latency-source']).toBe('legacy_confirmation');
+    expect(res.headers['x-voice-latency-correlation-id']).toMatch(/^vl_confirmation_/);
     expect(global.fetch).toHaveBeenCalled();
+  });
+
+  test('buffered fallback synth timing starts before vendor fetch resolves', async () => {
+    const sessionId = 'sess-fallback-timing';
+    registerSession(sessionId);
+    global.fetch.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return mockStreamingResponse();
+    });
+
+    const app = await buildApp();
+    const token = await authToken();
+    const res = await request(app)
+      .post('/api/proxy/elevenlabs-tts')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ text: 'hello', sessionId, turnId: 'T1' });
+
+    expect(res.status).toBe(200);
+    const success = mockLogger.info.mock.calls.find(
+      ([event]) => event === 'ElevenLabs TTS success'
+    );
+    expect(success).toBeDefined();
+    expect(success[1].elevenlabs_synth_total_ms).toBeGreaterThanOrEqual(20);
+    expect(success[1].elevenlabs_first_byte_ms).toBeGreaterThanOrEqual(20);
   });
 
   test('no turnId in body → skips cache lookup, runs live', async () => {
@@ -233,7 +258,8 @@ describe('/api/proxy/elevenlabs-tts — Loaded Barrel Phase 3 cache short-circui
       .send({ text: 'hello', sessionId });
 
     expect(res.status).toBe(200);
-    expect(res.headers['x-voice-latency-source']).toBeUndefined();
+    expect(res.headers['x-voice-latency-source']).toBe('legacy_confirmation');
+    expect(res.headers['x-voice-latency-correlation-id']).toMatch(/^vl_confirmation_/);
     expect(global.fetch).toHaveBeenCalled();
   });
 
@@ -295,7 +321,8 @@ describe('/api/proxy/elevenlabs-tts — Loaded Barrel Phase 3 cache short-circui
     const elapsed = Date.now() - start;
 
     expect(res.status).toBe(200);
-    expect(res.headers['x-voice-latency-source']).toBeUndefined(); // fell through
+    expect(res.headers['x-voice-latency-source']).toBe('legacy_confirmation');
+    expect(res.headers['x-voice-latency-correlation-id']).toMatch(/^vl_confirmation_/);
     expect(global.fetch).toHaveBeenCalled();
     expect(elapsed).toBeGreaterThanOrEqual(180); // honoured the 200ms wait (with timing slack)
 
@@ -326,7 +353,8 @@ describe('/api/proxy/elevenlabs-tts — Loaded Barrel Phase 3 cache short-circui
       });
 
     expect(res.status).toBe(200);
-    expect(res.headers['x-voice-latency-source']).toBeUndefined();
+    expect(res.headers['x-voice-latency-source']).toBe('legacy_confirmation');
+    expect(res.headers['x-voice-latency-correlation-id']).toMatch(/^vl_confirmation_/);
     expect(global.fetch).toHaveBeenCalled();
   });
 });

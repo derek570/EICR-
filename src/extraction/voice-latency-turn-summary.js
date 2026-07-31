@@ -429,7 +429,8 @@ function maybeFlushFinalizer(key, pending, decrementCountOverride) {
  * Voice-latency plan 2026-06-03 Tier 1.3 backend plumbing #4: flatten the
  * earliest-monotonic ACK (within the dominant process_uptime_id group) as
  * top-level row fields named exactly `ios_playback_ack_monotonic_at_ms`,
- * `ios_playback_ack_process_uptime_id`, and `ios_playback_ack_correlation_id`.
+ * `ios_playback_ack_process_uptime_id`, `ios_playback_ack_correlation_id`,
+ * and `ios_playback_ack_audio_source`.
  * Without this flattening, CloudWatch Logs Insights `latest()` CANNOT read
  * inside the `ios_playback_ack[]` array — the §CloudWatch dashboard query
  * would return null for the audible-first-byte column on every row. Fires
@@ -447,6 +448,7 @@ function emitTurnAudioSummary(fields) {
       ios_playback_ack_monotonic_at_ms: earliestAck?.monotonic_at_ms ?? null,
       ios_playback_ack_process_uptime_id: earliestAck?.process_uptime_id ?? null,
       ios_playback_ack_correlation_id: earliestAck?.correlation_id ?? null,
+      ios_playback_ack_audio_source: earliestAck?.audio_source ?? null,
     };
     delete enriched.eligible_for_validation; // internal-only; only top-level field ships
     logger.info('voice_latency.turn_audio_summary', enriched);
@@ -481,6 +483,7 @@ function emitTurnAudioSummary(fields) {
       ios_playback_ack_monotonic_at_ms: enrichedForStore.ios_playback_ack_monotonic_at_ms,
       ios_playback_ack_process_uptime_id: enrichedForStore.ios_playback_ack_process_uptime_id,
       ios_playback_ack_correlation_id: enrichedForStore.ios_playback_ack_correlation_id,
+      ios_playback_ack_audio_source: enrichedForStore.ios_playback_ack_audio_source,
     });
   } catch (storeErr) {
     logger.warn('voice_latency.perceived_latency_emit_error', {
@@ -592,6 +595,7 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
       monotonic_at_ms: ack?.monotonic_at_ms ?? null,
       process_uptime_id: ack?.process_uptime_id ?? null,
       correlation_id: ack?.correlation_id ?? null,
+      audio_source: ack?.audio_source ?? null,
     });
   } catch (err) {
     logger.warn('voice_latency.turn_summary_emit_error', {
@@ -616,6 +620,7 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
       ios_playback_ack_monotonic_at_ms: ack?.monotonic_at_ms ?? null,
       ios_playback_ack_process_uptime_id: ack?.process_uptime_id ?? null,
       ios_playback_ack_correlation_id: ack?.correlation_id ?? null,
+      ios_playback_ack_audio_source: ack?.audio_source ?? null,
     });
   } catch (storeErr) {
     logger.warn('voice_latency.perceived_latency_emit_error', {

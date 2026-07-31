@@ -85,7 +85,8 @@ function audioSummary(overrides = {}) {
     ios_playback_ack_at_ms: 1_780_000_001_500,
     ios_playback_ack_monotonic_at_ms: 2500, // 1500 ms after UE
     ios_playback_ack_process_uptime_id: PUID,
-    ios_playback_ack_correlation_id: null,
+    ios_playback_ack_correlation_id: 'vl_loaded_barrel_join-me',
+    ios_playback_ack_audio_source: 'loaded_barrel_hit',
     ...overrides,
   };
 }
@@ -105,6 +106,8 @@ describe('recordUtteranceEnd → recordTurnAudioSummary (arrival order A)', () =
       utterance_end_at_ms: 1_780_000_000_000,
       ios_playback_ack_at_ms: 1_780_000_001_500,
       ack_source: 'bundler',
+      ack_audio_source: 'loaded_barrel_hit',
+      ios_playback_ack_correlation_id: 'vl_loaded_barrel_join-me',
       expected_acks_eligible: 1,
     });
     expect(_peekEntryCountForTests()).toBe(0); // entry cleared after emit

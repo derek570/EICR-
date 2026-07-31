@@ -18,7 +18,7 @@
  *   Cross-host correlation only happens post-hoc in the analyser.
  * - Outcomes split into SERVER (what the server knows it did) and
  *   IOS (what iOS confirmed via ack). The analyser computes aggregate
- *   `fast_heard = server.sent_to_client + iOS.playback_completed`.
+ *   `fast_heard = server.sent_to_client + iOS.playback_started`.
  *
  * - `audioSeq` per session: iOS-owned counter that survives WS
  *   reconnect. Server stores it on the suppression reservation record
@@ -124,6 +124,11 @@ export const SERVER_OUTCOMES = Object.freeze([
 ]);
 
 export const IOS_OUTCOMES = Object.freeze([
+  // AVAudioPlayer.play() returned true. This is the authoritative
+  // audible-start event used by Loaded Barrel value measurement.
+  'playback_started',
+  // Retained for older voice_latency_ack producers that reported a
+  // terminal playback callback rather than the start boundary.
   'playback_completed',
   'dropped_stale',
   'dropped_by_correlation_id',

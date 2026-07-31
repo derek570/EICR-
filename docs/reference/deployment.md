@@ -21,6 +21,23 @@ The production site runs at **https://certmate.uk**. Delivery is PR-only: commit
 - **Model rollback:** restore `SONNET_EXTRACT_MODEL=claude-haiku-4-5-20251001` separately. Leaving the Fast variable present is harmless because only the OpenAI Responses adapter reads it.
 - **Verify:** after rollout, inspect `stage6_live_extraction`; `model` must be `gpt-5.6-luna` and `service_tier` should be `priority` (OpenAI's response label for Fast). The session cost summary should use the `luna_fast` rates, not Sonnet rates.
 
+### Loaded Barrel audible-value telemetry
+
+After the matching iOS build is installed, the authoritative cohort row is `voice_latency.turn_perceived_latency_ms`: `ack_audio_source` distinguishes `loaded_barrel_hit*` from `legacy_confirmation`/`confirmation`, and `ios_playback_ack_correlation_id` joins back to the synthesis ledger. Example CloudWatch Logs Insights query:
+
+```text
+fields @timestamp, sessionId, turnId, perceived_latency_ms,
+       ack_audio_source, ios_playback_ack_correlation_id
+| filter @message like /voice_latency.turn_perceived_latency_ms/
+| filter ispresent(ios_playback_ack_correlation_id)
+| stats count(*) as heard, pct(perceived_latency_ms, 50) as p50_ms,
+        pct(perceived_latency_ms, 75) as p75_ms,
+        pct(perceived_latency_ms, 95) as p95_ms by ack_audio_source
+| sort heard desc
+```
+
+For one correlation, filter `voice_latency.outcome` rows by `correlation_id`. A real audible join ends with `outcome="playback_started"` and `acked_by_ios=1`; `loaded_barrel_hit*` without that terminal is a claimed-but-unheard clip and must not be counted as latency saved.
+
 ### Observation-tier routing — flip & rollback (`OBSERVATION_TIER_ROUTING`)
 
 The observation-tier model router (chunk C1) remains DARK: `ecs/task-def-backend.json` sets `OBSERVATION_TIER_ROUTING=false`, so all live extraction currently uses default Luna. Activation and rollback are both a source flag edit plus CI redeploy — never a live `aws ecs` mutation:

@@ -112,8 +112,8 @@ describe('voice-latency-telemetry', () => {
       expect(p.meta).toEqual({ boardId: 'main' });
     });
 
-    test('logs an iOS outcome with acked_by_ios=true', () => {
-      tel.recordOutcome('vl_x', 'playback_completed', { acked_by_ios: true });
+    test('logs an iOS playback-start outcome with acked_by_ios=true', () => {
+      tel.recordOutcome('vl_x', 'playback_started', { acked_by_ios: true });
       const p = mockLogger.info.mock.calls.filter((c) => c[0] === 'voice_latency.outcome')[0][1];
       expect(p.acked_by_ios).toBe(true);
     });
@@ -188,13 +188,12 @@ describe('voice-latency-telemetry', () => {
       // A2-multiboard item 4 — an unregistered outcome is DROPPED by
       // recordOutcome (warn + return), so the reconciliation would run with no
       // audit trail at all if this membership ever regressed.
-      expect(tel.SERVER_OUTCOMES).toContain(
-        'loaded_barrel_collapsed_replacement_invalidated'
-      );
+      expect(tel.SERVER_OUTCOMES).toContain('loaded_barrel_collapsed_replacement_invalidated');
     });
 
-    test('IOS_OUTCOMES includes the 5 ack outcomes', () => {
-      expect(tel.IOS_OUTCOMES.length).toBe(5);
+    test('IOS_OUTCOMES includes start plus the 5 legacy ack outcomes', () => {
+      expect(tel.IOS_OUTCOMES.length).toBe(6);
+      expect(tel.IOS_OUTCOMES).toContain('playback_started');
       expect(tel.IOS_OUTCOMES).toContain('playback_completed');
       expect(tel.IOS_OUTCOMES).toContain('dropped_stale');
     });

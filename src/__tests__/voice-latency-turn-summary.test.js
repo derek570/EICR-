@@ -279,6 +279,8 @@ describe('Tier 1.3 — pickEarliestPlaybackAck flatten + row enrichment', () => 
     });
     turnSummary.recordPlaybackAck(SESS, TURN, {
       source: 'bundler',
+      audio_source: 'loaded_barrel_hit',
+      correlation_id: 'vl_loaded_barrel_join-me',
       at_ms: Date.now(),
       monotonic_at_ms: 42,
       process_uptime_id: 'proc-A',
@@ -287,6 +289,8 @@ describe('Tier 1.3 — pickEarliestPlaybackAck flatten + row enrichment', () => 
     const call = findEmit('voice_latency.turn_audio_summary');
     expect(call[1].audio_finalizer_timeout_fired).toBe(true);
     expect(call[1].ios_playback_ack_monotonic_at_ms).toBe(42);
+    expect(call[1].ios_playback_ack_correlation_id).toBe('vl_loaded_barrel_join-me');
+    expect(call[1].ios_playback_ack_audio_source).toBe('loaded_barrel_hit');
   });
 
   test('expected_acks_eligible projected as integer 1 when ack-eligible', () => {
