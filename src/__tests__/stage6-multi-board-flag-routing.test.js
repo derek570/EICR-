@@ -387,7 +387,10 @@ describe('dispatchers against a sub-board target', () => {
         tool_call_id: 'tu_2',
         name: 'record_reading',
         input: {
-          field: 'earth_loop_impedance_ze',
+          // Use a genuine circuit field so this fixture reaches the
+          // composite-namespace existence guard under PLAN-2D's new
+          // authoritative field boundary.
+          field: 'measured_zs_ohm',
           circuit: 3,
           value: '0.42',
           confidence: 0.9,

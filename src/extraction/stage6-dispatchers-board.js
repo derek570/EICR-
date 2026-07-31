@@ -188,10 +188,14 @@ function validateConfidence(confidence) {
  */
 export async function dispatchRecordBoardReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = normaliseBoardScopeInput(call.input ?? {});
+  // Keep the raw board scope here. Unlike the ordinary circuit dispatchers,
+  // record_board_reading is an authoritative board write and deliberately
+  // rejects an injected empty board_id instead of retargeting it at the
+  // current board (the shared normaliser documents this exemption).
+  const input = call.input ?? {};
 
   // PLAN-2D: sampled tools are non-strict, so enum membership is the first
-  // post-normalisation boundary. It must outrank board scope and confidence:
+  // dispatcher boundary. It must outrank board scope and confidence:
   // otherwise an off-schema write with another malformed argument disappears
   // behind an uncovered rejection and a mixed successful turn becomes silent.
   if (typeof input.field !== 'string' || !BOARD_FIELD_SET.has(input.field)) {

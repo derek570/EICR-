@@ -132,9 +132,12 @@ complete pairwise-disjoint dispatcher partition. Corrections are validated
 against the same route manifest (`cpc_csa_mm2` → `cable_size_earth`;
 `max_zs`/`ocpd_max_zs` → `ocpd_max_zs_ohm`), and a final egress guard drops
 anything still off-manifest. Every non-strict write tool performs its raw
-field-membership check immediately after input normalisation, before scope,
+field-membership check at the first dispatcher boundary, before scope,
 circuit, confidence, coercion, or range validation, and stages the same
-leak-safe covered refusal. The legacy `record_extraction` path applies the
+leak-safe covered refusal. Circuit writers retain their established
+empty-board-id normalisation; authoritative `record_board_reading` does not,
+so an injected empty id still fails `wrong_board` rather than silently
+retargeting the current board. The legacy `record_extraction` path applies the
 same contract before metrics, dedupe, question bookkeeping, or
 `updateStateSnapshot`; a later egress pass is idempotent defence in depth.
 If a malformed legacy result also contains valid sibling readings, the server

@@ -33,7 +33,11 @@ Board-tab notice, and structural fields never escape as ordinary readings.
 Only positive `is_distribution_circuit` intent on a source circuit is
 recoverable via `mark_distribution_circuit`; `feeds_board_id` and all other
 structural attempts are terminal. All three write tools check raw membership
-before any other validation and stage one shared, covered, leak-safe refusal.
+at their first dispatcher boundary before any other validation and stage one
+shared, covered, leak-safe refusal. Ordinary circuit writes first normalise an
+empty board scope to absent; authoritative board writes retain it so
+`record_board_reading` still rejects an injected empty id as `wrong_board`
+instead of silently retargeting the current board.
 The legacy extraction path sanitises before snapshot mutation; if a malformed
 turn also contains valid siblings, their model prose is replaced with exactly
 one server-built read-back per surviving slot, while untrusted questions,
