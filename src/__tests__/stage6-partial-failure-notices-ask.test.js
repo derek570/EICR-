@@ -220,7 +220,10 @@ describe('§5.C1 — channel 3 stages the genuinely-uncovered residue', () => {
       reason: 'write_failed',
       field: 'measured_zs_ohm',
       fieldLabel: label('measured_zs_ohm'),
-      boardId: null,
+      // PLAN-2B freezes the effective circuit board with the resolver census,
+      // so an omitted raw id now shares the successful/failed write's real
+      // main-board identity instead of staging an unscoped aggregate.
+      boardId: 'main',
       target: { kind: 'circuit', ref: 5 },
       producer: 'ask_auto_resolve_circuit',
     });
