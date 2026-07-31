@@ -124,7 +124,10 @@ const LEGACY_TO_PWA_CIRCUIT_FIELD: Record<string, string> = {
   cable_size_earth: 'cpc_csa_mm2',
   zs: 'measured_zs_ohm',
   r2: 'r2_ohm',
+  earth_continuity: 'r2_ohm',
   r1_plus_r2: 'r1_r2_ohm',
+  r1_r2: 'r1_r2_ohm',
+  r1r2: 'r1_r2_ohm',
   ring_continuity_r1: 'ring_r1_ohm',
   ring_continuity_rn: 'ring_rn_ohm',
   ring_continuity_r2: 'ring_r2_ohm',
@@ -132,9 +135,16 @@ const LEGACY_TO_PWA_CIRCUIT_FIELD: Record<string, string> = {
   insulation_resistance_l_l: 'ir_live_live_mohm',
   ir_test_voltage: 'ir_test_voltage_v',
   rcd_trip_time: 'rcd_time_ms',
+  rcd_time: 'rcd_time_ms',
+  rcd_rating: 'rcd_rating_a',
   ocpd_breaking_capacity: 'ocpd_breaking_capacity_ka',
   max_disconnect_time: 'max_disconnect_time_s',
   polarity: 'polarity_confirmed',
+  cpc_csa: 'cpc_csa_mm2',
+  circuit_description: 'circuit_designation',
+  ir_live_earth: 'ir_live_earth_mohm',
+  ir_live_live: 'ir_live_live_mohm',
+  earth_fault_loop_impedance: 'measured_zs_ohm',
 };
 
 /** Translate a wire field name to its PWA column counterpart. Returns
@@ -592,6 +602,79 @@ const NARRATIVE_FIELDS: ReadonlySet<string> = new Set([
   'reason_for_report',
 ]);
 
+const BOOLEAN_SECTION_FIELDS: ReadonlySet<string> = new Set([
+  'installation_records_available',
+  'evidence_of_additions_alterations',
+  'supply_polarity_confirmed',
+  'means_earthing_distributor',
+  'means_earthing_electrode',
+  'bonding_other_na',
+]);
+
+const INSPECTION_DATE_FIELDS: ReadonlySet<string> = new Set([
+  'date_of_inspection',
+  'date_of_previous_inspection',
+]);
+
+const NEXT_INSPECTION_YEAR_OPTIONS: ReadonlySet<number> = new Set([1, 2, 3, 4, 5, 10]);
+
+type NormalisedSectionValue =
+  | { ok: true; value: unknown }
+  | { ok: false; reason: 'invalid_boolean' | 'invalid_date' | 'invalid_number' };
+
+function normaliseInspectionDate(raw: unknown, allowNotApplicable: boolean): string | null {
+  const text = String(raw ?? '').trim();
+  if (allowNotApplicable && /^n\/?a$/i.test(text)) return 'N/A';
+
+  const dmy = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/);
+  const year = Number(dmy?.[3] ?? iso?.[1]);
+  const month = Number(dmy?.[2] ?? iso?.[2]);
+  const day = Number(dmy?.[1] ?? iso?.[3]);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * The Stage-6 wire deliberately uses string values, while several web tab
+ * controls are typed. Convert at the destination boundary so a successfully
+ * routed reading is also visible/editable in the real control.
+ */
+function normaliseSectionReadingValue(field: string, raw: unknown): NormalisedSectionValue {
+  if (BOOLEAN_SECTION_FIELDS.has(field)) {
+    if (typeof raw === 'boolean') return { ok: true, value: raw };
+    const value = String(raw ?? '').trim().toLowerCase();
+    if (value === 'yes' || value === 'true') return { ok: true, value: true };
+    if (value === 'no' || value === 'false') return { ok: true, value: false };
+    return { ok: false, reason: 'invalid_boolean' };
+  }
+
+  if (INSPECTION_DATE_FIELDS.has(field)) {
+    const value = normaliseInspectionDate(raw, field === 'date_of_previous_inspection');
+    return value == null
+      ? { ok: false, reason: 'invalid_date' }
+      : { ok: true, value };
+  }
+
+  if (field === 'next_inspection_years') {
+    const value = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim());
+    return Number.isInteger(value) && NEXT_INSPECTION_YEAR_OPTIONS.has(value)
+      ? { ok: true, value }
+      : { ok: false, reason: 'invalid_number' };
+  }
+
+  return { ok: true, value: raw };
+}
+
 /**
  * iOS-canon append/supersede/skip logic for narrative fields.
  *
@@ -979,6 +1062,16 @@ function applyCircuit0Readings(
       continue;
     }
 
+    const normalised = normaliseSectionReadingValue(reading.field, reading.value);
+    if (!normalised.ok) {
+      pipelineLog('apply_section_reading_invalid_value', {
+        wire_field: reading.field,
+        reason: normalised.reason,
+      });
+      continue;
+    }
+    const sectionValue = normalised.value;
+
     // 3-tier priority — protect any pre-existing user value across
     // EVERY target section, under BOTH wire and PWA-column names.
     // The inspector might have typed "100" into the Supply tab's
@@ -1029,10 +1122,10 @@ function applyCircuit0Readings(
     for (const sec of targets) {
       const sectionPatch: Record<string, unknown> = {
         ...(bySection[sec] ?? {}),
-        [reading.field]: reading.value,
+        [reading.field]: sectionValue,
       };
       if (pwaColumn && pwaColumn !== reading.field) {
-        sectionPatch[pwaColumn] = reading.value;
+        sectionPatch[pwaColumn] = sectionValue;
       }
       bySection[sec] = sectionPatch;
     }
