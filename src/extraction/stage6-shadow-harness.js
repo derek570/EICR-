@@ -110,6 +110,7 @@ import {
   EFFECTIVE_CIRCUIT_SLOT,
   circuitDesignationKey,
   decodeReadingKey,
+  rawCircuitSlot,
   projectBoardReadingWinners,
   projectReadingWinners,
   readEffectiveOpBoard,
@@ -3061,6 +3062,25 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // clear_board_reading SUCCESS (or a same-slot already-empty
           // outcome), never by an unrelated same-slot write.
           const survivingClearSlots = new Set();
+          // PLAN-2D recoverable structural route. A successful
+          // mark_distribution_circuit writes the exact source-circuit slots
+          // that a rejected record_reading could not safely mutate. Build the
+          // same server-owned slot identity so either dispatch order
+          // reconciles the wrong-tool notice away and the board-op read-back
+          // speaks alone.
+          const survivingDistributionSlots = new Set();
+          if (Array.isArray(perTurnWrites?.boardOps)) {
+            for (const op of perTurnWrites.boardOps) {
+              if (
+                op?.op === 'mark_distribution_circuit' &&
+                Number.isInteger(op.circuit_ref)
+              ) {
+                survivingDistributionSlots.add(
+                  rawCircuitSlot('distribution_link', op.circuit_ref, op.source_board_id ?? null)
+                );
+              }
+            }
+          }
           // A2-multiboard (2026-07-28) — the write side reads the PROJECTED
           // winners, never the raw `boardReadings` Map. `record_board_reading`
           // carries no schema `board_id`, so two boards' writes for the same
@@ -3118,6 +3138,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                     n2.family === 'board_clear_already_empty' &&
                     n2.slotKey === notice.slotKey
                 ))
+            ) {
+              continue;
+            }
+            if (
+              notice.family === 'mark_distribution_required' &&
+              typeof notice.slotKey === 'string' &&
+              survivingDistributionSlots.has(notice.slotKey)
             ) {
               continue;
             }

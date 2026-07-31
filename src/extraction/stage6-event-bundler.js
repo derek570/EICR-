@@ -1390,19 +1390,15 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       if (entry.boardId != null) {
         reading.board_id = entry.boardId;
       }
-      // Plan A1a (round-8) — projected-write board identity. Egress sends the
-      // extraction BEFORE current_board_changed, so a same-turn
-      // select_board(B) → write delivers a BOARDLESS write while the client
-      // still has board A selected (server ends with B written, client
-      // applies to A). For CAPABILITY-ENABLED sessions, fill board_id from
-      // the resolved EFFECTIVE_BOARD_SLOT stamp for every CLASSIFIED
-      // board-scoped write. UNCLASSIFIED legacy writes (no stamp) and
-      // capability-absent sessions stay byte-identical — the capability +
-      // classification boundary is the wire-compat line.
+      // PLAN-2D — projected-write board identity. Egress sends the extraction
+      // BEFORE current_board_changed, so a same-turn select_board(B) → write
+      // must carry the dispatcher-resolved board. `board_id` has long been an
+      // additive optional client key; the committed write-scope manifest is
+      // now the compatibility boundary, so every stamped board-scoped write is
+      // enriched regardless of the unrelated board-clear capability.
       {
         const a1aSym = entry?.[EFFECTIVE_BOARD_SLOT];
         if (
-          options.hasBoardClearV1 === true &&
           a1aSym &&
           a1aSym.boardId != null &&
           reading.board_id == null

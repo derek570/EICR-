@@ -314,13 +314,16 @@ describe('test 6d — GLOBAL field cross-board clear→write MUST collapse (ze)'
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-describe('test 11 sublegs — unclassified legacy writes flow byte-identically (stamp fallback)', () => {
-  test('(11-L1) an UNCLASSIFIED ordinary board write: no stamp, unchanged enumerable shape, no board_id fill even when capability is on', async () => {
+describe('test 11 sublegs — write scopes are explicit without changing enumerable payload shape', () => {
+  test('(11-L1) a GLOBAL ordinary write has a null-board stamp, unchanged enumerable shape, and no board_id', async () => {
     const session = makeSession([{ id: 'main', board_type: 'main' }]);
     const ptw = createPerTurnWrites();
     await write(session, ptw, 'nominal_voltage_u', '230', 'toolu_u1');
     const entry = [...ptw.boardReadings.values()][0];
-    expect(entry[EFFECTIVE_BOARD_SLOT]).toBeUndefined();
+    expect(entry[EFFECTIVE_BOARD_SLOT]).toEqual({
+      field: 'nominal_voltage_u',
+      boardId: null,
+    });
     expect(Object.keys(entry).sort()).toEqual(
       ['value', 'confidence', 'source_turn_id', 'auto_resolved', 'boardId'].sort()
     );
@@ -395,22 +398,58 @@ describe('test 17 (bundler half) — post-canonicalisation wire names + projecte
     });
   });
 
-  test('round-8 projected board identity: a CLASSIFIED board-scoped write after select_board carries the resolved board_id — capability-gated', async () => {
+  test('PLAN-2D projected board identity: a classified board write carries the resolved board_id independent of board-clear capability', async () => {
     const session = makeSession(twoBoards());
     const ptw = createPerTurnWrites();
     await selectBoard(session, ptw, 'garage');
     await write(session, ptw, 'manufacturer', 'Wylex', 'toolu_mfg');
-    // Capability ON → the projected reading carries B even though the model
-    // omitted board_id (extraction precedes current_board_changed on egress).
+    // The projected reading carries B even though the model omitted board_id
+    // (extraction precedes current_board_changed on egress).
     const on = bundle(ptw);
     expect(on.extracted_board_readings[0].board_id).toBe('garage');
-    // Capability OFF → byte-identical legacy projection (no board_id).
+    // The write contract is independent of board_clear_v1.
     const off = bundleToolCallsIntoResult(ptw, null, {
       confirmationsEnabled: true,
       turnId: 'turn-b1',
       hasBoardClearV1: false,
     });
-    expect(off.extracted_board_readings[0]).not.toHaveProperty('board_id');
+    expect(off.extracted_board_readings[0].board_id).toBe('garage');
+  });
+});
+
+describe('PLAN-2D — every board-scoped manifest field carries server-owned attribution', () => {
+  test.each([
+    ['manufacturer', 'contract-value'],
+    ['name', 'contract-value'],
+    ['location', 'contract-value'],
+    ['phases', '3'],
+    ['ze_at_db', '0.42'],
+    ['ipf_at_db', '0.42'],
+  ])('%s targets only the selected board on the wire', async (field, value) => {
+    const session = makeSession(twoBoards());
+    const ptw = createPerTurnWrites();
+    await selectBoard(session, ptw, 'garage');
+    await write(session, ptw, field, value);
+
+    const result = bundleToolCallsIntoResult(ptw, null, {
+      confirmationsEnabled: true,
+      turnId: 'turn-b1',
+      hasBoardClearV1: false,
+    });
+    expect(result.extracted_board_readings).toHaveLength(1);
+    expect(result.extracted_board_readings[0]).toMatchObject({
+      field,
+      board_id: 'garage',
+    });
+  });
+
+  test('a global section field remains board-insensitive after select_board', async () => {
+    const session = makeSession(twoBoards());
+    const ptw = createPerTurnWrites();
+    await selectBoard(session, ptw, 'garage');
+    await write(session, ptw, 'address', '1 Contract Street');
+    const result = bundle(ptw);
+    expect(result.extracted_board_readings[0]).not.toHaveProperty('board_id');
   });
 });
 

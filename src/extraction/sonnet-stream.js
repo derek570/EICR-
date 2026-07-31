@@ -1117,9 +1117,20 @@ function normaliseWiringType(value) {
 
 function validateAndCorrectFields(result, sessionId) {
   if (!result.extracted_readings) return result;
+  const acceptedReadings = [];
   for (const reading of result.extracted_readings) {
-    if (!reading.field) continue;
-    if (KNOWN_FIELDS.has(reading.field)) continue;
+    if (!reading.field) {
+      logger.warn('Reading without a field dropped before client egress', {
+        sessionId,
+        field: reading.field,
+        circuit: reading.circuit,
+      });
+      continue;
+    }
+    if (KNOWN_FIELDS.has(reading.field)) {
+      acceptedReadings.push(reading);
+      continue;
+    }
     // Audit-2026-06-02 Phase 3 — delegate the canonical → legacy rewrite
     // to the leaf helper (field-name-corrections.js) so the
     // dialogue-engine emit path can apply the same logic via
@@ -1131,7 +1142,11 @@ function validateAndCorrectFields(result, sessionId) {
     // produced and so doesn't need the same telemetry).
     const hadCorrection = FIELD_CORRECTIONS[reading.field] !== undefined;
     applyFieldNameCorrection(reading, sessionId, logger);
-    if (!hadCorrection) {
+    if (hadCorrection && KNOWN_FIELDS.has(reading.field)) {
+      acceptedReadings.push(reading);
+      continue;
+    }
+    if (!hadCorrection || !KNOWN_FIELDS.has(reading.field)) {
       logger.warn('Unknown field name from Sonnet', {
         sessionId,
         field: reading.field,
@@ -1140,6 +1155,12 @@ function validateAndCorrectFields(result, sessionId) {
       });
     }
   }
+  // PLAN-2D leg (b): off-manifest fields are dispatcher-unreachable on the
+  // live tool path, but synthetic/legacy callers can still invoke this final
+  // egress guard. Fail closed instead of emitting a server-mutated field that
+  // neither client has a committed destination for. The raw model spelling is
+  // logged only; no client/TTS payload can contain it.
+  result.extracted_readings = acceptedReadings;
   // Normalise wiring_type values from descriptions to letter codes
   for (const reading of result.extracted_readings) {
     if (reading.field === 'wiring_type' && reading.value) {

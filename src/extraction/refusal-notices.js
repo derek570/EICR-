@@ -208,6 +208,24 @@ export const B_STAGED_POOLS = Object.freeze({
     (f) =>
       `${capitaliseFirst(f)} is still recorded — the clear didn't route correctly here; it's logged.`,
   ]),
+  mark_distribution_required: Object.freeze([
+    (f) =>
+      `${capitaliseFirst(f)} wasn't saved as a reading — use mark_distribution_circuit for that link.`,
+    (f) =>
+      `That distribution link for ${f} needs the mark_distribution_circuit action, so the reading wasn't saved.`,
+    (f) =>
+      `I didn't write ${f} as a normal reading — mark_distribution_circuit is the supported route.`,
+  ]),
+  unsupported_structural_reading: Object.freeze([
+    (f) => `${capitaliseFirst(f)} can't be changed through a normal reading — edit it on screen.`,
+    (f) => `That structural field for ${f} isn't voice-editable here — update it on screen.`,
+    (f) => `I can't safely write ${f} as a reading — make that structural change on screen.`,
+  ]),
+  unroutable_board_reading: Object.freeze([
+    (f) => `${capitaliseFirst(f)} needs to be entered on the Board tab for now.`,
+    (f) => `Voice can't route ${f} safely yet — enter it on the Board tab for now.`,
+    (f) => `I didn't save ${f}; please put it in on the Board tab for now.`,
+  ]),
   unknown_tool: Object.freeze([
     () => `I hit an internal snag with that one — it's logged.`,
     () => `Something went wrong on my side with that request — it's been logged.`,
@@ -262,6 +280,12 @@ export const B_STAGED_TERMINALS = Object.freeze({
     `Still can't clear ${f} — that's attempt ${n}; it isn't voice-CLEARABLE in this build.`,
   wrong_tool_clear: (f, n) =>
     `${capitaliseFirst(f)} has NOT been cleared — attempt ${n} hit a routing snag, and it's logged.`,
+  mark_distribution_required: (f, n) =>
+    `${capitaliseFirst(f)} still needs mark_distribution_circuit — attempt ${n} wasn't saved as a reading.`,
+  unsupported_structural_reading: (f, n) =>
+    `${capitaliseFirst(f)} still can't be changed through a reading — attempt ${n}; use the screen.`,
+  unroutable_board_reading: (f, n) =>
+    `${capitaliseFirst(f)} still needs the Board tab — attempt ${n} wasn't saved by voice.`,
   unknown_tool: (f, n) => `That one hit the same internal snag again — attempt ${n} is logged.`,
   offschema_clear: (f, n) =>
     `That clear request keeps missing a field I recognise — attempt ${n} is logged.`,

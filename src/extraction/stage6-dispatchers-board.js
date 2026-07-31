@@ -68,8 +68,13 @@ import { isBoardClearKilled } from './voice-latency-config.js';
 import { getActiveSessionEntry } from './active-sessions.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { CONFIRMATION_FRIENDLY_NAMES, deriveFriendlyName } from './confirmation-text.js';
-import { stageMandatoryNotice } from './refusal-notices.js';
+import { stageMandatoryNotice, spokenBoardOrdinal } from './refusal-notices.js';
 import { buildDegenerateDedupeKey, WIRE_CLIENT_SECTION_DEDUPE_SCOPES } from './ios-dedupe-key.js';
+import {
+  BOARD_READING_SCOPE_MAP,
+  STRUCTURAL_READING_FIELDS,
+  UNROUTABLE_READING_FIELDS,
+} from './client-routable-reading-fields.js';
 import {
   DEFAULT_MAIN_BOARD_ID,
   ensureMultiBoardShape,
@@ -108,6 +113,46 @@ export const CLIENT_NAME_ADDRESS_SHAPE =
 
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
+}
+
+/** PLAN-2D terminal structural/unroutable board-reading rejection. */
+function stageBoardReadingDispositionRefusal(call, ctx, input) {
+  const route = UNROUTABLE_READING_FIELDS.has(input.field)
+    ? 'unroutable_board_reading'
+    : STRUCTURAL_READING_FIELDS.has(input.field)
+      ? 'unsupported_structural_reading'
+      : null;
+  if (route == null) return null;
+
+  const { session, perTurnWrites, turnId } = ctx;
+  const boardId = resolveEffectiveBoardIdForClear(session, input.board_id) ?? null;
+  const ordinal = spokenBoardOrdinal(session?.stateSnapshot, boardId);
+  const boardRenderable =
+    boardId == null || !Array.isArray(session?.stateSnapshot?.boards) || ordinal != null;
+  if (boardRenderable && call.tool_call_id != null) {
+    const friendlyBase = boardFieldSpokenName(input.field);
+    const friendly = ordinal == null ? friendlyBase : `${friendlyBase} on board ${ordinal}`;
+    const slotKey = boardSlotKey(input.field, boardId);
+    stageMandatoryNotice(perTurnWrites, session, {
+      family: route,
+      slotKey,
+      turnId,
+      friendly,
+      field: input.field,
+      boardId,
+      reason: route,
+      coveredToolCallIds: [call.tool_call_id],
+      route,
+      repeatKey: `${route}::${slotKey}`,
+    });
+  }
+  return {
+    code:
+      route === 'unroutable_board_reading'
+        ? 'client_route_unavailable'
+        : 'structural_field_not_recordable',
+    field: 'field',
+  };
 }
 
 /**
@@ -214,39 +259,24 @@ export async function dispatchRecordBoardReading(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
-  // 2b) F1AC26FB #2.2 — block sub_main_cable_csa when the job has NO
-  //     sub-distribution board. "tails are 25mm" (the supply meter tails
-  //     INTO the main board) belongs in main_switch_conductor_csa; with no
-  //     tails steering Sonnet picked the key whose label contains "cable"
-  //     and populated sub_main_cable_csa instead, on a single-board job
-  //     where that field is meaningless (it only describes the cable
-  //     FEEDING a separate sub-main). Redirect the model. #2.1 prompt
-  //     steering is the primary fix; this is the belt-and-braces guard.
-  //     Only fires when zero sub-boards exist — a real multi-board job is
-  //     left untouched.
-  if (input.field === 'sub_main_cable_csa') {
-    const boards = session.stateSnapshot?.boards;
-    const hasSubBoard =
-      Array.isArray(boards) && boards.some((b) => b && b.board_type && b.board_type !== 'main');
-    if (!hasSubBoard) {
-      const err = {
-        code: 'no_sub_board_for_sub_main',
-        field: 'field',
-        hint: 'This job has no sub-distribution board, so sub_main_cable_csa does not apply. Meter tails feeding the main board are main_switch_conductor_csa (bare number).',
-      };
-      logToolCall(logger, {
-        sessionId: session.sessionId,
-        turnId,
-        tool_use_id: call.tool_call_id,
-        tool: 'record_board_reading',
-        round,
-        is_error: true,
-        outcome: 'rejected',
-        validation_error: err,
-        input_summary: { field: input.field },
-      });
-      return envelope(call.tool_call_id, { ok: false, error: err }, true);
-    }
+  // PLAN-2D: structural metadata and the three legitimate-but-unroutable
+  // sub-main readings fail closed before coercion or snapshot mutation. The
+  // covered mandatory notice owns audibility, so a solo rejection suppresses
+  // the generic retry prompt and a mixed turn drains beside sibling read-backs.
+  const dispositionErr = stageBoardReadingDispositionRefusal(call, ctx, input);
+  if (dispositionErr) {
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_board_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: dispositionErr,
+      input_summary: { field: input.field },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: dispositionErr }, true);
   }
 
   // Fix B 2026-06-02 (handoff §B) — value coercion + per-field VALUE
@@ -453,16 +483,15 @@ export async function dispatchRecordBoardReading(call, ctx) {
       divisor: boardClamp.correction.divisor,
     });
   }
-  // Plan A1a (2026-07-27) — stamp CLASSIFIED writes with the effective board
-  // slot (canonical field; board id ONLY for board-scoped fields — a global
-  // field stamped with a concrete board id would make a write on board A and
-  // a post-select_board clear carry different stamps, so the collapse never
-  // fires). UNCLASSIFIED fields stay SYMBOL-LESS (legacy-preserving fallback,
-  // §3.4): existing writes — including the derived bonding producer below —
-  // flow byte-identically to today.
+  // PLAN-2D — stamp every client-routable board/section write through the
+  // dedicated WRITE scope map. This remains separate from
+  // BOARD_CLEAR_SCOPE_MAP: classifying a destination must never make a field
+  // clearable. Board-scoped writes carry the effective board because the
+  // extraction frame precedes current_board_changed on the wire; global fields
+  // stay board-insensitive.
   const writeCanonical = FIELD_CORRECTIONS[input.field] ?? input.field;
   {
-    const writeScope = BOARD_CLEAR_SCOPE_MAP[writeCanonical];
+    const writeScope = BOARD_READING_SCOPE_MAP[writeCanonical];
     if (writeScope === 'global') {
       attachEffectiveBoardSlot(boardMirror, writeCanonical, null);
     } else if (writeScope === 'board') {
