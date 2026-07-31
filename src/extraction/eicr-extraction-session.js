@@ -30,6 +30,7 @@ import {
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import { sanitizeReadingFieldContract } from './reading-field-contract-sanitizer.js';
 import logger from '../logger.js';
 
 // 2026-06-01 — single point of control for the ephemeral-cache TTL on
@@ -2661,6 +2662,17 @@ export class EICRExtractionSession {
       // working without needing to replay tool_use/tool_result pairs back to the API.
       assistantHistoryText = JSON.stringify(toolUseBlock.input);
     }
+
+    // PLAN-2D: legacy record_extraction bypasses the live write dispatcher.
+    // Enforce the committed client-routing contract BEFORE metrics, question
+    // bookkeeping, dedupe and—critically—updateStateSnapshot. The later
+    // sonnet-stream egress call is an idempotent defence-in-depth pass, not
+    // the first boundary.
+    sanitizeReadingFieldContract(result, {
+      sessionId: this.sessionId,
+      logger,
+      confirmationsEnabled: options.confirmationsEnabled === true,
+    });
 
     // ALWAYS push to conversation history (even on extraction failure) to keep context in sync
     this.conversationHistory.push(

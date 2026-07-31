@@ -3,10 +3,7 @@
  * not a hand-maintained warning allowlist.
  */
 
-import {
-  BOARD_FIELD_ENUM,
-  CIRCUIT_FIELD_ENUM,
-} from '../extraction/stage6-tool-schemas.js';
+import { BOARD_FIELD_ENUM, CIRCUIT_FIELD_ENUM } from '../extraction/stage6-tool-schemas.js';
 import { FIELD_CORRECTIONS } from '../extraction/field-name-corrections.js';
 import { KNOWN_FIELDS } from '../extraction/known-fields.js';
 import {
@@ -120,6 +117,18 @@ describe('PLAN-2D final egress guard', () => {
           text: 'I also saw __synthetic_off_manifest__ as secret-model-value',
         },
       ],
+      questions_for_user: [
+        {
+          field: '__synthetic_off_manifest__',
+          question: 'Was secret-model-value correct?',
+        },
+      ],
+      validation_alerts: [
+        {
+          field: '__synthetic_off_manifest__',
+          message: 'secret-model-value needs review',
+        },
+      ],
       spoken_response: '__synthetic_off_manifest__ is secret-model-value',
       action: {
         type: 'set_field',
@@ -135,13 +144,24 @@ describe('PLAN-2D final egress guard', () => {
       'ocpd_max_zs_ohm',
       'ocpd_max_zs_ohm',
     ]);
-    expect(result.confirmations).toEqual([
-      { field: 'cable_size_earth', circuit: 1, text: 'CPC CSA is 1.5' },
+    expect(result.confirmations).toHaveLength(3);
+    expect(result.confirmations.map((confirmation) => confirmation.field)).toEqual([
+      'cable_size_earth',
+      'ocpd_max_zs_ohm',
+      'ocpd_max_zs_ohm',
     ]);
+    expect(result.confirmations.map((confirmation) => confirmation.circuit)).toEqual([1, 1, 2]);
+    expect(result.confirmations.every((confirmation) => confirmation.text.length > 0)).toBe(true);
+    expect(result.questions_for_user).toEqual([]);
+    expect(result.validation_alerts).toEqual([]);
     expect(result.spoken_response).toMatch(/didn't match a field I recognise/i);
     expect(result.action).toBeNull();
     const wire = JSON.stringify(result);
     expect(wire).not.toContain('__synthetic_off_manifest__');
     expect(wire).not.toContain('secret-model-value');
+
+    const once = JSON.stringify(result.confirmations);
+    _test_validateAndCorrectFields(result, 'plan2d-egress-repeat');
+    expect(JSON.stringify(result.confirmations)).toBe(once);
   });
 });

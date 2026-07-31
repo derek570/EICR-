@@ -504,6 +504,30 @@ export function stageUnknownToolRefusal(perTurnWrites, session, { turnId, toolCa
   });
 }
 
+/**
+ * PLAN-2D leak-safe covered refusal for every write tool whose sampled field
+ * is outside its committed enum. Callers run this immediately after input
+ * normalisation, before scope/value/confidence validation, so malformed
+ * companion arguments cannot steal precedence and turn an off-schema write
+ * into a silent generic retry. Only server-owned constants enter the audible
+ * channel; the raw model field/value stay out of notices and wire payloads.
+ */
+export function stageOffschemaRecordRefusal(perTurnWrites, session, { turnId, toolCallId }) {
+  if (toolCallId == null) return;
+  stageMandatoryNotice(perTurnWrites, session, {
+    family: 'model_contract',
+    slotKey: 'offschema_record',
+    turnId,
+    friendly: null,
+    field: null,
+    boardId: null,
+    reason: 'offschema_record',
+    coveredToolCallIds: [toolCallId],
+    route: 'offschema_record',
+    repeatKey: 'model_contract::offschema_record',
+  });
+}
+
 /** True when a staged notice carries call-level coverage (B-staged). */
 export function noticeIsCovered(notice) {
   return Array.isArray(notice?.coveredToolCallIds) && notice.coveredToolCallIds.length > 0;

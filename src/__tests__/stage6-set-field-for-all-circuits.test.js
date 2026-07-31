@@ -301,7 +301,7 @@ describe('dispatchSetFieldForAllCircuits — validation rejection', () => {
       { tool_call_id: 'tu_bulk', name: 'set_field_for_all_circuits', input },
       {}
     );
-    return { result, body: JSON.parse(result.content), writes };
+    return { result, body: JSON.parse(result.content), writes, session };
   }
 
   test('missing field → invalid_field, no writes, is_error:true', async () => {
@@ -344,10 +344,34 @@ describe('dispatchSetFieldForAllCircuits — validation rejection', () => {
   });
 
   test('unknown field (not in circuit_fields schema) → unknown_field, NO writes (defence in depth: Bug-E removed strict:true)', async () => {
-    const { result, body, writes } = await runWith(validInput({ field: 'made_up_field_name' }));
+    const rawField = 'made_up_field_name';
+    const rawValue = 'private-bulk-value';
+    const { result, body, writes, session } = await runWith(
+      validInput({
+        field: rawField,
+        value: rawValue,
+        confidence: 2,
+        scope: 'kitchen_only',
+        board_id: 'missing-board',
+      })
+    );
     expect(result.is_error).toBe(true);
     expect(body.error.code).toBe('unknown_field');
     expect(writes.readings.size).toBe(0);
+    expect(writes.boardReadings.size).toBe(0);
+    expect(writes.readingJournal).toEqual([]);
+    expect(writes.boardReadingJournal).toEqual([]);
+    expect(writes.mandatoryNotices).toHaveLength(1);
+    expect(writes.mandatoryNotices[0]).toMatchObject({
+      family: 'model_contract',
+      route: 'offschema_record',
+      field: null,
+    });
+    expect(JSON.stringify({ body, notices: writes.mandatoryNotices })).not.toContain(rawField);
+    expect(JSON.stringify({ body, notices: writes.mandatoryNotices })).not.toContain(rawValue);
+    for (let n = 1; n <= 14; n += 1) {
+      expect(session.stateSnapshot.circuits[n]).not.toHaveProperty(rawField);
+    }
   });
 
   test('select-typed field with off-enum value → value_not_in_options, NO writes — option list returned in error envelope', async () => {

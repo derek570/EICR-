@@ -111,6 +111,7 @@ import { classifyBoardClear } from './stage6-dispatchers-board.js';
 // arbitrates (and can drop) it later.
 import {
   stageMandatoryNotice,
+  stageOffschemaRecordRefusal,
   spokenBoardOrdinal,
   stagePartialFailureNotice,
   resolvePartialFailureFieldLabel,
@@ -185,11 +186,7 @@ function stageStructuralReadingRefusal(
     const targetClause = bulk ? ' for all circuits' : ` for circuit ${input.circuit}`;
     const slotField =
       disposition === 'recoverable_mark_distribution' ? 'distribution_link' : input.field;
-    const slotKey = rawCircuitSlot(
-      slotField,
-      bulk ? 'all' : input.circuit,
-      boardId
-    );
+    const slotKey = rawCircuitSlot(slotField, bulk ? 'all' : input.circuit, boardId);
     const route =
       disposition === 'recoverable_mark_distribution'
         ? 'mark_distribution_required'
@@ -214,30 +211,6 @@ function stageStructuralReadingRefusal(
         : 'structural_field_not_recordable',
     field: 'field',
   };
-}
-
-/**
- * PLAN-2D final reachability guard for an off-enum record_reading call.
- *
- * Tool sampling is deliberately non-strict, so the dispatcher—not the SDK—
- * owns this membership check. The refusal carries only server-owned
- * constants: a hallucinated field/value may be logged for diagnosis, but can
- * never be rendered into TTS or sent to either client.
- */
-function stageOffschemaRecordReadingRefusal(call, ctx) {
-  if (call.tool_call_id == null) return;
-  stageMandatoryNotice(ctx.perTurnWrites, ctx.session, {
-    family: 'model_contract',
-    slotKey: 'offschema_record',
-    turnId: ctx.turnId,
-    friendly: null,
-    field: null,
-    boardId: null,
-    reason: 'offschema_record',
-    coveredToolCallIds: [call.tool_call_id],
-    route: 'offschema_record',
-    repeatKey: 'model_contract::offschema_record',
-  });
 }
 
 // ---- P5 same-turn clear→write slot identity (2026-07-23) --------------------
@@ -380,7 +353,32 @@ export async function dispatchRecordReading(call, ctx) {
   // while `validateBoardScope` compared it to the current board id and rejected
   // the whole call as `wrong_board`. Doing this at the dispatcher boundary means
   // every seam below sees the one spelling they already agree on — absent.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input ?? {});
+
+  // PLAN-2D: non-strict tool sampling makes the dispatcher the first
+  // authoritative enum boundary. This check deliberately precedes coercion,
+  // clamps, capability gates and scope/circuit/confidence validation: no
+  // malformed companion argument may turn an off-schema record into an
+  // uncovered rejection.
+  if (typeof input.field !== 'string' || !CIRCUIT_FIELD_SET.has(input.field)) {
+    const fieldErr = { code: 'invalid_field', field: 'field' };
+    stageOffschemaRecordRefusal(perTurnWrites, session, {
+      turnId,
+      toolCallId: call.tool_call_id,
+    });
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: fieldErr,
+      input_summary: { field: null, circuit: input.circuit ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: fieldErr }, true);
+  }
   // readback-correction-optionb §6 — capability flag threaded via the
   // write dispatcher's extraCtx (stage6-shadow-harness.js sources it from
   // entry.voiceLatency.capabilities.hasLowConfReadbackV1). Absent/false on
@@ -523,28 +521,6 @@ export async function dispatchRecordReading(call, ctx) {
       });
     }
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
-  }
-
-  // PLAN-2D reachability verdict: tool sampling is non-strict and
-  // validateRecordReading validates shape/range, not enum membership. Reject
-  // before structural classification, coercion, snapshot mutation, journalling
-  // or confirmation synthesis. The generic covered notice owns audibility
-  // without exposing the model-controlled spelling/value.
-  if (typeof input.field !== 'string' || !CIRCUIT_FIELD_SET.has(input.field)) {
-    const fieldErr = { code: 'invalid_field', field: 'field' };
-    stageOffschemaRecordReadingRefusal(call, ctx);
-    logToolCall(logger, {
-      sessionId: session.sessionId,
-      turnId,
-      tool_use_id: call.tool_call_id,
-      tool: 'record_reading',
-      round,
-      is_error: true,
-      outcome: 'rejected',
-      validation_error: fieldErr,
-      input_summary: { field: null, circuit: input.circuit },
-    });
-    return envelope(call.tool_call_id, { ok: false, error: fieldErr }, true);
   }
 
   const structuralErr = stageStructuralReadingRefusal(call, ctx, input);
@@ -2117,6 +2093,32 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // through untouched to the per-board fan-out below.
   const input = normaliseBoardScopeInput(call.input ?? {});
 
+  if (typeof input.field !== 'string' || !CIRCUIT_FIELD_SET.has(input.field)) {
+    const fieldErr = {
+      code:
+        typeof input.field === 'string' && input.field.length > 0
+          ? 'unknown_field'
+          : 'invalid_field',
+      field: 'field',
+    };
+    stageOffschemaRecordRefusal(perTurnWrites, session, {
+      turnId,
+      toolCallId: call.tool_call_id,
+    });
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'set_field_for_all_circuits',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: fieldErr,
+      input_summary: { field: null, scope: input.scope ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: fieldErr }, true);
+  }
+
   const err = validateSetFieldForAllCircuits(input);
   if (err) {
     logToolCall(logger, {
@@ -2426,11 +2428,7 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
           writable: true,
         });
       }
-      recordReadingWrite(
-        perTurnWrites,
-        encodeReadingKey(input.field, ref, boardId),
-        bulkMirror
-      );
+      recordReadingWrite(perTurnWrites, encodeReadingKey(input.field, ref, boardId), bulkMirror);
       applied.push({
         circuit: ref,
         field: input.field,

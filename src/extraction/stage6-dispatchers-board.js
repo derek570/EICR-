@@ -68,7 +68,11 @@ import { isBoardClearKilled } from './voice-latency-config.js';
 import { getActiveSessionEntry } from './active-sessions.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { CONFIRMATION_FRIENDLY_NAMES, deriveFriendlyName } from './confirmation-text.js';
-import { stageMandatoryNotice, spokenBoardOrdinal } from './refusal-notices.js';
+import {
+  stageMandatoryNotice,
+  stageOffschemaRecordRefusal,
+  spokenBoardOrdinal,
+} from './refusal-notices.js';
 import { buildDegenerateDedupeKey, WIRE_CLIENT_SECTION_DEDUPE_SCOPES } from './ios-dedupe-key.js';
 import {
   BOARD_READING_SCOPE_MAP,
@@ -184,7 +188,31 @@ function validateConfidence(confidence) {
  */
 export async function dispatchRecordBoardReading(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
-  const input = call.input ?? {};
+  const input = normaliseBoardScopeInput(call.input ?? {});
+
+  // PLAN-2D: sampled tools are non-strict, so enum membership is the first
+  // post-normalisation boundary. It must outrank board scope and confidence:
+  // otherwise an off-schema write with another malformed argument disappears
+  // behind an uncovered rejection and a mixed successful turn becomes silent.
+  if (typeof input.field !== 'string' || !BOARD_FIELD_SET.has(input.field)) {
+    const err = { code: 'invalid_field', field: 'field' };
+    stageOffschemaRecordRefusal(perTurnWrites, session, {
+      turnId,
+      toolCallId: call.tool_call_id,
+    });
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_board_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: err,
+      input_summary: { field: null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+  }
 
   // Hotfix slice 3.1 — validateBoardScope runs FIRST so a cross-board
   // record_board_reading on a non-current board surfaces as `wrong_board`
@@ -240,23 +268,6 @@ export async function dispatchRecordBoardReading(call, ctx) {
       input_summary: { field: input.field ?? null },
     });
     return envelope(call.tool_call_id, { ok: false, error: confErr }, true);
-  }
-
-  // 2) field-enum membership (defence in depth).
-  if (typeof input.field !== 'string' || !BOARD_FIELD_SET.has(input.field)) {
-    const err = { code: 'invalid_field', field: 'field' };
-    logToolCall(logger, {
-      sessionId: session.sessionId,
-      turnId,
-      tool_use_id: call.tool_call_id,
-      tool: 'record_board_reading',
-      round,
-      is_error: true,
-      outcome: 'rejected',
-      validation_error: err,
-      input_summary: { field: input.field ?? null },
-    });
-    return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
   // PLAN-2D: structural metadata and the three legitimate-but-unroutable
