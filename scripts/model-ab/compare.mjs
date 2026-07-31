@@ -162,8 +162,8 @@ function diffAndReport(base, cand, args) {
   line(`  readings agree   : ${agree}/${total}  (${fmtPct(total ? agree / total : 0)})`);
   line(`  latency (mean/turn): base ${B.latency_ms_mean}ms  |  cand ${C.latency_ms_mean}ms  ${latRatio ? `(${latRatio.toFixed(2)}×)` : ''}`);
   line(`  est cost (corpus): base $${B.est_cost_usd}  |  cand $${C.est_cost_usd}  ${costRatio ? `(${costRatio.toFixed(2)}×)` : ''}`);
-  line(`  tokens base : in ${B.usage.input_tokens} / out ${B.usage.output_tokens} / cacheRead ${B.usage.cache_read_tokens}`);
-  line(`  tokens cand : in ${C.usage.input_tokens} / out ${C.usage.output_tokens} / cacheRead ${C.usage.cache_read_tokens}`);
+  line(`  tokens base : in ${B.usage.input_tokens} / out ${B.usage.output_tokens} / cacheRead ${B.usage.cache_read_tokens} / cacheWrite ${B.usage.cache_write_tokens ?? 0}`);
+  line(`  tokens cand : in ${C.usage.input_tokens} / out ${C.usage.output_tokens} / cacheRead ${C.usage.cache_read_tokens} / cacheWrite ${C.usage.cache_write_tokens ?? 0}`);
   line('────────────────────────────────────────────────────────────────');
   for (const r of rows) {
     const flag = r.same ? '✓' : '✗ DIFF';

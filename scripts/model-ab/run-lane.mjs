@@ -38,17 +38,28 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..', '..');
 const CORPUS = path.join(REPO, 'tests', 'fixtures', 'field-replay-corpus');
 
-// Per-model $/1M token rates. Haiku 4.5 from the Anthropic catalog; Luna at the
-// permanent price Derek confirmed 2026-07-31. Cache reads ~0.1x input on both.
+// Per-model $/1M token rates. Both platforms use the SAME cache convention:
+// cache READ ~= 0.1x input (90% off), cache WRITE ~= 1.25x input (verified for
+// Anthropic in cost-tracker.js's HAIKU_RATES; verified for OpenAI live
+// 2026-07-31 via developers.openai.com/api/docs/pricing AND a live cache-cold/
+// cache-warm probe pair). Deliberately NOT delegating to CostTracker for cost
+// math: CostTracker._modelFamily() has no 'gpt' branch and silently falls back
+// to Sonnet rates for any unrecognized model id — it would grossly overprice
+// a gpt-* lane. This table is the source of truth for the A/B; keep it in
+// sync with cost-tracker.js's HAIKU_RATES if that ever changes.
+//
+// Luna's OFFICIAL pricing (developers.openai.com/api/docs/models/gpt-5.6-luna,
+// verified 2026-07-31 — NOT the $0.60 output figure some third-party
+// aggregators list): input $0.20, output $1.20, cached input $0.02 (90% off).
 const RATES = {
-  'claude-haiku-4-5-20251001': { in: 1.0, out: 5.0, cacheRead: 0.1 },
-  'claude-haiku-4-5': { in: 1.0, out: 5.0, cacheRead: 0.1 },
-  'gpt-5.6-luna': { in: 0.2, out: 0.6, cacheRead: 0.02 },
+  'claude-haiku-4-5-20251001': { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 },
+  'claude-haiku-4-5': { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 },
+  'gpt-5.6-luna': { in: 0.2, out: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
 };
 function rateFor(model) {
   if (RATES[model]) return RATES[model];
   // Fallback: unknown model → treat input-cache at 10% of input.
-  return { in: 1.0, out: 5.0, cacheRead: 0.1 };
+  return { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 };
 }
 
 function parseArgs(argv) {
@@ -288,6 +299,7 @@ async function main() {
       input_tokens: (costAfter.inputTokens || 0) - (costBefore.inputTokens || 0),
       output_tokens: (costAfter.outputTokens || 0) - (costBefore.outputTokens || 0),
       cache_read_tokens: (costAfter.cacheReadTokens || 0) - (costBefore.cacheReadTokens || 0),
+      cache_write_tokens: (costAfter.cacheWriteTokens || 0) - (costBefore.cacheWriteTokens || 0),
     };
     laneResults.push(fixtureOut);
 
@@ -305,19 +317,24 @@ async function main() {
   let totIn = 0;
   let totOut = 0;
   let totCacheRead = 0;
+  let totCacheWrite = 0;
   let totLatency = 0;
   let turnCount = 0;
   for (const f of laneResults) {
     totIn += f.usage.input_tokens;
     totOut += f.usage.output_tokens;
     totCacheRead += f.usage.cache_read_tokens;
+    totCacheWrite += f.usage.cache_write_tokens;
     for (const t of f.turns) {
       totLatency += t.latency_ms;
       turnCount += 1;
     }
   }
   const costUsd =
-    (totIn / 1e6) * rate.in + (totOut / 1e6) * rate.out + (totCacheRead / 1e6) * rate.cacheRead;
+    (totIn / 1e6) * rate.in +
+    (totOut / 1e6) * rate.out +
+    (totCacheRead / 1e6) * rate.cacheRead +
+    (totCacheWrite / 1e6) * rate.cacheWrite;
 
   const summary = {
     model,
@@ -327,7 +344,12 @@ async function main() {
     wall_ms_total: Date.now() - startedAt,
     latency_ms_total: totLatency,
     latency_ms_mean: turnCount ? Math.round(totLatency / turnCount) : 0,
-    usage: { input_tokens: totIn, output_tokens: totOut, cache_read_tokens: totCacheRead },
+    usage: {
+      input_tokens: totIn,
+      output_tokens: totOut,
+      cache_read_tokens: totCacheRead,
+      cache_write_tokens: totCacheWrite,
+    },
     est_cost_usd: Number(costUsd.toFixed(6)),
     rate_per_1m: rate,
     results: laneResults,

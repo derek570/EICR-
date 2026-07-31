@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import { isOpenAIModel } from './openai-vision-adapter.js';
 import { createOpenAIToolUseAdapter } from './openai-tooluse-adapter.js';
+import { createOpenAIResponsesAdapter } from './openai-responses-adapter.js';
 import { CostTracker } from './cost-tracker.js';
 import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
 import {
@@ -1103,11 +1104,24 @@ export class EICRExtractionSession {
   constructor(apiKey, sessionId, certType = 'eicr', options = {}) {
     // Provider selection for the Stage 6 extraction loop. Default: Anthropic.
     // When SONNET_EXTRACT_MODEL names a `gpt-*` model (e.g. GPT-5.6 Luna) AND
-    // OPENAI_API_KEY is available, route the tool-call loop through the OpenAI
-    // adapter instead — an Anthropic-shaped `messages.stream()` backed by
-    // OpenAI function calling. This is a provider A/B for the shadow-harness
-    // corpus trial; runToolLoop / the assembler / dispatchers are unchanged
-    // and the iOS/web wire contract is untouched (extraction is server-side).
+    // OPENAI_API_KEY is available, route the tool-call loop through an
+    // OpenAI adapter instead — an Anthropic-shaped `messages.stream()` backed
+    // by OpenAI function calling. This is a provider A/B for the shadow-
+    // harness corpus trial; runToolLoop / the assembler / dispatchers are
+    // unchanged and the iOS/web wire contract is untouched (extraction is
+    // server-side).
+    //
+    // TWO OpenAI adapters exist:
+    //   - Responses (`openai-responses-adapter.js`, DEFAULT) — verified live
+    //     2026-07-31 as the only mode that lets Luna run WITH reasoning
+    //     alongside function tools. Without it (Chat Completions), Luna loops
+    //     to the 8-round cap (~20s) on every non-trivial turn — a reasoning
+    //     model can't decide it's done with reasoning switched off.
+    //   - Chat Completions (`openai-tooluse-adapter.js`, legacy/comparison) —
+    //     forces reasoning_effort:'none' because /v1/chat/completions 400s on
+    //     any other value for Luna's tool calling. Kept only so the A/B
+    //     tooling can still show the pre-fix behaviour on request.
+    // Select via OPENAI_EXTRACT_API ('responses' default | 'chat_completions').
     //
     // Guarded so the default (claude-*) path is byte-identical: if the model
     // isn't gpt-* the branch is never taken; if it IS gpt-* but the key is
@@ -1115,9 +1129,14 @@ export class EICRExtractionSession {
     // session. Mirrors the CCU sliding-window provider swap precedent.
     const extractModel = (process.env.SONNET_EXTRACT_MODEL || '').trim();
     const openaiKey = process.env.OPENAI_API_KEY;
+    const openaiApi = (process.env.OPENAI_EXTRACT_API || 'responses').trim();
     if (isOpenAIModel(extractModel) && openaiKey) {
-      this.client = createOpenAIToolUseAdapter({ apiKey: openaiKey });
+      this.client =
+        openaiApi === 'chat_completions'
+          ? createOpenAIToolUseAdapter({ apiKey: openaiKey })
+          : createOpenAIResponsesAdapter({ apiKey: openaiKey });
       this.extractionProvider = 'openai';
+      this.extractionApi = openaiApi === 'chat_completions' ? 'chat_completions' : 'responses';
     } else {
       if (isOpenAIModel(extractModel) && !openaiKey) {
         logger.warn('SONNET_EXTRACT_MODEL is gpt-* but OPENAI_API_KEY missing — using Anthropic', {
