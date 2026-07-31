@@ -1252,6 +1252,14 @@ function parseMultiDescriptionCircuitRefs(userText) {
   const exceptionalRef = extractBoundedExceptionalCircuitRef(text);
   if (Number.isInteger(exceptionalRef)) return [exceptionalRef];
   if (hasCorrectionOrNegationSyntax(text)) return null;
+  // Preserve the shipped scalar circuit-ref grammar inside a registered
+  // multi-description clarification. This parser is whole-reply bounded and
+  // requires an explicit circuit noun for lead-ins such as "Use circuit 2",
+  // so it cannot turn "Bedroom 2" or "Add 0.4 to circuit 2" into ref 2.
+  // Correction/negation stays above it so "Do not use circuit 2" continues
+  // through the fail-closed correction lane instead of becoming a write.
+  const scalarRef = extractCircuitRef(text);
+  if (Number.isInteger(scalarRef)) return [scalarRef];
   const atoms = splitEnumeratedAtoms(text).filter((atom) => !isConversationalFillerSpan(atom.text));
   if (atoms.length === 0) return null;
   const refs = [];

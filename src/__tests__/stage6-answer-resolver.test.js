@@ -2061,6 +2061,13 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ['Put it onto cct 6', [6]],
     ['circuit 3 without the RCD', [3]],
     ['circuit 3 without RCD qualifier', [3]],
+    ['Use circuit 2', [2]],
+    ['Choose circuit 2', [2]],
+    ['Pick circuit 2', [2]],
+    ['Go with circuit 2', [2]],
+    ['The answer is circuit 2', [2]],
+    ["I'd use circuit 2", [2]],
+    ["I'll use circuit 2", [2]],
   ])('the mdr-only anchored ref grammar accepts "%s"', (reply, expectedRefs) => {
     const circuits = Array.from({ length: 21 }, (_, index) => ({
       circuit_ref: index + 1,
@@ -2085,6 +2092,8 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     ['Add to Bedroom 2', false],
     ['Add 0.4 to Bedroom 2', false],
     ['Add to Bedroom 2 and circuit 5', false],
+    ['Add 0.4 to circuit 2', false],
+    ['Do not use circuit 2', true],
     ['circuit 3 without sockets', true],
   ])(
     'the mdr-only exceptional ref grammar rejects out-of-bounds form "%s"',
@@ -2104,6 +2113,25 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       expect(isMultiDescriptionAnswerText(reply, circuits)).toBe(shouldConsumeAsCorrection);
     }
   );
+
+  test('unowned digit-bearing prose is not reclaimed by the mdr scalar lane', () => {
+    const circuits = [
+      { circuit_ref: 2, circuit_designation: 'Kitchen sockets' },
+      { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
+    ];
+    const verdict = resolveMultiDescriptionFollowup({
+      userText: 'Bedroom 2',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: circuits,
+    });
+
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_followup_no_designation_match',
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(isMultiDescriptionAnswerText('Bedroom 2', circuits)).toBe(false);
+  });
 
   test.each([
     'Add to Bedroom 2',

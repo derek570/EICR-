@@ -241,6 +241,7 @@ Recent changes — one line each. **Full commit-body-level detail in [docs/refer
 
 | Date | Summary |
 |------|---------|
+| 2026-07-30 | **PLAN-2B §3.3 round-26 scalar-compatibility closure.** Registered grouped clarifications reuse the shipped bounded scalar circuit parser, so natural `Use/Choose/Pick/Go with circuit N` answers work on both live channels without widening negation, prose, or value-command acceptance. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-07-30 | **PLAN-2B §3.3 round-25 broker-lifecycle closure.** Collapsed board writes and their unmatched-description notices retain a genuinely selected census board across an `mdr-*` wait, while a server-owned generation latch prevents model-reformatted retries from reopening an abandoned ask. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-07-30 | **PLAN-2B §3.3 round-24 authority closure.** Frozen-board retention now requires the board to have been genuinely selected at census time; model-authored scope for an unselected board still fails the normal `wrong_board` gate and mutates nothing. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-07-30 | **PLAN-2B §3.3 round-23 lifecycle closure.** The effective circuit board is frozen across an in-flight grouped clarification, including writes/dedupe/notices, and `user_moved_on` abandons plus generation-fences the stale buffered ask so the replacement command can run exactly once. Full detail: [changelog.md](docs/reference/changelog.md). |

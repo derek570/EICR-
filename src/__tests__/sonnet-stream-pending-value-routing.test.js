@@ -540,7 +540,7 @@ describe('§A4 (4) — ask_user_answered carrying a structurally complete fresh 
 });
 
 describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
-  const waitingChatter = [
+  const nonAnswerSpeech = [
     ['give-me-seconds', 'give me 2 seconds'],
     ['hold-on-minutes', 'hold on for 2 minutes'],
     ['just-seconds', 'just 2 secs'],
@@ -550,6 +550,7 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     ['delete-please', 'delete please'],
     ['remove-please', 'remove, please'],
     ['clear-please', 'clear please'],
+    ['unowned-digit-prose', 'Bedroom 2'],
   ];
 
   test('a transcript-only designation restatement resolves mdr pre-queue', async () => {
@@ -578,10 +579,23 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
-  test.each(['Add to circuit 5 please', 'circuit 3 without the RCD'])(
+  test.each([
+    'Add to circuit 5 please',
+    'circuit 3 without the RCD',
+    'Use circuit 2',
+    'Choose circuit 2',
+    'Pick circuit 2',
+    'Go with circuit 2',
+    'The answer is circuit 2',
+    "I'd use circuit 2",
+    "I'll use circuit 2",
+  ])(
     'a transcript-only bounded scalar form "%s" reaches the registered mdr resolver',
     async (userText) => {
-      const slug = userText.startsWith('Add') ? 'imperative' : 'rcd-qualifier';
+      const slug = userText
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
       const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
       entry.isExtracting = true;
       let resolvedPayload = null;
@@ -621,6 +635,7 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     'Add to Bedroom 2',
     'Add 0.4 to Bedroom 2',
     'Add to Bedroom 2 and circuit 5',
+    'Add 0.4 to circuit 2',
     '1 circuit add 0.4 to Bedroom 2',
     'one circuit add to Bedroom 2',
     'all circuits add 0.4 to Bedroom 2',
@@ -707,6 +722,7 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     'Add to Bedroom 2',
     'Add 0.4 to Bedroom 2',
     'Add to Bedroom 2 and circuit 5',
+    'Add 0.4 to circuit 2',
     '1 circuit add 0.4 to Bedroom 2',
     'one circuit add to Bedroom 2',
     'all circuits add 0.4 to Bedroom 2',
@@ -904,10 +920,23 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(runShadowHarnessSpy.mock.calls.at(-1)[1]).toContain('Ze is 0.22');
   });
 
-  test.each(['Add to circuit 5 please', 'circuit 3 without the RCD'])(
+  test.each([
+    'Add to circuit 5 please',
+    'circuit 3 without the RCD',
+    'Use circuit 2',
+    'Choose circuit 2',
+    'Pick circuit 2',
+    'Go with circuit 2',
+    'The answer is circuit 2',
+    "I'd use circuit 2",
+    "I'll use circuit 2",
+  ])(
     'a direct-channel bounded scalar form "%s" reaches the registered mdr resolver',
     async (userText) => {
-      const slug = userText.startsWith('Add') ? 'imperative' : 'rcd-qualifier';
+      const slug = userText
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
       const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
       let resolvedPayload = null;
       const toolCallId = `mdr-description-direct-${slug}`;
@@ -1096,8 +1125,8 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     }
   );
 
-  test.each(waitingChatter)(
-    'transcript waiting chatter (%s) neither consumes the mdr ask nor dispatches work',
+  test.each(nonAnswerSpeech)(
+    'transcript non-answer (%s) neither consumes the mdr ask nor dispatches work',
     async (slug, userText) => {
       const { ws, entry } = await startSession(wss, `sess-mdr-transcript-${slug}`);
       entry.isExtracting = true;
@@ -1122,8 +1151,8 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     }
   );
 
-  test.each(waitingChatter)(
-    'direct-channel waiting chatter (%s) preserves the registered mdr ask without dispatch',
+  test.each(nonAnswerSpeech)(
+    'direct-channel non-answer (%s) preserves the registered mdr ask without dispatch',
     async (slug, userText) => {
       const { ws, entry } = await startSession(wss, `sess-mdr-direct-${slug}`);
       let resolvedPayload = null;
@@ -1195,53 +1224,59 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     expect(entry.pendingAsks.size).toBe(0);
   });
 
-  test('a transcript correction reaches the mdr resolver instead of waiting for timeout', async () => {
-    const { ws, entry } = await startSession(wss, 'sess-mdr-correction-transcript');
-    entry.isExtracting = true;
-    let resolvedPayload = null;
-    registerMultiDescriptionAsk(entry, 'mdr-description-correction-transcript', (payload) => {
-      resolvedPayload = payload;
-    });
-    runShadowHarnessSpy.mockClear();
+  test.each(['circuit 1 and not circuit 2', 'Do not use circuit 2'])(
+    'transcript correction "%s" reaches the mdr resolver instead of waiting for timeout',
+    async (userText) => {
+      const { ws, entry } = await startSession(wss, 'sess-mdr-correction-transcript');
+      entry.isExtracting = true;
+      let resolvedPayload = null;
+      registerMultiDescriptionAsk(entry, 'mdr-description-correction-transcript', (payload) => {
+        resolvedPayload = payload;
+      });
+      runShadowHarnessSpy.mockClear();
 
-    await sendFrame(ws, {
-      type: 'transcript',
-      text: 'circuit 1 and not circuit 2',
-      utterance_id: 'u-mdr-correction-transcript',
-      regexResults: [],
-    });
+      await sendFrame(ws, {
+        type: 'transcript',
+        text: userText,
+        utterance_id: 'u-mdr-correction-transcript',
+        regexResults: [],
+      });
 
-    expect(resolvedPayload).toMatchObject({
-      answered: true,
-      user_text: 'circuit 1 and not circuit 2',
-      response_utterance_id: 'u-mdr-correction-transcript',
-    });
-    expect(entry.pendingAsks.size).toBe(0);
-    expect(entry.pendingTranscripts).toHaveLength(0);
-    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
-  });
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        response_utterance_id: 'u-mdr-correction-transcript',
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+      expect(entry.pendingTranscripts).toHaveLength(0);
+      expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    }
+  );
 
-  test('a direct-channel correction reaches the mdr resolver instead of being ignored', async () => {
-    const { ws, entry } = await startSession(wss, 'sess-mdr-correction-direct');
-    let resolvedPayload = null;
-    registerMultiDescriptionAsk(entry, 'mdr-description-correction-direct', (payload) => {
-      resolvedPayload = payload;
-    });
+  test.each(['circuit 1 and not circuit 2', 'Do not use circuit 2'])(
+    'direct-channel correction "%s" reaches the mdr resolver instead of being ignored',
+    async (userText) => {
+      const { ws, entry } = await startSession(wss, 'sess-mdr-correction-direct');
+      let resolvedPayload = null;
+      registerMultiDescriptionAsk(entry, 'mdr-description-correction-direct', (payload) => {
+        resolvedPayload = payload;
+      });
 
-    await sendFrame(ws, {
-      type: 'ask_user_answered',
-      tool_call_id: 'mdr-description-correction-direct',
-      user_text: 'circuit 1 and not circuit 2',
-      consumed_utterance_id: 'u-mdr-correction-direct',
-    });
+      await sendFrame(ws, {
+        type: 'ask_user_answered',
+        tool_call_id: 'mdr-description-correction-direct',
+        user_text: userText,
+        consumed_utterance_id: 'u-mdr-correction-direct',
+      });
 
-    expect(resolvedPayload).toMatchObject({
-      answered: true,
-      user_text: 'circuit 1 and not circuit 2',
-      utterance_id: 'u-mdr-correction-direct',
-    });
-    expect(entry.pendingAsks.size).toBe(0);
-  });
+      expect(resolvedPayload).toMatchObject({
+        answered: true,
+        user_text: userText,
+        utterance_id: 'u-mdr-correction-direct',
+      });
+      expect(entry.pendingAsks.size).toBe(0);
+    }
+  );
 
   test('a direct-channel cancellation reaches the mdr resolver instead of looking like filler', async () => {
     const { ws, entry } = await startSession(wss, 'sess-mdr-cancel');

@@ -1137,7 +1137,17 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
     });
   });
 
-  test.each(['Add to circuit 5 please', 'circuit 3 without the RCD'])(
+  test.each([
+    'Add to circuit 5 please',
+    'circuit 3 without the RCD',
+    'Use circuit 2',
+    'Choose circuit 2',
+    'Pick circuit 2',
+    'Go with circuit 2',
+    'The answer is circuit 2',
+    "I'd use circuit 2",
+    "I'll use circuit 2",
+  ])(
     'bounded scalar form "%s" remains an answer to the registered mdr ask',
     (userText) => {
       const verdict = classifyOvertake(
@@ -1164,6 +1174,36 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
       });
     }
   );
+
+  test.each([
+    ['Bedroom 2', { kind: 'user_moved_on' }],
+    [
+      'Do not use circuit 2',
+      {
+        kind: 'answers',
+        toolCallId: 'mdr-negative-control',
+        userText: 'Do not use circuit 2',
+      },
+    ],
+    ['Add 0.4 to circuit 2', { kind: 'user_moved_on', evidence: 'mdr_new_command' }],
+  ])('mdr scalar negative control "%s" stays fail-closed', (userText, expected) => {
+    const verdict = classifyOvertake(
+      userText,
+      [],
+      mockPending([
+        [
+          'mdr-negative-control',
+          {
+            ...mdrEntry,
+            multiDescriptionCircuits: [
+              { circuit_ref: 2, circuit_designation: 'Kitchen sockets' },
+            ],
+          },
+        ],
+      ])
+    );
+    expect(verdict).toEqual(expected);
+  });
 
   test.each([
     'Add to Bedroom 2',
