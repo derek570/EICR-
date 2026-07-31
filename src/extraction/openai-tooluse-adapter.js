@@ -276,11 +276,19 @@ function createStream(openai, streamArgs, options) {
     max_completion_tokens: isGpt5x ? Math.max((max_tokens || 4096) * 4, 8192) : max_tokens || 4096,
   };
   if (isGpt5x) {
-    // GPT-5.6 supports 'none'|'low'|'medium'|'high'|'xhigh'|'max'. Structured
-    // reading extraction is mostly pattern-matching, not deep deduction, so
-    // default 'low'; ops can bump via env for the corpus A/B. 'none' risks the
-    // model skipping tool calls on ambiguous turns.
-    requestPayload.reasoning_effort = (process.env.OPENAI_EXTRACT_REASONING_EFFORT || 'low').trim();
+    // HARD CONSTRAINT (verified live 2026-07-31): on `/v1/chat/completions`,
+    // GPT-5.6 Luna REJECTS function tools with any reasoning_effort other than
+    // 'none' — 400 `invalid_request_error`: "Function tools with reasoning_effort
+    // are not supported for gpt-5.6-luna in /v1/chat/completions. To use function
+    // tools, use /v1/responses or set reasoning_effort to 'none'." The extraction
+    // loop ALWAYS passes tools, so we default to 'none' here. Ops can override via
+    // OPENAI_EXTRACT_REASONING_EFFORT, but a non-'none' value on Chat Completions
+    // will 400 — reasoning-WITH-tools requires porting this adapter to the
+    // Responses API (documented follow-up; a latency/quality question, not a
+    // blocker for the correctness+cost trial).
+    requestPayload.reasoning_effort = (
+      process.env.OPENAI_EXTRACT_REASONING_EFFORT || 'none'
+    ).trim();
   }
 
   let resultPromise = null;
