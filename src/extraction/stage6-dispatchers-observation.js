@@ -354,7 +354,16 @@ export async function dispatchRecordObservation(call, ctx) {
       typeof input.clarification_chain_id === 'string' && input.clarification_chain_id.length > 0
         ? input.clarification_chain_id
         : null;
-    const isAfddOrSpdRecord = regulationVerdict.topics.length > 0;
+    // Topic prose is not the only bounded semantic signal. A neutral but
+    // otherwise valid observation may identify the family through its exact
+    // regulation or through the explicit internal AFDD decision basis. Keep
+    // this classifier deliberately limited to the PLAN-3 pair; it is not a
+    // general regulation-family allow-list.
+    const isAfddOrSpdRecord =
+      regulationVerdict.topics.length > 0 ||
+      regulationVerdict.ref === '421.1.7' ||
+      /^(?:443|534)\./.test(regulationVerdict.ref ?? '') ||
+      input.code_basis === 'afdd_premises_requirement';
     const attemptsClarificationResolution = suppliedChainId !== null;
     const chainMismatch =
       (isAfddOrSpdRecord || attemptsClarificationResolution) &&

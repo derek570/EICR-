@@ -144,6 +144,86 @@ describe('dispatchRecordObservation', () => {
     }
   );
 
+  test.each([
+    ['neutral AFDD ref, omitted id', '421.1.7', 'afdd_premises_requirement', undefined, false],
+    ['neutral AFDD basis, null id', '421.1.201', 'afdd_premises_requirement', null, false],
+    ['neutral SPD 443 ref, invented id', '443.4', null, 'obsclr-invented', false],
+    ['neutral SPD 534 ref, different known id', '534.4.1', null, null, true],
+  ])(
+    'PLAN-3 active flow rejects %s before append',
+    async (_label, suggestedRegulation, codeBasis, suppliedId, useDifferentKnownChain) => {
+      const session = makeSession();
+      session.obsClarifyChains = createObsClarifyChainBroker();
+      const activeChain = session.obsClarifyChains.mint();
+      session.obsClarifyChains.noteAnsweredAfddQuestion(activeChain, 'premises');
+      const clarificationChainId = useDifferentKnownChain
+        ? session.obsClarifyChains.mint()
+        : suppliedId;
+      const perTurnWrites = createPerTurnWrites();
+      const result = await WRITE_DISPATCHERS.record_observation(
+        {
+          tool_call_id: 'tu_obs_neutral_wrong_chain',
+          name: 'record_observation',
+          input: {
+            text: 'Protection is absent on this HMO socket final circuit.',
+            code: 'C3',
+            location: 'Consumer unit',
+            circuit: 2,
+            suggested_regulation: suggestedRegulation,
+            schedule_item: '5.22',
+            rationale: 'the provision applies to this installation',
+            clarification_chain_id: clarificationChainId,
+            code_basis: codeBasis,
+          },
+        },
+        makeCtx({ session, logger: makeLogger(), perTurnWrites })
+      );
+
+      expect(result.is_error).toBe(true);
+      expect(JSON.parse(result.content)).toEqual({
+        ok: false,
+        error: { code: 'afdd_clarification_chain_mismatch' },
+      });
+      expect(session.extractedObservations).toHaveLength(0);
+      expect(perTurnWrites.observations).toHaveLength(0);
+      expect(session.obsClarifyChains.getActiveAfddFlow()).toEqual({
+        chainId: activeChain,
+        kinds: ['premises'],
+      });
+    }
+  );
+
+  test('PLAN-3 neutral-text AFDD write with the exact active chain appends and closes the flow', async () => {
+    const session = makeSession();
+    session.obsClarifyChains = createObsClarifyChainBroker();
+    const activeChain = session.obsClarifyChains.mint();
+    session.obsClarifyChains.noteAnsweredAfddQuestion(activeChain, 'premises');
+    const perTurnWrites = createPerTurnWrites();
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_neutral_exact_chain',
+        name: 'record_observation',
+        input: {
+          text: 'Protection is absent on this HMO socket final circuit.',
+          code: 'C3',
+          location: 'Consumer unit',
+          circuit: 2,
+          suggested_regulation: '421.1.7',
+          schedule_item: '5.22',
+          rationale: 'the provision applies to this installation',
+          clarification_chain_id: activeChain,
+          code_basis: 'afdd_premises_requirement',
+        },
+      },
+      makeCtx({ session, logger: makeLogger(), perTurnWrites })
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.extractedObservations).toHaveLength(1);
+    expect(perTurnWrites.observations).toHaveLength(1);
+    expect(session.obsClarifyChains.getActiveAfddFlow()).toBeNull();
+  });
+
   test('PLAN-3 unrelated id-less observation remains writable but cannot close the active AFDD flow', async () => {
     const session = makeSession();
     session.obsClarifyChains = createObsClarifyChainBroker();
