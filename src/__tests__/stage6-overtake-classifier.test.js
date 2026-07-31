@@ -1172,6 +1172,9 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
     '1 circuit add 0.4 to Bedroom 2',
     'one circuit add to Bedroom 2',
     'all circuits add 0.4 to Bedroom 2',
+    'Delete Ze',
+    'delete circuit 3',
+    'remove smoke alarm',
   ])(
     'real designation collision "%s" remains a moved-on command, not an mdr answer',
     (userText) => {
@@ -1195,6 +1198,30 @@ describe('classifyOvertake — PLAN-2B mdr-* description restatement', () => {
         kind: 'user_moved_on',
         evidence: 'mdr_new_command',
       });
+    }
+  );
+
+  test.each(['delete', 'remove', 'clear'])(
+    'targetless short action "%s" does not claim the bounded mdr-new-command evidence lane',
+    (userText) => {
+      expect(
+        classifyOvertake(
+          userText,
+          [],
+          mockPending([
+            [
+              'mdr-targetless-action',
+              {
+                ...mdrEntry,
+                multiDescriptionCircuits: [
+                  { circuit_ref: 2, circuit_designation: 'Bedroom 2' },
+                  { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+                ],
+              },
+            ],
+          ])
+        )
+      ).toEqual({ kind: 'user_moved_on' });
     }
   );
 

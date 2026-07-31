@@ -940,6 +940,24 @@ function canonicalSeparatorDesignation(text) {
 }
 
 /**
+ * Canonicalise punctuation and enumerated separators without discarding any
+ * lexical token. This is the true raw-exact lane: a server-owned designation
+ * may itself be a stop word (for example the literal circuit name "A"), so
+ * STOP_WORDS must not participate until raw ownership has had first refusal.
+ */
+function canonicalRawSeparatorDesignation(text) {
+  const canonicalSeparator = '__enumerated_separator__';
+  const tokens = String(text ?? '')
+    .toLowerCase()
+    .replace(/(?:\s*(?:[,&+]|\band\b|\bplus\b)\s*)+/gi, ` ${canonicalSeparator} `)
+    .split(/\s+/)
+    .map((token) => token.replace(/^[^a-z0-9_-]+|[^a-z0-9_-]+$/g, ''))
+    .filter(Boolean)
+    .map((token) => (token === canonicalSeparator ? 'and' : token));
+  return tokens.join(' ').trim();
+}
+
+/**
  * Return exact canonical-equivalence refs only. A non-unique canonical match
  * is deliberately ambiguous and must stop before segmentation; otherwise the
  * component circuits could be written even though the whole name is not
@@ -966,9 +984,35 @@ function matchCanonicalExactDesignation(text, circuits) {
   return { kind: 'no_match', circuitRefs: [] };
 }
 
+function matchRawCanonicalExactDesignation(text, circuits) {
+  const canonical = canonicalRawSeparatorDesignation(text);
+  if (!canonical || !Array.isArray(circuits)) {
+    return { kind: 'no_match', circuitRefs: [] };
+  }
+  const refs = [];
+  for (const circuit of circuits) {
+    const designation = circuit?.circuit_designation ?? circuit?.designation ?? '';
+    if (!designation || canonicalRawSeparatorDesignation(designation) !== canonical) continue;
+    const ref =
+      typeof circuit?.circuit_ref === 'number'
+        ? circuit.circuit_ref
+        : Number.parseInt(String(circuit?.circuit_ref), 10);
+    if (Number.isInteger(ref)) refs.push(ref);
+  }
+  const circuitRefs = [...new Set(refs)].sort((a, b) => a - b);
+  if (circuitRefs.length === 1) return { kind: 'exact', circuitRefs };
+  if (circuitRefs.length > 1) return { kind: 'ambiguous', circuitRefs };
+  return { kind: 'no_match', circuitRefs: [] };
+}
+
+function matchExactDesignationWithRawPriority(text, circuits) {
+  const rawMatch = matchRawCanonicalExactDesignation(text, circuits);
+  return rawMatch.kind === 'no_match' ? matchCanonicalExactDesignation(text, circuits) : rawMatch;
+}
+
 function matchRawSpanExactDesignation(rawSpan, circuits) {
   const unwrapped = stripDescriptionLeadIn(stripPunct(String(rawSpan ?? '').toLowerCase()));
-  return matchCanonicalExactDesignation(unwrapped, circuits);
+  return matchExactDesignationWithRawPriority(unwrapped, circuits);
 }
 
 /**
@@ -1291,7 +1335,7 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
 
   // Whole-designation-first preserves shipped C1 fuzzy behaviour and protects
   // a real designation containing "and" from segmentation.
-  const canonicalWholeMatch = matchCanonicalExactDesignation(normalisedText, circuits);
+  const canonicalWholeMatch = matchExactDesignationWithRawPriority(normalisedText, circuits);
   if (canonicalWholeMatch.kind === 'ambiguous') {
     return {
       kind: 'escalate',
@@ -1520,7 +1564,7 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
     const cleaned = cleanReplyForDesignation(unwrappedSpan);
     const canonicalSpanMatch =
       quantifier === null
-        ? matchCanonicalExactDesignation(unwrappedSpan, circuits)
+        ? matchExactDesignationWithRawPriority(unwrappedSpan, circuits)
         : { kind: 'no_match', circuitRefs: [] };
     const rawMatch =
       canonicalSpanMatch.kind !== 'no_match'
@@ -1696,7 +1740,7 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
 function matchMultiDescriptionFollowupDesignation(userText, availableCircuits) {
   const circuits = Array.isArray(availableCircuits) ? availableCircuits : [];
   const designationText = stripDescriptionWrappers(String(userText ?? '').toLowerCase());
-  const canonicalMatch = matchCanonicalExactDesignation(designationText, circuits);
+  const canonicalMatch = matchExactDesignationWithRawPriority(designationText, circuits);
   const cleaned = cleanReplyForDesignation(designationText);
   const rawMatch =
     canonicalMatch.kind !== 'no_match' ? canonicalMatch : matchDesignation(cleaned, circuits);
@@ -2090,7 +2134,7 @@ export function resolveCircuitAnswer({
   // A unique server-owned whole designation has first refusal over the scalar
   // number grammar. Census names routinely carry room/flat numbers whose
   // embedded digit is not their circuit ref ("Flat 2 sockets" may be ref 7).
-  const scalarWholeDesignation = matchCanonicalExactDesignation(
+  const scalarWholeDesignation = matchExactDesignationWithRawPriority(
     stripDescriptionWrappers(lower),
     availableCircuits ?? []
   );

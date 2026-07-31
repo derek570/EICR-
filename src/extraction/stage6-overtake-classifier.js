@@ -136,16 +136,27 @@ export function classifyFreshCommandText(text) {
   const value = typeof text === 'string' ? text : '';
   const newCommandPrefix =
     /^\s*(?:can|could|would)\s+you\b|^\s*(?:please|set|change|update|make|add|delete|remove|mark|move|rename|skip|what about|how about)\b/i;
+  // Short destructive commands are high-confidence only when the complete
+  // utterance contains both a bounded action and a bounded target. Keep this
+  // separate from the broad prefix lane so "delete" alone and short generic
+  // fragments cannot steal a registered ask, while real commands such as
+  // "Delete Ze", "delete circuit 3", and "remove smoke alarm" move on now.
+  const shortActionTarget =
+    /^\s*(?:delete|remove|clear)\s+(?:the\s+)?(?:(?:circuit|cct)(?:\s+(?:number|no\.?))?\s+\d{1,3}|[a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*){0,2})\s*[.!?]*\s*$/i;
   const quantifiedCircuitCommandPrefix =
     /^\s*(?:(?:all|both|\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+)(?:of\s+the\s+)?circuits?\s+(?:add|put)\b/i;
   const bulkScope = /\bfor (?:all|every|each) (?:the )?circuits?\b/i;
   const wordCount = value.split(/\s+/).filter(Boolean).length;
+  const matchedShortActionTarget = shortActionTarget.test(value);
   const matchedImperative =
-    wordCount >= 4 && (newCommandPrefix.test(value) || quantifiedCircuitCommandPrefix.test(value));
+    matchedShortActionTarget ||
+    (wordCount >= 4 &&
+      (newCommandPrefix.test(value) || quantifiedCircuitCommandPrefix.test(value)));
   const matchedBulkScope = bulkScope.test(value);
   return {
     isFreshCommand: matchedImperative || matchedBulkScope,
     matchedImperative,
+    matchedShortActionTarget,
     matchedBulkScope,
     wordCount,
   };

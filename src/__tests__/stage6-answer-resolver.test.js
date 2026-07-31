@@ -734,6 +734,25 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes.map((write) => write.circuit)).toEqual([1, 2, 3]);
   });
 
+  test.each([
+    ['both A and B circuits', [1, 2]],
+    ['all A, B and C circuits', [1, 2, 3]],
+    ['all three A, B and C', [1, 2, 3]],
+  ])('literal one-letter designations survive whole-list grammar in "%s"', (reply, refs) => {
+    const verdict = resolveMulti(reply, [
+      { circuit_ref: 1, circuit_designation: 'A' },
+      { circuit_ref: 2, circuit_designation: 'B' },
+      { circuit_ref: 3, circuit_designation: 'C' },
+    ]);
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: refs,
+      unresolved: [],
+    });
+    expect(verdict.writes.map((write) => write.circuit)).toEqual(refs);
+  });
+
   test('a raw exact whole designation still owns a quantified-looking reply', () => {
     const verdict = resolveMulti('2 lighting circuits and smoke alarm', [
       { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
@@ -1899,6 +1918,26 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
       selected_circuit_refs: [expectedRef],
       unresolved: [],
       writes: [expect.objectContaining({ circuit: expectedRef, board_id: 'board-main' })],
+    });
+  });
+
+  test('the mdr-only follow-up preserves a literal stop-word designation', () => {
+    const verdict = resolveMultiDescriptionFollowup({
+      userText: 'A',
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: [
+        { circuit_ref: 1, circuit_designation: 'A' },
+        { circuit_ref: 2, circuit_designation: 'B' },
+        { circuit_ref: 3, circuit_designation: 'C' },
+      ],
+      contextBoardId: 'board-main',
+    });
+    expect(verdict).toMatchObject({
+      kind: 'auto_resolve',
+      match_status: 'full',
+      selected_circuit_refs: [1],
+      unresolved: [],
+      writes: [expect.objectContaining({ circuit: 1, board_id: 'board-main' })],
     });
   });
 

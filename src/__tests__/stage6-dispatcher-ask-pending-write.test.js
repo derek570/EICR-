@@ -685,6 +685,38 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     }
   );
 
+  test.each([
+    ['both A and B circuits', [1, 2]],
+    ['all A, B and C circuits', [1, 2, 3]],
+    ['all three A, B and C', [1, 2, 3]],
+  ])('literal one-letter whole-list reply "%s" dispatches every write', async (reply, refs) => {
+    const run = startMultiDispatcher({
+      session: buildSession([
+        { circuit_ref: 1, circuit_designation: 'A' },
+        { circuit_ref: 2, circuit_designation: 'B' },
+        { circuit_ref: 3, circuit_designation: 'C' },
+      ]),
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: reply,
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      auto_resolved: true,
+      match_status: 'full',
+      unresolved: [],
+    });
+    expect(body.resolved_writes.map((write) => write.circuit)).toEqual(refs);
+    expect(run.autoResolveWrite).toHaveBeenCalledTimes(refs.length);
+    expect(run.stagePartialFailureNotice).not.toHaveBeenCalled();
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual(
+      []
+    );
+  });
+
   test('noun-less whole-list count mismatch asks before every dispatcher mutation', async () => {
     const run = startMultiDispatcher();
     await tick();

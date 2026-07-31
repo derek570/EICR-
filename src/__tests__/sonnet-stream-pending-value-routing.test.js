@@ -621,6 +621,9 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     '1 circuit add 0.4 to Bedroom 2',
     'one circuit add to Bedroom 2',
     'all circuits add 0.4 to Bedroom 2',
+    'Delete Ze',
+    'delete circuit 3',
+    'remove smoke alarm',
   ])(
     'a transcript-only unbounded command "%s" releases mdr and processes exactly once',
     async (userText) => {
@@ -704,6 +707,9 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     '1 circuit add 0.4 to Bedroom 2',
     'one circuit add to Bedroom 2',
     'all circuits add 0.4 to Bedroom 2',
+    'Delete Ze',
+    'delete circuit 3',
+    'remove smoke alarm',
   ])(
     'a direct-channel unbounded command "%s" overtakes and is reinjected instead of answering mdr',
     async (userText) => {
@@ -743,19 +749,23 @@ describe('PLAN-2B — mdr-* answer routing across both iOS channels', () => {
     }
   );
 
-  test.each([
-    ['direct-first', true],
-    ['direct-first', false],
-    ['transcript-first', true],
-    ['transcript-first', false],
-  ])(
-    '%s paired mdr command delivery with %s anchor reaches the harness exactly once',
-    async (order, hasUtteranceId) => {
+  test.each(
+    ['Delete Ze', 'delete circuit 3'].flatMap((userText) =>
+      [
+        ['direct-first', true],
+        ['direct-first', false],
+        ['transcript-first', true],
+        ['transcript-first', false],
+      ].map(([order, hasUtteranceId]) => [userText, order, hasUtteranceId])
+    )
+  )(
+    '"%s" delivered %s with %s anchor reaches the harness exactly once',
+    async (userText, order, hasUtteranceId) => {
       const anchorSlug = hasUtteranceId ? 'anchored' : 'legacy';
-      const sessionId = `sess-mdr-paired-${order}-${anchorSlug}`;
-      const toolCallId = `mdr-description-paired-${order}-${anchorSlug}`;
-      const utteranceId = `u-mdr-paired-${order}-${anchorSlug}`;
-      const userText = 'Add to Bedroom 2';
+      const commandSlug = userText.replaceAll(/[^a-z0-9]+/gi, '-').toLowerCase();
+      const sessionId = `sess-mdr-paired-${commandSlug}-${order}-${anchorSlug}`;
+      const toolCallId = `mdr-description-paired-${commandSlug}-${order}-${anchorSlug}`;
+      const utteranceId = `u-mdr-paired-${commandSlug}-${order}-${anchorSlug}`;
       const { ws, entry } = await startSession(wss, sessionId);
       let resolvedPayload = null;
       registerMultiDescriptionAsk(
