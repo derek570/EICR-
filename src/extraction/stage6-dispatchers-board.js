@@ -73,6 +73,7 @@ import {
   ensureMultiBoardShape,
   getCircuitBucket,
   getMainBoardId,
+  isUnscopedBoardId,
   normaliseBoardScopeInput,
 } from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
@@ -145,7 +146,20 @@ export async function dispatchRecordBoardReading(call, ctx) {
   // the multi-board contract violation behind unrelated rejections.
   // Sonnet's prompt rule "call select_board first" depends on getting
   // the right error code back.
-  const scopeErr = validateBoardScope(input, session.stateSnapshot);
+  // PLAN-2B — the ask resolver may freeze a board-reading designation
+  // census on board A, block on its server-owned mdr-* clarification, then
+  // resume after the user selected board B. Its generated write carries A
+  // explicitly and reaches this dispatcher through createAutoResolveWriteHook.
+  // Permit that one internal synthetic route to retain A without moving the
+  // mutable cursor. Model-emitted calls cannot set dispatcher context, and the
+  // synthetic call-id check prevents widening the ordinary wrong-board gate.
+  const frozenAutoResolveBoardScope =
+    ctx.allowFrozenAutoResolveBoardScope === true &&
+    String(call.tool_call_id ?? '').includes('::auto::') &&
+    !isUnscopedBoardId(input.board_id);
+  const scopeErr = frozenAutoResolveBoardScope
+    ? null
+    : validateBoardScope(input, session.stateSnapshot);
   if (scopeErr) {
     logToolCall(logger, {
       sessionId: session.sessionId,

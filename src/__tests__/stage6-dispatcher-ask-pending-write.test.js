@@ -1842,26 +1842,45 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
     const emittedBeforeRetry = run.ws.sent.length;
 
-    const retryEnv = await run.dispatcher(
-      {
-        tool_call_id: 'toolu_multi_retry',
-        name: 'ask_user',
-        input: validInput({
-          pending_write: validPendingWrite(),
-        }),
-      },
-      {}
-    );
+    const retryInputs = [
+      validPendingWrite({ source_turn_id: 'model-minted-retry-turn' }),
+      validPendingWrite({ value: '4.0', source_turn_id: 'another-model-retry-turn' }),
+    ];
+    for (const [index, pendingWrite] of retryInputs.entries()) {
+      const retryEnv = await run.dispatcher(
+        {
+          tool_call_id: `toolu_multi_retry_${index}`,
+          name: 'ask_user',
+          input: validInput({ pending_write: pendingWrite }),
+        },
+        {}
+      );
 
-    expect(JSON.parse(retryEnv.content)).toEqual({
-      answered: false,
-      reason: 'user_moved_on',
-      followup_outcome: 'user_moved_on',
-    });
-    expect(retryEnv.is_error).toBe(false);
+      expect(JSON.parse(retryEnv.content)).toEqual({
+        answered: false,
+        reason: 'user_moved_on',
+        followup_outcome: 'user_moved_on',
+      });
+      expect(retryEnv.is_error).toBe(false);
+    }
     expect(run.ws.sent).toHaveLength(emittedBeforeRetry);
     expect(run.pendingAsks.size).toBe(0);
     expect(run.autoResolveWrite).toHaveBeenCalledTimes(1);
+
+    // A fresh dispatcher is a fresh model generation: the same buffered
+    // write can ask and resolve normally instead of inheriting the stale
+    // generation's server-owned abandonment latch.
+    const freshRun = startMultiDispatcher();
+    await tick();
+    expect(freshRun.pendingAsks.size).toBe(1);
+    freshRun.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'the smoke alarm',
+    });
+    const freshBody = JSON.parse((await freshRun.promise).content);
+    expect(freshBody.resolved_writes).toEqual([
+      expect.objectContaining({ circuit: 3, ok: true }),
+    ]);
   });
 
   test('an in-flight mdr keeps its original board after select_board changes the cursor', async () => {
@@ -1945,6 +1964,90 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
+  test('an ask-only board write keeps its selected census board across an mdr wait', async () => {
+    const session = {
+      sessionId: 'sess-test',
+      stateSnapshot: {
+        currentBoardId: 'main',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'sub-b', board_type: 'sub_distribution', parent_board_id: 'main' },
+        ],
+        circuits: {
+          4: { circuit_designation: 'Upstairs Lights' },
+          'sub-b::4': {
+            circuit: 4,
+            board_id: 'sub-b',
+            circuit_designation: 'Kitchen',
+          },
+        },
+      },
+    };
+    const perTurnWrites = createPerTurnWrites();
+    const realAutoResolveWrite = createAutoResolveWriteHook(
+      session,
+      noopLogger(),
+      'turn-multi',
+      perTurnWrites
+    );
+    const autoResolveResults = [];
+    const autoResolveWrite = jest.fn(async (write, ctx) => {
+      const result = await realAutoResolveWrite(write, ctx);
+      autoResolveResults.push(result);
+      return result;
+    });
+    const run = startMultiDispatcher({
+      session,
+      autoResolveWrite,
+      inputOverrides: { context_field: 'manufacturer' },
+      pendingWriteOverrides: {
+        tool: 'record_board_reading',
+        field: 'manufacturer',
+        value: 'Wylex',
+      },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstars lights and the attic circuit',
+    });
+    await tick();
+    const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+
+    session.stateSnapshot.currentBoardId = 'sub-b';
+    run.pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'Upstairs Lights',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.match_status).toBe('partial');
+    expect(autoResolveResults).toEqual([
+      expect.objectContaining({ ok: true, body: { ok: true } }),
+    ]);
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({
+        tool: 'record_board_reading',
+        field: 'manufacturer',
+        circuit: 0,
+        ok: true,
+      }),
+    ]);
+    expect(session.stateSnapshot.circuits[0].manufacturer).toBe('Wylex');
+    expect(session.stateSnapshot.boards[1].manufacturer).toBeUndefined();
+    expect(session.stateSnapshot.currentBoardId).toBe('sub-b');
+    expect(perTurnWrites.boardReadingJournal).toHaveLength(1);
+    expect(perTurnWrites.boardReadingJournal[0].value.boardId).toBe('main');
+    expect(run.stagePartialFailureNotice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'designation_no_match',
+        boardId: 'main',
+        target: { kind: 'ordinal', ordinal: 2 },
+        boardReading: true,
+      })
+    );
+  });
+
   test('a model-scoped unselected board cannot mint frozen auto-resolve authority', async () => {
     const session = {
       sessionId: 'sess-test',
@@ -2014,6 +2117,84 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(session.stateSnapshot.circuits[2].number_of_points).toBeUndefined();
     expect(session.stateSnapshot.circuits['sub-b::1'].number_of_points).toBeUndefined();
     expect(session.stateSnapshot.circuits['sub-b::2'].number_of_points).toBeUndefined();
+    expect(session.stateSnapshot.currentBoardId).toBe('main');
+  });
+
+  test('a model-scoped unselected board cannot mint frozen board-write authority', async () => {
+    const session = {
+      sessionId: 'sess-test',
+      stateSnapshot: {
+        currentBoardId: 'main',
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'sub-b', board_type: 'sub_distribution', parent_board_id: 'main' },
+        ],
+        circuits: {
+          1: { circuit_designation: 'Main sockets' },
+          'sub-b::1': {
+            circuit: 1,
+            board_id: 'sub-b',
+            circuit_designation: 'Sub sockets',
+          },
+          'sub-b::2': {
+            circuit: 2,
+            board_id: 'sub-b',
+            circuit_designation: 'Sub lights',
+          },
+        },
+      },
+    };
+    const perTurnWrites = createPerTurnWrites();
+    const realAutoResolveWrite = createAutoResolveWriteHook(
+      session,
+      noopLogger(),
+      'turn-multi',
+      perTurnWrites
+    );
+    const autoResolveResults = [];
+    const autoResolveWrite = jest.fn(async (write, ctx) => {
+      const result = await realAutoResolveWrite(write, ctx);
+      autoResolveResults.push(result);
+      return result;
+    });
+    const run = startMultiDispatcher({
+      session,
+      autoResolveWrite,
+      inputOverrides: {
+        context_board_id: 'sub-b',
+        context_field: 'manufacturer',
+      },
+      pendingWriteOverrides: {
+        tool: 'record_board_reading',
+        field: 'manufacturer',
+        value: 'Wylex',
+      },
+    });
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'Sub sockets and Sub lights',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({
+        tool: 'record_board_reading',
+        field: 'manufacturer',
+        circuit: 0,
+        ok: false,
+      }),
+    ]);
+    expect(autoResolveResults).toEqual([
+      expect.objectContaining({
+        ok: false,
+        body: { ok: false, error: expect.objectContaining({ code: 'wrong_board' }) },
+      }),
+    ]);
+    expect(perTurnWrites.boardReadingJournal).toHaveLength(0);
+    expect(session.stateSnapshot.circuits[0]).toBeUndefined();
+    expect(session.stateSnapshot.boards[0].manufacturer).toBeUndefined();
+    expect(session.stateSnapshot.boards[1].manufacturer).toBeUndefined();
     expect(session.stateSnapshot.currentBoardId).toBe('main');
   });
 

@@ -109,6 +109,61 @@ async function driveAnsweredAsk(
   return { result: await resultPromise, logger };
 }
 
+async function driveBrokeredBoardAsk(session, askInput) {
+  const pendingAsks = createPendingAsksRegistry();
+  const logger = makeLogger();
+  const ws = makeOpenWs();
+  session.client = mockClient([
+    toolUseRound([{ id: ASK_ID, name: 'ask_user', input: askInput }]),
+    endTurnRound('done'),
+  ]);
+  registerEntry(session);
+
+  const resultPromise = runShadowHarness(
+    session,
+    'Manufacturer Wylex for smoke, upstairs lights and the attic circuit',
+    [],
+    {
+      logger,
+      pendingAsks,
+      ws,
+      confirmationsEnabled: true,
+      chimeObserved: true,
+      generationId: 'gen-plan2b-board-broker',
+      utteranceId: 'u-plan2b-board-broker',
+    }
+  );
+
+  let answered = false;
+  for (let attempt = 0; attempt < 100 && !answered; attempt += 1) {
+    answered = pendingAsks.resolve(ASK_ID, {
+      answered: true,
+      user_text: 'the smoke alarm, upstars lights, and the attic circuit',
+    });
+    if (!answered) await new Promise((resolve) => setImmediate(resolve));
+  }
+  if (!answered) throw new Error('PLAN-2B broker test initial ask never registered');
+
+  let mdrFrame = null;
+  for (let attempt = 0; attempt < 100 && !mdrFrame; attempt += 1) {
+    mdrFrame = ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
+    if (!mdrFrame) await new Promise((resolve) => setImmediate(resolve));
+  }
+  if (!mdrFrame) throw new Error('PLAN-2B broker test follow-up ask never emitted');
+
+  session.stateSnapshot.currentBoardId = 'sub-1';
+  if (
+    !pendingAsks.resolve(mdrFrame.tool_call_id, {
+      answered: true,
+      user_text: 'Upstairs Lights',
+    })
+  ) {
+    throw new Error('PLAN-2B broker test follow-up ask never registered');
+  }
+
+  return { result: await resultPromise, logger };
+}
+
 describe('PLAN-2B — effective-board identity survives through the notice drain', () => {
   afterEach(() => {
     activeSessions.clear();
@@ -275,6 +330,77 @@ describe('PLAN-2B — effective-board identity survives through the notice drain
           field: fixture.expectedNoticeField,
           board: fixture.expectedNoticeBoardId,
           spoken_ordinals: '1',
+        }),
+      ],
+    ]);
+  });
+
+  test('a pre-wait board sibling and its no-match notice retain main after the cursor moves', async () => {
+    const session = makeLiveSession({
+      sessionId: 'sess-plan2b-board-broker-main',
+      certType: 'eicr',
+      stateSnapshot: {
+        circuits: {
+          3: { circuit: 3, circuit_designation: 'Smoke Alarm' },
+          4: { circuit: 4, circuit_designation: 'Upstairs Lights' },
+          'sub-1::3': {
+            circuit: 3,
+            board_id: 'sub-1',
+            circuit_designation: 'Garage',
+          },
+          'sub-1::4': {
+            circuit: 4,
+            board_id: 'sub-1',
+            circuit_designation: 'Kitchen',
+          },
+        },
+        pending_readings: [],
+        observations: [],
+        validation_alerts: [],
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-1',
+            designation: 'Garage',
+            board_type: 'sub_distribution',
+            parent_board_id: 'main',
+          },
+        ],
+        currentBoardId: 'main',
+      },
+    });
+    const askInput = buildBoardAskInput({
+      field: 'manufacturer',
+      value: 'Wylex',
+    });
+
+    const { result, logger } = await driveBrokeredBoardAsk(session, askInput);
+    const confirmations = (result.confirmations ?? []).filter(
+      (confirmation) =>
+        typeof confirmation?.text === 'string' && confirmation.text.trim().length > 0
+    );
+    const boardReadbacks = confirmations.filter(
+      (confirmation) => confirmation.field === 'manufacturer'
+    );
+    const descriptionNotices = confirmations.filter(
+      (confirmation) => confirmation.field == null && /circuit description/i.test(confirmation.text)
+    );
+
+    expect(session.stateSnapshot.circuits[0].manufacturer).toBe('Wylex');
+    expect(session.stateSnapshot.boards[1].manufacturer).toBeUndefined();
+    expect(session.stateSnapshot.currentBoardId).toBe('sub-1');
+    expect(boardReadbacks).toHaveLength(1);
+    expect(descriptionNotices).toHaveLength(1);
+    expect(
+      logger.info.mock.calls.filter(([event]) => event === 'stage6.partial_failure_notice_emitted')
+    ).toEqual([
+      [
+        'stage6.partial_failure_notice_emitted',
+        expect.objectContaining({
+          reason: 'designation_no_match',
+          field: 'manufacturer',
+          board: 'main',
+          spoken_ordinals: '3',
         }),
       ],
     ]);
