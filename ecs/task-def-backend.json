@@ -52,7 +52,7 @@
         { "name": "BOARD_CLEAR_DISABLED",               "value": "false" },
         { "name": "SNAPSHOT_FORMAT",                    "value": "split_blocks" },
         { "name": "CIRCUIT_ORDER",                      "value": "recent_3" },
-        { "name": "SONNET_EXTRACT_MODEL",               "value": "claude-haiku-4-5-20251001" },
+        { "name": "SONNET_EXTRACT_MODEL",               "value": "gpt-5.6-luna" },
         { "name": "OBSERVATION_EXTRACT_MODEL",          "value": "claude-sonnet-4-6" },
         { "name": "VOICE_AGENTIC_ANSWERS",              "value": "true" },
         { "name": "OBSERVATION_TIER_ROUTING",           "value": "false" }

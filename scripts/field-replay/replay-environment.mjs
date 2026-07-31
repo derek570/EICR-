@@ -119,6 +119,15 @@ export const EXCLUDED_NOT_IN_REPLAY_CLOSURE = Object.freeze({
   // Logger transports + infra — behaviour-neutral for extraction output.
   infra: ['LOG_FILE', 'LOG_LEVEL', 'S3_BUCKET', 'STAGE0_BENCH', 'PORT', 'REDIS_URL',
     'DATABASE_TYPE', 'STORAGE_TYPE', 'USE_AWS_SECRETS', 'AWS_REGION'],
+  // OpenAI extraction-provider trial (openai-tooluse-adapter.js /
+  // openai-responses-adapter.js). Reachable ONLY when SONNET_EXTRACT_MODEL is
+  // a `gpt-*` model AND OPENAI_API_KEY is set — the OpenAI-backed tool-call
+  // loop. The recorded replay lane pins SONNET_EXTRACT_MODEL to the task-def
+  // Haiku value, so the OpenAI branch is never taken during replay and these
+  // tuning knobs are outside the closure. (SONNET_EXTRACT_MODEL,
+  // OBSERVATION_EXTRACT_MODEL are PINNED_FROM_TASK_DEF; OPENAI_API_KEY is a
+  // SECRET — both already classified above.)
+  openai_trial: ['OPENAI_EXTRACT_REASONING_EFFORT', 'OPENAI_EXTRACT_API'],
 });
 
 /** Read the task-def env table (single container definition). */
@@ -185,5 +194,6 @@ export function classifiedVariables() {
     ...SECRETS,
     ...EXCLUDED_NOT_IN_REPLAY_CLOSURE.ccu,
     ...EXCLUDED_NOT_IN_REPLAY_CLOSURE.infra,
+    ...EXCLUDED_NOT_IN_REPLAY_CLOSURE.openai_trial,
   ]);
 }
