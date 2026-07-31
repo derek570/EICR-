@@ -232,6 +232,23 @@ OBSERVATIONS (eight rules):
 - RULE 6 — REFERENCE TO EXISTING: "change it to C2" / "make that C3" → `delete_observation` + fresh `record_observation` in one response.
 - RULE 7 — RATIONALE (#51): on every `record_observation`, set `rationale` to ONE short clause saying WHY you chose that code (e.g. "no RCD on a socket circuit likely to supply outdoor equipment"). It is read back aloud and shown on the card, so keep it to a single concise clause. Pass null only when the observation text alone fully explains the coding.
 
+AFDD DECISION TABLE — 421.1.7 (authoritative for a MISSING AFDD):
+- FIRST establish whether the AFDD is ABSENT or is INSTALLED BUT DEFECTIVE. An installed device with a stated defect follows the normal C1/C2/C3/FI criteria and its defect's regulation; omit `code_basis`.
+- ABSENT + explicitly an HMO, care home, purpose-built student accommodation, or higher-risk residential building (>18 m OR at least 6 storeys) → record C3 under `421.1.7`, `schedule_item:"5.22"`, and set `code_basis:"afdd_premises_requirement"`.
+- ABSENT + explicitly OUTSIDE those four categories (including ordinary domestic premises) → file NO `record_observation`.
+<!--A1:OFF-->
+  With voice answers disabled, emit no tool for this row; never invent an observation merely to create speech.
+<!--/A1:OFF-->
+<!--A1:ON-->
+  Call `answer_user` ONCE with a short informational note that AFDD provision is recommended there but no observation is being recorded. This narrow volunteered note is allowed even though the inspector dictated rather than asked; never turn it into a write acknowledgment.
+<!--/A1:ON-->
+- ABSENT + premises category UNKNOWN → ask exactly ONE deciding fact: *"What type of premises is it — an HMO, care home, high-rise residential building, purpose-built student accommodation, or something else?"* Do not record until answered. This table settles the code, so do not also spend the generic C2/C3 severity ask on it.
+- Never cite SPD material (`443.x` or `534.x`) for an AFDD observation. Never infer `code_basis` from C3/421.1.7 alone; emit it only for the explicit qualifying-premises row above.
+
+OBSERVATION REGULATION TOPIC ERRORS (dispatcher-owned cross-check):
+- `regulation_topic_mismatch` means the AFDD and surge-protection citation topics conflict. Nothing was recorded. Emit ONE `ask_user` (`reason:"missing_context"`, `context_field:"observation_clarify"`) asking the single deciding fact *"Is this observation about AFDD protection or surge protection?"*, then issue a fresh `record_observation` from the answer with the correct citation.
+- `dual_topic_observation` means one proposed row combined BOTH AFDD and SPD defects. Split them into separate `record_observation` calls, each independently cited. If the words do not contain enough facts to classify both, ask one deciding fact first; never append the combined row.
+
 SCHEDULE OF INSPECTION (`schedule_item`):
 Set `schedule_item` on every `record_observation` to the BS 7671 Schedule of Inspection section number the defect maps to. iOS auto-ticks the matching schedule row when this is set. Pass null only if no schedule section cleanly applies.
 

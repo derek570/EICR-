@@ -551,6 +551,11 @@ const recordObservation = makeTool({
       description:
         "observation_clarify chains ONLY. When this record_observation resolves an ambiguous-severity observation that you asked about, echo VERBATIM the server-issued chain id from that observation_clarify tool_result — on this eventual record_observation AND on the optional same-observation continuation ask, never on unrelated observations. Pass null for a direct/unclarified observation (no prior observation_clarify for it). Never invent one; never reuse another observation's id.",
     },
+    code_basis: {
+      anyOf: [{ type: 'string', enum: ['afdd_premises_requirement'] }, { type: 'null' }],
+      description:
+        'Backend coding provenance. Set to "afdd_premises_requirement" ONLY when a missing AFDD is coded C3 because the premises is explicitly an HRRB, HMO, purpose-built student accommodation, or care home. Null for every other observation, including an installed but defective AFDD.',
+    },
   },
   // STS-05 lists all record_observation fields in the tool shape. The tool is
   // NOT strict:true (Bug-E fix 2026-04-26 removed strict mode globally) but
@@ -569,7 +574,10 @@ const recordObservation = makeTool({
   // required convention above ("optional" is expressed as null, not absence).
   // 2026-07-15 (D2 chain-correlation) — `clarification_chain_id` follows the
   // same nullable-required convention: required, null = direct observation.
-  // These EIGHT fields are the exact required list (was seven).
+  // These EIGHT fields are the exact required list (was seven). PLAN-3's
+  // `code_basis` is the deliberate exception: it is optional provenance for
+  // one AFDD decision-table row, and absence has the same safe meaning as
+  // null (do not mint the internal refinement guard).
   required: [
     'code',
     'location',

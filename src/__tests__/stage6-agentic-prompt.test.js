@@ -473,8 +473,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // clause-locality, category-specific conflict) grew it further.
       // Measured 22891; cap 22991 leaves ~100-token headroom (measured +
       // ~100, P8 precedent).
+      // PLAN-3 (2026-07-31, feedback id 107): the four-row AFDD premises
+      // decision table plus deterministic mismatch/split recovery contract is
+      // shared by both renders. Measured 23767; cap 23867 retains the same
+      // ~100-token maintenance headroom.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(23325);
+      expect(estimate).toBeLessThanOrEqual(23867);
     });
   });
 
@@ -1216,8 +1220,10 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (negation-safe anchors, adjacent-field precedence, clause-locality,
       // category-specific conflict) grew it further. Measured 17653; cap
       // 17753 leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // PLAN-3 AFDD table + mismatch recovery: measured 18530; cap 18630
+      // leaves ~100 tokens while pinning the complete reviewed decision table.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(18087);
+      expect(estimate).toBeLessThanOrEqual(18630);
     });
   });
 
@@ -2156,7 +2162,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     test('§3.3 — multiple descriptions in one reply write to each matched circuit, BOTH renders', () => {
       for (const rendered of [renderedOn, renderedOff]) {
         expect(rendered).toContain('MULTIPLE DESCRIPTIONS in one reply');
-        expect(rendered).toContain('one `record_reading` per matched circuit, not just the last one');
+        expect(rendered).toContain(
+          'one `record_reading` per matched circuit, not just the last one'
+        );
         expect(rendered).toContain(
           'A designation that itself contains "and" ("Kitchen and utility lights") is ONE name, not two'
         );
@@ -2165,8 +2173,41 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     test('§3.4 — ref_method single-token guidance with answer forms, BOTH renders', () => {
       for (const rendered of [renderedOn, renderedOff]) {
         expect(rendered).toContain('`ref_method` (BS 7671 Appendix 4 reference method)');
-        expect(rendered).toContain('Answers like "C", "method C", "reference method C" → write "C"');
+        expect(rendered).toContain(
+          'Answers like "C", "method C", "reference method C" → write "C"'
+        );
         expect(rendered).toContain('the word form "one hundred" → "100"');
+      }
+    });
+  });
+
+  describe('Group 22 — 2026-07-31 PLAN-3 AFDD decision and citation integrity', () => {
+    test('the four-row AFDD decision table is present in BOTH flag renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('AFDD DECISION TABLE — 421.1.7');
+        expect(rendered).toMatch(/HMO.*care home.*purpose-built student accommodation/s);
+        expect(rendered).toContain(
+          'higher-risk residential building (>18 m OR at least 6 storeys)'
+        );
+        expect(rendered).toContain('file NO `record_observation`');
+        expect(rendered).toContain('premises category UNKNOWN');
+        expect(rendered).toContain('code_basis:"afdd_premises_requirement"');
+        expect(rendered).toContain('INSTALLED BUT DEFECTIVE');
+      }
+      expect(renderedOn).toContain('Call `answer_user` ONCE');
+      expect(renderedOff).toContain('With voice answers disabled, emit no tool for this row');
+      expect(renderedOff).not.toContain('answer_user');
+    });
+
+    test('topic mismatch asks once and dual-topic prose splits before append in BOTH renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('`regulation_topic_mismatch`');
+        expect(rendered).toContain(
+          'Is this observation about AFDD protection or surge protection?'
+        );
+        expect(rendered).toContain('`dual_topic_observation`');
+        expect(rendered).toContain('Split them into separate `record_observation` calls');
+        expect(rendered).toContain('Never cite SPD material (`443.x` or `534.x`)');
       }
     });
   });

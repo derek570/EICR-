@@ -67,6 +67,7 @@
 import logger from '../logger.js';
 import { lookupPostcode } from '../postcode_lookup.js';
 import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import { copyAfddPremisesRequirement } from './regulation-lookup.js';
 import { runToolLoop } from './stage6-tool-loop.js';
 // Loaded Barrel Phase 2.B/2.C wire-up (plan v10 §C). Per-turn
 // speculator instantiation in runLiveMode. Cache state is module-
@@ -345,7 +346,7 @@ export function renameObservationsForLegacyWire(observations) {
       regulation_description: obs.regulation_description ?? null,
     };
     if (obs.circuit !== undefined) renamed.circuit = obs.circuit;
-    return renamed;
+    return copyAfddPremisesRequirement(obs, renamed);
   });
 }
 

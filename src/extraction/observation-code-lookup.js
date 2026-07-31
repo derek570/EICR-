@@ -34,6 +34,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import logger from '../logger.js';
+import { AFDD_PREMISES_REQUIREMENT, crossCheckObservationRegulation } from './regulation-lookup.js';
 
 // BS 7671 Schedule of Inspections — single canonical copy on the server.
 // Loaded once at module init and inlined into the refinement prompt below.
@@ -97,8 +98,10 @@ export async function refineObservation(openai, obs, context = {}) {
   if (!description) return null;
 
   const currentCode = obs.code ? String(obs.code).toUpperCase() : null;
-  const currentReg = obs.regulation || null;
+  const originalReg = obs.suggested_regulation ?? obs.regulation ?? null;
+  const currentReg = originalReg;
   const currentSchedule = obs.schedule_item || null;
+  const afddPremisesRequirement = obs[AFDD_PREMISES_REQUIREMENT] === true;
 
   const prompt = [
     'You are an expert UK electrical inspector classifying EICR observations.',
@@ -160,6 +163,22 @@ export async function refineObservation(openai, obs, context = {}) {
     '- If the description is ambiguous, prefer the LESS severe code and note ambiguity in rationale.',
     '- Regulation must be a specific BS 7671 number plus the regulation wording.',
     "- professional_text must NEVER add facts the inspector didn't state. Faithful rewrite only.",
+    '',
+    'AFDD DECISION TABLE (BS 7671:2018+A2:2022 Regulation 421.1.7):',
+    '- A MISSING AFDD is C3 under 421.1.7 only where the stated premises is a',
+    '  higher-risk residential building (>18 m or at least 6 storeys), HMO,',
+    '  purpose-built student accommodation, or care home.',
+    '- Outside those four premises categories AFDD provision is a recommendation;',
+    '  the live extractor files no observation and gives an informational note.',
+    '- If the premises category is unknown, the live extractor asks one deciding fact.',
+    '- An INSTALLED but defective AFDD follows the ordinary C1/C2/C3/FI criteria;',
+    '  do not treat it as the missing-AFDD premises rule.',
+    ...(afddPremisesRequirement
+      ? [
+          '- SERVER DECISION: this row is a confirmed missing-AFDD premises requirement.',
+          '  Keep its existing C3 code and 421.1.7 citation; refine wording/schedule only.',
+        ]
+      : []),
     '',
     'FIXED-vs-MOBILE EQUIPMENT DISAMBIGUATION (load-bearing — a common',
     'misrouting class on this prompt):',
@@ -235,7 +254,7 @@ export async function refineObservation(openai, obs, context = {}) {
       return null;
     }
 
-    const code = String(parsed.code || '')
+    let code = String(parsed.code || '')
       .toUpperCase()
       .trim();
     if (!VALID_CODES.has(code)) {
@@ -243,10 +262,30 @@ export async function refineObservation(openai, obs, context = {}) {
       return null;
     }
 
-    const regulation = String(parsed.regulation || '').trim();
-    if (!regulation || !/\d{3}/.test(regulation)) {
-      logger.warn('Observation refinement returned weak regulation', { regulation });
-      // Still return the code — a refined code without regulation beats nothing.
+    if (afddPremisesRequirement && currentCode && VALID_CODES.has(currentCode)) {
+      code = currentCode;
+    }
+
+    const candidateRegulation = String(parsed.regulation || '').trim();
+    const candidateVerdict = crossCheckObservationRegulation(description, candidateRegulation);
+    const originalVerdict = crossCheckObservationRegulation(description, originalReg);
+    const afddMarkerRejectsDifferentRegulation =
+      afddPremisesRequirement &&
+      originalVerdict.wellShaped &&
+      candidateVerdict.ref !== originalVerdict.ref;
+    const acceptedRefinedReg =
+      candidateVerdict.ok && candidateVerdict.wellShaped && !afddMarkerRejectsDifferentRegulation
+        ? candidateRegulation
+        : null;
+    const acceptedOriginalReg =
+      originalVerdict.ok && originalVerdict.wellShaped ? originalReg : null;
+    const regulation = acceptedRefinedReg ?? acceptedOriginalReg;
+    if (!acceptedRefinedReg) {
+      logger.warn('Observation refinement regulation rejected', {
+        reason: candidateVerdict.code ?? 'weak_regulation_shape',
+        candidate_ref: candidateVerdict.ref,
+        original_preserved: acceptedOriginalReg !== null,
+      });
     }
 
     // Schedule item: keep null if the model returned null (legitimate — some
@@ -289,7 +328,7 @@ export async function refineObservation(openai, obs, context = {}) {
       },
       after: {
         code,
-        reg: regulation.slice(0, 40),
+        reg: regulation ? String(regulation).slice(0, 40) : null,
         schedule: scheduleItem,
         rewrote_text: professionalText !== null,
       },
@@ -298,6 +337,13 @@ export async function refineObservation(openai, obs, context = {}) {
     return {
       code,
       regulation,
+      regulation_refinement_accepted: acceptedRefinedReg !== null,
+      regulation_refinement_rejection_reason:
+        acceptedRefinedReg !== null
+          ? null
+          : afddMarkerRejectsDifferentRegulation
+            ? 'afdd_premises_requirement_guard'
+            : (candidateVerdict.code ?? 'weak_regulation_shape'),
       schedule_item: scheduleItem,
       professional_text: professionalText,
       rationale: String(parsed.rationale || '').slice(0, 400),

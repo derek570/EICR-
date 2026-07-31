@@ -222,6 +222,22 @@ const readingCall = (id) => ({
   },
   id,
 });
+const observationCall = (id, overrides = {}) => ({
+  name: 'record_observation',
+  input: {
+    code: 'C3',
+    location: null,
+    text: 'AFDD protection is absent',
+    circuit: null,
+    suggested_regulation: '421.1.7',
+    schedule_item: '5.22',
+    rationale: null,
+    clarification_chain_id: null,
+    code_basis: null,
+    ...overrides,
+  },
+  id,
+});
 
 function audibleConfs(result) {
   return (result.confirmations ?? []).filter(
@@ -439,6 +455,131 @@ describe('§5.3 — off-schema field string (leak pin)', () => {
     const rows = mandatoryRows(opts.logger);
     expect(rows).toHaveLength(1);
     expect(rows[0][1].field).toBeNull();
+    assertNoGenericApologies(result, opts.logger);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('PLAN-3 — regulation-topic mismatch covered-refusal lifecycle', () => {
+  const isTopicRefusal = (text) =>
+    B_STAGED_POOLS.regulation_topic_mismatch.some((render) => render() === text);
+
+  test('solo mismatch speaks the specific line once and suppresses the generic retry prompt', async () => {
+    const session = makeSession();
+    loopDispatching([
+      observationCall('toolu_topic_solo', {
+        suggested_regulation: '443.4',
+      }),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'AFDD protection is absent.', [], opts);
+
+    expect(session.extractedObservations).toHaveLength(0);
+    const speakers = audibleConfs(result);
+    expect(speakers).toHaveLength(1);
+    expect(isTopicRefusal(speakers[0].text)).toBe(true);
+    expect(mandatoryRows(opts.logger)).toEqual([
+      expect.arrayContaining([
+        'stage6.mandatory_notice_emitted',
+        expect.objectContaining({
+          family: 'observation_integrity',
+          route: 'regulation_topic_mismatch',
+          covered_count: 1,
+        }),
+      ]),
+    ]);
+    expect(suppressionRows(opts.logger)).toHaveLength(1);
+    assertNoGenericApologies(result, opts.logger);
+  });
+
+  test('mismatch and one emitted clarification speak both the ask and the specific refusal', async () => {
+    const session = makeSession();
+    const ws = { readyState: 1, OPEN: 1, send: jest.fn() };
+    const emittedAsk = Object.assign(
+      async (call) => {
+        ws.send(
+          JSON.stringify({
+            type: 'ask_user_started',
+            tool_call_id: call.tool_call_id,
+            question: call.input.question,
+          })
+        );
+        return {
+          tool_use_id: call.tool_call_id,
+          content: JSON.stringify({ answered: false, reason: 'user_moved_on' }),
+          is_error: false,
+        };
+      },
+      { __tag: 'asks' }
+    );
+    createAskDispatcherSpy.mockImplementationOnce(() => emittedAsk);
+    loopDispatching([
+      observationCall('toolu_topic_ask_reject', { suggested_regulation: '443.4' }),
+      {
+        name: 'ask_user',
+        input: {
+          question: 'Is this observation about AFDD protection or surge protection?',
+          context_field: 'observation_clarify',
+          circuit: null,
+          board_id: null,
+          pending_write: null,
+          clarification_chain_id: null,
+        },
+        id: 'toolu_topic_ask',
+      },
+    ]);
+    const opts = baseOpts({ ws });
+    const result = await runShadowHarness(session, 'AFDD protection is absent.', [], opts);
+
+    const frames = ws.send.mock.calls.map(([raw]) => JSON.parse(raw));
+    expect(frames).toContainEqual(
+      expect.objectContaining({
+        type: 'ask_user_started',
+        question: 'Is this observation about AFDD protection or surge protection?',
+      })
+    );
+    expect(audibleConfs(result).filter((c) => isTopicRefusal(c.text))).toHaveLength(1);
+    assertNoGenericApologies(result, opts.logger);
+  });
+
+  test('same-turn corrected re-record speaks its read-back beside the first-attempt refusal', async () => {
+    const session = makeSession();
+    loopDispatching([
+      observationCall('toolu_topic_retry_reject', { suggested_regulation: '443.4' }),
+      observationCall('toolu_topic_retry_success', {
+        text: 'AFDD protection is absent in this HMO',
+        code_basis: 'afdd_premises_requirement',
+      }),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(
+      session,
+      'AFDD protection is absent in this HMO.',
+      [],
+      opts
+    );
+
+    expect(session.extractedObservations).toHaveLength(1);
+    const speakers = audibleConfs(result);
+    expect(speakers.filter((c) => isTopicRefusal(c.text))).toHaveLength(1);
+    expect(speakers.filter((c) => !isTopicRefusal(c.text))).toHaveLength(1);
+    expect(speakers.find((c) => !isTopicRefusal(c.text))?.text).toMatch(/C3|AFDD/i);
+    assertNoGenericApologies(result, opts.logger);
+  });
+
+  test('ignored mismatch stays audible beside an unrelated surviving reading without leaking the raw ref', async () => {
+    const session = makeSession({ circuits: { 4: { circuit_designation: 'Sockets' } } });
+    loopDispatching([
+      observationCall('toolu_topic_ignored', { suggested_regulation: '534.999' }),
+      readingCall('toolu_topic_sibling'),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'AFDD absent. Zs on 4 is 0.86.', [], opts);
+
+    const speakers = audibleConfs(result);
+    expect(speakers.filter((c) => isTopicRefusal(c.text))).toHaveLength(1);
+    expect(speakers.filter((c) => c.field === 'measured_zs_ohm')).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain('534.999');
     assertNoGenericApologies(result, opts.logger);
   });
 });

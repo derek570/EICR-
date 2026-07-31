@@ -57,7 +57,13 @@ import {
   hashPayload,
   sanitizeObservationRegulation,
 } from './stage6-prompt-leak-filter.js';
-import { lookupRegulation } from './regulation-lookup.js';
+import {
+  copyAfddPremisesRequirement,
+  crossCheckObservationRegulation,
+  lookupRegulation,
+  markAfddPremisesRequirement,
+} from './regulation-lookup.js';
+import { stageRegulationTopicMismatchRefusal } from './refusal-notices.js';
 
 function envelope(tool_use_id, body, is_error) {
   return { tool_use_id, content: JSON.stringify(body), is_error };
@@ -299,6 +305,42 @@ export async function dispatchRecordObservation(call, ctx) {
     );
   }
 
+  // PLAN-3 A′ — evaluate the incident-proven AFDD↔SPD contradiction pair
+  // before ordinary regulation validation and before any append. Dual-topic
+  // prose wins even when the model supplied no regulation: one certificate
+  // row must never conflate two distinct defects. The covered refusal stages
+  // only server-authored wording; raw observation/ref strings stay inside the
+  // model-facing tool result and never enter TTS.
+  const regulationVerdict = crossCheckObservationRegulation(input.text, input.suggested_regulation);
+  if (!regulationVerdict.ok) {
+    stageRegulationTopicMismatchRefusal(perTurnWrites, session, {
+      turnId,
+      toolCallId: call.tool_call_id,
+    });
+    logToolCall(logger, {
+      ...baseLogRow,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: regulationVerdict.code,
+      input_summary: { code: input.code ?? null },
+    });
+    const dualTopic = regulationVerdict.code === 'dual_topic_observation';
+    return envelope(
+      call.tool_call_id,
+      {
+        ok: false,
+        code: regulationVerdict.code,
+        observation_text: input.text,
+        model_ref: regulationVerdict.ref,
+        expected_families: regulationVerdict.expectedFamilies,
+        reason: dualTopic
+          ? 'This combines AFDD and surge-protection defects. Split it into separate observations and cite each independently.'
+          : 'The citation contradicts the observation topic. Ask for the deciding fact, then record a fresh observation with the corrected citation.',
+      },
+      true
+    );
+  }
+
   // 2026-06-03: validator runs AFTER the leak filter (see comment above).
   // The regulation-required check rejects coded observations (C1/C2/C3/FI)
   // with null/empty `suggested_regulation`.
@@ -327,7 +369,7 @@ export async function dispatchRecordObservation(call, ctx) {
   // Atom owns UUID generation. Atom writes to session.extractedObservations.
   // (Legacy session.stateSnapshot.observations is a separate text-dedup
   // surface the atom deliberately does NOT touch — see Plan 02-01 SUMMARY.)
-  const { id } = appendObservation(session, {
+  const pendingObservation = {
     code: input.code ?? null,
     text: input.text,
     location: input.location ?? null,
@@ -338,9 +380,13 @@ export async function dispatchRecordObservation(call, ctx) {
     regulation_description,
     // Plan 06-23 obs-#51 — one-clause "why this code" rationale (null if none).
     rationale: input.rationale ?? null,
-  });
+  };
+  if (input.code_basis === 'afdd_premises_requirement') {
+    markAfddPremisesRequirement(pendingObservation);
+  }
+  const { id, observation: storedObservation } = appendObservation(session, pendingObservation);
 
-  perTurnWrites.observations.push({
+  const wireObservation = {
     id,
     code: input.code ?? null,
     text: input.text,
@@ -351,7 +397,9 @@ export async function dispatchRecordObservation(call, ctx) {
     regulation_title,
     regulation_description,
     rationale: input.rationale ?? null,
-  });
+  };
+  copyAfddPremisesRequirement(storedObservation, wireObservation);
+  perTurnWrites.observations.push(wireObservation);
 
   logToolCall(logger, {
     ...baseLogRow,

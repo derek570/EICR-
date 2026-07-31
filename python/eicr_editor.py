@@ -771,6 +771,7 @@ SCHEDULE_ITEMS = {
     "5.12.4": "RCD for final circuits supplying luminaires (domestic)",
     "5.18": "Condition of accessories including socket-outlets, switches",
     "5.19": "Suitability of accessories for external influences",
+    "5.22": "AFDD fitted where required (421.1.7)?",
     "6.1": "Additional protection for all low voltage circuits by RCD (bath/shower)",
     "6.4": "Presence of supplementary bonding conductors",
     "6.6": "Suitability of equipment for IP rating (bath/shower)",
@@ -3266,6 +3267,7 @@ with tabs[TAB_INSPECTION]:
                 "5.19": "Suitability of accessories for external influences",
                 "5.20": "Adequacy of working space/accessibility to equipment",
                 "5.21": "Single-pole switching in line conductors only",
+                "5.22": "AFDD fitted where required (421.1.7)?",
             },
             "6. Location(s) containing a bath or shower": {
                 "6.1": "Additional protection for all LV circuits by RCD not exceeding 30mA",

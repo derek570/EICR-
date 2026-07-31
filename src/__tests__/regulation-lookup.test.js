@@ -5,7 +5,13 @@
  * record_observation dispatcher relies on to attach canonical BS 7671 wording.
  */
 
-import { deriveRegulationRef, lookupRegulation } from '../extraction/regulation-lookup.js';
+import fssync from 'node:fs';
+
+import {
+  crossCheckObservationRegulation,
+  deriveRegulationRef,
+  lookupRegulation,
+} from '../extraction/regulation-lookup.js';
 
 describe('deriveRegulationRef — bare table-key normalisation', () => {
   test('bare numeric ref → itself', () => {
@@ -57,5 +63,72 @@ describe('lookupRegulation — canonical table lookup', () => {
 
   test('MISS: bare standard name → null', () => {
     expect(lookupRegulation('BS 7671 Part 6')).toBeNull();
+  });
+});
+
+describe('PLAN-3 A′ — AFDD/SPD topic cross-check', () => {
+  test.each(['443.4', '534.4.1'])('AFDD text rejects explicit SPD-family ref %s', (ref) => {
+    expect(crossCheckObservationRegulation('AFDD protection is absent', ref)).toMatchObject({
+      ok: false,
+      code: 'regulation_topic_mismatch',
+      ref,
+      expectedFamilies: ['421.1.7'],
+    });
+  });
+
+  test('SPD text rejects exact 421.1.7 but 421.1.201 remains a passthrough', () => {
+    expect(crossCheckObservationRegulation('SPD enclosure is damaged', '421.1.7')).toMatchObject({
+      ok: false,
+      code: 'regulation_topic_mismatch',
+    });
+    expect(crossCheckObservationRegulation('SPD enclosure is damaged', '421.1.201')).toMatchObject({
+      ok: true,
+      ref: '421.1.201',
+    });
+  });
+
+  test.each(['421.1.7', '443.4', null])(
+    'dual AFDD + SPD text rejects-and-splits before citation handling (%s)',
+    (ref) => {
+      expect(
+        crossCheckObservationRegulation('AFDD is absent and the SPD indicator has failed', ref)
+      ).toMatchObject({
+        ok: false,
+        code: 'dual_topic_observation',
+        topics: ['afdd', 'spd'],
+      });
+    }
+  );
+
+  test('a 534.x table MISS still rejects when the AFDD topic contradicts it', () => {
+    expect(lookupRegulation('534.4.1')).toBeNull();
+    expect(
+      crossCheckObservationRegulation('Arc-fault detection is absent', '534.4.1')
+    ).toMatchObject({
+      ok: false,
+      code: 'regulation_topic_mismatch',
+      wellShaped: true,
+    });
+  });
+
+  test('no-keyword text preserves current HIT/MISS behaviour', () => {
+    expect(crossCheckObservationRegulation('Socket enclosure is cracked', '416.2')).toMatchObject({
+      ok: true,
+      ref: '416.2',
+    });
+  });
+
+  test('every current RCD/bonding table HIT remains stamp-eligible', () => {
+    const table = JSON.parse(fssync.readFileSync('config/bs7671-regulations.json', 'utf8'));
+    const entries = table.regulations.filter((entry) =>
+      /\bRCD\b|bonding/i.test(`${entry.title ?? ''} ${entry.description ?? ''}`)
+    );
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(
+        crossCheckObservationRegulation(`${entry.title}. ${entry.description}`, entry.ref)
+      ).toMatchObject({ ok: true, ref: entry.ref });
+      expect(lookupRegulation(entry.ref)?.ref).toBe(entry.ref);
+    }
   });
 });

@@ -20,6 +20,7 @@
 
 import { jest } from '@jest/globals';
 import { needsRefinement, refineObservation } from '../extraction/observation-code-lookup.js';
+import { markAfddPremisesRequirement } from '../extraction/regulation-lookup.js';
 
 describe('needsRefinement (always-refine gate)', () => {
   test('returns true for any observation with usable text', () => {
@@ -160,6 +161,72 @@ describe('refineObservation — return shape', () => {
       observation_text: 'Some defect description',
     });
     expect(refined).toBeNull();
+  });
+
+  test('topic-mismatched refined regulation preserves the original while accepting other legs', async () => {
+    const openai = makeOpenAI(
+      JSON.stringify({
+        professional_text: 'AFDD protection is absent in the HMO.',
+        code: 'C2',
+        regulation: '443.4 — Surge protection devices',
+        schedule_item: '5.22',
+      })
+    );
+    const refined = await refineObservation(openai, {
+      observation_text: 'AFDD protection is absent in the HMO',
+      code: 'C3',
+      regulation: '421.1.7',
+    });
+    expect(refined).toMatchObject({
+      code: 'C2',
+      regulation: '421.1.7',
+      regulation_refinement_accepted: false,
+      regulation_refinement_rejection_reason: 'regulation_topic_mismatch',
+      schedule_item: '5.22',
+    });
+  });
+
+  test('weak refined regulation preserves a canonical-dispatcher suggested_regulation shape', async () => {
+    const openai = makeOpenAI(
+      JSON.stringify({
+        professional_text: 'Protective earthing is absent at the socket-outlet.',
+        code: 'C2',
+        regulation: 'Part four somewhere',
+        schedule_item: '5.8',
+      })
+    );
+    const refined = await refineObservation(openai, {
+      observation_text: 'No earth continuity at the socket outlet',
+      code: 'C3',
+      suggested_regulation: '411.3.3',
+    });
+    expect(refined.regulation).toBe('411.3.3');
+    expect(refined.regulation_refinement_accepted).toBe(false);
+  });
+
+  test('explicit AFDD premises marker pins C3; identical unmarked defective AFDD remains refinement-eligible', async () => {
+    const response = JSON.stringify({
+      professional_text: 'The installed AFDD does not operate.',
+      code: 'C2',
+      regulation: '411.3.3',
+      schedule_item: '5.22',
+    });
+    const marked = markAfddPremisesRequirement({
+      observation_text: 'AFDD protection is absent in this HMO',
+      code: 'C3',
+      regulation: '421.1.7',
+    });
+    const pinned = await refineObservation(makeOpenAI(response), marked);
+    const eligible = await refineObservation(makeOpenAI(response), {
+      observation_text: 'Installed AFDD does not operate on its test button',
+      code: 'C3',
+      regulation: '421.1.7',
+    });
+    expect(pinned.code).toBe('C3');
+    expect(pinned.regulation).toBe('421.1.7');
+    expect(pinned.regulation_refinement_rejection_reason).toBe('afdd_premises_requirement_guard');
+    expect(eligible.code).toBe('C2');
+    expect(eligible.regulation).toBe('411.3.3');
   });
 });
 

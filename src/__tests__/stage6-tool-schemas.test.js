@@ -269,6 +269,16 @@ describe('stage6-tool-schemas', () => {
     expect(prop.anyOf).toEqual([{ type: 'string' }, { type: 'null' }]);
   });
 
+  test('PLAN-3 code_basis is an optional, backend-internal AFDD decision signal', () => {
+    const schema = getToolByName('record_observation').input_schema;
+    expect(schema.required).not.toContain('code_basis');
+    expect(schema.properties.code_basis.anyOf).toEqual([
+      { type: 'string', enum: ['afdd_premises_requirement'] },
+      { type: 'null' },
+    ]);
+    expect(schema.properties.code_basis.description).toMatch(/ONLY when.*premises/i);
+  });
+
   // Test-matrix item 10 (D2 chain-correlation) — the new
   // record_observation.clarification_chain_id field + all THREE model-facing
   // descriptions carrying the mutation-echo instruction, plus the conditional

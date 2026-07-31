@@ -42,7 +42,8 @@ import {
 // payloads below also need it so the canonical title/description travel to iOS
 // on EVERY observation_update path (not just initial extraction). Without this
 // import the lookupRegulation(...) calls below would ReferenceError.
-import { lookupRegulation } from './regulation-lookup.js';
+import { crossCheckObservationRegulation, lookupRegulation } from './regulation-lookup.js';
+import { renderObservationRecodeNotice } from './refusal-notices.js';
 // 2026-04-28 — server-side ring continuity timeout detector. See
 // `src/extraction/ring-continuity-timeout.js` for the full design rationale
 // and `.planning-stage6-agentic/handoffs/silent-drop-fix-2026-04-28/README.md`
@@ -423,6 +424,165 @@ function logLegacyPathInvokedOnce(entry, sessionId, callSite) {
   });
 }
 
+// PLAN-3 B′ — async refinement owns a cursor separate from the extraction
+// ledger. The pending-refinement entry is retained until BOTH its data frame
+// and supplemental audible frame have sent.
+export const OBSERVATION_RECODE_EMISSION_CURSOR = Symbol('observation.recodeEmissionCursor');
+const OBSERVATION_RECODE_EMISSION_COMPLETE = Symbol('observation.recodeEmissionComplete');
+const OBSERVATION_RECODE_RENDERED_TEXT = Symbol('observation.recodeRenderedText');
+
+function buildObservationUpdatePayload(obs, refined, source = 'observation_refinement') {
+  const originalReg = obs?.suggested_regulation ?? obs?.regulation ?? null;
+  const originalVerdict = crossCheckObservationRegulation(
+    obs?.observation_text ?? obs?.description ?? '',
+    originalReg
+  );
+  const refinedVerdict = crossCheckObservationRegulation(
+    obs?.observation_text ?? obs?.description ?? '',
+    refined?.regulation
+  );
+  const acceptedRefinedReg =
+    refined?.regulation_refinement_accepted !== false &&
+    refinedVerdict.ok &&
+    refinedVerdict.wellShaped
+      ? refined.regulation
+      : null;
+  const acceptedOriginalReg = originalVerdict.ok && originalVerdict.wellShaped ? originalReg : null;
+  const effectiveReg = acceptedRefinedReg ?? acceptedOriginalReg;
+  const canonical = lookupRegulation(effectiveReg);
+  const updateText = refined?.professional_text || obs?.observation_text || obs?.description || '';
+  return {
+    type: 'observation_update',
+    observation_id: obs?.observation_id || null,
+    observation_text: updateText,
+    original_text: obs?.observation_text || obs?.description || '',
+    code: refined?.code ?? obs?.code ?? null,
+    regulation: effectiveReg,
+    regulation_title: canonical?.title ?? null,
+    regulation_description: canonical?.description ?? null,
+    schedule_item: refined?.schedule_item ?? obs?.schedule_item ?? null,
+    rationale: refined?.rationale ?? null,
+    source: refined?.source || source,
+  };
+}
+
+/** Production builder seam for PLAN-3 regulation-preservation wire tests. */
+export function _test_buildObservationUpdatePayload(obs, refined, source) {
+  return buildObservationUpdatePayload(obs, refined, source);
+}
+
+function minimalRecodeExtractionFrame(turnId, text) {
+  const result = {
+    extracted_readings: [],
+    field_clears: [],
+    circuit_updates: [],
+    observations: [],
+    validation_alerts: [],
+    confirmations: [
+      {
+        text,
+        expanded_text: text,
+        field: null,
+        circuit: null,
+        expects_ios_ack: false,
+      },
+    ],
+    turn_id: turnId,
+  };
+  // Route even this deliberately minimal supplemental frame through the
+  // shared wire projector. That keeps the extraction egress drift lock
+  // meaningful if server-internal result fields grow later.
+  return { type: 'extraction', result: projectExtractionResultForWire(result) };
+}
+
+/**
+ * PLAN-3 B′ — the one two-frame observation-update emitter. Normal async
+ * refinement and reconnect replay use its resumable send mode; Rule-6 asks it
+ * to append the exact same frame pair to the extraction result ledger, whose
+ * own cursor then owns replay. A severity-neutral update emits only frame 1.
+ */
+export function emitObservationRecode({
+  ws = null,
+  emissionState,
+  update,
+  previousCode,
+  turnId,
+  session,
+  appendTo = null,
+}) {
+  if (!emissionState || typeof emissionState !== 'object') {
+    throw new TypeError('emitObservationRecode requires a durable emissionState');
+  }
+  if (emissionState[OBSERVATION_RECODE_EMISSION_COMPLETE] === true) {
+    return { ok: true, complete: true, recodeSpoken: false };
+  }
+
+  const frames = [{ kind: 'observation_update', json: JSON.stringify(update) }];
+  const codeChanged =
+    typeof previousCode === 'string' &&
+    typeof update?.code === 'string' &&
+    previousCode.toUpperCase() !== update.code.toUpperCase();
+  if (codeChanged) {
+    let rendered = emissionState[OBSERVATION_RECODE_RENDERED_TEXT];
+    if (typeof rendered !== 'string') {
+      rendered = renderObservationRecodeNotice(session, {
+        text: update.observation_text,
+        previousCode,
+        code: update.code,
+      });
+      Object.defineProperty(emissionState, OBSERVATION_RECODE_RENDERED_TEXT, {
+        value: rendered,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    if (rendered) {
+      frames.push({
+        kind: 'observation_recode_confirmation',
+        json: JSON.stringify(minimalRecodeExtractionFrame(turnId, rendered)),
+      });
+    }
+  }
+
+  if (Array.isArray(appendTo)) {
+    appendTo.push(...frames);
+    return { ok: true, appended: frames.length, recodeSpoken: frames.length === 2 };
+  }
+
+  const stored = emissionState[OBSERVATION_RECODE_EMISSION_CURSOR];
+  let start = Number.isInteger(stored) && stored >= 0 ? stored : 0;
+  if (start > frames.length) start = frames.length;
+  const persistCursor = (idx) => {
+    Object.defineProperty(emissionState, OBSERVATION_RECODE_EMISSION_CURSOR, {
+      value: idx,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  };
+  for (let i = start; i < frames.length; i += 1) {
+    if (!ws || ws.readyState !== ws.OPEN) {
+      persistCursor(i);
+      return { ok: false, cursor: i, frameKind: frames[i].kind };
+    }
+    try {
+      ws.send(frames[i].json);
+    } catch (error) {
+      persistCursor(i);
+      return { ok: false, cursor: i, frameKind: frames[i].kind, error };
+    }
+  }
+  if (OBSERVATION_RECODE_EMISSION_CURSOR in emissionState) {
+    delete emissionState[OBSERVATION_RECODE_EMISSION_CURSOR];
+  }
+  Object.defineProperty(emissionState, OBSERVATION_RECODE_EMISSION_COMPLETE, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return { ok: true, complete: true, recodeSpoken: frames.length === 2 };
+}
+
 /**
  * Fire-and-forget observation refinement. For each observation in the result
  * that needs refinement (missing code/regulation/low confidence), call
@@ -437,7 +597,7 @@ function logLegacyPathInvokedOnce(entry, sessionId, callSite) {
  * already know is dead. Failed/skipped refinements remain in
  * `entry.pendingRefinements` so the reconnect flush re-kicks them.
  */
-async function refineObservationsAsync(entry, sessionId, observations) {
+async function refineObservationsAsync(entry, sessionId, observations, turnId = null) {
   if (!entry || !Array.isArray(observations) || observations.length === 0) return;
   const toRefine = observations.filter(needsRefinement);
   if (toRefine.length === 0) return;
@@ -465,7 +625,11 @@ async function refineObservationsAsync(entry, sessionId, observations) {
       });
       continue;
     }
-    entry.pendingRefinements.set(obs.observation_id, { obs, attemptedAt: Date.now() });
+    entry.pendingRefinements.set(obs.observation_id, {
+      obs,
+      turnId,
+      attemptedAt: Date.now(),
+    });
   }
 
   for (const obs of toRefine) {
@@ -504,6 +668,7 @@ async function refineObservationsAsync(entry, sessionId, observations) {
           entry.pendingRefinements.set(obs.observation_id, {
             obs,
             refined,
+            turnId,
             attemptedAt: Date.now(),
           });
         }
@@ -513,41 +678,28 @@ async function refineObservationsAsync(entry, sessionId, observations) {
         });
         continue;
       }
-      // observation_text on the update is the AUTHORITATIVE text iOS will
-      // render. When the refiner returned a professional rewrite, send that;
-      // otherwise fall back to the inspector's original dictation so iOS still
-      // has a non-empty fuzzy-match key. iOS's handleObservationUpdate replaces
-      // the row's observationText with this value (see Sources/Recording/
-      // DeepgramRecordingViewModel.swift handleObservationUpdate).
-      const updateText = refined.professional_text || obs.observation_text || obs.description || '';
-      // Plan 06-23 obs-#52 Fix B — the refinement (BPG4) ref is FRESH (the
-      // gpt-5-search-api refiner may cite a different reg than initial
-      // extraction), so look it up against the canonical table HERE rather than
-      // reusing the initial-extraction lookup. Null-fallback on a table MISS
-      // (the common case) so iOS falls back to the model `regulation` wording.
-      const refinedCanonical = lookupRegulation(refined.regulation);
-      currentWs.send(
-        JSON.stringify({
-          type: 'observation_update',
-          // Phase A: echo the server-assigned observation_id so iOS can patch
-          // the exact row even if Sonnet has since re-worded the observation
-          // text (fuzzy match becomes fallback only).
-          observation_id: obs.observation_id || null,
-          observation_text: updateText,
-          // 2026-05-01 — original_text carries the inspector's pre-rewrite
-          // dictation so iOS's fuzzy-match fallback can still pair the
-          // update to the row even after the visible text has changed.
-          // iOS ignores unknown keys, so this is forward-compatible.
-          original_text: obs.observation_text || obs.description || '',
-          code: refined.code,
-          regulation: refined.regulation,
-          regulation_title: refinedCanonical?.title ?? null,
-          regulation_description: refinedCanonical?.description ?? null,
-          schedule_item: refined.schedule_item,
-          rationale: refined.rationale,
-          source: refined.source,
-        })
-      );
+      const pending = obs.observation_id
+        ? entry.pendingRefinements.get(obs.observation_id)
+        : { obs, refined, turnId };
+      if (pending) pending.refined = refined;
+      const update = buildObservationUpdatePayload(obs, refined);
+      const emission = emitObservationRecode({
+        ws: currentWs,
+        emissionState: pending,
+        update,
+        previousCode: obs.code,
+        turnId: pending?.turnId ?? turnId,
+        session: entry.session,
+      });
+      if (!emission.ok) {
+        logger.info('Refinement emission queued (socket failed during frame pair)', {
+          sessionId,
+          observationId: (obs.observation_id || '').slice(0, 8),
+          frameKind: emission.frameKind,
+          cursor: emission.cursor,
+        });
+        continue;
+      }
       if (obs.observation_id) {
         entry.pendingRefinements.delete(obs.observation_id);
         // Phase C #5 duplicate guard: 2s window where a reconnect re-kick
@@ -560,7 +712,8 @@ async function refineObservationsAsync(entry, sessionId, observations) {
         code: refined.code,
         scheduleItem: refined.schedule_item || null,
         rewroteText: refined.professional_text !== null,
-        textPreview: updateText.slice(0, 60),
+        textPreview: update.observation_text.slice(0, 60),
+        recodeSpoken: emission.recodeSpoken,
       });
     } catch (err) {
       logger.warn('Observation refinement iteration failed', {
@@ -593,32 +746,22 @@ async function replayPendingRefinements(entry, sessionId) {
     count: toReplay.length,
   });
   const needsFreshSearch = [];
-  for (const { obs, refined } of toReplay) {
+  for (const pending of toReplay) {
+    const { obs, refined, turnId } = pending;
     if (refined) {
       // Cached result from a mid-refine socket drop — send directly.
       if (!entry.ws || entry.ws.readyState !== entry.ws.OPEN) return;
       try {
-        const replayText =
-          refined.professional_text || obs.observation_text || obs.description || '';
-        // Plan 06-23 obs-#52 Fix B — same canonical lookup as the live
-        // refinement send above so the replayed-on-reconnect path carries the
-        // table wording too (null-fallback on a MISS).
-        const replayCanonical = lookupRegulation(refined.regulation);
-        entry.ws.send(
-          JSON.stringify({
-            type: 'observation_update',
-            observation_id: obs.observation_id || null,
-            observation_text: replayText,
-            original_text: obs.observation_text || obs.description || '',
-            code: refined.code,
-            regulation: refined.regulation,
-            regulation_title: replayCanonical?.title ?? null,
-            regulation_description: replayCanonical?.description ?? null,
-            schedule_item: refined.schedule_item,
-            rationale: refined.rationale,
-            source: refined.source,
-          })
-        );
+        const update = buildObservationUpdatePayload(obs, refined);
+        const emission = emitObservationRecode({
+          ws: entry.ws,
+          emissionState: pending,
+          update,
+          previousCode: obs.code,
+          turnId,
+          session: entry.session,
+        });
+        if (!emission.ok) continue;
         if (obs.observation_id) {
           entry.pendingRefinements.delete(obs.observation_id);
           entry.recentlyRefinedIds.set(obs.observation_id, Date.now() + 2000);
@@ -634,17 +777,19 @@ async function replayPendingRefinements(entry, sessionId) {
         });
       }
     } else {
-      needsFreshSearch.push(obs);
+      needsFreshSearch.push(pending);
     }
   }
   if (needsFreshSearch.length > 0) {
     // Clear the pending entries first — refineObservationsAsync re-adds them
     // under the dedupe guard to avoid the window where the same id is both
     // pending AND in flight.
-    for (const obs of needsFreshSearch) {
-      if (obs.observation_id) entry.pendingRefinements.delete(obs.observation_id);
+    for (const pending of needsFreshSearch) {
+      if (pending.obs.observation_id) {
+        entry.pendingRefinements.delete(pending.obs.observation_id);
+      }
+      await refineObservationsAsync(entry, sessionId, [pending.obs], pending.turnId);
     }
-    await refineObservationsAsync(entry, sessionId, needsFreshSearch);
   }
 }
 
@@ -656,7 +801,12 @@ async function replayPendingRefinements(entry, sessionId) {
  * sees the code change (e.g. "make that a C2") without waiting for the web
  * search.
  */
-function dispatchObservationUpdates(ws, sessionId, updates, { failFast = false } = {}) {
+function dispatchObservationUpdates(
+  ws,
+  sessionId,
+  updates,
+  { failFast = false, turnId = null, session = {} } = {}
+) {
   if (!Array.isArray(updates) || updates.length === 0) return;
   if (ws.readyState !== ws.OPEN) return;
   for (const u of updates) {
@@ -667,19 +817,30 @@ function dispatchObservationUpdates(ws, sessionId, updates, { failFast = false }
       // RULE-6 edit path silently drops the canonical wording (same gap class
       // as the refinement path above). Null-fallback on a table MISS.
       const ruleSixCanonical = lookupRegulation(u.regulation);
-      ws.send(
-        JSON.stringify({
-          type: 'observation_update',
-          observation_id: u.observation_id || null,
-          observation_text: u.observation_text || '',
-          code: u.code,
-          regulation: u.regulation || null,
-          regulation_title: ruleSixCanonical?.title ?? null,
-          regulation_description: ruleSixCanonical?.description ?? null,
-          rationale: u.rationale || null,
-          source: u.source || 'rule_6_edit',
-        })
-      );
+      const update = {
+        type: 'observation_update',
+        observation_id: u.observation_id || null,
+        observation_text: u.observation_text || '',
+        code: u.code,
+        regulation: u.regulation || null,
+        regulation_title: ruleSixCanonical?.title ?? null,
+        regulation_description: ruleSixCanonical?.description ?? null,
+        rationale: u.rationale || null,
+        source: u.source || 'rule_6_edit',
+      };
+      const emission = emitObservationRecode({
+        ws,
+        emissionState: u,
+        update,
+        previousCode: u.previous_code,
+        turnId: turnId ?? u.turn_id ?? null,
+        session,
+      });
+      if (!emission.ok) {
+        const failure = emission.error ?? new Error(`socket failed at ${emission.frameKind}`);
+        if (failFast) throw failure;
+        continue;
+      }
       logger.info('observation_update sent (rule_6_edit)', {
         sessionId,
         observationId: (u.observation_id || '').slice(0, 8),
@@ -775,11 +936,11 @@ export function projectExtractionResultForWire(result) {
  * which is precisely the drift the A2 seam exists to stop. Not a production
  * export: production calls it directly (`:852`) inside this module.
  */
-export function _test_buildResultFrameLedger(snapshot, result) {
-  return buildResultFrameLedger(snapshot, result);
+export function _test_buildResultFrameLedger(snapshot, result, session = {}) {
+  return buildResultFrameLedger(snapshot, result, session);
 }
 
-function buildResultFrameLedger(snapshot, result) {
+function buildResultFrameLedger(snapshot, result, session = {}) {
   const frames = [];
   const { spoken_response, action, observationUpdates } = result;
   frames.push({
@@ -808,9 +969,9 @@ function buildResultFrameLedger(snapshot, result) {
     for (const u of observationUpdates) {
       if (!u) continue;
       const ruleSixCanonical = lookupRegulation(u.regulation);
-      frames.push({
-        kind: 'observation_update',
-        json: JSON.stringify({
+      emitObservationRecode({
+        emissionState: u,
+        update: {
           type: 'observation_update',
           observation_id: u.observation_id || null,
           observation_text: u.observation_text || '',
@@ -820,7 +981,11 @@ function buildResultFrameLedger(snapshot, result) {
           regulation_description: ruleSixCanonical?.description ?? null,
           rationale: u.rationale || null,
           source: u.source || 'rule_6_edit',
-        }),
+        },
+        previousCode: u.previous_code,
+        turnId: result.turn_id,
+        session,
+        appendTo: frames,
       });
     }
   }
@@ -859,8 +1024,8 @@ function buildResultFrameLedger(snapshot, result) {
  * retries (board_ops / observationUpdates / field_corrections are immutable
  * once bundled).
  */
-function sendResultFrameLedger(ws, snapshot, result) {
-  const frames = buildResultFrameLedger(snapshot, result);
+function sendResultFrameLedger(ws, snapshot, result, session = {}) {
+  const frames = buildResultFrameLedger(snapshot, result, session);
   const stored = result[EXTRACTION_EMISSION_CURSOR];
   let start = Number.isInteger(stored) && stored >= 0 ? stored : 0;
   if (start > frames.length) start = frames.length;
@@ -2800,53 +2965,39 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const entryRef = activeSessions.get(sessionId);
         const currentWs = entryRef?.ws || ws;
         if (currentWs.readyState === currentWs.OPEN) {
-          const { spoken_response, action, observationUpdates } = result;
-          const resultWithoutQuestions = projectExtractionResultForWire(result);
-          currentWs.send(JSON.stringify({ type: 'extraction', result: resultWithoutQuestions }));
-
-          // Phase E: emit `current_board_changed` for any select_board op
-          // Sonnet emitted this turn. iOS uses the unified envelope to drive
-          // `JobViewModel.currentBoardId` regardless of switch source — see
-          // helper docstring above.
-          emitCurrentBoardChangedFromBoardOps(currentWs, session.stateSnapshot, result.board_ops);
-
-          // Phase A: RULE 6 correction edits (same or similar text, new code)
-          // arrive classified by EICRExtractionSession into observationUpdates.
-          // Dispatch them immediately so iOS can patch the existing rows —
-          // these are NOT fed into refineObservationsAsync because the code is
-          // already set by the inspector; a web search would override it.
-          dispatchObservationUpdates(currentWs, sessionId, observationUpdates);
-
-          // Mirror the live-transcript path: fire BPG4 refinement for any new
-          // observations so the code/regulation gets upgraded even when the
-          // result came from the batch flush rather than the direct handler.
-          if (Array.isArray(result.observations) && result.observations.length > 0 && entryRef) {
-            refineObservationsAsync(entryRef, sessionId, result.observations).catch((err) => {
-              logger.warn('refineObservationsAsync unhandled (batch)', {
-                sessionId,
-                error: err?.message,
-              });
+          // PLAN-3 B′ — timeout-batch results now use the same resumable frame
+          // ledger as sync/reconnect. That is what makes a Rule-6 code edit's
+          // observation_update + supplemental spoken extraction one durable
+          // unit: failure between them replays only the unsent suffix.
+          const out = sendResultFrameLedger(currentWs, session.stateSnapshot, result, session);
+          if (!out.ok) {
+            if (entryRef) entryRef.pendingExtractions.push(result);
+            logger.warn('Batch extraction frame ledger paused', {
+              sessionId,
+              failed_frame_kind: out.frameKind ?? null,
+              resume_cursor: out.cursor ?? null,
             });
+          } else {
+            // Rule-6 updates are already final inspector corrections and are
+            // deliberately excluded; only new observations enter refinement.
+            if (Array.isArray(result.observations) && result.observations.length > 0 && entryRef) {
+              refineObservationsAsync(
+                entryRef,
+                sessionId,
+                result.observations,
+                result.turn_id
+              ).catch((err) => {
+                logger.warn('refineObservationsAsync unhandled (batch)', {
+                  sessionId,
+                  error: err?.message,
+                });
+              });
+            }
+            if (out.vcrSent && result.answer_source) {
+              logAnswerEmitted(sessionId, result, result.spoken_response, 'batch');
+            }
+            currentWs.send(JSON.stringify(session.costTracker.toCostUpdate()));
           }
-
-          // Forward voice command response from batch extraction (same as handleTranscript)
-          if (spoken_response || action) {
-            currentWs.send(
-              JSON.stringify({
-                type: 'voice_command_response',
-                understood: true,
-                spoken_response: spoken_response || '',
-                action: action || null,
-                // PLAN-C P4d (row 6) — carry the batch result's response epoch so
-                // the client chime watchdog disarms on the spoken command reply.
-                // Non-empty string only, else omitted (byte-identical pre-P4d).
-                ...(typeof result.utterance_id === 'string' && result.utterance_id
-                  ? { utterance_id: result.utterance_id }
-                  : {}),
-              })
-            );
-          }
-          currentWs.send(JSON.stringify(session.costTracker.toCostUpdate()));
         } else if (entryRef) {
           // Buffer extraction results when WebSocket not OPEN — flushed on reconnect
           entryRef.pendingExtractions.push(result);
@@ -3595,7 +3746,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // preserved inside the ledger; observation-frame failures are now
         // VISIBLE to the cursor instead of best-effort-swallowed, which is
         // what the old {failFast:true} flag approximated).
-        const out = sendResultFrameLedger(ws, entry.session?.stateSnapshot, result);
+        const out = sendResultFrameLedger(ws, entry.session?.stateSnapshot, result, entry.session);
         if (!out.ok) {
           logger.error('Failed to flush buffered extraction', {
             sessionId,
@@ -3627,12 +3778,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // (pendingRefinements was never seeded, so replayPendingRefinements
         // below had nothing to re-kick).
         if (Array.isArray(result.observations) && result.observations.length > 0) {
-          refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
-            logger.warn('refineObservationsAsync unhandled (reconnect flush)', {
-              sessionId,
-              error: err?.message,
-            });
-          });
+          refineObservationsAsync(entry, sessionId, result.observations, result.turn_id).catch(
+            (err) => {
+              logger.warn('refineObservationsAsync unhandled (reconnect flush)', {
+                sessionId,
+                error: err?.message,
+              });
+            }
+          );
         }
       }
       if (requeue.length) {
@@ -5185,19 +5338,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // failure at any earlier frame leaves the VCR unsent and the
         // resumed replay delivers it exactly once (P4d rows 6–7).
         const needsVcr = Boolean(spoken_response || action);
-        const ledgerOut = sendResultFrameLedger(ws, entry.session.stateSnapshot, result);
+        const ledgerOut = sendResultFrameLedger(
+          ws,
+          entry.session.stateSnapshot,
+          result,
+          entry.session
+        );
         if (ledgerOut.ok) {
           // Fire-and-forget BPG4 / BS 7671 refinement for new observations.
           // Runs AFTER the ledger so the inspector sees the observation
           // immediately; the refined code/regulation arrives a second or two
           // later as an `observation_update` patching the rendered row.
           if (Array.isArray(result.observations) && result.observations.length > 0 && entry) {
-            refineObservationsAsync(entry, sessionId, result.observations).catch((err) => {
-              logger.warn('refineObservationsAsync unhandled', {
-                sessionId,
-                error: err?.message,
-              });
-            });
+            refineObservationsAsync(entry, sessionId, result.observations, result.turn_id).catch(
+              (err) => {
+                logger.warn('refineObservationsAsync unhandled', {
+                  sessionId,
+                  error: err?.message,
+                });
+              }
+            );
           }
           if (needsVcr && ledgerOut.vcrSent) {
             // A1 agentic-voice — LEAK-RULE branch on the internal

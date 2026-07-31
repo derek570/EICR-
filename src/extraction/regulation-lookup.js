@@ -35,6 +35,37 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** @type {Map<string, {ref: string, title: string, description: string}> | null} */
 let regulationIndexCache = null;
 
+/**
+ * PLAN-3 (feedback id 107) — server-owned provenance for the one AFDD code
+ * decision the generic refinement pass is not allowed to revisit. A Symbol is
+ * deliberate: `code_basis` is model input, while this marker is minted only
+ * after the dispatcher has accepted that input and never serialises to either
+ * client.
+ */
+export const AFDD_PREMISES_REQUIREMENT = Symbol('observation.afddPremisesRequirement');
+
+/** Copy the non-enumerable AFDD decision marker across an allow-list rebuild. */
+export function copyAfddPremisesRequirement(source, target) {
+  if (!source?.[AFDD_PREMISES_REQUIREMENT] || !target || typeof target !== 'object') return target;
+  Object.defineProperty(target, AFDD_PREMISES_REQUIREMENT, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return target;
+}
+
+/** Mint the marker at the accepted dispatcher decision point. */
+export function markAfddPremisesRequirement(target) {
+  if (!target || typeof target !== 'object') return target;
+  Object.defineProperty(target, AFDD_PREMISES_REQUIREMENT, {
+    value: true,
+    enumerable: false,
+    configurable: true,
+  });
+  return target;
+}
+
 function loadRegulationIndex() {
   if (regulationIndexCache) return regulationIndexCache;
   const regPath = path.join(__dirname, '..', '..', 'config', 'bs7671-regulations.json');
@@ -82,6 +113,60 @@ export function deriveRegulationRef(suggestedRegulation) {
   // first non-ref char, so any trailing wording is ignored).
   const m = s.match(/^\d{1,4}(?:\.\d{1,3}){1,4}[a-z]?/);
   return m ? m[0] : null;
+}
+
+const AFDD_TOPIC = /\bAFDDs?\b|\barc[\s-]*fault(?:\s+detection(?:\s+devices?)?)?\b/i;
+const SPD_TOPIC = /\bSPDs?\b|\bsurge(?:\s+protect(?:ion|ive)(?:\s+devices?)?)?\b/i;
+
+/**
+ * PLAN-3 A′ — bounded topic cross-check for the incident-proven AFDD↔SPD
+ * contradiction pair. This is intentionally not a general regulation
+ * classifier: unrelated families pass through unchanged until they have an
+ * incident and their own passthrough corpus.
+ *
+ * Precedence is encoded in the returned verdict: dual-topic text is reported
+ * before citation shape/mismatch; otherwise only a well-shaped explicit ref
+ * can contradict the text. In particular, SPD text rejects exact 421.1.7 but
+ * not the rest of chapter 421 (421.1.201 is a valid passthrough case).
+ */
+export function crossCheckObservationRegulation(observationText, suggestedRegulation) {
+  const text = typeof observationText === 'string' ? observationText : '';
+  const hasAfdd = AFDD_TOPIC.test(text);
+  const hasSpd = SPD_TOPIC.test(text);
+  const ref = deriveRegulationRef(suggestedRegulation);
+
+  if (hasAfdd && hasSpd) {
+    return {
+      ok: false,
+      code: 'dual_topic_observation',
+      ref,
+      wellShaped: ref !== null,
+      topics: ['afdd', 'spd'],
+      expectedFamilies: ['421.1.7', '443.x', '534.x'],
+    };
+  }
+
+  const afddTextWithSpdRef = hasAfdd && ref !== null && /^(?:443|534)\./.test(ref);
+  const spdTextWithAfddRef = hasSpd && ref === '421.1.7';
+  if (afddTextWithSpdRef || spdTextWithAfddRef) {
+    return {
+      ok: false,
+      code: 'regulation_topic_mismatch',
+      ref,
+      wellShaped: true,
+      topics: hasAfdd ? ['afdd'] : ['spd'],
+      expectedFamilies: hasAfdd ? ['421.1.7'] : ['443.x', '534.x'],
+    };
+  }
+
+  return {
+    ok: true,
+    code: null,
+    ref,
+    wellShaped: ref !== null,
+    topics: hasAfdd ? ['afdd'] : hasSpd ? ['spd'] : [],
+    expectedFamilies: [],
+  };
 }
 
 /**

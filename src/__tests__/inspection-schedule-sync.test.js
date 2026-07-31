@@ -51,6 +51,9 @@ const IOS_SCHEDULE_PATH = path.join(
   'PDF',
   'EICRHTMLTemplate.swift'
 );
+const PYTHON_PDF_PATH = path.join(__dirname, '..', '..', 'python', 'eicr_pdf_generator.py');
+const PYTHON_EDITOR_PATH = path.join(__dirname, '..', '..', 'python', 'eicr_editor.py');
+const AFDD_ROW_TEXT = 'AFDD fitted where required (421.1.7)?';
 
 /**
  * Extract the ITEM refs from the iOS Swift source. Each
@@ -139,5 +142,41 @@ describe('BS 7671 Schedule of Inspections — iOS ↔ server sync', () => {
     const mdDupes = mdRefs.filter((r, i, a) => a.indexOf(r) !== i);
 
     expect({ swiftDupes, mdDupes }).toEqual({ swiftDupes: [], mdDupes: [] });
+  });
+});
+
+describe('PLAN-3 — AFDD Section-5 row on server/Python legal-document surfaces', () => {
+  test('5.22 is appended after 5.21 in the server prompt and before Section 6', () => {
+    const src = fssync.readFileSync(SERVER_SCHEDULE_PATH, 'utf8');
+    const row = `- 5.22 — ${AFDD_ROW_TEXT}`;
+    expect(src.split(row)).toHaveLength(2);
+    expect(src.indexOf('- 5.21 —')).toBeLessThan(src.indexOf(row));
+    expect(src.indexOf(row)).toBeLessThan(src.indexOf('## Section 6'));
+    expect(src).not.toMatch(/^- 5\.23 —/m);
+  });
+
+  test('Python fallback PDF renders 5.22 as an ordinary schedule item, not a header', () => {
+    const src = fssync.readFileSync(PYTHON_PDF_PATH, 'utf8');
+    const row = `("5.22", "${AFDD_ROW_TEXT}", False)`;
+    expect(src).toContain(row);
+    expect(src.indexOf('("5.21"')).toBeLessThan(src.indexOf(row));
+    expect(src.indexOf(row)).toBeLessThan(src.indexOf('# Section 6:'));
+    // The renderer iterates this exact list, so presence here is the render
+    // contract rather than a disconnected documentation constant.
+    expect(src).toMatch(
+      /for idx, \(item_no, description, is_section_header\) in enumerate\(INSPECTION_SCHEDULE_ITEMS\)/
+    );
+  });
+
+  test('Streamlit editor carries 5.22 in BOTH schedule maps', () => {
+    const src = fssync.readFileSync(PYTHON_EDITOR_PATH, 'utf8');
+    const occurrences = src.match(/"5\.22": "AFDD fitted where required \(421\.1\.7\)\?"/g) ?? [];
+    expect(occurrences).toHaveLength(2);
+    expect(src).toMatch(
+      /SCHEDULE_ITEMS = \{[\s\S]*"5\.22": "AFDD fitted where required \(421\.1\.7\)\?"/
+    );
+    expect(src).toMatch(
+      /ALL_SCHEDULE_ITEMS = \{[\s\S]*"5\. Final circuits": \{[\s\S]*"5\.22": "AFDD fitted where required \(421\.1\.7\)\?"/
+    );
   });
 });

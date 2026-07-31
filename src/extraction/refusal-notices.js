@@ -79,6 +79,40 @@ import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 // ordinal rule in this module exists to keep repeats byte-distinct inside it.
 export const REFUSAL_REPEAT_WINDOW_MS = 30_000;
 
+/**
+ * PLAN-3 B′ — async severity changes ride the clients' field-nil confirmation
+ * channel, whose 30 s text dedupe is byte based. These variants (plus the
+ * ordinal terminal) keep repeated re-codes audible without changing the wire
+ * shape.
+ */
+export const OBSERVATION_RECODE_NOTICE_FAMILIES = Object.freeze([
+  (text, from, to) => `Observation for ${text} re-coded ${from} to ${to}.`,
+  (text, from, to) => `The observation for ${text} has changed from ${from} to ${to}.`,
+  (text, from, to) => `I've updated ${text} from observation code ${from} to ${to}.`,
+]);
+
+export function renderObservationRecodeNotice(session, { text, previousCode, code }) {
+  const safeText =
+    typeof text === 'string' && text.trim().length > 0
+      ? text.trim().replace(/\s+/g, ' ').slice(0, 120)
+      : 'that item';
+  const from = String(previousCode ?? '').toUpperCase();
+  const to = String(code ?? '').toUpperCase();
+  if (!from || !to || from === to) return null;
+  if (
+    !session._observationRecodeNoticeCount ||
+    !Number.isInteger(session._observationRecodeNoticeCount)
+  ) {
+    session._observationRecodeNoticeCount = 0;
+  }
+  const count = session._observationRecodeNoticeCount;
+  session._observationRecodeNoticeCount += 1;
+  if (count >= OBSERVATION_RECODE_NOTICE_FAMILIES.length) {
+    return `Observation for ${safeText} re-coded ${from} to ${to} — severity update ${count + 1} this session.`;
+  }
+  return OBSERVATION_RECODE_NOTICE_FAMILIES[count](safeText, from, to);
+}
+
 function capitaliseFirst(s) {
   return typeof s === 'string' && s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s;
 }
@@ -241,6 +275,14 @@ export const B_STAGED_POOLS = Object.freeze({
     () => `I couldn't match that clear to a field I know — it's been logged.`,
     () => `That clear didn't line up with any known field — it's logged for review.`,
   ]),
+  regulation_topic_mismatch: Object.freeze([
+    () =>
+      `That citation doesn't match the observation — AFDD and surge protection use different regulations.`,
+    () =>
+      `I haven't filed that observation because the AFDD and surge-protection references conflict.`,
+    () =>
+      `That regulation points to the wrong protection topic, so the observation wasn't recorded.`,
+  ]),
   // BRIDGE pools — the four A1a denial families as staged by the
   // clear_reading→classifyBoardClear bridge (plan B §3.2). Byte-distinct
   // from the DIRECT pools above.
@@ -296,6 +338,8 @@ export const B_STAGED_TERMINALS = Object.freeze({
     `That reading keeps missing a field I recognise — attempt ${n} is logged.`,
   offschema_clear: (f, n) =>
     `That clear request keeps missing a field I recognise — attempt ${n} is logged.`,
+  regulation_topic_mismatch: (f, n) =>
+    `That observation still has an AFDD-versus-surge citation conflict — attempt ${n} wasn't recorded.`,
   board_clear_capability_missing: (f, n) =>
     `Board-level clears still aren't available on this device — attempt ${n} for ${f}.`,
   board_clear_disabled: (f, n) =>
@@ -528,6 +572,32 @@ export function stageOffschemaRecordRefusal(perTurnWrites, session, { turnId, to
   });
 }
 
+/**
+ * PLAN-3 A′ — covered, specific refusal for an AFDD↔SPD citation conflict.
+ * It deliberately uses no model-controlled label and covers the rejected
+ * call id, so the all-rejected audibility net suppresses its generic retry
+ * while this truthful line still drains.
+ */
+export function stageRegulationTopicMismatchRefusal(
+  perTurnWrites,
+  session,
+  { turnId, toolCallId }
+) {
+  if (toolCallId == null) return;
+  stageMandatoryNotice(perTurnWrites, session, {
+    family: 'observation_integrity',
+    slotKey: 'regulation_topic_mismatch',
+    turnId,
+    friendly: null,
+    field: null,
+    boardId: null,
+    reason: 'regulation_topic_mismatch',
+    coveredToolCallIds: [toolCallId],
+    route: 'regulation_topic_mismatch',
+    repeatKey: 'observation_integrity::regulation_topic_mismatch',
+  });
+}
+
 /** True when a staged notice carries call-level coverage (B-staged). */
 export function noticeIsCovered(notice) {
   return Array.isArray(notice?.coveredToolCallIds) && notice.coveredToolCallIds.length > 0;
@@ -625,6 +695,20 @@ export function renderedNoticeInventory() {
       text: B_STAGED_TERMINALS[route](SAMPLE_LABEL, SAMPLE_N),
     });
   }
+  OBSERVATION_RECODE_NOTICE_FAMILIES.forEach((variant, i) =>
+    out.push({
+      family: 'observation_recode',
+      route: 'async_confirmation',
+      kind: `variant_${i}`,
+      text: variant('sample observation', 'C1', 'C2'),
+    })
+  );
+  out.push({
+    family: 'observation_recode',
+    route: 'async_confirmation',
+    kind: 'terminal',
+    text: 'Observation for sample observation re-coded C1 to C2 — severity update 7 this session.',
+  });
   // Plan 2A — the partial-failure families join the SAME sweeps. Rendered
   // twice, once per grammatical number: the singular and plural fills are
   // different spoken lines from the same template, and a template that
