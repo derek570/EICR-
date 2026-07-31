@@ -119,11 +119,11 @@ describe('PLAN-2D web client reading contract', () => {
     );
   });
 
-  it('fails closed when an off-manifest field somehow reaches the web client', () => {
+  it('keeps canonical snapshot aliases outside the dispatcher manifest routable', () => {
     const applied = applyExtractionToJob(
       makeJob(),
-      resultFor({ circuit: 0, field: 'not_a_contract_field', value: 'must-not-land' })
+      resultFor({ circuit: 1, field: 'measured_zs_ohm', value: '0.42', board_id: 'main' })
     );
-    expect(applied).toBeNull();
+    expect(applied?.patch.circuits?.[0].measured_zs_ohm).toBe('0.42');
   });
 });

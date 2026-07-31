@@ -2,11 +2,12 @@
  * PLAN-2D client reading manifest.
  *
  * This is the web runtime mirror of the backend's
- * `CLIENT_ROUTABLE_READING_ROUTES`. `applyExtractionToJob` consults it before
- * applying a reading, so the committed contract is an egress guard rather than
- * decorative documentation. The contract test deep-compares this live object
- * with the committed cross-client JSON fixture and with the section/circuit
- * router in `apply-extraction.ts`.
+ * `CLIENT_ROUTABLE_READING_ROUTES`. The backend owns the final egress guard;
+ * this client copy is a drift contract over dispatcher fields after
+ * FIELD_CORRECTIONS, not a second runtime filter (dialogue/derived paths may
+ * legitimately carry canonical snapshot aliases). The contract test
+ * deep-compares this object with the committed cross-client JSON fixture and
+ * with the section/circuit router in `apply-extraction.ts`.
  */
 export type ClientReadingRoute =
   | 'circuit'
@@ -182,7 +183,3 @@ export const CLIENT_ROUTABLE_READING_ROUTES: Readonly<Record<string, ClientReadi
       ...entries(['departures_from_bs7671', 'departure_details'], 'design_construction'),
     ])
   );
-
-export function clientReadingRoute(field: string): ClientReadingRoute | undefined {
-  return CLIENT_ROUTABLE_READING_ROUTES[field];
-}
