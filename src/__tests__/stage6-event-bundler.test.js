@@ -478,6 +478,30 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     expect(fields).toEqual(new Set(['circuit_designation', 'ocpd_bs_en', 'address', 'postcode']));
   });
 
+  test('PLAN-2C: hand-built section writes retain legacy keys without dispatcher identity', () => {
+    const writes = makePerTurnWrites();
+    writes.boardReadings = new Map([
+      [
+        encodeBoardReadingKey('postcode'),
+        { value: 'RG1 5QA', confidence: 1.0, source_turn_id: 't1' },
+      ],
+      [
+        encodeBoardReadingKey('address'),
+        { value: '1 Tilehurst Road', confidence: 1.0, source_turn_id: 't1' },
+      ],
+    ]);
+    const result = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-1' }
+    );
+    const postcode = result.confirmations.find((c) => c.field === 'postcode');
+    const address = result.confirmations.find((c) => c.field === 'address');
+
+    expect(postcode).not.toHaveProperty('dedupe_token');
+    expect(address).not.toHaveProperty('dedupe_token');
+  });
+
   test('audio-first (2026-06-18): low-confidence readings are READ BACK, not skipped', () => {
     // Supersedes the old "low-confidence (<0.8) skipped, mirroring legacy
     // prompt gate" behaviour. A hands-free inspector verifies by ear, so

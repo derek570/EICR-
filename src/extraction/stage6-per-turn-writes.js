@@ -204,6 +204,44 @@ export function attachEffectiveBoardSlot(target, canonicalField, effectiveBoardI
 }
 
 /**
+ * PLAN-2C — dispatcher-owned identity for an ordinary section-field dedupe
+ * operation. This is separate from EFFECTIVE_BOARD_SLOT because clearability
+ * and client operation identity are independent manifests: postcode is a
+ * global dedupe operation but is intentionally not a clearable board field.
+ *
+ * `ordinal` is counted within the fresh per-turn accumulator for the same
+ * canonical field + scope. A replay of the turn therefore stamps the same
+ * ordinal, while two same-field operations within one turn remain distinct.
+ * Non-enumerable so the accumulator's public shape and wire bytes change only
+ * when the bundler deliberately emits the token.
+ */
+export const SECTION_DEDUPE_OPERATION = Symbol('stage6.sectionDedupeOperation');
+
+export function nextSectionDedupeOrdinal(perTurnWrites, canonicalField, scope) {
+  let ordinal = 0;
+  const entries = Array.isArray(perTurnWrites?.boardReadingJournal)
+    ? perTurnWrites.boardReadingJournal
+    : [];
+  for (const entry of entries) {
+    const identity = entry?.value?.[SECTION_DEDUPE_OPERATION];
+    if (identity?.field === canonicalField && identity?.scope === scope) {
+      ordinal += 1;
+    }
+  }
+  return ordinal;
+}
+
+export function attachSectionDedupeOperation(target, canonicalField, scope, ordinal) {
+  Object.defineProperty(target, SECTION_DEDUPE_OPERATION, {
+    value: { field: canonicalField, scope, ordinal },
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return target;
+}
+
+/**
  * A2-multiboard item 3 (2026-07-28) — the EFFECTIVE board a circuit-topology
  * operation actually hit.
  *

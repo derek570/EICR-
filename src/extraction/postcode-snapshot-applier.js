@@ -92,6 +92,10 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId) {
   const before = { town: circ0.town, county: circ0.county };
   const changes = [];
 
+  // `town` and `county` are designed-silent computed consequences of the
+  // inspector's postcode write (Audio-First exception), not separately
+  // dictated readings. Keep this helper snapshot-only: it must never stage
+  // either field into perTurnWrites or synthesize a second confirmation.
   if (lookup.town && shouldOverride(circ0.town)) {
     circ0.town = lookup.town;
     changes.push(`town: "${before.town ?? ''}" → "${lookup.town}"`);

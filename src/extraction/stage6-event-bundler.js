@@ -22,6 +22,7 @@ import {
   EFFECTIVE_CIRCUIT_SLOT,
   rawCircuitSlot,
   EFFECTIVE_BOARD_SLOT,
+  SECTION_DEDUPE_OPERATION,
   boardSlotKey,
   projectReadingWinners,
   projectBoardReadingWinners,
@@ -46,9 +47,10 @@ import {
 } from './confirmation-text.js';
 // §A1a (field-feedback-2026-07-14) — the ios_send_attempt telemetry loop
 // (which consumed the three key builders) moved to stage6-shadow-harness.js
-// so it runs on the SURVIVING post-debounce confirmation list. Only the
-// allowlist is needed here, for the token-aware debounce key.
-import { DEDUPE_TOKEN_FIELDS } from './ios-dedupe-key.js';
+// so it runs on the SURVIVING post-debounce confirmation list. The two
+// manifests here are intentionally distinct: WIRE/CLIENT drives `secfield_`
+// production, while DEDUPE drives the candidate-1 backend debounce policy.
+import { DEDUPE_TOKEN_FIELDS, WIRE_CLIENT_DEDUPE_TOKEN_FIELDS } from './ios-dedupe-key.js';
 // §A2 (field-feedback-2026-07-14) — outbound `field_corrected` wire
 // canonicalisation. field-name-corrections.js is a leaf module (no cycle).
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
@@ -513,6 +515,10 @@ function synthesiseConfirmations(
   // across a turn that writes the same slot twice — identity is.
   const correctionOf = (r) =>
     clampCorrections instanceof WeakMap ? (clampCorrections.get(r) ?? null) : null;
+  const sectionDedupeOperationOf = (r) => {
+    const resolver = boardScope?.sectionDedupeOperationOf;
+    return typeof resolver === 'function' ? (resolver(r) ?? null) : null;
+  };
   // F/U-1 (2026-07-19) — identity Set of projected reading objects that came
   // from a calculator write (::calc:: source). These speak with "calculated
   // as" phrasing so the inspector can ear-distinguish a derived value from a
@@ -704,6 +710,15 @@ function synthesiseConfirmations(
     if (r.board_id != null) {
       entry.board_id = r.board_id;
     }
+    const sectionDedupeOperation = sectionDedupeOperationOf(r);
+    if (sectionDedupeOperation) {
+      Object.defineProperty(entry, SECTION_DEDUPE_OPERATION, {
+        value: sectionDedupeOperation,
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
     // W1.4 transient confidence sidecar (board-level degenerate path).
     entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
     out.push(entry);
@@ -847,6 +862,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // and is still lost. The effective board the dispatcher resolved is recorded
   // here per projected reading and stamped onto the wire below.
   const effectiveBoardByReading = new WeakMap();
+  // PLAN-2C — direct projection of the dispatcher-owned section operation
+  // stamp. This never infers identity from optional wire scope or synthesized
+  // confirmation order.
+  const sectionDedupeOperationByReading = new WeakMap();
   const distinctEffectiveBoards = new Set();
   // A2-multiboard (2026-07-28) — project from the JOURNAL, not the raw Map.
   //
@@ -1424,6 +1443,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       if (clampCorrection) {
         clampCorrectionByReading.set(reading, clampCorrection);
       }
+      const sectionDedupeOperation = entry?.[SECTION_DEDUPE_OPERATION];
+      if (sectionDedupeOperation) {
+        sectionDedupeOperationByReading.set(reading, sectionDedupeOperation);
+      }
       extracted_board_readings.push(reading);
     }
     result.extracted_board_readings = extracted_board_readings;
@@ -1512,6 +1535,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // wire `board_id` was deliberately left off (single-board turn) is
         // still measured against ITS board rather than the session's.
         effectiveBoardOf: (r) => effectiveBoardByReading.get(r) ?? null,
+        sectionDedupeOperationOf: (r) => sectionDedupeOperationByReading.get(r) ?? null,
       }
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
@@ -1551,6 +1575,33 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // hash vector) stays byte-identical.
         const boardPart = entry.board_id != null ? `_${entry.board_id}` : '';
         entry.dedupe_token = `desig_${scope}${boardPart}_${_turnId}`;
+      }
+
+      // PLAN-2C §3.5 (feedback id 102) — ordinary section/board-field
+      // confirmations need replay-stable OPERATION identity too. Their
+      // positional client key hashes field+text, so two legitimate postcode
+      // amendments that speak the same text collide for the entire session.
+      //
+      // Stamp ONLY confirmations backed by dispatcher-owned operation
+      // identity. Never infer scope from optional wire board_id or ordinal
+      // from the post-LWW list: both lose the actual operation identity.
+      // `postcode` is the sole producer in this wave and is globally scoped.
+      for (const entry of confirmations) {
+        const field = entry?.field;
+        const isSectionShape =
+          entry?.circuit == null &&
+          (!Array.isArray(entry?.circuits) || entry.circuits.length === 0);
+        if (
+          !field ||
+          !isSectionShape ||
+          entry.dedupe_token ||
+          !WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has(field)
+        ) {
+          continue;
+        }
+        const identity = entry?.[SECTION_DEDUPE_OPERATION];
+        if (!identity || identity.field !== field) continue;
+        entry.dedupe_token = `secfield_${identity.field}_${identity.scope}_${_turnId}_ord${identity.ordinal}`;
       }
     }
     // Codex r3-#2 — when the per-turn designation-op LOG shows more ops than

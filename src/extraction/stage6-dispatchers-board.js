@@ -55,8 +55,10 @@ import {
   encodeBoardReadingKey,
   decodeBoardReadingKey,
   attachEffectiveBoardSlot,
+  attachSectionDedupeOperation,
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
+  nextSectionDedupeOrdinal,
   recordBoardReadingWrite,
   removeBoardReadingWrites,
 } from './stage6-per-turn-writes.js';
@@ -67,7 +69,7 @@ import { getActiveSessionEntry } from './active-sessions.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { CONFIRMATION_FRIENDLY_NAMES, deriveFriendlyName } from './confirmation-text.js';
 import { stageMandatoryNotice } from './refusal-notices.js';
-import { buildDegenerateDedupeKey } from './ios-dedupe-key.js';
+import { buildDegenerateDedupeKey, WIRE_CLIENT_SECTION_DEDUPE_SCOPES } from './ios-dedupe-key.js';
 import {
   DEFAULT_MAIN_BOARD_ID,
   ensureMultiBoardShape,
@@ -458,8 +460,8 @@ export async function dispatchRecordBoardReading(call, ctx) {
   // fires). UNCLASSIFIED fields stay SYMBOL-LESS (legacy-preserving fallback,
   // §3.4): existing writes — including the derived bonding producer below —
   // flow byte-identically to today.
+  const writeCanonical = FIELD_CORRECTIONS[input.field] ?? input.field;
   {
-    const writeCanonical = FIELD_CORRECTIONS[input.field] ?? input.field;
     const writeScope = BOARD_CLEAR_SCOPE_MAP[writeCanonical];
     if (writeScope === 'global') {
       attachEffectiveBoardSlot(boardMirror, writeCanonical, null);
@@ -470,6 +472,22 @@ export async function dispatchRecordBoardReading(call, ctx) {
         resolveEffectiveBoardIdForClear(session, input.board_id)
       );
     }
+  }
+  // PLAN-2C — token producer identity is decided at DISPATCH, where the
+  // authoritative operation scope and full write journal are still present.
+  // It must not be inferred later from optional wire board_id spelling or the
+  // post-LWW confirmation list. Postcode is installation-global, so an
+  // explicit/frozen board spelling cannot mint a different client key for the
+  // same logical operation. Count prior same-field/scope journal entries so a
+  // fresh replay remains ord0 while two writes in one turn become ord0/ord1.
+  const dedupeScope = WIRE_CLIENT_SECTION_DEDUPE_SCOPES[writeCanonical];
+  if (dedupeScope) {
+    attachSectionDedupeOperation(
+      boardMirror,
+      writeCanonical,
+      dedupeScope,
+      nextSectionDedupeOrdinal(perTurnWrites, writeCanonical, dedupeScope)
+    );
   }
   // A2-multiboard — journal the board write. `record_board_reading` carries NO
   // schema `board_id`, so the raw Map key is boardless and
