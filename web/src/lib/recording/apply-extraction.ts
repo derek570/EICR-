@@ -44,7 +44,6 @@ import {
 } from './observation-photo';
 import {
   CLIENT_ROUTABLE_READING_ROUTES,
-  clientReadingRoute,
   type ClientReadingRoute,
 } from './client-routable-reading-fields';
 
@@ -2746,15 +2745,12 @@ export function applyExtractionToJob(
   result: ExtractionResult,
   options: ApplyExtractionOptions = {}
 ): AppliedExtraction | null {
-  const readings = (result.readings ?? []).filter((reading) => {
-    if (clientReadingRoute(reading.field) != null) return true;
-    pipelineLog('apply_reading_off_manifest_dropped', {
-      field: reading.field,
-      circuit: reading.circuit,
-      board_id: reading.board_id ?? null,
-    });
-    return false;
-  });
+  // The server owns the final egress guard. Do not re-filter here: dialogue
+  // and derived-write paths may legitimately emit canonical snapshot names
+  // (for example `measured_zs_ohm`) while the committed manifest is defined
+  // over dispatcher fields after FIELD_CORRECTIONS. The existing client
+  // router deliberately accepts both spellings.
+  const readings = result.readings ?? [];
   const circuitUpdates = result.circuit_updates ?? [];
   const fieldClears = result.field_clears ?? [];
   const observations = result.observations ?? [];
