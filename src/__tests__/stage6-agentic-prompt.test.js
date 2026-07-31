@@ -477,9 +477,10 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // premises decision table and deterministic mismatch/split recovery
       // contract are shared by both renders. Review closure added the explicit
       // <=32 A socket-final-circuit gate and sequential applicability/premises
-      // asks. Measured 23961; cap 24061 retains ~100-token headroom.
+      // asks. PLAN-3's silent clarification terminal adds one bounded tool
+      // contract; measured 24238 and cap retains ~100-token headroom.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(24061);
+      expect(estimate).toBeLessThanOrEqual(24338);
     });
   });
 
@@ -1225,7 +1226,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // applicability: measured 18712; cap 18812 leaves ~100 tokens while
       // pinning the complete reviewed decision table.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(18812);
+      expect(estimate).toBeLessThanOrEqual(19088);
     });
   });
 
@@ -2196,8 +2197,10 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
           'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?'
         );
         expect(rendered).toContain('ask that as a later follow-up, never as a compound question');
-        expect(rendered).toContain('These facts share ONE chain');
-        expect(rendered).toContain('echo the server id on premises');
+        expect(rendered).toContain('Use ONE chain across topic/applicability/premises');
+        expect(rendered).toContain('Only those three kinds are allowed');
+        expect(rendered).toContain('observation_clarification_kind:"afdd_applicability"');
+        expect(rendered).toContain('observation_clarification_kind:"afdd_premises"');
         expect(rendered).toMatch(/HMO.*care home.*purpose-built student accommodation/s);
         expect(rendered).toContain(
           'higher-risk residential building as classified under applicable legislation'
@@ -2207,9 +2210,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain('premises category UNKNOWN');
         expect(rendered).toContain('code_basis:"afdd_premises_requirement"');
         expect(rendered).toContain('INSTALLED BUT DEFECTIVE');
+        expect(rendered).toContain('`resolve_observation_clarification`');
+        expect(rendered).toContain('outcome:"afdd_not_applicable"');
+        expect(rendered).toContain('outcome:"afdd_recommendation_only"');
       }
       expect(renderedOn).toContain('Call `answer_user` ONCE');
-      expect(renderedOff).toContain('With voice answers disabled, emit no tool for this row');
+      expect(renderedOff).toContain(
+        'With voice answers disabled, after any required silent terminal emit no other tool'
+      );
       expect(renderedOff).not.toContain('answer_user');
     });
 
@@ -2219,8 +2227,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           'Is this observation about AFDD protection or surge protection?'
         );
-        expect(rendered).toContain('This topic ask is its own chain');
-        expect(rendered).toContain('never echo its id into the AFDD table');
+        expect(rendered).toContain('echo this chain id on the table questions above');
+        expect(rendered).toContain('observation_clarification_kind:"afdd_topic"');
+        expect(rendered).toContain('never start another chain or ask severity');
         expect(rendered).toContain('`dual_topic_observation`');
         expect(rendered).toContain('Split them into separate `record_observation` calls');
         expect(rendered).toContain('Never cite SPD material (`443.x` or `534.x`)');

@@ -410,6 +410,14 @@ export async function dispatchRecordObservation(call, ctx) {
     input_summary: { observation_id: id, code: input.code ?? null },
   });
 
+  // PLAN-3: a successful same-chain observation is the terminal mutation for
+  // any active AFDD clarification flow. Clear the server-owned active latch so
+  // a later, unrelated observation in the same tool loop is not blocked; the
+  // D2 post-loop net still owns final chain retirement and correlation.
+  if (typeof input.clarification_chain_id === 'string') {
+    session.obsClarifyChains?.completeAfddFlow?.(input.clarification_chain_id);
+  }
+
   return envelope(call.tool_call_id, { ok: true, observation_id: id }, false);
 }
 

@@ -18,6 +18,7 @@ import { jest } from '@jest/globals';
 const {
   createAnswerDispatcher,
   createInspectDispatcher,
+  createObservationClarificationTerminalDispatcher,
   normaliseAnswerText,
   ANSWER_USER_MAX_CHARS,
   ANSWER_FALLBACK_TEXT,
@@ -624,20 +625,22 @@ describe('capInspectResult — appendix §4 truncation ladder', () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 describe('composer exhaustiveness — every advertised tool has a dispatch route (both flag states)', () => {
-  test('flag ON advertises 19 incl. the answer tools; flag OFF filters exactly those two', () => {
+  test('flag ON advertises 20 incl. the answer tools; flag OFF filters exactly those two', () => {
     const on = buildSessionTools(true).map((t) => t.name);
     const off = buildSessionTools(false).map((t) => t.name);
-    expect(on).toHaveLength(19);
-    expect(off).toHaveLength(17);
+    expect(on).toHaveLength(20);
+    expect(off).toHaveLength(18);
     expect(on).toEqual(expect.arrayContaining([...AGENTIC_ANSWER_TOOL_NAMES]));
     for (const name of AGENTIC_ANSWER_TOOL_NAMES) expect(off).not.toContain(name);
     // Plan A1a — clear_board_reading is UNCONDITIONAL (both flag states):
     // the capability gate lives at the dispatcher, never in the toolset.
     expect(on).toContain('clear_board_reading');
     expect(off).toContain('clear_board_reading');
+    expect(on).toContain('resolve_observation_clarification');
+    expect(off).toContain('resolve_observation_clarification');
     // Non-boolean input fails closed (filtered).
-    expect(buildSessionTools(undefined)).toHaveLength(17);
-    expect(buildSessionTools('true')).toHaveLength(17);
+    expect(buildSessionTools(undefined)).toHaveLength(18);
+    expect(buildSessionTools('true')).toHaveLength(18);
   });
 
   test.each([
@@ -655,7 +658,13 @@ describe('composer exhaustiveness — every advertised tool has a dispatch route
         : null;
       const answers = createAnswerDispatcher(session, logger, 'turn-1', ptw);
       const inspects = createInspectDispatcher(session, logger, 'turn-1', ptw);
-      const dispatcher = createToolDispatcher(writes, asks, { answers, inspects });
+      const observationClarificationTerminals =
+        createObservationClarificationTerminalDispatcher(session, logger, 'turn-1');
+      const dispatcher = createToolDispatcher(writes, asks, {
+        answers,
+        inspects,
+        observationClarificationTerminals,
+      });
 
       for (const [i, tool] of buildSessionTools(true).entries()) {
         // ask_user on the null-asks lane is DELIBERATELY the pre-A1

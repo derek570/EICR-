@@ -70,7 +70,7 @@ const clarifyAsk = (id, chainId = null) => ({
   },
 });
 
-const afddAsk = (id, question, chainId = null) => ({
+const afddAsk = (id, question, chainId = null, declaredKind = null) => ({
   tool_call_id: id,
   name: 'ask_user',
   input: {
@@ -78,6 +78,7 @@ const afddAsk = (id, question, chainId = null) => ({
     reason: 'missing_context',
     context_field: 'observation_clarify',
     expected_answer_shape: 'free_text',
+    ...(declaredKind ? { observation_clarification_kind: declaredKind } : {}),
     ...(chainId ? { clarification_chain_id: chainId } : {}),
   },
 });
@@ -138,34 +139,40 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
     expect(broker.known.has(seen[0].clarification_chain_id)).toBe(true);
   });
 
-  test('PLAN-3 AFDD topic repair and two deciding facts use separate bounded chains without a severity ask', async () => {
+  test('PLAN-3 AFDD topic repair + two deciding facts get one exact bounded 3-slot chain', async () => {
     const broker = createObsClarifyChainBroker();
     const budget = createAskBudget({ maxAsksPerKey: 2 });
     const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
 
     const topic = await dispatcher(
-      afddAsk('toolu_topic', 'Is this observation about AFDD protection or surge protection?'),
+      afddAsk('toolu_topic', 'model wording is ignored', null, 'afdd_topic'),
       ctx
     );
     const topicChain = JSON.parse(topic.content).clarification_chain_id;
+    expect(seen[0].question).toBe(
+      'Is this observation about AFDD protection or surge protection?'
+    );
 
-    // Topic repair is complete. Applicability deliberately starts a fresh
-    // chain, leaving two bounded slots for the two independent AFDD facts.
+    // Topic repair and its two deciding facts stay on ONE chain so the D2
+    // dropped-observation net can correlate the eventual mutation.
     const applicability = await dispatcher(
       afddAsk(
         'toolu_applicability',
-        'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?'
+        'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?',
+        topicChain,
+        'afdd_applicability'
       ),
       ctx
     );
     const afddChain = JSON.parse(applicability.content).clarification_chain_id;
-    expect(afddChain).not.toBe(topicChain);
+    expect(afddChain).toBe(topicChain);
 
     const premises = await dispatcher(
       afddAsk(
         'toolu_premises',
         'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?',
-        afddChain
+        afddChain,
+        'afdd_premises'
       ),
       ctx
     );
@@ -174,14 +181,88 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
       clarification_chain_id: afddChain,
     });
 
-    // The AFDD table owns severity. A model attempt to add the generic
-    // C2/C3 question to the same observation chain cannot reach the wire.
-    const severity = await dispatcher(clarifyAsk('toolu_severity', afddChain), ctx);
-    expect(JSON.parse(severity.content)).toMatchObject({
+    // The exact three-question sequence is the only cap-3 exception. The AFDD
+    // table owns severity, so a fourth generic C2/C3 ask cannot reach the wire.
+    for (const severity of [
+      await dispatcher(clarifyAsk('toolu_severity_same', afddChain), ctx),
+      await dispatcher(clarifyAsk('toolu_severity_absent'), ctx),
+      await dispatcher(clarifyAsk('toolu_severity_invented', 'invented-chain'), ctx),
+    ]) {
+      expect(JSON.parse(severity.content)).toMatchObject({
+        answered: false,
+        reason: 'ask_budget_exhausted',
+      });
+    }
+    expect(seen).toHaveLength(3);
+  });
+
+  test('PLAN-3 AFDD third-slot exception fails closed for a paraphrase or wrong order', async () => {
+    const broker = createObsClarifyChainBroker();
+    const budget = createAskBudget({ maxAsksPerKey: 2 });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+
+    const topic = await dispatcher(
+      afddAsk(
+        'toolu_topic',
+        'Is this observation about AFDD protection or surge protection?',
+        null,
+        'afdd_topic'
+      ),
+      ctx
+    );
+    const chain = JSON.parse(topic.content).clarification_chain_id;
+    await dispatcher(
+      afddAsk(
+        'toolu_applicability',
+        'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?',
+        chain,
+        'afdd_applicability'
+      ),
+      ctx
+    );
+    const paraphrase = await dispatcher(
+      afddAsk('toolu_premises', 'Which sort of building is this?', chain),
+      ctx
+    );
+    expect(JSON.parse(paraphrase.content)).toMatchObject({
       answered: false,
       reason: 'ask_budget_exhausted',
     });
-    expect(seen).toHaveLength(3);
+    expect(seen).toHaveLength(2);
+  });
+
+  test('PLAN-3 active AFDD flow blocks severity with same, absent, or invented ids before budget exhaustion', async () => {
+    const broker = createObsClarifyChainBroker();
+    const budget = createAskBudget({ maxAsksPerKey: 2 });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const topic = await dispatcher(
+      afddAsk('toolu_topic', 'ignored', null, 'afdd_topic'),
+      ctx
+    );
+    const chain = JSON.parse(topic.content).clarification_chain_id;
+    expect(budget.getCount(`observation_clarify#${chain}`)).toBe(1);
+
+    for (const attempt of [
+      clarifyAsk('toolu_severity_same', chain),
+      clarifyAsk('toolu_severity_absent'),
+      clarifyAsk('toolu_severity_invented', 'invented-chain'),
+    ]) {
+      const result = await dispatcher(attempt, ctx);
+      expect(JSON.parse(result.content)).toMatchObject({
+        answered: false,
+        reason: 'ask_budget_exhausted',
+      });
+    }
+    expect(seen).toHaveLength(1);
+
+    // A declared canonical next kind is accepted and server-forced back onto
+    // the active chain even when the model supplied an invented id.
+    const applicability = await dispatcher(
+      afddAsk('toolu_applicability', 'ignored', 'invented-chain', 'afdd_applicability'),
+      ctx
+    );
+    expect(JSON.parse(applicability.content).clarification_chain_id).toBe(chain);
+    expect(seen).toHaveLength(2);
   });
 });
 
@@ -301,6 +382,26 @@ const okReading = () => ({
   input: { field: 'measured_zs_ohm', circuit: 1, value: '0.3' },
   result: { is_error: false, content: JSON.stringify({ ok: true }) },
 });
+const resolvedObservationClarification = (chainId, outcome) => ({
+  name: 'resolve_observation_clarification',
+  tool_call_id: `resolve_${outcome}`,
+  input: { clarification_chain_id: chainId, outcome },
+  result: {
+    is_error: false,
+    content: JSON.stringify({
+      ok: true,
+      code: 'observation_clarification_resolved',
+      clarification_chain_id: chainId,
+      outcome,
+    }),
+  },
+});
+const answeredUserInfo = () => ({
+  name: 'answer_user',
+  tool_call_id: 'answer_afdd_info',
+  input: { answer_text: 'AFDD provision is recommended here, but no observation was recorded.' },
+  result: { is_error: false, content: JSON.stringify({ ok: true }) },
+});
 
 function loopOut(toolCalls) {
   return {
@@ -363,6 +464,61 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
     const result = await runShadowHarness(makeSession(), 'just cosmetic', [], baseOpts());
     const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
     expect(net).toBeUndefined();
+  });
+
+  test('PLAN-3 AFDD three-question chain + correlated write emits no false dropped-observation apology', async () => {
+    const chain = 'obsclr-afdd';
+    const topic = answeredClarify('toolu_afdd_topic');
+    topic.input.question = 'Is this observation about AFDD protection or surge protection?';
+    topic.input.clarification_chain_id = chain;
+    const applicability = answeredClarify('toolu_afdd_applicability');
+    applicability.input.question =
+      'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?';
+    applicability.input.clarification_chain_id = chain;
+    const premises = answeredClarify('toolu_afdd_premises');
+    premises.input.question =
+      'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?';
+    premises.input.clarification_chain_id = chain;
+    const observation = okObservation();
+    observation.input.clarification_chain_id = chain;
+
+    toolLoopResult = loopOut([topic, applicability, premises, observation]);
+    const result = await runShadowHarness(makeSession(), 'an HMO', [], baseOpts());
+    const net = (result.confirmations ?? []).find((c) => netText.test(c.text || ''));
+    expect(net).toBeUndefined();
+  });
+
+  test('PLAN-3 applicability-no silent terminal closes the chain with no write and no D2 apology', async () => {
+    const chain = 'obsclr-afdd-no';
+    const applicability = answeredClarify('toolu_afdd_applicability_no');
+    applicability.input.question =
+      'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?';
+    applicability.input.clarification_chain_id = chain;
+    toolLoopResult = loopOut([
+      applicability,
+      resolvedObservationClarification(chain, 'afdd_not_applicable'),
+    ]);
+
+    const result = await runShadowHarness(makeSession(), 'no', [], baseOpts());
+    expect(result.observations).toEqual([]);
+    expect((result.confirmations ?? []).some((c) => netText.test(c.text || ''))).toBe(false);
+  });
+
+  test('PLAN-3 recommendation-only terminal permits the optional answer_user note without a D2 apology', async () => {
+    const chain = 'obsclr-afdd-domestic';
+    const premises = answeredClarify('toolu_afdd_premises_domestic');
+    premises.input.question =
+      'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?';
+    premises.input.clarification_chain_id = chain;
+    toolLoopResult = loopOut([
+      premises,
+      resolvedObservationClarification(chain, 'afdd_recommendation_only'),
+      answeredUserInfo(),
+    ]);
+
+    const result = await runShadowHarness(makeSession(), 'ordinary domestic', [], baseOpts());
+    expect(result.observations).toEqual([]);
+    expect((result.confirmations ?? []).some((c) => netText.test(c.text || ''))).toBe(false);
   });
 
   test('NEGATIVE: answered clarify followed by an UNANSWERED continuation → no net (the question was audible)', async () => {

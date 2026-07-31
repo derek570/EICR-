@@ -28,6 +28,7 @@ import { jest } from '@jest/globals';
 import { WRITE_DISPATCHERS } from '../extraction/stage6-dispatchers.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 import { AFDD_PREMISES_REQUIREMENT } from '../extraction/regulation-lookup.js';
+import { createObsClarifyChainBroker } from '../extraction/stage6-ask-gate-wrapper.js';
 import { renameObservationsForLegacyWire } from '../extraction/stage6-shadow-harness.js';
 
 function makeSession() {
@@ -62,6 +63,38 @@ function makeCtx({ session, logger, perTurnWrites }) {
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 describe('dispatchRecordObservation', () => {
+  test('PLAN-3 successful same-chain AFDD write clears the active server flow latch', async () => {
+    const session = makeSession();
+    session.obsClarifyChains = createObsClarifyChainBroker();
+    const chainId = session.obsClarifyChains.mint();
+    session.obsClarifyChains.noteAnsweredAfddQuestion(chainId, 'premises');
+    const result = await WRITE_DISPATCHERS.record_observation(
+      {
+        tool_call_id: 'tu_obs_afdd_terminal_write',
+        name: 'record_observation',
+        input: {
+          text: 'AFDD protection is absent on the HMO socket final circuit.',
+          code: 'C3',
+          location: 'Consumer unit',
+          circuit: 2,
+          suggested_regulation: '421.1.7',
+          schedule_item: '5.22',
+          rationale: 'AFDD provision applies to this premises category',
+          clarification_chain_id: chainId,
+          code_basis: 'afdd_premises_requirement',
+        },
+      },
+      makeCtx({
+        session,
+        logger: makeLogger(),
+        perTurnWrites: createPerTurnWrites(),
+      })
+    );
+
+    expect(result.is_error).toBe(false);
+    expect(session.obsClarifyChains.getActiveAfddFlow()).toBeNull();
+  });
+
   test.each([
     ['AFDD protection is absent', '443.4'],
     ['Arc-fault detection device is missing', '534.4.1'],

@@ -246,6 +246,7 @@ import { buildSessionTools } from './stage6-tool-schemas.js';
 import {
   createAnswerDispatcher,
   createInspectDispatcher,
+  createObservationClarificationTerminalDispatcher,
   ANSWER_FALLBACK_TEXT,
 } from './stage6-dispatchers-answer.js';
 import {
@@ -1178,6 +1179,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const liveAgenticAnswersEnabled = liveSession?.agenticAnswersEnabled === true;
     const answers = createAnswerDispatcher(liveSession, log, turnId, perTurnWrites);
     const inspects = createInspectDispatcher(liveSession, log, turnId, perTurnWrites);
+    const observationClarificationTerminals =
+      createObservationClarificationTerminalDispatcher(liveSession, log, turnId);
     let dispatcher;
     let sortRecords;
     let askGateForTurn = null;
@@ -1274,7 +1277,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           obsClarifyChains: liveSession.obsClarifyChains,
         });
       }
-      dispatcher = createToolDispatcher(writes, asks, { answers, inspects, onUnknownToolRefusal });
+      dispatcher = createToolDispatcher(writes, asks, {
+        answers,
+        inspects,
+        observationClarificationTerminals,
+        onUnknownToolRefusal,
+      });
       sortRecords = createSortRecordsAsksLast();
     } else {
       // A1: route through the composer even without pendingAsks so
@@ -1282,7 +1290,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // ask_user falls back to `writes` inside the composer, reproducing the
       // pre-A1 unknown_tool behaviour byte-for-byte (plan B: plus the staged
       // model_contract refusal riding beside that envelope).
-      dispatcher = createToolDispatcher(writes, null, { answers, inspects, onUnknownToolRefusal });
+      dispatcher = createToolDispatcher(writes, null, {
+        answers,
+        inspects,
+        observationClarificationTerminals,
+        onUnknownToolRefusal,
+      });
       sortRecords = undefined;
     }
 
@@ -2934,11 +2947,30 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             }
           }
 
+          // PLAN-3: successful silent AFDD no-write terminals qualify ONLY
+          // their exact server-owned chain. Unlike legacy id-less observation
+          // mutations, terminals get no lenient/unknown fallback: their sole
+          // purpose is to prove that an answered clarification intentionally
+          // ended without a certificate row.
+          const successfulClarificationTerminals = [];
+          for (let i = 0; i < seq.length; i += 1) {
+            const c = seq[i];
+            if (
+              c?.name === 'resolve_observation_clarification' &&
+              parseMutationSuccess(c)
+            ) {
+              const chainId = normaliseObsClarifyChainId(c?.input?.clarification_chain_id);
+              if (chainId !== null && evaluatedCids.has(chainId)) {
+                successfulClarificationTerminals.push({ index: i, chainId });
+              }
+            }
+          }
+
           // For each chain find the EARLIEST qualifying event (a mutation or a
           // same-chain audibly-terminated continuation) strictly after its
           // anchor. Attributing to the earliest event keeps the lenient
           // telemetry rows honest ("newly qualified BY that mutation").
-          const qualifiedInfo = new Map(); // cid -> { type:'mutation'|'continuation', mutation }
+          const qualifiedInfo = new Map(); // cid -> { type:'mutation'|'terminal'|'continuation', mutation }
           for (const ch of evaluatedChains) {
             let bestIdx = Infinity;
             let bestType = null;
@@ -2952,6 +2984,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                 bestIdx = m.index;
                 bestType = 'mutation';
                 bestMutation = m;
+              }
+            }
+            for (const terminal of successfulClarificationTerminals) {
+              if (
+                terminal.index > ch.aIdx &&
+                terminal.chainId === ch.cid &&
+                terminal.index < bestIdx
+              ) {
+                bestIdx = terminal.index;
+                bestType = 'terminal';
+                bestMutation = null;
               }
             }
             for (let i = ch.aIdx + 1; i < seq.length; i += 1) {
@@ -4365,6 +4408,8 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const shadowAgenticAnswersEnabled = shadowSession?.agenticAnswersEnabled === true;
   const shadowAnswers = createAnswerDispatcher(shadowSession, log, turnId, perTurnWrites);
   const shadowInspects = createInspectDispatcher(shadowSession, log, turnId, perTurnWrites);
+  const shadowObservationClarificationTerminals =
+    createObservationClarificationTerminalDispatcher(shadowSession, log, turnId);
   // 2026-04-27 — auto-resolve hook is NOT threaded into shadow mode.
   //
   // The original 2026-04-27 path-2 wiring created a `shadowAutoResolveWrite`
@@ -4447,6 +4492,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     dispatcher = createToolDispatcher(writes, asks, {
       answers: shadowAnswers,
       inspects: shadowInspects,
+      observationClarificationTerminals: shadowObservationClarificationTerminals,
       onUnknownToolRefusal: shadowOnUnknownToolRefusal,
     });
     sortRecords = createSortRecordsAsksLast();
@@ -4455,6 +4501,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     dispatcher = createToolDispatcher(writes, null, {
       answers: shadowAnswers,
       inspects: shadowInspects,
+      observationClarificationTerminals: shadowObservationClarificationTerminals,
       onUnknownToolRefusal: shadowOnUnknownToolRefusal,
     });
     sortRecords = undefined; // runToolLoop treats undefined as identity.

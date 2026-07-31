@@ -327,6 +327,59 @@ export function normaliseObsClarifyChainId(value) {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+const AFDD_CLARIFICATION_BY_DECLARED_KIND = new Map([
+  [
+    'afdd_topic',
+    {
+      kind: 'topic',
+      question: 'Is this observation about AFDD protection or surge protection?',
+    },
+  ],
+  [
+    'afdd_applicability',
+    {
+      kind: 'applicability',
+      question:
+        'Is the missing AFDD for a single-phase final circuit supplying socket-outlets rated 32 amps or less?',
+    },
+  ],
+  [
+    'afdd_premises',
+    {
+      kind: 'premises',
+      question:
+        'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?',
+    },
+  ],
+]);
+
+const AFDD_CLARIFICATION_QUESTION_KIND = new Map(
+  [...AFDD_CLARIFICATION_BY_DECLARED_KIND.values()].map(({ kind, question }) => [question, kind])
+);
+
+function afddClarificationQuestionKind(input) {
+  if (input?.context_field !== 'observation_clarify') return null;
+  const declared = AFDD_CLARIFICATION_BY_DECLARED_KIND.get(
+    input?.observation_clarification_kind
+  );
+  if (declared) {
+    // The enum is model-selected; the spoken wording is not. Render the
+    // canonical single-interrogative question server-side before validation,
+    // dispatch, logging, and D2 lifecycle tracking.
+    input.question = declared.question;
+    return declared.kind;
+  }
+  return AFDD_CLARIFICATION_QUESTION_KIND.get(String(input?.question ?? '').trim()) ?? null;
+}
+
+function askWasAnswered(result) {
+  try {
+    return JSON.parse(result?.content ?? 'null')?.answered === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * §D2 (field-feedback-2026-07-14) — per-session observation_clarify chain
  * broker. Mints server-assigned chain ids (unique per OBSERVATION) that key
@@ -339,6 +392,7 @@ export function normaliseObsClarifyChainId(value) {
 export function createObsClarifyChainBroker() {
   const known = new Set();
   let next = 1;
+  let activeAfddFlow = null;
   return {
     known,
     mint() {
@@ -360,6 +414,41 @@ export function createObsClarifyChainBroker() {
     // exists to close; that trade-off is deliberate).
     retire(chainId) {
       if (typeof chainId === 'string') known.delete(chainId);
+      if (activeAfddFlow?.chainId === chainId) activeAfddFlow = null;
+    },
+    getActiveAfddFlow() {
+      return activeAfddFlow
+        ? { chainId: activeAfddFlow.chainId, kinds: [...activeAfddFlow.kinds] }
+        : null;
+    },
+    canContinueAfddFlow(kind) {
+      if (!activeAfddFlow) return true;
+      const kinds = activeAfddFlow.kinds;
+      if (kinds.length === 1 && kinds[0] === 'topic') {
+        return kind === 'applicability' || kind === 'premises';
+      }
+      if (
+        (kinds.length === 1 && kinds[0] === 'applicability') ||
+        (kinds.length === 2 && kinds[0] === 'topic' && kinds[1] === 'applicability')
+      ) {
+        return kind === 'premises';
+      }
+      return false;
+    },
+    noteAnsweredAfddQuestion(chainId, kind) {
+      if (!['topic', 'applicability', 'premises'].includes(kind)) return false;
+      if (!activeAfddFlow) {
+        activeAfddFlow = { chainId, kinds: [kind] };
+        return true;
+      }
+      if (activeAfddFlow.chainId !== chainId || !this.canContinueAfddFlow(kind)) return false;
+      activeAfddFlow.kinds.push(kind);
+      return true;
+    },
+    completeAfddFlow(chainId) {
+      if (!activeAfddFlow || activeAfddFlow.chainId !== chainId) return false;
+      activeAfddFlow = null;
+      return true;
     },
   };
 }
@@ -582,7 +671,7 @@ export function createAskGateWrapper({
  *
  * @param {(call, ctx) => Promise<{tool_use_id: string, content: string, is_error: boolean}>} innerDispatcher
  * @param {object} opts
- * @param {{ isExhausted: (key:string)=>boolean, increment: (key:string)=>void }} opts.askBudget
+ * @param {{ isExhausted: (key:string)=>boolean, increment: (key:string)=>void, getCount: (key:string)=>number }} opts.askBudget
  * @param {{ isActive: ()=>boolean, recordAsk: (turnId:string)=>void }} opts.restrainedMode
  * @param {{ gateOrFire: Function, destroy: Function }} opts.gate
  * @param {(call, ctx)=>void} [opts.filledSlotsShadow]  Side-effect-only logger; defaults to no-op.
@@ -606,6 +695,9 @@ export function wrapAskDispatcherWithGates(
   }
 ) {
   return async function dispatchAskUserGated(call, ctx) {
+    // PLAN-3 kind rendering must precede even the shadow-log hook: no
+    // model-paraphrased AFDD question may become the auditable/spoken form.
+    const afddKind = afddClarificationQuestionKind(call.input);
     // (1) Shadow-log FIRST, regardless of downstream outcome.
     // Open Question #5 — Phase 7 retirement analysis needs the full trace
     // of every ask the model EMITTED, not just the asks that survived the
@@ -635,12 +727,25 @@ export function wrapAskDispatcherWithGates(
     // arrives carrying its id, lands in the exhausted bucket, and is
     // blocked. An unknown/invented id mints a fresh chain (defensive —
     // never lets a wrong echo join another observation's bucket).
+    const activeAfddFlow = obsClarifyChains?.getActiveAfddFlow?.() ?? null;
+    const afddFlowRejectsAsk =
+      call.input?.context_field === 'observation_clarify' &&
+      activeAfddFlow !== null &&
+      (afddKind === null || obsClarifyChains?.canContinueAfddFlow?.(afddKind) !== true);
+    let observationChainId = null;
     if (call.input?.context_field === 'observation_clarify' && obsClarifyChains) {
       const provided = normaliseObsClarifyChainId(call.input.clarification_chain_id);
-      const chainId =
-        provided && obsClarifyChains.known.has(provided) ? provided : obsClarifyChains.mint();
+      // Once an AFDD decision is active, the SERVER owns its chain identity.
+      // Omitted/invented ids cannot mint a fresh bucket to evade the severity
+      // ban; an allowed canonical next question is forced onto the active id.
+      const chainId = activeAfddFlow
+        ? activeAfddFlow.chainId
+        : provided && obsClarifyChains.known.has(provided)
+          ? provided
+          : obsClarifyChains.mint();
       call.input.clarification_chain_id = chainId;
       key = `observation_clarify#${chainId}`;
+      observationChainId = chainId;
     }
 
     // (2) Restrained-mode short-circuit. The state machine in Plan 05-04
@@ -649,10 +754,19 @@ export function wrapAskDispatcherWithGates(
       return synthResultWrapped(call, 'restrained_mode', ctx, logger, sessionId, mode);
     }
 
-    // (3) Per-key budget short-circuit. STA-06 cap = 2 (default in
-    // stage6-ask-budget.js). Pre-fire check; the increment fires only
-    // after a successful inner dispatch (step 5 below).
-    if (askBudget.isExhausted(key)) {
+    // (3) Per-key budget short-circuit. STA-06 remains cap=2. PLAN-3 permits
+    // exactly one narrow third slot when the same answered chain has already
+    // established topic then circuit applicability and now asks the canonical
+    // premises question. A generic severity ask, paraphrase, retry, different
+    // order, or fourth question stays exhausted.
+    const answeredAfddKinds = activeAfddFlow?.kinds ?? [];
+    const permitsAfddThird =
+      afddKind === 'premises' &&
+      askBudget.getCount?.(key) === 2 &&
+      answeredAfddKinds.length === 2 &&
+      answeredAfddKinds[0] === 'topic' &&
+      answeredAfddKinds[1] === 'applicability';
+    if (afddFlowRejectsAsk || (askBudget.isExhausted(key) && !permitsAfddThird)) {
       return synthResultWrapped(call, 'ask_budget_exhausted', ctx, logger, sessionId, mode);
     }
 
@@ -683,6 +797,9 @@ export function wrapAskDispatcherWithGates(
     if (isRealFire(gated)) {
       askBudget.increment(key);
       restrainedMode.recordAsk(ctx.turnId);
+      if (observationChainId && afddKind && askWasAnswered(gated)) {
+        obsClarifyChains?.noteAnsweredAfddQuestion?.(observationChainId, afddKind);
+      }
     }
 
     return gated;

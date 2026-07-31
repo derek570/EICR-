@@ -93,14 +93,17 @@ const EXPECTED_TOOL_NAMES = [
   // unconditionally; enforcement is the dispatcher's board_clear_v1 capability
   // gate (deny-first), never buildSessionTools.
   'clear_board_reading',
+  // PLAN-3: silent same-chain terminal for deliberate AFDD no-write rows.
+  // Appended after clear_board_reading so every prior index stays stable.
+  'resolve_observation_clarification',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 19 tools with the expected names', () => {
+  test('exports exactly 20 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(19);
+    expect(TOOL_SCHEMAS).toHaveLength(20);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });
