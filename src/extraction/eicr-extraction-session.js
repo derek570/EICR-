@@ -2091,7 +2091,7 @@ export class EICRExtractionSession {
         system: this.buildSystemBlocks(),
         messages,
       });
-      this.costTracker.addSonnetUsage(response.usage, response.model);
+      this.costTracker.addSonnetUsage(response.usage, response.model, response.service_tier);
       logger.info(
         `Session ${this.sessionId} Cache keepalive sent (mode=${this.toolCallsMode}, systemBlocks=${this.buildSystemBlocks().length})`
       );
@@ -2880,7 +2880,7 @@ export class EICRExtractionSession {
     // Track token costs (model id from response so per-model rates apply
     // correctly when the tiered router escalated this turn to a different
     // model than the default).
-    this.costTracker.addSonnetUsage(response.usage, response.model);
+    this.costTracker.addSonnetUsage(response.usage, response.model, response.service_tier);
 
     // Log per-turn cost for debugging
     const usage = response.usage;
@@ -4309,7 +4309,7 @@ export class EICRExtractionSession {
     // Do NOT push review exchange to conversationHistory — it's a meta-instruction,
     // not part of the extraction dialogue.
     // Do NOT increment turnCount — this is not an extraction turn.
-    this.costTracker.addSonnetUsage(response.usage, response.model);
+    this.costTracker.addSonnetUsage(response.usage, response.model, response.service_tier);
 
     return result;
   }

@@ -1,4 +1,4 @@
-> Last updated: 2026-02-19
+> Last updated: 2026-07-31
 > Related: [Architecture](architecture.md) | [Field Reference](field-reference.md) | [Deployment](deployment.md) | [File Structure](file-structure.md) | [Deployment History](deployment-history.md)
 > Hub: [../../CLAUDE.md](../../CLAUDE.md)
 
@@ -30,7 +30,7 @@ iOS (16kHz PCM audio)
        └──► ServerWebSocketService.swift (wss://<backend>/api/sonnet-stream)
               │  Sends transcripts + regex hints + job state to backend
               │
-              └──► Backend: eicr-extraction-session.js (multi-turn Sonnet 4.5)
+              └──► Backend: Stage 6 tool loop (multi-turn GPT-5.6 Luna trial)
                      │  Full session context, prompt caching (1hr TTL),
                      │  conversation compaction, 5min session timeout
                      │
@@ -60,7 +60,15 @@ iOS (16kHz PCM audio)
 | `CertMateUnified/.../AudioRingBuffer.swift`            | 3s ring buffer for zero word loss on wake                  |
 | `CertMateUnified/.../TranscriptFieldMatcher.swift`     | Instant regex extraction (30+ patterns)                    |
 
-**Server-side Sonnet extraction:** Multi-turn conversation with `claude-sonnet-4-5-20250929`. Prompt caching (system prompt cached at ≥1024 tokens), conversation compaction at ~6000 tokens. Returns `RollingExtractionResult` with structured certificate fields.
+**Server-side live extraction:** Multi-turn tool loop, currently `gpt-5.6-luna` through the OpenAI Responses API (Fast service-tier trial). Prompt caching and conversation compaction preserve the rolling structured-certificate context.
+
+### Regex fast-TTS path
+
+For five low-ambiguity circuit readings (`measured_zs_ohm`, `r1_r2_ohm`, both IR values, and `number_of_points`), iOS can request the canonical ElevenLabs read-back before the model loop completes. The matcher accepts either explicit `Circuit N …` phrasing or a natural exact designation such as “Number of points for the upstairs socket is 6.” Natural routing canonicalises singular/plural designations, strips a leading article, requires exactly one matching circuit on the selected board, and fails closed on duplicates, missing multi-board scope, or non-numeric refs. Sonnet/Luna still processes the same transcript and remains authoritative for the write.
+
+The fast clip and bundler safety-net share `field::circuit::board` slot identity. iOS marks the slot pending before the HTTP request; if fast audio starts, the later bundler line is suppressed, and if the request or playback fails, the parked bundler line is released. This preserves the audio-first invariant: one heard read-back, never zero or two. The former caller used a two-part key while the bundler used three parts, so a successful fast clip could not reliably suppress its normal twin; this is now corrected. `regex_attempt.fields_matched` also includes circuit-field hits, fixing the misleading zero recorded on the latest points turn.
+
+In latency reports, **heard confirmation** is the client playback ACK/start timestamp: the point at which TTS audio actually begins playing back. It does not mean the model merely produced confirmation text or that ElevenLabs finished synthesis.
 
 **Remote config:** `RemoteConfigService.swift` + `Resources/default_config.json` — keyword boosts and validation rules can be updated without app rebuild.
 

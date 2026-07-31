@@ -260,6 +260,51 @@ describe('CostTracker', () => {
       );
       expect(tracker.sonnetCost).toBeCloseTo(0.3, 4);
     });
+
+    test('Luna Standard bills all four token buckets at published Luna rates', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000,
+          cache_creation_input_tokens: 1_000_000,
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+        },
+        'gpt-5.6-luna',
+        'default'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.02 + 0.25 + 0.2 + 1.2, 6);
+      expect(tracker.modelUsage.has('luna')).toBe(true);
+    });
+
+    test('Luna Fast/priority bills at exactly twice Standard', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000,
+          cache_creation_input_tokens: 1_000_000,
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+        },
+        'gpt-5.6-luna',
+        'priority'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.04 + 0.5 + 0.4 + 2.4, 6);
+      expect(tracker.modelUsage.has('luna_fast')).toBe(true);
+    });
+
+    test('Luna without response metadata follows the configured field-trial tier', () => {
+      const previous = process.env.OPENAI_EXTRACT_SERVICE_TIER;
+      process.env.OPENAI_EXTRACT_SERVICE_TIER = 'fast';
+      try {
+        tracker.addSonnetUsage(
+          { cache_read_input_tokens: 1_000_000 },
+          'gpt-5.6-luna'
+        );
+        expect(tracker.sonnetCost).toBeCloseTo(0.04, 6);
+      } finally {
+        if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
+        else process.env.OPENAI_EXTRACT_SERVICE_TIER = previous;
+      }
+    });
   });
 
   describe('ElevenLabs cost tracking', () => {

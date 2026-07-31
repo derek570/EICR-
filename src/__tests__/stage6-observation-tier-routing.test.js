@@ -381,7 +381,7 @@ describe('observation-tier routing — multi-round + override lock + cost', () =
     });
 
     expect(addSpy).toHaveBeenCalledTimes(1);
-    expect(addSpy).toHaveBeenCalledWith(expect.any(Object), OBS_MODEL);
+    expect(addSpy).toHaveBeenCalledWith(expect.any(Object), OBS_MODEL, undefined);
   });
 });
 

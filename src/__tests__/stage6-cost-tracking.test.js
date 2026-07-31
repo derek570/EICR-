@@ -327,7 +327,8 @@ describe('runShadowHarness live mode — costTracker wiring', () => {
         cache_creation_input_tokens: 500,
         cache_read_input_tokens: 0,
       },
-      expect.stringMatching(/^claude-/)
+      expect.stringMatching(/^claude-/),
+      undefined
     );
 
     // Confirm the cost tracker actually accepted the usage and flipped its

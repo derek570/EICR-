@@ -30,6 +30,7 @@ describe('drift enforcement against ecs/task-def-backend.json', () => {
   });
   test('the four routing values are pinned to the task-def snapshot', () => {
     expect(taskDef.SONNET_EXTRACT_MODEL).toBe('gpt-5.6-luna');
+    expect(taskDef.OPENAI_EXTRACT_SERVICE_TIER).toBe('fast');
     expect(taskDef.OBSERVATION_EXTRACT_MODEL).toBe('claude-sonnet-4-6');
     expect(taskDef.VOICE_LATENCY_ROUND1_MODEL).toBe('');
     // Observation-tier routing (C1) — 'false' in the dark PR; the flip commit

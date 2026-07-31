@@ -26,6 +26,8 @@ import { _internals } from '../extraction/openai-responses-adapter.js';
 // --- Round 1: reasoning, then one function_call. Streaming events + the
 // consistent buffered final response finalResponse() would return. ---
 const ROUND1_FINAL = {
+  model: 'gpt-5.6-luna-2026-07-15',
+  service_tier: 'priority',
   output: [
     { type: 'reasoning', id: 'rs_1', content: [], encrypted_content: 'enc_abc', summary: [] },
     {
@@ -65,6 +67,8 @@ const ROUND1_STREAM_EVENTS = [
 
 // --- Round 2: clean end_turn with a plain text message. ---
 const ROUND2_FINAL = {
+  model: 'gpt-5.6-luna-2026-07-15',
+  service_tier: 'priority',
   output: [
     { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Recorded.' }] },
   ],
@@ -139,12 +143,7 @@ function buildTestAdapter(rounds, hooks = {}) {
         async finalMessage() {
           const openaiStream = await getOpenaiStream();
           const finalResp = await openaiStream.finalResponse();
-          return {
-            content: _internals.buildAnthropicContent(finalResp),
-            usage: _internals.mapUsage(finalResp.usage),
-            stop_reason: _internals.mapStopReason(finalResp),
-            role: 'assistant',
-          };
+          return _internals.toAnthropicMessage(finalResp, model);
         },
       };
     },
@@ -263,6 +262,50 @@ describe('openai-responses-adapter — request/response translation', () => {
       cache_creation_input_tokens: 15,
       cache_read_input_tokens: 2047,
     });
+  });
+
+  test('final-message translation preserves actual model and served Fast tier for billing', () => {
+    const message = _internals.toAnthropicMessage(ROUND1_FINAL, 'gpt-5.6-luna');
+    expect(message.model).toBe('gpt-5.6-luna-2026-07-15');
+    expect(message.service_tier).toBe('priority');
+  });
+
+  test('Fast mode is explicit, Standard omits service_tier, and typos fail closed', () => {
+    expect(_internals.resolveServiceTier('fast')).toBe('fast');
+    expect(_internals.resolveServiceTier(' FAST ')).toBe('fast');
+    expect(_internals.resolveServiceTier('standard')).toBeUndefined();
+    expect(_internals.resolveServiceTier('default')).toBeUndefined();
+    expect(_internals.resolveServiceTier('')).toBeUndefined();
+    expect(() => _internals.resolveServiceTier('fasst')).toThrow(
+      'Unsupported OPENAI_EXTRACT_SERVICE_TIER'
+    );
+  });
+
+  test('createStream sends service_tier=fast on the actual Responses request', async () => {
+    const previous = process.env.OPENAI_EXTRACT_SERVICE_TIER;
+    process.env.OPENAI_EXTRACT_SERVICE_TIER = 'fast';
+    const openai = {
+      responses: {
+        stream: jest.fn(() => makeMockOpenAIStream(ROUND1_STREAM_EVENTS, ROUND1_FINAL)),
+      },
+    };
+    try {
+      const stream = _internals.createStream(openai, {
+        model: 'gpt-5.6-luna',
+        max_tokens: 100,
+        system: 'system',
+        messages: [{ role: 'user', content: 'Circuit 4 Zs 0.63' }],
+        tools: [],
+      });
+      await stream.finalMessage();
+      expect(openai.responses.stream).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'gpt-5.6-luna', service_tier: 'fast' }),
+        undefined
+      );
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
+      else process.env.OPENAI_EXTRACT_SERVICE_TIER = previous;
+    }
   });
 });
 
@@ -399,6 +442,7 @@ describe('openai-responses-adapter — drives the REAL runToolLoop across two ro
     expect(out.stop_reason).toBe('end_turn');
     expect(out.rounds).toBe(2);
     expect(out.aborted).toBe(false);
+    expect(out.service_tier).toBe('priority');
 
     expect(out.usage.output_tokens).toBe(65); // 55 + 10
     expect(out.usage.cache_read_input_tokens).toBe(2047); // only round 2 had a cache hit

@@ -29,10 +29,28 @@ export class CostTracker {
       input: 15.0,
       output: 75.0,
     };
+    // OpenAI GPT-5.6 Luna Responses-API rates (published 2026-07-31).
+    // Fast is the same model at an accelerated service tier and is billed at
+    // exactly 2x Standard. OpenAI's response currently reports Fast as
+    // service_tier="priority", so both names map to the fast bucket below.
+    this.LUNA_RATES = {
+      cacheRead: 0.02,
+      cacheWrite: 0.25,
+      input: 0.2,
+      output: 1.2,
+    };
+    this.LUNA_FAST_RATES = {
+      cacheRead: 0.04,
+      cacheWrite: 0.5,
+      input: 0.4,
+      output: 2.4,
+    };
     this.MODEL_RATES = {
       sonnet: this.SONNET_RATES,
       haiku: this.HAIKU_RATES,
       opus: this.OPUS_RATES,
+      luna: this.LUNA_RATES,
+      luna_fast: this.LUNA_FAST_RATES,
     };
 
     // ElevenLabs pricing is PER MODEL, billed in credits where the USD
@@ -193,9 +211,15 @@ export class CostTracker {
   // deterministic, but any unmodified production call site will silently
   // over-bill if it's actually running on Haiku. Audit grep:
   //   `grep -n addSonnetUsage src/` — every hit should pass a 2nd arg.
-  _modelFamily(modelId) {
+  _modelFamily(modelId, serviceTier) {
     if (!modelId) return 'sonnet';
     const id = String(modelId).toLowerCase();
+    if (id.includes('gpt-5.6-luna')) {
+      const tier = String(serviceTier ?? process.env.OPENAI_EXTRACT_SERVICE_TIER ?? '')
+        .trim()
+        .toLowerCase();
+      return tier === 'fast' || tier === 'priority' ? 'luna_fast' : 'luna';
+    }
     if (id.includes('haiku')) return 'haiku';
     if (id.includes('opus')) return 'opus';
     return 'sonnet';
@@ -220,8 +244,8 @@ export class CostTracker {
   // Sonnet/Haiku/Opus usage (from Anthropic API response.usage).
   // `modelId` should be the actual model used (e.g. response.model);
   // when omitted, falls back to the env-configured extraction model.
-  addSonnetUsage(usage, modelId) {
-    const b = this._bucketFor(this._modelFamily(modelId));
+  addSonnetUsage(usage, modelId, serviceTier) {
+    const b = this._bucketFor(this._modelFamily(modelId, serviceTier));
     b.turns++;
     b.cacheReadTokens += usage.cache_read_input_tokens || 0;
     b.cacheWriteTokens += usage.cache_creation_input_tokens || 0;
@@ -235,8 +259,8 @@ export class CostTracker {
     this.sonnet.outputTokens += usage.output_tokens || 0;
   }
 
-  addCompactionUsage(usage, modelId) {
-    const b = this._bucketFor(this._modelFamily(modelId));
+  addCompactionUsage(usage, modelId, serviceTier) {
+    const b = this._bucketFor(this._modelFamily(modelId, serviceTier));
     b.compactions++;
     // Compaction calls don't use caching -- full price
     b.inputTokens += usage.input_tokens || 0;
@@ -247,8 +271,8 @@ export class CostTracker {
   }
 
   // Voice command usage — single-turn calls outside the extraction conversation
-  addVoiceCommandCost(usage, modelId) {
-    const b = this._bucketFor(this._modelFamily(modelId));
+  addVoiceCommandCost(usage, modelId, serviceTier) {
+    const b = this._bucketFor(this._modelFamily(modelId, serviceTier));
     b.inputTokens += usage.input_tokens || 0;
     b.outputTokens += usage.output_tokens || 0;
     this.sonnet.inputTokens += usage.input_tokens || 0;
