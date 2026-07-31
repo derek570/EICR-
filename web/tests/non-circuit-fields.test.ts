@@ -58,44 +58,15 @@ const ROUTED_BUT_NOT_RESCUED_IOS_PARITY: ReadonlySet<string> = new Set([
 
 /**
  * Rescue-set members with NO explicit `CIRCUIT_0_SECTION` entry. They are
- * still correctly applied as section fields: either via the
- * default-to-supply fallback (`routeSupplyField` → 'supply_characteristics'
- * — e.g. the surge_* family, schema-coverage block) or because the name is
- * a PWA-column alias written by the dual-write path rather than a wire
- * route key (`earth_loop_impedance_ze`, `prospective_fault_current`,
- * `extent`). Rescuing them from the circuit buffer is therefore correct
- * even without an explicit route.
+ * still correctly applied because each is a PWA-column alias written by the
+ * dual-write path rather than a wire route key. PLAN-2D made every legitimate
+ * wire field explicit, so this exception list now contains aliases only.
  */
 const RESCUED_VIA_DEFAULT_SUPPLY_OR_ALIAS: ReadonlySet<string> = new Set([
   'earth_loop_impedance_ze',
   'prospective_fault_current',
   'main_switch_type',
   'main_switch_rating',
-  'surge_spd_present',
-  'surge_spd_type',
-  'surge_spd_bs_en',
-  'surge_status_indicator',
-  'ze_at_db',
-  'name',
-  'location',
-  'phases',
-  'ipf_at_db',
-  'bonding_conductor_material',
-  'bonding_conductor_csa',
-  'bonding_conductor_continuity',
-  'bonding_other_na',
-  'earthing_conductor_csa',
-  'means_earthing_distributor',
-  'means_earthing_electrode',
-  'rcd_operating_current_test',
-  'rcd_time_delay_test',
-  'rcd_operating_time_test',
-  'installation_records_available',
-  'evidence_of_additions_alterations',
-  'agreed_limitations',
-  'agreed_with',
-  'operational_limitations',
-  'extent',
 ]);
 
 describe('NON_CIRCUIT_FIELDS drift guard', () => {
