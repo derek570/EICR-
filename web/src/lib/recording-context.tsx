@@ -19,6 +19,10 @@ import {
   type SonnetSessionCallbacks,
 } from './recording/sonnet-session';
 import {
+  createExtractionTurnLedger,
+  shouldCloseProcessingTurn,
+} from './recording/extraction-turn-ledger';
+import {
   applyBoardOpsToJob,
   applyExtractionToJob,
   applyObservationUpdate,
@@ -661,6 +665,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // by <ProcessingBadge> on the recording chrome so the inspector can
   // see Sonnet is still thinking between turns.
   const [processingCount, setProcessingCount] = React.useState(0);
+  // PLAN-3 — reconnects reuse the client session id, so this ledger survives
+  // socket replacement. A stop/start rotates sessionIdRef and resets it on the
+  // next extraction. Supplemental re-code frames still apply and speak, but
+  // cannot close a later turn's ProcessingBadge slot.
+  const extractionTurnLedgerRef = React.useRef(createExtractionTurnLedger());
   // Cumulative count of validation-alerts / orphaned readings Sonnet has
   // flagged during the session. Mirrors iOS `PendingDataBanner`.
   const [pendingReadings, setPendingReadings] = React.useState(0);
@@ -2289,6 +2298,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         observations: result.observations?.length ?? 0,
         field_clears: result.field_clears?.length ?? 0,
         circuit_updates: result.circuit_updates?.length ?? 0,
+        turn_id: result.turn_id ?? null,
         firstConfirmationPreview,
         extraction_failed: Boolean(result.extraction_failed),
       });
@@ -2298,6 +2308,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         observations: result.observations?.length ?? 0,
         validation_alerts: result.validation_alerts?.length ?? 0,
         confirmations: result.confirmations?.length ?? 0,
+        turn_id: result.turn_id ?? null,
         extraction_failed: Boolean(result.extraction_failed),
       });
       let applied: ReturnType<typeof applyExtractionToJob>;
@@ -2441,9 +2452,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       if (alertCount > 0) {
         setPendingReadings((n) => n + alertCount);
       }
-      // Each extraction frame closes one outstanding turn — clamp at
-      // zero so a spurious extra frame doesn't push the count negative.
-      setProcessingCount((n) => Math.max(0, n - 1));
+      // Close at most once per server turn. PLAN-3's delayed re-code frame
+      // carries the original turn_id and therefore enqueues its confirmation
+      // without decrementing a newer turn that may now be processing.
+      if (
+        shouldCloseProcessingTurn(
+          extractionTurnLedgerRef.current,
+          sessionIdRef.current,
+          result.turn_id
+        )
+      ) {
+        setProcessingCount((n) => Math.max(0, n - 1));
+      }
     },
     [liveFill, schedulePushJobState]
   );

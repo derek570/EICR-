@@ -27,6 +27,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { buildCertificateHtml } from '@/lib/pdf/template/eicr-html-template';
+import { inspectionScheduleItems } from '@/lib/pdf/template/inspection-items';
+import { EICR_SCHEDULE } from '@/lib/constants/inspection-schedule';
 import {
   companyFromSettings,
   decodeInstallationDetails,
@@ -184,6 +186,25 @@ describe('WS9 · PDFGenerator normalization (blank installation_details)', () =>
 });
 
 describe('WS9 · page composition (what the capture renderer turns into PDF pages)', () => {
+  it('PLAN-3 appends AFDD 5.22 to both the editable model and rendered PDF list', () => {
+    const sectionFive = EICR_SCHEDULE.find((section) => section.title.startsWith('5.'));
+    expect(sectionFive?.items.at(-2)?.ref).toBe('5.21');
+    expect(sectionFive?.items.at(-1)).toEqual({
+      ref: '5.22',
+      description: 'AFDD fitted where required (421.1.7)?',
+    });
+
+    const pdfItem = inspectionScheduleItems().find((item) => item.ref === '5.22');
+    expect(pdfItem).toEqual({
+      ref: '5.22',
+      description: 'AFDD fitted where required (421.1.7)?',
+      isHeader: false,
+    });
+    const { portrait } = buildCertificateHtml(baseJob(), company, inspector);
+    expect(portrait).toContain('5.22');
+    expect(portrait).toContain('AFDD fitted where required (421.1.7)?');
+  });
+
   it('EICR: 8 portrait pages (p1 + obs + p3 + 4 inspection chunks + guidance) and 1 landscape per board', () => {
     const { portrait, landscape } = buildCertificateHtml(baseJob(), company, inspector);
     expect(pageCount(portrait, 'page')).toBe(8);
