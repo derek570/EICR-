@@ -2,7 +2,8 @@
  * OpenAI Responses-API tool-use adapter — the fixed sibling of
  * openai-tooluse-adapter.js. Exposes the same Anthropic-shaped
  * `messages.stream()` contract, backed by OpenAI's `/v1/responses` endpoint
- * instead of `/v1/chat/completions`.
+ * instead of `/v1/chat/completions`, using REAL server-sent streaming rather
+ * than a single buffered call.
  *
  * WHY THIS EXISTS (verified live, 2026-07-31): `gpt-5.6-luna` on
  * `/v1/chat/completions` REJECTS function tools with any `reasoning_effort`
@@ -16,6 +17,27 @@
  * without reasoning can't decide it's done. `/v1/responses` allows
  * reasoning_effort WITH function tools; a live probe with reasoning='low'
  * against the exact record_reading schema resolved cleanly in one round.
+ *
+ * WHY REAL STREAMING (not the original buffer-then-synthesize design,
+ * upgraded 2026-07-31 for a fair Loaded Barrel comparison): production runs
+ * with VOICE_LATENCY_LOADED_BARREL=true, which speculatively pre-synthesizes
+ * ElevenLabs confirmation audio the MOMENT a tool_use's content_block_stop
+ * fires mid-stream (stage6-tool-loop.js's onToolUseStreamed hook) — before
+ * the model's full response has finished. A buffer-then-synthesize adapter
+ * can't give Luna that same advantage: by construction the ENTIRE OpenAI
+ * response has already landed before any synthetic event is emitted, so
+ * onToolUseStreamed fires at the same moment finalMessage() would resolve
+ * regardless. Wiring real streaming here — consuming OpenAI's actual SSE
+ * events (`response.output_item.added` / `.function_call_arguments.delta` /
+ * `.output_item.done` / `.completed`, verified live) and translating them to
+ * Anthropic-shaped events AS THEY ARRIVE — lets Luna's tool_use blocks reach
+ * the assembler (and therefore Loaded Barrel) the moment each one's own
+ * arguments finish, not after the whole response completes. This matters
+ * most on multi-tool-call turns; on a single-call turn the win is whatever
+ * gap exists between function_call_arguments.done and response.completed
+ * (observed ~100-300ms in earlier probes) — real but modest, since the
+ * dominant cost (reasoning time before the FIRST tool_use appears) can't be
+ * parallelized by streaming either way.
  *
  * WHY the request/response shapes differ from openai-tooluse-adapter.js:
  *   - Tools are FLAT ({type:'function', name, description, parameters}), not
@@ -33,11 +55,26 @@
  *     Completions adapter's design: runToolLoop owns and re-sends the full
  *     `messages` history every round), so reasoning items are smuggled
  *     through as an extra Anthropic-shaped content-block type
- *     ({type:'reasoning', id, encrypted_content}) on the synthesized
- *     assistant message. runToolLoop pushes that content array onto
- *     `messages` opaquely (it only inspects blocks of type 'tool_use'), so it
- *     round-trips untouched; this module's own translator re-expands it into
- *     a `reasoning` input item, in original order, on the next round.
+ *     ({type:'reasoning', id, encrypted_content}) on the FINAL assistant
+ *     message (built from `.finalResponse()`, not the live event stream —
+ *     reasoning items are never surfaced to the assembler, only to
+ *     buildAnthropicContent for continuity). runToolLoop pushes that content
+ *     array onto `messages` opaquely (it only inspects blocks of type
+ *     'tool_use'), so it round-trips untouched; this module's own translator
+ *     re-expands it into a `reasoning` input item, in original order, on the
+ *     next round.
+ *
+ * WHAT REACHES THE ASSEMBLER, LIVE, vs WHAT'S BUFFERED: only `function_call`
+ * item lifecycle events (`response.output_item.added` /
+ * `.function_call_arguments.delta` / `.output_item.done`) are translated into
+ * live content_block_start/delta/stop events — matching the Chat Completions
+ * assembler's own contract, which no-ops on text and never tracks reasoning
+ * blocks (createAssembler only creates per-index state for `tool_use`-typed
+ * content_block_start). Message-type text and reasoning items are captured
+ * ONLY in the final buffered content (via `.finalResponse()` +
+ * `buildAnthropicContent`), exactly as the non-streaming design did —
+ * streaming only changes WHEN tool_use blocks become visible, not what ends
+ * up in the final content array.
  *
  * USAGE MAPPING (verified live against a cache-cold + cache-warm call pair):
  *   `usage.input_tokens` is the TOTAL prompt size for that call — INCLUSIVE
@@ -203,42 +240,85 @@ function buildAnthropicContent(resp) {
 }
 
 /**
- * Emit the Anthropic streaming event sequence the assembler consumes, one
- * content_block per function_call item (reasoning items are NOT surfaced to
- * the assembler — they carry no dispatchable tool_use and would confuse its
- * index-keyed reducer; they only need to round-trip via buildAnthropicContent
- * for the NEXT request's continuity, not via the streamed-record path).
+ * Translate OpenAI's REAL Responses-API streaming events into the Anthropic
+ * event sequence the assembler consumes, AS THEY ARRIVE — the mechanism that
+ * makes Loaded Barrel's onToolUseStreamed hook fire mid-generation for Luna
+ * instead of only after the full response lands (see module docstring).
+ *
+ * Only function_call item lifecycle events become content_block_start/delta/
+ * stop — matching the assembler's own contract (it only tracks per-index
+ * state for `tool_use`-typed content_block_start; text/reasoning are no-ops
+ * there today, and the FINAL content array — including reasoning, for
+ * continuity — is built separately from `.finalResponse()`, not from this
+ * live translation). Delta routing is keyed by `event.item_id`/`item.id`
+ * (never assumed ordering), the same defensive pattern the Anthropic
+ * assembler itself uses for interleaved blocks.
+ *
+ * @param {AsyncIterable<object>} openaiStream Real SSE-shaped events from
+ *   `openai.responses.stream(...)`.
  */
-function* synthesizeEvents(resp, stopReason) {
+async function* translateStreamingEvents(openaiStream) {
   yield { type: 'message_start' };
   let index = 0;
-  for (const item of resp?.output ?? []) {
-    if (item.type === 'message') {
-      const text = (item.content ?? [])
-        .filter((c) => c.type === 'output_text')
-        .map((c) => c.text || '')
-        .join('');
-      if (text) {
-        yield { type: 'content_block_start', index, content_block: { type: 'text', text: '' } };
-        yield { type: 'content_block_delta', index, delta: { type: 'text_delta', text } };
-        yield { type: 'content_block_stop', index };
-        index += 1;
+  const indexByItemId = new Map();
+  let stopReason = 'end_turn';
+
+  for await (const event of openaiStream) {
+    switch (event.type) {
+      case 'response.output_item.added': {
+        if (event.item?.type === 'function_call') {
+          const idx = index;
+          index += 1;
+          indexByItemId.set(event.item.id, idx);
+          yield {
+            type: 'content_block_start',
+            index: idx,
+            content_block: {
+              type: 'tool_use',
+              id: event.item.call_id,
+              name: event.item.name,
+              input: {},
+            },
+          };
+        }
+        // reasoning / message items are intentionally NOT surfaced here —
+        // they never reach the assembler even in the non-streaming design;
+        // final content (incl. reasoning, for continuity) comes from
+        // finalResponse() -> buildAnthropicContent below.
+        break;
       }
-    } else if (item.type === 'function_call') {
-      yield {
-        type: 'content_block_start',
-        index,
-        content_block: { type: 'tool_use', id: item.call_id, name: item.name, input: {} },
-      };
-      yield {
-        type: 'content_block_delta',
-        index,
-        delta: { type: 'input_json_delta', partial_json: item.arguments || '' },
-      };
-      yield { type: 'content_block_stop', index };
-      index += 1;
+      case 'response.function_call_arguments.delta': {
+        const idx = indexByItemId.get(event.item_id);
+        if (idx !== undefined) {
+          yield {
+            type: 'content_block_delta',
+            index: idx,
+            delta: { type: 'input_json_delta', partial_json: event.delta || '' },
+          };
+        }
+        break;
+      }
+      case 'response.output_item.done': {
+        if (event.item?.type === 'function_call') {
+          const idx = indexByItemId.get(event.item.id);
+          if (idx !== undefined) {
+            yield { type: 'content_block_stop', index: idx };
+          }
+        }
+        break;
+      }
+      case 'response.completed': {
+        stopReason = mapStopReason(event.response);
+        break;
+      }
+      default:
+        // response.created / response.in_progress / response.content_part.* /
+        // response.output_text.* / response.reasoning_summary_text.* / other
+        // event types are intentionally ignored on the live-translation path.
+        break;
     }
   }
+
   yield { type: 'message_delta', delta: { stop_reason: stopReason } };
   yield { type: 'message_stop' };
 }
@@ -265,6 +345,25 @@ function mapUsage(usage) {
 // The stream object (async-iterable + finalMessage)
 // ---------------------------------------------------------------------------
 
+/**
+ * @param {OpenAI} openai
+ * @param {object} streamArgs Anthropic-shaped { model, max_tokens, system, messages, tools }
+ * @param {object} [options] { signal }
+ * @returns {{
+ *   [Symbol.asyncIterator]: () => AsyncGenerator, // drives the assembler live
+ *   finalMessage: () => Promise<object>,          // the post-loop assistant turn
+ * }}
+ *
+ * ONE real `openai.responses.stream(...)` call backs BOTH halves — memoised
+ * so the HTTP request happens exactly once regardless of which the caller
+ * touches first. `runToolLoop`'s actual usage pattern (iterate fully, THEN
+ * call finalMessage()) means `.finalResponse()` resolves instantly at that
+ * point, since the SDK has already fully drained the stream during
+ * iteration; verified live that `.finalResponse()` also works correctly when
+ * called WITHOUT prior manual iteration (the `create()` convenience method
+ * below relies on this — though the only live-reachable `.create()` caller,
+ * the cache-keepalive ping, passes no tools and fails non-fatally on error).
+ */
 function createStream(openai, streamArgs, options) {
   const { model, max_tokens, system, messages, tools } = streamArgs;
   const { signal } = options || {};
@@ -282,29 +381,30 @@ function createStream(openai, streamArgs, options) {
     reasoning: { effort: (process.env.OPENAI_EXTRACT_REASONING_EFFORT || 'low').trim() },
   };
 
-  let resultPromise = null;
-  const run = () => {
-    if (!resultPromise) {
-      resultPromise = openai.responses
-        .create(requestPayload, signal ? { signal } : undefined)
-        .then((resp) => ({
-          resp,
-          stopReason: mapStopReason(resp),
-          usage: mapUsage(resp.usage),
-          content: buildAnthropicContent(resp),
-        }));
+  let openaiStreamPromise = null;
+  const getOpenaiStream = () => {
+    if (!openaiStreamPromise) {
+      openaiStreamPromise = Promise.resolve(
+        openai.responses.stream(requestPayload, signal ? { signal } : undefined)
+      );
     }
-    return resultPromise;
+    return openaiStreamPromise;
   };
 
   return {
     async *[Symbol.asyncIterator]() {
-      const { resp, stopReason } = await run();
-      for (const ev of synthesizeEvents(resp, stopReason)) yield ev;
+      const openaiStream = await getOpenaiStream();
+      for await (const ev of translateStreamingEvents(openaiStream)) yield ev;
     },
     async finalMessage() {
-      const { content, usage, stopReason } = await run();
-      return { content, usage, stop_reason: stopReason, role: 'assistant' };
+      const openaiStream = await getOpenaiStream();
+      const finalResp = await openaiStream.finalResponse();
+      return {
+        content: buildAnthropicContent(finalResp),
+        usage: mapUsage(finalResp.usage),
+        stop_reason: mapStopReason(finalResp),
+        role: 'assistant',
+      };
     },
   };
 }
@@ -338,6 +438,6 @@ export const _internals = Object.freeze({
   toResponsesInput,
   mapStopReason,
   buildAnthropicContent,
-  synthesizeEvents,
+  translateStreamingEvents,
   mapUsage,
 });
