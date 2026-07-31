@@ -1,4 +1,4 @@
-> Last updated: 2026-02-18
+> Last updated: 2026-07-31
 > Related: [Architecture](architecture.md) | [iOS Pipeline](ios-pipeline.md) | [Deployment](deployment.md) | [File Structure](file-structure.md) | [Deployment History](deployment-history.md)
 > Hub: [../../CLAUDE.md](../../CLAUDE.md)
 
@@ -12,6 +12,34 @@
 2. The schema includes `ai_guidance` for each field telling the AI how to extract it
 3. Update the relevant table below to document the change
 4. The AI will automatically use the updated schema for extraction
+
+## Voice-reading route contract (PLAN-2D, 2026-07-31)
+
+`src/extraction/client-routable-reading-fields.js` is the authoritative
+server-to-client route manifest for every Stage-6 reading that may leave the
+backend. Its committed JSON mirror at
+`tests/fixtures/test-contracts/client-routable-reading-fields.json` is
+byte-identical to the Swift test fixture and deep-compared with the live web
+router. Each field names one destination: `circuit`, `board_info`,
+`supply_characteristics`, `installation_details`, `extent_and_type`, or
+`design_construction`.
+
+The dispatcher field universe must remain a complete, pairwise-disjoint
+partition of client-routable readings, deliberately unroutable legacy
+sub-main fields, structural/hierarchy fields, and correction-only aliases.
+`cpc_csa_mm2` corrects to `cable_size_earth`; `max_zs` and `ocpd_max_zs`
+correct to `ocpd_max_zs_ohm`. The three sub-main fields are rejected with a
+Board-tab notice, and structural fields never escape as ordinary readings.
+Only positive `is_distribution_circuit` / `feeds_board_id` intent on a source
+circuit is recoverable, via `mark_distribution_circuit`; all other structural
+attempts are terminal. The final egress guard drops any off-manifest field.
+
+Board attribution is separate from clearing scope. The server stamps
+`board_id` on `manufacturer`, `name`, `location`, `phases`, `ze_at_db`, and
+`ipf_at_db`; the clients additionally retain the legacy `zs_at_db` board
+route. An explicit sub-board write updates only that board, while an unknown
+or ambiguous board fails closed. Web and iOS source is held for PLAN-4's
+wave-end deploy/TestFlight build rather than shipped independently.
 
 ## Voice clearing of board/supply/installation fields (`clear_board_reading` — plan A1a, 2026-07-27)
 

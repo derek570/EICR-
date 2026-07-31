@@ -123,6 +123,24 @@ Current models used by the backend processing pipeline:
 
 Live recording flows through the Stage 6 agentic extraction pipeline. `config/field_schema.json` is the single source of truth for every extractable field; the tool schemas (`src/extraction/stage6-tool-schemas.js`) generate `record_reading.field` / `record_board_reading.field` enums from it at module load.
 
+**Client-routing and structural rejection contract (PLAN-2D §3.6).** The live
+field schema is no longer trusted as proof that a client can apply a reading.
+`client-routable-reading-fields.js` commits the destination of every allowed
+wire field, while structural keys, the three deliberately unroutable
+sub-main keys, and correction-only aliases form the other three members of a
+complete pairwise-disjoint dispatcher partition. Corrections are validated
+against the same route manifest (`cpc_csa_mm2` → `cable_size_earth`;
+`max_zs`/`ocpd_max_zs` → `ocpd_max_zs_ohm`), and a final egress guard drops
+anything still off-manifest. Structural fields are refused before mutation:
+positive distribution-link intent is recoverable only through
+`mark_distribution_circuit`, whose same-turn success reconciles the notice;
+all hierarchy edits and legacy sub-main writes are terminal, with the latter
+directing the inspector to the Board tab. Board-attributed writes use their
+own write-scope map rather than the narrower clear-scope map, so every
+supported board field carries the server-resolved board independently of
+`board_clear_v1`. The web router is deep-compared to the committed contract
+and Swift pins the byte-identical fixture digest.
+
 Sonnet's `ask_user` tool carries an OPTIONAL `pending_write` property. When the inspector says a value without enough context (e.g. "Number of points is 4" with no circuit), Sonnet attaches the buffered write to its ask. The server then:
 
 1. Holds the user's reply.
