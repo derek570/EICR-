@@ -1743,7 +1743,10 @@ async function buildResolvedBody({
               askOutcome?.reason === 'broker_register_failed' ||
               askOutcome?.reason === 'broker_emit_failed'
             ) {
-              queueMultiDescriptionTerminal(MULTI_DESCRIPTION_ASK_FAILED_APOLOGY, askOutcome.reason);
+              queueMultiDescriptionTerminal(
+                MULTI_DESCRIPTION_ASK_FAILED_APOLOGY,
+                askOutcome.reason
+              );
             }
           }
         } else {
@@ -1996,13 +1999,14 @@ async function buildResolvedBody({
         }
       }
     }
-    const finalMatchStatus = followupCancelled || followupMovedOn
-      ? 'partial'
-      : verdict.match_status == null
-        ? 'auto_resolved'
-        : remainingUnresolved.length === 0
-          ? 'full'
-          : 'partial';
+    const finalMatchStatus =
+      followupCancelled || followupMovedOn
+        ? 'partial'
+        : verdict.match_status == null
+          ? 'auto_resolved'
+          : remainingUnresolved.length === 0
+            ? 'full'
+            : 'partial';
     if (logger?.info) {
       logger.info('stage6.ask_user_auto_resolved', {
         sessionId,
@@ -2662,13 +2666,17 @@ async function brokerDeterministicAsk(args) {
  * handed back to Haiku would be the same compliance dependency that
  * produced the original F8 silence.
  */
-function queuePendingValueApology(session, text, generationId = null) {
+function queuePendingValueApology(session, text, generationId = null, metadata = null) {
   if (!session) return;
   if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
   // F7 Item 3 — stamp the generation id so the harness drains ONLY the current
   // generation's prompts (a stale prompt from another generation must never
   // suppress the current fallback or be spoken on the wrong turn).
-  session.pendingVoicePrompts.push({ text, generationId });
+  session.pendingVoicePrompts.push({
+    text,
+    generationId,
+    ...(metadata && typeof metadata === 'object' ? metadata : {}),
+  });
 }
 
 const MULTI_DESCRIPTION_ASK_FAILED_APOLOGY =
@@ -2831,7 +2839,18 @@ async function runPendingValueChain(args) {
   const brokered = [];
 
   const terminalApology = () => {
-    queuePendingValueApology(session, PENDING_VALUE_APOLOGY, generationId);
+    // Keep enough server-owned identity for the turn-final drain to retract
+    // this provisional failure if a later model round successfully records the
+    // same pending reading. Production turn 8 queued this line twice for value
+    // 16, then recorded earthing_conductor_csa=16; without the metadata the
+    // drain could only speak the now-false apology after the true read-back.
+    queuePendingValueApology(session, PENDING_VALUE_APOLOGY, generationId, {
+      promptKind: 'pending_value_terminal',
+      pendingField: fieldKey,
+      pendingValue: value,
+      pendingCircuit: circuit,
+      pendingBoardId: contextBoardId ?? null,
+    });
     logger?.info?.('stage6.pending_value_failed', {
       sessionId,
       turnId,

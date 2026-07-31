@@ -287,6 +287,13 @@ describe('§A4 — brokered pvr-* asks (the deterministic-ask BROKER)', () => {
     // speak via result.confirmations (field-nil → A1(b) 30s TTL class).
     expect(session.pendingVoicePrompts).toHaveLength(1);
     expect(session.pendingVoicePrompts[0].text).toMatch(/couldn't place/i);
+    expect(session.pendingVoicePrompts[0]).toMatchObject({
+      promptKind: 'pending_value_terminal',
+      pendingField: null,
+      pendingValue: '26',
+      pendingCircuit: 2,
+      pendingBoardId: null,
+    });
     // Exactly ONE brokered ask — cap respected, no loop.
     expect(
       ws.sent.filter(
