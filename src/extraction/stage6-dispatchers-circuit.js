@@ -133,6 +133,8 @@ import {
 // blast radius is every circuit at once.
 const fieldSchemaRequire = createRequire(import.meta.url);
 const FIELD_SCHEMA = fieldSchemaRequire('../../config/field_schema.json');
+const CIRCUIT_FIELD_SET = new Set(CIRCUIT_FIELD_ENUM);
+const CLEAR_READING_FIELD_SET = new Set(CLEAR_READING_FIELD_ENUM);
 
 /**
  * Format a dispatcher return envelope. `content` is JSON-stringified here so
@@ -212,6 +214,30 @@ function stageStructuralReadingRefusal(
         : 'structural_field_not_recordable',
     field: 'field',
   };
+}
+
+/**
+ * PLAN-2D final reachability guard for an off-enum record_reading call.
+ *
+ * Tool sampling is deliberately non-strict, so the dispatcher—not the SDK—
+ * owns this membership check. The refusal carries only server-owned
+ * constants: a hallucinated field/value may be logged for diagnosis, but can
+ * never be rendered into TTS or sent to either client.
+ */
+function stageOffschemaRecordReadingRefusal(call, ctx) {
+  if (call.tool_call_id == null) return;
+  stageMandatoryNotice(ctx.perTurnWrites, ctx.session, {
+    family: 'model_contract',
+    slotKey: 'offschema_record',
+    turnId: ctx.turnId,
+    friendly: null,
+    field: null,
+    boardId: null,
+    reason: 'offschema_record',
+    coveredToolCallIds: [call.tool_call_id],
+    route: 'offschema_record',
+    repeatKey: 'model_contract::offschema_record',
+  });
 }
 
 // ---- P5 same-turn clear→write slot identity (2026-07-23) --------------------
@@ -499,6 +525,28 @@ export async function dispatchRecordReading(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
 
+  // PLAN-2D reachability verdict: tool sampling is non-strict and
+  // validateRecordReading validates shape/range, not enum membership. Reject
+  // before structural classification, coercion, snapshot mutation, journalling
+  // or confirmation synthesis. The generic covered notice owns audibility
+  // without exposing the model-controlled spelling/value.
+  if (typeof input.field !== 'string' || !CIRCUIT_FIELD_SET.has(input.field)) {
+    const fieldErr = { code: 'invalid_field', field: 'field' };
+    stageOffschemaRecordReadingRefusal(call, ctx);
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: fieldErr,
+      input_summary: { field: null, circuit: input.circuit },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: fieldErr }, true);
+  }
+
   const structuralErr = stageStructuralReadingRefusal(call, ctx, input);
   if (structuralErr) {
     logToolCall(logger, {
@@ -746,8 +794,6 @@ export async function dispatchRecordReading(call, ctx) {
 const CANONICAL_BOARD_CLEARABLE = new Set(
   CLEAR_BOARD_READING_FIELD_ENUM.map((m) => FIELD_CORRECTIONS[m] ?? m)
 );
-const CIRCUIT_FIELD_SET = new Set(CIRCUIT_FIELD_ENUM);
-const CLEAR_READING_FIELD_SET = new Set(CLEAR_READING_FIELD_ENUM);
 
 /**
  * Plan B §3.2 — stage the dispatcher-authored structural refusal for a

@@ -237,7 +237,6 @@ export const BOARD_READING_SCOPE_MAP = Object.freeze(
 );
 
 export function classifyStructuralReading(field, value) {
-  if (field === 'feeds_board_id') return 'recoverable_mark_distribution';
   if (field === 'is_distribution_circuit' && String(value).trim().toLowerCase() === 'yes') {
     return 'recoverable_mark_distribution';
   }

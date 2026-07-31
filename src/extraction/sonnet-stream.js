@@ -1115,16 +1115,24 @@ function normaliseWiringType(value) {
   return WIRING_TYPE_DESC_TO_CODE[upper] || upper;
 }
 
+const OFFSCHEMA_READING_RESPONSE =
+  `I couldn't save one reading because it didn't match a field I recognise — it's logged.`;
+
 function validateAndCorrectFields(result, sessionId) {
-  if (!result.extracted_readings) return result;
+  if (!Array.isArray(result.extracted_readings)) return result;
   const acceptedReadings = [];
+  const rejectedFields = new Set();
+  let rejectedReadingCount = 0;
   for (const reading of result.extracted_readings) {
-    if (!reading.field) {
+    const rawField = reading?.field;
+    if (!reading?.field) {
+      rejectedReadingCount += 1;
       logger.warn('Reading without a field dropped before client egress', {
         sessionId,
-        field: reading.field,
-        circuit: reading.circuit,
+        field: rawField,
+        circuit: reading?.circuit,
       });
+      if (typeof rawField === 'string') rejectedFields.add(rawField);
       continue;
     }
     if (KNOWN_FIELDS.has(reading.field)) {
@@ -1147,6 +1155,9 @@ function validateAndCorrectFields(result, sessionId) {
       continue;
     }
     if (!hadCorrection || !KNOWN_FIELDS.has(reading.field)) {
+      rejectedReadingCount += 1;
+      if (typeof rawField === 'string') rejectedFields.add(rawField);
+      if (typeof reading.field === 'string') rejectedFields.add(reading.field);
       logger.warn('Unknown field name from Sonnet', {
         sessionId,
         field: reading.field,
@@ -1159,8 +1170,29 @@ function validateAndCorrectFields(result, sessionId) {
   // live tool path, but synthetic/legacy callers can still invoke this final
   // egress guard. Fail closed instead of emitting a server-mutated field that
   // neither client has a committed destination for. The raw model spelling is
-  // logged only; no client/TTS payload can contain it.
+  // logged only; no client/TTS payload can contain it. Legacy/off-mode results
+  // can carry model-authored confirmations and voice-command prose
+  // independently of the reading array, so retain only confirmations naming
+  // a different accepted field (field-less model prose cannot prove that it is
+  // unrelated) and replace the VCR with one server-owned generic refusal.
+  // Nulling action is part of the same boundary: action payloads share the VCR
+  // frame and must not smuggle the rejected field/value around the reading
+  // filter.
   result.extracted_readings = acceptedReadings;
+  if (rejectedReadingCount > 0) {
+    if (Array.isArray(result.confirmations)) {
+      result.confirmations =
+        rejectedFields.size === 0
+          ? []
+          : result.confirmations.filter(
+              (confirmation) =>
+                typeof confirmation?.field === 'string' &&
+                !rejectedFields.has(confirmation.field)
+            );
+    }
+    result.spoken_response = OFFSCHEMA_READING_RESPONSE;
+    result.action = null;
+  }
   // Normalise wiring_type values from descriptions to letter codes
   for (const reading of result.extracted_readings) {
     if (reading.field === 'wiring_type' && reading.value) {

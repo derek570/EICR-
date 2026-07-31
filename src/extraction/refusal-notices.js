@@ -60,7 +60,7 @@
  * CONFIRMATION_FRIENDLY_NAMES, board ORDINALS — never a model-controlled
  * string). The `model_contract` routes render NO label at all and key their
  * repeat state on server-owned constants (`model_contract::unknown_tool`,
- * `model_contract::offschema_clear`), never the hallucinated tool name or
+ * `model_contract::offschema_record`, `model_contract::offschema_clear`), never the hallucinated tool name or
  * the off-schema field string.
  *
  * THIRD REGIME — PARTIAL-FAILURE notices (plan 2A, 2026-07-30, feedback id
@@ -231,6 +231,11 @@ export const B_STAGED_POOLS = Object.freeze({
     () => `Something went wrong on my side with that request — it's been logged.`,
     () => `That ran into an internal problem here — it's logged for review.`,
   ]),
+  offschema_record: Object.freeze([
+    () => `That reading didn't match a field I recognise — it's logged.`,
+    () => `I couldn't match that reading to a field I know — it's been logged.`,
+    () => `That reading didn't line up with any known field — it's logged for review.`,
+  ]),
   offschema_clear: Object.freeze([
     () => `That clear request didn't match a field I recognise — it's logged.`,
     () => `I couldn't match that clear to a field I know — it's been logged.`,
@@ -287,6 +292,8 @@ export const B_STAGED_TERMINALS = Object.freeze({
   unroutable_board_reading: (f, n) =>
     `${capitaliseFirst(f)} still needs the Board tab — attempt ${n} wasn't saved by voice.`,
   unknown_tool: (f, n) => `That one hit the same internal snag again — attempt ${n} is logged.`,
+  offschema_record: (f, n) =>
+    `That reading keeps missing a field I recognise — attempt ${n} is logged.`,
   offschema_clear: (f, n) =>
     `That clear request keeps missing a field I recognise — attempt ${n} is logged.`,
   board_clear_capability_missing: (f, n) =>

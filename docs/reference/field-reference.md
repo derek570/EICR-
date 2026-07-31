@@ -30,9 +30,11 @@ sub-main fields, structural/hierarchy fields, and correction-only aliases.
 `cpc_csa_mm2` corrects to `cable_size_earth`; `max_zs` and `ocpd_max_zs`
 correct to `ocpd_max_zs_ohm`. The three sub-main fields are rejected with a
 Board-tab notice, and structural fields never escape as ordinary readings.
-Only positive `is_distribution_circuit` / `feeds_board_id` intent on a source
-circuit is recoverable, via `mark_distribution_circuit`; all other structural
-attempts are terminal. The final egress guard drops any off-manifest field.
+Only positive `is_distribution_circuit` intent on a source circuit is
+recoverable via `mark_distribution_circuit`; `feeds_board_id` and all other
+structural attempts are terminal. The final egress guard drops any off-manifest
+field, strips any untrusted confirmation/action payload attached to it, and
+replaces model-authored speech with one generic server-owned refusal.
 
 Board attribution is separate from clearing scope. The server stamps
 `board_id` on `manufacturer`, `name`, `location`, `phases`, `ze_at_db`, and

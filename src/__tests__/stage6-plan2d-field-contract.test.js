@@ -99,7 +99,7 @@ describe('PLAN-2D reading-field manifests', () => {
 });
 
 describe('PLAN-2D final egress guard', () => {
-  test('three adjudicated overlaps are corrected and an off-manifest field is suppressed', async () => {
+  test('three adjudicated overlaps are corrected and an off-manifest field is suppressed leak-free', async () => {
     const { _test_validateAndCorrectFields } = await import('../extraction/sonnet-stream.js');
     const result = {
       extracted_readings: [
@@ -108,6 +108,24 @@ describe('PLAN-2D final egress guard', () => {
         { field: 'ocpd_max_zs', circuit: 2, value: '0.72' },
         { field: '__synthetic_off_manifest__', circuit: 1, value: 'secret-model-value' },
       ],
+      confirmations: [
+        { field: 'cable_size_earth', circuit: 1, text: 'CPC CSA is 1.5' },
+        {
+          field: '__synthetic_off_manifest__',
+          circuit: 1,
+          text: '__synthetic_off_manifest__ is secret-model-value',
+        },
+        {
+          field: null,
+          text: 'I also saw __synthetic_off_manifest__ as secret-model-value',
+        },
+      ],
+      spoken_response: '__synthetic_off_manifest__ is secret-model-value',
+      action: {
+        type: 'set_field',
+        field: '__synthetic_off_manifest__',
+        value: 'secret-model-value',
+      },
     };
 
     _test_validateAndCorrectFields(result, 'plan2d-egress');
@@ -117,7 +135,13 @@ describe('PLAN-2D final egress guard', () => {
       'ocpd_max_zs_ohm',
       'ocpd_max_zs_ohm',
     ]);
-    expect(JSON.stringify(result)).not.toContain('__synthetic_off_manifest__');
-    expect(JSON.stringify(result)).not.toContain('secret-model-value');
+    expect(result.confirmations).toEqual([
+      { field: 'cable_size_earth', circuit: 1, text: 'CPC CSA is 1.5' },
+    ]);
+    expect(result.spoken_response).toMatch(/didn't match a field I recognise/i);
+    expect(result.action).toBeNull();
+    const wire = JSON.stringify(result);
+    expect(wire).not.toContain('__synthetic_off_manifest__');
+    expect(wire).not.toContain('secret-model-value');
   });
 });

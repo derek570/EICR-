@@ -892,6 +892,7 @@ describe('PLAN-2D — structural and unroutable reading refusals', () => {
     ['board', 'feed_circuit_ref', '4'],
     ['board', 'sort_order', '2'],
     ['circuit', 'circuit_ref', '5'],
+    ['circuit', 'feeds_board_id', 'sub-1'],
     ['circuit', 'is_distribution_circuit', 'no'],
   ])('%s structural member %s is terminal and never mutates', async (kind, field, value) => {
     const session = twoBoardSession();
@@ -933,8 +934,8 @@ describe('PLAN-2D — structural and unroutable reading refusals', () => {
     async (order) => {
       const session = twoBoardSession();
       const rejected = circuitReadingCall(
-        'feeds_board_id',
-        'sub-1',
+        'is_distribution_circuit',
+        'yes',
         `toolu_wrong_structure_${order}`
       );
       const success = markDistributionCall(`toolu_mark_${order}`);
@@ -959,6 +960,73 @@ describe('PLAN-2D — structural and unroutable reading refusals', () => {
       assertNoGenericApologies(result, opts.logger);
     }
   );
+
+  test.each(['reject-first', 'success-first'])(
+    'feeds_board_id stays terminal beside mark_distribution_circuit success (%s)',
+    async (order) => {
+      const session = twoBoardSession();
+      const rejected = circuitReadingCall(
+        'feeds_board_id',
+        'sub-other',
+        `toolu_terminal_link_${order}`
+      );
+      const success = markDistributionCall(`toolu_mark_terminal_${order}`);
+      loopDispatching(order === 'reject-first' ? [rejected, success] : [success, rejected]);
+      const opts = baseOpts();
+      const result = await runShadowHarness(
+        session,
+        'Circuit 4 feeds another board; mark it as feeding the garage board.',
+        [],
+        opts
+      );
+
+      const speakers = audibleConfs(result);
+      expect(speakers).toHaveLength(2);
+      expect(speakers.some((c) => /screen|reading/i.test(c.text))).toBe(true);
+      expect(speakers.some((c) => c.text === 'Circuit 4 marked as feeding the sub-board')).toBe(
+        true
+      );
+      expect(session.stateSnapshot.circuits[4]).toMatchObject({
+        is_distribution_circuit: 'yes',
+        feeds_board_id: 'sub-1',
+      });
+      expect(mandatoryRows(opts.logger)[0][1]).toMatchObject({
+        family: 'unsupported_structural_reading',
+        covered_count: 1,
+      });
+      assertNoGenericApologies(result, opts.logger);
+    }
+  );
+
+  test('off-enum record_reading is rejected before mutation and speaks one leak-safe refusal', async () => {
+    const session = twoBoardSession();
+    const rawField = '__private_model_field__';
+    const rawValue = 'secret-model-value';
+    loopDispatching([
+      circuitReadingCall(rawField, rawValue, 'toolu_offschema_record'),
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(
+      session,
+      `${rawField} is ${rawValue}.`,
+      [],
+      opts
+    );
+
+    expect(session.stateSnapshot.circuits[4][rawField]).toBeUndefined();
+    expect(result.extracted_readings).toEqual([]);
+    expect(result.confirmations).toHaveLength(1);
+    expect(result.confirmations[0].text).toMatch(/field I recognise|field I know|known field/i);
+    const wire = JSON.stringify(result);
+    expect(wire).not.toContain(rawField);
+    expect(wire).not.toContain(rawValue);
+    expect(mandatoryRows(opts.logger)[0][1]).toMatchObject({
+      family: 'model_contract',
+      route: 'offschema_record',
+      covered_count: 1,
+    });
+    assertNoGenericApologies(result, opts.logger);
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
