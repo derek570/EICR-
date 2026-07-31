@@ -49,6 +49,16 @@ const CIRCUIT_COLUMN_BY_WIRE: Readonly<Record<string, string>> = {
   polarity: 'polarity_confirmed',
 };
 
+const SECTION_COLUMN_BY_WIRE: Readonly<Record<string, string>> = {
+  ze: 'earth_loop_impedance_ze',
+  pfc: 'prospective_fault_current',
+  main_earth_conductor_csa: 'earthing_conductor_csa',
+  main_bonding_conductor_csa: 'main_bonding_csa',
+  general_condition: 'general_condition_of_installation',
+  extent_of_installation: 'extent',
+  design_comments: 'comments',
+};
+
 function circuitValue(field: string): string {
   if (field === 'circuit_description' || field === 'designation') return 'Kitchen sockets';
   if (field === 'wiring_type') return 'A';
@@ -86,6 +96,26 @@ function sectionValue(field: string): string {
   return 'contract-value';
 }
 
+function expectedSectionValue(field: string): unknown {
+  if (
+    [
+      'installation_records_available',
+      'evidence_of_additions_alterations',
+      'supply_polarity_confirmed',
+      'means_earthing_distributor',
+      'means_earthing_electrode',
+      'bonding_other_na',
+    ].includes(field)
+  ) {
+    return true;
+  }
+  if (field === 'date_of_inspection' || field === 'date_of_previous_inspection') {
+    return '2026-07-31';
+  }
+  if (field === 'next_inspection_years') return 5;
+  return sectionValue(field);
+}
+
 function makeJob(overrides: Partial<JobDetail> = {}): JobDetail {
   return {
     id: 'plan2d-web-contract',
@@ -119,14 +149,24 @@ describe('PLAN-2D web client reading contract', () => {
     expect(__liveClientReadingRoutesForTests()).toEqual(fixture);
   });
 
-  it('routes every non-circuit, non-board field through its real section apply path', () => {
+  it('routes every non-circuit, non-board field into its exact rendered section column', () => {
     for (const [field, route] of Object.entries(fixture)) {
       if (route === 'circuit' || route === 'board_info') continue;
       const applied = applyExtractionToJob(
-        makeJob(),
+        makeJob({
+          certificate_type:
+            route === 'extent_and_type' || route === 'design_construction' ? 'EIC' : 'EICR',
+        }),
         resultFor({ circuit: 0, field, value: sectionValue(field) })
       );
-      expect(applied?.patch[route], `${field} did not land in ${route}`).toBeDefined();
+      const section = applied?.patch[route] as Record<string, unknown> | undefined;
+      const destination = SECTION_COLUMN_BY_WIRE[field] ?? field;
+      expect(section?.[destination], `${field} did not land in ${route}.${destination}`).toBe(
+        expectedSectionValue(field)
+      );
+      if (field === 'design_comments') {
+        expect(section?.[field], `${field} leaked into an invisible raw property`).toBeUndefined();
+      }
     }
   });
 
@@ -142,7 +182,10 @@ describe('PLAN-2D web client reading contract', () => {
       const destination = CIRCUIT_COLUMN_BY_WIRE[field] ?? field;
       expect(row?.[destination], `${field} did not land in ${destination}`).toBe(value);
       if (destination !== field) {
-        expect(row?.[field], `${field} leaked into an invisible raw alias property`).toBeUndefined();
+        expect(
+          row?.[field],
+          `${field} leaked into an invisible raw alias property`
+        ).toBeUndefined();
       }
     }
   });

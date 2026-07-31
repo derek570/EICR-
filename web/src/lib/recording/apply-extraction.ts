@@ -235,7 +235,16 @@ const LEGACY_TO_PWA_SECTION_FIELD: Record<string, string> = {
   // that section. Without translation the EIC Extent of Work
   // field renders empty post-recording.
   extent_of_installation: 'extent',
+  // Extent (EIC) — iOS canon and both web render/PDF paths store this
+  // legacy wire name in the visible `comments` column.
+  design_comments: 'comments',
 };
+
+// Most translated fields intentionally retain their legacy key for the
+// during-recording LiveFill mirror. `design_comments` has no such reader:
+// retaining it creates an invisible property beside the real `comments`
+// column, so this one translation is destination-only.
+const PWA_ONLY_SECTION_FIELDS = new Set(['design_comments']);
 
 /**
  * Fields whose primary `CIRCUIT_0_SECTION` routing is `board_info`
@@ -650,7 +659,9 @@ function normaliseInspectionDate(raw: unknown, allowNotApplicable: boolean): str
 function normaliseSectionReadingValue(field: string, raw: unknown): NormalisedSectionValue {
   if (BOOLEAN_SECTION_FIELDS.has(field)) {
     if (typeof raw === 'boolean') return { ok: true, value: raw };
-    const value = String(raw ?? '').trim().toLowerCase();
+    const value = String(raw ?? '')
+      .trim()
+      .toLowerCase();
     if (value === 'yes' || value === 'true') return { ok: true, value: true };
     if (value === 'no' || value === 'false') return { ok: true, value: false };
     return { ok: false, reason: 'invalid_boolean' };
@@ -658,9 +669,7 @@ function normaliseSectionReadingValue(field: string, raw: unknown): NormalisedSe
 
   if (INSPECTION_DATE_FIELDS.has(field)) {
     const value = normaliseInspectionDate(raw, field === 'date_of_previous_inspection');
-    return value == null
-      ? { ok: false, reason: 'invalid_date' }
-      : { ok: true, value };
+    return value == null ? { ok: false, reason: 'invalid_date' } : { ok: true, value };
   }
 
   if (field === 'next_inspection_years') {
@@ -1046,7 +1055,8 @@ function applyCircuit0Readings(
           });
           continue;
         }
-        const sectionPatch: Record<string, unknown> = { ...inBySection, [wireKey]: merged };
+        const sectionPatch: Record<string, unknown> = { ...inBySection };
+        if (!PWA_ONLY_SECTION_FIELDS.has(wireKey)) sectionPatch[wireKey] = merged;
         if (pwaColumn && pwaColumn !== wireKey) sectionPatch[pwaColumn] = merged;
         bySection[sec] = sectionPatch;
         pipelineLog('apply_narrative_field_merged', {
@@ -1120,8 +1130,10 @@ function applyCircuit0Readings(
     for (const sec of targets) {
       const sectionPatch: Record<string, unknown> = {
         ...(bySection[sec] ?? {}),
-        [reading.field]: sectionValue,
       };
+      if (!PWA_ONLY_SECTION_FIELDS.has(reading.field)) {
+        sectionPatch[reading.field] = sectionValue;
+      }
       if (pwaColumn && pwaColumn !== reading.field) {
         sectionPatch[pwaColumn] = sectionValue;
       }
