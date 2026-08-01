@@ -80,12 +80,21 @@ the durable server intent can recover across reconnects. Mirror-derived target
 writes remain designed-silent; the original dictated source write or a short
 server acknowledgement supplies the answer's audible terminal.
 
-Incomplete/conflicting explicit copy commands are durable too: the backend
-re-emits one stable clarification after the session acknowledgement on a
-reconnect, and finalizes it after the deciding source write even when legacy
-extraction used its timeout-batch callback. Question logs are hashed/redacted,
-and malformed postcode hints containing controls or non-ASCII separators are
-rejected before lookup.
+Explicit copy commands use an append-only durable operation ledger: even a
+complete no-question command is claimed before mutation, and incomplete or
+conflicting commands retain one stable clarification id across restart. The
+backend finalizes after the deciding source write even when legacy extraction
+uses its timeout-batch callback, then replays any committed-but-undelivered
+write/read-back ledger after the next session acknowledgement. Stable
+operation tokens make retries idempotent and keep old direct-question replies
+from resolving a newer command.
+
+Web and iOS preserve `purpose` on `ask_user_answered` and preserve the direct
+question's `tool_call_id` in transcript `in_response_to`. Their address-question
+tap paths send the answer but do not speak the normal local “Updated” or
+“keeping it” terminal; that speech is server-owned and therefore heard once.
+Question logs are hashed/redacted, and malformed postcode hints containing
+controls or non-ASCII separators are rejected before lookup.
 
 ### Regex fast-TTS path
 

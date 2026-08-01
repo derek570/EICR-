@@ -167,16 +167,29 @@ writes as `derived:true`, and therefore produce no address-copy read-backs.
 The inspector instead hears the surviving dictated-source confirmation or one
 short acknowledgement. Neither client owns a mirror latch, question, or copy.
 
-Direct commands use a separate durable `address_mirror_direct_intents` row so
-an incomplete source or a source/target conflict is not held only in process
-memory. The row preserves one stable clarification id across reconnects and
-process restarts; its deciding answer is finalized after the authoritative
-write on both synchronous and timeout-batch legacy paths. Convenience intents
-also retain their terminal result: a crash after the terminal compare-and-set
-but before staging can replay the same server-owned writes/read-back, while a
-changed source-version hash fails closed into a spoken conflict instead of
-copying a newer, uncaptured address. Address-mirror question telemetry stores
-only length/hash metadata, never street, postcode, or answer text.
+Direct commands use a separate append-only
+`address_mirror_direct_intents` operation ledger, keyed by the stable
+utterance token, so an incomplete source, a source/target conflict, and a
+success with no clarification are not held only in process memory. Each row
+preserves its source snapshot/write ledger, one stable clarification id,
+terminal outcome, and delivery marker. A delayed duplicate therefore cannot
+fall through to the model or resolve a newer opposite-direction question.
+Both direct and convenience terminal outcomes act as durable outboxes: the
+server commits the outcome before materialising its write/read-back ledger,
+marks it delivered only after the complete frame ledger sends, and drains any
+undelivered FIFO after the session acknowledgement on start, resume, or
+reconnect. A crash in between replays the same server-owned writes with stable
+dedupe identity; a changed source-version hash fails closed into a spoken
+conflict instead of copying a newer, uncaptured address.
+
+Clients round-trip the server-owned `purpose` and direct clarification
+`tool_call_id`. Voice replies to a direct question carry that id in
+`transcript.in_response_to`, so an old card or delayed transcript cannot
+resolve the current question merely because its prose still resembles it.
+For both address question types, the backend owns terminal speech; web/iOS tap
+handlers suppress their generic local “Updated” / “keeping it” response to
+avoid a second audible terminal. Address-mirror question telemetry stores only
+length/hash metadata, never street, postcode, or answer text.
 
 **Client-routing and structural rejection contract (PLAN-2D §3.6).** The live
 field schema is no longer trusted as proof that a client can apply a reading.
