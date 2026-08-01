@@ -1296,6 +1296,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const confirmationDedupeStoreRef = React.useRef<ConfirmationDedupeStore>(
     new ConfirmationDedupeStore()
   );
+  // One release path for queue-side discards AND the rarer pre-enqueue
+  // failures (TTS unavailable / empty terminal). Address operations reserve a
+  // durable delivery token plus, sometimes, an ordinary confirmation key; the
+  // pair must be released together or a backend retry is silently suppressed.
+  const discardConfirmationReservation = React.useCallback((dedupeKey: string) => {
+    const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
+    if (addressToken) {
+      const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
+      addressMirrorDeliveryStoreRef.current?.discard(addressToken);
+      if (reservation?.confirmationKey) {
+        confirmationDedupeStoreRef.current.forget(reservation.confirmationKey);
+      }
+      addressMirrorQueueReservationsRef.current.delete(dedupeKey);
+      return;
+    }
+    confirmationDedupeStoreRef.current.forget(dedupeKey);
+  }, []);
   // A4 (Wave 6) — voice feedback marker capture. iOS canon:
   // TranscriptProcessor.swift HEAD (state machine + 30s rolling window) +
   // DeepgramRecordingViewModel.performStopCleanup auto-close. The
@@ -2502,7 +2519,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           });
           // The source read-back is owed by the durable controller even when
           // the ordinary confirmation toggle is off.
-          speakConfirmation(sentence, { force: true, dedupeKey: deliveryDedupeKey });
+          const queued = speakConfirmation(sentence, {
+            force: true,
+            dedupeKey: deliveryDedupeKey,
+          });
+          if (!queued.enqueued) {
+            discardConfirmationReservation(deliveryDedupeKey);
+          }
           continue;
         }
         if (confirmationDedupeStoreRef.current.isLive(dedupeKey, fieldIsNil)) {
@@ -2550,7 +2573,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         setProcessingCount((n) => Math.max(0, n - 1));
       }
     },
-    [liveFill, schedulePushJobState]
+    [discardConfirmationReservation, liveFill, schedulePushJobState]
   );
 
   /** Open the Sonnet extraction WebSocket. Runs alongside Deepgram —
@@ -2592,19 +2615,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // discarded before it ever played is immediately re-speakable; a
     // TTL stamp left behind here would suppress a re-emitted apology for
     // up to 30 s despite it never being heard.
-    ttsQueueSetOnDiscarded((dedupeKey) => {
-      const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
-      if (addressToken) {
-        const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
-        addressMirrorDeliveryStoreRef.current?.discard(addressToken);
-        if (reservation?.confirmationKey) {
-          confirmationDedupeStoreRef.current.forget(reservation.confirmationKey);
-        }
-        addressMirrorQueueReservationsRef.current.delete(dedupeKey);
-        return;
-      }
-      confirmationDedupeStoreRef.current.forget(dedupeKey);
-    });
+    ttsQueueSetOnDiscarded(discardConfirmationReservation);
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
     ttsQueueSetOnPlaybackStarted((dedupeKey) => {
@@ -3126,7 +3137,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               token: deliveryToken,
               confirmationKey: null,
             });
-            speakConfirmation(response.spoken_response, { force: true, dedupeKey });
+            const queued = speakConfirmation(response.spoken_response, {
+              force: true,
+              dedupeKey,
+            });
+            if (!queued.enqueued) {
+              discardConfirmationReservation(dedupeKey);
+            }
           } else {
             speakConfirmation(response.spoken_response, { force: true });
           }
@@ -3237,7 +3254,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // can fire `client_diagnostic` envelopes without plumbing the session
     // reference through every layer. Cleared on teardownSonnet.
     setDiagnosticSink(session);
-  }, [applyExtraction, speakDirectPrompt]);
+  }, [applyExtraction, discardConfirmationReservation, speakDirectPrompt]);
 
   /** Open the mic stream and forward audio to Deepgram. Shared between
    *  `start()` and `resume()`. Also owns the SleepManager + ring buffer

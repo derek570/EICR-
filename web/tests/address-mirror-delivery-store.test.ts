@@ -56,4 +56,17 @@ describe('AddressMirrorDeliveryStore', () => {
     expect(tokenFromAddressMirrorDeliveryDedupeKey(key)).toBe('direct:op-7');
     expect(tokenFromAddressMirrorDeliveryDedupeKey('measured_zs_ohm_1')).toBeNull();
   });
+
+  it('keeps operation identity independent from equal-text confirmation keys', () => {
+    // Two address operations can legitimately speak identical field/value
+    // text, so the ordinary confirmation key is not delivery authority. The
+    // server token keeps those operations distinct, while replay of one token
+    // remains byte-identical.
+    expect(addressMirrorDeliveryDedupeKey('direct:op-8')).not.toBe(
+      addressMirrorDeliveryDedupeKey('direct:op-9')
+    );
+    expect(addressMirrorDeliveryDedupeKey('direct:op-8')).toBe(
+      addressMirrorDeliveryDedupeKey('direct:op-8')
+    );
+  });
 });

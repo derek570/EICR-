@@ -527,7 +527,11 @@ describe('address mirror controller', () => {
       successfulFields: new Set(['address', 'postcode']),
       perTurnWrites: writes,
     });
-    expect(completed).toMatchObject({ handled: true, outcome: 'copied' });
+    expect(completed).toMatchObject({
+      handled: true,
+      outcome: 'copied',
+      clearAskId: first.questionId,
+    });
     expect(session.stateSnapshot.circuits[0]).toMatchObject({
       client_address: '2 Test Road',
       client_postcode: 'TE1 1ST',

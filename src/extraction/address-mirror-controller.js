@@ -990,6 +990,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       return { handled: true, outcome: 'duplicate', changed: [] };
     }
     const terminalOutcome = intent.terminal_outcome?.outcome;
+    const clearAskId = intent.clarification_kind === 'direct' ? null : (intent.question_id ?? null);
     const stageOwnedDelivery = () =>
       stageDelivery(perTurnWrites, 'direct', intent.operation_token, intent.delivery_claim_token);
     if (terminalOutcome === 'no') {
@@ -1005,6 +1006,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         outcome: 'no',
         changed: [],
         resolutionToken: intent.operation_token,
+        clearAskId,
         delivery: { kind: 'direct', token: intent.operation_token },
       };
     }
@@ -1020,6 +1022,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         changed: [],
         replayedSource: 0,
         resolutionToken: intent.operation_token,
+        clearAskId,
         delivery: { kind: 'direct', token: intent.operation_token },
       };
     }
@@ -1044,6 +1047,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           changed: [],
           replayedSource: 0,
           resolutionToken: intent.operation_token,
+          clearAskId,
           delivery: { kind: 'direct', token: intent.operation_token },
         };
       }
@@ -1094,6 +1098,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         changed: [],
         replayedSource,
         resolutionToken: intent.operation_token,
+        clearAskId,
         delivery: { kind: 'direct', token: intent.operation_token },
       };
     }
@@ -1127,6 +1132,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       changed,
       replayedSource,
       resolutionToken: intent.operation_token,
+      clearAskId,
       delivery: { kind: 'direct', token: intent.operation_token },
     };
   }

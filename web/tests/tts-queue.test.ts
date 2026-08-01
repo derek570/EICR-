@@ -280,6 +280,30 @@ describe('pump advances on terminal onEnd OR onError', () => {
     // B must still pump.
     expect(recs.map((r) => r.text)).toEqual(['A', 'B']);
   });
+
+  it('onError before playback releases the reservation before advancing', () => {
+    const onDiscarded = vi.fn();
+    setOnDiscarded(onDiscarded);
+    enq('A', { dedupeKey: 'address_delivery_1' });
+    enq('B');
+
+    recs[0].controls.onError('synthesis failed');
+
+    expect(onDiscarded).toHaveBeenCalledOnce();
+    expect(onDiscarded).toHaveBeenCalledWith('address_delivery_1');
+    expect(recs.map((rec) => rec.text)).toEqual(['A', 'B']);
+  });
+
+  it('onError after playback start keeps the heard reservation', () => {
+    const onDiscarded = vi.fn();
+    setOnDiscarded(onDiscarded);
+    enq('A', { dedupeKey: 'address_delivery_1' });
+    fetchDone(recs[0]);
+
+    recs[0].controls.onError('playback interrupted');
+
+    expect(onDiscarded).not.toHaveBeenCalled();
+  });
 });
 
 describe('preemptFlush returns the never-played discarded count', () => {

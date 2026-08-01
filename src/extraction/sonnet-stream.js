@@ -417,7 +417,7 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
   if (!result.spoken_response && directResult.spoken_response) {
     result.spoken_response = directResult.spoken_response;
   }
-  if (typeof directFinal.question === 'string') {
+  if (typeof directFinal.question === 'string' || directFinal.clearAskId) {
     Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {
       value: directFinal,
       enumerable: false,
@@ -1139,6 +1139,7 @@ export const EXTRACTION_EMISSION_CURSOR = Symbol('stage6.extractionEmissionCurso
  * — no egress site does bespoke marker handling.
  */
 export function projectExtractionResultForWire(result) {
+  normaliseAddressMirrorAudibleTerminal(result);
   const {
     questions_for_user: _questionsForUser,
     extracted_readings,
@@ -1157,6 +1158,66 @@ export function projectExtractionResultForWire(result) {
     projected.address_mirror_delivery_token = `${mirrorDelivery.kind}:${mirrorDelivery.token}`;
   }
   return projected;
+}
+
+function punctuateAddressMirrorFragment(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return '';
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+}
+
+/**
+ * One durable address operation is acknowledged by one playback-start ACK.
+ * Make its audible terminal equally atomic: otherwise two recovered source
+ * writes can produce two confirmation items while only the last owns the
+ * address delivery token. A crash before the first item plays, followed by
+ * playback of the last, would then close the whole outbox with one dictated
+ * value still unheard. Combining the prose keeps the readings themselves
+ * separate for client application while giving the delivery lease exactly one
+ * audio item to fence.
+ *
+ * Idempotent by shape: a confirmation-only terminal becomes one confirmation;
+ * a VCR terminal absorbs every confirmation and empties the array.
+ */
+function normaliseAddressMirrorAudibleTerminal(result) {
+  const delivery = result?.[ADDRESS_MIRROR_DELIVERY];
+  if (!result || !delivery?.kind || !delivery?.token) return result;
+  const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
+  const audible = confirmations.filter(
+    (confirmation) =>
+      confirmation && typeof confirmation.text === 'string' && confirmation.text.trim().length > 0
+  );
+  if (audible.length === 0) return result;
+
+  const combinedText = audible
+    .map((confirmation) => punctuateAddressMirrorFragment(confirmation.text))
+    .filter(Boolean)
+    .join(' ');
+  const combinedExpandedText = audible
+    .map((confirmation) =>
+      punctuateAddressMirrorFragment(confirmation.expanded_text ?? confirmation.text)
+    )
+    .filter(Boolean)
+    .join(' ');
+  const hasVoiceCommandTerminal = Boolean(result.spoken_response || result.action);
+  if (hasVoiceCommandTerminal) {
+    const spokenTerminal = punctuateAddressMirrorFragment(result.spoken_response);
+    result.confirmations = [];
+    result.spoken_response = [combinedText, spokenTerminal].filter(Boolean).join(' ');
+    return result;
+  }
+  if (audible.length === 1 && confirmations.length === 1) return result;
+  result.confirmations = [
+    {
+      text: combinedText,
+      expanded_text: combinedExpandedText,
+      field: null,
+      circuit: null,
+      dedupe_token: `addressmirror_${delivery.kind}_${delivery.token}`,
+      expects_ios_ack: false,
+    },
+  ];
+  return result;
 }
 
 /**
@@ -1196,6 +1257,7 @@ export function _test_buildResultFrameLedger(snapshot, result, session = {}) {
 }
 
 function buildResultFrameLedger(snapshot, result, session = {}) {
+  normaliseAddressMirrorAudibleTerminal(result);
   const frames = [];
   const { spoken_response, action, observationUpdates } = result;
   frames.push({
@@ -1250,6 +1312,16 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
       frames.push({ kind: 'field_corrected', json: JSON.stringify(evt) });
     }
   }
+  const directFollowup = result[ADDRESS_MIRROR_DIRECT_FOLLOWUP];
+  if (typeof directFollowup?.clearAskId === 'string' && directFollowup.clearAskId) {
+    frames.push({
+      kind: 'cancel_pending_tts',
+      json: JSON.stringify({
+        type: 'cancel_pending_tts',
+        prefix: directFollowup.clearAskId,
+      }),
+    });
+  }
   // The audible frame is LAST (exactly-once contract, P4d row 7): if any
   // earlier frame fails, the VCR has not gone out and the resumed replay
   // speaks it exactly once.
@@ -1273,7 +1345,6 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
       }),
     });
   }
-  const directFollowup = result[ADDRESS_MIRROR_DIRECT_FOLLOWUP];
   if (typeof directFollowup?.question === 'string') {
     frames.push({
       kind: 'address_mirror_direct_question',
@@ -4406,7 +4477,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         entry.pendingExtractions.push(result);
         return;
       }
-      if (recovered.outcome === 'conflict' && recovered.clearAskId) {
+      if (recovered.clearAskId) {
         sendAddressMirrorAskClear(ws, recovered.clearAskId, sessionId);
       }
       const delivered = await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
@@ -4744,11 +4815,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           context?.purpose === ADDRESS_MIRROR_PURPOSE ||
           context?.type === ADDRESS_MIRROR_QUESTION_TYPE;
         const hasDirectClarificationAnchor = context?.type === ADDRESS_MIRROR_DIRECT_QUESTION_TYPE;
+        const recoveredAskId =
+          typeof context?.tool_call_id === 'string' && context.tool_call_id.length > 0
+            ? context.tool_call_id
+            : null;
         let mirrorOutcome = hasRecoveredAnswerAnchor
           ? await entry.addressMirrorController.resolveRecoveredAnswer({
               context,
               text: canonicalTranscriptText,
-              askId: null,
+              askId: recoveredAskId,
               perTurnWrites: mirrorWrites,
             })
           : { handled: false };
@@ -4759,10 +4834,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             perTurnWrites: mirrorWrites,
           });
         }
-        if (!mirrorOutcome.handled && mirrorOutcome.reason === 'stale_direct_question') {
+        if (
+          !mirrorOutcome.handled &&
+          (mirrorOutcome.reason === 'stale_direct_question' ||
+            mirrorOutcome.reason === 'stale_address_mirror_ask_id')
+        ) {
           entry.addressMirrorReservations.add(reservationKey);
           stampSeenTranscript();
-          consumeDestructiveToken('address_mirror_stale_direct_question');
+          consumeDestructiveToken(
+            mirrorOutcome.reason === 'stale_direct_question'
+              ? 'address_mirror_stale_direct_question'
+              : 'address_mirror_stale_recovered_question'
+          );
           return;
         }
         const directCommand = parseDirectAddressMirrorCommand(canonicalTranscriptText);
@@ -4819,10 +4902,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           );
           if (!sent.ok) entry.pendingExtractions.push(result);
           else await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
-          if (
-            (mirrorOutcome.outcome === 'conflict' || mirrorOutcome.outcome === 'duplicate') &&
-            mirrorOutcome.clearAskId
-          ) {
+          if (mirrorOutcome.clearAskId) {
             sendAddressMirrorAskClear(ws, mirrorOutcome.clearAskId, sessionId);
           }
           stampSeenTranscript();

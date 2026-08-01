@@ -87,7 +87,8 @@ const {
   _test_validateAndCorrectFields,
   _test_buildResultFrameLedger,
 } = await import('../extraction/sonnet-stream.js');
-const { ADDRESS_MIRROR_DELIVERY } = await import('../extraction/address-mirror-controller.js');
+const { ADDRESS_MIRROR_DELIVERY, ADDRESS_MIRROR_DIRECT_FOLLOWUP } =
+  await import('../extraction/address-mirror-controller.js');
 
 const WIRE_CONTRACT_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1026,6 +1027,61 @@ describe('A2 — projectExtractionResultForWire', () => {
 
     expect(projected.address_mirror_delivery_token).toBe('convenience:resolution-7');
     expect(JSON.stringify(projected)).not.toContain('lease-secret');
+  });
+
+  test('one address delivery token owns one aggregate confirmation', () => {
+    const result = {
+      extracted_readings: [],
+      confirmations: [
+        { text: 'Address is 2 Test Road', expanded_text: 'Address is 2 Test Road' },
+        { text: 'Postcode is TE1 1ST', expanded_text: 'Postcode is T E 1 1 S T' },
+      ],
+    };
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'atomic-1' },
+      enumerable: false,
+    });
+
+    const projected = projectExtractionResultForWire(result);
+
+    expect(projected.confirmations).toHaveLength(1);
+    expect(projected.confirmations[0]).toMatchObject({
+      text: 'Address is 2 Test Road. Postcode is TE1 1ST.',
+      expanded_text: 'Address is 2 Test Road. Postcode is T E 1 1 S T.',
+      field: null,
+      circuit: null,
+    });
+    expect(projected.address_mirror_delivery_token).toBe('direct:atomic-1');
+  });
+
+  test('address confirmations fold into the single token-owning VCR and clear its deciding ask', () => {
+    const result = {
+      extracted_readings: [],
+      confirmations: [{ text: 'Address is 2 Test Road' }, { text: 'Postcode is TE1 1ST' }],
+      spoken_response: "Okay, I'll use the site address for the client",
+    };
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'atomic-vcr' },
+      enumerable: false,
+    });
+    Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {
+      value: { clearAskId: 'address-mirror-direct-atomic-vcr' },
+      enumerable: false,
+    });
+
+    const frames = _test_buildResultFrameLedger({}, result).map((frame) => JSON.parse(frame.json));
+
+    expect(frames[0].result.confirmations).toEqual([]);
+    expect(frames).toContainEqual({
+      type: 'cancel_pending_tts',
+      prefix: 'address-mirror-direct-atomic-vcr',
+    });
+    expect(frames.at(-1)).toMatchObject({
+      type: 'voice_command_response',
+      spoken_response:
+        "Address is 2 Test Road. Postcode is TE1 1ST. Okay, I'll use the site address for the client.",
+      address_mirror_delivery_token: 'direct:atomic-vcr',
+    });
   });
 
   test('playback ACK capability alone decides whether socket flush may complete delivery', () => {

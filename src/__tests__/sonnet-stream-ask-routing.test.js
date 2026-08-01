@@ -429,6 +429,82 @@ describe('Group B — inbound ask_user_answered routing', () => {
     expect(entry.consumedAskUtterances.has('utt-address-grace')).toBe(true);
   });
 
+  test('annotated mirror transcript forwards its exact ask id to durable recovery', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-annotated-id',
+      jobId: 'job-address-annotated-id',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-annotated-id');
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(async () => ({
+      handled: true,
+      outcome: 'duplicate',
+      clearAskId: 'addr-exact-generation',
+    }));
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-annotated-id',
+      text: 'yes',
+      in_response_to: {
+        purpose: 'address_mirror',
+        type: 'address_mirror',
+        tool_call_id: 'addr-exact-generation',
+      },
+    });
+
+    expect(entry.addressMirrorController.resolveRecoveredAnswer).toHaveBeenCalledWith({
+      context: {
+        purpose: 'address_mirror',
+        type: 'address_mirror',
+        tool_call_id: 'addr-exact-generation',
+      },
+      text: 'yes',
+      askId: 'addr-exact-generation',
+      perTurnWrites: expect.any(Object),
+    });
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'cancel_pending_tts',
+        prefix: 'addr-exact-generation',
+      })
+    );
+  });
+
+  test('explicit stale mirror transcript id is consumed before model extraction', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-stale-id',
+      jobId: 'job-address-stale-id',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-stale-id');
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(async () => ({
+      handled: false,
+      reason: 'stale_address_mirror_ask_id',
+    }));
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-stale-id',
+      text: 'yes',
+      in_response_to: {
+        purpose: 'address_mirror',
+        type: 'address_mirror',
+        tool_call_id: 'addr-stale-generation',
+      },
+    });
+
+    expect(entry.addressMirrorController.resolveRecoveredAnswer).toHaveBeenCalledWith(
+      expect.objectContaining({ askId: 'addr-stale-generation' })
+    );
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
+
   test('invalid payload (missing tool_call_id) emits error envelope; registry untouched', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {
