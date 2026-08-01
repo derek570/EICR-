@@ -1136,9 +1136,7 @@ export class EICRExtractionSession {
     this._openaiApiKey = process.env.OPENAI_API_KEY;
     this.extractionApi = (process.env.OPENAI_EXTRACT_API || 'responses').trim();
     this._providerClients = new Map(Object.entries(options.providerClients || {}));
-    this.defaultExtractionModel = (
-      process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6'
-    ).trim();
+    this.defaultExtractionModel = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
     this.extractionProvider = providerForModel(this.defaultExtractionModel);
     this.client =
       this._providerClients.get(this.extractionProvider) ||
@@ -1226,7 +1224,7 @@ export class EICRExtractionSession {
     // Failed utterance recovery queue — utterances that failed JSON parse are queued
     // here and prepended to the next successful API call. Prevents data loss when
     // Sonnet breaks out of JSON mode. Entries older than 60s are discarded as stale.
-    this.failedUtteranceQueue = []; // Array of { text: string, timestamp: number }
+    this.failedUtteranceQueue = []; // Array of { text, timestamp, postcodeHintState }
 
     // (cacheKeepaliveHandle + pauseKeepaliveDeadlineHandle initialised above)
 
@@ -1294,9 +1292,12 @@ export class EICRExtractionSession {
   _createExtractionClient(provider) {
     if (provider === 'anthropic') {
       if (!this._anthropicApiKey) {
-        throw new ProviderResolutionError('ANTHROPIC_API_KEY missing for Anthropic extraction model', {
-          provider,
-        });
+        throw new ProviderResolutionError(
+          'ANTHROPIC_API_KEY missing for Anthropic extraction model',
+          {
+            provider,
+          }
+        );
       }
       return new Anthropic({ apiKey: this._anthropicApiKey });
     }
@@ -2632,15 +2633,14 @@ export class EICRExtractionSession {
   }
 
   async _extractSingle(transcriptText, regexResults = [], options = {}) {
+    // Build the windowed message history first (may reset circuitScheduleIncluded flag)
+    const windowMessages = this.buildMessageWindow();
+
     const postcodeLookupResult = await lookupResolvedPostcodeHint(options.postcodeHintState, {
       logger,
       sessionId: this.sessionId,
       lane: 'legacy',
     });
-
-    // Build the windowed message history first (may reset circuitScheduleIncluded flag)
-    const windowMessages = this.buildMessageWindow();
-
     let userMessage = this.buildUserMessage(transcriptText, regexResults, postcodeLookupResult);
     if (options.confirmationsEnabled) {
       userMessage += '\n\n[CONFIRMATIONS ENABLED]';
@@ -2651,7 +2651,17 @@ export class EICRExtractionSession {
     const recoverable = this.failedUtteranceQueue.filter((q) => now - q.timestamp < 60000);
     this.failedUtteranceQueue = [];
     if (recoverable.length > 0) {
-      const recoveredText = recoverable.map((q) => q.text).join(' ... ');
+      const recoveredMessages = await Promise.all(
+        recoverable.map(async (queued) => {
+          const queuedLookup = await lookupResolvedPostcodeHint(queued.postcodeHintState, {
+            logger,
+            sessionId: this.sessionId,
+            lane: 'legacy_recovery',
+          });
+          return this.buildUserMessage(queued.text, [], queuedLookup);
+        })
+      );
+      const recoveredText = recoveredMessages.join(' ... ');
       userMessage = `[Previously unprocessed]: ${recoveredText}\n\n[New]: ${userMessage}`;
       logger.info(
         `Session ${this.sessionId} Recovered ${recoverable.length} queued utterance(s) from failed extractions`
@@ -2723,7 +2733,11 @@ export class EICRExtractionSession {
         logger.error(
           `Session ${this.sessionId} Tool-use fallback parse failed: ${parseError.message}`
         );
-        this.failedUtteranceQueue.push({ text: transcriptText, timestamp: Date.now() });
+        this.failedUtteranceQueue.push({
+          text: transcriptText,
+          timestamp: Date.now(),
+          postcodeHintState: options.postcodeHintState,
+        });
         logger.info(
           `Session ${this.sessionId} Queued failed utterance for recovery (queue size: ${this.failedUtteranceQueue.length})`
         );

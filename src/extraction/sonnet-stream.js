@@ -1217,6 +1217,7 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
   // earlier frame fails, the VCR has not gone out and the resumed replay
   // speaks it exactly once.
   if (spoken_response || action) {
+    const mirrorDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
     frames.push({
       kind: 'voice_command_response',
       json: JSON.stringify({
@@ -1226,6 +1227,11 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
         action: action || null,
         ...(typeof result.utterance_id === 'string' && result.utterance_id
           ? { utterance_id: result.utterance_id }
+          : {}),
+        ...(mirrorDelivery?.kind && mirrorDelivery?.token
+          ? {
+              address_mirror_delivery_token: `${mirrorDelivery.kind}:${mirrorDelivery.token}`,
+            }
           : {}),
       }),
     });
@@ -1261,7 +1267,7 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
  * retries (board_ops / observationUpdates / field_corrections are immutable
  * once bundled).
  */
-function sendResultFrameLedger(ws, snapshot, result, session = {}) {
+async function sendResultFrameLedger(ws, snapshot, result, session = {}) {
   const frames = buildResultFrameLedger(snapshot, result, session);
   const stored = result[EXTRACTION_EMISSION_CURSOR];
   let start = Number.isInteger(stored) && stored >= 0 ? stored : 0;
@@ -1280,7 +1286,18 @@ function sendResultFrameLedger(ws, snapshot, result, session = {}) {
       return { ok: false, cursor: i, frameKind: frames[i].kind, error: null };
     }
     try {
-      ws.send(frames[i].json);
+      if (ws.send.length >= 2) {
+        await new Promise((resolve, reject) => {
+          ws.send(frames[i].json, (error) => {
+            if (error) reject(error);
+            else resolve();
+          });
+        });
+      } else {
+        // Focused unit-test sockets use synchronous one-argument stubs. The
+        // production `ws` implementation exposes the callback form above.
+        ws.send(frames[i].json);
+      }
     } catch (err) {
       persistCursor(i);
       return { ok: false, cursor: i, frameKind: frames[i].kind, error: err };
@@ -2255,21 +2272,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             }
             if (!hasLiveRegistryAsk && entry.addressMirrorController) {
               const mirrorWrites = createPerTurnWrites();
-              const transcriptAlreadyOwnsReply =
-                directResponseUtteranceId &&
-                (entry.seenTranscriptUtterances?.has(directResponseUtteranceId) ||
-                  entry.addressMirrorIngressArbiter?.wasReleased(directResponseUtteranceId));
-              const recovered = transcriptAlreadyOwnsReply
-                ? { handled: false }
-                : await entry.addressMirrorController.resolveRecoveredAnswer({
-                    context:
-                      msg.purpose === ADDRESS_MIRROR_PURPOSE
-                        ? { purpose: ADDRESS_MIRROR_PURPOSE }
-                        : null,
-                    text: msg.user_text,
-                    askId: msg.tool_call_id,
-                    perTurnWrites: mirrorWrites,
-                  });
+              // A grace-expired transcript may already have entered model
+              // extraction before its paired exact answer frame arrives. The
+              // seen/released marker prevents a SECOND model exposure; it must
+              // not block the durable controller, or a process-restarted
+              // one-shot intent is stranded forever behind the permanent job
+              // latch.
+              const recovered = await entry.addressMirrorController.resolveRecoveredAnswer({
+                context:
+                  msg.purpose === ADDRESS_MIRROR_PURPOSE
+                    ? { purpose: ADDRESS_MIRROR_PURPOSE }
+                    : null,
+                text: msg.user_text,
+                askId: msg.tool_call_id,
+                perTurnWrites: mirrorWrites,
+              });
               if (recovered.handled && recovered.outcome === 'duplicate') {
                 if (directResponseUtteranceId) {
                   entry.consumedAskUtterances.add(directResponseUtteranceId);
@@ -2297,7 +2314,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   }),
                   mirrorWrites
                 );
-                const sent = sendResultFrameLedger(
+                const sent = await sendResultFrameLedger(
                   ws,
                   entry.session.stateSnapshot,
                   result,
@@ -2925,6 +2942,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // so Sonnet can still terminate the turn gracefully.
           entry.pendingAsks.rejectAll('session_terminated');
           entry.addressMirrorIngressArbiter?.clear();
+          if (entry.addressMirrorOutboxRetryHandle) {
+            clearTimeout(entry.addressMirrorOutboxRetryHandle);
+            entry.addressMirrorOutboxRetryHandle = null;
+          }
           // Plan 05-04 — cancel the rolling-window release timer + clear
           // the askTurns array so the activeSessions entry is fully
           // garbage-collectible after the .delete() below. Optional-
@@ -3354,7 +3375,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // ledger as sync/reconnect. That is what makes a Rule-6 code edit's
           // observation_update + supplemental spoken extraction one durable
           // unit: failure between them replays only the unsent suffix.
-          const out = sendResultFrameLedger(currentWs, session.stateSnapshot, result, session);
+          const out = await sendResultFrameLedger(
+            currentWs,
+            session.stateSnapshot,
+            result,
+            session
+          );
           if (!out.ok) {
             if (entryRef) entryRef.pendingExtractions.push(result);
             logger.warn('Batch extraction frame ledger paused', {
@@ -4162,7 +4188,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // preserved inside the ledger; observation-frame failures are now
         // VISIBLE to the cursor instead of best-effort-swallowed, which is
         // what the old {failFast:true} flag approximated).
-        const out = sendResultFrameLedger(ws, entry.session?.stateSnapshot, result, entry.session);
+        const out = await sendResultFrameLedger(
+          ws,
+          entry.session?.stateSnapshot,
+          result,
+          entry.session
+        );
         if (!out.ok) {
           logger.error('Failed to flush buffered extraction', {
             sessionId,
@@ -4245,7 +4276,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     for (let i = 0; i < 16; i += 1) {
       const writes = createPerTurnWrites();
       const recovered = await entry.addressMirrorController.recoverUndelivered(writes);
-      if (!recovered?.handled || recovered.outcome === 'duplicate') return;
+      if (!recovered?.handled || recovered.outcome === 'duplicate') {
+        if (recovered?.reason === 'delivery_claimed' && !entry.addressMirrorOutboxRetryHandle) {
+          entry.addressMirrorOutboxRetryHandle = setTimeout(() => {
+            entry.addressMirrorOutboxRetryHandle = null;
+            const currentWs = entry.ws;
+            if (currentWs?.readyState === currentWs?.OPEN) {
+              replayAddressMirrorOutbox(currentWs, entry, sessionId).catch((error) => {
+                logger.warn('Address mirror leased outbox retry failed', {
+                  sessionId,
+                  error: error?.message ?? String(error),
+                });
+              });
+            }
+          }, 10_100);
+          entry.addressMirrorOutboxRetryHandle.unref?.();
+        }
+        return;
+      }
       const result = attachAddressMirrorDelivery(
         bundleToolCallsIntoResult(writes, null, {
           confirmationsEnabled: true,
@@ -4254,7 +4302,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         }),
         writes
       );
-      const sent = sendResultFrameLedger(ws, entry.session?.stateSnapshot, result, entry.session);
+      const sent = await sendResultFrameLedger(
+        ws,
+        entry.session?.stateSnapshot,
+        result,
+        entry.session
+      );
       if (!sent.ok) {
         entry.pendingExtractions.push(result);
         return;
@@ -4658,7 +4711,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             }),
             mirrorWrites
           );
-          const sent = sendResultFrameLedger(
+          const sent = await sendResultFrameLedger(
             ws,
             entry.session.stateSnapshot,
             result,
@@ -5948,7 +6001,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // failure at any earlier frame leaves the VCR unsent and the
         // resumed replay delivers it exactly once (P4d rows 6–7).
         const needsVcr = Boolean(spoken_response || action);
-        const ledgerOut = sendResultFrameLedger(
+        const ledgerOut = await sendResultFrameLedger(
           ws,
           entry.session.stateSnapshot,
           result,
@@ -6229,6 +6282,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // event-loop tick sees it — before any `await` below yields.
     entry.isStopping = true;
     entry.addressMirrorIngressArbiter?.clear();
+    if (entry.addressMirrorOutboxRetryHandle) {
+      clearTimeout(entry.addressMirrorOutboxRetryHandle);
+      entry.addressMirrorOutboxRetryHandle = null;
+    }
 
     // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release blocking asks BEFORE
     // the existing stop-path cleanup. Placed here (not near the

@@ -28,6 +28,8 @@ exports.up = (pgm) => {
     resolution_token: { type: 'text', notNull: true },
     terminal_outcome: { type: 'jsonb' },
     delivered_at: { type: 'timestamp with time zone' },
+    delivery_claim_token: { type: 'text' },
+    delivery_claimed_at: { type: 'timestamp with time zone' },
     claimed_at: { type: 'timestamp with time zone', notNull: true, default: pgm.func('NOW()') },
     resolved_at: { type: 'timestamp with time zone' },
   });
@@ -85,6 +87,8 @@ exports.up = (pgm) => {
     source_writes: { type: 'jsonb', notNull: true, default: "'[]'::jsonb" },
     terminal_outcome: { type: 'jsonb' },
     delivered_at: { type: 'timestamp with time zone' },
+    delivery_claim_token: { type: 'text' },
+    delivery_claimed_at: { type: 'timestamp with time zone' },
     created_at: { type: 'timestamp with time zone', notNull: true, default: pgm.func('NOW()') },
     resolved_at: { type: 'timestamp with time zone' },
   });
@@ -96,7 +100,7 @@ exports.up = (pgm) => {
   pgm.addConstraint(
     'address_mirror_direct_intents',
     'address_mirror_direct_intents_status_check',
-    "CHECK (status IN ('pending', 'resolved_yes', 'resolved_no', 'cancelled'))"
+    "CHECK (status IN ('pending', 'resolved_yes', 'resolved_no', 'conflict', 'cancelled'))"
   );
   pgm.addConstraint(
     'address_mirror_direct_intents',

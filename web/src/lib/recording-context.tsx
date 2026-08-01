@@ -52,6 +52,7 @@ import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { shouldForward } from './recording/transcript-gate';
 import {
+  buildQuestionTapDispatch,
   InFlightQuestionTracker,
   isServerOwnedAddressMirrorQuestion,
 } from './recording/in-flight-question';
@@ -1186,6 +1187,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // sonnet-stream.js:3193-3243 never saw the question context and bare
   // replies like "yes"/"no"/"code 2" lost attribution.
   const inFlightQuestionRef = React.useRef(new InFlightQuestionTracker());
+  // Stable server-owned address outcome tokens prevent a crash/reconnect
+  // outbox replay from speaking the same decision acknowledgement twice.
+  // Session memory is sufficient for transport reconnects; keep it bounded
+  // for unusually long inspections.
+  const heardAddressMirrorDeliveryTokensRef = React.useRef(new Set<string>());
   // Stamps the most-recent text passed to `speak()`. The TTS lifecycle
   // observer (event: 'start' | 'end') doesn't carry the spoken text,
   // but the in-flight tracker matches FIFO entries by exact question
@@ -1737,13 +1743,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // becoming a regex write or entering the cumulative matcher window.
         const postcodeHint = detectPostcodeHint(text);
         // WS3 item 7 (2026-07-02) — the in-flight-ask signal is computed
-        // FIRST via a NON-consuming peek. It feeds BOTH (a) the regex
+        // FIRST via the TTS-anchored NON-consuming FIFO peek. The payload is
+        // atomic: question, purpose and tool id all belong to the prompt the
+        // inspector actually heard, even if a newer ask arrived meanwhile.
+        // It feeds BOTH (a) the regex
         // skip below (which guards the sess_mp79tvcj_6prk 2026-05-15
         // regression and MUST keep receiving the signal) and (b) the
         // transcript gate's hasPendingAsk input. Consumption of the
         // tool_call_id happens only on the gate-PASS path immediately
         // before the send — a gate REJECT must not burn ask state.
-        const peekedToolCallId = sonnetRef.current?.peekInFlightToolCallId() ?? null;
+        const peekedPayload = inFlightQuestionRef.current.peekPayloadForTranscript();
+        const peekedToolCallId =
+          peekedPayload?.type !== 'address_mirror_direct' && peekedPayload?.tool_call_id
+            ? peekedPayload.tool_call_id
+            : null;
         const isAnswerToAsk = Boolean(peekedToolCallId);
         let regexResults: RegexResultsWire | undefined = undefined;
         // Flag-independent match-presence signal for the gate: a
@@ -1860,7 +1873,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // could force a PASS, chime, then send with a null payload.
         // iOS-canon consequence: a non-expired pending ask or a valid
         // in_response_to payload is a gate-PASS by definition.
-        const peekedPayload = inFlightQuestionRef.current.peekPayloadForTranscript();
         const gatePassed = shouldForward({
           text,
           hasRegexHit: gateRegexHit,
@@ -1888,7 +1900,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         // PASS: consume the Stage 6 tool_call_id (peeked earlier) — the
         // consume/peek pair is race-free inside this synchronous block.
-        const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
+        const inFlightToolCallId = peekedToolCallId
+          ? (sonnetRef.current?.consumeInFlightToolCallId(peekedToolCallId) ?? null)
+          : null;
         console.info(
           `[recording:pipeline] stage=sonnet_send utteranceId=${utteranceId.slice(0, 8)} inFlightToolCallId=${inFlightToolCallId?.slice(0, 12) ?? 'none'} regexHints=${regexResults?.length ?? 0}`
         );
@@ -2081,7 +2095,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // that's more likely the mic catching its own speaker), then
           // BARGE IN — cancel TTS and let the transcript through.
           if (isWithinTtsWindow()) {
-            const hasInFlightAsk = Boolean(sonnetRef.current?.peekInFlightToolCallId());
+            const hasInFlightAsk = inFlightQuestionRef.current.peekPayloadForTranscript() != null;
             const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
             // Single-token replies ARE legitimate ("yes", "no", "0.6",
             // "TT"). iOS uses a separate VAD gate; we approximate by
@@ -2967,6 +2981,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         schedulePushJobState();
       },
       onVoiceCommandResponse: (response) => {
+        const deliveryToken = response.address_mirror_delivery_token;
+        if (deliveryToken) {
+          const heard = heardAddressMirrorDeliveryTokensRef.current;
+          if (heard.has(deliveryToken)) {
+            clientDiagnostic('address_mirror_voice_response_deduped', {
+              deliveryTokenShort: deliveryToken.slice(0, 16),
+            });
+            return;
+          }
+          heard.add(deliveryToken);
+          while (heard.size > 256) {
+            const oldest = heard.values().next().value;
+            if (typeof oldest !== 'string') break;
+            heard.delete(oldest);
+          }
+        }
         // iOS canon: DeepgramRecordingViewModel.handleVoiceCommandResponse
         // (DeepgramRecordingViewModel.swift:7446). Execute the action via
         // the same applier the local Calculate/Apply intents use, then
@@ -3909,9 +3939,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   /**
    * Tap-accept on a question — mirrors iOS handleTapResponse(accepted:
    * true) (AlertManager.swift:610 + line 785 "Updated"). Wires the
-   * accept through the same `ask_user_answered` channel a spoken "yes"
-   * would, so the backend's tool-call resolver sees one canonical
-   * answer shape regardless of whether the inspector tapped or spoke.
+   * accept through the same channel a spoken "yes" would use. Live Stage 6
+   * asks use ask_user_answered; rollback and direct mirror questions use
+   * transcript.in_response_to because their deterministic controllers do not
+   * consume the Stage 6 registry channel.
    * Plays the confirmation chime BEFORE TTS — same iOS ordering at
    * line 784–785.
    *
@@ -3919,8 +3950,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    * against double-emit, so a second tap on the same question is a
    * silent no-op on the wire.
    *
-   * Rejected (no tool_call_id): legacy questions don't have a wire
-   * back path — fall back to a silent dismiss.
+   * Server-owned mirror cards remain visible if no session handoff is
+   * available; dismissing them would strand the durable pending intent.
    */
   const acceptQuestion = React.useCallback(
     (index: number) => {
@@ -3940,26 +3971,44 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           questionPreview: target?.question?.slice(0, 80) ?? '',
         });
         if (!target) return;
-        const toolCallId = target.tool_call_id;
-        if (toolCallId && sonnetRef.current) {
+        const dispatch = buildQuestionTapDispatch(target, true);
+        let handedOff = false;
+        if (dispatch && sonnetRef.current) {
+          const exactToolCallId =
+            dispatch.askUserAnswered?.toolCallId ?? dispatch.inResponseTo?.tool_call_id ?? null;
+          const ownsLiveAsk = dispatch.askUserAnswered
+            ? sonnetRef.current.consumeInFlightToolCallId(exactToolCallId) === exactToolCallId
+            : true;
+          if (!dispatch.askUserAnswered && exactToolCallId) {
+            sonnetRef.current.consumeInFlightToolCallId(exactToolCallId);
+          }
           const utteranceId =
             typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
               ? crypto.randomUUID()
               : `u_${Date.now()}_tap`;
-          // Send a placeholder transcript so the wire ordering invariant
-          // holds (transcript-then-ask) — the backend's seenTranscript
-          // Utterances Set must be populated before the ask answer
-          // arrives, otherwise the fast-path dedupe misses and we burn
-          // the fuzzy fallback. Empty user_text would defeat the
-          // anchor; "yes" is the canonical positive shape.
-          sonnetRef.current.sendTranscript('yes', {
-            confirmationsEnabled: getConfirmationModeEnabled(),
-            utteranceId,
-          });
-          sonnetRef.current.sendAskUserAnswered(toolCallId, 'yes', utteranceId, target.purpose);
+          if (ownsLiveAsk) {
+            sonnetRef.current.sendTranscript(dispatch.transcript, {
+              confirmationsEnabled: getConfirmationModeEnabled(),
+              utteranceId,
+              inResponseTo: dispatch.inResponseTo,
+            });
+            if (dispatch.askUserAnswered) {
+              sonnetRef.current.sendAskUserAnswered(
+                dispatch.askUserAnswered.toolCallId,
+                dispatch.transcript,
+                utteranceId,
+                dispatch.askUserAnswered.purpose
+              );
+            }
+            inFlightQuestionRef.current.consumeMatchingQuestion(target.question, exactToolCallId);
+            handedOff = true;
+          }
         }
+        if (dispatch?.serverOwnsTerminalSpeech && !handedOff) return;
         playConfirmationChime();
-        if (!isServerOwnedAddressMirrorQuestion(target)) speak('Updated');
+        if (!dispatch?.serverOwnsTerminalSpeech && !isServerOwnedAddressMirrorQuestion(target)) {
+          speak('Updated');
+        }
         // Drop the question from the queue + clear the auto-dismiss
         // timer.
         setQuestions((prev) => {
@@ -3989,20 +4038,44 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           questionPreview: target?.question?.slice(0, 80) ?? '',
         });
         if (!target) return;
-        const toolCallId = target.tool_call_id;
-        if (toolCallId && sonnetRef.current) {
+        const dispatch = buildQuestionTapDispatch(target, false);
+        let handedOff = false;
+        if (dispatch && sonnetRef.current) {
+          const exactToolCallId =
+            dispatch.askUserAnswered?.toolCallId ?? dispatch.inResponseTo?.tool_call_id ?? null;
+          const ownsLiveAsk = dispatch.askUserAnswered
+            ? sonnetRef.current.consumeInFlightToolCallId(exactToolCallId) === exactToolCallId
+            : true;
+          if (!dispatch.askUserAnswered && exactToolCallId) {
+            sonnetRef.current.consumeInFlightToolCallId(exactToolCallId);
+          }
           const utteranceId =
             typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
               ? crypto.randomUUID()
               : `u_${Date.now()}_tap`;
-          sonnetRef.current.sendTranscript('no', {
-            confirmationsEnabled: getConfirmationModeEnabled(),
-            utteranceId,
-          });
-          sonnetRef.current.sendAskUserAnswered(toolCallId, 'no', utteranceId, target.purpose);
+          if (ownsLiveAsk) {
+            sonnetRef.current.sendTranscript(dispatch.transcript, {
+              confirmationsEnabled: getConfirmationModeEnabled(),
+              utteranceId,
+              inResponseTo: dispatch.inResponseTo,
+            });
+            if (dispatch.askUserAnswered) {
+              sonnetRef.current.sendAskUserAnswered(
+                dispatch.askUserAnswered.toolCallId,
+                dispatch.transcript,
+                utteranceId,
+                dispatch.askUserAnswered.purpose
+              );
+            }
+            inFlightQuestionRef.current.consumeMatchingQuestion(target.question, exactToolCallId);
+            handedOff = true;
+          }
         }
+        if (dispatch?.serverOwnsTerminalSpeech && !handedOff) return;
         // No chime on reject — iOS line 788 only speaks the response.
-        if (!isServerOwnedAddressMirrorQuestion(target)) speak('Okay, keeping it.');
+        if (!dispatch?.serverOwnsTerminalSpeech && !isServerOwnedAddressMirrorQuestion(target)) {
+          speak('Okay, keeping it.');
+        }
         setQuestions((prev) => {
           if (target.question) cancelDismissTimer(target.question);
           const next = prev.filter((_, i) => i !== index);

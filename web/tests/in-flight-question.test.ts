@@ -11,12 +11,102 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  buildQuestionTapDispatch,
   InFlightQuestionTracker,
   isServerOwnedAddressMirrorQuestion,
   transcriptConsumesInFlight,
   DEFAULT_STALE_WINDOW_MS,
   PENDING_FIFO_MAX,
 } from '@/lib/recording/in-flight-question';
+
+describe('buildQuestionTapDispatch', () => {
+  it.each([true, false])('routes live mirror taps through transcript then ask (%s)', (accepted) => {
+    expect(
+      buildQuestionTapDispatch(
+        {
+          question: 'Use the site address for the client?',
+          question_type: 'ask_user',
+          tool_call_id: 'ask-live-1',
+          purpose: 'address_mirror',
+        },
+        accepted
+      )
+    ).toEqual({
+      transcript: accepted ? 'yes' : 'no',
+      askUserAnswered: { toolCallId: 'ask-live-1', purpose: 'address_mirror' },
+      serverOwnsTerminalSpeech: true,
+    });
+  });
+
+  it.each([true, false])('routes rollback mirror taps through in_response_to (%s)', (accepted) => {
+    expect(
+      buildQuestionTapDispatch(
+        {
+          question: 'Use the site address for the client?',
+          question_type: 'address_mirror',
+          purpose: 'address_mirror',
+          field: 'client_address',
+        },
+        accepted
+      )
+    ).toEqual({
+      transcript: accepted ? 'yes' : 'no',
+      inResponseTo: {
+        type: 'address_mirror',
+        question: 'Use the site address for the client?',
+        purpose: 'address_mirror',
+        field: 'client_address',
+      },
+      serverOwnsTerminalSpeech: true,
+    });
+  });
+
+  it.each([true, false])(
+    'routes direct taps with the exact direct question id (%s)',
+    (accepted) => {
+      expect(
+        buildQuestionTapDispatch(
+          {
+            question: 'The client address differs. Replace it?',
+            question_type: 'address_mirror_direct',
+            tool_call_id: 'address-mirror-direct-op-7',
+          },
+          accepted
+        )
+      ).toEqual({
+        transcript: accepted ? 'yes' : 'no',
+        inResponseTo: {
+          type: 'address_mirror_direct',
+          question: 'The client address differs. Replace it?',
+          tool_call_id: 'address-mirror-direct-op-7',
+        },
+        serverOwnsTerminalSpeech: true,
+      });
+    }
+  );
+});
+
+describe('tap consumption', () => {
+  it('clears only the exact tapped generation and preserves a newer identical ask', () => {
+    const tracker = new InFlightQuestionTracker(() => 1_000);
+    tracker.enqueue({
+      type: 'stage6_ask_user',
+      question: 'Use this address?',
+      toolCallId: 'ask-a',
+    });
+    tracker.enqueue({
+      type: 'stage6_ask_user',
+      question: 'Use this address?',
+      toolCallId: 'ask-b',
+    });
+    expect(tracker.onTtsStart('Use this address?')).toBe(true);
+
+    tracker.consumeMatchingQuestion('Use this address?', 'ask-a');
+    expect(tracker.peekPayloadForTranscript()).toBeNull();
+    expect(tracker.onTtsStart('Use this address?')).toBe(true);
+    expect(tracker.peekPayloadForTranscript()?.tool_call_id).toBe('ask-b');
+  });
+});
 
 function makeClock(start = 1_000_000): { now: () => number; advance: (ms: number) => void } {
   let t = start;

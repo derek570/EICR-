@@ -64,7 +64,7 @@ export interface SonnetSessionLike {
   sendCompactRequest(): void;
   sendJobStateUpdate(job: unknown): void;
   peekInFlightToolCallId(): string | null;
-  consumeInFlightToolCallId(): string | null;
+  consumeInFlightToolCallId(expectedId?: string | null): string | null;
   clearInFlightToolCallIdByPrefix(prefix: string): void;
   readonly connectionState: SonnetConnectionState;
   /** Diagnostic sink surface — recording-context wires the session into

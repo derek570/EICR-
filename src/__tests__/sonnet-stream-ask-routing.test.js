@@ -144,6 +144,8 @@ jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
+const { ADDRESS_MIRROR_ANSWER_GRACE_MS } =
+  await import('../extraction/address-mirror-ingress-arbiter.js');
 
 // ── Helpers (pattern lifted from sonnet-stream-resume.test.js) ───────────────
 
@@ -380,6 +382,51 @@ describe('Group B — inbound ask_user_answered routing', () => {
     });
 
     expect(ws._sent.find((m) => m.type === 'error')).toBeUndefined();
+  });
+
+  test('grace-expired address reply still reaches the durable exact-answer controller', async () => {
+    jest.useFakeTimers();
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-grace',
+      jobId: 'job-address-grace',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-grace');
+    entry.addressMirrorController.shouldHoldReplyTranscript = jest.fn(async () => true);
+    entry.addressMirrorController.noteReplyHoldReleased = jest.fn();
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(async () => ({
+      handled: true,
+      outcome: 'duplicate',
+      resolutionToken: 'already-resolved-token',
+    }));
+
+    const releasedTranscript = sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-grace',
+      text: 'yes',
+    });
+    await jest.advanceTimersByTimeAsync(ADDRESS_MIRROR_ANSWER_GRACE_MS);
+    await releasedTranscript;
+
+    expect(entry.addressMirrorIngressArbiter.wasReleased('utt-address-grace')).toBe(true);
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'addr-job-address-grace-client',
+      purpose: 'address_mirror',
+      user_text: 'yes',
+      consumed_utterance_id: 'utt-address-grace',
+    });
+
+    expect(entry.addressMirrorController.resolveRecoveredAnswer).toHaveBeenCalledWith({
+      context: { purpose: 'address_mirror' },
+      text: 'yes',
+      askId: 'addr-job-address-grace-client',
+      perTurnWrites: expect.any(Object),
+    });
+    expect(entry.consumedAskUtterances.has('utt-address-grace')).toBe(true);
   });
 
   test('invalid payload (missing tool_call_id) emits error envelope; registry untouched', async () => {

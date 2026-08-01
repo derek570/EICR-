@@ -3,6 +3,7 @@
 import * as React from 'react';
 import { Check, X, ThumbsDown } from 'lucide-react';
 import type { SonnetQuestion } from '@/lib/recording/sonnet-session';
+import { isServerOwnedAddressMirrorQuestion } from '@/lib/recording/in-flight-question';
 
 /**
  * Alert card — renders a stack of queued Sonnet questions and the
@@ -43,10 +44,10 @@ export function AlertCard({
   if (questions.length === 0) return null;
   const head = questions[0];
   const remaining = questions.length - 1;
-  // Wire-back actions only make sense for Stage 6 ask_user. Hide
-  // accept/reject for legacy questions so the inspector doesn't tap a
-  // dead button.
-  const hasWireBack = Boolean(head.tool_call_id);
+  // Address-mirror rollback questions have a transcript.in_response_to wire
+  // route even without a Stage 6 tool id. Other legacy questions remain
+  // voice-only.
+  const hasWireBack = Boolean(head.tool_call_id) || isServerOwnedAddressMirrorQuestion(head);
 
   return (
     <div

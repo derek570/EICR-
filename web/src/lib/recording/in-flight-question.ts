@@ -51,14 +51,92 @@ export interface InFlightPayload {
   tool_call_id?: string;
 }
 
+export interface QuestionTapDispatch {
+  transcript: string;
+  inResponseTo?: InFlightPayload;
+  askUserAnswered?: {
+    toolCallId: string;
+    purpose?: string | null;
+  };
+  serverOwnsTerminalSpeech: boolean;
+}
+
 /** Server owns the only terminal speech for deterministic address asks. */
 export function isServerOwnedAddressMirrorQuestion(question: {
   purpose?: string | null;
   question_type?: string | null;
 }): boolean {
   return (
-    question.purpose === 'address_mirror' || question.question_type === 'address_mirror_direct'
+    question.purpose === 'address_mirror' ||
+    question.question_type === 'address_mirror' ||
+    question.question_type === 'address_mirror_direct'
   );
+}
+
+/**
+ * Build the exact wire route for an on-screen Yes/No answer.
+ *
+ * The three address-mirror question lanes deliberately use two different
+ * backend ingress contracts:
+ *  - live Stage 6 asks require transcript-then-ask_user_answered;
+ *  - rollback/legacy questions resolve from transcript.in_response_to;
+ *  - direct-command clarifications also resolve from in_response_to, with
+ *    their exact server-minted question id.
+ *
+ * Keeping this as a pure function makes it impossible for the tap handlers to
+ * accidentally send every tool_call_id through ask_user_answered (the direct
+ * controller never consumes that channel), and gives wire-shape tests one
+ * authoritative seam.
+ */
+export function buildQuestionTapDispatch(
+  question: {
+    question: string;
+    question_type?: string | null;
+    field?: string | null;
+    circuit?: number | null;
+    tool_call_id?: string | null;
+    purpose?: string | null;
+  },
+  accepted: boolean
+): QuestionTapDispatch | null {
+  const transcript = accepted ? 'yes' : 'no';
+  const toolCallId =
+    typeof question.tool_call_id === 'string' && question.tool_call_id
+      ? question.tool_call_id
+      : null;
+
+  if (question.question_type === 'address_mirror_direct') {
+    const inResponseTo: InFlightPayload = {
+      type: 'address_mirror_direct',
+      question: question.question,
+    };
+    if (toolCallId) inResponseTo.tool_call_id = toolCallId;
+    return { transcript, inResponseTo, serverOwnsTerminalSpeech: true };
+  }
+
+  if (
+    !toolCallId &&
+    (question.purpose === 'address_mirror' || question.question_type === 'address_mirror')
+  ) {
+    const inResponseTo: InFlightPayload = {
+      type: 'address_mirror',
+      question: question.question,
+      purpose: 'address_mirror',
+    };
+    if (question.field != null) inResponseTo.field = question.field;
+    if (question.circuit != null) inResponseTo.circuit = question.circuit;
+    return { transcript, inResponseTo, serverOwnsTerminalSpeech: true };
+  }
+
+  if (toolCallId) {
+    return {
+      transcript,
+      askUserAnswered: { toolCallId, purpose: question.purpose },
+      serverOwnsTerminalSpeech: isServerOwnedAddressMirrorQuestion(question),
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -285,6 +363,20 @@ export class InFlightQuestionTracker {
     if (age > this.staleWindowMs) {
       this.slot = null;
     }
+  }
+
+  /**
+   * Consume only the question answered by an on-screen tap. Matching the
+   * server id when present prevents an older card from clearing a newer
+   * identical prompt that has already entered the TTS FIFO.
+   */
+  consumeMatchingQuestion(question: string, toolCallId?: string | null): void {
+    const matches = (candidate: InFlightQuestion): boolean =>
+      candidate.question === question &&
+      (toolCallId == null || candidate.toolCallId === toolCallId);
+    if (this.slot && matches(this.slot)) this.slot = null;
+    const pendingIndex = this.pending.findIndex(matches);
+    if (pendingIndex >= 0) this.pending.splice(pendingIndex, 1);
   }
 
   /**

@@ -10,7 +10,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   claimAddressMirrorAsk,
+  claimAddressMirrorDirectIntentDelivery,
   claimAddressMirrorDirectIntent,
+  claimAddressMirrorIntentDelivery,
+  conflictAddressMirrorIntent,
+  conflictAddressMirrorDirectIntent,
   getAddressMirrorIntent,
   getPendingAddressMirrorDirectIntent,
   getRecoverableAddressMirrorDirectIntents,
@@ -200,6 +204,7 @@ function normaliseRow(row) {
     resolution_token: row.resolution_token ?? row.resolutionToken,
     terminal_outcome: parseJsonObject(row.terminal_outcome ?? row.terminalOutcome),
     delivered_at: row.delivered_at ?? row.deliveredAt ?? null,
+    delivery_claim_token: row.delivery_claim_token ?? row.deliveryClaimToken ?? null,
   };
 }
 
@@ -218,13 +223,24 @@ function normaliseDirectRow(row) {
       : [],
     terminal_outcome: parseJsonObject(row.terminal_outcome ?? row.terminalOutcome),
     delivered_at: row.delivered_at ?? row.deliveredAt ?? null,
+    delivery_claim_token: row.delivery_claim_token ?? row.deliveryClaimToken ?? null,
   };
 }
 
-function stageDelivery(perTurnWrites, kind, token) {
+function normaliseTransition(value) {
+  if (!value) return { won: false, row: null };
+  if (Object.hasOwn(value, 'won') && Object.hasOwn(value, 'row')) {
+    return { won: value.won === true, row: value.row };
+  }
+  // Store doubles written before the CAS contract returned a bare row. Treat
+  // them as winners so focused tests/dev adapters remain source-compatible.
+  return { won: true, row: value };
+}
+
+function stageDelivery(perTurnWrites, kind, token, claimToken = null) {
   if (!perTurnWrites || typeof token !== 'string' || !token) return;
   Object.defineProperty(perTurnWrites, ADDRESS_MIRROR_DELIVERY, {
-    value: { kind, token },
+    value: { kind, token, claimToken },
     enumerable: false,
     configurable: true,
   });
@@ -255,6 +271,8 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     load: store.load ?? getAddressMirrorIntent,
     rebind: store.rebind ?? rebindAddressMirrorAsk,
     resolve: store.resolve ?? resolveAddressMirrorIntent,
+    claimDelivery: store.claimDelivery ?? claimAddressMirrorIntentDelivery,
+    conflict: store.conflict ?? conflictAddressMirrorIntent,
     markDelivered: store.markDelivered ?? markAddressMirrorIntentDelivered,
     claimDirect: store.claimDirect ?? claimAddressMirrorDirectIntent,
     loadDirect: store.loadDirect ?? getPendingAddressMirrorDirectIntent,
@@ -263,6 +281,8 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       (store.loadDirect ? null : getRecoverableAddressMirrorDirectIntents),
     rebindDirect: store.rebindDirect ?? rebindAddressMirrorDirectIntent,
     resolveDirect: store.resolveDirect ?? resolveAddressMirrorDirectIntent,
+    claimDirectDelivery: store.claimDirectDelivery ?? claimAddressMirrorDirectIntentDelivery,
+    conflictDirect: store.conflictDirect ?? conflictAddressMirrorDirectIntent,
     markDirectDelivered: store.markDirectDelivered ?? markAddressMirrorDirectIntentDelivered,
   };
   let localIntent = null;
@@ -274,6 +294,8 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
   let terminalRecoveryArmed = false;
 
   const useDurableStore = Boolean(userId && jobId);
+  const customConvenienceStoreWithoutLease = Boolean(store.resolve && !store.claimDelivery);
+  const customDirectStoreWithoutLease = Boolean(store.resolveDirect && !store.claimDirectDelivery);
 
   async function rehydrate() {
     if (!useDurableStore) return localIntent;
@@ -400,20 +422,77 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
   async function terminalise(intent, status, terminalOutcome) {
     if (!useDurableStore) {
       localIntent = { ...intent, status, terminal_outcome: terminalOutcome, delivered_at: null };
-      return localIntent;
+      return { won: true, row: localIntent };
     }
-    const row = await db.resolve(userId, jobId, status, intent.resolution_token, terminalOutcome);
-    durableIntent = normaliseRow(row);
-    return durableIntent;
+    const transition = normaliseTransition(
+      await db.resolve(userId, jobId, status, intent.resolution_token, terminalOutcome)
+    );
+    durableIntent = normaliseRow(transition.row);
+    return { won: transition.won, row: durableIntent };
   }
 
-  async function resolveIntentAnswer({ text, perTurnWrites, askId = null }) {
+  async function acquireConvenienceDelivery(intent) {
+    if (!intent || intent.delivered_at) return null;
+    const claimToken = randomUUID();
+    if (!useDurableStore || customConvenienceStoreWithoutLease) {
+      localIntent = { ...intent, delivery_claim_token: claimToken };
+      durableIntent = localIntent;
+      return localIntent;
+    }
+    const row = await db.claimDelivery(userId, jobId, intent.resolution_token, claimToken);
+    durableIntent = normaliseRow(row) ?? durableIntent;
+    return row ? durableIntent : null;
+  }
+
+  async function acquireDirectDelivery(intent) {
+    if (!intent || intent.delivered_at) return null;
+    const claimToken = randomUUID();
+    if (!useDurableStore || customDirectStoreWithoutLease) {
+      const claimed = { ...intent, delivery_claim_token: claimToken };
+      directIntent = claimed;
+      recoverableDirectIntents = recoverableDirectIntents.map((row) =>
+        row.operation_token === claimed.operation_token ? claimed : row
+      );
+      return claimed;
+    }
+    const row = await db.claimDirectDelivery(userId, jobId, intent.operation_token, claimToken);
+    const claimed = normaliseDirectRow(row);
+    if (claimed) {
+      directIntent = claimed;
+      recoverableDirectIntents = recoverableDirectIntents.map((item) =>
+        item.operation_token === claimed.operation_token ? claimed : item
+      );
+    }
+    return claimed;
+  }
+
+  async function persistConvenienceDeliveryConflict(intent, reason) {
+    const terminalOutcome = { outcome: 'conflict', reason };
+    if (!useDurableStore || customConvenienceStoreWithoutLease) {
+      const conflicted = { ...intent, status: 'conflict', terminal_outcome: terminalOutcome };
+      localIntent = conflicted;
+      durableIntent = conflicted;
+      return conflicted;
+    }
+    const row = normaliseRow(
+      await db.conflict(userId, jobId, intent.resolution_token, terminalOutcome)
+    );
+    if (row) durableIntent = row;
+    return row ?? intent;
+  }
+
+  async function resolveIntentAnswer({
+    text,
+    perTurnWrites,
+    askId = null,
+    claimedRecoveryIntent = null,
+  }) {
     const answer = parseAddressMirrorAnswer(text);
     if (!answer) {
       allowClarificationReask = true;
       return { handled: false, reason: 'unclear' };
     }
-    const intent = await currentIntent();
+    let intent = claimedRecoveryIntent ?? (await currentIntent());
     if (!intent || (askId && intent.ask_id && askId !== intent.ask_id)) {
       return { handled: false, reason: 'no_matching_pending_intent' };
     }
@@ -426,18 +505,53 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         resolutionToken: intent.resolution_token,
       };
     }
+    if (intent.status !== 'pending' && !claimedRecoveryIntent) {
+      return {
+        handled: true,
+        outcome: 'duplicate',
+        changed: [],
+        replayedSource: 0,
+        resolutionToken: intent.resolution_token,
+      };
+    }
     const terminalAnswer =
       intent.status === 'resolved_yes' ? 'yes' : intent.status === 'resolved_no' ? 'no' : null;
     const conflict = async (reason) => {
       if (intent.status === 'pending') {
-        await terminalise(intent, 'conflict', { outcome: 'conflict', reason });
+        const transition = await terminalise(intent, 'conflict', { outcome: 'conflict', reason });
+        if (!transition.won) {
+          return {
+            handled: true,
+            outcome: 'duplicate',
+            changed: [],
+            replayedSource: 0,
+            resolutionToken: intent.resolution_token,
+          };
+        }
+        intent = await acquireConvenienceDelivery(transition.row);
+        if (!intent) {
+          return {
+            handled: true,
+            outcome: 'duplicate',
+            changed: [],
+            replayedSource: 0,
+            resolutionToken: transition.row?.resolution_token,
+          };
+        }
+      } else if (claimedRecoveryIntent && intent.status !== 'conflict') {
+        intent = await persistConvenienceDeliveryConflict(intent, reason);
       }
       const question =
         reason === 'answer_changed'
           ? "That answer conflicts with the one already recorded, so I haven't changed the addresses."
           : "The address changed after I asked, so I haven't copied it. Please tell me which address to use.";
       stageAcknowledgement(perTurnWrites, question);
-      stageDelivery(perTurnWrites, 'convenience', intent.resolution_token);
+      stageDelivery(
+        perTurnWrites,
+        'convenience',
+        intent.resolution_token,
+        intent.delivery_claim_token
+      );
       return {
         handled: true,
         outcome: 'conflict',
@@ -493,14 +607,30 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     }
 
     if (intent.status === 'pending') {
-      const terminal = await terminalise(
+      const transition = await terminalise(
         intent,
         answer === 'yes' ? 'resolved_yes' : 'resolved_no',
         { outcome: answer }
       );
       const expectedStatus = answer === 'yes' ? 'resolved_yes' : 'resolved_no';
-      if (!terminal || terminal.status !== expectedStatus) {
-        return { handled: true, outcome: 'conflict', changed: [], replayedSource: 0 };
+      if (!transition.won || transition.row?.status !== expectedStatus) {
+        return {
+          handled: true,
+          outcome: 'duplicate',
+          changed: [],
+          replayedSource: 0,
+          resolutionToken: intent.resolution_token,
+        };
+      }
+      intent = await acquireConvenienceDelivery(transition.row);
+      if (!intent) {
+        return {
+          handled: true,
+          outcome: 'duplicate',
+          changed: [],
+          replayedSource: 0,
+          resolutionToken: transition.row?.resolution_token,
+        };
       }
     }
 
@@ -509,7 +639,12 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       enumerable: false,
       configurable: true,
     });
-    stageDelivery(perTurnWrites, 'convenience', intent.resolution_token);
+    stageDelivery(
+      perTurnWrites,
+      'convenience',
+      intent.resolution_token,
+      intent.delivery_claim_token
+    );
     if (replay.length > 0) {
       Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
         value: true,
@@ -598,17 +733,31 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         : intent.status === 'resolved_no'
           ? 'no'
           : 'conflict');
+    const claimed = await acquireConvenienceDelivery(intent);
+    if (!claimed) return { handled: false, reason: 'delivery_claimed' };
     const out =
       answer === 'conflict'
-        ? await resolveIntentAnswer({ text: 'yes', perTurnWrites })
-        : await resolveIntentAnswer({ text: answer, perTurnWrites });
+        ? await resolveIntentAnswer({
+            text: 'yes',
+            perTurnWrites,
+            claimedRecoveryIntent: claimed,
+          })
+        : await resolveIntentAnswer({
+            text: answer,
+            perTurnWrites,
+            claimedRecoveryIntent: claimed,
+          });
     if (out?.handled) terminalRecoveryArmed = false;
     return out;
   }
 
   async function markDelivered(delivery) {
     if (!delivery || typeof delivery.token !== 'string') return false;
-    if (!useDurableStore) {
+    if (
+      !useDurableStore ||
+      (delivery.kind === 'convenience' && customConvenienceStoreWithoutLease) ||
+      (delivery.kind === 'direct' && customDirectStoreWithoutLease)
+    ) {
       if (delivery.kind === 'convenience' && localIntent?.resolution_token === delivery.token) {
         localIntent = { ...localIntent, delivered_at: new Date().toISOString() };
       }
@@ -625,12 +774,22 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       return true;
     }
     if (delivery.kind === 'convenience') {
-      const row = await db.markDelivered(userId, jobId, delivery.token);
+      const row = await db.markDelivered(
+        userId,
+        jobId,
+        delivery.token,
+        delivery.claimToken ?? null
+      );
       if (row) durableIntent = normaliseRow(row);
       return Boolean(row);
     }
     if (delivery.kind === 'direct') {
-      const row = await db.markDirectDelivered(userId, jobId, delivery.token);
+      const row = await db.markDirectDelivered(
+        userId,
+        jobId,
+        delivery.token,
+        delivery.claimToken ?? null
+      );
       if (!row) return false;
       const normalised = normaliseDirectRow(row);
       recoverableDirectIntents = recoverableDirectIntents.filter(
@@ -746,24 +905,26 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       recoverableDirectIntents = recoverableDirectIntents.map((row) =>
         row.operation_token === intent.operation_token ? directIntent : row
       );
-      return directIntent;
+      return { won: true, row: directIntent };
     }
-    const row = await db.resolveDirect(
-      userId,
-      jobId,
-      intent.operation_token,
-      status,
-      terminalOutcome,
-      sourceSnapshot,
-      sourceWrites
+    const transition = normaliseTransition(
+      await db.resolveDirect(
+        userId,
+        jobId,
+        intent.operation_token,
+        status,
+        terminalOutcome,
+        sourceSnapshot,
+        sourceWrites
+      )
     );
-    directIntent = normaliseDirectRow(row);
+    directIntent = normaliseDirectRow(transition.row);
     if (directIntent) {
       recoverableDirectIntents = recoverableDirectIntents.map((item) =>
         item.operation_token === directIntent.operation_token ? directIntent : item
       );
     }
-    return directIntent;
+    return { won: transition.won, row: directIntent };
   }
 
   async function rebindDirectConflict(sourceSnapshot, sourceWrites) {
@@ -793,13 +954,37 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     return directIntent;
   }
 
-  function materializeDirectTerminal(intent, perTurnWrites, sourceAudible = false) {
+  async function persistDirectDeliveryConflict(intent, reason) {
+    const terminalOutcome = { outcome: 'conflict', reason };
+    if (!useDurableStore) {
+      const conflicted = { ...intent, status: 'conflict', terminal_outcome: terminalOutcome };
+      directIntent = conflicted;
+      recoverableDirectIntents = recoverableDirectIntents.map((row) =>
+        row.operation_token === conflicted.operation_token ? conflicted : row
+      );
+      return conflicted;
+    }
+    const row = normaliseDirectRow(
+      await db.conflictDirect(userId, jobId, intent.operation_token, terminalOutcome)
+    );
+    if (row) {
+      directIntent = row;
+      recoverableDirectIntents = recoverableDirectIntents.map((item) =>
+        item.operation_token === row.operation_token ? row : item
+      );
+    }
+    return row ?? intent;
+  }
+
+  async function materializeDirectTerminal(intent, perTurnWrites, sourceAudible = false) {
     if (!intent || intent.delivered_at) {
       return { handled: true, outcome: 'duplicate', changed: [] };
     }
     const terminalOutcome = intent.terminal_outcome?.outcome;
-    stageDelivery(perTurnWrites, 'direct', intent.operation_token);
+    const stageOwnedDelivery = () =>
+      stageDelivery(perTurnWrites, 'direct', intent.operation_token, intent.delivery_claim_token);
     if (terminalOutcome === 'no') {
+      stageOwnedDelivery();
       stageAcknowledgement(
         perTurnWrites,
         intent.clarification_kind === 'conflict'
@@ -814,6 +999,21 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         delivery: { kind: 'direct', token: intent.operation_token },
       };
     }
+    if (terminalOutcome === 'conflict' || intent.status === 'conflict') {
+      stageOwnedDelivery();
+      stageAcknowledgement(
+        perTurnWrites,
+        "The address changed before I could finish, so I haven't copied it."
+      );
+      return {
+        handled: true,
+        outcome: 'conflict',
+        changed: [],
+        replayedSource: 0,
+        resolutionToken: intent.operation_token,
+        delivery: { kind: 'direct', token: intent.operation_token },
+      };
+    }
     const source = intent.source_snapshot;
     if (!complete(source)) return { handled: false, reason: 'source_incomplete' };
     const sourceFields = FAMILIES[intent.source_family];
@@ -823,6 +1023,8 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       const value = source[key];
       if (!meaningful(value)) continue;
       if (meaningful(currentSource[key]) && String(currentSource[key]) !== String(value)) {
+        intent = await persistDirectDeliveryConflict(intent, 'source_drift');
+        stageOwnedDelivery();
         stageAcknowledgement(
           perTurnWrites,
           "The address changed before I could finish, so I haven't copied it."
@@ -864,6 +1066,29 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       });
     }
     const target = stableSnapshot(session.stateSnapshot, intent.target_family);
+    const authorisedTarget = parseJsonObject(intent.terminal_outcome?.target_snapshot) ?? {};
+    for (const key of Object.keys(FAMILIES[intent.target_family])) {
+      const current = target[key];
+      const sourceValue = source[key];
+      if (!meaningful(current) || String(current) === String(sourceValue ?? '')) continue;
+      const authorised = authorisedTarget[key];
+      if (meaningful(authorised) && String(current) === String(authorised)) continue;
+      intent = await persistDirectDeliveryConflict(intent, 'target_drift');
+      stageOwnedDelivery();
+      stageAcknowledgement(
+        perTurnWrites,
+        "The address changed before I could finish, so I haven't copied it."
+      );
+      return {
+        handled: true,
+        outcome: 'conflict',
+        changed: [],
+        replayedSource,
+        resolutionToken: intent.operation_token,
+        delivery: { kind: 'direct', token: intent.operation_token },
+      };
+    }
+    stageOwnedDelivery();
     const changed = [];
     for (const key of Object.keys(FAMILIES[intent.target_family])) {
       const value = source[key];
@@ -897,6 +1122,15 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     };
   }
 
+  async function materializeWonDirectTransition(transition, perTurnWrites, sourceAudible = false) {
+    if (!transition?.won || !transition.row) {
+      return { handled: true, outcome: 'duplicate', changed: [] };
+    }
+    const claimed = await acquireDirectDelivery(transition.row);
+    if (!claimed) return { handled: true, outcome: 'duplicate', changed: [] };
+    return materializeDirectTerminal(claimed, perTurnWrites, sourceAudible);
+  }
+
   async function applyDirectCommand(text, perTurnWrites, operationToken = randomUUID()) {
     const command = parseDirectAddressMirrorCommand(text);
     if (!command) return { handled: false };
@@ -923,17 +1157,21 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           return { handled: true, outcome: 'duplicate', changed: [] };
         }
         if (existing?.status !== 'pending') {
-          return materializeDirectTerminal(existing, perTurnWrites);
+          return { handled: true, outcome: 'duplicate', changed: [] };
         }
         if (existing?.clarification_kind === 'direct') {
           const terminal = await terminaliseDirect(
             'resolved_yes',
-            { outcome: 'copied', replacement: false },
+            {
+              outcome: 'copied',
+              replacement: false,
+              target_snapshot: stableSnapshot(session.stateSnapshot, existing.target_family),
+            },
             existing.source_snapshot,
             existing.source_writes,
             existing
           );
-          return materializeDirectTerminal(terminal, perTurnWrites);
+          return materializeWonDirectTransition(terminal, perTurnWrites);
         }
         return {
           handled: true,
@@ -962,11 +1200,11 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     }
     const terminal = await terminaliseDirect(
       'resolved_yes',
-      { outcome: 'copied', replacement: false },
+      { outcome: 'copied', replacement: false, target_snapshot: target },
       source,
       []
     );
-    return materializeDirectTerminal(terminal, perTurnWrites);
+    return materializeWonDirectTransition(terminal, perTurnWrites);
   }
 
   async function resolveDirectClarification({ context, text, perTurnWrites }) {
@@ -988,7 +1226,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       const answer = parseAddressMirrorAnswer(text);
       if (answer === 'no') {
         const terminal = await terminaliseDirect('resolved_no', { outcome: 'no' });
-        return materializeDirectTerminal(terminal, perTurnWrites);
+        return materializeWonDirectTransition(terminal, perTurnWrites);
       }
       // The deciding address/postcode reply must be extracted normally. The
       // post-write finalizer below observes the authoritative source writes,
@@ -999,18 +1237,22 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     if (!answer) return { handled: false, reason: 'unclear' };
     if (answer === 'no') {
       const terminal = await terminaliseDirect('resolved_no', { outcome: 'no' });
-      return materializeDirectTerminal(terminal, perTurnWrites);
+      return materializeWonDirectTransition(terminal, perTurnWrites);
     }
     const source = complete(directIntent.source_snapshot)
       ? directIntent.source_snapshot
       : stableSnapshot(session.stateSnapshot, directIntent.source_family);
     const terminal = await terminaliseDirect(
       'resolved_yes',
-      { outcome: 'copied', replacement: true },
+      {
+        outcome: 'copied',
+        replacement: true,
+        target_snapshot: stableSnapshot(session.stateSnapshot, directIntent.target_family),
+      },
       source,
       directIntent.source_writes
     );
-    return materializeDirectTerminal(terminal, perTurnWrites);
+    return materializeWonDirectTransition(terminal, perTurnWrites);
   }
 
   async function finalizeDirectAfterWrites({
@@ -1060,11 +1302,11 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       : sourceWriteLedger(perTurnWrites, directIntent.source_family, directIntent.operation_token);
     const terminal = await terminaliseDirect(
       'resolved_yes',
-      { outcome: 'copied', replacement: false },
+      { outcome: 'copied', replacement: false, target_snapshot: target },
       source,
       writes
     );
-    return materializeDirectTerminal(terminal, perTurnWrites, sourceAudible);
+    return materializeWonDirectTransition(terminal, perTurnWrites, sourceAudible);
   }
 
   async function currentDirectQuestion() {
@@ -1093,20 +1335,28 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     }
     if (!intent) return { handled: false };
     if (intent.status === 'pending') {
-      intent = await terminaliseDirect(
+      const transition = await terminaliseDirect(
         'resolved_yes',
-        { outcome: 'copied', replacement: false },
+        {
+          outcome: 'copied',
+          replacement: false,
+          target_snapshot: stableSnapshot(session.stateSnapshot, intent.target_family),
+        },
         intent.source_snapshot,
         intent.source_writes,
         intent
       );
+      if (!transition.won) return { handled: false, reason: 'delivery_claimed' };
+      intent = transition.row;
     }
-    return materializeDirectTerminal(intent, perTurnWrites);
+    const claimed = await acquireDirectDelivery(intent);
+    if (!claimed) return { handled: false, reason: 'delivery_claimed' };
+    return materializeDirectTerminal(claimed, perTurnWrites);
   }
 
   async function recoverUndelivered(perTurnWrites) {
     const convenience = await recoverConvenienceDelivery(perTurnWrites);
-    if (convenience.handled) return convenience;
+    if (convenience.handled || convenience.reason === 'delivery_claimed') return convenience;
     return recoverDirectDelivery(perTurnWrites);
   }
 

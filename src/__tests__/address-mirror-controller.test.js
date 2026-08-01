@@ -765,4 +765,123 @@ describe('address mirror controller', () => {
       })
     ).toMatchObject({ handled: true, outcome: 'yes' });
   });
+
+  test('two controllers sharing one CAS produce only one terminal ledger', async () => {
+    let row = {
+      status: 'pending',
+      ask_id: 'ask-concurrent',
+      source_family: 'site',
+      source_snapshot: { address: '2 Test Road', postcode: 'TE1 1ST' },
+      source_version_hash: null,
+      source_writes: [],
+      resolution_token: 'resolution-concurrent',
+      delivered_at: null,
+    };
+    const store = {
+      load: jest.fn(async () => row),
+      loadRecoverableDirect: jest.fn(async () => []),
+      resolve: jest.fn(async (_user, _job, status, _token, terminalOutcome) => {
+        if (row.status !== 'pending') return { won: false, row };
+        row = { ...row, status, terminal_outcome: terminalOutcome };
+        return { won: true, row };
+      }),
+      claimDelivery: jest.fn(async (_user, _job, _token, claimToken) => {
+        if (row.delivery_claim_token) return null;
+        row = { ...row, delivery_claim_token: claimToken };
+        return row;
+      }),
+    };
+    const session = sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const a = createAddressMirrorController({
+      userId: 'owner-concurrent',
+      jobId: 'job-concurrent',
+      session,
+      store,
+    });
+    const b = createAddressMirrorController({
+      userId: 'owner-concurrent',
+      jobId: 'job-concurrent',
+      session,
+      store,
+    });
+    await Promise.all([a.rehydrate(), b.rehydrate()]);
+    const writesA = createPerTurnWrites();
+    const writesB = createPerTurnWrites();
+    const outcomes = await Promise.all([
+      a.resolveRecoveredAnswer({
+        context: { purpose: 'address_mirror' },
+        text: 'yes',
+        askId: 'ask-concurrent',
+        perTurnWrites: writesA,
+      }),
+      b.resolveRecoveredAnswer({
+        context: { purpose: 'address_mirror' },
+        text: 'yes',
+        askId: 'ask-concurrent',
+        perTurnWrites: writesB,
+      }),
+    ]);
+
+    expect(outcomes.map((outcome) => outcome.outcome).sort()).toEqual(['duplicate', 'yes']);
+    const emittedLedgers = [writesA, writesB].filter(
+      (writes) => writes.boardReadings.size > 0 || writes.answer.stagedText
+    );
+    expect(emittedLedgers).toHaveLength(1);
+    expect(row.status).toBe('resolved_yes');
+  });
+
+  test('direct outbox recovery persists target drift and never overwrites it', async () => {
+    let row = {
+      status: 'resolved_yes',
+      clarification_kind: 'direct',
+      source_family: 'site',
+      target_family: 'client',
+      operation_token: 'direct-target-drift',
+      question_id: 'address-mirror-direct-target-drift',
+      source_snapshot: { address: '2 Test Road', postcode: 'TE1 1ST' },
+      source_writes: [],
+      terminal_outcome: {
+        outcome: 'copied',
+        replacement: false,
+        target_snapshot: {},
+      },
+      delivered_at: null,
+    };
+    const store = {
+      load: jest.fn(async () => null),
+      loadRecoverableDirect: jest.fn(async () => [row]),
+      claimDirectDelivery: jest.fn(async (_user, _job, _token, claimToken) => {
+        row = { ...row, delivery_claim_token: claimToken };
+        return row;
+      }),
+      conflictDirect: jest.fn(async (_user, _job, _token, terminalOutcome) => {
+        row = { ...row, status: 'conflict', terminal_outcome: terminalOutcome };
+        return row;
+      }),
+    };
+    const session = sessionWith(
+      { address: '2 Test Road', postcode: 'TE1 1ST' },
+      { address: '9 New Road', postcode: 'NW1 1AA' }
+    );
+    const controller = createAddressMirrorController({
+      userId: 'owner-target-drift',
+      jobId: 'job-target-drift',
+      session,
+      store,
+    });
+    await controller.rehydrate();
+    const writes = createPerTurnWrites();
+    const recovered = await controller.recoverUndelivered(writes);
+
+    expect(recovered).toMatchObject({ handled: true, outcome: 'conflict', changed: [] });
+    expect(row).toMatchObject({
+      status: 'conflict',
+      terminal_outcome: { outcome: 'conflict', reason: 'target_drift' },
+    });
+    expect(session.stateSnapshot.circuits[0]).toMatchObject({
+      client_address: '9 New Road',
+      client_postcode: 'NW1 1AA',
+    });
+    expect([...writes.boardReadings.values()].filter((write) => write.derived)).toHaveLength(0);
+  });
 });

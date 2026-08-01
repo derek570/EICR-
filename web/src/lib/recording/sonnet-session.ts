@@ -366,6 +366,7 @@ export interface VoiceCommandResponse {
   understood: boolean;
   spoken_response: string;
   action: { type?: string; [k: string]: unknown } | null;
+  address_mirror_delivery_token?: string | null;
 }
 
 export interface CostUpdate {
@@ -1334,20 +1335,20 @@ export class SonnetSession {
    * a null result means "this transcript is just a normal turn —
    * emit transcript only".
    */
-  consumeInFlightToolCallId(): string | null {
-    const id = this.inFlightToolCallId;
+  consumeInFlightToolCallId(expectedId?: string | null): string | null {
+    const id = expectedId ?? this.inFlightToolCallId;
     if (!id) return null;
     if (this.firedToolCallIds.has(id)) {
       // The id is set but we've already fired for it — clear lazily and
       // tell the caller there's nothing in flight.
-      this.inFlightToolCallId = null;
+      if (this.inFlightToolCallId === id) this.inFlightToolCallId = null;
       return null;
     }
     // Mark BEFORE clearing the in-flight slot so re-entry on the same
     // boundary (a synchronous second final from the same audio chunk)
     // dedupes via the Set on its second pass.
     this.firedToolCallIds.add(id);
-    this.inFlightToolCallId = null;
+    if (this.inFlightToolCallId === id) this.inFlightToolCallId = null;
     return id;
   }
 
@@ -2059,6 +2060,10 @@ export class SonnetSession {
           understood: Boolean(json.understood),
           spoken_response: (json.spoken_response as string) ?? '',
           action: (json.action as VoiceCommandResponse['action']) ?? null,
+          address_mirror_delivery_token:
+            typeof json.address_mirror_delivery_token === 'string'
+              ? json.address_mirror_delivery_token
+              : null,
         });
         break;
       }

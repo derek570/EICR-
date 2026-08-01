@@ -235,6 +235,32 @@ describe('SonnetSession', () => {
     });
   });
 
+  describe('address mirror terminal replay identity', () => {
+    it('decodes the stable VCR delivery token for client-side speech dedupe', async () => {
+      const onVoiceCommandResponse = vi.fn();
+      const session = new SonnetSession({ onVoiceCommandResponse });
+      session.connect({ sessionId: 'mirror-token', jobId: 'job-token', certificateType: 'EICR' });
+      await server.connected;
+
+      server.send(
+        JSON.stringify({
+          type: 'voice_command_response',
+          understood: true,
+          spoken_response: "Okay, I'll use the same address.",
+          action: null,
+          address_mirror_delivery_token: 'convenience:resolution-7',
+        })
+      );
+      await Promise.resolve();
+
+      expect(onVoiceCommandResponse).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address_mirror_delivery_token: 'convenience:resolution-7',
+        })
+      );
+    });
+  });
+
   // ────────────────────────────────────────────────────────────────────────
   // Commit B — reconnect state machine (feature-flagged)
   //
@@ -794,6 +820,36 @@ describe('SonnetSession', () => {
       expect(session.consumeInFlightToolCallId()).toBe('toolu_xyz');
       // Second consume must return null — toolCallId is single-shot.
       expect(session.consumeInFlightToolCallId()).toBeNull();
+    });
+
+    it('consumes the TTS-anchored id without clearing a newer latched ask', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      server.send(
+        JSON.stringify({
+          type: 'ask_user_started',
+          tool_call_id: 'ask-a',
+          question: 'Question A?',
+          reason: 'missing_context',
+        })
+      );
+      server.send(
+        JSON.stringify({
+          type: 'ask_user_started',
+          tool_call_id: 'ask-b',
+          question: 'Question B?',
+          reason: 'missing_context',
+        })
+      );
+      await Promise.resolve();
+
+      expect(session.consumeInFlightToolCallId('ask-a')).toBe('ask-a');
+      expect(session.peekInFlightToolCallId()).toBe('ask-b');
+      expect(session.consumeInFlightToolCallId('ask-a')).toBeNull();
+      expect(session.consumeInFlightToolCallId('ask-b')).toBe('ask-b');
     });
 
     it('sendTranscript stamps utterance_id when provided', async () => {

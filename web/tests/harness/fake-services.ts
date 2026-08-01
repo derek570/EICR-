@@ -210,9 +210,9 @@ export class FakeSonnetSession implements SonnetSessionLike {
   peekInFlightToolCallId(): string | null {
     return this.inFlightToolCallId;
   }
-  consumeInFlightToolCallId(): string | null {
-    const id = this.inFlightToolCallId;
-    this.inFlightToolCallId = null;
+  consumeInFlightToolCallId(expectedId?: string | null): string | null {
+    const id = expectedId ?? this.inFlightToolCallId;
+    if (this.inFlightToolCallId === id) this.inFlightToolCallId = null;
     return id;
   }
   clearInFlightToolCallIdByPrefix(): void {

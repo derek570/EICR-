@@ -780,18 +780,60 @@ export async function resolveAddressMirrorIntent(
       RETURNING *`,
     [userId, jobId, status, resolutionToken, JSON.stringify(terminalOutcome)]
   );
-  if (updated.rows[0]) return updated.rows[0];
+  if (updated.rows[0]) return { won: true, row: updated.rows[0] };
   const existing = await db.query(
     `SELECT * FROM address_mirror_intents
       WHERE user_id = $1 AND job_id = $2
       LIMIT 1`,
     [userId, jobId]
   );
-  return existing.rows[0] || null;
+  return { won: false, row: existing.rows[0] || null };
 }
 
-/** Mark a convenience outcome delivered only after its full frame ledger sent. */
-export async function markAddressMirrorIntentDelivered(userId, jobId, resolutionToken) {
+/** Lease one terminal convenience outbox row to exactly one emitter. */
+export async function claimAddressMirrorIntentDelivery(
+  userId,
+  jobId,
+  resolutionToken,
+  deliveryClaimToken
+) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `UPDATE address_mirror_intents
+        SET delivery_claim_token = $4, delivery_claimed_at = NOW()
+      WHERE user_id = $1 AND job_id = $2 AND resolution_token = $3
+        AND status <> 'pending' AND delivered_at IS NULL
+        AND (delivery_claim_token IS NULL OR delivery_claim_token = $4
+             OR delivery_claimed_at < NOW() - INTERVAL '10 seconds')
+      RETURNING *`,
+    [userId, jobId, resolutionToken, deliveryClaimToken]
+  );
+  return result.rows[0] || null;
+}
+
+/** Persist a fail-closed convenience recovery conflict before emission. */
+export async function conflictAddressMirrorIntent(userId, jobId, resolutionToken, terminalOutcome) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `UPDATE address_mirror_intents
+        SET status = 'conflict', terminal_outcome = $4::jsonb, resolved_at = NOW()
+      WHERE user_id = $1 AND job_id = $2 AND resolution_token = $3
+        AND delivered_at IS NULL AND status <> 'pending'
+      RETURNING *`,
+    [userId, jobId, resolutionToken, JSON.stringify(terminalOutcome)]
+  );
+  return result.rows[0] || null;
+}
+
+/** Mark a convenience outcome delivered only after its full frame ledger flushed. */
+export async function markAddressMirrorIntentDelivered(
+  userId,
+  jobId,
+  resolutionToken,
+  deliveryClaimToken = null
+) {
   if (!usePostgres()) return null;
   const db = getPool();
   const result = await db.query(
@@ -799,8 +841,9 @@ export async function markAddressMirrorIntentDelivered(userId, jobId, resolution
         SET delivered_at = COALESCE(delivered_at, NOW())
       WHERE user_id = $1 AND job_id = $2 AND resolution_token = $3
         AND status <> 'pending' AND terminal_outcome IS NOT NULL
+        AND ($4::text IS NULL OR delivery_claim_token = $4)
       RETURNING *`,
-    [userId, jobId, resolutionToken]
+    [userId, jobId, resolutionToken, deliveryClaimToken]
   );
   return result.rows[0] || null;
 }
@@ -985,18 +1028,65 @@ export async function resolveAddressMirrorDirectIntent(
       sourceWrites == null ? null : JSON.stringify(sourceWrites),
     ]
   );
-  if (result.rows[0]) return result.rows[0];
+  if (result.rows[0]) return { won: true, row: result.rows[0] };
   const existing = await db.query(
     `SELECT * FROM address_mirror_direct_intents
       WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
       LIMIT 1`,
     [userId, jobId, operationToken]
   );
-  return existing.rows[0] || null;
+  return { won: false, row: existing.rows[0] || null };
 }
 
-/** Mark one direct operation delivered after its complete frame ledger sent. */
-export async function markAddressMirrorDirectIntentDelivered(userId, jobId, operationToken) {
+/** Lease one terminal direct-command outbox row to exactly one emitter. */
+export async function claimAddressMirrorDirectIntentDelivery(
+  userId,
+  jobId,
+  operationToken,
+  deliveryClaimToken
+) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `UPDATE address_mirror_direct_intents
+        SET delivery_claim_token = $4, delivery_claimed_at = NOW()
+      WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
+        AND status <> 'pending' AND delivered_at IS NULL
+        AND (delivery_claim_token IS NULL OR delivery_claim_token = $4
+             OR delivery_claimed_at < NOW() - INTERVAL '10 seconds')
+      RETURNING *`,
+    [userId, jobId, operationToken, deliveryClaimToken]
+  );
+  return result.rows[0] || null;
+}
+
+/** Persist a fail-closed target-drift decision before recovery emission. */
+export async function conflictAddressMirrorDirectIntent(
+  userId,
+  jobId,
+  operationToken,
+  terminalOutcome
+) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `UPDATE address_mirror_direct_intents
+        SET status = 'conflict', terminal_outcome = $4::jsonb, resolved_at = NOW()
+      WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
+        AND delivered_at IS NULL AND status <> 'pending'
+      RETURNING *`,
+    [userId, jobId, operationToken, JSON.stringify(terminalOutcome)]
+  );
+  return result.rows[0] || null;
+}
+
+/** Mark one direct operation delivered after its complete frame ledger flushed. */
+export async function markAddressMirrorDirectIntentDelivered(
+  userId,
+  jobId,
+  operationToken,
+  deliveryClaimToken = null
+) {
   if (!usePostgres()) return null;
   const db = getPool();
   const result = await db.query(
@@ -1004,8 +1094,9 @@ export async function markAddressMirrorDirectIntentDelivered(userId, jobId, oper
         SET delivered_at = COALESCE(delivered_at, NOW())
       WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
         AND status <> 'pending' AND terminal_outcome IS NOT NULL
+        AND ($4::text IS NULL OR delivery_claim_token = $4)
       RETURNING *`,
-    [userId, jobId, operationToken]
+    [userId, jobId, operationToken, deliveryClaimToken]
   );
   return result.rows[0] || null;
 }

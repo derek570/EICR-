@@ -765,6 +765,49 @@ describe('EICRExtractionSession', () => {
       }
     );
 
+    test('failed utterance recovery keeps its own postcode lookup note', async () => {
+      mockLookupPostcode.mockResolvedValue({
+        postcode: 'RG1 1AA',
+        town: 'Reading',
+        county: 'Berkshire',
+      });
+      mockCreate
+        .mockResolvedValueOnce({
+          content: [{ type: 'text', text: 'not valid json' }],
+          usage: { input_tokens: 10, output_tokens: 5 },
+          stop_reason: 'end_turn',
+        })
+        .mockResolvedValueOnce({
+          content: toolUseContent({
+            extracted_readings: [],
+            questions_for_user: [],
+            confirmations: [],
+          }),
+          usage: { input_tokens: 10, output_tokens: 5 },
+          stop_reason: 'tool_use',
+        });
+
+      session.start(null);
+      await session.extractFromUtterance('The postcode is RG1 1AA', [], {
+        postcodeHintState: {
+          state: 'present_valid',
+          source: 'dedicated',
+          postcode: 'RG1 1AA',
+        },
+      });
+      await session.flushUtteranceBuffer();
+      await session.extractFromUtterance('The board is metal');
+      await session.flushUtteranceBuffer();
+
+      const secondRequest = mockCreate.mock.calls[1][0];
+      const userBlock = secondRequest.messages.at(-1).content[0].text;
+      expect(userBlock).toContain('[Previously unprocessed]');
+      expect(userBlock).toContain('RG1 1AA');
+      expect(userBlock).toContain('Reading');
+      expect(userBlock).toContain('Berkshire');
+      expect(mockLookupPostcode).toHaveBeenCalledWith('RG1 1AA');
+    });
+
     test('should cap askedQuestions at 30', async () => {
       // Pre-fill with 29 questions
       session.askedQuestions = Array.from({ length: 29 }, (_, i) => `field${i}:${i}`);
