@@ -62,9 +62,27 @@ iOS (16kHz PCM audio)
 
 **Server-side live extraction:** Multi-turn tool loop, currently `gpt-5.6-luna` through the OpenAI Responses API (Fast service-tier trial). Prompt caching and conversation compaction preserve the rolling structured-certificate context.
 
+### Voice-address authority and postcode hints
+
+Address-family values are deliberately outside client regex extraction. Web
+and iOS do not locally write `address`, `postcode`, `client_address`,
+`client_postcode`, locality fields, or a same-address flag, and iOS no longer
+owns an address-mirror prompt/latch. The backend/model path is the only voice
+writer and the backend address-mirror controller is the only copy owner.
+
+Before the ask/regex split, each client may derive an optional `postcode_hint`
+from the current final utterance and carry it on the existing transcript
+envelope. It is lookup enrichment only: the backend validates it once, never
+reuses it on a later message, and waits for an authoritative site/client
+postcode write before applying `postcodes.io` town/county to that family.
+Question purpose/type metadata is round-tripped on both client answer paths so
+the durable server intent can recover across reconnects. Mirror-derived target
+writes remain designed-silent; the original dictated source write or a short
+server acknowledgement supplies the answer's audible terminal.
+
 ### Regex fast-TTS path
 
-For five low-ambiguity circuit readings (`measured_zs_ohm`, `r1_r2_ohm`, both IR values, and `number_of_points`), iOS can request the canonical ElevenLabs read-back before the model loop completes. The matcher accepts either explicit `Circuit N …` phrasing or a natural exact designation such as “Number of points for the upstairs socket is 6.” Natural routing canonicalises singular/plural designations, strips a leading article, requires exactly one matching circuit on the selected board, and fails closed on duplicates, missing multi-board scope, or non-numeric refs. Sonnet/Luna still processes the same transcript and remains authoritative for the write.
+For five low-ambiguity circuit readings (`measured_zs_ohm`, `r1_r2_ohm`, both IR values, and `number_of_points`), iOS can request the canonical ElevenLabs read-back before the model loop completes. This five-field whitelist is unchanged by address-regex retirement. The matcher accepts either explicit `Circuit N …` phrasing or a natural exact designation such as “Number of points for the upstairs socket is 6.” Natural routing canonicalises singular/plural designations, strips a leading article, requires exactly one matching circuit on the selected board, and fails closed on duplicates, missing multi-board scope, or non-numeric refs. Sonnet/Luna still processes the same transcript and remains authoritative for the write.
 
 The fast clip and bundler safety-net share `field::circuit::board` slot identity. iOS marks the slot pending before the HTTP request; if fast audio starts, the later bundler line is suppressed, and if the request or playback fails, the parked bundler line is released. This preserves the audio-first invariant: one heard read-back, never zero or two. Two client seams must carry that identity: the deferred-confirmation flush and the ordinary inline-confirmation branch. Build 425 exposed that only the deferred branch did—an inline “Zs for the cooker is 0.22” fast clip played, then its bundler twin played because inline delivery passed `slotKey:nil`. Both branches now derive the same three-part key. This follows the earlier correction from a two-part caller key to the board-aware identity. `regex_attempt.fields_matched` also includes circuit-field hits.
 

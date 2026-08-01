@@ -143,6 +143,30 @@ The pre-Fast field baseline is median **4.65 s heard confirmation** on Luna Stan
 
 Live recording flows through the Stage 6 agentic extraction pipeline. `config/field_schema.json` is the single source of truth for every extractable field; the tool schemas (`src/extraction/stage6-tool-schemas.js`) generate `record_reading.field` / `record_board_reading.field` enums from it at module load.
 
+**Voice-address authority (2026-08-01).** Transcript regex is no longer a
+writer for either the installation or client address family. Web and iOS may
+extract a structurally valid UK `postcode_hint` from the current utterance and
+send it as lookup enrichment, but the hint never chooses a family or mutates a
+certificate. The backend validates that hint once per message, calls
+`postcodes.io`, and applies returned town/county only after an authoritative
+model/controller postcode write identifies the matching site or client
+family. `postcodes.io` is locality enrichment, not a street-address lookup;
+the spoken/model-selected address and postcode remain the authority.
+
+The one-shot site↔client convenience question and every same-address copy are
+also server-owned. A transactional owner/job claim sets the permanent job bit
+and creates an `address_mirror_intents` row immediately before the question is
+sent. That durable row retains the exact ask identity, stable legacy type,
+captured source-family snapshot, replayable source writes, and a server token,
+so an annotated answer can resolve idempotently after reconnect or process
+restart without trusting question prose. A short bounded ingress arbiter pairs
+transcript-first and answer-frame-first replies by utterance id; unrelated
+commands are not delayed. Affirmative answers and explicit same-address
+commands copy only the captured complete source family, journal the target
+writes as `derived:true`, and therefore produce no address-copy read-backs.
+The inspector instead hears the surviving dictated-source confirmation or one
+short acknowledgement. Neither client owns a mirror latch, question, or copy.
+
 **Client-routing and structural rejection contract (PLAN-2D §3.6).** The live
 field schema is no longer trusted as proof that a client can apply a reading.
 `client-routable-reading-fields.js` commits the destination of every allowed

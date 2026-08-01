@@ -88,12 +88,12 @@ client advertises.
 | Field | Type | Options | AI Extraction Guidance |
 |-------|------|---------|----------------------|
 | `client_name` | text | - | Name of client/property owner. Listen for "Mrs Smith", "Mr Jones", etc. Dispatcher REJECTS address-shaped values written here (`client_name_looks_like_address`) — those belong in the `client_*` family below (Phase 4.3). |
-| `client_address` | text | - | BILLING address — distinct from site address. Filled via four `record_board_reading` writes when inspector says "use site address for client too" (Phase 4.2). |
+| `client_address` | text | - | BILLING address — distinct from site address. Voice writes are server-owned. When the inspector accepts or explicitly commands a site→client mirror, the deterministic backend controller copies a complete captured source family as designed-silent `derived:true` writes; clients never perform a local mirror. |
 | `client_postcode` | text | UK postcode pattern | BILLING postcode. Companion to `client_address`. |
 | `client_town` | text | - | BILLING town. Derived from postcode when omitted. |
 | `client_county` | text | - | BILLING county. Derived from postcode when omitted. |
-| `address` | text | - | Full SITE/installation address. Listen for street, house number, town. |
-| `postcode` | text | - | SITE UK postcode like "RG1 1AA". The lookup-derived site `town`/`county` snapshot values are designed-silent computed consequences: the dictated postcode is read back, but those two automatic fills do not enter `perTurnWrites` or produce extra confirmations. |
+| `address` | text | - | Full SITE/installation address. Listen for street, house number, town. Voice writes are server-owned; client regex may provide only a non-mutating current-utterance postcode lookup hint. |
+| `postcode` | text | - | SITE UK postcode like "RG1 1AA". The authoritative dictated postcode is read back. Matching `postcodes.io` town/county enrichment is journalled as `derived:true` for client delivery but remains designed-silent and produces no extra confirmations; the hint itself never selects the site/client family. |
 | `premises_description` | select | Residential, Commercial, Industrial, Agricultural, Other | Usually "Residential" for houses |
 | `installation_records_available` | boolean | - | True if previous certificates/records available |
 | `evidence_of_additions_alterations` | boolean | - | True if unrecorded work found |
