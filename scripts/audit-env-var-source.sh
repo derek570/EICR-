@@ -183,8 +183,6 @@ GEMINI_FALLBACK_MODEL
 GEMINI_MODEL
 OPENAI_EXTRACT_API                 # in-code default 'responses' (eicr-extraction-session.js); OpenAI extraction-provider trial only — selects openai-responses-adapter.js (default) vs openai-tooluse-adapter.js ('chat_completions', kept for comparison); not in the live task-def
 OPENAI_EXTRACT_REASONING_EFFORT    # in-code default 'low' on the Responses adapter, 'none' on the legacy Chat Completions adapter; OpenAI extraction-provider trial only — reached when SONNET_EXTRACT_MODEL is gpt-* + OPENAI_API_KEY set; not in the live task-def
-OPENAI_OBSERVATION_REASONING_EFFORT # in-code default 'low'; dark until an OpenAI observation model is source-pinned in the task-def
-OPENAI_OBSERVATION_SERVICE_TIER    # in-code default 'standard'; prevents a future OpenAI observation route inheriting the global Luna Fast tier
 SONNET_CACHE_TTL                   # ephemeral-cache TTL override for system + snapshot blocks; in-code default '5m' matches prod; harness sets '1h' for warm-cache across the scenario suite (eicr-extraction-session.js)
 SONNET_EXTRACT_MODEL
 SONNET_SESSION_MAX_ENTRIES

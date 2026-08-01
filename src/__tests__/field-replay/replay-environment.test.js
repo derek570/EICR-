@@ -28,15 +28,17 @@ describe('drift enforcement against ecs/task-def-backend.json', () => {
       expect(taskDef).toHaveProperty(k);
     }
   });
-  test('the four routing values are pinned to the task-def snapshot', () => {
+  test('the extraction routing values are pinned to the task-def snapshot', () => {
     expect(taskDef.SONNET_EXTRACT_MODEL).toBe('gpt-5.6-luna');
     expect(taskDef.OPENAI_EXTRACT_SERVICE_TIER).toBe('fast');
-    expect(taskDef.OBSERVATION_EXTRACT_MODEL).toBe('claude-sonnet-4-6');
+    expect(taskDef.OBSERVATION_EXTRACT_MODEL).toBe('gpt-5.6-terra');
+    expect(taskDef.OPENAI_OBSERVATION_SERVICE_TIER).toBe('standard');
+    expect(taskDef.OPENAI_OBSERVATION_REASONING_EFFORT).toBe('low');
     expect(taskDef.VOICE_LATENCY_ROUND1_MODEL).toBe('');
-    // Observation-tier routing (C1) — 'false' in the dark PR; the flip commit
-    // moves this to 'true'. The pin keeps the recorded lane at the prod value.
-    expect(taskDef.OBSERVATION_TIER_ROUTING).toBe('false');
+    expect(taskDef.OBSERVATION_TIER_ROUTING).toBe('true');
     expect(PINNED_FROM_TASK_DEF).toContain('OBSERVATION_TIER_ROUTING');
+    expect(PINNED_FROM_TASK_DEF).toContain('OPENAI_OBSERVATION_SERVICE_TIER');
+    expect(PINNED_FROM_TASK_DEF).toContain('OPENAI_OBSERVATION_REASONING_EFFORT');
   });
   test('SNAPSHOT_FORMAT/CIRCUIT_ORDER — the exact prompt-divergence gotchas — are pinned', () => {
     expect(taskDef.SNAPSHOT_FORMAT).toBe('split_blocks');
@@ -87,18 +89,25 @@ describe('load + restore semantics', () => {
     }
   });
 
-  test('recorded lane clears vendor secrets; live lane leaves ANTHROPIC_API_KEY alone', () => {
-    const prev = process.env.ANTHROPIC_API_KEY;
+  test('recorded lane clears vendor secrets; live lane leaves selected-provider keys alone', () => {
+    const prevAnthropic = process.env.ANTHROPIC_API_KEY;
+    const prevOpenAI = process.env.OPENAI_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-test-not-real';
+    process.env.OPENAI_API_KEY = 'sk-openai-test-not-real';
     const restoreRec = loadReplayEnvironment({ lane: 'recorded' });
     expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(process.env.OPENAI_API_KEY).toBeUndefined();
     restoreRec();
     expect(process.env.ANTHROPIC_API_KEY).toBe('sk-test-not-real');
+    expect(process.env.OPENAI_API_KEY).toBe('sk-openai-test-not-real');
     const restoreLive = loadReplayEnvironment({ lane: 'live' });
     expect(process.env.ANTHROPIC_API_KEY).toBe('sk-test-not-real');
+    expect(process.env.OPENAI_API_KEY).toBe('sk-openai-test-not-real');
     restoreLive();
-    if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = prev;
+    if (prevAnthropic === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevAnthropic;
+    if (prevOpenAI === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = prevOpenAI;
   });
 
   test('subprocess ordering proof: a pre-seeded SONNET_EXTRACT_MODEL is task-def-pinned BEFORE module latch', () => {
