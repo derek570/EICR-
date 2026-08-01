@@ -825,6 +825,10 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     const pending = await currentPending();
     if (!pending) return { handled: false };
     if (pending.source_family !== command.sourceFamily) {
+      stageAcknowledgement(
+        perTurnWrites,
+        'That conflicts with the address question I just asked. Please answer that question first.'
+      );
       return { handled: true, outcome: 'conflict', changed: [] };
     }
     return resolveIntentAnswer({ text: 'yes', perTurnWrites });
@@ -1114,7 +1118,10 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       });
       changed.push(field);
     }
-    if (!sourceAudible && !hasAudibleSourceWrite(perTurnWrites, intent.source_family)) {
+    const forcedSourceConfirmation =
+      perTurnWrites?.[FORCE_CONFIRMATIONS] === true &&
+      hasAudibleSourceWrite(perTurnWrites, intent.source_family);
+    if (!sourceAudible && !forcedSourceConfirmation) {
       stageAcknowledgement(
         perTurnWrites,
         intent.terminal_outcome?.replacement === true

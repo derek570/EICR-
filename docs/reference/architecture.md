@@ -166,6 +166,11 @@ commands copy only the captured complete source family, journal the target
 writes as `derived:true`, and therefore produce no address-copy read-backs.
 The inspector instead hears the surviving dictated-source confirmation or one
 short acknowledgement. Neither client owns a mirror latch, question, or copy.
+Merely writing a source field is not evidence that it will be heard: current
+source writes suppress the acknowledgement only when confirmation mode will
+actually speak them, while crash-replayed source writes use the explicit
+forced-confirmation marker. With confirmation mode off, completing a deciding
+address/postcode ask therefore still produces the short truthful terminal.
 
 Direct commands use a separate append-only
 `address_mirror_direct_intents` operation ledger, keyed by the occurrence
@@ -179,6 +184,10 @@ while a deliberately repeated command in a later utterance remains new work.
 An explicit answer id that is not the active direct clarification fails closed;
 matching purpose/type metadata is only a compatibility aid for an id-less
 legacy frame, never authority to cross question generations.
+An exact direct command that points opposite to a still-pending convenience
+question is consumed deterministically and receives a fail-closed spoken
+instruction to answer the active question first; it never falls through to
+model extraction.
 Both direct and convenience terminal outcomes act as durable outboxes: the
 server commits the outcome before materialising its write/read-back ledger,
 then leases each undelivered row to one emitter. The terminal compare-and-set
@@ -234,6 +243,11 @@ utterances retain the lookup that belonged to their original invocation, so
 town/county enrichment cannot be lost or borrowed from a later turn.
 Address-mirror question telemetry stores only length/hash metadata, never
 street, postcode, or answer text.
+
+Offline audio import shares the retired regex matcher but not the live address
+controller. Regex performs no address-family pre-fill there; the existing
+full-transcript model result remains authoritative and is regression-tested to
+apply installation address and postcode after the regex pass leaves them empty.
 
 **Client-routing and structural rejection contract (PLAN-2D §3.6).** The live
 field schema is no longer trusted as proof that a client can apply a reading.

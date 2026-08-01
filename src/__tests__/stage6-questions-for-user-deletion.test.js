@@ -328,7 +328,7 @@ describe('Group 1 — onBatchResult path, off mode (legacy behaviour preserved)'
     expect(entry.addressMirrorController.finalizeDirectAfterWrites).toHaveBeenCalledWith(
       expect.objectContaining({
         successfulFields: new Set(['installation_postcode']),
-        sourceAudible: true,
+        sourceAudible: false,
       })
     );
   });

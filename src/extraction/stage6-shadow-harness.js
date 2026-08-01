@@ -1917,6 +1917,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       const directFinal = await entry.addressMirrorController.finalizeDirectAfterWrites({
         successfulFields: successfulAddressFields,
         perTurnWrites,
+        sourceAudible: options.confirmationsEnabled === true,
       });
       if (directFinal?.handled && typeof directFinal.question === 'string') {
         addressMirrorDirectFollowup = directFinal;

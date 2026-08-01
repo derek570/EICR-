@@ -539,6 +539,29 @@ describe('address mirror controller', () => {
     expect(
       [...writes.boardReadings.values()].filter((entry) => entry.derived === true)
     ).toHaveLength(2);
+    expect(writes.answer.stagedText).toMatch(/use the site address for the client/i);
+  });
+
+  test('incomplete direct completion trusts only a source confirmation that will be audible', async () => {
+    const session = sessionWith();
+    const controller = createAddressMirrorController({ session });
+    await controller.applyDirectCommand(
+      'use the installation address for the customer',
+      createPerTurnWrites(),
+      'utt-audibility'
+    );
+    session.stateSnapshot.circuits[0].address = '2 Test Road';
+    session.stateSnapshot.circuits[0].postcode = 'TE1 1ST';
+    const writes = sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' });
+
+    const completed = await controller.finalizeDirectAfterWrites({
+      successfulFields: new Set(['address', 'postcode']),
+      perTurnWrites: writes,
+      sourceAudible: true,
+    });
+
+    expect(completed).toMatchObject({ handled: true, outcome: 'copied' });
+    expect(writes.answer.stagedText).toBeNull();
   });
 
   test('direct conflict survives controller restart and resolves once', async () => {

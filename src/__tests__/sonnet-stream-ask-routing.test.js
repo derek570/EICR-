@@ -505,6 +505,43 @@ describe('Group B — inbound ask_user_answered routing', () => {
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
   });
 
+  test('opposite direct command beside a pending mirror ask is acknowledged without model fallthrough', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-opposite-command',
+      jobId: 'job-address-opposite-command',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-opposite-command');
+    entry.addressMirrorController.resolvePendingDirectCommand = jest.fn(
+      async ({ perTurnWrites }) => {
+        perTurnWrites.answer.stagedText =
+          'That conflicts with the address question I just asked. Please answer that question first.';
+        return { handled: true, outcome: 'conflict', changed: [] };
+      }
+    );
+    runShadowHarnessSpy.mockClear();
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-opposite-command',
+      text: 'use the client address for the site',
+      confirmations_enabled: false,
+    });
+
+    expect(entry.addressMirrorController.resolvePendingDirectCommand).toHaveBeenCalled();
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'voice_command_response',
+        spoken_response:
+          'That conflicts with the address question I just asked. Please answer that question first.',
+      })
+    );
+  });
+
   test('invalid payload (missing tool_call_id) emits error envelope; registry untouched', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {

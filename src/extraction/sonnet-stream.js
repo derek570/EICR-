@@ -393,10 +393,19 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
       operation_token: `${result.turn_id ?? 'legacy'}:${reading.field}:${ordinal}`,
     }));
   const directWrites = createPerTurnWrites();
+  const audibleLegacyFields = new Set(
+    (result.confirmations ?? []).map((confirmation) => confirmation?.field).filter(Boolean)
+  );
+  const hasModelTerminal =
+    typeof result.spoken_response === 'string' && result.spoken_response.trim().length > 0;
+  const sourceAudible =
+    hasModelTerminal ||
+    (capturedSourceWrites.length > 0 &&
+      capturedSourceWrites.every((write) => audibleLegacyFields.has(write.field)));
   const directFinal = await entry.addressMirrorController.finalizeDirectAfterWrites({
     successfulFields: successfulAddressFields,
     perTurnWrites: directWrites,
-    sourceAudible: successfulAddressFields.size > 0,
+    sourceAudible,
     sourceWrites: capturedSourceWrites,
   });
   if (!directFinal?.handled) return result;
@@ -4871,8 +4880,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           'already_pending',
         ]);
         const isTerminalMirrorOutcome =
-          terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
-          (mirrorOutcome.outcome === 'conflict' && mirrorOutcome.clearAskId);
+          terminalMirrorOutcome.has(mirrorOutcome.outcome) || mirrorOutcome.outcome === 'conflict';
         if (mirrorOutcome.handled && isTerminalMirrorOutcome) {
           entry.addressMirrorReservations.add(reservationKey);
           while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
