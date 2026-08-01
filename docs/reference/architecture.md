@@ -176,11 +176,16 @@ terminal outcome, and delivery marker. A delayed duplicate therefore cannot
 fall through to the model or resolve a newer opposite-direction question.
 Both direct and convenience terminal outcomes act as durable outboxes: the
 server commits the outcome before materialising its write/read-back ledger,
-marks it delivered only after the complete frame ledger sends, and drains any
-undelivered FIFO after the session acknowledgement on start, resume, or
-reconnect. A crash in between replays the same server-owned writes with stable
-dedupe identity; a changed source-version hash fails closed into a spoken
-conflict instead of copying a newer, uncaptured address.
+then leases each undelivered row to one emitter. The terminal compare-and-set
+winner and the delivery-lease owner are explicit database outcomes, so two
+sockets cannot both materialise the same result; an abandoned lease becomes
+recoverable after ten seconds. Delivery is marked only after every WebSocket
+frame reports a successful flush callback, and start/resume/reconnect drains
+the remaining FIFO. A crash in between replays the same server-owned writes
+and a stable `address_mirror_delivery_token`; web/iOS suppress an already-heard
+terminal token while leaving ordinary voice-command responses unchanged. A
+changed source or target after authorisation is persisted as a fail-closed
+conflict instead of overwriting newer certificate data.
 
 Clients round-trip the server-owned `purpose` and direct clarification
 `tool_call_id`. Voice replies to a direct question carry that id in
@@ -188,8 +193,12 @@ Clients round-trip the server-owned `purpose` and direct clarification
 resolve the current question merely because its prose still resembles it.
 For both address question types, the backend owns terminal speech; web/iOS tap
 handlers suppress their generic local “Updated” / “keeping it” response to
-avoid a second audible terminal. Address-mirror question telemetry stores only
-length/hash metadata, never street, postcode, or answer text.
+avoid a second audible terminal. Live taps use the paired
+`transcript`/`ask_user_answered` route, while rollback and direct taps use
+`transcript.in_response_to`; both clients consume only the exact tapped ask
+generation so repeated question prose cannot strand or clear a newer ask.
+Address-mirror question telemetry stores only length/hash metadata, never
+street, postcode, or answer text.
 
 **Client-routing and structural rejection contract (PLAN-2D §3.6).** The live
 field schema is no longer trusted as proof that a client can apply a reading.

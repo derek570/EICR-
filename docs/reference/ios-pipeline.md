@@ -80,6 +80,14 @@ the durable server intent can recover across reconnects. Mirror-derived target
 writes remain designed-silent; the original dictated source write or a short
 server acknowledgement supplies the answer's audible terminal.
 
+On-screen answers preserve the same authority split: live Stage-6 mirror asks
+emit the paired transcript plus `ask_user_answered`, whereas rollback and
+direct questions emit one transcript with their exact `in_response_to`
+identity. Web/iOS remove only that tapped generation from their TTS question
+queues. Durable terminal voice frames carry a stable server token, which each
+client keeps in a bounded heard-set so a reconnect replay cannot speak the
+same decision twice.
+
 Explicit copy commands use an append-only durable operation ledger: even a
 complete no-question command is claimed before mutation, and incomplete or
 conflicting commands retain one stable clarification id across restart. The
