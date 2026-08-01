@@ -266,6 +266,13 @@ model omitted both, and resolution places the matching clear/cancel frame
 before extraction, read-back, or voice-command terminal frames in the same
 ordered ledger. This preserves build-428 compatibility, whose local alert must
 clear before it will accept the server-owned terminal.
+The legacy model's open question schema is not an authority boundary: the exact
+pair `type:address_mirror` plus `purpose:address_mirror` is required before the
+final QuestionGate may invoke the durable claim. A type-only, purpose-only, or
+mismatched marker is rejected without emission or claim, and a claimed
+question also fails closed if the controller hook is unavailable; malformed
+model output therefore cannot create an ordinary, repeatedly audible mirror
+ask or burn the one-shot ledger with a card the client cannot route.
 Duplicate delivery of an already-terminal ask also carries a server-owned
 clear/cancel instruction, preventing a stale card from surviving merely
 because its outcome was previously committed. A rejected stale answer on

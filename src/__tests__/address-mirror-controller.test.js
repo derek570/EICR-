@@ -106,6 +106,7 @@ describe('address mirror controller', () => {
     expect(
       await off.claimLegacyQuestion(
         {
+          type: 'address_mirror',
           purpose: 'address_mirror',
           field: 'client_address',
           id: 'ask-split-off',
@@ -144,6 +145,7 @@ describe('address mirror controller', () => {
       store,
     });
     const question = {
+      type: 'address_mirror',
       purpose: 'address_mirror',
       field: 'client_address',
       question: 'Use it for the client?',
@@ -161,6 +163,34 @@ describe('address mirror controller', () => {
       expected_answer_shape: 'yes_no',
     });
     expect(store.claim.mock.calls[0][2].askId).toBe(question.tool_call_id);
+  });
+
+  test.each([
+    ['type-only', { type: 'address_mirror' }],
+    ['purpose-only', { purpose: 'address_mirror' }],
+    ['mismatched type', { type: 'unclear', purpose: 'address_mirror' }],
+  ])('legacy claim fails closed for a %s model marker', async (_label, marker) => {
+    const store = {
+      claim: jest.fn(async (_user, _job, intent) => ({ claimed: true, intent })),
+    };
+    const controller = createAddressMirrorController({
+      userId: 'owner-marker-mismatch',
+      jobId: 'job-marker-mismatch',
+      session: sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' }),
+      store,
+    });
+
+    await expect(
+      controller.claimLegacyQuestion(
+        {
+          field: 'client_address',
+          question: 'Use it for the client?',
+          ...marker,
+        },
+        sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' })
+      )
+    ).resolves.toBe(false);
+    expect(store.claim).not.toHaveBeenCalled();
   });
 
   test('claims once then applies a silent derived site-to-client copy', async () => {
@@ -546,6 +576,7 @@ describe('address mirror controller', () => {
       store,
     });
     const question = {
+      type: 'address_mirror',
       purpose: 'address_mirror',
       field: 'client_address',
       id: 'legacy-ask',

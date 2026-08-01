@@ -383,7 +383,10 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
   }
 
   async function claimLegacyQuestion(question, perTurnWrites) {
-    if (question?.purpose !== ADDRESS_MIRROR_PURPOSE) return true;
+    const hasMirrorPurpose = question?.purpose === ADDRESS_MIRROR_PURPOSE;
+    const hasMirrorType = question?.type === ADDRESS_MIRROR_PURPOSE;
+    if (!hasMirrorPurpose && !hasMirrorType) return true;
+    if (!hasMirrorPurpose || !hasMirrorType) return false;
     const capturedWrites = question[ADDRESS_MIRROR_SOURCE_WRITES] ?? perTurnWrites;
     const contextField = question.field ?? question.context_field ?? null;
     const expectedSourceFamily = contextField?.startsWith('client_')

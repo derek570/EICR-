@@ -29,6 +29,12 @@ import { normaliseValue } from './value-normalise.js';
 // composition-over-the-class — never instantiates QuestionGate).
 export const QUESTION_GATE_DELAY_MS = 1500;
 
+const ADDRESS_MIRROR_MARKER = 'address_mirror';
+
+function hasAddressMirrorMarker(question) {
+  return question?.purpose === ADDRESS_MIRROR_MARKER || question?.type === ADDRESS_MIRROR_MARKER;
+}
+
 // Phase D: stop-word list used when comparing a question's `heard_value`
 // against newly-extracted observation text. These tokens would otherwise
 // false-match almost anything (e.g. "the kitchen" and "the bathroom" share
@@ -410,8 +416,7 @@ export class QuestionGate {
 
     const epoch = this.lifecycleEpoch;
     const candidates = this.pendingQuestions.splice(0);
-    const needsAddressMirrorClaim =
-      this.beforeSend && candidates.some((q) => q?.purpose === 'address_mirror');
+    const needsAddressMirrorClaim = candidates.some(hasAddressMirrorMarker);
 
     // Preserve the historic synchronous flush for ordinary questions. A
     // promise is retained only while the durable address-mirror claim is in
@@ -434,7 +439,28 @@ export class QuestionGate {
   async _claimAndEmit(candidates, epoch) {
     const approved = [];
     for (const q of candidates) {
-      if (q?.purpose === 'address_mirror') {
+      const hasMirrorPurpose = q?.purpose === ADDRESS_MIRROR_MARKER;
+      const hasMirrorType = q?.type === ADDRESS_MIRROR_MARKER;
+
+      // The exact marker pair is the legacy trust boundary. A model can
+      // populate the open question shape with only one marker (or a
+      // contradictory type), but that must neither burn the one-shot claim
+      // nor escape the durable controller as an ordinary audible question.
+      if (hasMirrorType !== hasMirrorPurpose) {
+        logger.warn('Dropped malformed address mirror question', {
+          sessionId: this.sessionId,
+          reason: hasMirrorPurpose ? 'missing_type' : 'missing_purpose',
+        });
+        continue;
+      }
+
+      if (hasMirrorPurpose) {
+        if (typeof this.beforeSend !== 'function') {
+          logger.warn('Address mirror question claim unavailable', {
+            sessionId: this.sessionId,
+          });
+          continue;
+        }
         let keep = false;
         try {
           keep = (await this.beforeSend(q)) === true;

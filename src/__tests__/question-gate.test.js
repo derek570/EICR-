@@ -492,8 +492,9 @@ describe('QuestionGate', () => {
       expect(gate.pendingQuestions).toEqual([]);
     });
 
-    test('address mirror flush telemetry contains only hash/length, never address text', () => {
+    test('address mirror flush telemetry contains only hash/length, never address text', async () => {
       const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+      gate.setBeforeSend(async () => true);
       const street = '29 Synthetic Banana Road';
       gate.enqueue([
         {
@@ -504,7 +505,7 @@ describe('QuestionGate', () => {
           heard_value: street,
         },
       ]);
-      jest.advanceTimersByTime(gate.GATE_DELAY_MS);
+      await gate.flush();
       const call = info.mock.calls.find(([name]) => name === 'Flushing questions to iOS');
       expect(call).toBeDefined();
       const payload = JSON.stringify(call[1]);
@@ -545,6 +546,46 @@ describe('QuestionGate', () => {
       await gate.flush();
 
       expect(sendCallback).toHaveBeenCalledWith([ordinary]);
+      expect(gate.recentlyFlushedSigs.has(gate._questionSig(mirror))).toBe(false);
+    });
+
+    test.each([
+      ['type-only', { type: 'address_mirror' }],
+      ['purpose-only', { purpose: 'address_mirror' }],
+      ['mismatched type', { type: 'unclear', purpose: 'address_mirror' }],
+    ])(
+      'drops a %s address mirror marker without claiming or emitting it',
+      async (_label, marker) => {
+        const beforeSend = jest.fn(async () => true);
+        gate.setBeforeSend(beforeSend);
+        const ordinary = { question: 'Which circuit?', field: 'zs', circuit: null };
+        const malformed = {
+          question: 'Use the same address for the client?',
+          field: 'client_address',
+          ...marker,
+        };
+        gate.enqueue([ordinary, malformed]);
+
+        await gate.flush();
+
+        expect(beforeSend).not.toHaveBeenCalled();
+        expect(sendCallback).toHaveBeenCalledWith([ordinary]);
+        expect(gate.recentlyFlushedSigs.has(gate._questionSig(malformed))).toBe(false);
+      }
+    );
+
+    test('drops a claimed address question when no durable hook is installed', async () => {
+      const mirror = {
+        question: 'Use the same address for the client?',
+        field: 'client_address',
+        type: 'address_mirror',
+        purpose: 'address_mirror',
+      };
+      gate.enqueue([mirror]);
+
+      await gate.flush();
+
+      expect(sendCallback).not.toHaveBeenCalled();
       expect(gate.recentlyFlushedSigs.has(gate._questionSig(mirror))).toBe(false);
     });
 
