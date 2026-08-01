@@ -56,8 +56,15 @@
  *     The store passes the flag through; the dashboard makes the cut
  *     explicit via `filter expected_acks_eligible = 1`.
  *
+ *   - Later clip after a completed turn: the canonical
+ *     `voice_latency.late_playback_ack` row remains the playback evidence,
+ *     but the perceived-latency store ignores it because first-audio latency
+ *     has already been emitted. A short-lived summary tombstone distinguishes
+ *     this normal multi-clip case from a genuinely missing summary.
+ *
  *   - Late-ack without prior summary (`recordLatePlaybackAck` fires for
- *     a turn that never received a `recordTurnAudioSummary`): emit
+ *     a turn that never received a `recordTurnAudioSummary` and has no
+ *     summary tombstone): emit
  *     `turn_perceived_latency_skipped` with
  *     `reason: 'late_ack_without_summary'`. Vanishingly rare by
  *     construction — `voice-latency-turn-summary.js` always emits the
@@ -116,9 +123,26 @@ import logger from '../logger.js';
 /** @type {Map<string, PerceivedLatencyEntry>} */
 const entries = new Map();
 
+/**
+ * Recently completed turn keys whose entry included an audio summary.
+ *
+ * A multi-confirmation turn can emit its authoritative first-audio row and
+ * delete the live entry before later clips begin playback. Those later ACKs
+ * still land in the canonical `voice_latency.late_playback_ack` stream, but
+ * are not a `late_ack_without_summary` failure: the summary existed and was
+ * already consumed. Keep a bounded tombstone for the same 60-second window
+ * used by the upstream correlation-to-turn index.
+ *
+ * @type {Map<string, number>} key -> expiry epoch ms
+ */
+const summarizedTurns = new Map();
+
 /** Per-entry TTL in ms. Well above the 8 s finalizer timeout + the
  *  realistic late-ack grace so eligible-no-ack turns stay queryable. */
 const ENTRY_TTL_MS = 60_000;
+
+/** Keep summary tombstones aligned with the upstream late-ACK correlation TTL. */
+const SUMMARIZED_TURN_TTL_MS = 60_000;
 
 /** Lazy expiry sweep threshold — sweep expired entries when the Map gets
  *  this big. Avoids per-set scan in the steady state. */
@@ -139,6 +163,30 @@ function entryKey(sessionId, turnId) {
   return `${sessionId}::${turnId}`;
 }
 
+function sweepSummarizedTurns(now = Date.now()) {
+  for (const [key, expiresAt] of summarizedTurns) {
+    if (expiresAt <= now) summarizedTurns.delete(key);
+  }
+}
+
+function rememberSummarizedTurn(sessionId, turnId) {
+  const now = Date.now();
+  sweepSummarizedTurns(now);
+  summarizedTurns.set(entryKey(sessionId, turnId), now + SUMMARIZED_TURN_TTL_MS);
+}
+
+function wasRecentlySummarized(sessionId, turnId) {
+  const now = Date.now();
+  const key = entryKey(sessionId, turnId);
+  const expiresAt = summarizedTurns.get(key);
+  if (typeof expiresAt !== 'number') return false;
+  if (expiresAt <= now) {
+    summarizedTurns.delete(key);
+    return false;
+  }
+  return true;
+}
+
 function getOrCreateEntry(sessionId, turnId) {
   const key = entryKey(sessionId, turnId);
   let entry = entries.get(key);
@@ -154,7 +202,7 @@ function getOrCreateEntry(sessionId, turnId) {
   entry.ttlTimer = setTimeout(() => {
     const live = entries.get(key);
     if (!live) return;
-    entries.delete(key);
+    deleteEntry(live.sessionId, live.turnId);
     handleTtlExpiry(live);
   }, ENTRY_TTL_MS);
   if (typeof entry.ttlTimer.unref === 'function') entry.ttlTimer.unref();
@@ -169,6 +217,7 @@ function deleteEntry(sessionId, turnId) {
   if (!entry) return;
   if (entry.ttlTimer) clearTimeout(entry.ttlTimer);
   entries.delete(key);
+  if (entry.audioSummary) rememberSummarizedTurn(sessionId, turnId);
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +526,10 @@ export function recordTurnAudioSummary(payload) {
  *     (preserving the original `expected_acks` / `expected_acks_eligible`
  *     — the late ack ONLY contributes the ack-source fields) and call
  *     `maybeFire` to emit `voice_latency.turn_perceived_latency_ms`.
- *   - When no prior entry exists, emit
+ *   - When no live entry exists but the turn has a recent summary tombstone,
+ *     the authoritative first-audio row is already complete. Return silently;
+ *     the caller has already emitted the canonical late-playback ACK row.
+ *   - When no prior entry or tombstone exists, emit
  *     `voice_latency.turn_perceived_latency_skipped` with
  *     `reason: 'late_ack_without_summary'`. This should be vanishingly
  *     rare (the on-time `emitTurnAudioSummary` always runs first by
@@ -494,6 +546,9 @@ export function recordLatePlaybackAck(payload) {
 
     const key = entryKey(payload.sessionId, payload.turnId);
     const existing = entries.get(key);
+    if (!existing && wasRecentlySummarized(payload.sessionId, payload.turnId)) {
+      return;
+    }
     if (!existing || !existing.audioSummary) {
       // No prior audio summary → emit the diagnostic skip and bail.
       // Construct an ephemeral entry just for the emit metadata; do NOT
@@ -560,6 +615,7 @@ export function _resetPerceivedLatencyStoreForTests() {
     if (entry.ttlTimer) clearTimeout(entry.ttlTimer);
   }
   entries.clear();
+  summarizedTurns.clear();
 }
 
 /**
@@ -571,8 +627,7 @@ export function _forceTtlExpiryForTests(sessionId, turnId) {
   const key = entryKey(sessionId, turnId);
   const entry = entries.get(key);
   if (!entry) return;
-  if (entry.ttlTimer) clearTimeout(entry.ttlTimer);
-  entries.delete(key);
+  deleteEntry(sessionId, turnId);
   handleTtlExpiry(entry);
 }
 

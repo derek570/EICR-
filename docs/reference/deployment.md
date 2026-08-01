@@ -38,6 +38,8 @@ fields @timestamp, sessionId, turnId, perceived_latency_ms,
 
 For one correlation, filter `voice_latency.outcome` rows by `correlation_id`. A real audible join ends with `outcome="playback_started"` and `acked_by_ios=1`; `loaded_barrel_hit*` without that terminal is a claimed-but-unheard clip and must not be counted as latency saved.
 
+`turn_perceived_latency_ms` is intentionally a **first-audible-per-turn** row. Multi-reading turns can play several later clips after that row is complete. The canonical `voice_latency.late_playback_ack` and same-correlation `playback_started` rows retain those later playback facts, while a 60-second completed-summary tombstone prevents them from being misreported as `turn_perceived_latency_skipped { reason:"late_ack_without_summary" }`. That skip reason is therefore reserved for a late ACK whose turn genuinely never produced an audio summary.
+
 ### Observation-tier routing — flip & rollback (`OBSERVATION_TIER_ROUTING`)
 
 The observation-tier model router (chunk C1) remains DARK: `ecs/task-def-backend.json` sets `OBSERVATION_TIER_ROUTING=false`, so all live extraction currently uses default Luna. Activation and rollback are both a source flag edit plus CI redeploy — never a live `aws ecs` mutation:
