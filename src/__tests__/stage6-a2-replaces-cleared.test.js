@@ -1071,11 +1071,13 @@ describe('A2 — projectExtractionResultForWire', () => {
 
     const frames = _test_buildResultFrameLedger({}, result).map((frame) => JSON.parse(frame.json));
 
-    expect(frames[0].result.confirmations).toEqual([]);
-    expect(frames).toContainEqual({
+    expect(frames[0]).toEqual({
       type: 'cancel_pending_tts',
       prefix: 'address-mirror-direct-atomic-vcr',
     });
+    const extractionIndex = frames.findIndex((frame) => frame.type === 'extraction');
+    expect(extractionIndex).toBeGreaterThan(0);
+    expect(frames[extractionIndex].result.confirmations).toEqual([]);
     expect(frames.at(-1)).toMatchObject({
       type: 'voice_command_response',
       spoken_response:
