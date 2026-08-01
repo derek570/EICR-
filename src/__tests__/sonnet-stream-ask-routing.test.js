@@ -542,6 +542,47 @@ describe('Group B — inbound ask_user_answered routing', () => {
     );
   });
 
+  test('ordinary direct target conflict still emits its deciding question', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-direct-conflict-question',
+      jobId: 'job-address-direct-conflict-question',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-direct-conflict-question');
+    entry.addressMirrorController.resolvePendingDirectCommand = jest.fn(async () => ({
+      handled: false,
+    }));
+    entry.addressMirrorController.applyDirectCommand = jest.fn(async () => ({
+      handled: true,
+      outcome: 'conflict',
+      changed: [],
+      question: 'The client address is already different. Should I replace it?',
+      questionId: 'address-mirror-direct-conflict-question',
+    }));
+    runShadowHarnessSpy.mockClear();
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-direct-conflict-question',
+      text: 'use the installation address for the customer',
+      confirmations_enabled: false,
+    });
+
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'question',
+        question_type: 'address_mirror_direct',
+        tool_call_id: 'address-mirror-direct-conflict-question',
+        question: 'The client address is already different. Should I replace it?',
+      })
+    );
+    expect(ws._sent.find((frame) => frame.type === 'extraction')).toBeUndefined();
+  });
+
   test('invalid payload (missing tool_call_id) emits error envelope; registry untouched', async () => {
     const ws = connect(wss, 'user-1');
     await sendFrame(ws, {

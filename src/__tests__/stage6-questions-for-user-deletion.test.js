@@ -332,6 +332,30 @@ describe('Group 1 — onBatchResult path, off mode (legacy behaviour preserved)'
       })
     );
   });
+
+  test('one surviving legacy source confirmation suppresses a second generic terminal', async () => {
+    const { entry } = await startSession('off');
+    entry.addressMirrorController.finalizeDirectAfterWrites = jest.fn(async () => ({
+      handled: false,
+    }));
+
+    await entry.session.onBatchResult(
+      extractionResult({
+        extracted_board_readings: [
+          { field: 'address', value: '2 Test Road', derived: false },
+          { field: 'postcode', value: 'TE1 1ST', derived: false },
+        ],
+        confirmations: [{ field: 'address', text: 'Address, 2 Test Road' }],
+      })
+    );
+
+    expect(entry.addressMirrorController.finalizeDirectAfterWrites).toHaveBeenCalledWith(
+      expect.objectContaining({
+        successfulFields: new Set(['address', 'postcode']),
+        sourceAudible: true,
+      })
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

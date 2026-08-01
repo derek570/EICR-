@@ -187,7 +187,9 @@ legacy frame, never authority to cross question generations.
 An exact direct command that points opposite to a still-pending convenience
 question is consumed deterministically and receives a fail-closed spoken
 instruction to answer the active question first; it never falls through to
-model extraction.
+model extraction. This is distinct from an unsolicited direct command whose
+complete source meets a different non-empty target: that path still emits its
+server-owned “Should I replace it?” deciding question.
 Both direct and convenience terminal outcomes act as durable outboxes: the
 server commits the outcome before materialising its write/read-back ledger,
 then leases each undelivered row to one emitter. The terminal compare-and-set
