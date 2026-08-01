@@ -888,7 +888,7 @@ describe('A2 — wire contract (shared cross-client fixture)', () => {
       path.join(path.dirname(fileURLToPath(import.meta.url)), '../extraction/sonnet-stream.js'),
       'utf8'
     );
-    const batchStart = src.indexOf('session.onBatchResult = (result) =>');
+    const batchStart = src.indexOf('session.onBatchResult = async (result) =>');
     const syncStart = src.indexOf('const needsVcr = Boolean(spoken_response || action)');
     expect(batchStart).toBeGreaterThan(-1);
     expect(syncStart).toBeGreaterThan(-1);

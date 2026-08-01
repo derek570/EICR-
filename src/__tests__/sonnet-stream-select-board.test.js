@@ -379,7 +379,7 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
 
     // Synthesize a turn result containing a select_board op as if Sonnet's
     // dispatcher had pushed it during a tool-loop iteration.
-    entry.session.onBatchResult({
+    await entry.session.onBatchResult({
       extracted_readings: [],
       observations: [],
       board_ops: [{ op: 'select_board', board_id: 'sub-1' }],
@@ -412,7 +412,7 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
       circuits: {},
     };
 
-    entry.session.onBatchResult({
+    await entry.session.onBatchResult({
       extracted_readings: [],
       observations: [],
       board_ops: [
@@ -447,7 +447,7 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
     const entry = getEntry(sid);
     seedTwoBoardSnapshot(entry);
 
-    entry.session.onBatchResult({
+    await entry.session.onBatchResult({
       extracted_readings: [],
       observations: [],
       board_ops: [
@@ -478,7 +478,7 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
     const entry = getEntry(sid);
     seedTwoBoardSnapshot(entry);
 
-    entry.session.onBatchResult({
+    await entry.session.onBatchResult({
       extracted_readings: [],
       observations: [],
       board_ops: [{ op: 'mark_distribution_circuit', circuit_ref: 4, feeds_board_id: 'sub-1' }],
@@ -493,7 +493,7 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
     const entry = getEntry(sid);
     seedTwoBoardSnapshot(entry);
 
-    entry.session.onBatchResult({
+    await entry.session.onBatchResult({
       extracted_readings: [],
       observations: [],
       // no board_ops key at all
@@ -515,7 +515,7 @@ describe('Phase E — current_board_changed broadcast from Sonnet boardOps', () 
       circuits: {},
     };
 
-    entry.session.onBatchResult({
+    await entry.session.onBatchResult({
       extracted_readings: [],
       observations: [],
       board_ops: [{ op: 'select_board', board_id: 'sub-1' }],

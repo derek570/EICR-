@@ -4471,6 +4471,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         const hasRecoveredAnswerAnchor =
           context?.purpose === ADDRESS_MIRROR_PURPOSE ||
           context?.type === ADDRESS_MIRROR_QUESTION_TYPE;
+        const hasDirectClarificationAnchor = context?.type === ADDRESS_MIRROR_DIRECT_QUESTION_TYPE;
         let mirrorOutcome = hasRecoveredAnswerAnchor
           ? await entry.addressMirrorController.resolveRecoveredAnswer({
               context,
@@ -4479,7 +4480,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               perTurnWrites: mirrorWrites,
             })
           : { handled: false };
-        if (!mirrorOutcome.handled) {
+        if (!mirrorOutcome.handled && hasDirectClarificationAnchor) {
           mirrorOutcome = await entry.addressMirrorController.resolveDirectClarification({
             context,
             text: canonicalTranscriptText,
