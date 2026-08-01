@@ -503,6 +503,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         changed: [],
         replayedSource: 0,
         resolutionToken: intent.resolution_token,
+        clearAskId: intent.ask_id ?? null,
       };
     }
     if (intent.status !== 'pending' && !claimedRecoveryIntent) {
@@ -512,6 +513,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         changed: [],
         replayedSource: 0,
         resolutionToken: intent.resolution_token,
+        clearAskId: intent.ask_id ?? null,
       };
     }
     const terminalAnswer =
@@ -712,9 +714,16 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
   async function resolveRecoveredAnswer({ context, text, askId, perTurnWrites }) {
     const intent = await currentIntent();
     if (!intent) return { handled: false };
+    const suppliedAskId = typeof askId === 'string' && askId.length > 0;
+    // Purpose/type is a compatibility anchor only when the client has no id.
+    // Once an explicit id is present it must match the durable generation;
+    // otherwise stale UI can resolve a newer opposite answer.
+    if (suppliedAskId && askId !== intent.ask_id) {
+      return { handled: false, reason: 'stale_address_mirror_ask_id' };
+    }
     const hasExactPurpose = context?.purpose === ADDRESS_MIRROR_PURPOSE;
     const hasLegacyType = context?.type === ADDRESS_MIRROR_QUESTION_TYPE;
-    const hasAskId = typeof askId === 'string' && askId === intent.ask_id;
+    const hasAskId = suppliedAskId && askId === intent.ask_id;
     if (!hasExactPurpose && !hasLegacyType && !hasAskId) return { handled: false };
     const out = await resolveIntentAnswer({ text, askId: hasAskId ? askId : null, perTurnWrites });
     if (out?.handled) terminalRecoveryArmed = false;

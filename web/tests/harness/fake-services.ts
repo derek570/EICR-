@@ -176,6 +176,7 @@ export class FakeSonnetSession implements SonnetSessionLike {
   readonly callbacks: FakeSonnetCallbacks;
   readonly sentTranscripts: SentTranscript[] = [];
   readonly sentAskAnswers: Array<{ toolCallId: string; text: string }> = [];
+  readonly sentAddressMirrorDeliveryAcks: string[] = [];
   readonly diagnostics: Array<{ category: string; payload: Record<string, unknown> }> = [];
   private inFlightToolCallId: string | null = null;
   private state: SonnetConnectionState = 'idle' as SonnetConnectionState;
@@ -204,6 +205,9 @@ export class FakeSonnetSession implements SonnetSessionLike {
     _purpose?: string | null
   ): void {
     this.sentAskAnswers.push({ toolCallId, text });
+  }
+  sendAddressMirrorDeliveryAck(deliveryToken: string): void {
+    this.sentAddressMirrorDeliveryAcks.push(deliveryToken);
   }
   sendCompactRequest(): void {}
   sendJobStateUpdate(): void {}

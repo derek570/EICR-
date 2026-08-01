@@ -312,6 +312,9 @@ export interface ExtractionResult {
   observations?: Observation[];
   validation_alerts?: ValidationAlert[];
   confirmations?: Confirmation[];
+  /** Stable durable-outbox identity. Present on extraction only when an
+   * owed confirmation (rather than a VCR) is the terminal audible family. */
+  address_mirror_delivery_token?: string | null;
   extraction_failed?: boolean;
   error_message?: string;
   /** Multi-board mutation ops — Phase 6 wire channel. Decoded on the
@@ -656,6 +659,7 @@ export const VOICE_LATENCY_SUPPORTS: readonly string[] = [
   // /ep execution log. Rollback = server BOARD_CLEAR_DISABLED, never
   // un-advertising.
   'board_clear_v1',
+  'address_mirror_delivery_ack_v1',
 ];
 
 export class SonnetSession {
@@ -1238,6 +1242,15 @@ export class SonnetSession {
     this.sendBuffered(msg);
   }
 
+  /** Persisted audible-start ACK for the address-mirror durable outbox. */
+  sendAddressMirrorDeliveryAck(deliveryToken: string): void {
+    if (!deliveryToken || deliveryToken.length > 160) return;
+    this.sendBuffered({
+      type: 'address_mirror_delivery_ack',
+      delivery_token: deliveryToken,
+    });
+  }
+
   /**
    * Diagnostic envelope that lands on CloudWatch as `Client diagnostic`.
    * Mirrors iOS `ServerWebSocketService.sendClientDiagnostic`.
@@ -1599,7 +1612,12 @@ export class SonnetSession {
       return;
     }
     const type = msg.type as string | undefined;
-    if (type === 'transcript' || type === 'correction' || type === 'ask_user_answered') {
+    if (
+      type === 'transcript' ||
+      type === 'correction' ||
+      type === 'ask_user_answered' ||
+      type === 'address_mirror_delivery_ack'
+    ) {
       this.pendingMessages.push(msg);
     }
     // Other types disconnected = drop. Mirrors iOS SEND_DROPPED branch.
@@ -1773,6 +1791,10 @@ export class SonnetSession {
             observations,
             validation_alerts: validationAlerts,
             confirmations,
+            address_mirror_delivery_token:
+              typeof result.address_mirror_delivery_token === 'string'
+                ? result.address_mirror_delivery_token
+                : undefined,
             extraction_failed: result.extraction_failed,
             error_message: result.error_message,
             board_ops: boardOps,

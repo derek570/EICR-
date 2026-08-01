@@ -774,6 +774,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     sessionId: session.sessionId,
     lane: 'live',
   });
+  // A blocking ask can be answered by a later transcript carrying its own
+  // postcode hint. The mutable ref lets the answer dispatcher replace the
+  // opening utterance's lookup before any resumed postcode write dispatches.
+  const postcodeLookupRef = { current: postcodeLookupResult };
   const postcodeLookupNote = buildPostcodeLookupNote(postcodeLookupResult);
 
   // Per-turn writes accumulator. Function-local — never stored on session
@@ -1127,6 +1131,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       hasBoardClearV1,
       onUnknownToolRefusal,
       postcodeLookupResult,
+      postcodeLookupRef,
     });
     // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
     // path into the normal write infrastructure: when ask_user carries a
@@ -1190,6 +1195,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // initial/pvr await when the resolved outcome carries a non-empty epoch
         // (direct-frame `utterance_id` OR transcript-origin `response_utterance_id`).
         responseEpochRef,
+        postcodeLookupRef,
         // Plan 2A channel 3 (2026-07-30, feedback id 112) — STAGING callback for
         // an auto-resolved write that did not land. A callback rather than the
         // `perTurnWrites` accumulator itself: the ask dispatcher has never held

@@ -106,4 +106,36 @@ describe('address mirror ask dispatcher boundary', () => {
       disposition: 'source_incomplete',
     });
   });
+
+  test('already-terminal duplicate clears the stale ask from the client', async () => {
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = openWs();
+    const controller = {
+      claimLiveAsk: jest.fn(async () => ({ ok: true })),
+      resolveLiveAnswer: jest.fn(async () => ({
+        handled: true,
+        outcome: 'duplicate',
+        changed: [],
+        clearAskId: 'toolu-mirror-terminal',
+      })),
+    };
+    const dispatcher = createAskDispatcher(
+      { sessionId: 'sess-mirror', stateSnapshot: { circuits: { 0: {} } } },
+      { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      'turn-mirror',
+      pendingAsks,
+      ws,
+      { addressMirrorController: controller }
+    );
+    const promise = dispatcher(mirrorCall('toolu-mirror-terminal'), {});
+    await tick();
+    pendingAsks.resolve('toolu-mirror-terminal', { answered: true, user_text: 'yes' });
+    await promise;
+
+    expect(ws.sent).toContainEqual({
+      type: 'cancel_pending_tts',
+      prefix: 'toolu-mirror-terminal',
+      sessionId: 'sess-mirror',
+    });
+  });
 });

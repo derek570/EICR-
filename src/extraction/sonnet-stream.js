@@ -32,7 +32,11 @@ import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
 import { runShadowHarness } from './stage6-shadow-harness.js';
-import { POSTCODE_HINT_STATE, resolvePostcodeHintState } from './postcode-hint.js';
+import {
+  POSTCODE_HINT_STATE,
+  lookupResolvedPostcodeHint,
+  resolvePostcodeHintState,
+} from './postcode-hint.js';
 import {
   ADDRESS_MIRROR_DIRECT_QUESTION_TYPE,
   ADDRESS_MIRROR_DIRECT_FOLLOWUP,
@@ -1143,7 +1147,40 @@ export function projectExtractionResultForWire(result) {
     observationUpdates: _observationUpdates,
     ...rest
   } = result;
-  return { readings: extracted_readings, ...rest };
+  const projected = { readings: extracted_readings, ...rest };
+  const mirrorDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
+  // When an owed dictated source confirmation is the terminal audible
+  // family there is deliberately no VCR frame. Put the same stable token on
+  // the extraction envelope so the client can bind it to that confirmation's
+  // playback-start lifecycle and ACK durable delivery only after audio begins.
+  if (mirrorDelivery?.kind && mirrorDelivery?.token && !_spokenResponse && !_action) {
+    projected.address_mirror_delivery_token = `${mirrorDelivery.kind}:${mirrorDelivery.token}`;
+  }
+  return projected;
+}
+
+/**
+ * One durable direct-command occurrence. Utterance id is canonical; legacy
+ * clients retain reconnect identity through their original frame timestamp.
+ * Truly anchorless frames cannot be distinguished from an intentional later
+ * repeat, so they receive a process-local UUID rather than a permanent prose
+ * hash that would suppress the command forever.
+ */
+export function addressMirrorOccurrenceAnchor(msg = {}) {
+  if (typeof msg.utterance_id === 'string' && msg.utterance_id) {
+    return `id:${msg.utterance_id}`;
+  }
+  if (typeof msg.timestamp === 'string' && msg.timestamp) {
+    return `timestamp:${msg.timestamp}`;
+  }
+  return `ephemeral:${randomUUID()}`;
+}
+
+export function shouldAwaitAddressMirrorPlaybackAck(entry, result) {
+  return Boolean(
+    result?.[ADDRESS_MIRROR_DELIVERY] &&
+    entry?.voiceLatency?.capabilities?.hasAddressMirrorDeliveryAckV1 === true
+  );
 }
 
 /**
@@ -2149,6 +2186,44 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           case 'heartbeat':
             break;
 
+          // Address-regex retirement: capable clients persist this token and
+          // send the ACK at audible playback start. Socket flush alone is not
+          // client receipt; only this owner/job-scoped application ACK closes
+          // the durable outcome outbox.
+          case 'address_mirror_delivery_ack': {
+            if (!currentSessionId || !activeSessions.has(currentSessionId)) break;
+            const entry = activeSessions.get(currentSessionId);
+            const raw = typeof msg.delivery_token === 'string' ? msg.delivery_token : '';
+            const separator = raw.indexOf(':');
+            const kind = separator > 0 ? raw.slice(0, separator) : '';
+            const token = separator > 0 ? raw.slice(separator + 1) : '';
+            if (
+              !entry.addressMirrorController ||
+              (kind !== 'convenience' && kind !== 'direct') ||
+              token.length < 1 ||
+              token.length > 160
+            ) {
+              logger.warn('stage6.address_mirror_delivery_ack_rejected', {
+                sessionId: currentSessionId,
+                kind: kind || null,
+              });
+              break;
+            }
+            const marked = await entry.addressMirrorController.markDelivered({ kind, token });
+            if (marked) {
+              if (entry.addressMirrorOutboxRetryHandle) {
+                clearTimeout(entry.addressMirrorOutboxRetryHandle);
+                entry.addressMirrorOutboxRetryHandle = null;
+              }
+              logger.info('stage6.address_mirror_delivery_acknowledged', {
+                sessionId: currentSessionId,
+                kind,
+              });
+              await replayAddressMirrorOutbox(ws, entry, currentSessionId);
+            }
+            break;
+          }
+
           // Stage 6 Phase 3 Plan 03-08 — iOS reply to a blocking ask_user.
           //
           // Two question sources land on this case, distinguished by the
@@ -2296,6 +2371,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   sessionId: currentSessionId,
                   tool_call_id: msg.tool_call_id,
                 });
+                if (recovered.clearAskId) {
+                  sendAddressMirrorAskClear(ws, recovered.clearAskId, currentSessionId);
+                }
                 break;
               }
               if (
@@ -2321,7 +2399,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   entry.session
                 );
                 if (!sent.ok) entry.pendingExtractions.push(result);
-                else await markAddressMirrorResultDelivered(entry, result, currentSessionId);
+                else await finalizeAddressMirrorResultDelivery(entry, result, currentSessionId);
                 if (directResponseUtteranceId) {
                   entry.consumedAskUtterances.add(directResponseUtteranceId);
                   entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
@@ -3389,7 +3467,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               resume_cursor: out.cursor ?? null,
             });
           } else {
-            await markAddressMirrorResultDelivered(entryRef, result, sessionId);
+            await finalizeAddressMirrorResultDelivery(entryRef, result, sessionId);
             // Rule-6 updates are already final inspector corrections and are
             // deliberately excluded; only new observations enter refinement.
             if (Array.isArray(result.observations) && result.observations.length > 0 && entryRef) {
@@ -4208,7 +4286,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           halted = true;
           continue;
         }
-        await markAddressMirrorResultDelivered(entry, result, sessionId);
+        await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
         // A1 Codex r1 — answers delivered via reconnect replay carry the
         // same redacted emission telemetry as the sync path (non-enumerable
         // answer_source survives buffering by reference).
@@ -4267,6 +4345,34 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
   }
 
+  function scheduleAddressMirrorOutboxRetry(entry, sessionId) {
+    if (entry?.addressMirrorOutboxRetryHandle) return;
+    entry.addressMirrorOutboxRetryHandle = setTimeout(() => {
+      entry.addressMirrorOutboxRetryHandle = null;
+      const currentWs = entry.ws;
+      if (currentWs?.readyState === currentWs?.OPEN) {
+        replayAddressMirrorOutbox(currentWs, entry, sessionId).catch((error) => {
+          logger.warn('Address mirror acknowledgement retry failed', {
+            sessionId,
+            error: error?.message ?? String(error),
+          });
+        });
+      }
+    }, 10_100);
+    entry.addressMirrorOutboxRetryHandle.unref?.();
+  }
+
+  async function finalizeAddressMirrorResultDelivery(entry, result, sessionId) {
+    const delivery = result?.[ADDRESS_MIRROR_DELIVERY];
+    if (!delivery) return true;
+    if (shouldAwaitAddressMirrorPlaybackAck(entry, result)) {
+      scheduleAddressMirrorOutboxRetry(entry, sessionId);
+      return false;
+    }
+    await markAddressMirrorResultDelivered(entry, result, sessionId);
+    return true;
+  }
+
   async function replayAddressMirrorOutbox(ws, entry, sessionId) {
     if (!entry?.addressMirrorController || ws?.readyState !== ws?.OPEN) return;
     // The direct ledger is append-only, so more than one terminal operation
@@ -4277,20 +4383,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       const writes = createPerTurnWrites();
       const recovered = await entry.addressMirrorController.recoverUndelivered(writes);
       if (!recovered?.handled || recovered.outcome === 'duplicate') {
-        if (recovered?.reason === 'delivery_claimed' && !entry.addressMirrorOutboxRetryHandle) {
-          entry.addressMirrorOutboxRetryHandle = setTimeout(() => {
-            entry.addressMirrorOutboxRetryHandle = null;
-            const currentWs = entry.ws;
-            if (currentWs?.readyState === currentWs?.OPEN) {
-              replayAddressMirrorOutbox(currentWs, entry, sessionId).catch((error) => {
-                logger.warn('Address mirror leased outbox retry failed', {
-                  sessionId,
-                  error: error?.message ?? String(error),
-                });
-              });
-            }
-          }, 10_100);
-          entry.addressMirrorOutboxRetryHandle.unref?.();
+        if (recovered?.reason === 'delivery_claimed') {
+          scheduleAddressMirrorOutboxRetry(entry, sessionId);
         }
         return;
       }
@@ -4315,7 +4409,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (recovered.outcome === 'conflict' && recovered.clearAskId) {
         sendAddressMirrorAskClear(ws, recovered.clearAskId, sessionId);
       }
-      await markAddressMirrorResultDelivered(entry, result, sessionId);
+      const delivered = await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
+      if (!delivered) return;
     }
   }
 
@@ -4627,10 +4722,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (!(entry.addressMirrorReservations instanceof Set)) {
         entry.addressMirrorReservations = new Set();
       }
-      const reservationKey =
-        typeof msg.utterance_id === 'string' && msg.utterance_id
-          ? `id:${msg.utterance_id}`
-          : `text:${createHash('sha256').update(canonicalTranscriptText).digest('hex').slice(0, 24)}`;
+      // The durable direct-operation identity must describe one occurrence,
+      // not the command prose forever. Current clients supply an utterance id;
+      // their timestamp is the stable reconnect anchor for legacy/id-less
+      // envelopes. A truly anchorless legacy frame gets a one-process UUID.
+      const occurrenceAnchor = addressMirrorOccurrenceAnchor(msg);
+      const reservationKey = `${occurrenceAnchor}:${createHash('sha256')
+        .update(canonicalTranscriptText)
+        .digest('hex')
+        .slice(0, 24)}`;
       if (entry.addressMirrorReservations.has(reservationKey)) {
         stampSeenTranscript();
         consumeDestructiveToken('address_mirror_controller_duplicate');
@@ -4676,7 +4776,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           mirrorOutcome = await entry.addressMirrorController.applyDirectCommand(
             canonicalTranscriptText,
             mirrorWrites,
-            typeof msg.utterance_id === 'string' ? msg.utterance_id : reservationKey.slice(5)
+            occurrenceAnchor
           );
         }
 
@@ -4718,8 +4818,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             entry.session
           );
           if (!sent.ok) entry.pendingExtractions.push(result);
-          else await markAddressMirrorResultDelivered(entry, result, sessionId);
-          if (mirrorOutcome.outcome === 'conflict') {
+          else await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
+          if (
+            (mirrorOutcome.outcome === 'conflict' || mirrorOutcome.outcome === 'duplicate') &&
+            mirrorOutcome.clearAskId
+          ) {
             sendAddressMirrorAskClear(ws, mirrorOutcome.clearAskId, sessionId);
           }
           stampSeenTranscript();
@@ -4943,6 +5046,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           // is the direct-frame path); becomes the response epoch.
           response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
         };
+        // This transcript is consumed as the blocking ask's answer and never
+        // enters a second runLiveMode call. Preserve its own lookup result on
+        // the in-memory resolution so a bare-postcode answer can enrich the
+        // authoritative postcode write made by the already-running tool loop.
+        preResolvePayload.postcode_lookup_result = await lookupResolvedPostcodeHint(
+          postcodeHintState,
+          { logger, sessionId, lane: 'live_ask_answer' }
+        );
         if (sanitisedPre.truncated || sanitisedPre.stripped) {
           preResolvePayload.sanitisation = {
             truncated: sanitisedPre.truncated,
@@ -6008,7 +6119,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           entry.session
         );
         if (ledgerOut.ok) {
-          await markAddressMirrorResultDelivered(entry, result, sessionId);
+          await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
           // Fire-and-forget BPG4 / BS 7671 refinement for new observations.
           // Runs AFTER the ledger so the inspector sees the observation
           // immediately; the refined code/regulation arrives a second or two

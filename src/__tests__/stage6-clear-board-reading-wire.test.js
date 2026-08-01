@@ -170,12 +170,13 @@ function connect(fakeWsOpts) {
 }
 const sendFrame = (ws, frame) => ws._emit('message', Buffer.from(JSON.stringify(frame)));
 
-async function startSession(fakeWsOpts) {
+async function startSession(fakeWsOpts, capabilities) {
   const ws = connect(fakeWsOpts);
   await sendFrame(ws, {
     type: 'session_start',
     sessionId: 'sess-ledger',
     jobState: { certificateType: 'eicr' },
+    ...(capabilities ? { capabilities } : {}),
   });
   return { ws, entry: activeSessions.get('sess-ledger') };
 }
@@ -272,5 +273,34 @@ describe('§3.4c ordered frame ledger — reconnect flush through the REAL seam'
     const { ws } = await startSession();
     const vcr = ws._sent.find((frame) => frame.type === 'voice_command_response');
     expect(vcr.address_mirror_delivery_token).toBe('direct:operation-7');
+  });
+
+  test('capable client socket flush leaves delivery pending until playback ACK', async () => {
+    const { entry } = await startSession();
+    const markDelivered = jest
+      .spyOn(entry.addressMirrorController, 'markDelivered')
+      .mockResolvedValue(true);
+    const result = makeLedgerResult();
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'operation-ack-1', claimToken: 'lease-ack-1' },
+      enumerable: false,
+    });
+    entry.pendingExtractions.push(result);
+
+    const { ws } = await startSession(undefined, {
+      voice_latency: { version: 1, supports: ['address_mirror_delivery_ack_v1'] },
+    });
+
+    expect(ledgerFrames(ws)).toEqual(EXPECTED_ORDER);
+    expect(markDelivered).not.toHaveBeenCalled();
+    await sendFrame(ws, {
+      type: 'address_mirror_delivery_ack',
+      delivery_token: 'direct:operation-ack-1',
+    });
+    expect(markDelivered).toHaveBeenCalledWith({
+      kind: 'direct',
+      token: 'operation-ack-1',
+    });
+    expect(entry.addressMirrorOutboxRetryHandle).toBeNull();
   });
 });

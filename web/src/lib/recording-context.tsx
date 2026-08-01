@@ -102,6 +102,11 @@ import {
 } from './recording/tts-queue';
 import { ConfirmationDedupeStore } from './recording/confirmation-dedupe-store';
 import {
+  AddressMirrorDeliveryStore,
+  addressMirrorDeliveryDedupeKey,
+  tokenFromAddressMirrorDeliveryDedupeKey,
+} from './recording/address-mirror-delivery-store';
+import {
   handleCancelPendingTts,
   handleInspectorStoppedSpeaking,
 } from './recording/tts-prompt-helpers';
@@ -1187,11 +1192,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // sonnet-stream.js:3193-3243 never saw the question context and bare
   // replies like "yes"/"no"/"code 2" lost attribution.
   const inFlightQuestionRef = React.useRef(new InFlightQuestionTracker());
-  // Stable server-owned address outcome tokens prevent a crash/reconnect
-  // outbox replay from speaking the same decision acknowledgement twice.
-  // Session memory is sufficient for transport reconnects; keep it bounded
-  // for unusually long inspections.
-  const heardAddressMirrorDeliveryTokensRef = React.useRef(new Set<string>());
+  const addressMirrorDeliveryStoreRef = React.useRef<AddressMirrorDeliveryStore | null>(null);
+  if (!addressMirrorDeliveryStoreRef.current) {
+    addressMirrorDeliveryStoreRef.current = AddressMirrorDeliveryStore.fromBrowser();
+  }
+  const addressMirrorQueueReservationsRef = React.useRef(
+    new Map<string, { token: string; confirmationKey: string | null }>()
+  );
   // Stamps the most-recent text passed to `speak()`. The TTS lifecycle
   // observer (event: 'start' | 'end') doesn't carry the spoken text,
   // but the in-flight tracker matches FIFO entries by exact question
@@ -2443,7 +2450,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // value discriminator, so "same field, different value" now reads
       // back — audio-first invariant #1 (exactly once, never zero).
       const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
-      for (const conf of confirmations) {
+      const addressDeliveryToken = result.address_mirror_delivery_token ?? null;
+      let addressTerminalIndex = -1;
+      if (addressDeliveryToken) {
+        for (let i = confirmations.length - 1; i >= 0; i -= 1) {
+          if (typeof confirmations[i]?.text === 'string' && confirmations[i].text.trim()) {
+            addressTerminalIndex = i;
+            break;
+          }
+        }
+      }
+      for (const [confirmationIndex, conf] of confirmations.entries()) {
         if (!conf || typeof conf.text !== 'string' || conf.text.trim().length === 0) continue;
         const dedupeKey = buildConfirmationDedupeKey(conf);
         // §A1b — field-nil confirmations (apologies / system prompts)
@@ -2453,6 +2470,41 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // operation token belongs in the permanent store: reconnect replay of
         // the same owed suffix dedupes, while a later re-code has a new token.
         const fieldIsNil = conf.field == null && !isObservationRecodeConfirmation(conf);
+        const ownsAddressDelivery =
+          Boolean(addressDeliveryToken) && confirmationIndex === addressTerminalIndex;
+        if (ownsAddressDelivery && addressDeliveryToken) {
+          const deliveryStore = addressMirrorDeliveryStoreRef.current!;
+          if (deliveryStore.isHeard(addressDeliveryToken)) {
+            sonnetRef.current?.sendAddressMirrorDeliveryAck(addressDeliveryToken);
+            continue;
+          }
+          if (!deliveryStore.reserve(addressDeliveryToken)) continue;
+          const sentence = confirmationToSentence(conf);
+          if (!sentence) {
+            deliveryStore.discard(addressDeliveryToken);
+            continue;
+          }
+          // A prior ordinary frame may already have spoken this exact
+          // confirmation. Keep that normal dedupe record intact; the durable
+          // address terminal still gets its own audible delivery, but a queue
+          // discard must not erase an older heard confirmation's identity.
+          const confirmationKeyWasLive = confirmationDedupeStoreRef.current.isLive(
+            dedupeKey,
+            fieldIsNil
+          );
+          if (!confirmationKeyWasLive) {
+            confirmationDedupeStoreRef.current.reserve(dedupeKey, fieldIsNil);
+          }
+          const deliveryDedupeKey = addressMirrorDeliveryDedupeKey(addressDeliveryToken);
+          addressMirrorQueueReservationsRef.current.set(deliveryDedupeKey, {
+            token: addressDeliveryToken,
+            confirmationKey: confirmationKeyWasLive ? null : dedupeKey,
+          });
+          // The source read-back is owed by the durable controller even when
+          // the ordinary confirmation toggle is off.
+          speakConfirmation(sentence, { force: true, dedupeKey: deliveryDedupeKey });
+          continue;
+        }
         if (confirmationDedupeStoreRef.current.isLive(dedupeKey, fieldIsNil)) {
           clientDiagnostic('onExtraction_confirmation_deduped', {
             dedupeKey,
@@ -2541,11 +2593,34 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // TTL stamp left behind here would suppress a re-emitted apology for
     // up to 30 s despite it never being heard.
     ttsQueueSetOnDiscarded((dedupeKey) => {
+      const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
+      if (addressToken) {
+        const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
+        addressMirrorDeliveryStoreRef.current?.discard(addressToken);
+        if (reservation?.confirmationKey) {
+          confirmationDedupeStoreRef.current.forget(reservation.confirmationKey);
+        }
+        addressMirrorQueueReservationsRef.current.delete(dedupeKey);
+        return;
+      }
       confirmationDedupeStoreRef.current.forget(dedupeKey);
     });
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
     ttsQueueSetOnPlaybackStarted((dedupeKey) => {
+      const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
+      if (addressToken) {
+        const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
+        // Persist before ACK so an app/tab restart in the tiny post-start
+        // window cannot replay the same terminal audibly.
+        addressMirrorDeliveryStoreRef.current?.markPlaybackStarted(addressToken);
+        if (reservation?.confirmationKey) {
+          confirmationDedupeStoreRef.current.markPlaybackStarted(reservation.confirmationKey);
+        }
+        addressMirrorQueueReservationsRef.current.delete(dedupeKey);
+        sonnetRef.current?.sendAddressMirrorDeliveryAck(addressToken);
+        return;
+      }
       confirmationDedupeStoreRef.current.markPlaybackStarted(dedupeKey);
     });
 
@@ -2983,18 +3058,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       onVoiceCommandResponse: (response) => {
         const deliveryToken = response.address_mirror_delivery_token;
         if (deliveryToken) {
-          const heard = heardAddressMirrorDeliveryTokensRef.current;
-          if (heard.has(deliveryToken)) {
+          const deliveryStore = addressMirrorDeliveryStoreRef.current!;
+          if (deliveryStore.isHeard(deliveryToken)) {
             clientDiagnostic('address_mirror_voice_response_deduped', {
               deliveryTokenShort: deliveryToken.slice(0, 16),
             });
+            sonnetRef.current?.sendAddressMirrorDeliveryAck(deliveryToken);
             return;
           }
-          heard.add(deliveryToken);
-          while (heard.size > 256) {
-            const oldest = heard.values().next().value;
-            if (typeof oldest !== 'string') break;
-            heard.delete(oldest);
+          if (!deliveryStore.reserve(deliveryToken)) {
+            clientDiagnostic('address_mirror_voice_response_reserved', {
+              deliveryTokenShort: deliveryToken.slice(0, 16),
+            });
+            return;
           }
         }
         // iOS canon: DeepgramRecordingViewModel.handleVoiceCommandResponse
@@ -3044,7 +3120,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // toggle on both clients (documented opt-out), and answers still
           // queue behind read-backs on the existing FIFO (Resolved decision
           // 3 — no queue-priority change).
-          speakConfirmation(response.spoken_response, { force: true });
+          if (deliveryToken) {
+            const dedupeKey = addressMirrorDeliveryDedupeKey(deliveryToken);
+            addressMirrorQueueReservationsRef.current.set(dedupeKey, {
+              token: deliveryToken,
+              confirmationKey: null,
+            });
+            speakConfirmation(response.spoken_response, { force: true, dedupeKey });
+          } else {
+            speakConfirmation(response.spoken_response, { force: true });
+          }
+        } else if (deliveryToken) {
+          // A delivery token without an audible terminal is malformed. Release
+          // the reservation so the server retry remains speakable.
+          addressMirrorDeliveryStoreRef.current?.discard(deliveryToken);
         }
         sleepManagerRef.current?.onSpeechActivity();
       },
@@ -3562,6 +3651,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // into a new recording started within 30 s would suppress that
     // session's first apology.
     confirmationDedupeStoreRef.current.reset();
+    addressMirrorDeliveryStoreRef.current?.clearReservations();
+    addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();
     // Capture the new session id synchronously and snapshot it locally so
     // that any async handler resolving below (mic permission prompt, WS
@@ -3780,6 +3871,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // field-nil TTL map + reservations) so the next session starts with
     // a clean slate.
     confirmationDedupeStoreRef.current.reset();
+    addressMirrorDeliveryStoreRef.current?.clearReservations();
+    addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 

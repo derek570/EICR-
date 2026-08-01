@@ -552,7 +552,7 @@ export async function dispatchRecordBoardReading(call, ctx) {
   // corresponding town/county family. Derived entries ride the ordinary board
   // journal but are excluded from spoken confirmation candidacy.
   if (writeCanonical === 'postcode' || writeCanonical === 'client_postcode') {
-    const lookup = ctx.postcodeLookupResult;
+    const lookup = ctx.postcodeLookupRef?.current ?? ctx.postcodeLookupResult;
     const writtenPostcode = canonicalisePostcodeHint(input.value);
     const lookupPostcode = canonicalisePostcodeHint(lookup?.postcode);
     if (lookup?.valid === true && writtenPostcode && writtenPostcode === lookupPostcode) {

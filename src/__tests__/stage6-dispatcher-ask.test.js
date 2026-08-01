@@ -189,6 +189,43 @@ describe('createAskDispatcher — shadow-mode short-circuit', () => {
 // --- Group 3: Live happy path ---------------------------------------------
 
 describe('createAskDispatcher — live happy path', () => {
+  test('answer-owned postcode lookup replaces the opening lookup ref before loop resume', async () => {
+    const pending = createPendingAsksRegistry();
+    const postcodeLookupRef = { current: { valid: false, reason: 'absent' } };
+    const dispatch = createAskDispatcher(
+      makeSession('live'),
+      makeLogger(),
+      'turn-postcode-answer',
+      pending,
+      makeWs(),
+      { postcodeLookupRef }
+    );
+    const promise = dispatch(makeCall('toolu-postcode-answer'), {
+      sessionId: 'sess-1',
+      turnId: 'turn-postcode-answer',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    pending.resolve('toolu-postcode-answer', {
+      answered: true,
+      user_text: 'RG1 5QA',
+      postcode_lookup_result: {
+        valid: true,
+        postcode: 'RG1 5QA',
+        town: 'Reading',
+        county: 'Berkshire',
+      },
+    });
+
+    await promise;
+    expect(postcodeLookupRef.current).toMatchObject({
+      valid: true,
+      postcode: 'RG1 5QA',
+      town: 'Reading',
+      county: 'Berkshire',
+    });
+  });
+
   test('live mode: registers, emits ask_user_started, resolves via registry.resolve → answered body + log', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick'] });
     try {

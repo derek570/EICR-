@@ -61,6 +61,7 @@ export interface SonnetSessionLike {
     utteranceId?: string,
     purpose?: string | null
   ): void;
+  sendAddressMirrorDeliveryAck(deliveryToken: string): void;
   sendCompactRequest(): void;
   sendJobStateUpdate(job: unknown): void;
   peekInFlightToolCallId(): string | null;

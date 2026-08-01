@@ -244,6 +244,10 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     opts?.responseEpochRef && typeof opts.responseEpochRef === 'object'
       ? opts.responseEpochRef
       : null;
+  const postcodeLookupRef =
+    opts?.postcodeLookupRef && typeof opts.postcodeLookupRef === 'object'
+      ? opts.postcodeLookupRef
+      : null;
   // Plan 2A channel 3 (2026-07-30, feedback id 112) — STAGING hook for the
   // partial-failure notice channel. Fired once per auto-resolved write that did
   // not land, with a fully-formed notice spec (see stageAskAutoResolveFailure).
@@ -802,6 +806,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // breach the cancellation guard's contract; the guard still stops all of
     // those below.
     advanceResponseEpoch(responseEpochRef, outcome);
+    if (postcodeLookupRef && outcome?.postcode_lookup_result?.valid === true) {
+      postcodeLookupRef.current = outcome.postcode_lookup_result;
+    }
 
     // P4 (ask-decline-ack-net) — stamp the INITIAL ask's resolution into the
     // per-turn ask-lifecycle ledger. `answered===true` (a real user reply — a
@@ -906,7 +913,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     });
     if (mirrorResolution?.handled) {
       if (
-        mirrorResolution.outcome === 'conflict' &&
+        (mirrorResolution.outcome === 'conflict' || mirrorResolution.outcome === 'duplicate') &&
         typeof mirrorResolution.clearAskId === 'string' &&
         ws?.readyState === ws?.OPEN
       ) {

@@ -777,6 +777,37 @@ describe('Group B — inbound ask_user_answered routing', () => {
   });
 });
 
+describe('address mirror durable delivery ACK routing', () => {
+  test('owned capable-session ACK marks the exact kind/token and rejects malformed tokens', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-ack',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+      capabilities: {
+        voice_latency: { version: 1, supports: ['address_mirror_delivery_ack_v1'] },
+      },
+    });
+    const entry = activeSessions.get('sess-address-ack');
+    const markDelivered = jest
+      .spyOn(entry.addressMirrorController, 'markDelivered')
+      .mockResolvedValue(true);
+
+    await sendFrame(ws, {
+      type: 'address_mirror_delivery_ack',
+      delivery_token: 'direct:operation-7',
+    });
+    expect(markDelivered).toHaveBeenCalledWith({ kind: 'direct', token: 'operation-7' });
+
+    await sendFrame(ws, {
+      type: 'address_mirror_delivery_ack',
+      delivery_token: 'unknown:operation-8',
+    });
+    expect(markDelivered).toHaveBeenCalledTimes(1);
+  });
+});
+
 // -----------------------------------------------------------------------------
 // Group C — termination paths call rejectAll in strict order
 // -----------------------------------------------------------------------------

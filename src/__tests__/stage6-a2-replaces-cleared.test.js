@@ -82,9 +82,12 @@ jest.unstable_mockModule('../storage.js', () => ({
 
 const {
   projectExtractionResultForWire,
+  addressMirrorOccurrenceAnchor,
+  shouldAwaitAddressMirrorPlaybackAck,
   _test_validateAndCorrectFields,
   _test_buildResultFrameLedger,
 } = await import('../extraction/sonnet-stream.js');
+const { ADDRESS_MIRROR_DELIVERY } = await import('../extraction/address-mirror-controller.js');
 
 const WIRE_CONTRACT_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1007,6 +1010,61 @@ describe('A2 — projectExtractionResultForWire', () => {
       some_future_frame_key: { nested: true },
     });
     expect(projected.some_future_frame_key).toEqual({ nested: true });
+  });
+
+  test('owed confirmation carries a stable address delivery token but no server internals', () => {
+    const result = {
+      extracted_readings: [],
+      confirmations: [{ text: 'Site address copied to client' }],
+    };
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'convenience', token: 'resolution-7', claimToken: 'lease-secret' },
+      enumerable: false,
+    });
+
+    const projected = projectExtractionResultForWire(result);
+
+    expect(projected.address_mirror_delivery_token).toBe('convenience:resolution-7');
+    expect(JSON.stringify(projected)).not.toContain('lease-secret');
+  });
+
+  test('playback ACK capability alone decides whether socket flush may complete delivery', () => {
+    const result = {};
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'operation-7' },
+      enumerable: false,
+    });
+    expect(
+      shouldAwaitAddressMirrorPlaybackAck(
+        { voiceLatency: { capabilities: { hasAddressMirrorDeliveryAckV1: true } } },
+        result
+      )
+    ).toBe(true);
+    expect(
+      shouldAwaitAddressMirrorPlaybackAck(
+        { voiceLatency: { capabilities: { hasAddressMirrorDeliveryAckV1: false } } },
+        result
+      )
+    ).toBe(false);
+    expect(
+      shouldAwaitAddressMirrorPlaybackAck(
+        { voiceLatency: { capabilities: { hasAddressMirrorDeliveryAckV1: true } } },
+        {}
+      )
+    ).toBe(false);
+  });
+
+  test('id-less direct command identity is per timestamp, never a permanent prose hash', () => {
+    expect(addressMirrorOccurrenceAnchor({ utterance_id: 'utt-1', timestamp: 'old' })).toBe(
+      'id:utt-1'
+    );
+    expect(addressMirrorOccurrenceAnchor({ timestamp: '2026-08-01T12:00:00Z' })).toBe(
+      'timestamp:2026-08-01T12:00:00Z'
+    );
+    expect(addressMirrorOccurrenceAnchor({ timestamp: '2026-08-01T12:01:00Z' })).not.toBe(
+      addressMirrorOccurrenceAnchor({ timestamp: '2026-08-01T12:00:00Z' })
+    );
+    expect(addressMirrorOccurrenceAnchor({})).not.toBe(addressMirrorOccurrenceAnchor({}));
   });
 });
 

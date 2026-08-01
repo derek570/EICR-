@@ -2641,6 +2641,7 @@ export class EICRExtractionSession {
       sessionId: this.sessionId,
       lane: 'legacy',
     });
+    const postcodeLookupResults = [];
     let userMessage = this.buildUserMessage(transcriptText, regexResults, postcodeLookupResult);
     if (options.confirmationsEnabled) {
       userMessage += '\n\n[CONFIRMATIONS ENABLED]';
@@ -2651,22 +2652,30 @@ export class EICRExtractionSession {
     const recoverable = this.failedUtteranceQueue.filter((q) => now - q.timestamp < 60000);
     this.failedUtteranceQueue = [];
     if (recoverable.length > 0) {
-      const recoveredMessages = await Promise.all(
+      const recoveredLookups = await Promise.all(
         recoverable.map(async (queued) => {
           const queuedLookup = await lookupResolvedPostcodeHint(queued.postcodeHintState, {
             logger,
             sessionId: this.sessionId,
             lane: 'legacy_recovery',
           });
-          return this.buildUserMessage(queued.text, [], queuedLookup);
+          return {
+            lookup: queuedLookup,
+            message: this.buildUserMessage(queued.text, [], queuedLookup),
+          };
         })
       );
-      const recoveredText = recoveredMessages.join(' ... ');
+      postcodeLookupResults.push(...recoveredLookups.map((item) => item.lookup));
+      const recoveredText = recoveredLookups.map((item) => item.message).join(' ... ');
       userMessage = `[Previously unprocessed]: ${recoveredText}\n\n[New]: ${userMessage}`;
       logger.info(
         `Session ${this.sessionId} Recovered ${recoverable.length} queued utterance(s) from failed extractions`
       );
     }
+    // The current/new utterance comes last in the composed model message, so
+    // it also wins if two queued invocations somehow share a postcode with
+    // different mocked lookup metadata.
+    postcodeLookupResults.push(postcodeLookupResult);
 
     // Build messages array: sliding window + new user message with cache_control.
     // Structured output is enforced via Anthropic tool-use (tool_choice forces
@@ -2948,19 +2957,27 @@ export class EICRExtractionSession {
     // locality only after that write is authoritative so a client postcode
     // can never pre-fill the site, and preserve a real/manual locality the
     // same response already wrote. Only actual snapshot changes ride the wire.
-    if (postcodeLookupResult?.valid === true) {
-      const lookupCanonical = canonicalisePostcodeHint(postcodeLookupResult.postcode);
-      const postcodeWrites = result.extracted_readings.filter(
-        (reading) =>
-          Number(reading?.circuit) === 0 &&
-          (reading.field === 'postcode' || reading.field === 'client_postcode') &&
-          canonicalisePostcodeHint(reading.value) === lookupCanonical
-      );
-      for (const reading of postcodeWrites) {
+    // Recovery can place older failed utterances and the new utterance in one
+    // model response. Keep every invocation-local lookup and select it by the
+    // authoritative postcode write's canonical value; using only the new
+    // utterance's lookup silently lost locality for recovered postcodes.
+    const lookupByPostcode = new Map();
+    for (const lookup of postcodeLookupResults) {
+      if (lookup?.valid !== true) continue;
+      const canonical = canonicalisePostcodeHint(lookup.postcode);
+      if (canonical) lookupByPostcode.set(canonical, lookup);
+    }
+    for (const reading of result.extracted_readings.filter(
+      (candidate) =>
+        Number(candidate?.circuit) === 0 &&
+        (candidate.field === 'postcode' || candidate.field === 'client_postcode')
+    )) {
+      const matchedLookup = lookupByPostcode.get(canonicalisePostcodeHint(reading.value));
+      if (matchedLookup) {
         const family = reading.field === 'client_postcode' ? 'client' : 'site';
         const changes = applyPostcodeLookupToSnapshot(
           this.stateSnapshot,
-          postcodeLookupResult,
+          matchedLookup,
           this.sessionId,
           { family }
         );

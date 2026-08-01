@@ -259,6 +259,49 @@ describe('SonnetSession', () => {
         })
       );
     });
+
+    it('preserves an extraction-envelope delivery token', async () => {
+      const onExtraction = vi.fn();
+      const session = new SonnetSession({ onExtraction });
+      session.connect({
+        sessionId: 'mirror-extraction',
+        jobId: 'job-token',
+        certificateType: 'EICR',
+      });
+      await server.connected;
+
+      server.send(
+        JSON.stringify({
+          type: 'extraction',
+          result: {
+            readings: [],
+            confirmations: [{ text: 'Site address copied to client' }],
+            address_mirror_delivery_token: 'convenience:resolution-8',
+          },
+        })
+      );
+      await Promise.resolve();
+
+      expect(onExtraction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address_mirror_delivery_token: 'convenience:resolution-8',
+        })
+      );
+    });
+
+    it('sends the exact playback ACK frame', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 'mirror-ack', jobId: 'job-token', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage;
+
+      session.sendAddressMirrorDeliveryAck('direct:operation-9');
+
+      expect(JSON.parse((await server.nextMessage) as string)).toEqual({
+        type: 'address_mirror_delivery_ack',
+        delivery_token: 'direct:operation-9',
+      });
+    });
   });
 
   // ────────────────────────────────────────────────────────────────────────
@@ -667,7 +710,12 @@ describe('SonnetSession', () => {
           // sentinel-safe guards this wave, so it advertises LIM-ranged-write.
           // A1b (2026-07-29) — board_clear_v1 added: web decodes + routes the
           // board-scope field_corrected frame this wave.
-          supports: ['low_conf_readback_v1', 'lim_ranged_write_v1', 'board_clear_v1'],
+          supports: [
+            'low_conf_readback_v1',
+            'lim_ranged_write_v1',
+            'board_clear_v1',
+            'address_mirror_delivery_ack_v1',
+          ],
         },
       });
       // Exported constant is the single source of truth (iOS parity:
@@ -676,6 +724,7 @@ describe('SonnetSession', () => {
         'low_conf_readback_v1',
         'lim_ranged_write_v1',
         'board_clear_v1',
+        'address_mirror_delivery_ack_v1',
       ]);
       // regex_fast_v2 / client_playback_telemetry MUST NOT be claimed until
       // their web plumbing ships (parity-ledger follow-up rows own them).
@@ -973,7 +1022,7 @@ describe('SonnetSession', () => {
   // (Plan 06-05 r4-#2).
   // ────────────────────────────────────────────────────────────────────────
   describe('disconnected buffering', () => {
-    it('buffers transcript / correction / ask_user_answered while connecting and flushes on open', async () => {
+    it('buffers transcript / correction / ask_user_answered / playback ACK while connecting and flushes on open', async () => {
       const session = new SonnetSession({});
       session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
       // Send before the WS handshake completes — these must be buffered
@@ -981,6 +1030,7 @@ describe('SonnetSession', () => {
       session.sendTranscript('hello', { utteranceId: 'u-1' });
       session.sendCorrection('zs', 1, '0.44');
       session.sendAskUserAnswered('toolu_x', 'hello', 'u-1');
+      session.sendAddressMirrorDeliveryAck('direct:op-buffered');
 
       await server.connected;
 
@@ -999,11 +1049,16 @@ describe('SonnetSession', () => {
       const f1 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
       const f2 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
       const f3 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      const f4 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
       expect(f1.type).toBe('transcript');
       expect(f1.utterance_id).toBe('u-1');
       expect(f2.type).toBe('correction');
       expect(f3.type).toBe('ask_user_answered');
       expect(f3.consumed_utterance_id).toBe('u-1');
+      expect(f4).toMatchObject({
+        type: 'address_mirror_delivery_ack',
+        delivery_token: 'direct:op-buffered',
+      });
     });
 
     it('hoists transcript IMMEDIATELY before its paired ask when ask was buffered first', async () => {

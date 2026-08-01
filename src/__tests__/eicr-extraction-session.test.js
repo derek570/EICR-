@@ -779,7 +779,9 @@ describe('EICRExtractionSession', () => {
         })
         .mockResolvedValueOnce({
           content: toolUseContent({
-            extracted_readings: [],
+            extracted_readings: [
+              { circuit: 0, field: 'postcode', value: 'RG1 1AA', confidence: 1 },
+            ],
             questions_for_user: [],
             confirmations: [],
           }),
@@ -797,7 +799,7 @@ describe('EICRExtractionSession', () => {
       });
       await session.flushUtteranceBuffer();
       await session.extractFromUtterance('The board is metal');
-      await session.flushUtteranceBuffer();
+      const recoveredResult = await session.flushUtteranceBuffer();
 
       const secondRequest = mockCreate.mock.calls[1][0];
       const userBlock = secondRequest.messages.at(-1).content[0].text;
@@ -806,6 +808,18 @@ describe('EICRExtractionSession', () => {
       expect(userBlock).toContain('Reading');
       expect(userBlock).toContain('Berkshire');
       expect(mockLookupPostcode).toHaveBeenCalledWith('RG1 1AA');
+      expect(recoveredResult.extracted_readings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'postcode', value: 'RG1 1AA' }),
+          expect.objectContaining({ field: 'town', value: 'Reading', derived: true }),
+          expect.objectContaining({ field: 'county', value: 'Berkshire', derived: true }),
+        ])
+      );
+      expect(
+        recoveredResult.confirmations.some((confirmation) =>
+          ['town', 'county'].includes(confirmation.field)
+        )
+      ).toBe(false);
     });
 
     test('should cap askedQuestions at 30', async () => {

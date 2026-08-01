@@ -766,6 +766,57 @@ describe('address mirror controller', () => {
     ).toMatchObject({ handled: true, outcome: 'yes' });
   });
 
+  test('explicit stale recovery id fails closed even when purpose matches', async () => {
+    const session = sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const writes = sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const controller = createAddressMirrorController({ session });
+    await controller.claimLiveAsk({
+      input: { purpose: 'address_mirror', question: 'Use it for client?' },
+      askId: 'ask-current',
+      perTurnWrites: writes,
+    });
+
+    const out = await controller.resolveRecoveredAnswer({
+      context: { purpose: 'address_mirror' },
+      text: 'yes',
+      askId: 'ask-stale',
+      perTurnWrites: writes,
+    });
+
+    expect(out).toEqual({ handled: false, reason: 'stale_address_mirror_ask_id' });
+    expect(session.stateSnapshot.circuits[0].client_address).toBeUndefined();
+  });
+
+  test('terminal recovery duplicate returns its stale ask id for client clearing', async () => {
+    const session = sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const writes = sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const controller = createAddressMirrorController({ session });
+    await controller.claimLiveAsk({
+      input: { purpose: 'address_mirror', question: 'Use it for client?' },
+      askId: 'ask-delivered-terminal',
+      perTurnWrites: writes,
+    });
+    await controller.resolveRecoveredAnswer({
+      context: { purpose: 'address_mirror' },
+      text: 'no',
+      askId: 'ask-delivered-terminal',
+      perTurnWrites: writes,
+    });
+
+    const duplicate = await controller.resolveRecoveredAnswer({
+      context: { purpose: 'address_mirror' },
+      text: 'no',
+      askId: 'ask-delivered-terminal',
+      perTurnWrites: createPerTurnWrites(),
+    });
+
+    expect(duplicate).toMatchObject({
+      handled: true,
+      outcome: 'duplicate',
+      clearAskId: 'ask-delivered-terminal',
+    });
+  });
+
   test('two controllers sharing one CAS produce only one terminal ledger', async () => {
     let row = {
       status: 'pending',

@@ -311,7 +311,7 @@ describe('parseVoiceLatencyCapabilities (1a.3 handshake)', () => {
 });
 
 describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
-  test('lists exactly the 10 known support strings', () => {
+  test('lists exactly the 11 known support strings', () => {
     expect([...flags.VOICE_LATENCY_KNOWN_SUPPORTS]).toEqual([
       'streaming_http_audio',
       'source_field_in_tts_post',
@@ -326,7 +326,26 @@ describe('VOICE_LATENCY_KNOWN_SUPPORTS', () => {
       'lim_ranged_write_v1',
       // Plan A1a — board/supply-scope clear rollout-sequencing gate.
       'board_clear_v1',
+      // Address-regex retirement — playback-start delivery ACK.
+      'address_mirror_delivery_ack_v1',
     ]);
+  });
+});
+
+describe('parseVoiceLatencyCapabilities — address mirror delivery ACK', () => {
+  test('is explicit true only for an advertised v1 capability', () => {
+    expect(
+      flags.parseVoiceLatencyCapabilities({
+        voice_latency: { version: 1, supports: ['address_mirror_delivery_ack_v1'] },
+      }).hasAddressMirrorDeliveryAckV1
+    ).toBe(true);
+    expect(flags.parseVoiceLatencyCapabilities(null)).toHaveProperty(
+      'hasAddressMirrorDeliveryAckV1',
+      false
+    );
+    expect(
+      flags.parseVoiceLatencyCapabilities({ voice_latency: { version: 1, supports: [] } })
+    ).toHaveProperty('hasAddressMirrorDeliveryAckV1', false);
   });
 });
 
