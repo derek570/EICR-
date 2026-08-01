@@ -167,6 +167,17 @@ writes as `derived:true`, and therefore produce no address-copy read-backs.
 The inspector instead hears the surviving dictated-source confirmation or one
 short acknowledgement. Neither client owns a mirror latch, question, or copy.
 
+Direct commands use a separate durable `address_mirror_direct_intents` row so
+an incomplete source or a source/target conflict is not held only in process
+memory. The row preserves one stable clarification id across reconnects and
+process restarts; its deciding answer is finalized after the authoritative
+write on both synchronous and timeout-batch legacy paths. Convenience intents
+also retain their terminal result: a crash after the terminal compare-and-set
+but before staging can replay the same server-owned writes/read-back, while a
+changed source-version hash fails closed into a spoken conflict instead of
+copying a newer, uncaptured address. Address-mirror question telemetry stores
+only length/hash metadata, never street, postcode, or answer text.
+
 **Client-routing and structural rejection contract (PLAN-2D §3.6).** The live
 field schema is no longer trusted as proof that a client can apply a reading.
 `client-routable-reading-fields.js` commits the destination of every allowed

@@ -80,6 +80,13 @@ the durable server intent can recover across reconnects. Mirror-derived target
 writes remain designed-silent; the original dictated source write or a short
 server acknowledgement supplies the answer's audible terminal.
 
+Incomplete/conflicting explicit copy commands are durable too: the backend
+re-emits one stable clarification after the session acknowledgement on a
+reconnect, and finalizes it after the deciding source write even when legacy
+extraction used its timeout-batch callback. Question logs are hashed/redacted,
+and malformed postcode hints containing controls or non-ASCII separators are
+rejected before lookup.
+
 ### Regex fast-TTS path
 
 For five low-ambiguity circuit readings (`measured_zs_ohm`, `r1_r2_ohm`, both IR values, and `number_of_points`), iOS can request the canonical ElevenLabs read-back before the model loop completes. This five-field whitelist is unchanged by address-regex retirement. The matcher accepts either explicit `Circuit N …` phrasing or a natural exact designation such as “Number of points for the upstairs socket is 6.” Natural routing canonicalises singular/plural designations, strips a leading article, requires exactly one matching circuit on the selected board, and fails closed on duplicates, missing multi-board scope, or non-numeric refs. Sonnet/Luna still processes the same transcript and remains authoritative for the write.
