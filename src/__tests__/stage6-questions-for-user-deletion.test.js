@@ -73,6 +73,9 @@ class FakeEICRExtractionSession {
     this.flushUtteranceBuffer = mockFlushBuffer;
     this.reviewForOrphanedValues = mockReviewForOrphanedValues;
     this.updateJobState = jest.fn();
+    this.applyModeChange = jest.fn((mode) => {
+      this.toolCallsMode = mode;
+    });
     this.pause = jest.fn();
     this.resume = jest.fn();
     this.onBatchResult = null;
@@ -307,6 +310,28 @@ describe('Group 1 — onBatchResult path, off mode (legacy behaviour preserved)'
     expect(resultCall[1].questionsPreview).toHaveLength(1);
     expect(resultCall[1].questionsPreview[0].field).toBe('r1_r2');
   });
+
+  test('off-mode timeout batches finalize a pending direct address-mirror command', async () => {
+    const { entry } = await startSession('off');
+    entry.addressMirrorController.finalizeDirectAfterWrites = jest.fn(async () => ({
+      handled: false,
+    }));
+
+    await entry.session.onBatchResult(
+      extractionResult({
+        extracted_board_readings: [
+          { field: 'installation_postcode', value: 'RG1 1AA', derived: false },
+        ],
+      })
+    );
+
+    expect(entry.addressMirrorController.finalizeDirectAfterWrites).toHaveBeenCalledWith(
+      expect.objectContaining({
+        successfulFields: new Set(['installation_postcode']),
+        sourceAudible: true,
+      })
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -488,5 +513,32 @@ describe('Group 5 — cross-mode smoke + regression guards', () => {
 
     expect(off.entry.questionGate.enqueue).toHaveBeenCalledTimes(1);
     expect(shadow.entry.questionGate.enqueue).not.toHaveBeenCalled();
+  });
+
+  test('reconnect emits a durable direct clarification only after session_ack', async () => {
+    const first = await startSession('off', 'sess-direct-reconnect');
+    first.entry.addressMirrorController.currentDirectQuestion = jest.fn(async () => ({
+      outcome: 'source_incomplete',
+      questionId: 'addr-direct-1',
+      question: 'What is the installation postcode?',
+    }));
+
+    const resumedWs = connect(wss, 'user-1');
+    await sendFrame(resumedWs, {
+      type: 'session_start',
+      sessionId: 'sess-direct-reconnect',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const ackIndex = resumedWs._sent.findIndex(
+      (frame) => frame.type === 'session_ack' && frame.status === 'reconnected'
+    );
+    const questionIndex = resumedWs._sent.findIndex(
+      (frame) => frame.type === 'question' && frame.tool_call_id === 'addr-direct-1'
+    );
+    expect(ackIndex).toBeGreaterThanOrEqual(0);
+    expect(questionIndex).toBeGreaterThan(ackIndex);
   });
 });

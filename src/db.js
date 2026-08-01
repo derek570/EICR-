@@ -785,6 +785,119 @@ export async function resolveAddressMirrorIntent(userId, jobId, status, resoluti
 }
 
 /**
+ * Claim one durable clarification for an explicit same-address command.
+ * This deliberately does not touch jobs.address_mirror_asked: direct commands
+ * are user-initiated operations, not the one-shot convenience question.
+ */
+export async function claimAddressMirrorDirectIntent(userId, jobId, intent) {
+  if (!usePostgres()) return { claimed: false, reason: 'database_unconfigured' };
+  const db = getPool();
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query(
+      `SELECT status, operation_token
+         FROM address_mirror_direct_intents
+        WHERE user_id = $1 AND job_id = $2
+        FOR UPDATE`,
+      [userId, jobId]
+    );
+    if (existing.rows[0]?.status === 'pending') {
+      await client.query('ROLLBACK');
+      return {
+        claimed: false,
+        reason:
+          existing.rows[0].operation_token === intent.operationToken
+            ? 'duplicate_operation'
+            : 'clarification_already_pending',
+      };
+    }
+    const saved = await client.query(
+      `INSERT INTO address_mirror_direct_intents
+         (user_id, job_id, status, clarification_kind, source_family,
+          target_family, operation_token, question_id, resolved_at)
+       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, NULL)
+       ON CONFLICT (user_id, job_id) DO UPDATE SET
+         status = 'pending', clarification_kind = EXCLUDED.clarification_kind,
+         source_family = EXCLUDED.source_family, target_family = EXCLUDED.target_family,
+         operation_token = EXCLUDED.operation_token, question_id = EXCLUDED.question_id,
+         created_at = NOW(), resolved_at = NULL
+       RETURNING *`,
+      [
+        userId,
+        jobId,
+        intent.clarificationKind,
+        intent.sourceFamily,
+        intent.targetFamily,
+        intent.operationToken,
+        intent.questionId,
+      ]
+    );
+    await client.query('COMMIT');
+    return { claimed: true, intent: saved.rows[0] };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error('claimAddressMirrorDirectIntent failed', {
+      error: error.message,
+      jobId,
+      userId,
+    });
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Load the pending direct-command clarification for one owner/job. */
+export async function getPendingAddressMirrorDirectIntent(userId, jobId) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `SELECT * FROM address_mirror_direct_intents
+      WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
+      LIMIT 1`,
+    [userId, jobId]
+  );
+  return result.rows[0] || null;
+}
+
+/** Change the deciding-field clarification into a bounded conflict question. */
+export async function rebindAddressMirrorDirectIntent(
+  userId,
+  jobId,
+  operationToken,
+  clarificationKind,
+  questionId
+) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `UPDATE address_mirror_direct_intents
+        SET clarification_kind = $4, question_id = $5
+      WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
+        AND operation_token = $3
+      RETURNING *`,
+    [userId, jobId, operationToken, clarificationKind, questionId]
+  );
+  return result.rows[0] || null;
+}
+
+/** Terminal compare-and-set for an explicit direct-command clarification. */
+export async function resolveAddressMirrorDirectIntent(userId, jobId, operationToken, status) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `UPDATE address_mirror_direct_intents
+        SET status = $4, resolved_at = NOW()
+      WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
+        AND operation_token = $3
+      RETURNING *`,
+    [userId, jobId, operationToken, status]
+  );
+  return result.rows[0] || null;
+}
+
+/**
  * @deprecated -- Use migrations/001_baseline.cjs instead. No longer called at startup.
  * Ensure users table has token_version column for JWT rotation
  */

@@ -327,7 +327,7 @@ const HUNDREDS_PATTERN_LOCAL = /\b(one|two|three|four|five|six|seven|eight|nine|
 // Spaced UK postcode collapse
 const SPACED_POSTCODE_2L = /\b([a-z])\s+([a-z])\s+(\d{1,4})\s+([a-z])\s+([a-z])\b/gi;
 const PARTIAL_SPACED_POSTCODE = /\b([a-z]{1,2})\s+(\d{1,4})\s+([a-z])\s+([a-z])\b/gi;
-const POSTCODE_FORMAT_VALIDATION = /^[A-Z]{1,2}\d[0-9A-Z]?\d[A-Z]{2}$/;
+const POSTCODE_FORMAT_VALIDATION = /^(?:GIR0AA|[A-Z]{1,2}\d[0-9A-Z]?\d[A-Z]{2})$/;
 
 /** Lookup-only detector for the current final utterance. It intentionally
  * does not share the stateful matcher's cumulative window and cannot create a

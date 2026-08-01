@@ -71,6 +71,7 @@ import {
   resolvePostcodeHintState,
 } from './postcode-hint.js';
 import { copyAfddPremisesRequirement } from './regulation-lookup.js';
+import { ADDRESS_MIRROR_DIRECT_FOLLOWUP } from './address-mirror-controller.js';
 import { runToolLoop } from './stage6-tool-loop.js';
 // Loaded Barrel Phase 2.B/2.C wire-up (plan v10 §C). Per-turn
 // speculator instantiation in runLiveMode. Cache state is module-
@@ -112,6 +113,7 @@ import {
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
   EFFECTIVE_CIRCUIT_SLOT,
+  FORCE_CONFIRMATIONS,
   circuitDesignationKey,
   decodeBoardReadingKey,
   decodeReadingKey,
@@ -937,6 +939,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // opposite default would silence exactly the class this plan exists to
     // remove.
     let allRejected = false;
+    let addressMirrorDirectFollowup = null;
     // marker-② predicate-4 "already-spoken evidence": count of confirmations
     // PRODUCED this turn but suppressed by the backend applyConfirmationDebounce
     // (the inspector heard the same reading on a recent turn). Captured from
@@ -1896,8 +1899,24 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
+    if (entry?.addressMirrorController) {
+      const successfulAddressFields = new Set(
+        projectBoardReadingWinners(perTurnWrites)
+          .filter((winner) => winner?.value?.derived !== true)
+          .map((winner) => decodeBoardReadingKey(winner.rawKey).field)
+      );
+      const directFinal = await entry.addressMirrorController.finalizeDirectAfterWrites({
+        successfulFields: successfulAddressFields,
+        perTurnWrites,
+      });
+      if (directFinal?.handled && typeof directFinal.question === 'string') {
+        addressMirrorDirectFollowup = directFinal;
+      }
+    }
+
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {
-      confirmationsEnabled: options.confirmationsEnabled === true,
+      confirmationsEnabled:
+        options.confirmationsEnabled === true || perTurnWrites[FORCE_CONFIRMATIONS] === true,
       // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
       // trip it on the /api/proxy/elevenlabs-tts POST body for cache
       // lookup. Omitted when undefined; legacy decoders ignore unknown
@@ -1941,6 +1960,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // wire-compat line.
       hasBoardClearV1,
     });
+    if (addressMirrorDirectFollowup) {
+      Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {
+        value: addressMirrorDirectFollowup,
+        enumerable: false,
+        configurable: false,
+      });
+    }
 
     // P5 (2026-07-23) — emit clear→write collapse telemetry (live path).
     emitClearWriteCollapseTelemetry(log, session, turnId, result);

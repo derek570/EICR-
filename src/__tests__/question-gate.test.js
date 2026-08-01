@@ -4,6 +4,7 @@
 
 import { jest } from '@jest/globals';
 import { QuestionGate } from '../extraction/question-gate.js';
+import logger from '../logger.js';
 
 describe('QuestionGate', () => {
   let sendCallback;
@@ -17,6 +18,7 @@ describe('QuestionGate', () => {
 
   afterEach(() => {
     gate.destroy();
+    jest.restoreAllMocks();
     jest.useRealTimers();
   });
 
@@ -488,6 +490,27 @@ describe('QuestionGate', () => {
 
       expect(sendCallback).toHaveBeenCalledWith([{ field: 'zs', circuit: 1 }]);
       expect(gate.pendingQuestions).toEqual([]);
+    });
+
+    test('address mirror flush telemetry contains only hash/length, never address text', () => {
+      const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
+      const street = '29 Synthetic Banana Road';
+      gate.enqueue([
+        {
+          type: 'address_mirror',
+          purpose: 'address_mirror',
+          field: 'client_address',
+          question: `Use ${street}, CL16 5NU for the client?`,
+          heard_value: street,
+        },
+      ]);
+      jest.advanceTimersByTime(gate.GATE_DELAY_MS);
+      const call = info.mock.calls.find(([name]) => name === 'Flushing questions to iOS');
+      expect(call).toBeDefined();
+      const payload = JSON.stringify(call[1]);
+      expect(payload).not.toContain(street);
+      expect(payload).not.toContain('CL16 5NU');
+      expect(call[1].questions[0].question_hash).toMatch(/^[a-f0-9]{64}$/);
     });
 
     test('claims an address mirror only at final emission', async () => {

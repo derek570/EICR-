@@ -5,6 +5,7 @@
 import { jest } from '@jest/globals';
 
 const mockCreate = jest.fn();
+const mockLookupPostcode = jest.fn();
 
 jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
   default: jest.fn(() => ({
@@ -12,6 +13,9 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
       create: mockCreate,
     },
   })),
+}));
+jest.unstable_mockModule('../postcode_lookup.js', () => ({
+  lookupPostcode: mockLookupPostcode,
 }));
 
 const { EICRExtractionSession, EICR_SYSTEM_PROMPT } =
@@ -31,6 +35,7 @@ describe('EICRExtractionSession', () => {
   beforeEach(() => {
     session = new EICRExtractionSession('test-api-key', 'test-session-id');
     mockCreate.mockReset();
+    mockLookupPostcode.mockReset();
   });
 
   afterEach(() => {
@@ -676,6 +681,89 @@ describe('EICRExtractionSession', () => {
 
       expect(session.askedQuestions).toContain('zs:-1');
     });
+
+    test('mirror candidates stay out of history until the final transactional claim seam', async () => {
+      mockCreate.mockResolvedValue({
+        content: toolUseContent({
+          extracted_readings: [
+            { circuit: 0, field: 'address', value: '2 Test Road', confidence: 1 },
+            { circuit: 0, field: 'postcode', value: 'TE1 1ST', confidence: 1 },
+          ],
+          questions_for_user: [
+            {
+              field: 'client_address',
+              circuit: null,
+              question: 'Use the same address for the client?',
+              type: 'address_mirror',
+              purpose: 'address_mirror',
+            },
+          ],
+        }),
+        usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
+      });
+
+      session.start(null);
+      await session.extractFromUtterance('The site is 2 Test Road, TE1 1ST');
+      const result = await session.flushUtteranceBuffer();
+
+      expect(result.questions_for_user).toHaveLength(1);
+      expect(session.askedQuestions).toEqual([]);
+      expect(JSON.stringify(session.conversationHistory)).not.toContain('address_mirror');
+    });
+
+    test.each(['eicr', 'eic'])(
+      '%s rollback lookup locality is backend-derived and never confirmed',
+      async (certType) => {
+        const certSession = new EICRExtractionSession(
+          'test-api-key',
+          `postcode-${certType}`,
+          certType
+        );
+        mockLookupPostcode.mockResolvedValue({
+          postcode: 'RG1 1AA',
+          town: 'Reading',
+          county: 'Berkshire',
+        });
+        mockCreate.mockResolvedValue({
+          content: toolUseContent({
+            extracted_readings: [
+              { circuit: 0, field: 'postcode', value: 'RG1 1AA', confidence: 1 },
+            ],
+            questions_for_user: [],
+            confirmations: [],
+          }),
+          usage: { input_tokens: 10, output_tokens: 5 },
+          stop_reason: 'tool_use',
+        });
+
+        certSession.start(null);
+        await certSession.extractFromUtterance('The postcode is RG1 1AA', [], {
+          confirmationsEnabled: true,
+          postcodeHintState: {
+            state: 'present_valid',
+            source: 'dedicated',
+            postcode: 'RG1 1AA',
+          },
+        });
+        const result = await certSession.flushUtteranceBuffer();
+        const locality = result.extracted_readings.filter((reading) =>
+          ['town', 'county'].includes(reading.field)
+        );
+        expect(locality).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ field: 'town', value: 'Reading', derived: true }),
+            expect.objectContaining({ field: 'county', value: 'Berkshire', derived: true }),
+          ])
+        );
+        expect(
+          result.confirmations.some((confirmation) =>
+            ['town', 'county'].includes(confirmation.field)
+          )
+        ).toBe(false);
+        if (certSession.batchTimeoutHandle) clearTimeout(certSession.batchTimeoutHandle);
+      }
+    );
 
     test('should cap askedQuestions at 30', async () => {
       // Pre-fill with 29 questions

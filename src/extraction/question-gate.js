@@ -10,6 +10,7 @@
 // replies. 1500ms still covers the common "...pause... 4XW" continuation
 // pattern but cuts a full second off every turn.
 
+import { createHash } from 'node:crypto';
 import logger from '../logger.js';
 import { normaliseValue } from './value-normalise.js';
 
@@ -477,13 +478,28 @@ export class QuestionGate {
     logger.info('Flushing questions to iOS', {
       sessionId: this.sessionId,
       count: approved.length,
-      questions: approved.map((q) => ({
-        type: q.type || null,
-        field: q.field || null,
-        circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-        question: typeof q.question === 'string' ? q.question.slice(0, 200) : null,
-        heard_value: q.heard_value || null,
-      })),
+      questions: approved.map((q) => {
+        const isAddressMirror = q?.purpose === 'address_mirror' || q?.type === 'address_mirror';
+        const base = {
+          type: q.type || null,
+          purpose: q.purpose || null,
+          field: q.field || null,
+          circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
+        };
+        if (!isAddressMirror) {
+          return {
+            ...base,
+            question: typeof q.question === 'string' ? q.question.slice(0, 200) : null,
+            heard_value: q.heard_value || null,
+          };
+        }
+        const question = typeof q.question === 'string' ? q.question : '';
+        return {
+          ...base,
+          question_length: question.length,
+          question_hash: createHash('sha256').update(question).digest('hex'),
+        };
+      }),
     });
     const sent = this.sendCallback(approved);
     if (sent === false) {

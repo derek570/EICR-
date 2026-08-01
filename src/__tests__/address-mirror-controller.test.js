@@ -76,6 +76,62 @@ describe('address mirror controller', () => {
     expect(store.claim).not.toHaveBeenCalled();
   });
 
+  test('later postcode write selects a complete same-family snapshot in live and off modes', async () => {
+    const makeStore = () => ({
+      claim: jest.fn(async (_user, _job, intent) => ({ claimed: true, intent })),
+    });
+    const liveStore = makeStore();
+    const live = createAddressMirrorController({
+      userId: 'owner-split-live',
+      jobId: 'job-split-live',
+      session: sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' }),
+      store: liveStore,
+    });
+    expect(
+      await live.claimLiveAsk({
+        input: { purpose: 'address_mirror', question: 'Use it for the client?' },
+        askId: 'ask-split-live',
+        perTurnWrites: sourceTurnWrites({ postcode: 'TE1 1ST' }),
+      })
+    ).toMatchObject({ ok: true });
+
+    const offStore = makeStore();
+    const off = createAddressMirrorController({
+      userId: 'owner-split-off',
+      jobId: 'job-split-off',
+      session: sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' }),
+      store: offStore,
+    });
+    expect(
+      await off.claimLegacyQuestion(
+        {
+          purpose: 'address_mirror',
+          field: 'client_address',
+          id: 'ask-split-off',
+          question: 'Use it for the client?',
+        },
+        sourceTurnWrites({ postcode: 'TE1 1ST' })
+      )
+    ).toBe(true);
+    expect(liveStore.claim).toHaveBeenCalledTimes(1);
+    expect(offStore.claim).toHaveBeenCalledTimes(1);
+
+    const clientStore = makeStore();
+    const clientFirst = createAddressMirrorController({
+      userId: 'owner-split-client',
+      jobId: 'job-split-client',
+      session: sessionWith({}, { address: '9 Client Road', postcode: 'CR1 1AA' }),
+      store: clientStore,
+    });
+    expect(
+      await clientFirst.claimLiveAsk({
+        input: { purpose: 'address_mirror', question: 'Use it for the site?' },
+        askId: 'ask-split-client',
+        perTurnWrites: sourceTurnWrites({ client_postcode: 'CR1 1AA' }),
+      })
+    ).toMatchObject({ ok: true });
+  });
+
   test('claims once then applies a silent derived site-to-client copy', async () => {
     let row = null;
     const store = {
@@ -261,11 +317,151 @@ describe('address mirror controller', () => {
     });
   });
 
-  test('explicit command copies a complete source and rejects prose substrings', () => {
+  test('terminal CAS remains replayable after a crash before staging', async () => {
+    let row = null;
+    let crashAfterCas = true;
+    const store = {
+      claim: jest.fn(async (_user, _job, intent) => {
+        row = {
+          ...intent,
+          ask_id: intent.askId,
+          source_family: intent.sourceFamily,
+          source_snapshot: intent.sourceSnapshot,
+          source_version_hash: intent.sourceVersionHash,
+          source_writes: intent.sourceWrites,
+          resolution_token: intent.resolutionToken,
+          status: 'pending',
+        };
+        return { claimed: true, intent: row };
+      }),
+      load: jest.fn(async () => row),
+      loadDirect: jest.fn(async () => null),
+      resolve: jest.fn(async (_user, _job, status) => {
+        row = { ...row, status };
+        if (crashAfterCas) {
+          crashAfterCas = false;
+          throw new Error('simulated_process_crash_after_cas');
+        }
+        return row;
+      }),
+    };
+    const original = sessionWith({ address: '14 High Street', postcode: 'SW1A 1AA' });
+    const first = createAddressMirrorController({
+      userId: 'owner-crash',
+      jobId: 'job-crash',
+      session: original,
+      store,
+    });
+    await first.claimLiveAsk({
+      input: { purpose: 'address_mirror', question: 'Use it for the client?' },
+      askId: 'ask-crash',
+      perTurnWrites: sourceTurnWrites({ address: '14 High Street', postcode: 'SW1A 1AA' }),
+    });
+    await expect(
+      first.resolveLiveAnswer({
+        input: { purpose: 'address_mirror' },
+        outcome: { answered: true, user_text: 'yes' },
+        askId: 'ask-crash',
+        perTurnWrites: createPerTurnWrites(),
+      })
+    ).rejects.toThrow('simulated_process_crash_after_cas');
+    expect(row.status).toBe('resolved_yes');
+
+    const restarted = sessionWith();
+    const recovered = createAddressMirrorController({
+      userId: 'owner-crash',
+      jobId: 'job-crash',
+      session: restarted,
+      store,
+    });
+    await recovered.rehydrate();
+    const writes = createPerTurnWrites();
+    const out = await recovered.resolveRecoveredAnswer({
+      context: null,
+      text: 'yes',
+      askId: 'ask-crash',
+      perTurnWrites: writes,
+    });
+    expect(out).toMatchObject({ handled: true, outcome: 'yes', replayedSource: 2 });
+    expect(restarted.stateSnapshot.circuits[0]).toMatchObject({
+      address: '14 High Street',
+      postcode: 'SW1A 1AA',
+      client_address: '14 High Street',
+      client_postcode: 'SW1A 1AA',
+    });
+  });
+
+  test('captured-null to current-value drift emits one conflict and clears the stale ask', async () => {
+    const session = sessionWith({ address: '14 High Street', postcode: 'SW1A 1AA' });
+    const controller = createAddressMirrorController({ session });
+    await controller.claimLiveAsk({
+      input: { purpose: 'address_mirror', question: 'Use it for the client?' },
+      askId: 'ask-drift',
+      perTurnWrites: sourceTurnWrites({ address: '14 High Street', postcode: 'SW1A 1AA' }),
+    });
+    session.stateSnapshot.circuits[0].town = 'London';
+    const writes = createPerTurnWrites();
+    const out = await controller.resolveRecoveredAnswer({
+      context: { type: 'address_mirror' },
+      text: 'yes',
+      perTurnWrites: writes,
+    });
+    expect(out).toMatchObject({
+      handled: true,
+      outcome: 'conflict',
+      clearAskId: 'ask-drift',
+    });
+    expect(writes.answer.stagedText).toMatch(/address changed/i);
+    expect(session.stateSnapshot.circuits[0].client_address).toBeUndefined();
+  });
+
+  test('legacy claim requires one same-turn family agreeing with the question direction', async () => {
+    const store = {
+      claim: jest.fn(async (_user, _job, intent) => ({ claimed: true, intent })),
+    };
+    const controller = createAddressMirrorController({
+      userId: 'owner-legacy',
+      jobId: 'job-legacy',
+      session: sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' }),
+      store,
+    });
+    const question = {
+      purpose: 'address_mirror',
+      field: 'client_address',
+      id: 'legacy-ask',
+      question: 'Use the same address for the client?',
+    };
+    expect(await controller.claimLegacyQuestion(question, createPerTurnWrites())).toBe(false);
+    expect(
+      await controller.claimLegacyQuestion(
+        { ...question, field: 'address' },
+        sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' })
+      )
+    ).toBe(false);
+    expect(
+      await controller.claimLegacyQuestion(
+        question,
+        sourceTurnWrites({
+          address: '2 Test Road',
+          postcode: 'TE1 1ST',
+          client_address: '9 Other Road',
+        })
+      )
+    ).toBe(false);
+    expect(
+      await controller.claimLegacyQuestion(
+        question,
+        sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' })
+      )
+    ).toBe(true);
+    expect(store.claim).toHaveBeenCalledTimes(1);
+  });
+
+  test('explicit command copies a complete source and rejects prose substrings', async () => {
     const session = sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' });
     const controller = createAddressMirrorController({ session });
     const writes = createPerTurnWrites();
-    const copied = controller.applyDirectCommand(
+    const copied = await controller.applyDirectCommand(
       'use the installation address for the customer',
       writes,
       'utt-1'
@@ -273,20 +469,20 @@ describe('address mirror controller', () => {
     expect(copied).toMatchObject({ handled: true, outcome: 'copied' });
     expect(session.stateSnapshot.circuits[0].client_address).toBe('2 Test Road');
     expect(
-      controller.applyDirectCommand(
+      await controller.applyDirectCommand(
         'we discussed the same address for the client yesterday',
         createPerTurnWrites()
       )
     ).toEqual({ handled: false });
   });
 
-  test('direct conflict asks once and replaces only after an explicit yes', () => {
+  test('direct conflict asks once and replaces only after an explicit yes', async () => {
     const session = sessionWith(
       { address: '2 Test Road', postcode: 'TE1 1ST' },
       { address: '9 Other Road', postcode: 'OT1 1HR' }
     );
     const controller = createAddressMirrorController({ session });
-    const first = controller.applyDirectCommand(
+    const first = await controller.applyDirectCommand(
       'use the installation address for the customer',
       createPerTurnWrites(),
       'utt-conflict'
@@ -296,7 +492,7 @@ describe('address mirror controller', () => {
     expect(session.stateSnapshot.circuits[0].client_address).toBe('9 Other Road');
 
     const writes = createPerTurnWrites();
-    const resolved = controller.resolveDirectClarification({
+    const resolved = await controller.resolveDirectClarification({
       context: { type: ADDRESS_MIRROR_DIRECT_QUESTION_TYPE },
       text: 'yes',
       perTurnWrites: writes,
@@ -307,6 +503,89 @@ describe('address mirror controller', () => {
       client_postcode: 'TE1 1ST',
     });
     expect([...writes.boardReadings.values()].every((entry) => entry.derived === true)).toBe(true);
+  });
+
+  test('incomplete direct command resumes after authoritative source writes', async () => {
+    const session = sessionWith();
+    const controller = createAddressMirrorController({ session });
+    const first = await controller.applyDirectCommand(
+      'use the installation address for the customer',
+      createPerTurnWrites(),
+      'utt-incomplete'
+    );
+    expect(first).toMatchObject({ handled: true, outcome: 'source_incomplete' });
+    session.stateSnapshot.circuits[0].address = '2 Test Road';
+    session.stateSnapshot.circuits[0].postcode = 'TE1 1ST';
+    const writes = sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const completed = await controller.finalizeDirectAfterWrites({
+      successfulFields: new Set(['address', 'postcode']),
+      perTurnWrites: writes,
+    });
+    expect(completed).toMatchObject({ handled: true, outcome: 'copied' });
+    expect(session.stateSnapshot.circuits[0]).toMatchObject({
+      client_address: '2 Test Road',
+      client_postcode: 'TE1 1ST',
+    });
+    expect(
+      [...writes.boardReadings.values()].filter((entry) => entry.derived === true)
+    ).toHaveLength(2);
+  });
+
+  test('direct conflict survives controller restart and resolves once', async () => {
+    let directRow = null;
+    const store = {
+      load: jest.fn(async () => null),
+      loadDirect: jest.fn(async () => directRow),
+      claimDirect: jest.fn(async (_user, _job, intent) => {
+        directRow = {
+          status: 'pending',
+          clarification_kind: intent.clarificationKind,
+          source_family: intent.sourceFamily,
+          target_family: intent.targetFamily,
+          operation_token: intent.operationToken,
+          question_id: intent.questionId,
+        };
+        return { claimed: true, intent: directRow };
+      }),
+      resolveDirect: jest.fn(async (_user, _job, _token, status) => {
+        directRow = { ...directRow, status };
+        return directRow;
+      }),
+    };
+    const session = sessionWith(
+      { address: '2 Test Road', postcode: 'TE1 1ST' },
+      { address: '9 Other Road', postcode: 'OT1 1HR' }
+    );
+    const first = createAddressMirrorController({
+      userId: 'owner-direct',
+      jobId: 'job-direct',
+      session,
+      store,
+    });
+    expect(
+      await first.applyDirectCommand(
+        'use the installation address for the customer',
+        createPerTurnWrites(),
+        'utt-direct-restart'
+      )
+    ).toMatchObject({ outcome: 'conflict' });
+
+    const restarted = createAddressMirrorController({
+      userId: 'owner-direct',
+      jobId: 'job-direct',
+      session,
+      store,
+    });
+    await restarted.rehydrate();
+    const writes = createPerTurnWrites();
+    const out = await restarted.resolveDirectClarification({
+      context: { type: ADDRESS_MIRROR_DIRECT_QUESTION_TYPE },
+      text: 'yes',
+      perTurnWrites: writes,
+    });
+    expect(out).toMatchObject({ handled: true, outcome: 'copied' });
+    expect(directRow.status).toBe('resolved_yes');
+    expect(session.stateSnapshot.circuits[0].client_address).toBe('2 Test Road');
   });
 
   test('recovery requires exact server-owned purpose, type, or ask id', async () => {

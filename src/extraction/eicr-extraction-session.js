@@ -2611,7 +2611,7 @@ export class EICRExtractionSession {
     try {
       const result = await this._processUtteranceBatch();
       if (result && this.onBatchResult) {
-        this.onBatchResult(result);
+        await this.onBatchResult(result);
       }
     } catch (error) {
       logger.error(`Session ${this.sessionId} Batch flush error: ${error.message}`);
@@ -2761,6 +2761,22 @@ export class EICRExtractionSession {
     if (rejectedReadingCount > 0) {
       assistantHistoryText = JSON.stringify(result);
     }
+    // The server-side transactional claim, not model history, owns the
+    // one-shot mirror lifecycle. A source-incomplete candidate may be dropped
+    // later at QuestionGate's final claim seam; retaining it here would tell
+    // the next turn it had already been asked and strand split-turn
+    // address→postcode completion. Omit mirror candidates from both history
+    // and the generic askedQuestions digest; the durable job flag suppresses
+    // genuine repeats after an actual emit.
+    const nonMirrorQuestions = result.questions_for_user.filter(
+      (q) => q?.purpose !== 'address_mirror' && q?.type !== 'address_mirror'
+    );
+    if (nonMirrorQuestions.length !== result.questions_for_user.length) {
+      assistantHistoryText = JSON.stringify({
+        ...result,
+        questions_for_user: nonMirrorQuestions,
+      });
+    }
 
     // ALWAYS push to conversation history (even on extraction failure) to keep context in sync
     this.conversationHistory.push(
@@ -2771,8 +2787,8 @@ export class EICRExtractionSession {
     // Track metrics
     this.turnCount++;
     this.extractedReadingsCount += result.extracted_readings.length;
-    if (result.questions_for_user.length > 0) {
-      const newQuestions = result.questions_for_user.map(
+    if (nonMirrorQuestions.length > 0) {
+      const newQuestions = nonMirrorQuestions.map(
         (q) => `${q.field || 'unknown'}:${q.circuit || 'unknown'}`
       );
       this.askedQuestions.push(...newQuestions);

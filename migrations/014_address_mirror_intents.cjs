@@ -59,8 +59,59 @@ exports.up = (pgm) => {
   pgm.createIndex('address_mirror_intents', ['user_id', 'ask_id'], {
     name: 'idx_address_mirror_intents_owner_ask',
   });
+
+  // Direct "same address" commands are independent of the permanent
+  // convenience-question latch above. Keep their deciding-field/conflict
+  // clarification durable without consuming jobs.address_mirror_asked or
+  // colliding with the job's historical convenience intent.
+  pgm.createTable('address_mirror_direct_intents', {
+    user_id: { type: 'text', notNull: true },
+    job_id: {
+      type: 'text',
+      notNull: true,
+      references: 'jobs(id)',
+      onDelete: 'CASCADE',
+    },
+    status: { type: 'text', notNull: true, default: "'pending'" },
+    clarification_kind: { type: 'text', notNull: true },
+    source_family: { type: 'text', notNull: true },
+    target_family: { type: 'text', notNull: true },
+    operation_token: { type: 'text', notNull: true },
+    question_id: { type: 'text', notNull: true },
+    created_at: { type: 'timestamp with time zone', notNull: true, default: pgm.func('NOW()') },
+    resolved_at: { type: 'timestamp with time zone' },
+  });
+  pgm.addConstraint(
+    'address_mirror_direct_intents',
+    'address_mirror_direct_intents_owner_job_unique',
+    { unique: ['user_id', 'job_id'] }
+  );
+  pgm.addConstraint(
+    'address_mirror_direct_intents',
+    'address_mirror_direct_intents_status_check',
+    "CHECK (status IN ('pending', 'resolved_yes', 'resolved_no', 'cancelled'))"
+  );
+  pgm.addConstraint(
+    'address_mirror_direct_intents',
+    'address_mirror_direct_intents_kind_check',
+    "CHECK (clarification_kind IN ('incomplete', 'conflict'))"
+  );
+  pgm.addConstraint(
+    'address_mirror_direct_intents',
+    'address_mirror_direct_intents_source_family_check',
+    "CHECK (source_family IN ('site', 'client'))"
+  );
+  pgm.addConstraint(
+    'address_mirror_direct_intents',
+    'address_mirror_direct_intents_target_family_check',
+    "CHECK (target_family IN ('site', 'client') AND target_family <> source_family)"
+  );
+  pgm.createIndex('address_mirror_direct_intents', ['user_id', 'job_id', 'status'], {
+    name: 'idx_address_mirror_direct_owner_job_status',
+  });
 };
 
 exports.down = (pgm) => {
+  pgm.dropTable('address_mirror_direct_intents');
   pgm.dropTable('address_mirror_intents');
 };

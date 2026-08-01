@@ -58,6 +58,7 @@ describe('TranscriptFieldMatcher', () => {
 
   it('postcode hint is current-utterance only and rejects chatter', () => {
     expect(detectPostcodeHint('SW1A 1AA')).toBe('SW1A 1AA');
+    expect(detectPostcodeHint('postcode GIR 0AA')).toBe('GIR 0AA');
     expect(detectPostcodeHint('the client address is the same')).toBeUndefined();
     expect(detectPostcodeHint('not a postcode')).toBeUndefined();
   });

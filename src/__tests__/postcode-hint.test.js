@@ -14,12 +14,20 @@ describe('postcode hint trust boundary', () => {
     expect(canonicalisePostcodeHint(input)).toBe(expected);
   });
 
-  test.each([null, 42, '', 'NOT A POSTCODE', 'A'.repeat(33)])(
-    'rejects malformed or abusive hint %p',
-    (input) => {
-      expect(canonicalisePostcodeHint(input)).toBeNull();
-    }
-  );
+  test.each([
+    null,
+    42,
+    '',
+    'NOT A POSTCODE',
+    'A'.repeat(33),
+    'SW1A\n1AA',
+    'SW1A\r1AA',
+    'SW1A\t1AA',
+    'SW1A\u00001AA',
+    'SW1A\u007f1AA',
+  ])('rejects malformed or abusive hint %p', (input) => {
+    expect(canonicalisePostcodeHint(input)).toBeNull();
+  });
 
   test('dedicated malformed property blocks a valid legacy fallback', () => {
     const message = {
@@ -34,6 +42,15 @@ describe('postcode hint trust boundary', () => {
       state: 'present_invalid',
       source: 'dedicated',
     });
+  });
+
+  test('dedicated control-character postcode remains invalid and blocks fallback', () => {
+    expect(
+      resolvePostcodeHintState({
+        postcode_hint: 'SW1A\n1AA',
+        regexResults: [{ field: 'install.postcode', value: 'CL16 5NU' }],
+      })
+    ).toEqual({ state: 'present_invalid', source: 'dedicated' });
   });
 
   test('legacy fallback uses only the last valid current-message postcode', () => {

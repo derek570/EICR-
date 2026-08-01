@@ -115,6 +115,15 @@ export const EFFECTIVE_CIRCUIT_SLOT = Symbol('stage6.effectiveCircuitSlot');
 export const CONFIRMATION_REPLAY_TOKEN = Symbol('stage6.confirmationReplayToken');
 
 /**
+ * A recovered address-mirror answer may have to reconstruct dictated source
+ * writes that were heard before a process crash but never reached a client.
+ * Those ordinary writes remain audibility-mandatory even if the replaying
+ * envelope lacks the live confirmations toggle. Non-enumerable Symbol state
+ * keeps the accumulator's public/wire shape unchanged.
+ */
+export const FORCE_CONFIRMATIONS = Symbol('stage6.forceConfirmations');
+
+/**
  * P5 — the ONE shared slot-DERIVATION helper used by BOTH `dispatchClearReading`'s
  * effective-aware delete and the bundler's clear→write collapse projection.
  * Builds a stable identity STRING from raw `(field, circuit, boardId)` parts.

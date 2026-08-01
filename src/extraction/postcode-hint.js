@@ -13,9 +13,17 @@ export const POSTCODE_HINT_MAX_INPUT_LENGTH = 32;
 
 const UK_POSTCODE_COMPACT = /^(?:GIR0AA|[A-Z]{1,2}[0-9][0-9A-Z]?[0-9][A-Z]{2})$/;
 
+function containsControlCharacter(value) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+  });
+}
+
 export function canonicalisePostcodeHint(value) {
   if (typeof value !== 'string' || value.length > POSTCODE_HINT_MAX_INPUT_LENGTH) return null;
-  const compact = value.trim().replace(/\s+/g, '').toUpperCase();
+  if (containsControlCharacter(value) || /[^A-Za-z0-9 ]/.test(value)) return null;
+  const compact = value.trim().replace(/ +/g, '').toUpperCase();
   if (!UK_POSTCODE_COMPACT.test(compact)) return null;
   return `${compact.slice(0, -3)} ${compact.slice(-3)}`;
 }
@@ -120,5 +128,5 @@ export function buildPostcodeLookupNote(lookup) {
   if (lookup.valid !== true) {
     return "SERVER POSTCODE LOOKUP: no locality match. This is enrichment only; still interpret and record the inspector's postcode in the address family they named.";
   }
-  return `SERVER POSTCODE LOOKUP (enrichment only, not a write): canonical postcode ${lookup.postcode}; town ${lookup.town || 'unknown'}; county ${lookup.county || 'unknown'}. You must still emit the dictated postcode/client_postcode write and choose the site or client family from the inspector's words.`;
+  return `SERVER POSTCODE LOOKUP (enrichment only, not a write): canonical postcode ${lookup.postcode}; town ${lookup.town || 'unknown'}; county ${lookup.county || 'unknown'}. You must still emit the dictated postcode/client_postcode write and choose the site or client family from the inspector's words. Do not emit town/county/client_town/client_county solely from this lookup; the backend applies that locality as derived data after the authoritative postcode write.`;
 }

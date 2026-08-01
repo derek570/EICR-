@@ -274,6 +274,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
     const input = call.input ?? {};
+    const logAsk = (payload) =>
+      logAskUser(logger, {
+        ...payload,
+        ...(input.purpose === 'address_mirror' ? { purpose: 'address_mirror' } : {}),
+      });
     // Plan 03-09 integration fix (Decision 03-06 #5 ratified): read id from
     // BOTH shapes. runToolLoop dispatches with `{ tool_call_id, name, input }`
     // (Phase 1/2 convention); the dispatcher's Plan 03-05 unit tests pass
@@ -287,7 +292,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // payload is a bug regardless of whether we would block on it.
     const vErr = validateAskUser(input);
     if (vErr) {
-      logAskUser(logger, {
+      logAsk({
         sessionId,
         turnId,
         mode,
@@ -347,7 +352,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         length: rawQuestion.length,
         hash: hashPayload(rawQuestion),
       });
-      logAskUser(logger, {
+      logAsk({
         sessionId,
         turnId,
         mode,
@@ -379,7 +384,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         field: input.pending_write.field,
         source_turn_id: input.pending_write.source_turn_id ?? null,
       });
-      logAskUser(logger, {
+      logAsk({
         sessionId,
         turnId,
         mode,
@@ -404,7 +409,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
 
     // Step 2: shadow-mode short-circuit (Research §Q5, Open Question #5).
     if (mode === 'shadow') {
-      logAskUser(logger, {
+      logAsk({
         sessionId,
         turnId,
         mode,
@@ -751,7 +756,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // envelope. Best-effort — if the logger itself throws we let
       // both errors propagate unchanged.
       try {
-        logAskUser(logger, {
+        logAsk({
           sessionId,
           turnId,
           mode,
@@ -856,7 +861,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     if (outcome.dispatcher_error_diag !== undefined) {
       logPayload.dispatcher_error = outcome.dispatcher_error_diag;
     }
-    logAskUser(logger, logPayload);
+    logAsk(logPayload);
 
     // Step 6: return tool_result envelope. Body is a JSON string per the
     // runToolLoop contract. is_error is true ONLY for duplicate — other
@@ -900,6 +905,19 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       askId: toolCallId,
     });
     if (mirrorResolution?.handled) {
+      if (
+        mirrorResolution.outcome === 'conflict' &&
+        typeof mirrorResolution.clearAskId === 'string' &&
+        ws?.readyState === ws?.OPEN
+      ) {
+        ws.send(
+          JSON.stringify({
+            type: 'cancel_pending_tts',
+            prefix: mirrorResolution.clearAskId,
+            sessionId,
+          })
+        );
+      }
       return {
         tool_use_id: toolCallId,
         content: JSON.stringify({

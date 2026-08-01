@@ -54,6 +54,18 @@ describe('Stage 6 Phase 3 — prompt trust-boundary (r20 MAJOR)', () => {
       // not push the file below the cacheable size.
       expect(prompt.length).toBeGreaterThan(2000);
     });
+
+    test(`${label}: rollback address mirror output keeps exact purpose/type recovery anchors`, () => {
+      expect(prompt).toMatch(/"type":\s*"<[^>]*address_mirror[^>]*>"/);
+      expect(prompt).toMatch(/"purpose":\s*"<address_mirror\|null>"/);
+      expect(prompt).toMatch(/including matching values stored .* earlier turns/i);
+    });
+
+    test(`${label}: lookup locality remains backend-owned derived data`, () => {
+      expect(prompt).toMatch(/NEVER emit `town`, `county`, `client_town`, or `client_county`/);
+      expect(prompt).toMatch(/backend applies lookup locality later as `derived:true`/);
+      expect(prompt).not.toMatch(/Return the corrected address .* town\/county from the lookup/i);
+    });
   });
 
   test('tool schema description aligns with the prompt — also names untrusted_user_text + quoted content', () => {
