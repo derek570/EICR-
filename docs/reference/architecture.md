@@ -197,10 +197,29 @@ terminal at a time. A changed source or target after authorisation is
 persisted as a fail-closed conflict instead of overwriting newer certificate
 data.
 
+One delivery token always owns one audible item. If crash recovery must replay
+more than one dictated source field, the backend combines their confirmation
+text into one confirmation; if the operation also has a voice-command
+terminal, those confirmations are folded into that single final response.
+The structured readings remain separate for client application. A playback
+start can therefore ACK the complete audible operation, never just its last
+field. An unheard operation token also outranks an older ordinary
+field/text-confirmation collision: equal prose from a distinct address
+operation still plays. Web synthesis errors before playback and pre-enqueue
+failures release both the operation reservation and any new ordinary-key
+reservation, so the leased outbox retry remains audible.
+
 Clients round-trip the server-owned `purpose` and direct clarification
 `tool_call_id`. Voice replies to a direct question carry that id in
 `transcript.in_response_to`, so an old card or delayed transcript cannot
 resolve the current question merely because its prose still resembles it.
+The transcript recovery lane forwards that exact id into the durable
+controller and consumes a stale explicit generation before model extraction;
+purpose/type metadata cannot silently select a newer ask. When a deciding
+address/postcode answer completes an incomplete direct command, its terminal
+ledger includes a prompt-clear frame before the audible terminal. The client
+therefore leaves answer mode immediately instead of parking the confirmation
+behind a resolved prompt until timeout.
 For both address question types, the backend owns terminal speech; web/iOS tap
 handlers suppress their generic local “Updated” / “keeping it” response to
 avoid a second audible terminal. Live taps use the paired
