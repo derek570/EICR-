@@ -146,6 +146,7 @@ const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
 const { ADDRESS_MIRROR_ANSWER_GRACE_MS } =
   await import('../extraction/address-mirror-ingress-arbiter.js');
+const { ADDRESS_MIRROR_DELIVERY } = await import('../extraction/address-mirror-controller.js');
 
 // ── Helpers (pattern lifted from sonnet-stream-resume.test.js) ───────────────
 
@@ -503,6 +504,49 @@ describe('Group B — inbound ask_user_answered routing', () => {
       expect.objectContaining({ askId: 'addr-stale-generation' })
     );
     expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'cancel_pending_tts',
+        prefix: 'addr-stale-generation',
+      })
+    );
+    expect(ws._sent).not.toContainEqual(
+      expect.objectContaining({ prefix: 'addr-current-generation' })
+    );
+  });
+
+  test('explicit stale mirror answer frame clears only its supplied generation', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-stale-answer-id',
+      jobId: 'job-address-stale-answer-id',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-stale-answer-id');
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(async () => ({
+      handled: false,
+      reason: 'stale_address_mirror_ask_id',
+    }));
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'addr-stale-answer-generation',
+      purpose: 'address_mirror',
+      user_text: 'yes',
+      consumed_utterance_id: 'utt-stale-answer-generation',
+    });
+
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'cancel_pending_tts',
+        prefix: 'addr-stale-answer-generation',
+      })
+    );
+    expect(ws._sent).not.toContainEqual(
+      expect.objectContaining({ prefix: 'addr-current-answer-generation' })
+    );
   });
 
   test('opposite direct command beside a pending mirror ask is acknowledged without model fallthrough', async () => {
@@ -581,6 +625,71 @@ describe('Group B — inbound ask_user_answered routing', () => {
       })
     );
     expect(ws._sent.find((frame) => frame.type === 'extraction')).toBeUndefined();
+  });
+
+  test('legacy same-as-site clears the claimed ask before its old-client terminal', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-legacy-terminal-order',
+      jobId: 'job-address-legacy-terminal-order',
+      jobState: { certificateType: 'eicr' },
+      // Deliberately no delivery-ACK capability: build-428 compatibility is
+      // socket-flush complete, so sending audio before the clear would make a
+      // client-side awaiting gate drop it permanently.
+    });
+    const entry = activeSessions.get('sess-address-legacy-terminal-order');
+    const markDelivered = jest
+      .spyOn(entry.addressMirrorController, 'markDelivered')
+      .mockResolvedValue(true);
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(
+      async ({ text, askId, perTurnWrites }) => {
+        expect(text).toBe('same as site');
+        expect(askId).toBeNull(); // purpose/type-only legacy frame
+        perTurnWrites.answer.stagedText = 'Site address copied to client.';
+        Object.defineProperty(perTurnWrites, ADDRESS_MIRROR_DELIVERY, {
+          value: {
+            kind: 'convenience',
+            token: 'legacy-terminal-order-token',
+            claimToken: null,
+          },
+          enumerable: false,
+          configurable: true,
+        });
+        return {
+          handled: true,
+          outcome: 'yes',
+          resolutionToken: 'legacy-terminal-order-token',
+          clearAskId: 'legacy-address-mirror-generation-1',
+        };
+      }
+    );
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-legacy-terminal-order',
+      text: 'same as site',
+      confirmations_enabled: false,
+      in_response_to: {
+        type: 'address_mirror',
+        purpose: 'address_mirror',
+        question: 'Should I use this same address for the client?',
+      },
+    });
+
+    const clearIndex = ws._sent.findIndex((frame) => frame.type === 'cancel_pending_tts');
+    const extractionIndex = ws._sent.findIndex((frame) => frame.type === 'extraction');
+    const terminalIndex = ws._sent.findIndex((frame) => frame.type === 'voice_command_response');
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(clearIndex).toBeLessThan(extractionIndex);
+    expect(clearIndex).toBeLessThan(terminalIndex);
+    expect(ws._sent[clearIndex]).toMatchObject({
+      prefix: 'legacy-address-mirror-generation-1',
+    });
+    expect(markDelivered).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: expect.any(String), token: expect.any(String) })
+    );
   });
 
   test('invalid payload (missing tool_call_id) emits error envelope; registry untouched', async () => {

@@ -308,6 +308,17 @@ function sendAddressMirrorAskClear(ws, askId, sessionId) {
   );
 }
 
+function attachAddressMirrorAskClear(result, clearAskId) {
+  if (typeof clearAskId !== 'string' || !clearAskId || !result) return result;
+  const existing = result[ADDRESS_MIRROR_DIRECT_FOLLOWUP] ?? {};
+  Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {
+    value: { ...existing, clearAskId },
+    enumerable: false,
+    configurable: true,
+  });
+  return result;
+}
+
 function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null) {
   if (typeof followup?.question !== 'string' || ws?.readyState !== ws?.OPEN) return false;
   ws.send(
@@ -1269,6 +1280,20 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
   normaliseAddressMirrorAudibleTerminal(result);
   const frames = [];
   const { spoken_response, action, observationUpdates } = result;
+  const directFollowup = result[ADDRESS_MIRROR_DIRECT_FOLLOWUP];
+  // A resolved address ask must clear the client's awaiting-response gate
+  // BEFORE either an extraction confirmation or VCR can try to speak. Keep the
+  // clear in the same resumable ledger so a socket failure cannot reorder it
+  // behind an old-client flush-completed terminal.
+  if (typeof directFollowup?.clearAskId === 'string' && directFollowup.clearAskId) {
+    frames.push({
+      kind: 'cancel_pending_tts',
+      json: JSON.stringify({
+        type: 'cancel_pending_tts',
+        prefix: directFollowup.clearAskId,
+      }),
+    });
+  }
   frames.push({
     kind: 'extraction',
     json: JSON.stringify({ type: 'extraction', result: projectExtractionResultForWire(result) }),
@@ -1320,16 +1345,6 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
       if (!evt) continue;
       frames.push({ kind: 'field_corrected', json: JSON.stringify(evt) });
     }
-  }
-  const directFollowup = result[ADDRESS_MIRROR_DIRECT_FOLLOWUP];
-  if (typeof directFollowup?.clearAskId === 'string' && directFollowup.clearAskId) {
-    frames.push({
-      kind: 'cancel_pending_tts',
-      json: JSON.stringify({
-        type: 'cancel_pending_tts',
-        prefix: directFollowup.clearAskId,
-      }),
-    });
   }
   // The audible frame is LAST (exactly-once contract, P4d row 7): if any
   // earlier frame fails, the VCR has not gone out and the resumed replay
@@ -2442,6 +2457,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 askId: msg.tool_call_id,
                 perTurnWrites: mirrorWrites,
               });
+              if (
+                !recovered.handled &&
+                (recovered.reason === 'stale_address_mirror_ask_id' ||
+                  recovered.reason === 'stale_direct_question')
+              ) {
+                sendAddressMirrorAskClear(ws, msg.tool_call_id, currentSessionId);
+                if (directResponseUtteranceId) {
+                  entry.consumedAskUtterances.add(directResponseUtteranceId);
+                  entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                }
+                logger.info('stage6.address_mirror_stale_answer_cleared', {
+                  sessionId: currentSessionId,
+                  stale_tool_call_id: msg.tool_call_id,
+                  reason: recovered.reason,
+                });
+                break;
+              }
               if (recovered.handled && recovered.outcome === 'duplicate') {
                 if (directResponseUtteranceId) {
                   entry.consumedAskUtterances.add(directResponseUtteranceId);
@@ -2472,6 +2504,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   }),
                   mirrorWrites
                 );
+                attachAddressMirrorAskClear(result, recovered.clearAskId ?? msg.tool_call_id);
                 const sent = await sendResultFrameLedger(
                   ws,
                   entry.session.stateSnapshot,
@@ -2483,13 +2516,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 if (directResponseUtteranceId) {
                   entry.consumedAskUtterances.add(directResponseUtteranceId);
                   entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
-                }
-                if (recovered.outcome === 'conflict') {
-                  sendAddressMirrorAskClear(
-                    ws,
-                    recovered.clearAskId ?? msg.tool_call_id,
-                    currentSessionId
-                  );
                 }
                 logger.info('stage6.address_mirror_answer_recovered', {
                   sessionId: currentSessionId,
@@ -4476,6 +4502,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         }),
         writes
       );
+      attachAddressMirrorAskClear(result, recovered.clearAskId);
       const sent = await sendResultFrameLedger(
         ws,
         entry.session?.stateSnapshot,
@@ -4485,9 +4512,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       if (!sent.ok) {
         entry.pendingExtractions.push(result);
         return;
-      }
-      if (recovered.clearAskId) {
-        sendAddressMirrorAskClear(ws, recovered.clearAskId, sessionId);
       }
       const delivered = await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
       if (!delivered) return;
@@ -4848,6 +4872,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           (mirrorOutcome.reason === 'stale_direct_question' ||
             mirrorOutcome.reason === 'stale_address_mirror_ask_id')
         ) {
+          sendAddressMirrorAskClear(ws, recoveredAskId, sessionId);
           entry.addressMirrorReservations.add(reservationKey);
           stampSeenTranscript();
           consumeDestructiveToken(
@@ -4904,6 +4929,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             }),
             mirrorWrites
           );
+          attachAddressMirrorAskClear(result, mirrorOutcome.clearAskId);
           const sent = await sendResultFrameLedger(
             ws,
             entry.session.stateSnapshot,
@@ -4912,9 +4938,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           );
           if (!sent.ok) entry.pendingExtractions.push(result);
           else await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
-          if (mirrorOutcome.clearAskId) {
-            sendAddressMirrorAskClear(ws, mirrorOutcome.clearAskId, sessionId);
-          }
           stampSeenTranscript();
           consumeDestructiveToken('address_mirror_controller');
           return;

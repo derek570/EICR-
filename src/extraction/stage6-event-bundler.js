@@ -752,7 +752,7 @@ function synthesiseConfirmations(
  *            cleared_readings?: Array<{field: string, circuit: string, reason?: string}>,
  *            circuit_updates?: Array<{op: string, circuit_ref: string, from_ref?: string, board_id?: string, meta?: any}>,
  *            observation_deletions?: Array<{id: string, reason?: string}>,
- *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call', board_id?: string}>,
+ *            extracted_board_readings?: Array<{field: string, value: any, confidence: number, source: 'tool_call', board_id?: string, derived?: true}>,
  *            board_ops?: Array<{op: string, [key: string]: any}>}}
  */
 export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, options = {}) {
@@ -918,6 +918,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // field; omitting when undefined keeps the snapshot stable).
     if (entry.auto_resolved === true) {
       reading.auto_resolved = true;
+    }
+    // Address/locality mirrors and other automatic consequences must remain
+    // distinguishable after they cross the client boundary. The server already
+    // suppresses their generated confirmations; carrying the additive marker
+    // also prevents a Voice-off client from inventing a local correction
+    // read-back for a write the inspector did not dictate.
+    if (isDerivedWrite(entry)) {
+      reading.derived = true;
     }
     // "Work on Board" hotfix slice 1.1a (2026-05-08) — emit board_id when
     // the dispatcher recorded one on the value entry. Omit otherwise so
@@ -1387,6 +1395,9 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       // P3-B — same auto_resolve propagation as extracted_readings above.
       if (entry.auto_resolved === true) {
         reading.auto_resolved = true;
+      }
+      if (isDerivedWrite(entry)) {
+        reading.derived = true;
       }
       // "Work on Board" hotfix slice 1.1a — emit board_id so shadow-harness's
       // fold to extracted_readings (with circuit:0) carries the field through

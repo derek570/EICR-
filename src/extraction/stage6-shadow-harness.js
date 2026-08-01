@@ -2010,6 +2010,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           source: br.source,
         };
         if (br.board_id != null) synthesised.board_id = br.board_id;
+        // Preserve server-owned provenance across the legacy circuit:0 fold.
+        // This additive flag lets clients suppress local correction speech for
+        // automatic mirror/locality writes even when Voice confirmations are
+        // disabled; dictated readings continue to omit it and remain audible.
+        if (br.derived === true) synthesised.derived = true;
         // A2-multiboard item 7 (2026-07-28) — carry the collapse flag through
         // the fold. `extracted_board_readings` is STRIPPED below (the iOS
         // Codable decoder rejects the slot), so this synthesised circuit:0 copy

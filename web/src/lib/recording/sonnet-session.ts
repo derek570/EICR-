@@ -45,6 +45,12 @@ export interface ExtractedReading {
   board_id?: string | null;
   confidence?: number;
   /**
+   * Server-owned provenance for an automatic consequence such as an address
+   * mirror or postcode locality enrichment. Omitted for dictated readings.
+   * Clients must not invent a per-field read-back for these silent writes.
+   */
+  derived?: true;
+  /**
    * A2 (2026-07-28) — set by the backend bundler when this write SUPERSEDED a
    * same-turn `clear_reading` for the identical circuit slot and the server
    * dropped that clear from the wire (the P5 2026-07-23 same-turn collapse).

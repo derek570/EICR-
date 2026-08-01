@@ -395,14 +395,24 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     if (!sourceFamily || !expectedSourceFamily || sourceFamily !== expectedSourceFamily) {
       return false;
     }
+    const askId = question.id ?? `legacy-address-mirror-${randomUUID()}`;
     const out = await claim(
       {
-        askId: question.id ?? `legacy-address-mirror-${randomUUID()}`,
+        askId,
         question: question.question,
       },
       capturedWrites,
       sourceFamily
     );
+    // Stamp the claimed generation onto the exact object QuestionGate will
+    // emit. Legacy/build-428 already decodes tool_call_id even when it drops
+    // the newer purpose field; the terminal cancel can therefore dismiss the
+    // real alert before its audible result instead of targeting an internal id
+    // the client never saw.
+    if (out.ok) {
+      question.tool_call_id = out.intent?.ask_id ?? askId;
+      question.expected_answer_shape = 'yes_no';
+    }
     return out.ok;
   }
 
@@ -518,7 +528,39 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     }
     const terminalAnswer =
       intent.status === 'resolved_yes' ? 'yes' : intent.status === 'resolved_no' ? 'no' : null;
-    const conflict = async (reason) => {
+    const stageSourceReplay = (sourceReplay) => {
+      const replayWithProvenance = sourceReplay.map((write) => ({
+        ...write,
+        ledgerEntry: intent.source_writes.find((item) => item?.field === write.field) ?? null,
+      }));
+      if (replayWithProvenance.some((write) => write.ledgerEntry != null)) {
+        Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
+          value: true,
+          enumerable: false,
+          configurable: true,
+        });
+        Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
+          value: intent.resolution_token,
+          enumerable: false,
+          configurable: true,
+        });
+      }
+      for (const [ordinal, write] of replayWithProvenance.entries()) {
+        const { ledgerEntry } = write;
+        stageBoardWrite(session, perTurnWrites, write.field, write.value, {
+          confidence: ledgerEntry?.confidence ?? 1,
+          source_turn_id:
+            ledgerEntry?.source_turn_id ??
+            ledgerEntry?.operation_token ??
+            `::address_mirror_source::${intent.resolution_token}`,
+          derived: ledgerEntry == null,
+          replayed: ledgerEntry != null,
+          ordinal,
+        });
+      }
+      return replayWithProvenance.length;
+    };
+    const conflict = async (reason, sourceReplay = []) => {
       if (intent.status === 'pending') {
         const transition = await terminalise(intent, 'conflict', { outcome: 'conflict', reason });
         if (!transition.won) {
@@ -528,6 +570,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
             changed: [],
             replayedSource: 0,
             resolutionToken: intent.resolution_token,
+            clearAskId: intent.ask_id ?? transition.row?.ask_id ?? null,
           };
         }
         intent = await acquireConvenienceDelivery(transition.row);
@@ -538,6 +581,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
             changed: [],
             replayedSource: 0,
             resolutionToken: transition.row?.resolution_token,
+            clearAskId: transition.row?.ask_id ?? intent?.ask_id ?? null,
           };
         }
       } else if (claimedRecoveryIntent && intent.status !== 'conflict') {
@@ -554,17 +598,17 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         intent.resolution_token,
         intent.delivery_claim_token
       );
+      const replayedSource = stageSourceReplay(sourceReplay);
       return {
         handled: true,
         outcome: 'conflict',
         changed: [],
-        replayedSource: 0,
+        replayedSource,
         clearAskId: intent.ask_id ?? null,
         resolutionToken: intent.resolution_token,
         delivery: { kind: 'convenience', token: intent.resolution_token },
       };
     };
-    if (intent.status === 'conflict') return conflict('source_drift');
     if (terminalAnswer && terminalAnswer !== answer) {
       return conflict('answer_changed');
     }
@@ -597,13 +641,18 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       return conflict('source_drift');
     }
 
+    if (intent.status === 'conflict') {
+      const reason = intent.terminal_outcome?.reason ?? 'source_drift';
+      return conflict(reason, reason === 'target_drift' ? replay : []);
+    }
+
     if (answer === 'yes') {
       const currentTarget = stableSnapshot(session.stateSnapshot, targetFamily(sourceFamily));
       for (const key of Object.keys(targetFields)) {
         const captured = source[key];
         if (!meaningful(captured) || !meaningful(currentTarget[key])) continue;
         if (String(currentTarget[key]) !== String(captured)) {
-          return conflict('target_drift');
+          return conflict('target_drift', replay);
         }
       }
     }
@@ -622,6 +671,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           changed: [],
           replayedSource: 0,
           resolutionToken: intent.resolution_token,
+          clearAskId: intent.ask_id ?? transition.row?.ask_id ?? null,
         };
       }
       intent = await acquireConvenienceDelivery(transition.row);
@@ -632,41 +682,18 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           changed: [],
           replayedSource: 0,
           resolutionToken: transition.row?.resolution_token,
+          clearAskId: transition.row?.ask_id ?? intent?.ask_id ?? null,
         };
       }
     }
 
-    Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
-      value: intent.resolution_token,
-      enumerable: false,
-      configurable: true,
-    });
     stageDelivery(
       perTurnWrites,
       'convenience',
       intent.resolution_token,
       intent.delivery_claim_token
     );
-    if (replay.length > 0) {
-      Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
-        value: true,
-        enumerable: false,
-        configurable: true,
-      });
-    }
-
-    for (const [ordinal, write] of replay.entries()) {
-      const ledgerEntry = intent.source_writes.find((item) => item?.field === write.field);
-      stageBoardWrite(session, perTurnWrites, write.field, write.value, {
-        confidence: ledgerEntry?.confidence ?? 1,
-        source_turn_id:
-          ledgerEntry?.source_turn_id ??
-          ledgerEntry?.operation_token ??
-          `::address_mirror_source::${intent.resolution_token}`,
-        replayed: true,
-        ordinal,
-      });
-    }
+    stageSourceReplay(replay);
 
     const changed = [];
     if (answer === 'yes') {
@@ -991,9 +1018,18 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
 
   async function materializeDirectTerminal(intent, perTurnWrites, sourceAudible = false) {
     if (!intent || intent.delivered_at) {
-      return { handled: true, outcome: 'duplicate', changed: [] };
+      const duplicateClearAskId =
+        intent?.clarification_kind === 'direct' ? null : (intent?.question_id ?? null);
+      return {
+        handled: true,
+        outcome: 'duplicate',
+        changed: [],
+        ...(duplicateClearAskId ? { clearAskId: duplicateClearAskId } : {}),
+      };
     }
     const terminalOutcome = intent.terminal_outcome?.outcome;
+    const replayPersistedTargetConflict =
+      terminalOutcome === 'conflict' && intent.terminal_outcome?.reason === 'target_drift';
     const clearAskId = intent.clarification_kind === 'direct' ? null : (intent.question_id ?? null);
     const stageOwnedDelivery = () =>
       stageDelivery(perTurnWrites, 'direct', intent.operation_token, intent.delivery_claim_token);
@@ -1014,7 +1050,10 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         delivery: { kind: 'direct', token: intent.operation_token },
       };
     }
-    if (terminalOutcome === 'conflict' || intent.status === 'conflict') {
+    if (
+      (terminalOutcome === 'conflict' || intent.status === 'conflict') &&
+      !replayPersistedTargetConflict
+    ) {
       stageOwnedDelivery();
       stageAcknowledgement(
         perTurnWrites,
@@ -1034,7 +1073,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     if (!complete(source)) return { handled: false, reason: 'source_incomplete' };
     const sourceFields = FAMILIES[intent.source_family];
     const currentSource = stableSnapshot(session.stateSnapshot, intent.source_family);
-    let replayedSource = 0;
+    const sourceReplay = [];
     for (const [ordinal, key] of Object.keys(sourceFields).entries()) {
       const value = source[key];
       if (!meaningful(value)) continue;
@@ -1058,19 +1097,12 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       if (!meaningful(currentSource[key])) {
         const field = sourceFields[key];
         const ledgerEntry = intent.source_writes.find((item) => item?.field === field);
-        stageBoardWrite(session, perTurnWrites, field, value, {
-          confidence: ledgerEntry?.confidence ?? 1,
-          source_turn_id:
-            ledgerEntry?.source_turn_id ??
-            ledgerEntry?.operation_token ??
-            `::address_mirror_direct_source::${intent.operation_token}`,
-          replayed: true,
-          ordinal,
-        });
-        replayedSource += 1;
+        sourceReplay.push({ ordinal, field, value, ledgerEntry });
       }
     }
-    if (replayedSource > 0) {
+    const replayedSource = sourceReplay.length;
+    const replayedAudibleSource = sourceReplay.filter((write) => write.ledgerEntry).length;
+    if (replayedAudibleSource > 0) {
       Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
         value: true,
         enumerable: false,
@@ -1081,6 +1113,35 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         enumerable: false,
         configurable: true,
       });
+    }
+    for (const write of sourceReplay) {
+      const { ledgerEntry } = write;
+      stageBoardWrite(session, perTurnWrites, write.field, write.value, {
+        confidence: ledgerEntry?.confidence ?? 1,
+        source_turn_id:
+          ledgerEntry?.source_turn_id ??
+          ledgerEntry?.operation_token ??
+          `::address_mirror_direct_source::${intent.operation_token}`,
+        derived: ledgerEntry == null,
+        replayed: ledgerEntry != null,
+        ordinal: write.ordinal,
+      });
+    }
+    if (replayPersistedTargetConflict) {
+      stageOwnedDelivery();
+      stageAcknowledgement(
+        perTurnWrites,
+        "The address changed before I could finish, so I haven't copied it."
+      );
+      return {
+        handled: true,
+        outcome: 'conflict',
+        changed: [],
+        replayedSource,
+        resolutionToken: intent.operation_token,
+        clearAskId,
+        delivery: { kind: 'direct', token: intent.operation_token },
+      };
     }
     const target = stableSnapshot(session.stateSnapshot, intent.target_family);
     const authorisedTarget = parseJsonObject(intent.terminal_outcome?.target_snapshot) ?? {};
@@ -1146,10 +1207,30 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
 
   async function materializeWonDirectTransition(transition, perTurnWrites, sourceAudible = false) {
     if (!transition?.won || !transition.row) {
-      return { handled: true, outcome: 'duplicate', changed: [] };
+      const duplicateClearAskId =
+        transition?.row?.clarification_kind === 'direct'
+          ? null
+          : (transition?.row?.question_id ?? null);
+      return {
+        handled: true,
+        outcome: 'duplicate',
+        changed: [],
+        ...(duplicateClearAskId ? { clearAskId: duplicateClearAskId } : {}),
+      };
     }
     const claimed = await acquireDirectDelivery(transition.row);
-    if (!claimed) return { handled: true, outcome: 'duplicate', changed: [] };
+    if (!claimed) {
+      const duplicateClearAskId =
+        transition.row.clarification_kind === 'direct'
+          ? null
+          : (transition.row.question_id ?? null);
+      return {
+        handled: true,
+        outcome: 'duplicate',
+        changed: [],
+        ...(duplicateClearAskId ? { clearAskId: duplicateClearAskId } : {}),
+      };
+    }
     return materializeDirectTerminal(claimed, perTurnWrites, sourceAudible);
   }
 
@@ -1176,10 +1257,24 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       if (claimed?.reason === 'duplicate_operation') {
         const existing = normaliseDirectRow(claimed.intent);
         if (existing?.delivered_at) {
-          return { handled: true, outcome: 'duplicate', changed: [] };
+          const duplicateClearAskId =
+            existing.clarification_kind === 'direct' ? null : (existing.question_id ?? null);
+          return {
+            handled: true,
+            outcome: 'duplicate',
+            changed: [],
+            ...(duplicateClearAskId ? { clearAskId: duplicateClearAskId } : {}),
+          };
         }
         if (existing?.status !== 'pending') {
-          return { handled: true, outcome: 'duplicate', changed: [] };
+          const duplicateClearAskId =
+            existing?.clarification_kind === 'direct' ? null : (existing?.question_id ?? null);
+          return {
+            handled: true,
+            outcome: 'duplicate',
+            changed: [],
+            ...(duplicateClearAskId ? { clearAskId: duplicateClearAskId } : {}),
+          };
         }
         if (existing?.clarification_kind === 'direct') {
           const terminal = await terminaliseDirect(

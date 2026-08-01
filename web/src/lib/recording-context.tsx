@@ -55,6 +55,7 @@ import {
   buildQuestionTapDispatch,
   InFlightQuestionTracker,
   isServerOwnedAddressMirrorQuestion,
+  shouldDiscardTtsEchoForQuestion,
 } from './recording/in-flight-question';
 import {
   buildConfirmationDedupeKey,
@@ -2118,8 +2119,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // text is plausibly a content reply (not just a 1-word burp
           // that's more likely the mic catching its own speaker), then
           // BARGE IN — cancel TTS and let the transcript through.
+          const activeQuestionForEcho = inFlightQuestionRef.current.peekPayloadForTranscript();
           if (isWithinTtsWindow()) {
-            const hasInFlightAsk = inFlightQuestionRef.current.peekPayloadForTranscript() != null;
+            const hasInFlightAsk = activeQuestionForEcho != null;
             const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
             // Single-token replies ARE legitimate ("yes", "no", "0.6",
             // "TT"). iOS uses a separate VAD gate; we approximate by
@@ -2169,7 +2171,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // question through the speaker, Deepgram transcribed
           // fragments, and Sonnet processed those fragments as the
           // inspector's reply.
-          if (isTTSEcho(text)) {
+          if (shouldDiscardTtsEchoForQuestion(text, isTTSEcho(text), activeQuestionForEcho)) {
             console.info(`[recording:tts-echo-discarded] text="${text.slice(0, 60)}"`);
             clientDiagnostic('pipeline_tts_echo_discarded', {
               textLength: text.length,

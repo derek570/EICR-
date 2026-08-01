@@ -33,13 +33,14 @@ function sessionWith(site = {}, client = {}) {
   };
 }
 
-function sourceTurnWrites(values) {
+function sourceTurnWrites(values, derivedFields = new Set()) {
   const writes = createPerTurnWrites();
   for (const [field, value] of Object.entries(values)) {
     recordBoardReadingWrite(writes, encodeBoardReadingKey(field), {
       value,
       confidence: 1,
       source_turn_id: 'turn-source',
+      ...(derivedFields.has(field) ? { derived: true } : {}),
     });
   }
   return writes;
@@ -130,6 +131,36 @@ describe('address mirror controller', () => {
         perTurnWrites: sourceTurnWrites({ client_postcode: 'CR1 1AA' }),
       })
     ).toMatchObject({ ok: true });
+  });
+
+  test('legacy claim stamps its server ask id onto the outbound question', async () => {
+    const store = {
+      claim: jest.fn(async (_user, _job, intent) => ({ claimed: true, intent })),
+    };
+    const controller = createAddressMirrorController({
+      userId: 'owner-legacy-id',
+      jobId: 'job-legacy-id',
+      session: sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' }),
+      store,
+    });
+    const question = {
+      purpose: 'address_mirror',
+      field: 'client_address',
+      question: 'Use it for the client?',
+    };
+
+    await expect(
+      controller.claimLegacyQuestion(
+        question,
+        sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' })
+      )
+    ).resolves.toBe(true);
+
+    expect(question).toMatchObject({
+      tool_call_id: expect.stringMatching(/^legacy-address-mirror-/),
+      expected_answer_shape: 'yes_no',
+    });
+    expect(store.claim.mock.calls[0][2].askId).toBe(question.tool_call_id);
   });
 
   test('claims once then applies a silent derived site-to-client copy', async () => {
@@ -273,7 +304,12 @@ describe('address mirror controller', () => {
         return row;
       }),
     };
-    const original = sessionWith({ address: '14 High Street', postcode: 'SW1A 1AA' });
+    const original = sessionWith({
+      address: '14 High Street',
+      postcode: 'SW1A 1AA',
+      town: 'London',
+      county: 'Greater London',
+    });
     const first = createAddressMirrorController({
       userId: 'owner-replay',
       jobId: 'job-replay',
@@ -283,7 +319,15 @@ describe('address mirror controller', () => {
     await first.claimLiveAsk({
       input: { purpose: 'address_mirror', question: 'Use it for the client?' },
       askId: 'ask-replay',
-      perTurnWrites: sourceTurnWrites({ address: '14 High Street', postcode: 'SW1A 1AA' }),
+      perTurnWrites: sourceTurnWrites(
+        {
+          address: '14 High Street',
+          postcode: 'SW1A 1AA',
+          town: 'London',
+          county: 'Greater London',
+        },
+        new Set(['town', 'county'])
+      ),
     });
 
     const restarted = sessionWith();
@@ -301,7 +345,7 @@ describe('address mirror controller', () => {
       askId: 'ask-replay',
       perTurnWrites: writes,
     });
-    expect(out).toMatchObject({ handled: true, outcome: 'yes', replayedSource: 2 });
+    expect(out).toMatchObject({ handled: true, outcome: 'yes', replayedSource: 4 });
     const result = bundleToolCallsIntoResult(writes, null, {
       confirmationsEnabled: true,
       turnId: 'new-process-turn',
@@ -316,8 +360,12 @@ describe('address mirror controller', () => {
     expect(restarted.stateSnapshot.circuits[0]).toMatchObject({
       address: '14 High Street',
       postcode: 'SW1A 1AA',
+      town: 'London',
+      county: 'Greater London',
       client_address: '14 High Street',
       client_postcode: 'SW1A 1AA',
+      client_town: 'London',
+      client_county: 'Greater London',
     });
     await recovered.markDelivered(out.delivery);
     expect(await recovered.recoverUndelivered(createPerTurnWrites())).toEqual({
@@ -394,6 +442,75 @@ describe('address mirror controller', () => {
     });
   });
 
+  test('target conflict recovery still restores and reads back owed source writes', async () => {
+    let row = null;
+    const store = {
+      claim: jest.fn(async (_user, _job, intent) => {
+        row = {
+          ...intent,
+          ask_id: intent.askId,
+          source_family: intent.sourceFamily,
+          source_snapshot: intent.sourceSnapshot,
+          source_version_hash: intent.sourceVersionHash,
+          source_writes: intent.sourceWrites,
+          resolution_token: intent.resolutionToken,
+          status: 'pending',
+        };
+        return { claimed: true, intent: row };
+      }),
+      load: jest.fn(async () => row),
+      resolve: jest.fn(async (_user, _job, status, _token, terminalOutcome) => {
+        row = { ...row, status, terminal_outcome: terminalOutcome };
+        return row;
+      }),
+    };
+    const original = sessionWith({ address: '14 High Street', postcode: 'SW1A 1AA' });
+    const first = createAddressMirrorController({
+      userId: 'owner-target-conflict-replay',
+      jobId: 'job-target-conflict-replay',
+      session: original,
+      store,
+    });
+    await first.claimLiveAsk({
+      input: { purpose: 'address_mirror', question: 'Use it for the client?' },
+      askId: 'ask-target-conflict-replay',
+      perTurnWrites: sourceTurnWrites({ address: '14 High Street', postcode: 'SW1A 1AA' }),
+    });
+
+    const restarted = sessionWith({}, { address: '9 Other Road' });
+    const recovered = createAddressMirrorController({
+      userId: 'owner-target-conflict-replay',
+      jobId: 'job-target-conflict-replay',
+      session: restarted,
+      store,
+    });
+    await recovered.rehydrate();
+    const writes = createPerTurnWrites();
+
+    const out = await recovered.resolveRecoveredAnswer({
+      context: { purpose: 'address_mirror' },
+      text: 'yes',
+      askId: 'ask-target-conflict-replay',
+      perTurnWrites: writes,
+    });
+
+    expect(out).toMatchObject({ handled: true, outcome: 'conflict', replayedSource: 2 });
+    const result = bundleToolCallsIntoResult(writes, null, {
+      confirmationsEnabled: true,
+      turnId: 'target-conflict-replay-turn',
+    });
+    expect(result.confirmations.map((confirmation) => confirmation.field)).toEqual([
+      'address',
+      'postcode',
+    ]);
+    expect(restarted.stateSnapshot.circuits[0]).toMatchObject({
+      address: '14 High Street',
+      postcode: 'SW1A 1AA',
+      client_address: '9 Other Road',
+    });
+    expect(restarted.stateSnapshot.circuits[0].client_postcode).toBeUndefined();
+  });
+
   test('captured-null to current-value drift emits one conflict and clears the stale ask', async () => {
     const session = sessionWith({ address: '14 High Street', postcode: 'SW1A 1AA' });
     const controller = createAddressMirrorController({ session });
@@ -457,6 +574,8 @@ describe('address mirror controller', () => {
         sourceTurnWrites({ address: '2 Test Road', postcode: 'TE1 1ST' })
       )
     ).toBe(true);
+    expect(question.tool_call_id).toBe('legacy-ask');
+    expect(question.expected_answer_shape).toBe('yes_no');
     expect(store.claim).toHaveBeenCalledTimes(1);
   });
 
@@ -720,6 +839,137 @@ describe('address mirror controller', () => {
     });
   });
 
+  test('direct recovery keeps snapshot-only locality derived and silent', async () => {
+    let row = {
+      status: 'resolved_yes',
+      clarification_kind: 'incomplete',
+      source_family: 'site',
+      target_family: 'client',
+      operation_token: 'direct-derived-recovery',
+      question_id: 'address-mirror-direct-derived-recovery',
+      source_snapshot: {
+        address: '2 Test Road',
+        postcode: 'TE1 1ST',
+        town: 'Test Town',
+        county: 'Testshire',
+      },
+      source_writes: [
+        {
+          field: 'address',
+          value: '2 Test Road',
+          confidence: 1,
+          source_turn_id: 'turn-address',
+        },
+        {
+          field: 'postcode',
+          value: 'TE1 1ST',
+          confidence: 1,
+          source_turn_id: 'turn-postcode',
+        },
+      ],
+      terminal_outcome: {
+        outcome: 'copied',
+        replacement: false,
+        target_snapshot: {},
+      },
+      delivered_at: null,
+    };
+    const store = {
+      load: jest.fn(async () => null),
+      loadRecoverableDirect: jest.fn(async () => [row]),
+      claimDirectDelivery: jest.fn(async (_user, _job, _token, claimToken) => {
+        row = { ...row, delivery_claim_token: claimToken };
+        return row;
+      }),
+    };
+    const session = sessionWith();
+    const controller = createAddressMirrorController({
+      userId: 'owner-direct-derived-recovery',
+      jobId: 'job-direct-derived-recovery',
+      session,
+      store,
+    });
+    await controller.rehydrate();
+    const writes = createPerTurnWrites();
+
+    const recovered = await controller.recoverUndelivered(writes);
+
+    expect(recovered).toMatchObject({
+      handled: true,
+      outcome: 'copied',
+      replayedSource: 4,
+    });
+    const result = bundleToolCallsIntoResult(writes, null, {
+      confirmationsEnabled: true,
+      turnId: 'direct-derived-recovery-turn',
+    });
+    expect(result.confirmations.map((confirmation) => confirmation.field)).toEqual([
+      'address',
+      'postcode',
+    ]);
+    expect(result.spoken_response).toBeUndefined();
+    expect(session.stateSnapshot.circuits[0]).toMatchObject({
+      address: '2 Test Road',
+      postcode: 'TE1 1ST',
+      town: 'Test Town',
+      county: 'Testshire',
+      client_address: '2 Test Road',
+      client_postcode: 'TE1 1ST',
+      client_town: 'Test Town',
+      client_county: 'Testshire',
+    });
+  });
+
+  test('direct recovery preflights source drift before staging an earlier missing field', async () => {
+    let row = {
+      status: 'resolved_yes',
+      clarification_kind: 'incomplete',
+      source_family: 'site',
+      target_family: 'client',
+      operation_token: 'direct-source-drift-preflight',
+      question_id: 'address-mirror-direct-source-drift-preflight',
+      source_snapshot: { address: '2 Test Road', postcode: 'TE1 1ST' },
+      source_writes: [
+        { field: 'address', value: '2 Test Road', source_turn_id: 'turn-address' },
+        { field: 'postcode', value: 'TE1 1ST', source_turn_id: 'turn-postcode' },
+      ],
+      terminal_outcome: {
+        outcome: 'copied',
+        replacement: false,
+        target_snapshot: {},
+      },
+      delivered_at: null,
+    };
+    const store = {
+      load: jest.fn(async () => null),
+      loadRecoverableDirect: jest.fn(async () => [row]),
+      claimDirectDelivery: jest.fn(async (_user, _job, _token, claimToken) => {
+        row = { ...row, delivery_claim_token: claimToken };
+        return row;
+      }),
+      conflictDirect: jest.fn(async (_user, _job, _token, terminalOutcome) => {
+        row = { ...row, status: 'conflict', terminal_outcome: terminalOutcome };
+        return row;
+      }),
+    };
+    const session = sessionWith({ postcode: 'NW1 2AB' });
+    const controller = createAddressMirrorController({
+      userId: 'owner-direct-source-drift-preflight',
+      jobId: 'job-direct-source-drift-preflight',
+      session,
+      store,
+    });
+    await controller.rehydrate();
+    const writes = createPerTurnWrites();
+
+    const recovered = await controller.recoverUndelivered(writes);
+
+    expect(recovered).toMatchObject({ handled: true, outcome: 'conflict', changed: [] });
+    expect(session.stateSnapshot.circuits[0].address).toBeUndefined();
+    expect(session.stateSnapshot.circuits[0].postcode).toBe('NW1 2AB');
+    expect(writes.boardReadings.size).toBe(0);
+  });
+
   test('stale direct clarification id cannot resolve a newer opposite-direction ask', async () => {
     const session = sessionWith(
       { address: '2 Test Road', postcode: 'TE1 1ST' },
@@ -901,6 +1151,9 @@ describe('address mirror controller', () => {
     ]);
 
     expect(outcomes.map((outcome) => outcome.outcome).sort()).toEqual(['duplicate', 'yes']);
+    expect(outcomes.find((outcome) => outcome.outcome === 'duplicate')).toMatchObject({
+      clearAskId: 'ask-concurrent',
+    });
     const emittedLedgers = [writesA, writesB].filter(
       (writes) => writes.boardReadings.size > 0 || writes.answer.stagedText
     );
@@ -917,7 +1170,10 @@ describe('address mirror controller', () => {
       operation_token: 'direct-target-drift',
       question_id: 'address-mirror-direct-target-drift',
       source_snapshot: { address: '2 Test Road', postcode: 'TE1 1ST' },
-      source_writes: [],
+      source_writes: [
+        { field: 'address', value: '2 Test Road', source_turn_id: 'turn-address' },
+        { field: 'postcode', value: 'TE1 1ST', source_turn_id: 'turn-postcode' },
+      ],
       terminal_outcome: {
         outcome: 'copied',
         replacement: false,
@@ -961,5 +1217,35 @@ describe('address mirror controller', () => {
       client_postcode: 'NW1 1AA',
     });
     expect([...writes.boardReadings.values()].filter((write) => write.derived)).toHaveLength(0);
+
+    const restartedSession = sessionWith({}, { address: '9 New Road', postcode: 'NW1 1AA' });
+    const restarted = createAddressMirrorController({
+      userId: 'owner-target-drift',
+      jobId: 'job-target-drift',
+      session: restartedSession,
+      store,
+    });
+    await restarted.rehydrate();
+    const replayWrites = createPerTurnWrites();
+    const replayed = await restarted.recoverUndelivered(replayWrites);
+    expect(replayed).toMatchObject({
+      handled: true,
+      outcome: 'conflict',
+      replayedSource: 2,
+    });
+    const replayResult = bundleToolCallsIntoResult(replayWrites, null, {
+      confirmationsEnabled: true,
+      turnId: 'direct-target-conflict-retry',
+    });
+    expect(replayResult.confirmations.map((confirmation) => confirmation.field)).toEqual([
+      'address',
+      'postcode',
+    ]);
+    expect(restartedSession.stateSnapshot.circuits[0]).toMatchObject({
+      address: '2 Test Road',
+      postcode: 'TE1 1ST',
+      client_address: '9 New Road',
+      client_postcode: 'NW1 1AA',
+    });
   });
 });

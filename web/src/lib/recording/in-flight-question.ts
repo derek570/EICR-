@@ -65,12 +65,42 @@ export interface QuestionTapDispatch {
 export function isServerOwnedAddressMirrorQuestion(question: {
   purpose?: string | null;
   question_type?: string | null;
+  type?: string | null;
 }): boolean {
   return (
     question.purpose === 'address_mirror' ||
     question.question_type === 'address_mirror' ||
-    question.question_type === 'address_mirror_direct'
+    question.question_type === 'address_mirror_direct' ||
+    question.type === 'address_mirror' ||
+    question.type === 'address_mirror_direct'
   );
+}
+
+/**
+ * Keep generic prompt-echo rejection for every ordinary question, but never
+ * let it consume a supported reply to a server-owned address operation.
+ * Phrases such as "use the same" intentionally overlap the prompt and are
+ * resolved by the backend's bounded yes/no parser; the exact purpose/type
+ * marker is the authority, never the question wording.
+ */
+export function shouldDiscardTtsEchoForQuestion(
+  transcript: string,
+  isEcho: boolean,
+  question: InFlightPayload | null
+): boolean {
+  if (!isEcho) return false;
+  if (!isServerOwnedAddressMirrorQuestion(question ?? {})) return true;
+
+  // Keep this deliberately identical to the backend controller's bounded
+  // address-mirror YES/NO grammar. Only an actual supported answer may pass
+  // through the overlap gate; the spoken prompt itself (or a fragment of it)
+  // must still be rejected as echo.
+  const clean = transcript.trim();
+  const yes =
+    /^(?:y|yes|yeah|yep|same|use (?:the )?same|same as (?:the )?(?:site|installation|client|customer))(?:[.!])?$/i;
+  const no =
+    /^(?:n|no|nope|different|separate|keep (?:them|the addresses) (?:different|separate))(?:[.!])?$/i;
+  return !(yes.test(clean) || no.test(clean));
 }
 
 /**

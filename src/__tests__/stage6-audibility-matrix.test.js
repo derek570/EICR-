@@ -229,6 +229,9 @@ describe('F7 matrix — invariant (c): read-back exactly once per applied readin
     const result = await runShadowHarness(makeSession(), 'zs circuit 1 is 0.62', [], baseOpts());
     const polConfs = (result.confirmations ?? []).filter((c) => c.field === 'polarity');
     expect(polConfs).toHaveLength(0);
+    expect(result.extracted_readings).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: 'polarity', derived: true })])
+    );
   });
 });
 
@@ -349,7 +352,11 @@ describe('F7 matrix — scenario family: D2 observation_clarify post-answer net'
       // record_observation requires a parsed body with ok===true (is_error
       // false alone is not enough), so the net can distinguish a real write
       // from a failed/malformed one.
-      { name: 'record_observation', input: {}, result: { is_error: false, content: JSON.stringify({ ok: true }) } },
+      {
+        name: 'record_observation',
+        input: {},
+        result: { is_error: false, content: JSON.stringify({ ok: true }) },
+      },
     ];
     const result = await runShadowHarness(makeSession(), 'crack is cosmetic', [], baseOpts());
     const apologies = (result.confirmations ?? []).filter(

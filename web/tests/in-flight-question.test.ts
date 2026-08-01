@@ -14,6 +14,7 @@ import {
   buildQuestionTapDispatch,
   InFlightQuestionTracker,
   isServerOwnedAddressMirrorQuestion,
+  shouldDiscardTtsEchoForQuestion,
   transcriptConsumesInFlight,
   DEFAULT_STALE_WINDOW_MS,
   PENDING_FIFO_MAX,
@@ -84,6 +85,54 @@ describe('buildQuestionTapDispatch', () => {
       });
     }
   );
+});
+
+describe('address mirror prompt echo arbitration', () => {
+  it('keeps a supported overlapping answer for live and rollback address asks', () => {
+    const live = {
+      type: 'ask_user',
+      question: 'Should I use this same address for the client?',
+      purpose: 'address_mirror',
+      tool_call_id: 'ask-address-1',
+    };
+    const rollback = {
+      type: 'address_mirror',
+      question: 'Should I use this same address for the client?',
+    };
+
+    // isTTSEcho("use the same") is true for these prompt words. The exact
+    // server-owned address identity must nevertheless let the answer route.
+    expect(shouldDiscardTtsEchoForQuestion('use the same', true, live)).toBe(false);
+    expect(shouldDiscardTtsEchoForQuestion('same as site', true, rollback)).toBe(false);
+    expect(shouldDiscardTtsEchoForQuestion('different', true, rollback)).toBe(false);
+  });
+
+  it('still rejects the spoken address prompt and unsupported prompt fragments', () => {
+    const question = {
+      type: 'ask_user',
+      question: 'Should I use this same address for the client?',
+      purpose: 'address_mirror',
+    };
+
+    expect(
+      shouldDiscardTtsEchoForQuestion(
+        'Should I use this same address for the client?',
+        true,
+        question
+      )
+    ).toBe(true);
+    expect(shouldDiscardTtsEchoForQuestion('use this same address', true, question)).toBe(true);
+  });
+
+  it('retains generic echo rejection for ordinary questions', () => {
+    expect(
+      shouldDiscardTtsEchoForQuestion('Which circuit was that for?', true, {
+        type: 'unclear',
+        question: 'Which circuit was that for?',
+      })
+    ).toBe(true);
+    expect(shouldDiscardTtsEchoForQuestion('anything', false, null)).toBe(false);
+  });
 });
 
 describe('tap consumption', () => {
