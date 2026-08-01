@@ -224,6 +224,27 @@ describe('Ineligible (expected_acks_eligible = 0) lifecycle', () => {
 });
 
 describe('Late ack without prior summary (diagnostic)', () => {
+  test('late ack after a completed first-audio row is not misclassified as missing its summary', () => {
+    recordUtteranceEnd(utteranceEnd());
+    recordTurnAudioSummary(audioSummary());
+
+    expect(findEvents('voice_latency.turn_perceived_latency_ms')).toHaveLength(1);
+    expect(_peekEntryCountForTests()).toBe(0);
+
+    recordLatePlaybackAck({
+      sessionId: SESSION,
+      turnId: TURN,
+      ack_source: 'bundler',
+      ios_playback_ack_at_ms: 1_780_000_003_000,
+      ios_playback_ack_monotonic_at_ms: 4000,
+      ios_playback_ack_process_uptime_id: PUID,
+      ios_playback_ack_correlation_id: 'vl_confirmation-later-clip',
+    });
+
+    expect(findEvents('voice_latency.turn_perceived_latency_ms')).toHaveLength(1);
+    expect(findEvents('voice_latency.turn_perceived_latency_skipped')).toHaveLength(0);
+  });
+
   test('recordLatePlaybackAck with no prior recordTurnAudioSummary → skipped with reason late_ack_without_summary', () => {
     recordLatePlaybackAck({
       sessionId: SESSION,
