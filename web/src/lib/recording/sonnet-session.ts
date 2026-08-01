@@ -2060,10 +2060,9 @@ export class SonnetSession {
           understood: Boolean(json.understood),
           spoken_response: (json.spoken_response as string) ?? '',
           action: (json.action as VoiceCommandResponse['action']) ?? null,
-          address_mirror_delivery_token:
-            typeof json.address_mirror_delivery_token === 'string'
-              ? json.address_mirror_delivery_token
-              : null,
+          ...(typeof json.address_mirror_delivery_token === 'string'
+            ? { address_mirror_delivery_token: json.address_mirror_delivery_token }
+            : {}),
         });
         break;
       }
