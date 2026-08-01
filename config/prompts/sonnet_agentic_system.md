@@ -213,11 +213,11 @@ CLIENT BILLING ADDRESS — SITE COPY RULE (one-shot ask per job):
   Customer→site direction is symmetric: copy each populated `client_*` value into its site counterpart.
 - WORKED EXAMPLE — site address dictated first, mirror ask fires, inspector says yes:
   - User: *"The address is 71 Hexham Road, Reading, RG30 6PT, Berkshire."* → site writes (address/postcode/town/county) land.
-  - Sonnet: `ask_user({question: "Should I use this same address for the customer?", reason: "missing_context", context_field: "client_address"})`.
+  - Assistant: `ask_user({question: "Should I use this same address for the customer?", reason: "missing_context", context_field: "client_address"})`.
   - User: *"Yeah."* → four `record_board_reading` writes (client_address/client_postcode/client_town/client_county) carrying the site values verbatim.
 - WORKED EXAMPLE — customer address dictated first, mirror ask fires, inspector says no:
   - User: *"My customer's address is 1 High Street, Bristol."* → client writes land (the *"customer"* qualifier disambiguates the slot).
-  - Sonnet: `ask_user({question: "Should I use this same address for the site?", reason: "missing_context", context_field: "none"})`.
+  - Assistant: `ask_user({question: "Should I use this same address for the site?", reason: "missing_context", context_field: "none"})`.
   - User: *"No, the site is different."* → no further writes. A later *"The site is 5 Acacia Avenue, Bath"* dictation is treated as a normal site write — no second mirror ask fires.
 - NEVER `record_board_reading({field: "client_name", value: "71 Hexham Road, Reading"})`. Address material belongs in the four address-family slots; the dispatcher rejects address-shaped values written to `client_name`.
 

@@ -7,9 +7,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
-import { isOpenAIModel } from './openai-vision-adapter.js';
 import { createOpenAIToolUseAdapter } from './openai-tooluse-adapter.js';
 import { createOpenAIResponsesAdapter } from './openai-responses-adapter.js';
+import { ProviderResolutionError, providerForModel } from './model-provider.js';
 import { CostTracker } from './cost-tracker.js';
 import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
 import {
@@ -1123,30 +1123,21 @@ export class EICRExtractionSession {
     //     tooling can still show the pre-fix behaviour on request.
     // Select via OPENAI_EXTRACT_API ('responses' default | 'chat_completions').
     //
-    // Guarded so the default (claude-*) path is byte-identical: if the model
-    // isn't gpt-* the branch is never taken; if it IS gpt-* but the key is
-    // missing we fall back to Anthropic and log, rather than crashing a live
-    // session. Mirrors the CCU sliding-window provider swap precedent.
-    const extractModel = (process.env.SONNET_EXTRACT_MODEL || '').trim();
-    const openaiKey = process.env.OPENAI_API_KEY;
-    const openaiApi = (process.env.OPENAI_EXTRACT_API || 'responses').trim();
-    if (isOpenAIModel(extractModel) && openaiKey) {
-      this.client =
-        openaiApi === 'chat_completions'
-          ? createOpenAIToolUseAdapter({ apiKey: openaiKey })
-          : createOpenAIResponsesAdapter({ apiKey: openaiKey });
-      this.extractionProvider = 'openai';
-      this.extractionApi = openaiApi === 'chat_completions' ? 'chat_completions' : 'responses';
-    } else {
-      if (isOpenAIModel(extractModel) && !openaiKey) {
-        logger.warn('SONNET_EXTRACT_MODEL is gpt-* but OPENAI_API_KEY missing — using Anthropic', {
-          sessionId,
-          model: extractModel,
-        });
-      }
-      this.client = new Anthropic({ apiKey });
-      this.extractionProvider = 'anthropic';
-    }
+    // A missing key or unknown model family now fails before SDK dispatch.
+    // The previous "GPT model via Anthropic fallback" could never succeed and
+    // concealed a broken deployment until the first inspector utterance.
+    this._anthropicApiKey = apiKey;
+    this._openaiApiKey = process.env.OPENAI_API_KEY;
+    this.extractionApi = (process.env.OPENAI_EXTRACT_API || 'responses').trim();
+    this._providerClients = new Map(Object.entries(options.providerClients || {}));
+    this.defaultExtractionModel = (
+      process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6'
+    ).trim();
+    this.extractionProvider = providerForModel(this.defaultExtractionModel);
+    this.client =
+      this._providerClients.get(this.extractionProvider) ||
+      this._createExtractionClient(this.extractionProvider);
+    this._providerClients.set(this.extractionProvider, this.client);
     this.sessionId = sessionId;
     this.certType = certType; // 'eicr' or 'eic'
 
@@ -1292,6 +1283,66 @@ export class EICRExtractionSession {
     // which would produce the same '' as the constructor default and
     // wrongly count as "cache hit" with an empty-string sentinel.
     this._lastScheduleText = null;
+  }
+
+  _createExtractionClient(provider) {
+    if (provider === 'anthropic') {
+      if (!this._anthropicApiKey) {
+        throw new ProviderResolutionError('ANTHROPIC_API_KEY missing for Anthropic extraction model', {
+          provider,
+        });
+      }
+      return new Anthropic({ apiKey: this._anthropicApiKey });
+    }
+
+    if (provider === 'openai') {
+      if (!this._openaiApiKey) {
+        throw new ProviderResolutionError('OPENAI_API_KEY missing for OpenAI extraction model', {
+          provider,
+        });
+      }
+      if (!['responses', 'chat_completions'].includes(this.extractionApi)) {
+        throw new ProviderResolutionError(
+          `Unsupported OPENAI_EXTRACT_API: ${this.extractionApi || '<empty>'}`,
+          { provider, extractionApi: this.extractionApi }
+        );
+      }
+      return this.extractionApi === 'chat_completions'
+        ? createOpenAIToolUseAdapter({ apiKey: this._openaiApiKey })
+        : createOpenAIResponsesAdapter({ apiKey: this._openaiApiKey });
+    }
+
+    throw new ProviderResolutionError(`Unsupported extraction provider: ${provider}`, { provider });
+  }
+
+  /**
+   * Resolve the SDK client and model as one atomic routing decision. The
+   * default-provider branch deliberately reads `this.client` so the repo's
+   * long-standing `session.client = mockClient` test seam remains valid.
+   */
+  resolveExtractionTarget(model = this.defaultExtractionModel) {
+    const normalizedModel = typeof model === 'string' ? model.trim() : '';
+    const provider = providerForModel(normalizedModel);
+    let client;
+
+    if (provider === this.extractionProvider) {
+      client = this.client;
+    } else {
+      client = this._providerClients.get(provider);
+      if (!client) {
+        client = this._createExtractionClient(provider);
+        this._providerClients.set(provider, client);
+      }
+    }
+
+    if (!client?.messages) {
+      throw new ProviderResolutionError(`No ${provider} extraction client available`, {
+        model: normalizedModel,
+        provider,
+      });
+    }
+
+    return { client, model: normalizedModel, provider };
   }
 
   /**
@@ -2081,12 +2132,13 @@ export class EICRExtractionSession {
       }
       messages.push({ role: 'user', content: [{ type: 'text', text: '[keepalive]' }] });
 
-      const response = await this.client.messages.create({
+      const keepaliveTarget = this.resolveExtractionTarget(this.defaultExtractionModel);
+      const response = await keepaliveTarget.client.messages.create({
         // SONNET_EXTRACT_MODEL must match the other call sites in this
         // file AND stage6-shadow-harness.js SHADOW_MODEL — Anthropic
         // prompt cache is keyed by model, so a split here would make
         // every keepalive miss the cache it's meant to warm.
-        model: (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim(),
+        model: keepaliveTarget.model,
         max_tokens: 1,
         system: this.buildSystemBlocks(),
         messages,
@@ -2984,6 +3036,7 @@ export class EICRExtractionSession {
     const isObservationTurn =
       observationModel.length > 0 && OBSERVATION_PATTERN.test(inspectorTranscript);
     const model = isObservationTurn ? observationModel : defaultModel;
+    const target = this.resolveExtractionTarget(model);
     if (isObservationTurn) {
       logger.info(`Session ${this.sessionId} Turn ${this.turnCount} observation tier`, {
         model,
@@ -3005,13 +3058,21 @@ export class EICRExtractionSession {
       system,
       messages,
     };
+    if (isObservationTurn && target.provider === 'openai') {
+      requestParams.service_tier = (
+        process.env.OPENAI_OBSERVATION_SERVICE_TIER || 'standard'
+      ).trim();
+      requestParams.reasoning_effort = (
+        process.env.OPENAI_OBSERVATION_REASONING_EFFORT || 'low'
+      ).trim();
+    }
     if (options.tools) requestParams.tools = options.tools;
     if (options.toolChoice) requestParams.tool_choice = options.toolChoice;
 
     let lastError;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        return await this.client.messages.create(requestParams, { timeout: 30000 });
+        return await target.client.messages.create(requestParams, { timeout: 30000 });
       } catch (error) {
         lastError = error;
         if (error.status === 429 || error.status >= 500) {

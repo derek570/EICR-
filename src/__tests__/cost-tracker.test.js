@@ -272,7 +272,7 @@ describe('CostTracker', () => {
         'gpt-5.6-luna',
         'default'
       );
-      expect(tracker.sonnetCost).toBeCloseTo(0.02 + 0.25 + 0.2 + 1.2, 6);
+      expect(tracker.sonnetCost).toBeCloseTo(0.1 + 1.25 + 1.0 + 6.0, 6);
       expect(tracker.modelUsage.has('luna')).toBe(true);
     });
 
@@ -287,7 +287,7 @@ describe('CostTracker', () => {
         'gpt-5.6-luna',
         'priority'
       );
-      expect(tracker.sonnetCost).toBeCloseTo(0.04 + 0.5 + 0.4 + 2.4, 6);
+      expect(tracker.sonnetCost).toBeCloseTo(0.2 + 2.5 + 2.0 + 12.0, 6);
       expect(tracker.modelUsage.has('luna_fast')).toBe(true);
     });
 
@@ -299,7 +299,30 @@ describe('CostTracker', () => {
           { cache_read_input_tokens: 1_000_000 },
           'gpt-5.6-luna'
         );
-        expect(tracker.sonnetCost).toBeCloseTo(0.04, 6);
+        expect(tracker.sonnetCost).toBeCloseTo(0.2, 6);
+      } finally {
+        if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
+        else process.env.OPENAI_EXTRACT_SERVICE_TIER = previous;
+      }
+    });
+
+    test('Terra Standard uses its own rates even while the default Luna route is Fast', () => {
+      const previous = process.env.OPENAI_EXTRACT_SERVICE_TIER;
+      process.env.OPENAI_EXTRACT_SERVICE_TIER = 'fast';
+      try {
+        tracker.addSonnetUsage(
+          {
+            cache_read_input_tokens: 1_000_000,
+            cache_creation_input_tokens: 1_000_000,
+            input_tokens: 1_000_000,
+            output_tokens: 1_000_000,
+          },
+          'gpt-5.6-terra',
+          'standard'
+        );
+        expect(tracker.sonnetCost).toBeCloseTo(0.25 + 3.125 + 2.5 + 15.0, 6);
+        expect(tracker.modelUsage.has('terra')).toBe(true);
+        expect(tracker.modelUsage.has('terra_fast')).toBe(false);
       } finally {
         if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
         else process.env.OPENAI_EXTRACT_SERVICE_TIER = previous;

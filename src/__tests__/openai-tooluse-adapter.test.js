@@ -121,7 +121,7 @@ describe('openai-tooluse-adapter — request translation', () => {
         { type: 'text', text: 'A' },
         { type: 'text', text: 'B', cache_control: { type: 'ephemeral' } },
       ])
-    ).toBe('AB');
+    ).toBe('A\n\nB');
   });
 
   test('toOpenAITools maps Anthropic input_schema -> function.parameters', () => {

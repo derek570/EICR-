@@ -89,21 +89,13 @@
  * SCOPE: read-back extraction path only; iOS/web wire contract unchanged.
  */
 import OpenAI from 'openai';
+import { renderSystemPrompt } from './system-prompt-renderer.js';
 
 // ---------------------------------------------------------------------------
 // Anthropic -> Responses request translation
 // ---------------------------------------------------------------------------
 
-function flattenSystem(system) {
-  if (!system) return '';
-  if (typeof system === 'string') return system;
-  if (Array.isArray(system)) {
-    return system
-      .map((b) => (typeof b === 'string' ? b : b?.type === 'text' ? b.text || '' : ''))
-      .join('');
-  }
-  return '';
-}
+const flattenSystem = renderSystemPrompt;
 
 /** Anthropic tool defs -> Responses API function tools (FLAT, no nested `function` key). */
 function toResponsesTools(tools) {
@@ -357,14 +349,14 @@ function resolveServiceTier(raw = process.env.OPENAI_EXTRACT_SERVICE_TIER) {
 }
 
 /** Preserve the provider's actual model + service tier for cost accounting. */
-function toAnthropicMessage(finalResp, fallbackModel) {
+function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier) {
   return {
     content: buildAnthropicContent(finalResp),
     usage: mapUsage(finalResp.usage),
     stop_reason: mapStopReason(finalResp),
     role: 'assistant',
     model: finalResp?.model || fallbackModel,
-    service_tier: finalResp?.service_tier,
+    service_tier: finalResp?.service_tier || fallbackServiceTier,
   };
 }
 
@@ -392,7 +384,15 @@ function toAnthropicMessage(finalResp, fallbackModel) {
  * the cache-keepalive ping, passes no tools and fails non-fatally on error).
  */
 function createStream(openai, streamArgs, options) {
-  const { model, max_tokens, system, messages, tools } = streamArgs;
+  const {
+    model,
+    max_tokens,
+    system,
+    messages,
+    tools,
+    service_tier: serviceTierOverride,
+    reasoning_effort: reasoningEffortOverride,
+  } = streamArgs;
   const { signal } = options || {};
 
   const requestPayload = {
@@ -405,9 +405,18 @@ function createStream(openai, streamArgs, options) {
     // headroom is for reasoning tokens (counted inside output_tokens, not
     // billed separately — see mapUsage docstring).
     max_output_tokens: Math.max((max_tokens || 4096) * 4, 8192),
-    reasoning: { effort: (process.env.OPENAI_EXTRACT_REASONING_EFFORT || 'low').trim() },
+    reasoning: {
+      effort: String(
+        reasoningEffortOverride ?? process.env.OPENAI_EXTRACT_REASONING_EFFORT ?? 'low'
+      ).trim(),
+    },
   };
-  const serviceTier = resolveServiceTier();
+  const configuredServiceTier = String(
+    serviceTierOverride ?? process.env.OPENAI_EXTRACT_SERVICE_TIER ?? 'standard'
+  )
+    .trim()
+    .toLowerCase();
+  const serviceTier = resolveServiceTier(configuredServiceTier);
   if (serviceTier) requestPayload.service_tier = serviceTier;
 
   let openaiStreamPromise = null;
@@ -428,7 +437,7 @@ function createStream(openai, streamArgs, options) {
     async finalMessage() {
       const openaiStream = await getOpenaiStream();
       const finalResp = await openaiStream.finalResponse();
-      return toAnthropicMessage(finalResp, model);
+      return toAnthropicMessage(finalResp, model, configuredServiceTier || 'standard');
     },
   };
 }

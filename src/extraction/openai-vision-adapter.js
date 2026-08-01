@@ -31,6 +31,7 @@
  * cacheable region but only at that point.
  */
 import OpenAI from 'openai';
+import { providerForModel } from './model-provider.js';
 
 /**
  * Translate an Anthropic-shaped `messages.create()` payload into an
@@ -180,5 +181,9 @@ export function createOpenAIAnthropicAdapter({ apiKey }) {
  * else (claude-sonnet-*, claude-opus-*, claude-haiku-*) stays on Anthropic.
  */
 export function isOpenAIModel(modelName) {
-  return typeof modelName === 'string' && modelName.trim().toLowerCase().startsWith('gpt-');
+  try {
+    return providerForModel(modelName) === 'openai';
+  } catch {
+    return false;
+  }
 }

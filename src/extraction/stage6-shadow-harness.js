@@ -264,6 +264,7 @@ import {
   throwIfStage6Cancelled,
 } from './stage6-control-flow-errors.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
+import { providerForModel } from './model-provider.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { applyReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { buildConfirmationText } from './confirmation-text.js';
@@ -295,6 +296,17 @@ import {
 // env var on purpose — the prompt cache is keyed by model, so the three
 // call sites MUST agree or the cache misses every turn.
 const SHADOW_MODEL = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
+
+function resolveSessionExtractionTarget(session, model) {
+  if (typeof session?.resolveExtractionTarget === 'function') {
+    return session.resolveExtractionTarget(model);
+  }
+  return {
+    client: session?.client,
+    model,
+    provider: providerForModel(model),
+  };
+}
 
 /**
  * Bug-H fix (2026-04-28) — rewrite Stage 6 per-turn observations into the
@@ -1552,6 +1564,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const routeToObservationTier =
       observationTierFlagEnabled && observationClassifierMatch && observationModel.length > 0;
     const selectedModel = routeToObservationTier ? observationModel : SHADOW_MODEL;
+    const selectedTarget = resolveSessionExtractionTarget(session, selectedModel);
+    const observationOpenAIServiceTier =
+      routeToObservationTier && selectedTarget.provider === 'openai'
+        ? (process.env.OPENAI_OBSERVATION_SERVICE_TIER || 'standard').trim()
+        : undefined;
+    const observationOpenAIReasoningEffort =
+      routeToObservationTier && selectedTarget.provider === 'openai'
+        ? (process.env.OPENAI_OBSERVATION_REASONING_EFFORT || 'low').trim()
+        : undefined;
     // Observation-tier turns LOCK the model across every round (disable the
     // round-1 VOICE_LATENCY_ROUND1_MODEL Haiku override so the escalation isn't
     // undone on round 1); reading turns keep the latency override.
@@ -1568,6 +1589,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       classifier_match: observationClassifierMatch,
       flag_enabled: observationTierFlagEnabled,
       selected_model: selectedModel,
+      selected_provider: selectedTarget.provider,
       default_model: SHADOW_MODEL,
       round1_override_locked: round1OverrideLocked,
     });
@@ -1587,14 +1609,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // pre-loop postcode await (guards the snapshot from post-abort mutation).
       throwIfStage6Cancelled(signal);
       toolLoopOut = await runToolLoop({
-        client: session.client,
+        client: selectedTarget.client,
         // Observation-tier routing (C1) — SHADOW_MODEL under flag-off /
         // reading turns; OBSERVATION_EXTRACT_MODEL for an observation-shaped
         // raw utterance when OBSERVATION_TIER_ROUTING is on. Computed once
         // above. (The mode==='shadow' comparison call ~:3470 stays on
         // SHADOW_MODEL — its contract is matching SHADOW_MODEL; do NOT change
         // that one.)
-        model: selectedModel,
+        model: selectedTarget.model,
+        provider: selectedTarget.provider,
+        openAIServiceTier: observationOpenAIServiceTier,
+        openAIReasoningEffort: observationOpenAIReasoningEffort,
         // Lock the selected model across every round for observation-tier
         // turns (disable the round-1 latency override); reading turns keep it.
         allowRound1ModelOverride: !round1OverrideLocked,
@@ -4549,10 +4574,12 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     // live ONLY on dispatch semantics (tool-call vs prose-JSON parse),
     // never on prompt shape or state visibility.
     const systemBlocks = preLegacySystemBlocks;
+    const shadowTarget = resolveSessionExtractionTarget(session, SHADOW_MODEL);
 
     toolLoopOut = await runToolLoop({
-      client: session.client,
-      model: SHADOW_MODEL,
+      client: shadowTarget.client,
+      model: shadowTarget.model,
+      provider: shadowTarget.provider,
       system: systemBlocks,
       messages: [{ role: 'user', content: transcriptText }],
       // A1: shadow lane advertises the SAME flag-filtered toolset as live.
