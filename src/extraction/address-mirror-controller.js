@@ -13,6 +13,9 @@ import {
   claimAddressMirrorDirectIntent,
   getAddressMirrorIntent,
   getPendingAddressMirrorDirectIntent,
+  getRecoverableAddressMirrorDirectIntents,
+  markAddressMirrorDirectIntentDelivered,
+  markAddressMirrorIntentDelivered,
   rebindAddressMirrorAsk,
   rebindAddressMirrorDirectIntent,
   resolveAddressMirrorDirectIntent,
@@ -35,6 +38,7 @@ export const ADDRESS_MIRROR_QUESTION_TYPE = 'address_mirror';
 export const ADDRESS_MIRROR_DIRECT_QUESTION_TYPE = 'address_mirror_direct';
 export const ADDRESS_MIRROR_SOURCE_WRITES = Symbol('addressMirror.sourceWrites');
 export const ADDRESS_MIRROR_DIRECT_FOLLOWUP = Symbol('addressMirror.directFollowup');
+export const ADDRESS_MIRROR_DELIVERY = Symbol('addressMirror.delivery');
 
 const FAMILIES = Object.freeze({
   site: Object.freeze({
@@ -194,6 +198,8 @@ function normaliseRow(row) {
       ? (row.source_writes ?? row.sourceWrites)
       : [],
     resolution_token: row.resolution_token ?? row.resolutionToken,
+    terminal_outcome: parseJsonObject(row.terminal_outcome ?? row.terminalOutcome),
+    delivered_at: row.delivered_at ?? row.deliveredAt ?? null,
   };
 }
 
@@ -206,7 +212,22 @@ function normaliseDirectRow(row) {
     target_family: row.target_family ?? row.targetFamily,
     operation_token: row.operation_token ?? row.operationToken,
     question_id: row.question_id ?? row.questionId,
+    source_snapshot: parseJsonObject(row.source_snapshot ?? row.sourceSnapshot) ?? {},
+    source_writes: Array.isArray(row.source_writes ?? row.sourceWrites)
+      ? (row.source_writes ?? row.sourceWrites)
+      : [],
+    terminal_outcome: parseJsonObject(row.terminal_outcome ?? row.terminalOutcome),
+    delivered_at: row.delivered_at ?? row.deliveredAt ?? null,
   };
+}
+
+function stageDelivery(perTurnWrites, kind, token) {
+  if (!perTurnWrites || typeof token !== 'string' || !token) return;
+  Object.defineProperty(perTurnWrites, ADDRESS_MIRROR_DELIVERY, {
+    value: { kind, token },
+    enumerable: false,
+    configurable: true,
+  });
 }
 
 export function parseAddressMirrorAnswer(text) {
@@ -234,30 +255,47 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     load: store.load ?? getAddressMirrorIntent,
     rebind: store.rebind ?? rebindAddressMirrorAsk,
     resolve: store.resolve ?? resolveAddressMirrorIntent,
+    markDelivered: store.markDelivered ?? markAddressMirrorIntentDelivered,
     claimDirect: store.claimDirect ?? claimAddressMirrorDirectIntent,
     loadDirect: store.loadDirect ?? getPendingAddressMirrorDirectIntent,
+    loadRecoverableDirect:
+      store.loadRecoverableDirect ??
+      (store.loadDirect ? null : getRecoverableAddressMirrorDirectIntents),
     rebindDirect: store.rebindDirect ?? rebindAddressMirrorDirectIntent,
     resolveDirect: store.resolveDirect ?? resolveAddressMirrorDirectIntent,
+    markDirectDelivered: store.markDirectDelivered ?? markAddressMirrorDirectIntentDelivered,
   };
   let localIntent = null;
   let durableIntent = null;
   let locallyAsked = false;
   let allowClarificationReask = false;
   let directIntent = null;
+  let recoverableDirectIntents = [];
   let terminalRecoveryArmed = false;
 
   const useDurableStore = Boolean(userId && jobId);
 
   async function rehydrate() {
     if (!useDurableStore) return localIntent;
-    const [mirrorRow, directRow] = await Promise.all([
+    const [mirrorRow, directRows] = await Promise.all([
       db.load(userId, jobId),
-      db.loadDirect(userId, jobId),
+      db.loadRecoverableDirect
+        ? db.loadRecoverableDirect(userId, jobId)
+        : Promise.resolve(db.loadDirect(userId, jobId)).then((row) => (row ? [row] : [])),
     ]);
     durableIntent = normaliseRow(mirrorRow);
-    directIntent = normaliseDirectRow(directRow);
+    recoverableDirectIntents = (Array.isArray(directRows) ? directRows : [directRows])
+      .filter(Boolean)
+      .map(normaliseDirectRow);
+    directIntent =
+      recoverableDirectIntents.find((row) => row.status === 'pending') ??
+      recoverableDirectIntents[0] ??
+      null;
     terminalRecoveryArmed =
-      durableIntent?.status === 'resolved_yes' || durableIntent?.status === 'resolved_no';
+      !durableIntent?.delivered_at &&
+      (durableIntent?.status === 'resolved_yes' ||
+        durableIntent?.status === 'resolved_no' ||
+        durableIntent?.status === 'conflict');
     return durableIntent;
   }
 
@@ -359,12 +397,12 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     return rehydrate();
   }
 
-  async function terminalise(intent, status) {
+  async function terminalise(intent, status, terminalOutcome) {
     if (!useDurableStore) {
-      localIntent = { ...intent, status };
+      localIntent = { ...intent, status, terminal_outcome: terminalOutcome, delivered_at: null };
       return localIntent;
     }
-    const row = await db.resolve(userId, jobId, status, intent.resolution_token);
+    const row = await db.resolve(userId, jobId, status, intent.resolution_token, terminalOutcome);
     durableIntent = normaliseRow(row);
     return durableIntent;
   }
@@ -379,15 +417,27 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     if (!intent || (askId && intent.ask_id && askId !== intent.ask_id)) {
       return { handled: false, reason: 'no_matching_pending_intent' };
     }
+    if (intent.status !== 'pending' && intent.delivered_at) {
+      return {
+        handled: true,
+        outcome: 'duplicate',
+        changed: [],
+        replayedSource: 0,
+        resolutionToken: intent.resolution_token,
+      };
+    }
     const terminalAnswer =
       intent.status === 'resolved_yes' ? 'yes' : intent.status === 'resolved_no' ? 'no' : null;
     const conflict = async (reason) => {
-      if (intent.status === 'pending') await terminalise(intent, 'conflict');
+      if (intent.status === 'pending') {
+        await terminalise(intent, 'conflict', { outcome: 'conflict', reason });
+      }
       const question =
         reason === 'answer_changed'
           ? "That answer conflicts with the one already recorded, so I haven't changed the addresses."
           : "The address changed after I asked, so I haven't copied it. Please tell me which address to use.";
       stageAcknowledgement(perTurnWrites, question);
+      stageDelivery(perTurnWrites, 'convenience', intent.resolution_token);
       return {
         handled: true,
         outcome: 'conflict',
@@ -395,6 +445,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         replayedSource: 0,
         clearAskId: intent.ask_id ?? null,
         resolutionToken: intent.resolution_token,
+        delivery: { kind: 'convenience', token: intent.resolution_token },
       };
     };
     if (intent.status === 'conflict') return conflict('source_drift');
@@ -442,7 +493,11 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     }
 
     if (intent.status === 'pending') {
-      const terminal = await terminalise(intent, answer === 'yes' ? 'resolved_yes' : 'resolved_no');
+      const terminal = await terminalise(
+        intent,
+        answer === 'yes' ? 'resolved_yes' : 'resolved_no',
+        { outcome: answer }
+      );
       const expectedStatus = answer === 'yes' ? 'resolved_yes' : 'resolved_no';
       if (!terminal || terminal.status !== expectedStatus) {
         return { handled: true, outcome: 'conflict', changed: [], replayedSource: 0 };
@@ -454,6 +509,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       enumerable: false,
       configurable: true,
     });
+    stageDelivery(perTurnWrites, 'convenience', intent.resolution_token);
     if (replay.length > 0) {
       Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
         value: true,
@@ -507,6 +563,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       replayedSource: replay.length,
       resolutionToken: intent.resolution_token,
       clearAskId: intent.ask_id ?? null,
+      delivery: { kind: 'convenience', token: intent.resolution_token },
     };
   }
 
@@ -529,6 +586,62 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     return out;
   }
 
+  async function recoverConvenienceDelivery(perTurnWrites) {
+    const intent = await currentIntent();
+    if (!intent || intent.status === 'pending' || intent.delivered_at) {
+      return { handled: false };
+    }
+    const answer =
+      intent.terminal_outcome?.outcome ??
+      (intent.status === 'resolved_yes'
+        ? 'yes'
+        : intent.status === 'resolved_no'
+          ? 'no'
+          : 'conflict');
+    const out =
+      answer === 'conflict'
+        ? await resolveIntentAnswer({ text: 'yes', perTurnWrites })
+        : await resolveIntentAnswer({ text: answer, perTurnWrites });
+    if (out?.handled) terminalRecoveryArmed = false;
+    return out;
+  }
+
+  async function markDelivered(delivery) {
+    if (!delivery || typeof delivery.token !== 'string') return false;
+    if (!useDurableStore) {
+      if (delivery.kind === 'convenience' && localIntent?.resolution_token === delivery.token) {
+        localIntent = { ...localIntent, delivered_at: new Date().toISOString() };
+      }
+      if (delivery.kind === 'direct') {
+        recoverableDirectIntents = recoverableDirectIntents.map((row) =>
+          row.operation_token === delivery.token
+            ? { ...row, delivered_at: new Date().toISOString() }
+            : row
+        );
+        if (directIntent?.operation_token === delivery.token) {
+          directIntent = { ...directIntent, delivered_at: new Date().toISOString() };
+        }
+      }
+      return true;
+    }
+    if (delivery.kind === 'convenience') {
+      const row = await db.markDelivered(userId, jobId, delivery.token);
+      if (row) durableIntent = normaliseRow(row);
+      return Boolean(row);
+    }
+    if (delivery.kind === 'direct') {
+      const row = await db.markDirectDelivered(userId, jobId, delivery.token);
+      if (!row) return false;
+      const normalised = normaliseDirectRow(row);
+      recoverableDirectIntents = recoverableDirectIntents.filter(
+        (item) => item.operation_token !== delivery.token
+      );
+      if (directIntent?.operation_token === delivery.token) directIntent = null;
+      return Boolean(normalised);
+    }
+    return false;
+  }
+
   async function shouldHoldReplyTranscript() {
     if (terminalRecoveryArmed) return true;
     return Boolean(await currentPending());
@@ -549,7 +662,22 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     return resolveIntentAnswer({ text: 'yes', perTurnWrites });
   }
 
-  async function saveDirectIntent(command, clarificationKind, operationToken) {
+  function directQuestion(intent) {
+    if (!intent) return null;
+    return intent.clarification_kind === 'conflict'
+      ? `The ${intent.target_family} address is already different. Should I replace it?`
+      : intent.clarification_kind === 'incomplete'
+        ? `What is the ${intent.source_family} address and postcode?`
+        : null;
+  }
+
+  async function saveDirectIntent(
+    command,
+    clarificationKind,
+    operationToken,
+    sourceSnapshot = {},
+    sourceWrites = []
+  ) {
     const questionId = `address-mirror-direct-${operationToken}`;
     const candidate = normaliseDirectRow({
       status: 'pending',
@@ -558,12 +686,22 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       target_family: command.targetFamily,
       operation_token: operationToken,
       question_id: questionId,
+      source_snapshot: sourceSnapshot,
+      source_writes: sourceWrites,
     });
     if (!useDurableStore) {
+      if (directIntent?.operation_token === operationToken) {
+        return { claimed: false, reason: 'duplicate_operation', intent: directIntent };
+      }
       if (directIntent?.status === 'pending') {
-        return { claimed: false, reason: 'clarification_already_pending' };
+        return {
+          claimed: false,
+          reason: 'clarification_already_pending',
+          intent: directIntent,
+        };
       }
       directIntent = candidate;
+      recoverableDirectIntents.push(candidate);
       return { claimed: true, intent: directIntent };
     }
     const out = await db.claimDirect(userId, jobId, {
@@ -572,23 +710,63 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       targetFamily: command.targetFamily,
       operationToken,
       questionId,
+      sourceSnapshot,
+      sourceWrites,
     });
-    if (out?.claimed) directIntent = normaliseDirectRow(out.intent ?? candidate);
+    if (out?.intent) {
+      const row = normaliseDirectRow(out.intent);
+      if (row.status === 'pending') directIntent = row;
+      if (!recoverableDirectIntents.some((item) => item.operation_token === row.operation_token)) {
+        recoverableDirectIntents.push(row);
+      }
+    } else if (out?.claimed) {
+      directIntent = candidate;
+      recoverableDirectIntents.push(candidate);
+    }
     return out;
   }
 
-  async function terminaliseDirect(status) {
-    if (!directIntent) return null;
+  async function terminaliseDirect(
+    status,
+    terminalOutcome,
+    sourceSnapshot = null,
+    sourceWrites = null,
+    intent = directIntent
+  ) {
+    if (!intent) return null;
     if (!useDurableStore) {
-      directIntent = { ...directIntent, status };
+      directIntent = normaliseDirectRow({
+        ...intent,
+        status,
+        terminal_outcome: terminalOutcome,
+        source_snapshot: sourceSnapshot ?? intent.source_snapshot,
+        source_writes: sourceWrites ?? intent.source_writes,
+        delivered_at: null,
+      });
+      recoverableDirectIntents = recoverableDirectIntents.map((row) =>
+        row.operation_token === intent.operation_token ? directIntent : row
+      );
       return directIntent;
     }
-    const row = await db.resolveDirect(userId, jobId, directIntent.operation_token, status);
+    const row = await db.resolveDirect(
+      userId,
+      jobId,
+      intent.operation_token,
+      status,
+      terminalOutcome,
+      sourceSnapshot,
+      sourceWrites
+    );
     directIntent = normaliseDirectRow(row);
+    if (directIntent) {
+      recoverableDirectIntents = recoverableDirectIntents.map((item) =>
+        item.operation_token === directIntent.operation_token ? directIntent : item
+      );
+    }
     return directIntent;
   }
 
-  async function rebindDirectConflict() {
+  async function rebindDirectConflict(sourceSnapshot, sourceWrites) {
     if (!directIntent) return null;
     const questionId = `address-mirror-direct-conflict-${directIntent.operation_token}`;
     if (!useDurableStore) {
@@ -596,18 +774,95 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         ...directIntent,
         clarification_kind: 'conflict',
         question_id: questionId,
+        source_snapshot: sourceSnapshot ?? directIntent.source_snapshot,
+        source_writes: sourceWrites ?? directIntent.source_writes,
       };
       return directIntent;
     }
     directIntent = normaliseDirectRow(
-      await db.rebindDirect(userId, jobId, directIntent.operation_token, 'conflict', questionId)
+      await db.rebindDirect(
+        userId,
+        jobId,
+        directIntent.operation_token,
+        'conflict',
+        questionId,
+        sourceSnapshot,
+        sourceWrites
+      )
     );
     return directIntent;
   }
 
-  function copyDirectSnapshot(intent, perTurnWrites, replacement = false, sourceAudible = false) {
-    const source = stableSnapshot(session.stateSnapshot, intent.source_family);
+  function materializeDirectTerminal(intent, perTurnWrites, sourceAudible = false) {
+    if (!intent || intent.delivered_at) {
+      return { handled: true, outcome: 'duplicate', changed: [] };
+    }
+    const terminalOutcome = intent.terminal_outcome?.outcome;
+    stageDelivery(perTurnWrites, 'direct', intent.operation_token);
+    if (terminalOutcome === 'no') {
+      stageAcknowledgement(
+        perTurnWrites,
+        intent.clarification_kind === 'conflict'
+          ? "Okay, I'll leave the addresses unchanged."
+          : "Okay, I haven't copied the address."
+      );
+      return {
+        handled: true,
+        outcome: 'no',
+        changed: [],
+        resolutionToken: intent.operation_token,
+        delivery: { kind: 'direct', token: intent.operation_token },
+      };
+    }
+    const source = intent.source_snapshot;
     if (!complete(source)) return { handled: false, reason: 'source_incomplete' };
+    const sourceFields = FAMILIES[intent.source_family];
+    const currentSource = stableSnapshot(session.stateSnapshot, intent.source_family);
+    let replayedSource = 0;
+    for (const [ordinal, key] of Object.keys(sourceFields).entries()) {
+      const value = source[key];
+      if (!meaningful(value)) continue;
+      if (meaningful(currentSource[key]) && String(currentSource[key]) !== String(value)) {
+        stageAcknowledgement(
+          perTurnWrites,
+          "The address changed before I could finish, so I haven't copied it."
+        );
+        return {
+          handled: true,
+          outcome: 'conflict',
+          changed: [],
+          replayedSource: 0,
+          resolutionToken: intent.operation_token,
+          delivery: { kind: 'direct', token: intent.operation_token },
+        };
+      }
+      if (!meaningful(currentSource[key])) {
+        const field = sourceFields[key];
+        const ledgerEntry = intent.source_writes.find((item) => item?.field === field);
+        stageBoardWrite(session, perTurnWrites, field, value, {
+          confidence: ledgerEntry?.confidence ?? 1,
+          source_turn_id:
+            ledgerEntry?.source_turn_id ??
+            ledgerEntry?.operation_token ??
+            `::address_mirror_direct_source::${intent.operation_token}`,
+          replayed: true,
+          ordinal,
+        });
+        replayedSource += 1;
+      }
+    }
+    if (replayedSource > 0) {
+      Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
+        value: true,
+        enumerable: false,
+        configurable: true,
+      });
+      Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
+        value: intent.operation_token,
+        enumerable: false,
+        configurable: true,
+      });
+    }
     const target = stableSnapshot(session.stateSnapshot, intent.target_family);
     const changed = [];
     for (const key of Object.keys(FAMILIES[intent.target_family])) {
@@ -623,7 +878,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     if (!sourceAudible && !hasAudibleSourceWrite(perTurnWrites, intent.source_family)) {
       stageAcknowledgement(
         perTurnWrites,
-        replacement
+        intent.terminal_outcome?.replacement === true
           ? intent.target_family === 'client'
             ? "Okay, I've replaced the client address with the site address."
             : "Okay, I've replaced the site address with the client address."
@@ -632,19 +887,64 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
             : "Okay, I'll use the client address for the site."
       );
     }
-    return { handled: true, outcome: 'copied', changed };
+    return {
+      handled: true,
+      outcome: 'copied',
+      changed,
+      replayedSource,
+      resolutionToken: intent.operation_token,
+      delivery: { kind: 'direct', token: intent.operation_token },
+    };
   }
 
   async function applyDirectCommand(text, perTurnWrites, operationToken = randomUUID()) {
     const command = parseDirectAddressMirrorCommand(text);
     if (!command) return { handled: false };
     const source = stableSnapshot(session.stateSnapshot, command.sourceFamily);
-    if (!complete(source)) {
-      const claimed = await saveDirectIntent(command, 'incomplete', operationToken);
-      if (!claimed?.claimed) {
-        stageAcknowledgement(perTurnWrites, "I'm still waiting for that address.");
-        return { handled: true, outcome: 'already_pending', changed: [] };
+    const target = stableSnapshot(session.stateSnapshot, command.targetFamily);
+    const hasConflict = complete(source)
+      ? Object.keys(FAMILIES[command.targetFamily]).some(
+          (key) =>
+            meaningful(source[key]) &&
+            meaningful(target[key]) &&
+            String(source[key]) !== String(target[key])
+        )
+      : false;
+    const clarificationKind = !complete(source)
+      ? 'incomplete'
+      : hasConflict
+        ? 'conflict'
+        : 'direct';
+    const claimed = await saveDirectIntent(command, clarificationKind, operationToken, source);
+    if (!claimed?.claimed) {
+      if (claimed?.reason === 'duplicate_operation') {
+        const existing = normaliseDirectRow(claimed.intent);
+        if (existing?.delivered_at) {
+          return { handled: true, outcome: 'duplicate', changed: [] };
+        }
+        if (existing?.status !== 'pending') {
+          return materializeDirectTerminal(existing, perTurnWrites);
+        }
+        if (existing?.clarification_kind === 'direct') {
+          const terminal = await terminaliseDirect(
+            'resolved_yes',
+            { outcome: 'copied', replacement: false },
+            existing.source_snapshot,
+            existing.source_writes,
+            existing
+          );
+          return materializeDirectTerminal(terminal, perTurnWrites);
+        }
+        return {
+          handled: true,
+          outcome: existing?.clarification_kind === 'conflict' ? 'conflict' : 'source_incomplete',
+          question: directQuestion(existing),
+          questionId: existing?.question_id,
+        };
       }
+      return { handled: true, outcome: 'already_pending', changed: [] };
+    }
+    if (!complete(source)) {
       return {
         handled: true,
         outcome: 'source_incomplete',
@@ -652,49 +952,43 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         questionId: directIntent.question_id,
       };
     }
-    const target = stableSnapshot(session.stateSnapshot, command.targetFamily);
-    for (const key of Object.keys(FAMILIES[command.targetFamily])) {
-      if (
-        meaningful(source[key]) &&
-        meaningful(target[key]) &&
-        String(source[key]) !== String(target[key])
-      ) {
-        const claimed = await saveDirectIntent(command, 'conflict', operationToken);
-        if (!claimed?.claimed) {
-          stageAcknowledgement(perTurnWrites, "I'm still waiting for your answer.");
-          return { handled: true, outcome: 'already_pending', changed: [] };
-        }
-        return {
-          handled: true,
-          outcome: 'conflict',
-          question: `The ${command.targetFamily} address is already different. Should I replace it?`,
-          questionId: directIntent.question_id,
-        };
-      }
+    if (hasConflict) {
+      return {
+        handled: true,
+        outcome: 'conflict',
+        question: directQuestion(directIntent),
+        questionId: directIntent.question_id,
+      };
     }
-    return copyDirectSnapshot(
-      {
-        source_family: command.sourceFamily,
-        target_family: command.targetFamily,
-        operation_token: operationToken,
-      },
-      perTurnWrites
+    const terminal = await terminaliseDirect(
+      'resolved_yes',
+      { outcome: 'copied', replacement: false },
+      source,
+      []
     );
+    return materializeDirectTerminal(terminal, perTurnWrites);
   }
 
   async function resolveDirectClarification({ context, text, perTurnWrites }) {
-    if (
-      context?.type !== ADDRESS_MIRROR_DIRECT_QUESTION_TYPE ||
-      directIntent?.status !== 'pending'
-    ) {
+    if (context?.type !== ADDRESS_MIRROR_DIRECT_QUESTION_TYPE) {
       return { handled: false };
+    }
+    if (directIntent?.status !== 'pending') {
+      return { handled: false, reason: 'stale_direct_question' };
+    }
+    const suppliedQuestionId = context?.tool_call_id ?? context?.toolCallId ?? null;
+    const hasExactQuestionId =
+      typeof suppliedQuestionId === 'string' && suppliedQuestionId === directIntent.question_id;
+    const hasLegacyExactQuestion =
+      suppliedQuestionId == null && context?.question === directQuestion(directIntent);
+    if (!hasExactQuestionId && !hasLegacyExactQuestion) {
+      return { handled: false, reason: 'stale_direct_question' };
     }
     if (directIntent.clarification_kind === 'incomplete') {
       const answer = parseAddressMirrorAnswer(text);
       if (answer === 'no') {
-        await terminaliseDirect('resolved_no');
-        stageAcknowledgement(perTurnWrites, "Okay, I haven't copied the address.");
-        return { handled: true, outcome: 'no', changed: [] };
+        const terminal = await terminaliseDirect('resolved_no', { outcome: 'no' });
+        return materializeDirectTerminal(terminal, perTurnWrites);
       }
       // The deciding address/postcode reply must be extracted normally. The
       // post-write finalizer below observes the authoritative source writes,
@@ -704,19 +998,26 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     const answer = parseAddressMirrorAnswer(text);
     if (!answer) return { handled: false, reason: 'unclear' };
     if (answer === 'no') {
-      await terminaliseDirect('resolved_no');
-      stageAcknowledgement(perTurnWrites, "Okay, I'll leave the addresses unchanged.");
-      return { handled: true, outcome: 'no', changed: [] };
+      const terminal = await terminaliseDirect('resolved_no', { outcome: 'no' });
+      return materializeDirectTerminal(terminal, perTurnWrites);
     }
-    const out = copyDirectSnapshot(directIntent, perTurnWrites, true);
-    if (out.handled) await terminaliseDirect('resolved_yes');
-    return out;
+    const source = complete(directIntent.source_snapshot)
+      ? directIntent.source_snapshot
+      : stableSnapshot(session.stateSnapshot, directIntent.source_family);
+    const terminal = await terminaliseDirect(
+      'resolved_yes',
+      { outcome: 'copied', replacement: true },
+      source,
+      directIntent.source_writes
+    );
+    return materializeDirectTerminal(terminal, perTurnWrites);
   }
 
   async function finalizeDirectAfterWrites({
     successfulFields,
     perTurnWrites,
     sourceAudible = false,
+    sourceWrites = null,
   }) {
     if (directIntent?.status !== 'pending' || directIntent.clarification_kind !== 'incomplete') {
       return { handled: false };
@@ -738,34 +1039,75 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         meaningful(target[key]) &&
         String(source[key]) !== String(target[key])
       ) {
-        await rebindDirectConflict();
+        const capturedWrites = Array.isArray(sourceWrites)
+          ? sourceWrites
+          : sourceWriteLedger(
+              perTurnWrites,
+              directIntent.source_family,
+              directIntent.operation_token
+            );
+        await rebindDirectConflict(source, capturedWrites);
         return {
           handled: true,
           outcome: 'conflict',
-          question: `The ${directIntent.target_family} address is already different. Should I replace it?`,
+          question: directQuestion(directIntent),
           questionId: directIntent.question_id,
         };
       }
     }
-    const out = copyDirectSnapshot(directIntent, perTurnWrites, false, sourceAudible);
-    if (out.handled) await terminaliseDirect('resolved_yes');
-    return out;
+    const writes = Array.isArray(sourceWrites)
+      ? sourceWrites
+      : sourceWriteLedger(perTurnWrites, directIntent.source_family, directIntent.operation_token);
+    const terminal = await terminaliseDirect(
+      'resolved_yes',
+      { outcome: 'copied', replacement: false },
+      source,
+      writes
+    );
+    return materializeDirectTerminal(terminal, perTurnWrites, sourceAudible);
   }
 
   async function currentDirectQuestion() {
     if (directIntent?.status !== 'pending' && useDurableStore) {
       directIntent = normaliseDirectRow(await db.loadDirect(userId, jobId));
     }
-    if (directIntent?.status !== 'pending') return null;
+    if (directIntent?.status !== 'pending' || directIntent.clarification_kind === 'direct') {
+      return null;
+    }
     return {
       handled: true,
       outcome: directIntent.clarification_kind === 'conflict' ? 'conflict' : 'source_incomplete',
-      question:
-        directIntent.clarification_kind === 'conflict'
-          ? `The ${directIntent.target_family} address is already different. Should I replace it?`
-          : `What is the ${directIntent.source_family} address and postcode?`,
+      question: directQuestion(directIntent),
       questionId: directIntent.question_id,
     };
+  }
+
+  async function recoverDirectDelivery(perTurnWrites) {
+    let intent = recoverableDirectIntents.find(
+      (row) => row.status !== 'pending' && !row.delivered_at
+    );
+    if (!intent) {
+      intent = recoverableDirectIntents.find(
+        (row) => row.status === 'pending' && row.clarification_kind === 'direct'
+      );
+    }
+    if (!intent) return { handled: false };
+    if (intent.status === 'pending') {
+      intent = await terminaliseDirect(
+        'resolved_yes',
+        { outcome: 'copied', replacement: false },
+        intent.source_snapshot,
+        intent.source_writes,
+        intent
+      );
+    }
+    return materializeDirectTerminal(intent, perTurnWrites);
+  }
+
+  async function recoverUndelivered(perTurnWrites) {
+    const convenience = await recoverConvenienceDelivery(perTurnWrites);
+    if (convenience.handled) return convenience;
+    return recoverDirectDelivery(perTurnWrites);
   }
 
   return {
@@ -779,6 +1121,8 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     applyDirectCommand,
     finalizeDirectAfterWrites,
     currentDirectQuestion,
+    recoverUndelivered,
+    markDelivered,
     currentPending,
     currentIntent,
     shouldHoldReplyTranscript,

@@ -51,7 +51,10 @@ import { TranscriptFieldMatcher, detectPostcodeHint } from './recording/transcri
 import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { shouldForward } from './recording/transcript-gate';
-import { InFlightQuestionTracker } from './recording/in-flight-question';
+import {
+  InFlightQuestionTracker,
+  isServerOwnedAddressMirrorQuestion,
+} from './recording/in-flight-question';
 import {
   buildConfirmationDedupeKey,
   isObservationRecodeConfirmation,
@@ -1949,7 +1952,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           console.info(
             `[recording:pipeline] stage=ask_user_answered toolCallId=${inFlightToolCallId.slice(0, 12)} userText="${text.slice(0, 40)}"`
           );
-          sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
+          sonnetRef.current?.sendAskUserAnswered(
+            inFlightToolCallId,
+            text,
+            utteranceId,
+            drainedPayload?.purpose
+          );
           // iOS canon DeepgramRecordingViewModel.swift:2108-2113 — clear
           // the in-flight question slot the instant the wire emit is
           // sent. The card itself is no longer rendered (see
@@ -3948,10 +3956,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             confirmationsEnabled: getConfirmationModeEnabled(),
             utteranceId,
           });
-          sonnetRef.current.sendAskUserAnswered(toolCallId, 'yes', utteranceId);
+          sonnetRef.current.sendAskUserAnswered(toolCallId, 'yes', utteranceId, target.purpose);
         }
         playConfirmationChime();
-        speak('Updated');
+        if (!isServerOwnedAddressMirrorQuestion(target)) speak('Updated');
         // Drop the question from the queue + clear the auto-dismiss
         // timer.
         setQuestions((prev) => {
@@ -3991,10 +3999,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             confirmationsEnabled: getConfirmationModeEnabled(),
             utteranceId,
           });
-          sonnetRef.current.sendAskUserAnswered(toolCallId, 'no', utteranceId);
+          sonnetRef.current.sendAskUserAnswered(toolCallId, 'no', utteranceId, target.purpose);
         }
         // No chime on reject — iOS line 788 only speaks the response.
-        speak('Okay, keeping it.');
+        if (!isServerOwnedAddressMirrorQuestion(target)) speak('Okay, keeping it.');
         setQuestions((prev) => {
           if (target.question) cancelDismissTimer(target.question);
           const next = prev.filter((_, i) => i !== index);

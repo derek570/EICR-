@@ -26,6 +26,8 @@ exports.up = (pgm) => {
     source_version_hash: { type: 'text', notNull: true },
     source_writes: { type: 'jsonb', notNull: true, default: "'[]'::jsonb" },
     resolution_token: { type: 'text', notNull: true },
+    terminal_outcome: { type: 'jsonb' },
+    delivered_at: { type: 'timestamp with time zone' },
     claimed_at: { type: 'timestamp with time zone', notNull: true, default: pgm.func('NOW()') },
     resolved_at: { type: 'timestamp with time zone' },
   });
@@ -61,9 +63,10 @@ exports.up = (pgm) => {
   });
 
   // Direct "same address" commands are independent of the permanent
-  // convenience-question latch above. Keep their deciding-field/conflict
-  // clarification durable without consuming jobs.address_mirror_asked or
-  // colliding with the job's historical convenience intent.
+  // convenience-question latch above. This is an append-only operation
+  // ledger, not a single mutable slot: an utterance token remains reserved
+  // after later commands so a delayed duplicate can never fall through to
+  // model extraction or resolve a newer opposite-direction clarification.
   pgm.createTable('address_mirror_direct_intents', {
     user_id: { type: 'text', notNull: true },
     job_id: {
@@ -78,13 +81,17 @@ exports.up = (pgm) => {
     target_family: { type: 'text', notNull: true },
     operation_token: { type: 'text', notNull: true },
     question_id: { type: 'text', notNull: true },
+    source_snapshot: { type: 'jsonb', notNull: true, default: "'{}'::jsonb" },
+    source_writes: { type: 'jsonb', notNull: true, default: "'[]'::jsonb" },
+    terminal_outcome: { type: 'jsonb' },
+    delivered_at: { type: 'timestamp with time zone' },
     created_at: { type: 'timestamp with time zone', notNull: true, default: pgm.func('NOW()') },
     resolved_at: { type: 'timestamp with time zone' },
   });
   pgm.addConstraint(
     'address_mirror_direct_intents',
-    'address_mirror_direct_intents_owner_job_unique',
-    { unique: ['user_id', 'job_id'] }
+    'address_mirror_direct_intents_operation_unique',
+    { unique: ['user_id', 'job_id', 'operation_token'] }
   );
   pgm.addConstraint(
     'address_mirror_direct_intents',
@@ -94,7 +101,7 @@ exports.up = (pgm) => {
   pgm.addConstraint(
     'address_mirror_direct_intents',
     'address_mirror_direct_intents_kind_check',
-    "CHECK (clarification_kind IN ('incomplete', 'conflict'))"
+    "CHECK (clarification_kind IN ('direct', 'incomplete', 'conflict'))"
   );
   pgm.addConstraint(
     'address_mirror_direct_intents',
@@ -109,6 +116,19 @@ exports.up = (pgm) => {
   pgm.createIndex('address_mirror_direct_intents', ['user_id', 'job_id', 'status'], {
     name: 'idx_address_mirror_direct_owner_job_status',
   });
+  pgm.createIndex('address_mirror_direct_intents', ['user_id', 'job_id', 'delivered_at'], {
+    name: 'idx_address_mirror_direct_owner_job_delivery',
+  });
+  pgm.addConstraint(
+    'address_mirror_direct_intents',
+    'address_mirror_direct_source_snapshot_object_check',
+    "CHECK (jsonb_typeof(source_snapshot) = 'object')"
+  );
+  pgm.addConstraint(
+    'address_mirror_direct_intents',
+    'address_mirror_direct_source_writes_array_check',
+    "CHECK (jsonb_typeof(source_writes) = 'array')"
+  );
 };
 
 exports.down = (pgm) => {

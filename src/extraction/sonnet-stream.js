@@ -36,6 +36,7 @@ import { POSTCODE_HINT_STATE, resolvePostcodeHintState } from './postcode-hint.j
 import {
   ADDRESS_MIRROR_DIRECT_QUESTION_TYPE,
   ADDRESS_MIRROR_DIRECT_FOLLOWUP,
+  ADDRESS_MIRROR_DELIVERY,
   ADDRESS_MIRROR_PURPOSE,
   ADDRESS_MIRROR_QUESTION_TYPE,
   ADDRESS_MIRROR_SOURCE_WRITES,
@@ -361,11 +362,38 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
       .map((reading) => reading?.field)
       .filter(Boolean)
   );
+  const capturedSourceWrites = [
+    ...(result.extracted_board_readings ?? []),
+    ...(result.extracted_readings ?? []),
+  ]
+    .filter(
+      (reading) =>
+        reading?.derived !== true &&
+        successfulAddressFields.has(reading?.field) &&
+        [
+          'address',
+          'postcode',
+          'town',
+          'county',
+          'client_address',
+          'client_postcode',
+          'client_town',
+          'client_county',
+        ].includes(reading?.field)
+    )
+    .map((reading, ordinal) => ({
+      field: reading.field,
+      value: reading.value,
+      confidence: reading.confidence ?? 1,
+      source_turn_id: reading.source_turn_id ?? result.turn_id ?? null,
+      operation_token: `${result.turn_id ?? 'legacy'}:${reading.field}:${ordinal}`,
+    }));
   const directWrites = createPerTurnWrites();
   const directFinal = await entry.addressMirrorController.finalizeDirectAfterWrites({
     successfulFields: successfulAddressFields,
     perTurnWrites: directWrites,
     sourceAudible: successfulAddressFields.size > 0,
+    sourceWrites: capturedSourceWrites,
   });
   if (!directFinal?.handled) return result;
 
@@ -390,6 +418,13 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
       value: directFinal,
       enumerable: false,
       configurable: false,
+    });
+  }
+  if (directWrites[ADDRESS_MIRROR_DELIVERY]) {
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: directWrites[ADDRESS_MIRROR_DELIVERY],
+      enumerable: false,
+      configurable: true,
     });
   }
   return result;
@@ -1260,6 +1295,39 @@ function sendResultFrameLedger(ws, snapshot, result, session = {}) {
   };
 }
 
+function attachAddressMirrorDelivery(result, perTurnWrites) {
+  const delivery = perTurnWrites?.[ADDRESS_MIRROR_DELIVERY];
+  if (!result || !delivery) return result;
+  Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+    value: delivery,
+    enumerable: false,
+    configurable: true,
+  });
+  return result;
+}
+
+async function markAddressMirrorResultDelivered(entry, result, sessionId) {
+  const delivery = result?.[ADDRESS_MIRROR_DELIVERY];
+  if (!delivery || !entry?.addressMirrorController) return;
+  try {
+    const marked = await entry.addressMirrorController.markDelivered(delivery);
+    if (!marked) {
+      logger.warn('Address mirror outcome delivery marker was not persisted', {
+        sessionId,
+        kind: delivery.kind,
+      });
+    }
+  } catch (error) {
+    // The client already received the full ledger. Leave the durable outbox
+    // pending so a later reconnect retries with stable write/dedupe tokens.
+    logger.warn('Address mirror outcome delivery marker failed', {
+      sessionId,
+      kind: delivery.kind,
+      error: error?.message ?? String(error),
+    });
+  }
+}
+
 // --- Per-connection rate limiting for transcript messages ---
 const WS_RATE_LIMIT = {
   maxTranscripts: 60, // max transcript messages per sliding window
@@ -1860,15 +1928,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
                 if (ack.status === 'resumed' && activeEntryKey) {
                   const resumedEntry = activeSessions.get(activeEntryKey);
-                  resumedEntry?.addressMirrorController
-                    ?.currentDirectQuestion()
-                    .then((question) => sendAddressMirrorDirectQuestion(ws, question, null))
-                    .catch((error) => {
-                      logger.warn('Address mirror direct intent resume failed', {
-                        sessionId: resumedEntry?.session?.sessionId ?? null,
-                        error: error?.message ?? String(error),
-                      });
-                    });
+                  await flushPendingExtractions(ws, resumedEntry, activeEntryKey);
+                  await replayAddressMirrorOutbox(ws, resumedEntry, activeEntryKey);
+                  sendAddressMirrorDirectQuestion(
+                    ws,
+                    await resumedEntry?.addressMirrorController?.currentDirectQuestion(),
+                    null
+                  );
                 }
 
                 // Hotfix slice 2.3 — emit initial current_board_changed
@@ -2196,24 +2262,41 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               const recovered = transcriptAlreadyOwnsReply
                 ? { handled: false }
                 : await entry.addressMirrorController.resolveRecoveredAnswer({
-                    context: null,
+                    context:
+                      msg.purpose === ADDRESS_MIRROR_PURPOSE
+                        ? { purpose: ADDRESS_MIRROR_PURPOSE }
+                        : null,
                     text: msg.user_text,
                     askId: msg.tool_call_id,
                     perTurnWrites: mirrorWrites,
                   });
+              if (recovered.handled && recovered.outcome === 'duplicate') {
+                if (directResponseUtteranceId) {
+                  entry.consumedAskUtterances.add(directResponseUtteranceId);
+                  entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                }
+                logger.info('stage6.address_mirror_duplicate_answer_consumed', {
+                  sessionId: currentSessionId,
+                  tool_call_id: msg.tool_call_id,
+                });
+                break;
+              }
               if (
                 recovered.handled &&
                 (recovered.outcome === 'yes' ||
                   recovered.outcome === 'no' ||
                   recovered.outcome === 'conflict')
               ) {
-                const result = bundleToolCallsIntoResult(mirrorWrites, null, {
-                  confirmationsEnabled: true,
-                  turnId: `${currentSessionId}-address-mirror-${
-                    recovered.resolutionToken ?? 'recovery'
-                  }`,
-                  utteranceId: directResponseUtteranceId,
-                });
+                const result = attachAddressMirrorDelivery(
+                  bundleToolCallsIntoResult(mirrorWrites, null, {
+                    confirmationsEnabled: true,
+                    turnId: `${currentSessionId}-address-mirror-${
+                      recovered.resolutionToken ?? 'recovery'
+                    }`,
+                    utteranceId: directResponseUtteranceId,
+                  }),
+                  mirrorWrites
+                );
                 const sent = sendResultFrameLedger(
                   ws,
                   entry.session.stateSnapshot,
@@ -2221,6 +2304,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   entry.session
                 );
                 if (!sent.ok) entry.pendingExtractions.push(result);
+                else await markAddressMirrorResultDelivered(entry, result, currentSessionId);
                 if (directResponseUtteranceId) {
                   entry.consumedAskUtterances.add(directResponseUtteranceId);
                   entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
@@ -3230,7 +3314,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       }
 
       // Flush any extraction results that were buffered while the socket was disconnected
-      flushPendingExtractions(ws, existing, sessionId);
+      await flushPendingExtractions(ws, existing, sessionId);
+      await replayAddressMirrorOutbox(ws, existing, sessionId);
       logger.info('Session reconnected', { sessionId, turns: existing.session.turnCount });
       return;
     }
@@ -3278,6 +3363,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               resume_cursor: out.cursor ?? null,
             });
           } else {
+            await markAddressMirrorResultDelivered(entryRef, result, sessionId);
             // Rule-6 updates are already final inspector corrections and are
             // deliberately excluded; only new observations enter refinement.
             if (Array.isArray(result.observations) && result.observations.length > 0 && entryRef) {
@@ -3701,6 +3787,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       })
     );
 
+    await replayAddressMirrorOutbox(ws, createdEntry, sessionId);
     sendAddressMirrorDirectQuestion(
       ws,
       await createdEntry.addressMirrorController.currentDirectQuestion(),
@@ -4014,10 +4101,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       entry.addressMirrorController?.claimLegacyQuestion(question, createPerTurnWrites())
     );
 
-    // Flush any extraction results that were buffered while the socket was
-    // disconnected — same path as handleSessionStart's reconnect branch.
-    flushPendingExtractions(ws, entry, clientSessionId);
-
     logger.info('session_resume rehydrated', {
       userId,
       requestedSessionId,
@@ -4032,7 +4115,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     };
   }
 
-  function flushPendingExtractions(ws, entry, sessionId) {
+  async function flushPendingExtractions(ws, entry, sessionId) {
     if (entry.pendingExtractions.length) {
       const buffered = [...entry.pendingExtractions];
       entry.pendingExtractions.length = 0;
@@ -4094,6 +4177,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           halted = true;
           continue;
         }
+        await markAddressMirrorResultDelivered(entry, result, sessionId);
         // A1 Codex r1 — answers delivered via reconnect replay carry the
         // same redacted emission telemetry as the sync path (non-enumerable
         // answer_source survives buffering by reference).
@@ -4149,6 +4233,36 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           error: err?.message,
         });
       });
+    }
+  }
+
+  async function replayAddressMirrorOutbox(ws, entry, sessionId) {
+    if (!entry?.addressMirrorController || ws?.readyState !== ws?.OPEN) return;
+    // The direct ledger is append-only, so more than one terminal operation
+    // can survive a process crash. Drain a bounded FIFO; each successful send
+    // marks exactly that operation delivered before asking the controller for
+    // the next one.
+    for (let i = 0; i < 16; i += 1) {
+      const writes = createPerTurnWrites();
+      const recovered = await entry.addressMirrorController.recoverUndelivered(writes);
+      if (!recovered?.handled || recovered.outcome === 'duplicate') return;
+      const result = attachAddressMirrorDelivery(
+        bundleToolCallsIntoResult(writes, null, {
+          confirmationsEnabled: true,
+          turnId: `${sessionId}-address-mirror-outbox-${recovered.resolutionToken ?? i}`,
+          utteranceId: null,
+        }),
+        writes
+      );
+      const sent = sendResultFrameLedger(ws, entry.session?.stateSnapshot, result, entry.session);
+      if (!sent.ok) {
+        entry.pendingExtractions.push(result);
+        return;
+      }
+      if (recovered.outcome === 'conflict' && recovered.clearAskId) {
+        sendAddressMirrorAskClear(ws, recovered.clearAskId, sessionId);
+      }
+      await markAddressMirrorResultDelivered(entry, result, sessionId);
     }
   }
 
@@ -4464,6 +4578,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         typeof msg.utterance_id === 'string' && msg.utterance_id
           ? `id:${msg.utterance_id}`
           : `text:${createHash('sha256').update(canonicalTranscriptText).digest('hex').slice(0, 24)}`;
+      if (entry.addressMirrorReservations.has(reservationKey)) {
+        stampSeenTranscript();
+        consumeDestructiveToken('address_mirror_controller_duplicate');
+        return;
+      }
       if (!entry.addressMirrorReservations.has(reservationKey)) {
         const mirrorWrites = createPerTurnWrites();
         const context =
@@ -4487,6 +4606,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             perTurnWrites: mirrorWrites,
           });
         }
+        if (!mirrorOutcome.handled && mirrorOutcome.reason === 'stale_direct_question') {
+          entry.addressMirrorReservations.add(reservationKey);
+          stampSeenTranscript();
+          consumeDestructiveToken('address_mirror_stale_direct_question');
+          return;
+        }
         const directCommand = parseDirectAddressMirrorCommand(canonicalTranscriptText);
         if (!mirrorOutcome.handled && directCommand) {
           mirrorOutcome = await entry.addressMirrorController.resolvePendingDirectCommand({
@@ -4502,7 +4627,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           );
         }
 
-        const terminalMirrorOutcome = new Set(['yes', 'no', 'copied', 'already_pending']);
+        const terminalMirrorOutcome = new Set([
+          'yes',
+          'no',
+          'copied',
+          'duplicate',
+          'already_pending',
+        ]);
         const isTerminalMirrorOutcome =
           terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
           (mirrorOutcome.outcome === 'conflict' && mirrorOutcome.clearAskId);
@@ -4518,12 +4649,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               ? msg.utterance_id
               : reservationKey.slice(-12))
           }`;
-          const result = bundleToolCallsIntoResult(mirrorWrites, null, {
-            confirmationsEnabled:
-              msg.confirmations_enabled === true || (mirrorOutcome.replayedSource ?? 0) > 0,
-            turnId: mirrorTurnId,
-            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-          });
+          const result = attachAddressMirrorDelivery(
+            bundleToolCallsIntoResult(mirrorWrites, null, {
+              confirmationsEnabled:
+                msg.confirmations_enabled === true || (mirrorOutcome.replayedSource ?? 0) > 0,
+              turnId: mirrorTurnId,
+              utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+            }),
+            mirrorWrites
+          );
           const sent = sendResultFrameLedger(
             ws,
             entry.session.stateSnapshot,
@@ -4531,6 +4665,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             entry.session
           );
           if (!sent.ok) entry.pendingExtractions.push(result);
+          else await markAddressMirrorResultDelivered(entry, result, sessionId);
           if (mirrorOutcome.outcome === 'conflict') {
             sendAddressMirrorAskClear(ws, mirrorOutcome.clearAskId, sessionId);
           }
@@ -5820,6 +5955,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           entry.session
         );
         if (ledgerOut.ok) {
+          await markAddressMirrorResultDelivered(entry, result, sessionId);
           // Fire-and-forget BPG4 / BS 7671 refinement for new observations.
           // Runs AFTER the ledger so the inspector sees the observation
           // immediately; the refined code/regulation arrives a second or two

@@ -48,6 +48,17 @@ export interface InFlightPayload {
   field?: string;
   circuit?: number;
   purpose?: string;
+  tool_call_id?: string;
+}
+
+/** Server owns the only terminal speech for deterministic address asks. */
+export function isServerOwnedAddressMirrorQuestion(question: {
+  purpose?: string | null;
+  question_type?: string | null;
+}): boolean {
+  return (
+    question.purpose === 'address_mirror' || question.question_type === 'address_mirror_direct'
+  );
 }
 
 /**
@@ -219,6 +230,7 @@ export class InFlightQuestionTracker {
     if (this.slot.field != null) payload.field = this.slot.field;
     if (this.slot.circuit != null) payload.circuit = this.slot.circuit;
     if (this.slot.purpose != null) payload.purpose = this.slot.purpose;
+    if (this.slot.toolCallId != null) payload.tool_call_id = this.slot.toolCallId;
     if (transcriptConsumesInFlight(transcript)) {
       this.slot = null;
     }
@@ -254,6 +266,8 @@ export class InFlightQuestionTracker {
     };
     if (this.slot.field != null) payload.field = this.slot.field;
     if (this.slot.circuit != null) payload.circuit = this.slot.circuit;
+    if (this.slot.purpose != null) payload.purpose = this.slot.purpose;
+    if (this.slot.toolCallId != null) payload.tool_call_id = this.slot.toolCallId;
     return payload;
   }
 

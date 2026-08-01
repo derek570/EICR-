@@ -827,7 +827,7 @@ describe('SonnetSession', () => {
         confirmationsEnabled: true,
         utteranceId: 'u-abc',
       });
-      session.sendAskUserAnswered('toolu_01', 'cooker', 'u-abc');
+      session.sendAskUserAnswered('toolu_01', 'cooker', 'u-abc', 'address_mirror');
 
       const t = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
       const a = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
@@ -838,6 +838,7 @@ describe('SonnetSession', () => {
       expect(a.tool_call_id).toBe('toolu_01');
       expect(a.user_text).toBe('cooker');
       expect(a.consumed_utterance_id).toBe('u-abc');
+      expect(a.purpose).toBe('address_mirror');
     });
 
     it('sendAskUserAnswered no-ops on empty toolCallId or userText', async () => {

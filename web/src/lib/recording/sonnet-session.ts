@@ -1203,7 +1203,12 @@ export class SonnetSession {
    * The Set persists across reconnect on the same session instance —
    * see field comment.
    */
-  sendAskUserAnswered(toolCallId: string, userText: string, consumedUtteranceId?: string): void {
+  sendAskUserAnswered(
+    toolCallId: string,
+    userText: string,
+    consumedUtteranceId?: string,
+    purpose?: string | null
+  ): void {
     if (!toolCallId || !userText) {
       pipelineLog('sonnet_send_ask_user_answered_skipped', {
         hasToolCallId: !!toolCallId,
@@ -1219,11 +1224,15 @@ export class SonnetSession {
     if (consumedUtteranceId) {
       msg.consumed_utterance_id = consumedUtteranceId;
     }
+    if (purpose) {
+      msg.purpose = purpose;
+    }
     pipelineLog('sonnet_send_ask_user_answered', {
       toolCallIdShort: toolCallId.slice(0, 16),
       userTextLength: userText.length,
       userTextPreview: userText.slice(0, 40),
       consumedUtteranceIdShort: consumedUtteranceId?.slice(0, 11) ?? null,
+      purpose: purpose ?? null,
     });
     this.sendBuffered(msg);
   }

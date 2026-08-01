@@ -268,6 +268,10 @@ describe('address mirror controller', () => {
         row = { ...row, status };
         return row;
       }),
+      markDelivered: jest.fn(async () => {
+        row = { ...row, delivered_at: '2026-08-01T12:00:00.000Z' };
+        return row;
+      }),
     };
     const original = sessionWith({ address: '14 High Street', postcode: 'SW1A 1AA' });
     const first = createAddressMirrorController({
@@ -314,6 +318,10 @@ describe('address mirror controller', () => {
       postcode: 'SW1A 1AA',
       client_address: '14 High Street',
       client_postcode: 'SW1A 1AA',
+    });
+    await recovered.markDelivered(out.delivery);
+    expect(await recovered.recoverUndelivered(createPerTurnWrites())).toEqual({
+      handled: false,
     });
   });
 
@@ -376,12 +384,7 @@ describe('address mirror controller', () => {
     });
     await recovered.rehydrate();
     const writes = createPerTurnWrites();
-    const out = await recovered.resolveRecoveredAnswer({
-      context: null,
-      text: 'yes',
-      askId: 'ask-crash',
-      perTurnWrites: writes,
-    });
+    const out = await recovered.recoverUndelivered(writes);
     expect(out).toMatchObject({ handled: true, outcome: 'yes', replayedSource: 2 });
     expect(restarted.stateSnapshot.circuits[0]).toMatchObject({
       address: '14 High Street',
@@ -493,7 +496,10 @@ describe('address mirror controller', () => {
 
     const writes = createPerTurnWrites();
     const resolved = await controller.resolveDirectClarification({
-      context: { type: ADDRESS_MIRROR_DIRECT_QUESTION_TYPE },
+      context: {
+        type: ADDRESS_MIRROR_DIRECT_QUESTION_TYPE,
+        tool_call_id: first.questionId,
+      },
       text: 'yes',
       perTurnWrites: writes,
     });
@@ -544,11 +550,13 @@ describe('address mirror controller', () => {
           target_family: intent.targetFamily,
           operation_token: intent.operationToken,
           question_id: intent.questionId,
+          source_snapshot: intent.sourceSnapshot,
+          source_writes: intent.sourceWrites,
         };
         return { claimed: true, intent: directRow };
       }),
-      resolveDirect: jest.fn(async (_user, _job, _token, status) => {
-        directRow = { ...directRow, status };
+      resolveDirect: jest.fn(async (_user, _job, _token, status, terminalOutcome) => {
+        directRow = { ...directRow, status, terminal_outcome: terminalOutcome };
         return directRow;
       }),
     };
@@ -579,13 +587,158 @@ describe('address mirror controller', () => {
     await restarted.rehydrate();
     const writes = createPerTurnWrites();
     const out = await restarted.resolveDirectClarification({
-      context: { type: ADDRESS_MIRROR_DIRECT_QUESTION_TYPE },
+      context: {
+        type: ADDRESS_MIRROR_DIRECT_QUESTION_TYPE,
+        tool_call_id: directRow.question_id,
+      },
       text: 'yes',
       perTurnWrites: writes,
     });
     expect(out).toMatchObject({ handled: true, outcome: 'copied' });
     expect(directRow.status).toBe('resolved_yes');
     expect(session.stateSnapshot.circuits[0].client_address).toBe('2 Test Road');
+  });
+
+  test('delivered direct operation token consumes a duplicate without writes or speech', async () => {
+    const session = sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const controller = createAddressMirrorController({ session });
+    const firstWrites = createPerTurnWrites();
+    const first = await controller.applyDirectCommand(
+      'use the installation address for the customer',
+      firstWrites,
+      'stable-utterance-token'
+    );
+    expect(first).toMatchObject({ handled: true, outcome: 'copied' });
+    await controller.markDelivered(first.delivery);
+
+    const duplicateWrites = createPerTurnWrites();
+    const duplicate = await controller.applyDirectCommand(
+      'use the installation address for the customer',
+      duplicateWrites,
+      'stable-utterance-token'
+    );
+    expect(duplicate).toEqual({ handled: true, outcome: 'duplicate', changed: [] });
+    expect(duplicateWrites.boardReadings.size).toBe(0);
+    expect(duplicateWrites.answer.stagedText).toBeNull();
+  });
+
+  test('direct terminal outbox replays after a crash without another command frame', async () => {
+    let directRow = null;
+    let crashAfterCas = true;
+    const store = {
+      load: jest.fn(async () => null),
+      loadDirect: jest.fn(async () => directRow),
+      claimDirect: jest.fn(async (_user, _job, intent) => {
+        directRow = normaliseDirectFixture(intent);
+        return { claimed: true, intent: directRow };
+      }),
+      resolveDirect: jest.fn(async (_user, _job, _token, status, terminalOutcome) => {
+        directRow = {
+          ...directRow,
+          status,
+          terminal_outcome: terminalOutcome,
+          delivered_at: null,
+        };
+        if (crashAfterCas) {
+          crashAfterCas = false;
+          throw new Error('simulated_direct_crash_after_cas');
+        }
+        return directRow;
+      }),
+    };
+    function normaliseDirectFixture(intent) {
+      return {
+        status: 'pending',
+        clarification_kind: intent.clarificationKind,
+        source_family: intent.sourceFamily,
+        target_family: intent.targetFamily,
+        operation_token: intent.operationToken,
+        question_id: intent.questionId,
+        source_snapshot: intent.sourceSnapshot,
+        source_writes: intent.sourceWrites,
+        delivered_at: null,
+      };
+    }
+
+    const firstSession = sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const first = createAddressMirrorController({
+      userId: 'owner-direct-crash',
+      jobId: 'job-direct-crash',
+      session: firstSession,
+      store,
+    });
+    await expect(
+      first.applyDirectCommand(
+        'use the installation address for the customer',
+        createPerTurnWrites(),
+        'direct-crash-token'
+      )
+    ).rejects.toThrow('simulated_direct_crash_after_cas');
+    expect(directRow.status).toBe('resolved_yes');
+
+    const restartedSession = sessionWith({ address: '2 Test Road', postcode: 'TE1 1ST' });
+    const restarted = createAddressMirrorController({
+      userId: 'owner-direct-crash',
+      jobId: 'job-direct-crash',
+      session: restartedSession,
+      store,
+    });
+    await restarted.rehydrate();
+    const writes = createPerTurnWrites();
+    const recovered = await restarted.recoverUndelivered(writes);
+    expect(recovered).toMatchObject({ handled: true, outcome: 'copied' });
+    expect(restartedSession.stateSnapshot.circuits[0]).toMatchObject({
+      client_address: '2 Test Road',
+      client_postcode: 'TE1 1ST',
+    });
+  });
+
+  test('stale direct clarification id cannot resolve a newer opposite-direction ask', async () => {
+    const session = sessionWith(
+      { address: '2 Test Road', postcode: 'TE1 1ST' },
+      { address: '9 Other Road', postcode: 'OT1 1HR' }
+    );
+    const controller = createAddressMirrorController({ session });
+    const older = await controller.applyDirectCommand(
+      'use the installation address for the customer',
+      createPerTurnWrites(),
+      'older-operation'
+    );
+    const olderNoWrites = createPerTurnWrites();
+    const olderNo = await controller.resolveDirectClarification({
+      context: {
+        type: ADDRESS_MIRROR_DIRECT_QUESTION_TYPE,
+        tool_call_id: older.questionId,
+      },
+      text: 'no',
+      perTurnWrites: olderNoWrites,
+    });
+    await controller.markDelivered(olderNo.delivery);
+
+    const newer = await controller.applyDirectCommand(
+      'use the client address for the site',
+      createPerTurnWrites(),
+      'newer-operation'
+    );
+    const staleWrites = createPerTurnWrites();
+    const stale = await controller.resolveDirectClarification({
+      context: {
+        type: ADDRESS_MIRROR_DIRECT_QUESTION_TYPE,
+        tool_call_id: older.questionId,
+        question: older.question,
+      },
+      text: 'yes',
+      perTurnWrites: staleWrites,
+    });
+    expect(stale).toEqual({ handled: false, reason: 'stale_direct_question' });
+    expect(staleWrites.boardReadings.size).toBe(0);
+    expect(session.stateSnapshot.circuits[0]).toMatchObject({
+      address: '2 Test Road',
+      postcode: 'TE1 1ST',
+      client_address: '9 Other Road',
+      client_postcode: 'OT1 1HR',
+    });
+    expect(newer.questionId).not.toBe(older.questionId);
   });
 
   test('recovery requires exact server-owned purpose, type, or ask id', async () => {

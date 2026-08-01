@@ -763,16 +763,22 @@ export async function rebindAddressMirrorAsk(userId, jobId, resolutionToken, ask
 }
 
 /** Owner-scoped compare-and-set terminal transition for a mirror answer. */
-export async function resolveAddressMirrorIntent(userId, jobId, status, resolutionToken) {
+export async function resolveAddressMirrorIntent(
+  userId,
+  jobId,
+  status,
+  resolutionToken,
+  terminalOutcome = null
+) {
   if (!usePostgres()) return null;
   const db = getPool();
   const updated = await db.query(
     `UPDATE address_mirror_intents
-        SET status = $3, resolved_at = NOW()
+        SET status = $3, terminal_outcome = $5::jsonb, resolved_at = NOW()
       WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
         AND resolution_token = $4
       RETURNING *`,
-    [userId, jobId, status, resolutionToken]
+    [userId, jobId, status, resolutionToken, JSON.stringify(terminalOutcome)]
   );
   if (updated.rows[0]) return updated.rows[0];
   const existing = await db.query(
@@ -782,6 +788,21 @@ export async function resolveAddressMirrorIntent(userId, jobId, status, resoluti
     [userId, jobId]
   );
   return existing.rows[0] || null;
+}
+
+/** Mark a convenience outcome delivered only after its full frame ledger sent. */
+export async function markAddressMirrorIntentDelivered(userId, jobId, resolutionToken) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `UPDATE address_mirror_intents
+        SET delivered_at = COALESCE(delivered_at, NOW())
+      WHERE user_id = $1 AND job_id = $2 AND resolution_token = $3
+        AND status <> 'pending' AND terminal_outcome IS NOT NULL
+      RETURNING *`,
+    [userId, jobId, resolutionToken]
+  );
+  return result.rows[0] || null;
 }
 
 /**
@@ -795,33 +816,52 @@ export async function claimAddressMirrorDirectIntent(userId, jobId, intent) {
   const client = await db.connect();
   try {
     await client.query('BEGIN');
-    const existing = await client.query(
-      `SELECT status, operation_token
-         FROM address_mirror_direct_intents
-        WHERE user_id = $1 AND job_id = $2
-        FOR UPDATE`,
-      [userId, jobId]
+    // Serialize operations through the owned job row. Unlike a unique
+    // constraint alone, this also prevents two different utterance tokens
+    // from concurrently opening competing pending clarifications.
+    const ownedJob = await client.query(
+      `SELECT id FROM jobs WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+      [jobId, userId]
     );
-    if (existing.rows[0]?.status === 'pending') {
+    if (ownedJob.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      return { claimed: false, reason: 'job_not_owned' };
+    }
+    const duplicate = await client.query(
+      `SELECT *
+         FROM address_mirror_direct_intents
+        WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
+        LIMIT 1`,
+      [userId, jobId, intent.operationToken]
+    );
+    if (duplicate.rows[0]) {
       await client.query('ROLLBACK');
       return {
         claimed: false,
-        reason:
-          existing.rows[0].operation_token === intent.operationToken
-            ? 'duplicate_operation'
-            : 'clarification_already_pending',
+        reason: 'duplicate_operation',
+        intent: duplicate.rows[0],
+      };
+    }
+    const pending = await client.query(
+      `SELECT * FROM address_mirror_direct_intents
+        WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
+        ORDER BY created_at DESC LIMIT 1`,
+      [userId, jobId]
+    );
+    if (pending.rows[0]) {
+      await client.query('ROLLBACK');
+      return {
+        claimed: false,
+        reason: 'clarification_already_pending',
+        intent: pending.rows[0],
       };
     }
     const saved = await client.query(
       `INSERT INTO address_mirror_direct_intents
          (user_id, job_id, status, clarification_kind, source_family,
-          target_family, operation_token, question_id, resolved_at)
-       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, NULL)
-       ON CONFLICT (user_id, job_id) DO UPDATE SET
-         status = 'pending', clarification_kind = EXCLUDED.clarification_kind,
-         source_family = EXCLUDED.source_family, target_family = EXCLUDED.target_family,
-         operation_token = EXCLUDED.operation_token, question_id = EXCLUDED.question_id,
-         created_at = NOW(), resolved_at = NULL
+          target_family, operation_token, question_id, source_snapshot,
+          source_writes, resolved_at)
+       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, NULL)
        RETURNING *`,
       [
         userId,
@@ -831,6 +871,8 @@ export async function claimAddressMirrorDirectIntent(userId, jobId, intent) {
         intent.targetFamily,
         intent.operationToken,
         intent.questionId,
+        JSON.stringify(intent.sourceSnapshot ?? {}),
+        JSON.stringify(intent.sourceWrites ?? []),
       ]
     );
     await client.query('COMMIT');
@@ -855,10 +897,28 @@ export async function getPendingAddressMirrorDirectIntent(userId, jobId) {
   const result = await db.query(
     `SELECT * FROM address_mirror_direct_intents
       WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
-      LIMIT 1`,
+      ORDER BY created_at DESC LIMIT 1`,
     [userId, jobId]
   );
   return result.rows[0] || null;
+}
+
+/**
+ * Load every direct operation that still needs controller attention: one
+ * pending command/clarification plus any terminal outcomes whose frame ledger
+ * was never fully delivered before a disconnect or process crash.
+ */
+export async function getRecoverableAddressMirrorDirectIntents(userId, jobId) {
+  if (!usePostgres()) return [];
+  const db = getPool();
+  const result = await db.query(
+    `SELECT * FROM address_mirror_direct_intents
+      WHERE user_id = $1 AND job_id = $2
+        AND (status = 'pending' OR delivered_at IS NULL)
+      ORDER BY created_at ASC`,
+    [userId, jobId]
+  );
+  return result.rows;
 }
 
 /** Change the deciding-field clarification into a bounded conflict question. */
@@ -867,32 +927,85 @@ export async function rebindAddressMirrorDirectIntent(
   jobId,
   operationToken,
   clarificationKind,
-  questionId
+  questionId,
+  sourceSnapshot = null,
+  sourceWrites = null
 ) {
   if (!usePostgres()) return null;
   const db = getPool();
   const result = await db.query(
     `UPDATE address_mirror_direct_intents
-        SET clarification_kind = $4, question_id = $5
+        SET clarification_kind = $4, question_id = $5,
+            source_snapshot = COALESCE($6::jsonb, source_snapshot),
+            source_writes = COALESCE($7::jsonb, source_writes)
       WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
         AND operation_token = $3
       RETURNING *`,
-    [userId, jobId, operationToken, clarificationKind, questionId]
+    [
+      userId,
+      jobId,
+      operationToken,
+      clarificationKind,
+      questionId,
+      sourceSnapshot == null ? null : JSON.stringify(sourceSnapshot),
+      sourceWrites == null ? null : JSON.stringify(sourceWrites),
+    ]
   );
   return result.rows[0] || null;
 }
 
 /** Terminal compare-and-set for an explicit direct-command clarification. */
-export async function resolveAddressMirrorDirectIntent(userId, jobId, operationToken, status) {
+export async function resolveAddressMirrorDirectIntent(
+  userId,
+  jobId,
+  operationToken,
+  status,
+  terminalOutcome = null,
+  sourceSnapshot = null,
+  sourceWrites = null
+) {
   if (!usePostgres()) return null;
   const db = getPool();
   const result = await db.query(
     `UPDATE address_mirror_direct_intents
-        SET status = $4, resolved_at = NOW()
+        SET status = $4, terminal_outcome = $5::jsonb,
+            source_snapshot = COALESCE($6::jsonb, source_snapshot),
+            source_writes = COALESCE($7::jsonb, source_writes),
+            resolved_at = NOW()
       WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
         AND operation_token = $3
       RETURNING *`,
-    [userId, jobId, operationToken, status]
+    [
+      userId,
+      jobId,
+      operationToken,
+      status,
+      JSON.stringify(terminalOutcome),
+      sourceSnapshot == null ? null : JSON.stringify(sourceSnapshot),
+      sourceWrites == null ? null : JSON.stringify(sourceWrites),
+    ]
+  );
+  if (result.rows[0]) return result.rows[0];
+  const existing = await db.query(
+    `SELECT * FROM address_mirror_direct_intents
+      WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
+      LIMIT 1`,
+    [userId, jobId, operationToken]
+  );
+  return existing.rows[0] || null;
+}
+
+/** Mark one direct operation delivered after its complete frame ledger sent. */
+export async function markAddressMirrorDirectIntentDelivered(userId, jobId, operationToken) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `UPDATE address_mirror_direct_intents
+        SET delivered_at = COALESCE(delivered_at, NOW())
+      WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
+        AND status <> 'pending' AND terminal_outcome IS NOT NULL
+      RETURNING *`,
+    [userId, jobId, operationToken]
   );
   return result.rows[0] || null;
 }

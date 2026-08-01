@@ -197,7 +197,12 @@ export class FakeSonnetSession implements SonnetSessionLike {
   sendTranscript(text: string, options?: unknown): void {
     this.sentTranscripts.push({ text, options });
   }
-  sendAskUserAnswered(toolCallId: string, text: string): void {
+  sendAskUserAnswered(
+    toolCallId: string,
+    text: string,
+    _utteranceId?: string,
+    _purpose?: string | null
+  ): void {
     this.sentAskAnswers.push({ toolCallId, text });
   }
   sendCompactRequest(): void {}

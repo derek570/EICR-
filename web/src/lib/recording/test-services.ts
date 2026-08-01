@@ -55,7 +55,12 @@ export interface SonnetSessionLike {
   pause(): void;
   resume(): void;
   sendTranscript(text: string, options?: unknown): void;
-  sendAskUserAnswered(toolCallId: string, text: string, utteranceId?: string): void;
+  sendAskUserAnswered(
+    toolCallId: string,
+    text: string,
+    utteranceId?: string,
+    purpose?: string | null
+  ): void;
   sendCompactRequest(): void;
   sendJobStateUpdate(job: unknown): void;
   peekInFlightToolCallId(): string | null;

@@ -71,7 +71,10 @@ import {
   resolvePostcodeHintState,
 } from './postcode-hint.js';
 import { copyAfddPremisesRequirement } from './regulation-lookup.js';
-import { ADDRESS_MIRROR_DIRECT_FOLLOWUP } from './address-mirror-controller.js';
+import {
+  ADDRESS_MIRROR_DELIVERY,
+  ADDRESS_MIRROR_DIRECT_FOLLOWUP,
+} from './address-mirror-controller.js';
 import { runToolLoop } from './stage6-tool-loop.js';
 // Loaded Barrel Phase 2.B/2.C wire-up (plan v10 §C). Per-turn
 // speculator instantiation in runLiveMode. Cache state is module-
@@ -1965,6 +1968,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         value: addressMirrorDirectFollowup,
         enumerable: false,
         configurable: false,
+      });
+    }
+    if (perTurnWrites[ADDRESS_MIRROR_DELIVERY]) {
+      Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+        value: perTurnWrites[ADDRESS_MIRROR_DELIVERY],
+        enumerable: false,
+        configurable: true,
       });
     }
 

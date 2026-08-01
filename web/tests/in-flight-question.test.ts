@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   InFlightQuestionTracker,
+  isServerOwnedAddressMirrorQuestion,
   transcriptConsumesInFlight,
   DEFAULT_STALE_WINDOW_MS,
   PENDING_FIFO_MAX,
@@ -120,12 +121,33 @@ describe('InFlightQuestionTracker', () => {
       type: 'address_mirror',
       question: 'Use the site address for the client?',
       purpose: 'address_mirror',
+      toolCallId: 'ask-address-1',
     });
     t.onTtsStart('Use the site address for the client?');
     expect(t.takePayload('yes')).toMatchObject({
       type: 'address_mirror',
       purpose: 'address_mirror',
+      tool_call_id: 'ask-address-1',
     });
+  });
+
+  it('preserves direct question identity and leaves terminal speech to the server', () => {
+    const t = new InFlightQuestionTracker();
+    t.enqueue({
+      type: 'address_mirror_direct',
+      question: 'The client address is already different. Should I replace it?',
+      toolCallId: 'address-mirror-direct-operation-2',
+    });
+    t.onTtsStart('The client address is already different. Should I replace it?');
+    expect(t.takePayload('yes')).toMatchObject({
+      type: 'address_mirror_direct',
+      tool_call_id: 'address-mirror-direct-operation-2',
+    });
+    expect(isServerOwnedAddressMirrorQuestion({ question_type: 'address_mirror_direct' })).toBe(
+      true
+    );
+    expect(isServerOwnedAddressMirrorQuestion({ purpose: 'address_mirror' })).toBe(true);
+    expect(isServerOwnedAddressMirrorQuestion({ question_type: 'unclear' })).toBe(false);
   });
 
   it('passes field + circuit through to the payload when set', () => {
