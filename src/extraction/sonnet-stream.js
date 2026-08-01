@@ -5050,10 +5050,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // enters a second runLiveMode call. Preserve its own lookup result on
         // the in-memory resolution so a bare-postcode answer can enrich the
         // authoritative postcode write made by the already-running tool loop.
-        preResolvePayload.postcode_lookup_result = await lookupResolvedPostcodeHint(
-          postcodeHintState,
-          { logger, sessionId, lane: 'live_ask_answer' }
-        );
+        const answerPostcodeLookup = await lookupResolvedPostcodeHint(postcodeHintState, {
+          logger,
+          sessionId,
+          lane: 'live_ask_answer',
+        });
+        if (answerPostcodeLookup != null) {
+          preResolvePayload.postcode_lookup_result = answerPostcodeLookup;
+        }
         if (sanitisedPre.truncated || sanitisedPre.stripped) {
           preResolvePayload.sanitisation = {
             truncated: sanitisedPre.truncated,
