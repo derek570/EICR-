@@ -118,6 +118,8 @@ The TTS proxy returns `X-Voice-Latency-Correlation-Id` plus `X-Voice-Latency-Sou
 
 The established ACK `source` remains `bundler` (delivery path); additive `audio_source` records where the bytes originated, preserving existing dashboards. Backend rows expose `ios_playback_ack_correlation_id` and `ios_playback_ack_audio_source`; the unified `voice_latency.turn_perceived_latency_ms` row exposes the same values as `ios_playback_ack_correlation_id` and `ack_audio_source`. A same-correlation `voice_latency.outcome { outcome:"playback_started", acked_by_ios:true }` provides the direct PII-safe synthesis→audible join. Missing headers remain valid for rolling deploys and older servers.
 
+Address-mirror terminal speech has a separate durability ACK. A capable web or iOS client advertises `address_mirror_delivery_ack_v1`, reserves the server's `address_mirror_delivery_token` while TTS is queued, persists it in a bounded heard ledger immediately when playback starts, and then sends `address_mirror_delivery_ack`. Discard or synthesis failure releases only the reservation, allowing the server's leased outbox to retry. A reconnect/restart replay whose token is already heard is ACKed without speaking again. This is operation delivery state, not latency telemetry: the backend does not mark a capable client's address-mirror outbox row delivered merely because the WebSocket frame flushed.
+
 **Remote config:** `RemoteConfigService.swift` + `Resources/default_config.json` — keyword boosts and validation rules can be updated without app rebuild.
 
 ---

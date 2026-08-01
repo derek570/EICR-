@@ -168,24 +168,34 @@ The inspector instead hears the surviving dictated-source confirmation or one
 short acknowledgement. Neither client owns a mirror latch, question, or copy.
 
 Direct commands use a separate append-only
-`address_mirror_direct_intents` operation ledger, keyed by the stable
-utterance token, so an incomplete source, a source/target conflict, and a
+`address_mirror_direct_intents` operation ledger, keyed by the occurrence
+identity carried by the client (utterance id first, then timestamp), so an
+incomplete source, a source/target conflict, and a
 success with no clarification are not held only in process memory. Each row
 preserves its source snapshot/write ledger, one stable clarification id,
 terminal outcome, and delivery marker. A delayed duplicate therefore cannot
-fall through to the model or resolve a newer opposite-direction question.
+fall through to the model or resolve a newer opposite-direction question,
+while a deliberately repeated command in a later utterance remains new work.
+An explicit answer id that is not the active direct clarification fails closed;
+matching purpose/type metadata is only a compatibility aid for an id-less
+legacy frame, never authority to cross question generations.
 Both direct and convenience terminal outcomes act as durable outboxes: the
 server commits the outcome before materialising its write/read-back ledger,
 then leases each undelivered row to one emitter. The terminal compare-and-set
 winner and the delivery-lease owner are explicit database outcomes, so two
 sockets cannot both materialise the same result; an abandoned lease becomes
-recoverable after ten seconds. Delivery is marked only after every WebSocket
-frame reports a successful flush callback, and start/resume/reconnect drains
-the remaining FIFO. A crash in between replays the same server-owned writes
-and a stable `address_mirror_delivery_token`; web/iOS suppress an already-heard
-terminal token while leaving ordinary voice-command responses unchanged. A
-changed source or target after authorisation is persisted as a fail-closed
-conflict instead of overwriting newer certificate data.
+recoverable after ten seconds. Clients advertising
+`address_mirror_delivery_ack_v1` persist the stable
+`address_mirror_delivery_token` when terminal TTS actually starts and then ACK
+that exact token. Only that ACK marks the outbox row delivered; socket flush
+alone schedules a retry, so synthesis failure, queue discard, disconnect, or a
+process crash cannot turn an unheard terminal into a completed operation. A
+replayed token already present in the client's bounded heard ledger is ACKed
+without speaking twice. Older clients retain socket-flush completion during
+the rolling transition. Start/resume/reconnect drains the remaining FIFO one
+terminal at a time. A changed source or target after authorisation is
+persisted as a fail-closed conflict instead of overwriting newer certificate
+data.
 
 Clients round-trip the server-owned `purpose` and direct clarification
 `tool_call_id`. Voice replies to a direct question carry that id in
@@ -197,6 +207,12 @@ avoid a second audible terminal. Live taps use the paired
 `transcript`/`ask_user_answered` route, while rollback and direct taps use
 `transcript.in_response_to`; both clients consume only the exact tapped ask
 generation so repeated question prose cannot strand or clear a newer ask.
+Duplicate delivery of an already-terminal ask also carries a server-owned
+clear/cancel instruction, preventing a stale card from surviving merely
+because its outcome was previously committed. A bare postcode supplied as an
+answer is looked up on that answer's own ingress lane, and recovered legacy
+utterances retain the lookup that belonged to their original invocation, so
+town/county enrichment cannot be lost or borrowed from a later turn.
 Address-mirror question telemetry stores only length/hash metadata, never
 street, postcode, or answer text.
 
