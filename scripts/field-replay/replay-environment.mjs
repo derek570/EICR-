@@ -32,7 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const REPLAY_ENV_INVENTORY_VERSION = 4;
+export const REPLAY_ENV_INVENTORY_VERSION = 5;
 
 /** Vars PINNED from ecs/task-def-backend.json (value read live from the
  *  task-def at load time so the drift test enforces itself). */
@@ -42,6 +42,8 @@ export const PINNED_FROM_TASK_DEF = Object.freeze([
   'SONNET_EXTRACT_MODEL',
   'OPENAI_EXTRACT_SERVICE_TIER',
   'OBSERVATION_EXTRACT_MODEL',
+  'OPENAI_OBSERVATION_SERVICE_TIER',
+  'OPENAI_OBSERVATION_REASONING_EFFORT',
   'SNAPSHOT_FORMAT',
   'CIRCUIT_ORDER',
   'VOICE_LATENCY_STREAM_CONFIRMATIONS',
@@ -69,8 +71,8 @@ export const PINNED_FROM_TASK_DEF = Object.freeze([
   // fixtures stay valid only if re-verified — the pin makes the lane track
   // whatever production actually runs, per the drift-enforcement contract.
   'VOICE_AGENTIC_ANSWERS',
-  // Observation-tier routing (2026-07-24, chunk C1) — the dark-ship flag that
-  // routes observation turns to OBSERVATION_EXTRACT_MODEL (Sonnet) on the live
+  // Observation-tier routing (2026-07-24, chunk C1; activated 2026-08-01) —
+  // routes observation turns to OBSERVATION_EXTRACT_MODEL on the live
   // path. Pinned from the task-def so the recorded lane replays at the
   // production value ('false' in the dark PR, 'true' in the flip commit): the
   // versioned inventory test scans every extraction-layer env read and FAILS
@@ -98,8 +100,8 @@ export const DELIBERATE_OVERRIDES = Object.freeze({
   VOICE_LATENCY_LOADED_BARREL: 'false',
 });
 
-/** Credentials — cleared in the recorded lane (the live lane supplies
- *  ANTHROPIC_API_KEY explicitly; the AWS deny module owns AWS_*). */
+/** Credentials — cleared in the recorded lane (the live lane supplies its
+ *  selected provider key explicitly; the AWS deny module owns AWS_*). */
 export const SECRETS = Object.freeze(['ANTHROPIC_API_KEY', 'ELEVENLABS_API_KEY', 'OPENAI_API_KEY']);
 
 /** Reachable by a naive src/extraction directory scan but NOT by the
@@ -120,20 +122,13 @@ export const EXCLUDED_NOT_IN_REPLAY_CLOSURE = Object.freeze({
   // Logger transports + infra — behaviour-neutral for extraction output.
   infra: ['LOG_FILE', 'LOG_LEVEL', 'S3_BUCKET', 'STAGE0_BENCH', 'PORT', 'REDIS_URL',
     'DATABASE_TYPE', 'STORAGE_TYPE', 'USE_AWS_SECRETS', 'AWS_REGION'],
-  // OpenAI extraction-provider trial (openai-tooluse-adapter.js /
+  // OpenAI default extraction-provider trial (openai-tooluse-adapter.js /
   // openai-responses-adapter.js). Reachable ONLY when SONNET_EXTRACT_MODEL is
   // a `gpt-*` model AND OPENAI_API_KEY is set — the OpenAI-backed tool-call
-  // loop. The recorded replay lane pins SONNET_EXTRACT_MODEL to the task-def
-  // Haiku value, so the OpenAI branch is never taken during replay and these
-  // tuning knobs are outside the closure. (SONNET_EXTRACT_MODEL,
-  // OBSERVATION_EXTRACT_MODEL are PINNED_FROM_TASK_DEF; OPENAI_API_KEY is a
-  // SECRET — both already classified above.)
-  openai_trial: [
-    'OPENAI_EXTRACT_REASONING_EFFORT',
-    'OPENAI_EXTRACT_API',
-    'OPENAI_OBSERVATION_SERVICE_TIER',
-    'OPENAI_OBSERVATION_REASONING_EFFORT',
-  ],
+  // loop. The provider API/ordinary-route effort knobs remain outside the
+  // deterministic recorded closure; the Terra observation tier/effort are
+  // production-pinned above because that route is now active.
+  openai_trial: ['OPENAI_EXTRACT_REASONING_EFFORT', 'OPENAI_EXTRACT_API'],
 });
 
 /** Read the task-def env table (single container definition). */
