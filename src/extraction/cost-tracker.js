@@ -29,21 +29,45 @@ export class CostTracker {
       input: 15.0,
       output: 75.0,
     };
-    // OpenAI GPT-5.6 Luna Responses-API rates (published 2026-07-31).
+    // OpenAI GPT-5.6 Responses-API rates (verified 2026-08-01).
     // Fast is the same model at an accelerated service tier and is billed at
     // exactly 2x Standard. OpenAI's response currently reports Fast as
     // service_tier="priority", so both names map to the fast bucket below.
     this.LUNA_RATES = {
-      cacheRead: 0.02,
-      cacheWrite: 0.25,
-      input: 0.2,
-      output: 1.2,
+      cacheRead: 0.1,
+      cacheWrite: 1.25,
+      input: 1.0,
+      output: 6.0,
     };
     this.LUNA_FAST_RATES = {
-      cacheRead: 0.04,
-      cacheWrite: 0.5,
-      input: 0.4,
-      output: 2.4,
+      cacheRead: 0.2,
+      cacheWrite: 2.5,
+      input: 2.0,
+      output: 12.0,
+    };
+    this.TERRA_RATES = {
+      cacheRead: 0.25,
+      cacheWrite: 3.125,
+      input: 2.5,
+      output: 15.0,
+    };
+    this.TERRA_FAST_RATES = {
+      cacheRead: 0.5,
+      cacheWrite: 6.25,
+      input: 5.0,
+      output: 30.0,
+    };
+    this.SOL_RATES = {
+      cacheRead: 0.5,
+      cacheWrite: 6.25,
+      input: 5.0,
+      output: 30.0,
+    };
+    this.SOL_FAST_RATES = {
+      cacheRead: 1.0,
+      cacheWrite: 12.5,
+      input: 10.0,
+      output: 60.0,
     };
     this.MODEL_RATES = {
       sonnet: this.SONNET_RATES,
@@ -51,6 +75,10 @@ export class CostTracker {
       opus: this.OPUS_RATES,
       luna: this.LUNA_RATES,
       luna_fast: this.LUNA_FAST_RATES,
+      terra: this.TERRA_RATES,
+      terra_fast: this.TERRA_FAST_RATES,
+      sol: this.SOL_RATES,
+      sol_fast: this.SOL_FAST_RATES,
     };
 
     // ElevenLabs pricing is PER MODEL, billed in credits where the USD
@@ -214,11 +242,22 @@ export class CostTracker {
   _modelFamily(modelId, serviceTier) {
     if (!modelId) return 'sonnet';
     const id = String(modelId).toLowerCase();
-    if (id.includes('gpt-5.6-luna')) {
-      const tier = String(serviceTier ?? process.env.OPENAI_EXTRACT_SERVICE_TIER ?? '')
+    if (id === 'gpt-5.6' || id.startsWith('gpt-5.6-')) {
+      // Luna is the default route and may rely on the global Fast setting.
+      // Terra/Sol observation routes pass their requested tier explicitly;
+      // if old callers omit it, Standard is the conservative billing default.
+      const configuredFallback = id.includes('gpt-5.6-luna')
+        ? process.env.OPENAI_EXTRACT_SERVICE_TIER
+        : 'standard';
+      const tier = String(serviceTier ?? configuredFallback ?? '')
         .trim()
         .toLowerCase();
-      return tier === 'fast' || tier === 'priority' ? 'luna_fast' : 'luna';
+      const fast = tier === 'fast' || tier === 'priority';
+      if (id.includes('gpt-5.6-luna')) return fast ? 'luna_fast' : 'luna';
+      if (id.includes('gpt-5.6-terra')) return fast ? 'terra_fast' : 'terra';
+      // Sol is also the unsuffixed gpt-5.6 alias and the conservative
+      // highest-cost fallback for any future 5.6 suffix we do not yet know.
+      return fast ? 'sol_fast' : 'sol';
     }
     if (id.includes('haiku')) return 'haiku';
     if (id.includes('opus')) return 'opus';

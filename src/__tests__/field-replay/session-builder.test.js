@@ -112,7 +112,7 @@ describe('machine-checked classification vs the production entry', () => {
     expect(stale).toEqual([]); // production removed a field → update the table
   });
   test('every classification carries a rationale', () => {
-    for (const [field, c] of Object.entries(ACTIVE_ENTRY_CLASSIFICATION)) {
+    for (const c of Object.values(ACTIVE_ENTRY_CLASSIFICATION)) {
       expect(['reproduced', 'deliberately_excluded', 'irrelevant']).toContain(c.class);
       expect((c.how ?? c.why ?? '').length).toBeGreaterThan(10);
     }
@@ -359,6 +359,11 @@ describe('blocking behaviour through the REAL harness', () => {
         const ws = makeOpenWs();
         built.entry.ws = ws;
         built.session.client = mockClient([endTurnRound()]);
+        // The test deliberately selects a Claude observation model while the
+        // task-def-pinned default is OpenAI. Give the alternate-provider cache
+        // the same deterministic mock so the assertion measures routing, not
+        // credentials/network.
+        built.session._providerClients.set('anthropic', built.session.client);
         built.session.start(built.fixtureJobState);
         built.session._clearCacheKeepalive?.();
         const opts = built.buildTurnOptions({

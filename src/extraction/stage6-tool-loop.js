@@ -50,6 +50,11 @@ import {
   isStage6FatalControlFlowError,
   throwIfStage6Cancelled,
 } from './stage6-control-flow-errors.js';
+import {
+  ProviderResolutionError,
+  assertSameProvider,
+  providerForModel,
+} from './model-provider.js';
 
 // ---------------------------------------------------------------------------
 // Loaded Barrel Phase 2.C — perTurnWrites snapshot/diff helpers (plan v10 §C)
@@ -260,6 +265,9 @@ function assistantToolUseIds(assistantMsg) {
 export async function runToolLoop({
   client,
   model,
+  provider,
+  openAIServiceTier,
+  openAIReasoningEffort,
   system,
   messages,
   tools,
@@ -400,9 +408,29 @@ export async function runToolLoop({
     cache_read_input_tokens: 0,
   };
   // OpenAI Responses reports the tier it actually served (`priority` for a
-  // Fast request today). The live Luna trial uses one tier for every round;
-  // retain it so CostTracker can bill Luna at the matching published rate.
+  // Fast request today). Retain it so CostTracker can bill each 5.6 family at
+  // the matching Standard/Fast rate.
   let serviceTier;
+
+  // Provider/model pairing is resolved once for the whole loop. A
+  // cross-provider round-one override would leave provider-private history
+  // (notably OpenAI encrypted reasoning blocks) in a shape the next SDK does
+  // not understand, so reject it before the first network dispatch. Direct
+  // unit callers that omit `provider` retain their historical generic-client
+  // seam; all production call sites pass the resolved provider.
+  if (provider) {
+    const modelProvider = providerForModel(model);
+    if (modelProvider !== provider) {
+      throw new ProviderResolutionError(
+        `Extraction target mismatch: ${model} belongs to ${modelProvider}, not ${provider}`,
+        { model, modelProvider, provider }
+      );
+    }
+    const configuredRound1Override = (process.env.VOICE_LATENCY_ROUND1_MODEL || '').trim();
+    if (allowRound1ModelOverride && configuredRound1Override) {
+      assertSameProvider(model, configuredRound1Override);
+    }
+  }
 
   while (rounds < maxRounds) {
     rounds += 1;
@@ -447,6 +475,12 @@ export async function runToolLoop({
       messages,
       tools,
     };
+    if (provider === 'openai') {
+      if (openAIServiceTier !== undefined) streamArgs.service_tier = openAIServiceTier;
+      if (openAIReasoningEffort !== undefined) {
+        streamArgs.reasoning_effort = openAIReasoningEffort;
+      }
+    }
     if (effectiveModel !== model) {
       logger?.info?.('voice_latency.round1_model_override', {
         sessionId: ctx?.sessionId,
@@ -1010,13 +1044,13 @@ export async function runToolLoop({
     usage,
     // The base model the loop ran on. Surfaced so callers can pipe it
     // into costTracker.addSonnetUsage(usage, model) for per-model
-    // pricing. NOTE: when VOICE_LATENCY_ROUND1_MODEL is set, round-1
-    // tokens are charged at the base-model rate here even though they
-    // physically ran on the override model. Round 1 is typically a small
-    // single-tool emission, so the mispricing is bounded; revisit if
-    // the override model differs in price by an order of magnitude.
+    // pricing. Cross-provider round-one overrides fail before dispatch; a
+    // same-provider override is still billed at the base model's rate because
+    // this legacy accumulator has one model bucket per loop.
     model,
-    service_tier: serviceTier,
+    provider: provider || undefined,
+    service_tier:
+      serviceTier || (provider === 'openai' ? openAIServiceTier || undefined : undefined),
     // Phase 0 + Phase 2 (single-round latency sprint) — additive return fields.
     // Legacy callers ignore unknown keys, so the back-compat is preserved.
     terminal_reason: terminalReason,

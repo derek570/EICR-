@@ -1,7 +1,7 @@
 /**
  * Stage 6 Agentic Extraction — Anthropic tool-schema codegen.
  *
- * Exports TOOL_SCHEMAS: an array of 19 Anthropic tool definitions
+ * Exports TOOL_SCHEMAS: an array of 20 provider-neutral tool definitions
  * (additionalProperties:false, NOT strict:true — see makeTool below),
  * codegenned at module load from:
  *   - config/field_schema.json              (circuit_fields -> record_reading.field enum;

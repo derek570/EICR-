@@ -152,6 +152,19 @@ function buildTestAdapter(rounds, hooks = {}) {
 }
 
 describe('openai-responses-adapter — request/response translation', () => {
+  test('system blocks retain order and an explicit boundary', () => {
+    expect(_internals.flattenSystem('base')).toBe('base');
+    expect(
+      _internals.flattenSystem([
+        { type: 'text', text: 'BASE SENTINEL' },
+        { type: 'text', text: '' },
+        { type: 'text', text: 'STABLE PREFIX END' },
+        { type: 'text', text: 'EXTRACTED\nPENDING' },
+      ])
+    ).toBe('BASE SENTINEL\n\nSTABLE PREFIX END\n\nEXTRACTED\nPENDING');
+    expect(_internals.flattenSystem([{ type: 'image', data: 'ignored' }])).toBe('');
+  });
+
   test('toResponsesTools is FLAT (no nested function key)', () => {
     const out = _internals.toResponsesTools([
       {
@@ -305,6 +318,45 @@ describe('openai-responses-adapter — request/response translation', () => {
     } finally {
       if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
       else process.env.OPENAI_EXTRACT_SERVICE_TIER = previous;
+    }
+  });
+
+  test('per-route Standard and reasoning overrides outrank the global Luna Fast policy', async () => {
+    const previousTier = process.env.OPENAI_EXTRACT_SERVICE_TIER;
+    const previousEffort = process.env.OPENAI_EXTRACT_REASONING_EFFORT;
+    process.env.OPENAI_EXTRACT_SERVICE_TIER = 'fast';
+    process.env.OPENAI_EXTRACT_REASONING_EFFORT = 'medium';
+    const standardFinal = { ...ROUND1_FINAL, service_tier: undefined };
+    const openai = {
+      responses: {
+        stream: jest.fn(() => makeMockOpenAIStream(ROUND1_STREAM_EVENTS, standardFinal)),
+      },
+    };
+    try {
+      const stream = _internals.createStream(openai, {
+        model: 'gpt-5.6-terra',
+        max_tokens: 100,
+        system: 'system',
+        messages: [{ role: 'user', content: 'observation cracked socket' }],
+        tools: [],
+        service_tier: 'standard',
+        reasoning_effort: 'low',
+      });
+      const message = await stream.finalMessage();
+      expect(openai.responses.stream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'gpt-5.6-terra',
+          reasoning: { effort: 'low' },
+        }),
+        undefined
+      );
+      expect(openai.responses.stream.mock.calls[0][0]).not.toHaveProperty('service_tier');
+      expect(message.service_tier).toBe('standard');
+    } finally {
+      if (previousTier === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
+      else process.env.OPENAI_EXTRACT_SERVICE_TIER = previousTier;
+      if (previousEffort === undefined) delete process.env.OPENAI_EXTRACT_REASONING_EFFORT;
+      else process.env.OPENAI_EXTRACT_REASONING_EFFORT = previousEffort;
     }
   });
 });

@@ -162,6 +162,8 @@ const ENV_KEYS = [
   'OBSERVATION_TIER_ROUTING',
   'OBSERVATION_EXTRACT_MODEL',
   'VOICE_LATENCY_ROUND1_MODEL',
+  'OPENAI_OBSERVATION_SERVICE_TIER',
+  'OPENAI_OBSERVATION_REASONING_EFFORT',
 ];
 let savedEnv;
 
@@ -195,16 +197,25 @@ describe('observation-tier routing — model selection matrix', () => {
 
     const ev = routingEvent(logger);
     expect(ev).toBeTruthy();
-    // EXACT five-field shape — no transcript text, no extra keys (PII-safe
+    // Exact PII-safe shape — provider is explicit so a model/client mismatch
+    // cannot hide behind a correct-looking selected_model value.
     // contract). default_model is SHADOW_MODEL (module-latched); read it back
     // rather than hardcoding the process's latched value.
     expect(Object.keys(ev).sort()).toEqual(
-      ['classifier_match', 'default_model', 'flag_enabled', 'round1_override_locked', 'selected_model'].sort()
+      [
+        'classifier_match',
+        'default_model',
+        'flag_enabled',
+        'round1_override_locked',
+        'selected_model',
+        'selected_provider',
+      ].sort()
     );
     expect(ev).toEqual({
       classifier_match: true,
       flag_enabled: true,
       selected_model: OBS_MODEL,
+      selected_provider: 'anthropic',
       default_model: ev.default_model,
       round1_override_locked: true,
     });
@@ -230,6 +241,41 @@ describe('observation-tier routing — model selection matrix', () => {
     expect(ev.selected_model).not.toBe(OBS_MODEL);
     expect(ev.round1_override_locked).toBe(false);
     expect(session.client._calls[0].model).toBe(ev.default_model);
+  });
+
+  test('OpenAI observation model resolves its own client and stays Standard while readings remain Fast-configured', async () => {
+    const terraModel = 'gpt-5.6-terra';
+    process.env.OBSERVATION_TIER_ROUTING = 'true';
+    process.env.OBSERVATION_EXTRACT_MODEL = terraModel;
+    process.env.OPENAI_OBSERVATION_SERVICE_TIER = 'standard';
+    process.env.OPENAI_OBSERVATION_REASONING_EFFORT = 'low';
+    const logger = makeLogger();
+    const session = makeLiveSession([endTurnRound()]);
+    const defaultClient = session.client;
+    const terraClient = mockClient([endTurnRound()]);
+    session.resolveExtractionTarget = jest.fn((model) =>
+      model === terraModel
+        ? { client: terraClient, model, provider: 'openai' }
+        : { client: defaultClient, model, provider: 'anthropic' }
+    );
+
+    await runShadowHarness(session, OBS_TRANSCRIPT, [], {
+      logger,
+      rawInspectorTranscript: OBS_TRANSCRIPT,
+    });
+
+    expect(defaultClient._calls).toHaveLength(0);
+    expect(terraClient._calls).toHaveLength(1);
+    expect(terraClient._calls[0]).toEqual(
+      expect.objectContaining({
+        model: terraModel,
+        service_tier: 'standard',
+        reasoning_effort: 'low',
+      })
+    );
+    expect(routingEvent(logger)).toEqual(
+      expect.objectContaining({ selected_model: terraModel, selected_provider: 'openai' })
+    );
   });
 
   test('flag OFF → default model for EVERYTHING (dark-ship byte-identity), even an observation utterance', async () => {

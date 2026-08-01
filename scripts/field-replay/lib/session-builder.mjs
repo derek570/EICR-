@@ -104,7 +104,28 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
   const corpusId = fixture.corpus_id;
   const sessionId = mintSessionId(corpusId);
   const certType = fixture.job_state?.certificateType ?? 'eicr';
-  const session = new EICRExtractionSession(apiKey, sessionId, certType, { toolCallsMode });
+  // Recorded replay deliberately clears vendor keys before importing the
+  // extraction stack. Supply a non-dispatchable constructor client for the
+  // task-def-pinned default provider, then replace `session.client` with the
+  // deterministic turn client before every harness call below. This preserves
+  // production's fail-closed missing-key contract without granting replay a
+  // network credential or reviving the old GPT-via-Anthropic fallback.
+  const defaultModel = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
+  const defaultProvider = defaultModel.toLowerCase().startsWith('gpt-') ? 'openai' : 'anthropic';
+  const undispatchableBootstrapClient = {
+    messages: {
+      create() {
+        throw new Error('field-replay bootstrap client must never dispatch');
+      },
+      stream() {
+        throw new Error('field-replay bootstrap client must be replaced before dispatch');
+      },
+    },
+  };
+  const session = new EICRExtractionSession(apiKey, sessionId, certType, {
+    toolCallsMode,
+    providerClients: { [defaultProvider]: undispatchableBootstrapClient },
+  });
 
   // Provenance-backed client capabilities (e.g. ['low_conf_readback_v1']) —
   // the wire shape production parses at session_start.

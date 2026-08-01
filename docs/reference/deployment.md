@@ -1,4 +1,4 @@
-> Last updated: 2026-07-31
+> Last updated: 2026-08-01
 > Related: [Architecture](architecture.md) | [iOS Pipeline](ios-pipeline.md) | [Field Reference](field-reference.md) | [File Structure](file-structure.md) | [Deployment History](deployment-history.md)
 > Hub: [../../CLAUDE.md](../../CLAUDE.md)
 
@@ -20,6 +20,7 @@ The production site runs at **https://certmate.uk**. Delivery is PR-only: commit
 - **Luna Standard rollback:** set `OPENAI_EXTRACT_SERVICE_TIER` to `standard`, commit, merge, and let CI redeploy. This omits `service_tier` while retaining the same model.
 - **Model rollback:** restore `SONNET_EXTRACT_MODEL=claude-haiku-4-5-20251001` separately. Leaving the Fast variable present is harmless because only the OpenAI Responses adapter reads it.
 - **Verify:** after rollout, inspect `stage6_live_extraction`; `model` must be `gpt-5.6-luna` and `service_tier` should be `priority` (OpenAI's response label for Fast). The session cost summary should use the `luna_fast` rates, not Sonnet rates.
+- **Provider safety:** every extraction surface resolves model + SDK together. Missing keys, unknown providers and cross-provider round-one overrides fail before the first API request; there is no GPT-via-Anthropic fallback.
 
 ### Loaded Barrel audible-value telemetry
 
@@ -46,7 +47,8 @@ The observation-tier model router (chunk C1) remains DARK: `ecs/task-def-backend
 
 - **Flip ON (activate):** change `OBSERVATION_TIER_ROUTING` to `"true"` in `ecs/task-def-backend.json`, commit, merge to `main` → CI re-registers the task def + rolls the service. **Flip prerequisite:** the web observation-processing TTS cue (parity-ledger `recording/observation-processing-cue`) must be live + verified first — the flag routes BOTH clients' observation turns to Sonnet (added latency), and iOS already masks it with its own cue while web does not yet. There is NO numeric latency gate (Derek: latency is masked by a processing cue, not gated on a number).
 - **Rollback:** change it back to `"false"`, commit, merge, redeploy. This restores byte-identical pre-C1 behaviour with no other change.
-- **Verify the seam is active** post-flip: `aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m | grep observation_tier_routing` — the `stage6.observation_tier_routing` event carries `{classifier_match, flag_enabled, selected_model, default_model, round1_override_locked}` (PII-safe, no transcript). `flag_enabled:true` + `selected_model` == the observation model on an observation turn proves the router fired. The P8 live probes REQUIRE this evidence (they must run against the Sonnet-routed path; re-run them if P8 already merged — probes on Haiku validate the wrong model).
+- **OpenAI observation policy:** set `OPENAI_OBSERVATION_SERVICE_TIER=standard` to prevent the global Luna Fast setting from applying to Terra/Sol; `OPENAI_OBSERVATION_REASONING_EFFORT` is independently configurable (`low` default).
+- **Verify the seam is active** post-flip: `aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m | grep observation_tier_routing` — the `stage6.observation_tier_routing` event carries `{classifier_match, flag_enabled, selected_model, selected_provider, default_model, round1_override_locked}` (PII-safe, no transcript). `flag_enabled:true`, the expected model and its matching provider prove the router fired. The P8 live probes REQUIRE this evidence (they must run against the observation-tier path; probes on the default model validate the wrong route).
 
 ### Check Cloud Status
 ```bash

@@ -37,6 +37,7 @@
  * Anthropic default path is byte-identical when the flag is off.
  */
 import OpenAI from 'openai';
+import { renderSystemPrompt } from './system-prompt-renderer.js';
 
 // ---------------------------------------------------------------------------
 // Anthropic -> OpenAI request translation
@@ -49,16 +50,7 @@ import OpenAI from 'openai';
  * concatenate the text of every block. cache_control is dropped (OpenAI caches
  * long repeated prefixes automatically; there is no explicit breakpoint API).
  */
-function flattenSystem(system) {
-  if (!system) return '';
-  if (typeof system === 'string') return system;
-  if (Array.isArray(system)) {
-    return system
-      .map((b) => (typeof b === 'string' ? b : b?.type === 'text' ? b.text || '' : ''))
-      .join('');
-  }
-  return '';
-}
+const flattenSystem = renderSystemPrompt;
 
 /**
  * Anthropic tool defs -> OpenAI function tools.

@@ -32,7 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const REPLAY_ENV_INVENTORY_VERSION = 3;
+export const REPLAY_ENV_INVENTORY_VERSION = 4;
 
 /** Vars PINNED from ecs/task-def-backend.json (value read live from the
  *  task-def at load time so the drift test enforces itself). */
@@ -128,7 +128,12 @@ export const EXCLUDED_NOT_IN_REPLAY_CLOSURE = Object.freeze({
   // tuning knobs are outside the closure. (SONNET_EXTRACT_MODEL,
   // OBSERVATION_EXTRACT_MODEL are PINNED_FROM_TASK_DEF; OPENAI_API_KEY is a
   // SECRET — both already classified above.)
-  openai_trial: ['OPENAI_EXTRACT_REASONING_EFFORT', 'OPENAI_EXTRACT_API'],
+  openai_trial: [
+    'OPENAI_EXTRACT_REASONING_EFFORT',
+    'OPENAI_EXTRACT_API',
+    'OPENAI_OBSERVATION_SERVICE_TIER',
+    'OPENAI_OBSERVATION_REASONING_EFFORT',
+  ],
 });
 
 /** Read the task-def env table (single container definition). */
