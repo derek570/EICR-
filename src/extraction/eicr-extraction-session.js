@@ -31,8 +31,14 @@ import {
   applyWrapPolicy,
 } from './stage6-snapshot-user-text.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
-import { lookupPostcode } from '../postcode_lookup.js';
 import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import {
+  buildPostcodeLookupNote,
+  canonicalisePostcodeHint,
+  combinePostcodeHintStates,
+  lookupResolvedPostcodeHint,
+  resolvePostcodeHintState,
+} from './postcode-hint.js';
 import { sanitizeReadingFieldContractWithReport } from './reading-field-contract-sanitizer.js';
 import logger from '../logger.js';
 
@@ -2506,7 +2512,11 @@ export class EICRExtractionSession {
     // id as this immediate placeholder or the web completion ledger can close
     // a newer turn when the delayed result arrives.
     const turnId = `legacy-${randomUUID()}`;
-    this.utteranceBuffer.push({ transcriptText, regexResults, options, turnId });
+    const effectiveOptions = { ...options };
+    if (!effectiveOptions.postcodeHintState) {
+      effectiveOptions.postcodeHintState = resolvePostcodeHintState({ regexResults });
+    }
+    this.utteranceBuffer.push({ transcriptText, regexResults, options: effectiveOptions, turnId });
 
     // Clear any existing flush timeout
     if (this.batchTimeoutHandle) {
@@ -2580,6 +2590,9 @@ export class EICRExtractionSession {
       confirmationsEnabled: batch.some((b) => b.options?.confirmationsEnabled),
       utteranceId: lastBufferedUtteranceId,
       turnId: lastBufferedTurnId,
+      postcodeHintState: combinePostcodeHintStates(
+        batch.map((item) => ({ postcodeHintState: item.options?.postcodeHintState }))
+      ),
     };
 
     logger.info(
@@ -2619,54 +2632,11 @@ export class EICRExtractionSession {
   }
 
   async _extractSingle(transcriptText, regexResults = [], options = {}) {
-    // Check if regex results contain a postcode — if so, look it up via postcodes.io
-    let postcodeLookupResult = null;
-    if (regexResults && regexResults.length > 0) {
-      const postcodeEntry = regexResults.find((r) => r.field === 'install.postcode' && r.value);
-      if (postcodeEntry) {
-        try {
-          const lookup = await lookupPostcode(postcodeEntry.value);
-          if (lookup) {
-            postcodeLookupResult = {
-              postcode: lookup.postcode,
-              town: lookup.town,
-              county: lookup.county,
-              valid: true,
-            };
-            logger.info(
-              `Session ${this.sessionId} Postcode lookup: ${postcodeEntry.value} → ${lookup.town}, ${lookup.county}`
-            );
-          } else {
-            postcodeLookupResult = {
-              postcode: postcodeEntry.value,
-              valid: false,
-            };
-            logger.info(
-              `Session ${this.sessionId} Postcode lookup: ${postcodeEntry.value} → not found`
-            );
-          }
-        } catch (err) {
-          logger.warn(`Session ${this.sessionId} Postcode lookup failed: ${err.message}`);
-        }
-      }
-    }
-
-    // Apply the lookup result back to circuits[0] BEFORE building the
-    // prompt and BEFORE Sonnet's tool loop runs. Previous behaviour
-    // (commit history pre-2026-06-01) only injected the lookup
-    // informationally into buildUserMessage; Sonnet still extracted
-    // town/county independently from the transcript and frequently
-    // ended up writing the ITL1 region ("South East", "South West")
-    // rather than the administrative county returned by postcodes.io.
-    // Sessions B95B2EE1 + D68ACD24 (2026-05-31, both RG1 5QA) both
-    // landed county="South East" in the final job snapshot despite
-    // a valid postcode lookup returning "Berkshire".
-    //
-    // Override policy (Derek 2026-06-01): lookup wins on empty OR on
-    // a drift signal (existing value matches a known UK region rather
-    // than a real administrative town/county). Manually-correct
-    // values are preserved.
-    applyPostcodeLookupToSnapshot(this.stateSnapshot, postcodeLookupResult, this.sessionId);
+    const postcodeLookupResult = await lookupResolvedPostcodeHint(options.postcodeHintState, {
+      logger,
+      sessionId: this.sessionId,
+      lane: 'legacy',
+    });
 
     // Build the windowed message history first (may reset circuitScheduleIncluded flag)
     const windowMessages = this.buildMessageWindow();
@@ -2944,6 +2914,39 @@ export class EICRExtractionSession {
     // Update rolling state snapshot with this response
     this.updateStateSnapshot(result);
 
+    // The model-selected postcode write owns address-family routing. Apply
+    // locality only after that write is authoritative so a client postcode
+    // can never pre-fill the site, and preserve a real/manual locality the
+    // same response already wrote. Only actual snapshot changes ride the wire.
+    if (postcodeLookupResult?.valid === true) {
+      const lookupCanonical = canonicalisePostcodeHint(postcodeLookupResult.postcode);
+      const postcodeWrites = result.extracted_readings.filter(
+        (reading) =>
+          Number(reading?.circuit) === 0 &&
+          (reading.field === 'postcode' || reading.field === 'client_postcode') &&
+          canonicalisePostcodeHint(reading.value) === lookupCanonical
+      );
+      for (const reading of postcodeWrites) {
+        const family = reading.field === 'client_postcode' ? 'client' : 'site';
+        const changes = applyPostcodeLookupToSnapshot(
+          this.stateSnapshot,
+          postcodeLookupResult,
+          this.sessionId,
+          { family }
+        );
+        for (const change of changes) {
+          result.extracted_readings.push({
+            field: change.field,
+            circuit: 0,
+            value: change.value,
+            confidence: reading.confidence ?? 1,
+            source_turn_id: reading.source_turn_id ?? null,
+            derived: true,
+          });
+        }
+      }
+    }
+
     // Track token costs (model id from response so per-model rates apply
     // correctly when the tiered router escalated this turn to a different
     // model than the default).
@@ -3169,15 +3172,8 @@ export class EICRExtractionSession {
         parts.push(`Regex pre-filled fields (confirm or correct): ${JSON.stringify(regexResults)}`);
       }
     }
-    if (postcodeLookup) {
-      if (postcodeLookup.valid) {
-        parts.push(
-          `POSTCODE LOOKUP: "${postcodeLookup.postcode}" → ${postcodeLookup.town}, ${postcodeLookup.county} (valid)`
-        );
-      } else {
-        parts.push(`POSTCODE LOOKUP: "${postcodeLookup.postcode}" → not found (invalid postcode)`);
-      }
-    }
+    const postcodeNote = buildPostcodeLookupNote(postcodeLookup);
+    if (postcodeNote) parts.push(postcodeNote);
     // Stage 6 Phase 4 (STQ-03): circuit schedule, asked-questions digest, and
     // already-created-observations list live in the CACHED SYSTEM PREFIX in
     // non-off modes (see buildSystemBlocks / buildStateSnapshotMessage), so we

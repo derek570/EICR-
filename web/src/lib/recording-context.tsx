@@ -47,7 +47,7 @@ import {
   computeFreshRegexWrites,
   shadowBaselineReader,
 } from './recording/apply-regex-match';
-import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
+import { TranscriptFieldMatcher, detectPostcodeHint } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { shouldForward } from './recording/transcript-gate';
@@ -1729,6 +1729,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
             ? crypto.randomUUID()
             : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        // Lookup-only and current-utterance-only. Compute before the ask-answer
+        // branch so a bare postcode response still reaches the backend without
+        // becoming a regex write or entering the cumulative matcher window.
+        const postcodeHint = detectPostcodeHint(text);
         // WS3 item 7 (2026-07-02) — the in-flight-ask signal is computed
         // FIRST via a NON-consuming peek. It feeds BOTH (a) the regex
         // skip below (which guards the sess_mp79tvcj_6prk 2026-05-15
@@ -1932,6 +1936,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           utteranceId,
           regexResults,
           inResponseTo,
+          postcodeHint,
         });
         if (inFlightToolCallId) {
           // Force-clear: takePayload above only burned the slot on a
@@ -2686,6 +2691,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             field: q.field ?? null,
             circuit: q.circuit ?? null,
             toolCallId: typeof q.tool_call_id === 'string' ? q.tool_call_id : null,
+            purpose: q.purpose ?? null,
           });
           clientDiagnostic('onQuestion_speaking', {
             queueDepth: next.length,

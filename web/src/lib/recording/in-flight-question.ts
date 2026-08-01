@@ -36,6 +36,8 @@ export interface InFlightQuestion {
    *  `ask_user_started`. Travels through so the consumer can correlate
    *  later, but the slot mechanism itself is tool_call_id-agnostic. */
   toolCallId?: string | null;
+  /** Server-owned deterministic controller purpose. */
+  purpose?: string | null;
 }
 
 /** Shape attached to the outbound `transcript` frame as `in_response_to`.
@@ -45,6 +47,7 @@ export interface InFlightPayload {
   question: string;
   field?: string;
   circuit?: number;
+  purpose?: string;
 }
 
 /**
@@ -171,6 +174,7 @@ export class InFlightQuestionTracker {
       field: entry.field,
       circuit: entry.circuit,
       toolCallId: entry.toolCallId,
+      purpose: entry.purpose,
       askedAt: this.now(),
     };
     // Purge stale pending entries so they can't shadow a future match.
@@ -214,6 +218,7 @@ export class InFlightQuestionTracker {
     };
     if (this.slot.field != null) payload.field = this.slot.field;
     if (this.slot.circuit != null) payload.circuit = this.slot.circuit;
+    if (this.slot.purpose != null) payload.purpose = this.slot.purpose;
     if (transcriptConsumesInFlight(transcript)) {
       this.slot = null;
     }

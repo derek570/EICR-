@@ -79,33 +79,45 @@ function shouldOverride(existing) {
   return isDriftValue(trimmed);
 }
 
-export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId) {
-  if (!snapshot || typeof snapshot !== 'object') return;
-  if (!lookup || lookup.valid !== true) return;
-  if (!lookup.town && !lookup.county) return;
+export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, options = {}) {
+  if (!snapshot || typeof snapshot !== 'object') return [];
+  if (!lookup || lookup.valid !== true) return [];
+  if (!lookup.town && !lookup.county) return [];
 
   if (!snapshot.circuits || typeof snapshot.circuits !== 'object') {
     snapshot.circuits = {};
   }
   const circ0 = snapshot.circuits[0] || (snapshot.circuits[0] = {});
 
-  const before = { town: circ0.town, county: circ0.county };
+  const family = options.family === 'client' ? 'client' : 'site';
+  const townField = family === 'client' ? 'client_town' : 'town';
+  const countyField = family === 'client' ? 'client_county' : 'county';
+  const before = { town: circ0[townField], county: circ0[countyField] };
   const changes = [];
 
   // `town` and `county` are designed-silent computed consequences of the
   // inspector's postcode write (Audio-First exception), not separately
   // dictated readings. Keep this helper snapshot-only: it must never stage
   // either field into perTurnWrites or synthesize a second confirmation.
-  if (lookup.town && shouldOverride(circ0.town)) {
-    circ0.town = lookup.town;
-    changes.push(`town: "${before.town ?? ''}" → "${lookup.town}"`);
+  if (lookup.town && shouldOverride(circ0[townField])) {
+    circ0[townField] = lookup.town;
+    changes.push({ field: townField, value: lookup.town });
   }
-  if (lookup.county && shouldOverride(circ0.county)) {
-    circ0.county = lookup.county;
-    changes.push(`county: "${before.county ?? ''}" → "${lookup.county}"`);
+  if (lookup.county && shouldOverride(circ0[countyField])) {
+    circ0[countyField] = lookup.county;
+    changes.push({ field: countyField, value: lookup.county });
   }
 
   if (changes.length > 0) {
-    logger.info(`Session ${sessionId} Postcode lookup applied to snapshot — ${changes.join(', ')}`);
+    logger.info('postcode_hint.snapshot_enriched', {
+      sessionId,
+      family,
+      changed_fields: changes.map((change) => change.field),
+      replaced_existing: {
+        town: before.town != null && String(before.town).trim() !== '',
+        county: before.county != null && String(before.county).trim() !== '',
+      },
+    });
   }
+  return changes;
 }

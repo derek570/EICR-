@@ -489,5 +489,89 @@ describe('QuestionGate', () => {
       expect(sendCallback).toHaveBeenCalledWith([{ field: 'zs', circuit: 1 }]);
       expect(gate.pendingQuestions).toEqual([]);
     });
+
+    test('claims an address mirror only at final emission', async () => {
+      const beforeSend = jest.fn(async () => true);
+      gate.setBeforeSend(beforeSend);
+      const question = {
+        question: 'Use the same address for the client?',
+        field: 'client_address',
+        type: 'address_mirror',
+        purpose: 'address_mirror',
+      };
+      gate.enqueue([question]);
+      expect(beforeSend).not.toHaveBeenCalled();
+
+      await gate.flush();
+
+      expect(beforeSend).toHaveBeenCalledWith(question);
+      expect(sendCallback).toHaveBeenCalledWith([question]);
+    });
+
+    test('drops only a mirror question when its durable claim loses', async () => {
+      gate.setBeforeSend(async () => false);
+      const ordinary = { question: 'Which circuit?', field: 'zs', circuit: null };
+      const mirror = {
+        question: 'Use the same address for the client?',
+        field: 'client_address',
+        type: 'address_mirror',
+        purpose: 'address_mirror',
+      };
+      gate.enqueue([ordinary, mirror]);
+
+      await gate.flush();
+
+      expect(sendCallback).toHaveBeenCalledWith([ordinary]);
+      expect(gate.recentlyFlushedSigs.has(gate._questionSig(mirror))).toBe(false);
+    });
+
+    test('serialises concurrent flush calls around one async claim', async () => {
+      let release;
+      gate.setBeforeSend(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          })
+      );
+      gate.enqueue([
+        {
+          question: 'Use the same address for the client?',
+          purpose: 'address_mirror',
+          type: 'address_mirror',
+        },
+      ]);
+
+      const first = gate.flush();
+      const second = gate.flush();
+      expect(first).toBe(second);
+      release(true);
+      await first;
+      expect(sendCallback).toHaveBeenCalledTimes(1);
+    });
+
+    test('an ordinary question enqueued during an async mirror claim is re-armed', async () => {
+      let releaseClaim;
+      const claim = new Promise((resolve) => {
+        releaseClaim = resolve;
+      });
+      gate.setBeforeSend(() => claim);
+      gate.enqueue([
+        {
+          type: 'address_mirror',
+          purpose: 'address_mirror',
+          question: 'Use the same address for the client?',
+        },
+      ]);
+      const flushing = gate.flush();
+      gate.enqueue([{ field: 'zs', circuit: 4, question: 'Which circuit?' }]);
+      releaseClaim(true);
+      await flushing;
+      expect(gate.pendingQuestions).toHaveLength(1);
+      jest.advanceTimersByTime(gate.GATE_DELAY_MS);
+      expect(sendCallback).toHaveBeenCalledTimes(2);
+      expect(sendCallback.mock.calls[1][0]).toEqual([
+        expect.objectContaining({ field: 'zs', circuit: 4 }),
+      ]);
+    });
   });
 });

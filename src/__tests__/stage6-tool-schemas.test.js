@@ -230,6 +230,15 @@ describe('stage6-tool-schemas', () => {
     expect(askUser.input_schema.required).not.toContain('context_board_id');
   });
 
+  test('ask_user purpose is optional and closed to the server-owned address mirror marker', () => {
+    const ask = byName('ask_user').input_schema;
+    expect(ask.required).not.toContain('purpose');
+    expect(ask.properties.purpose.anyOf).toEqual([
+      { type: 'string', enum: ['address_mirror'] },
+      { type: 'null' },
+    ]);
+  });
+
   test('record_observation.code enum sourced from stage6-enumerations.json', () => {
     const recordObs = byName('record_observation');
     expect(recordObs.input_schema.properties.code.enum).toEqual(enumerations.observation_code);

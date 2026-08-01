@@ -107,6 +107,14 @@
 export const EFFECTIVE_CIRCUIT_SLOT = Symbol('stage6.effectiveCircuitSlot');
 
 /**
+ * Stable token for rebuilding a confirmation after a process restart. It is
+ * intentionally separate from result.turn_id: the latter remains the live
+ * voice-latency correlation id, while this token owns client dedupe identity
+ * for a replayed ordinary source write.
+ */
+export const CONFIRMATION_REPLAY_TOKEN = Symbol('stage6.confirmationReplayToken');
+
+/**
  * P5 — the ONE shared slot-DERIVATION helper used by BOTH `dispatchClearReading`'s
  * effective-aware delete and the bundler's clear→write collapse projection.
  * Builds a stable identity STRING from raw `(field, circuit, boardId)` parts.

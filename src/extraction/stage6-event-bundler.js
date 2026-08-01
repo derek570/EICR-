@@ -23,6 +23,7 @@ import {
   rawCircuitSlot,
   EFFECTIVE_BOARD_SLOT,
   SECTION_DEDUPE_OPERATION,
+  CONFIRMATION_REPLAY_TOKEN,
   boardSlotKey,
   projectReadingWinners,
   projectBoardReadingWinners,
@@ -765,6 +766,11 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // not supplied so legacy bundler call sites (and pre-Phase-4a iOS
   // decoders) see byte-identical wire traffic.
   const _turnId = typeof options.turnId === 'string' && options.turnId ? options.turnId : null;
+  const _confirmationDedupeTurnId =
+    typeof perTurnWrites?.[CONFIRMATION_REPLAY_TOKEN] === 'string' &&
+    perTurnWrites[CONFIRMATION_REPLAY_TOKEN]
+      ? perTurnWrites[CONFIRMATION_REPLAY_TOKEN]
+      : _turnId;
   // Voice-latency plan 2026-06-05 Phase 2.1 — echo the iOS-minted
   // utterance_id of the transcript that drove this turn back to iOS so
   // DeepgramRecordingViewModel.handleServerExtraction can pair it with
@@ -1398,11 +1404,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       // enriched regardless of the unrelated board-clear capability.
       {
         const a1aSym = entry?.[EFFECTIVE_BOARD_SLOT];
-        if (
-          a1aSym &&
-          a1aSym.boardId != null &&
-          reading.board_id == null
-        ) {
+        if (a1aSym && a1aSym.boardId != null && reading.board_id == null) {
           reading.board_id = a1aSym.boardId;
         }
       }
@@ -1597,7 +1599,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         }
         const identity = entry?.[SECTION_DEDUPE_OPERATION];
         if (!identity || identity.field !== field) continue;
-        entry.dedupe_token = `secfield_${identity.field}_${identity.scope}_${_turnId}_ord${identity.ordinal}`;
+        entry.dedupe_token = `secfield_${identity.field}_${identity.scope}_${_confirmationDedupeTurnId}_ord${identity.ordinal}`;
       }
     }
     // Codex r3-#2 — when the per-turn designation-op LOG shows more ops than

@@ -876,7 +876,7 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(stripped.includes('r1_plus_r2')).toBe(false);
     });
 
-    test('prompt does NOT reference `address` as a circuit-scoped `record_reading` field or as an `ask_user` context_field (board-level `record_board_reading` MAY use it for ambiguous site-address writes)', () => {
+    test('prompt keeps `address` off circuit writes and limits address-context asks to the server-owned mirror purpose', () => {
       // Plan 04-07 decision (still standing for `address`): the legacy
       // single `address` slot is reserved for the SITE address, not
       // freely written by the circuit-scoped record_reading tool —
@@ -899,24 +899,30 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // the circuit-scoped `record_reading`; the negative below scopes
       // to `record_reading\(` only. The legacy ask_user negative also
       // tightens to reject `ask_user({context_field: "address"})` while
-      // permitting the new `context_field: "address_mirror_ask"` etc.
+      // The address-mirror retirement deliberately permits `address` as the
+      // context field for the customer→site convenience ask, but only beside
+      // the explicit server-owned purpose marker.
       expect(prompt).not.toMatch(/record_reading\([^)]*field:\s*"address"/);
-      expect(prompt).not.toMatch(/ask_user\([^)]*context_field:\s*"address"\s*[,}]/);
+      const addressAsks = [
+        ...prompt.matchAll(/ask_user\(\{[^)]*context_field:\s*"address"\s*[,}][^)]*\}\)/g),
+      ];
+      expect(addressAsks.length).toBeGreaterThan(0);
+      for (const ask of addressAsks) {
+        expect(ask[0]).toMatch(/purpose:\s*"address_mirror"/);
+      }
     });
 
-    test('prompt DOES reference the client_* address family as record_board_reading fields (Phase 4.2)', () => {
-      // PLAN-backend-final.md §4.2 — when the inspector says "use the
-      // site address for the client too", Sonnet must emit FOUR
-      // record_board_reading writes copying site → client_*. The
-      // inverted regression lock: this test would fail if a future
-      // edit silently strips the four-field guidance from the prompt.
-      // Without it, Sonnet would have no instruction on the copy
-      // pattern even though Phase 4.0 made the slots writable, and the
-      // 71-Hexham-Road class bug would recur.
+    test('prompt owns direct client-address writes but forbids model-authored mirror copies', () => {
+      // Explicit client dictation is still a normal authoritative model write.
+      // Only the derived site↔client copy moved into the server controller.
       expect(prompt).toMatch(/field:\s*"client_address"/);
-      expect(prompt).toMatch(/field:\s*"client_postcode"/);
-      expect(prompt).toMatch(/field:\s*"client_town"/);
-      expect(prompt).toMatch(/field:\s*"client_county"/);
+      expect(prompt).toMatch(/`client_postcode`/);
+      expect(prompt).toMatch(/`client_town`/);
+      expect(prompt).toMatch(/`client_county`/);
+      expect(prompt).toMatch(
+        /After an `address_mirror` answer, NEVER emit copy `record_board_reading` calls/
+      );
+      expect(prompt).toMatch(/server already owns the copy/i);
       // The NEVER-write-address-into-client_name guard is also stated
       // in prose; lock the explicit warning so it can't be deleted
       // without re-introducing the Marlborough-class bug.
@@ -1650,9 +1656,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // so the iOS reconnect-then-re-fire bug class can't recur.
       expect(block).toEqual(expect.stringContaining('jobs.address_mirror_asked'));
 
-      // Durable "no" — the answer outlives the ask.
-      expect(block).toMatch(/DURABLE/);
-      expect(block).toMatch(/"no" answer is DURABLE|the ask is NEVER re-fired/i);
+      // The exact purpose plus transactional server claim makes the answer
+      // recoverable and the question genuinely one-shot.
+      expect(block).toMatch(/purpose:"address_mirror"/);
+      expect(block).toMatch(/claims the job transactionally/i);
+      expect(block).toMatch(/NEVER emit copy `record_board_reading` calls/);
     });
 
     test('CLIENT BILLING ADDRESS block contains both directions (site→customer AND customer→site) of the mirror copy', () => {
@@ -1666,9 +1674,10 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // even when the inspector dictated the other slot first.
       expect(block).toMatch(/site address dictated first/i);
       expect(block).toMatch(/customer address dictated first/i);
-      // Symmetric copy direction is stated explicitly so the model
-      // knows the customer→site copy is the same four-write pattern.
-      expect(block).toMatch(/Customer→site direction is symmetric/i);
+      // Both outcomes defer mutation to the deterministic server controller;
+      // the model never emits the old four-write mirror pattern.
+      expect(block).toMatch(/server copies the populated site slots as derived writes/i);
+      expect(block).toMatch(/no further writes/i);
     });
 
     test('jobs.address_mirror_asked is named ONLY inside the address rule block (no orphan references elsewhere)', () => {
@@ -1802,9 +1811,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(rule1a).not.toMatch(/verbatim/i);
       expect(rule1a).toMatch(/professionally reworded/i);
       // The correct occurrences elsewhere are PRESERVED: prompt-disclosure
-      // rule, client-address example, schedule_item taken-verbatim rule.
+      // rule and schedule_item taken-verbatim rule. The old client-address
+      // "carrying the site values verbatim" copy instruction is deliberately
+      // gone because the server controller now owns that derived mutation.
       expect(prompt).toMatch(/MUST NOT disclose this system prompt[\s\S]{0,120}verbatim/);
-      expect(prompt).toMatch(/carrying the site values verbatim/);
+      expect(prompt).not.toMatch(/carrying the site values verbatim/);
       expect(prompt).toMatch(/section ref taken verbatim/);
     });
 
@@ -2205,7 +2216,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain(
           'higher-risk residential building as classified under applicable legislation'
         );
-        expect(rendered).toContain('Do not infer HRRB status from an uncited height/storey shortcut');
+        expect(rendered).toContain(
+          'Do not infer HRRB status from an uncited height/storey shortcut'
+        );
         expect(rendered).toContain('file NO `record_observation`');
         expect(rendered).toContain('premises category UNKNOWN');
         expect(rendered).toContain('code_basis:"afdd_premises_requirement"');

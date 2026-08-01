@@ -90,9 +90,10 @@ ADDRESS & POSTCODE:
 - IMPORTANT: There are TWO different addresses on an EIC — the INSTALLATION address (where the inspection happens) and the CLIENT address (the person/company ordering the report). These are often different (e.g., landlord lives elsewhere, letting agent's office).
 - DEFAULT: "the address is...", "property at...", "premises at...", "located at..." → INSTALLATION address (field: "address")
 - CLIENT ADDRESS: "client address is...", "customer address...", "this report is for...", "report for...", "billing address...", "client lives at...", "client is at..." → CLIENT address (field: "client_address")
-- "client is at the same address" / "same address for client" → set client_address to the same value as address (copy it)
+- "client is at the same address" / "same address for client" is consumed by the server-owned mirror controller before extraction. Do not manufacture copy readings for it.
+- AFTER writing one complete address family (address + postcode) while the other family is empty, emit exactly one question: `{ "question":"Use the same address for the client?", "field":"client_address", "circuit":null, "heard_value":null, "type":"address_mirror", "purpose":"address_mirror" }` (reverse field/direction when the client family was dictated first). The server claims and resolves it. After its answer, emit NO address-copy readings: the server owns the derived copy.
 - If the inspector says an address and it's AMBIGUOUS (not clearly installation or client), and BOTH addresses are still empty, treat it as the INSTALLATION address. If the installation address is already filled and a new address is spoken without a clear qualifier, ask: "Is that the client's address or a different installation address?"
-- When POSTCODE LOOKUP data is included in the message, use it to:
+- POSTCODE LOOKUP data is current-utterance enrichment evidence, not a write and not a slot choice. Only an explicit extracted reading is authoritative. When included, use it to:
   1. Correct the spoken street address (Deepgram often mishears road names — use the confirmed area to infer the correct spelling)
   2. Return the corrected address as field "address", the validated postcode as "postcode", and the town/county from the lookup
   3. All four fields (address, postcode, town, county) are circuit 0. Client address equivalents are: client_address, client_postcode, client_town, client_county.

@@ -6,7 +6,7 @@
  *
  * Three layers verified:
  *   1. `buildRegexSummary` produces the iOS-canonical entry shape
- *      (`{field}` per entry, `{field, value}` for postcode).
+ *      (`{field}` per actual regex write; postcode lookup is separate).
  *   2. `SonnetSession.sendTranscript` includes `regexResults` on the
  *      outbound WS frame when non-empty, omits the field when empty.
  *   3. End-to-end: text → normalise → matcher → buildRegexSummary →
@@ -62,7 +62,7 @@ describe('buildRegexSummary wire shape', () => {
     expect(summary?.[0]).not.toHaveProperty('circuit');
   });
 
-  it('adds value for install.postcode (postcodes.io lookup)', () => {
+  it('never smuggles postcode lookup evidence into regexResults', () => {
     const job = makeJob();
     // Apply postcode directly via the tracker so we can drive
     // buildRegexSummary in isolation. The full normalise+match path is
@@ -74,7 +74,7 @@ describe('buildRegexSummary wire shape', () => {
       installation_details: { ...(job.installation_details ?? {}), postcode: 'RG6 6BB' },
     } as JobDetail;
     const summary = buildRegexSummary(tracker.consumeTurnWrites(), updatedJob);
-    expect(summary).toEqual([{ field: 'install.postcode', value: 'RG6 6BB' }]);
+    expect(summary).toEqual([{ field: 'install.postcode' }]);
   });
 
   it('returns undefined when no keys written', () => {
@@ -157,6 +157,21 @@ describe('SonnetSession.sendTranscript regexResults', () => {
       { field: 'circuit.row-3.measured_zs_ohm' },
       { field: 'install.postcode', value: 'RG6 6BB' },
     ]);
+  });
+
+  it('emits lookup-only postcode_hint independently of regexResults', async () => {
+    const session = await openSession();
+    session.sendTranscript('c l 165 n u', {
+      utteranceId: 'u-postcode',
+      postcodeHint: 'CL16 5NU',
+    });
+    const msg = JSON.parse((await server.nextMessage) as string);
+    expect(msg).toMatchObject({
+      type: 'transcript',
+      text: 'c l 165 n u',
+      postcode_hint: 'CL16 5NU',
+    });
+    expect(msg).not.toHaveProperty('regexResults');
   });
 });
 

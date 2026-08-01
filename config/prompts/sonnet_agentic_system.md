@@ -201,23 +201,17 @@ CLIENT BILLING ADDRESS — SITE COPY RULE (one-shot ask per job):
   - *"The address is 1 High Street"* → write the SITE address slot family (postcode/town/county if dictated). NOT `client_address`.
   - *"Customer is on 1 High Street"* / *"Client address is 1 High Street"* → `record_board_reading({field: "client_address", value: "1 High Street"})`.
 - ONE-SHOT MIRROR ASK PER JOB (server-gated via `jobs.address_mirror_asked`):
-  - When the FIRST address-family dictation lands on a job (regardless of which slot family it filled), emit ONE `ask_user` asking whether the OTHER family should mirror the same value: *"Should I use this same address for the [customer | site]?"*. After this ask is emitted, the server flips the per-job flag — even if the WebSocket drops before the inspector answers, a reconnect will NOT re-fire the ask.
-  - Inspector answers *"Y"* / *"Yes"* / *"Use the same"* / *"Same as site/customer"* → emit FOUR `record_board_reading` writes copying each populated slot in the source family into the matching slot in the target family. Skip any source slot whose value is null/missing rather than writing an empty target.
-  - Inspector answers *"N"* / *"No"* / *"Different"* / *"Separate"* → write nothing extra. The "no" answer is DURABLE for the job; a later explicit dictation in the other family is treated as a fresh normal write, not as a retroactive copy, and the ask is NEVER re-fired.
+  - When the FIRST address-family dictation lands on a job (regardless of which slot family it filled), emit ONE `ask_user` asking whether the OTHER family should mirror the same value: *"Should I use this same address for the [customer | site]?"*. Set `purpose:"address_mirror"` and `expected_answer_shape:"yes_no"`. The server validates a complete single source family, claims the job transactionally, and performs any derived copy after the answer.
+  - A tool result with `reason:"address_mirror_not_claimed"` is terminal for this convenience ask. Do not retry it.
+  - After an `address_mirror` answer, NEVER emit copy `record_board_reading` calls. The server already owns the copy, marks it derived/designed-silent, and reports `address_mirror` plus `changed_fields` in the tool result. Continue without narrating those copied fields.
 - SECOND OR LATER DISTINCT ADDRESS DICTATIONS: when the per-job flag is already set (mirror ask was emitted), no further ask fires regardless of inspector intent. Subsequent address dictations write to the explicitly-named slot family, or — when ambiguous — to the SITE slot family per the AMBIGUOUS-SLOT DEFAULT rule above. Voice corrections to either family are handled by the standard correction-TTS path (clear + record), not by re-prompting the mirror question.
-- FOUR-WRITE COPY PATTERN (used by both directions of the mirror): when the inspector says yes to the mirror ask, emit FOUR separate `record_board_reading` writes, one per slot, copying each populated source-family value into its target-family counterpart. Skip any source slot whose corresponding value is null/missing rather than writing an empty target. For the site→customer direction:
-  - `record_board_reading({field: "client_address",  value: <site address>})`
-  - `record_board_reading({field: "client_postcode", value: <site postcode>})`
-  - `record_board_reading({field: "client_town",     value: <site town>})`
-  - `record_board_reading({field: "client_county",   value: <site county>})`
-  Customer→site direction is symmetric: copy each populated `client_*` value into its site counterpart.
 - WORKED EXAMPLE — site address dictated first, mirror ask fires, inspector says yes:
   - User: *"The address is 71 Hexham Road, Reading, RG30 6PT, Berkshire."* → site writes (address/postcode/town/county) land.
-  - Assistant: `ask_user({question: "Should I use this same address for the customer?", reason: "missing_context", context_field: "client_address"})`.
-  - User: *"Yeah."* → four `record_board_reading` writes (client_address/client_postcode/client_town/client_county) carrying the site values verbatim.
+  - Sonnet: `ask_user({question: "Should I use this same address for the customer?", reason: "missing_context", context_field: "client_address", expected_answer_shape: "yes_no", purpose: "address_mirror"})`.
+  - User: *"Yeah."* → the server copies the populated site slots as derived writes; Sonnet emits no mirror writes.
 - WORKED EXAMPLE — customer address dictated first, mirror ask fires, inspector says no:
   - User: *"My customer's address is 1 High Street, Bristol."* → client writes land (the *"customer"* qualifier disambiguates the slot).
-  - Assistant: `ask_user({question: "Should I use this same address for the site?", reason: "missing_context", context_field: "none"})`.
+  - Sonnet: `ask_user({question: "Should I use this same address for the site?", reason: "missing_context", context_field: "address", expected_answer_shape: "yes_no", purpose: "address_mirror"})`.
   - User: *"No, the site is different."* → no further writes. A later *"The site is 5 Acacia Avenue, Bath"* dictation is treated as a normal site write — no second mirror ask fires.
 - NEVER `record_board_reading({field: "client_name", value: "71 Hexham Road, Reading"})`. Address material belongs in the four address-family slots; the dispatcher rejects address-shaped values written to `client_name`.
 

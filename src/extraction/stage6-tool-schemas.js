@@ -725,6 +725,11 @@ const askUser = makeTool({
       description:
         "observation_clarify chains ONLY. Leave null/absent on the INITIAL severity-clarification ask for an observation — the server assigns a chain id and returns it in the tool_result as clarification_chain_id. Echo that id VERBATIM on the single bounded continuation ask for the SAME observation AND on the eventual record_observation that resolves it; never on an unrelated observation. Never invent one; never reuse another observation's id.",
     },
+    purpose: {
+      anyOf: [{ type: 'string', enum: ['address_mirror'] }, { type: 'null' }],
+      description:
+        'Server-owned ask purpose. Set to "address_mirror" only for the first one-shot site/client address mirror question. Omit/null for every other clarification; never infer this purpose from question wording.',
+    },
     expected_answer_shape: {
       type: 'string',
       enum: enumerations.expected_answer_shape,
@@ -1298,8 +1303,7 @@ const resolveObservationClarification = makeTool({
     outcome: {
       type: 'string',
       enum: ['afdd_not_applicable', 'afdd_recommendation_only'],
-      description:
-        'Why the AFDD decision table deliberately produces no observation.',
+      description: 'Why the AFDD decision table deliberately produces no observation.',
     },
   },
   required: ['clarification_chain_id', 'outcome'],

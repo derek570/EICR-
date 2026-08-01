@@ -671,6 +671,120 @@ export async function deleteJob(jobId, userId) {
 }
 
 /**
+ * Atomically claim the one-shot address mirror ask and persist its recovery
+ * state. Returns {claimed:false} when the owner/job does not exist or the ask
+ * was already claimed. PII-bearing intent data is deliberately absent from
+ * logs in this module.
+ */
+export async function claimAddressMirrorAsk(userId, jobId, intent) {
+  if (!usePostgres()) return { claimed: false, reason: 'database_unconfigured' };
+  const db = getPool();
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    const claimedJob = await client.query(
+      `UPDATE jobs
+         SET address_mirror_asked = TRUE
+       WHERE id = $1 AND user_id = $2 AND address_mirror_asked = FALSE
+       RETURNING id`,
+      [jobId, userId]
+    );
+    if (claimedJob.rowCount !== 1) {
+      await client.query('ROLLBACK');
+      return { claimed: false, reason: 'already_asked_or_not_owned' };
+    }
+    const inserted = await client.query(
+      `INSERT INTO address_mirror_intents
+         (user_id, job_id, status, ask_id, legacy_question_type, question_hash,
+          source_family, source_snapshot, source_version_hash, source_writes,
+          resolution_token)
+       VALUES ($1, $2, 'pending', $3, 'address_mirror', $4, $5, $6::jsonb,
+               $7, $8::jsonb, $9)
+       RETURNING *`,
+      [
+        userId,
+        jobId,
+        intent.askId,
+        intent.questionHash,
+        intent.sourceFamily,
+        JSON.stringify(intent.sourceSnapshot),
+        intent.sourceVersionHash,
+        JSON.stringify(intent.sourceWrites ?? []),
+        intent.resolutionToken,
+      ]
+    );
+    await client.query('COMMIT');
+    return { claimed: true, intent: inserted.rows[0] };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error('claimAddressMirrorAsk failed', { error: error.message, jobId, userId });
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+/** Load the durable mirror intent for exactly one authenticated owner/job. */
+export async function getAddressMirrorIntent(userId, jobId) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const result = await db.query(
+    `SELECT * FROM address_mirror_intents
+      WHERE user_id = $1 AND job_id = $2
+      LIMIT 1`,
+    [userId, jobId]
+  );
+  return result.rows[0] || null;
+}
+
+/** Backwards-compatible pending-only view used by focused callers/tests. */
+export async function getPendingAddressMirrorIntent(userId, jobId) {
+  const intent = await getAddressMirrorIntent(userId, jobId);
+  return intent?.status === 'pending' ? intent : null;
+}
+
+/**
+ * Move the exact recovery anchor to a bounded clarification ask while the
+ * durable intent remains pending. This does not touch jobs.address_mirror_asked:
+ * the clarification is part of the already-claimed conversation.
+ */
+export async function rebindAddressMirrorAsk(userId, jobId, resolutionToken, askId, questionHash) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const updated = await db.query(
+    `UPDATE address_mirror_intents
+        SET ask_id = $4, question_hash = $5
+      WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
+        AND resolution_token = $3
+      RETURNING *`,
+    [userId, jobId, resolutionToken, askId, questionHash]
+  );
+  return updated.rows[0] || null;
+}
+
+/** Owner-scoped compare-and-set terminal transition for a mirror answer. */
+export async function resolveAddressMirrorIntent(userId, jobId, status, resolutionToken) {
+  if (!usePostgres()) return null;
+  const db = getPool();
+  const updated = await db.query(
+    `UPDATE address_mirror_intents
+        SET status = $3, resolved_at = NOW()
+      WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
+        AND resolution_token = $4
+      RETURNING *`,
+    [userId, jobId, status, resolutionToken]
+  );
+  if (updated.rows[0]) return updated.rows[0];
+  const existing = await db.query(
+    `SELECT * FROM address_mirror_intents
+      WHERE user_id = $1 AND job_id = $2
+      LIMIT 1`,
+    [userId, jobId]
+  );
+  return existing.rows[0] || null;
+}
+
+/**
  * @deprecated -- Use migrations/001_baseline.cjs instead. No longer called at startup.
  * Ensure users table has token_version column for JWT rotation
  */

@@ -48,6 +48,7 @@ export function createPendingAsksRegistry() {
         pendingValue,
         pendingValueEligible,
         multiDescriptionCircuits,
+        purpose,
         resolve,
         timer,
         askStartedAt,
@@ -97,6 +98,7 @@ export function createPendingAsksRegistry() {
         multiDescriptionCircuits: Array.isArray(multiDescriptionCircuits)
           ? multiDescriptionCircuits.map((circuit) => ({ ...circuit }))
           : null,
+        purpose: purpose ?? null,
         askStartedAt,
       });
     },

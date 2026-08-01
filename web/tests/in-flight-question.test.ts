@@ -114,6 +114,20 @@ describe('InFlightQuestionTracker', () => {
     expect(t.hasActiveSlot).toBe(false);
   });
 
+  it('round-trips the server-owned address mirror purpose', () => {
+    const t = new InFlightQuestionTracker();
+    t.enqueue({
+      type: 'address_mirror',
+      question: 'Use the site address for the client?',
+      purpose: 'address_mirror',
+    });
+    t.onTtsStart('Use the site address for the client?');
+    expect(t.takePayload('yes')).toMatchObject({
+      type: 'address_mirror',
+      purpose: 'address_mirror',
+    });
+  });
+
   it('passes field + circuit through to the payload when set', () => {
     const t = new InFlightQuestionTracker();
     t.enqueue({

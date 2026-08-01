@@ -253,6 +253,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // staging silently no-ops, which is the pre-plan-2A behaviour exactly.
   const stagePartialFailureNotice =
     typeof opts?.stagePartialFailureNotice === 'function' ? opts.stagePartialFailureNotice : null;
+  const addressMirrorController = opts?.addressMirrorController ?? null;
   // PLAN-2B lifecycle fence — one dispatcher instance belongs to one live
   // model generation. When the inspector abandons the server-brokered mdr-*
   // clarification, latch the rest of THIS generation so a model retry cannot
@@ -422,6 +423,33 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       };
     }
 
+    // Address retirement: the convenience ask is claimed transactionally by
+    // the server immediately before any in-memory registration or wire emit.
+    // Invalid/incomplete candidates do not burn the one-shot job flag.
+    if (input.purpose === 'address_mirror') {
+      const claimed = await addressMirrorController?.claimLiveAsk?.({
+        input,
+        askId: toolCallId,
+      });
+      if (!claimed?.ok) {
+        logger?.info?.('stage6.address_mirror_ask_not_claimed', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          reason: claimed?.reason ?? 'controller_unavailable',
+        });
+        return {
+          tool_use_id: toolCallId,
+          content: JSON.stringify({
+            answered: false,
+            reason: 'address_mirror_not_claimed',
+            disposition: claimed?.reason ?? 'controller_unavailable',
+          }),
+          is_error: false,
+        };
+      }
+    }
+
     // Step 3–4: live path — register + emit + await.
     //
     // Plan 03-12 r10 MAJOR remediation — wrap the Promise setup/await in
@@ -512,6 +540,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
             // numeric attribution is the harder failure mode to detect
             // (poisons the slot map) than a re-ask.
             expectedAnswerShape: input.expected_answer_shape,
+            purpose: input.purpose ?? null,
             // 2026-04-27 — bug-1B fix. Buffer the pending write on the entry
             // so the dispatcher's resolution path can hand it to the answer
             // resolver alongside the user reply. Null when the ask is not
@@ -611,6 +640,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
                 context_field: input.context_field,
                 context_circuit: input.context_circuit,
                 expected_answer_shape: input.expected_answer_shape,
+                ...(input.purpose ? { purpose: input.purpose } : {}),
                 // PLAN-C P4d (row 4) — stamp the QUESTION frame with the
                 // response epoch at emit time (creation == emit for the
                 // dispatcher ask; the ref is not yet advanced for the initial
@@ -864,6 +894,24 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     //
     // The legacy body shape is preserved when there's nothing to resolve
     // so existing call paths don't break.
+    const mirrorResolution = await addressMirrorController?.resolveLiveAnswer?.({
+      input,
+      outcome,
+      askId: toolCallId,
+    });
+    if (mirrorResolution?.handled) {
+      return {
+        tool_use_id: toolCallId,
+        content: JSON.stringify({
+          answered: true,
+          address_mirror: mirrorResolution.outcome,
+          changed_fields: mirrorResolution.changed ?? [],
+          source_replay_count: mirrorResolution.replayedSource ?? 0,
+        }),
+        is_error: false,
+      };
+    }
+
     const body = await buildResolvedBody({
       outcome,
       pendingWrite: input.pending_write ?? null,

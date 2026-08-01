@@ -359,6 +359,7 @@ export interface SonnetQuestion {
   field?: string | null;
   circuit?: number | null;
   tool_call_id?: string | null;
+  purpose?: string | null;
 }
 
 export interface VoiceCommandResponse {
@@ -1094,6 +1095,7 @@ export class SonnetSession {
       confirmationsEnabled?: boolean;
       utteranceId?: string;
       regexResults?: RegexResultsWire;
+      postcodeHint?: string;
       /**
        * Preceding-TTS-question context. When a transcript arrives within
        * the post-TTS answer window, the client attaches the question text
@@ -1113,6 +1115,7 @@ export class SonnetSession {
         question: string;
         field?: string | null;
         circuit?: number | null;
+        purpose?: string | null;
       };
     }
   ): void {
@@ -1141,6 +1144,9 @@ export class SonnetSession {
     if (options?.regexResults && options.regexResults.length > 0) {
       msg.regexResults = options.regexResults;
     }
+    if (options?.postcodeHint) {
+      msg.postcode_hint = options.postcodeHint;
+    }
     // iOS canon: ServerWebSocketService.swift:516-518 — only attach when
     // the payload is non-empty. The `question` key is the load-bearer
     // (backend at sonnet-stream.js:3202 short-circuits without it).
@@ -1153,6 +1159,7 @@ export class SonnetSession {
       utteranceIdShort:
         typeof options?.utteranceId === 'string' ? options.utteranceId.slice(0, 11) : null,
       regexHints: options?.regexResults?.length ?? 0,
+      hasPostcodeHint: Boolean(options?.postcodeHint),
       confirmationsEnabled: options?.confirmationsEnabled ?? false,
       hasInResponseTo: Boolean(options?.inResponseTo?.question),
       state: this.state,
@@ -1908,6 +1915,7 @@ export class SonnetSession {
           circuit:
             typeof json.context_circuit === 'number' ? (json.context_circuit as number) : null,
           tool_call_id: toolCallId,
+          purpose: typeof json.purpose === 'string' ? json.purpose : null,
         };
         clientDiagnostic('ask_user_started_dispatching_to_onQuestion', {
           hasOnQuestionCallback: typeof this.callbacks.onQuestion === 'function',

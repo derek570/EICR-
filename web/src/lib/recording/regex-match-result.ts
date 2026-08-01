@@ -70,8 +70,6 @@ export interface BoardUpdates {
 
 export interface InstallationUpdates {
   client_name?: string;
-  address?: string;
-  postcode?: string;
   premises_description?: string;
   next_inspection_years?: number;
   client_phone?: string;
@@ -82,11 +80,6 @@ export interface InstallationUpdates {
   previous_certificate_number?: string;
   estimated_age_of_installation?: string;
   general_condition_of_installation?: string;
-  client_address?: string;
-  client_town?: string;
-  client_county?: string;
-  client_postcode?: string;
-  client_address_same_as_installation?: boolean;
   date_of_inspection?: string; // ISO date string in TS land — Date is serialised before reaching apply layer
 }
 
@@ -155,8 +148,8 @@ export function isEmptyResult(r: RegexMatchResult): boolean {
  *     "circuit.c-abc.measured_zs_ohm", "install.postcode"). Circuit
  *     attribution is encoded inside the key — iOS does NOT emit a
  *     separate `circuit` number key.
- *   - `value`: optional, added ONLY for `install.postcode` so backend's
- *     postcodes.io lookup at `eicr-extraction-session.js:1490` can fire.
+ *   - `value`: optional for backwards wire compatibility only. New clients do
+ *     not put postcode lookup evidence in this pre-write list.
  *
  * Backend reads the array at `src/extraction/sonnet-stream.js:3416-3443`
  * (validates `Array.isArray`); downstream consumers:
@@ -196,17 +189,8 @@ import type { JobDetail } from '@/lib/types';
  */
 export function buildRegexSummary(
   writtenKeys: string[],
-  job: JobDetail
+  _job: JobDetail
 ): RegexResultsWire | undefined {
   if (writtenKeys.length === 0) return undefined;
-  return writtenKeys.map((key) => {
-    const entry: RegexResultWireEntry = { field: key };
-    if (key === 'install.postcode') {
-      const postcode = (job.installation_details as { postcode?: unknown } | undefined)?.postcode;
-      if (typeof postcode === 'string' && postcode.length > 0) {
-        entry.value = postcode;
-      }
-    }
-    return entry;
-  });
+  return writtenKeys.map((key) => ({ field: key }));
 }
