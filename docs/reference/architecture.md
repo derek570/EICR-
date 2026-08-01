@@ -253,9 +253,11 @@ avoid a second audible terminal. Live taps use the paired
 `transcript`/`ask_user_answered` route, while rollback and direct taps use
 `transcript.in_response_to`; both clients consume only the exact tapped ask
 generation so repeated question prose cannot strand or clear a newer ask.
-Claimed address questions are exempt from generic client already-filled-field
-and reconnect-grace filters: once the backend has durably claimed the one-shot
-ask, those UI heuristics cannot silently consume it. The web echo gate exempts
+Claimed address questions are exempt from generic client already-filled-field,
+reconnect-grace, and per-session ask-count filters: once the backend has durably
+claimed the one-shot ask, those UI heuristics cannot silently consume it. The
+backend's durable generation remains replayable until it receives an answer.
+The web echo gate exempts
 only the controller's bounded yes/no answer grammar (`use the same`,
 `same as site`, `different`, and peers); the spoken prompt itself and
 unsupported fragments remain echo-discarded. Legacy claimed questions receive
