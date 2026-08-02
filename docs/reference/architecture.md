@@ -143,6 +143,152 @@ The pre-Fast field baseline is median **4.65 s heard confirmation** on Luna Stan
 
 Live recording flows through the Stage 6 agentic extraction pipeline. `config/field_schema.json` is the single source of truth for every extractable field; the tool schemas (`src/extraction/stage6-tool-schemas.js`) generate `record_reading.field` / `record_board_reading.field` enums from it at module load.
 
+**Voice-address authority (2026-08-01).** Transcript regex is no longer a
+writer for either the installation or client address family. Web and iOS may
+extract a structurally valid UK `postcode_hint` from the current utterance and
+send it as lookup enrichment, but the hint never chooses a family or mutates a
+certificate. The backend validates that hint once per message, calls
+`postcodes.io`, and applies returned town/county only after an authoritative
+model/controller postcode write identifies the matching site or client
+family. `postcodes.io` is locality enrichment, not a street-address lookup;
+the spoken/model-selected address and postcode remain the authority.
+
+The one-shot site↔client convenience question and every same-address copy are
+also server-owned. A transactional owner/job claim sets the permanent job bit
+and creates an `address_mirror_intents` row immediately before the question is
+sent. That durable row retains the exact ask identity, stable legacy type,
+captured source-family snapshot, replayable source writes, and a server token,
+so an annotated answer can resolve idempotently after reconnect or process
+restart without trusting question prose. A short bounded ingress arbiter pairs
+transcript-first and answer-frame-first replies by utterance id; unrelated
+commands are not delayed. Affirmative answers and explicit same-address
+commands copy only the captured complete source family, journal the target
+writes as `derived:true`, and therefore produce no address-copy read-backs.
+That provenance survives board/circuit projection and the additive wire field,
+so clients can apply a derived non-empty correction without synthesising their
+generic local correction confirmation when Voice confirmations are disabled.
+The inspector instead hears the surviving dictated-source confirmation or one
+short acknowledgement. Neither client owns a mirror latch, question, or copy.
+Merely writing a source field is not evidence that it will be heard: current
+source writes suppress the acknowledgement only when confirmation mode will
+actually speak them, while crash-replayed source writes use the explicit
+forced-confirmation marker. With confirmation mode off, completing a deciding
+address/postcode ask therefore still produces the short truthful terminal.
+
+Direct commands use a separate append-only
+`address_mirror_direct_intents` operation ledger, keyed by the occurrence
+identity carried by the client (utterance id first, then timestamp), so an
+incomplete source, a source/target conflict, and a
+success with no clarification are not held only in process memory. Each row
+preserves its source snapshot/write ledger, one stable clarification id,
+terminal outcome, and delivery marker. A delayed duplicate therefore cannot
+fall through to the model or resolve a newer opposite-direction question,
+while a deliberately repeated command in a later utterance remains new work.
+An explicit answer id that is not the active direct clarification fails closed;
+matching purpose/type metadata is only a compatibility aid for an id-less
+legacy frame, never authority to cross question generations.
+An exact direct command that points opposite to a still-pending convenience
+question is consumed deterministically and receives a fail-closed spoken
+instruction to answer the active question first; it never falls through to
+model extraction. This is distinct from an unsolicited direct command whose
+complete source meets a different non-empty target: that path still emits its
+server-owned “Should I replace it?” deciding question.
+Both direct and convenience terminal outcomes act as durable outboxes: the
+server commits the outcome before materialising its write/read-back ledger,
+then leases each undelivered row to one emitter. The terminal compare-and-set
+winner and the delivery-lease owner are explicit database outcomes, so two
+sockets cannot both materialise the same result; an abandoned lease becomes
+recoverable after ten seconds. Clients advertising
+`address_mirror_delivery_ack_v1` persist the stable
+`address_mirror_delivery_token` when terminal TTS actually starts and then ACK
+that exact token. Only that ACK marks the outbox row delivered; socket flush
+alone schedules a retry, so synthesis failure, queue discard, disconnect, or a
+process crash cannot turn an unheard terminal into a completed operation. A
+replayed token already present in the client's bounded heard ledger is ACKed
+without speaking twice. Older clients retain socket-flush completion during
+the rolling transition. Start/resume/reconnect drains the remaining FIFO one
+terminal at a time. A changed source or target after authorisation is
+persisted as a fail-closed conflict instead of overwriting newer certificate
+data.
+
+Recovery treats the persisted source-write ledger as provenance, not merely a
+snapshot hint. A missing field with a matching ordinary ledger entry is an
+owed dictated write and replays with forced confirmation; a snapshot-only
+field (including postcode-derived town/county) is restored as `derived:true`
+and stays silent. Every source family is preflighted for drift before any
+member is mutated, preventing a missing earlier field from being restored next
+to a later mismatching field. A target-only conflict still restores and reads
+back its owed source writes but never copies or overwrites the target; that
+same fence is reconstructed from the persisted conflict outcome after another
+process crash.
+
+One delivery token always owns one audible item. If crash recovery must replay
+more than one dictated source field, the backend combines their confirmation
+text into one confirmation; if the operation also has a voice-command
+terminal, those confirmations are folded into that single final response.
+The structured readings remain separate for client application. A playback
+start can therefore ACK the complete audible operation, never just its last
+field. An unheard operation token also outranks an older ordinary
+field/text-confirmation collision: equal prose from a distinct address
+operation still plays. Web synthesis errors before playback and pre-enqueue
+failures release both the operation reservation and any new ordinary-key
+reservation, so the leased outbox retry remains audible. iOS likewise releases
+the operation reservation when a socket disconnect discards a terminal that was
+deferred behind live speech; reconnect replay can then enqueue and ACK it.
+
+Clients round-trip the server-owned `purpose` and direct clarification
+`tool_call_id`. Voice replies to a direct question carry that id in
+`transcript.in_response_to`, so an old card or delayed transcript cannot
+resolve the current question merely because its prose still resembles it.
+The transcript recovery lane forwards that exact id into the durable
+controller and consumes a stale explicit generation before model extraction;
+purpose/type metadata cannot silently select a newer ask. When a deciding
+address/postcode answer completes an incomplete direct command, its terminal
+ledger includes a prompt-clear frame before the audible terminal. The client
+therefore leaves answer mode immediately instead of parking the confirmation
+behind a resolved prompt until timeout.
+For both address question types, the backend owns terminal speech; web/iOS tap
+handlers suppress their generic local “Updated” / “keeping it” response to
+avoid a second audible terminal. Live taps use the paired
+`transcript`/`ask_user_answered` route, while rollback and direct taps use
+`transcript.in_response_to`; both clients consume only the exact tapped ask
+generation so repeated question prose cannot strand or clear a newer ask.
+Claimed address questions are exempt from generic client already-filled-field,
+reconnect-grace, and per-session ask-count filters: once the backend has durably
+claimed the one-shot ask, those UI heuristics cannot silently consume it. The
+backend's durable generation remains replayable until it receives an answer.
+The web echo gate exempts
+only the controller's bounded yes/no answer grammar (`use the same`,
+`same as site`, `different`, and peers); the spoken prompt itself and
+unsupported fragments remain echo-discarded. Legacy claimed questions receive
+a server-minted `tool_call_id` and `expected_answer_shape:yes_no` even when the
+model omitted both, and resolution places the matching clear/cancel frame
+before extraction, read-back, or voice-command terminal frames in the same
+ordered ledger. This preserves build-428 compatibility, whose local alert must
+clear before it will accept the server-owned terminal.
+The legacy model's open question schema is not an authority boundary: the exact
+pair `type:address_mirror` plus `purpose:address_mirror` is required before the
+final QuestionGate may invoke the durable claim. A type-only, purpose-only, or
+mismatched marker is rejected without emission or claim, and a claimed
+question also fails closed if the controller hook is unavailable; malformed
+model output therefore cannot create an ordinary, repeatedly audible mirror
+ask or burn the one-shot ledger with a card the client cannot route.
+Duplicate delivery of an already-terminal ask also carries a server-owned
+clear/cancel instruction, preventing a stale card from surviving merely
+because its outcome was previously committed. A rejected stale answer on
+either transcript or direct-answer ingress clears only the supplied stale id,
+never the newer durable generation. A bare postcode supplied as an
+answer is looked up on that answer's own ingress lane, and recovered legacy
+utterances retain the lookup that belonged to their original invocation, so
+town/county enrichment cannot be lost or borrowed from a later turn.
+Address-mirror question telemetry stores only length/hash metadata, never
+street, postcode, or answer text.
+
+Offline audio import shares the retired regex matcher but not the live address
+controller. Regex performs no address-family pre-fill there; the existing
+full-transcript model result remains authoritative and is regression-tested to
+apply installation address and postcode after the regex pass leaves them empty.
+
 **Client-routing and structural rejection contract (PLAN-2D §3.6).** The live
 field schema is no longer trusted as proof that a client can apply a reading.
 `client-routable-reading-fields.js` commits the destination of every allowed

@@ -394,6 +394,23 @@ describe('validateAskUser', () => {
       const input = { ...validInput(), question: 'a'.repeat(500) };
       expect(validateAskUser(input)).toBeNull();
     });
+    test('address mirror purpose requires the bounded yes/no shape', () => {
+      expect(
+        validateAskUser({
+          ...validInput(),
+          purpose: 'address_mirror',
+          expected_answer_shape: 'yes_no',
+        })
+      ).toBeNull();
+      expect(validateAskUser({ ...validInput(), purpose: 'address_mirror' })).toEqual({
+        code: 'invalid_address_mirror_answer_shape',
+        field: 'expected_answer_shape',
+      });
+      expect(validateAskUser({ ...validInput(), purpose: 'not_trusted' })).toEqual({
+        code: 'invalid_purpose',
+        field: 'purpose',
+      });
+    });
   });
 
   describe('invalid_question', () => {

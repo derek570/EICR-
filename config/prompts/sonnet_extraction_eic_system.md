@@ -90,12 +90,11 @@ ADDRESS & POSTCODE:
 - IMPORTANT: There are TWO different addresses on an EIC — the INSTALLATION address (where the inspection happens) and the CLIENT address (the person/company ordering the report). These are often different (e.g., landlord lives elsewhere, letting agent's office).
 - DEFAULT: "the address is...", "property at...", "premises at...", "located at..." → INSTALLATION address (field: "address")
 - CLIENT ADDRESS: "client address is...", "customer address...", "this report is for...", "report for...", "billing address...", "client lives at...", "client is at..." → CLIENT address (field: "client_address")
-- "client is at the same address" / "same address for client" → set client_address to the same value as address (copy it)
+- "client is at the same address" / "same address for client" is consumed by the server-owned mirror controller before extraction. Do not manufacture copy readings for it.
+- AFTER this turn's successful writes make one complete address family (`address` + `postcode`), including matching values stored for that family on earlier turns, while the other family is incomplete, emit exactly one question: `{ "question":"Use the same address for the client?", "field":"client_address", "circuit":null, "heard_value":null, "type":"address_mirror", "purpose":"address_mirror" }` (reverse field/direction when the client family was dictated first). The server claims and resolves it. If the source is incomplete, defer until a later turn completes it; do not record the rejected candidate as already asked. After its answer, emit NO address-copy readings: the server owns the derived copy.
 - If the inspector says an address and it's AMBIGUOUS (not clearly installation or client), and BOTH addresses are still empty, treat it as the INSTALLATION address. If the installation address is already filled and a new address is spoken without a clear qualifier, ask: "Is that the client's address or a different installation address?"
-- When POSTCODE LOOKUP data is included in the message, use it to:
-  1. Correct the spoken street address (Deepgram often mishears road names — use the confirmed area to infer the correct spelling)
-  2. Return the corrected address as field "address", the validated postcode as "postcode", and the town/county from the lookup
-  3. All four fields (address, postcode, town, county) are circuit 0. Client address equivalents are: client_address, client_postcode, client_town, client_county.
+- POSTCODE LOOKUP data is current-utterance enrichment evidence, not a write and not a slot choice. Only an explicit extracted reading is authoritative. Emit the dictated `postcode` or `client_postcode` and choose its family from the inspector's words.
+- NEVER emit `town`, `county`, `client_town`, or `client_county` solely from postcode lookup evidence. The backend applies lookup locality later as `derived:true`, preserves manual locality, and keeps that computed consequence silent.
 - If the spoken address seems very different from what you'd expect for the postcode area, ask: "Is the address [your best guess], [town]?"
 - If the postcode lookup failed (invalid), ask: "I couldn't verify that postcode — could you repeat it?"
 - If only a street address was spoken (no postcode yet), extract the address but do NOT guess the postcode — wait for the inspector to say it
@@ -363,7 +362,7 @@ Return ONLY valid JSON in this format. Omit any top-level array that would be em
     { "type": "<str>", "severity": "<info|warning|critical>", "message": "<str>" }
   ],
   "questions_for_user": [
-    { "question": "<max 15 words>", "field": "<str|null>", "circuit": <int|null>, "heard_value": "<str|null>", "type": "<orphaned|out_of_range|unclear|tt_confirmation|circuit_disambiguation>" }
+    { "question": "<max 15 words>", "field": "<str|null>", "circuit": <int|null>, "heard_value": "<str|null>", "type": "<orphaned|out_of_range|unclear|tt_confirmation|circuit_disambiguation|address_mirror>", "purpose": "<address_mirror|null>" }
   ],
   "confirmations": [
     { "text": "Circuit 3 sockets, 0.35", "field": "zs", "circuit": 3 }

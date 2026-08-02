@@ -224,6 +224,11 @@ const KNOWN_SUPPORTS = Object.freeze([
   // latches before capabilities are parsed, so a capability-conditional
   // toolset would split prompt and toolset).
   'board_clear_v1',
+  // Address-regex retirement: capable clients persist the terminal delivery
+  // token at audible playback start and ACK it over the session websocket.
+  // Until advertised, the backend retains socket-flush completion for old
+  // clients so backend-first rollout cannot replay acknowledgements forever.
+  'address_mirror_delivery_ack_v1',
 ]);
 
 export function parseVoiceLatencyCapabilities(capabilitiesObj) {
@@ -254,6 +259,7 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
     // silent or malformed capabilities block can never let a client that
     // cannot apply a board-scope clear receive one.
     hasBoardClearV1: false,
+    hasAddressMirrorDeliveryAckV1: false,
     raw,
   });
 
@@ -280,6 +286,7 @@ export function parseVoiceLatencyCapabilities(capabilitiesObj) {
     hasLowConfReadbackV1: supports.has('low_conf_readback_v1'),
     hasLimRangedWriteV1: supports.has('lim_ranged_write_v1'),
     hasBoardClearV1: supports.has('board_clear_v1'),
+    hasAddressMirrorDeliveryAckV1: supports.has('address_mirror_delivery_ack_v1'),
     raw,
   };
 }

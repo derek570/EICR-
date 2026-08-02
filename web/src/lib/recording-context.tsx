@@ -47,11 +47,16 @@ import {
   computeFreshRegexWrites,
   shadowBaselineReader,
 } from './recording/apply-regex-match';
-import { TranscriptFieldMatcher } from './recording/transcript-field-matcher';
+import { TranscriptFieldMatcher, detectPostcodeHint } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { shouldForward } from './recording/transcript-gate';
-import { InFlightQuestionTracker } from './recording/in-flight-question';
+import {
+  buildQuestionTapDispatch,
+  InFlightQuestionTracker,
+  isServerOwnedAddressMirrorQuestion,
+  shouldDiscardTtsEchoForQuestion,
+} from './recording/in-flight-question';
 import {
   buildConfirmationDedupeKey,
   isObservationRecodeConfirmation,
@@ -97,6 +102,11 @@ import {
   setShouldDeferPlayback as ttsQueueSetShouldDeferPlayback,
 } from './recording/tts-queue';
 import { ConfirmationDedupeStore } from './recording/confirmation-dedupe-store';
+import {
+  AddressMirrorDeliveryStore,
+  addressMirrorDeliveryDedupeKey,
+  tokenFromAddressMirrorDeliveryDedupeKey,
+} from './recording/address-mirror-delivery-store';
 import {
   handleCancelPendingTts,
   handleInspectorStoppedSpeaking,
@@ -1183,6 +1193,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // sonnet-stream.js:3193-3243 never saw the question context and bare
   // replies like "yes"/"no"/"code 2" lost attribution.
   const inFlightQuestionRef = React.useRef(new InFlightQuestionTracker());
+  const addressMirrorDeliveryStoreRef = React.useRef<AddressMirrorDeliveryStore | null>(null);
+  if (!addressMirrorDeliveryStoreRef.current) {
+    addressMirrorDeliveryStoreRef.current = AddressMirrorDeliveryStore.fromBrowser();
+  }
+  const addressMirrorQueueReservationsRef = React.useRef(
+    new Map<string, { token: string; confirmationKey: string | null }>()
+  );
   // Stamps the most-recent text passed to `speak()`. The TTS lifecycle
   // observer (event: 'start' | 'end') doesn't carry the spoken text,
   // but the in-flight tracker matches FIFO entries by exact question
@@ -1280,6 +1297,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const confirmationDedupeStoreRef = React.useRef<ConfirmationDedupeStore>(
     new ConfirmationDedupeStore()
   );
+  // One release path for queue-side discards AND the rarer pre-enqueue
+  // failures (TTS unavailable / empty terminal). Address operations reserve a
+  // durable delivery token plus, sometimes, an ordinary confirmation key; the
+  // pair must be released together or a backend retry is silently suppressed.
+  const discardConfirmationReservation = React.useCallback((dedupeKey: string) => {
+    const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
+    if (addressToken) {
+      const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
+      addressMirrorDeliveryStoreRef.current?.discard(addressToken);
+      if (reservation?.confirmationKey) {
+        confirmationDedupeStoreRef.current.forget(reservation.confirmationKey);
+      }
+      addressMirrorQueueReservationsRef.current.delete(dedupeKey);
+      return;
+    }
+    confirmationDedupeStoreRef.current.forget(dedupeKey);
+  }, []);
   // A4 (Wave 6) — voice feedback marker capture. iOS canon:
   // TranscriptProcessor.swift HEAD (state machine + 30s rolling window) +
   // DeepgramRecordingViewModel.performStopCleanup auto-close. The
@@ -1729,14 +1763,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
             ? crypto.randomUUID()
             : `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        // Lookup-only and current-utterance-only. Compute before the ask-answer
+        // branch so a bare postcode response still reaches the backend without
+        // becoming a regex write or entering the cumulative matcher window.
+        const postcodeHint = detectPostcodeHint(text);
         // WS3 item 7 (2026-07-02) — the in-flight-ask signal is computed
-        // FIRST via a NON-consuming peek. It feeds BOTH (a) the regex
+        // FIRST via the TTS-anchored NON-consuming FIFO peek. The payload is
+        // atomic: question, purpose and tool id all belong to the prompt the
+        // inspector actually heard, even if a newer ask arrived meanwhile.
+        // It feeds BOTH (a) the regex
         // skip below (which guards the sess_mp79tvcj_6prk 2026-05-15
         // regression and MUST keep receiving the signal) and (b) the
         // transcript gate's hasPendingAsk input. Consumption of the
         // tool_call_id happens only on the gate-PASS path immediately
         // before the send — a gate REJECT must not burn ask state.
-        const peekedToolCallId = sonnetRef.current?.peekInFlightToolCallId() ?? null;
+        const peekedPayload = inFlightQuestionRef.current.peekPayloadForTranscript();
+        const peekedToolCallId =
+          peekedPayload?.type !== 'address_mirror_direct' && peekedPayload?.tool_call_id
+            ? peekedPayload.tool_call_id
+            : null;
         const isAnswerToAsk = Boolean(peekedToolCallId);
         let regexResults: RegexResultsWire | undefined = undefined;
         // Flag-independent match-presence signal for the gate: a
@@ -1853,7 +1898,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // could force a PASS, chime, then send with a null payload.
         // iOS-canon consequence: a non-expired pending ask or a valid
         // in_response_to payload is a gate-PASS by definition.
-        const peekedPayload = inFlightQuestionRef.current.peekPayloadForTranscript();
         const gatePassed = shouldForward({
           text,
           hasRegexHit: gateRegexHit,
@@ -1881,7 +1925,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         // PASS: consume the Stage 6 tool_call_id (peeked earlier) — the
         // consume/peek pair is race-free inside this synchronous block.
-        const inFlightToolCallId = sonnetRef.current?.consumeInFlightToolCallId() ?? null;
+        const inFlightToolCallId = peekedToolCallId
+          ? (sonnetRef.current?.consumeInFlightToolCallId(peekedToolCallId) ?? null)
+          : null;
         console.info(
           `[recording:pipeline] stage=sonnet_send utteranceId=${utteranceId.slice(0, 8)} inFlightToolCallId=${inFlightToolCallId?.slice(0, 12) ?? 'none'} regexHints=${regexResults?.length ?? 0}`
         );
@@ -1932,6 +1978,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           utteranceId,
           regexResults,
           inResponseTo,
+          postcodeHint,
         });
         if (inFlightToolCallId) {
           // Force-clear: takePayload above only burned the slot on a
@@ -1944,7 +1991,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           console.info(
             `[recording:pipeline] stage=ask_user_answered toolCallId=${inFlightToolCallId.slice(0, 12)} userText="${text.slice(0, 40)}"`
           );
-          sonnetRef.current?.sendAskUserAnswered(inFlightToolCallId, text, utteranceId);
+          sonnetRef.current?.sendAskUserAnswered(
+            inFlightToolCallId,
+            text,
+            utteranceId,
+            drainedPayload?.purpose
+          );
           // iOS canon DeepgramRecordingViewModel.swift:2108-2113 — clear
           // the in-flight question slot the instant the wire emit is
           // sent. The card itself is no longer rendered (see
@@ -2067,8 +2119,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // text is plausibly a content reply (not just a 1-word burp
           // that's more likely the mic catching its own speaker), then
           // BARGE IN — cancel TTS and let the transcript through.
+          const activeQuestionForEcho = inFlightQuestionRef.current.peekPayloadForTranscript();
           if (isWithinTtsWindow()) {
-            const hasInFlightAsk = Boolean(sonnetRef.current?.peekInFlightToolCallId());
+            const hasInFlightAsk = activeQuestionForEcho != null;
             const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
             // Single-token replies ARE legitimate ("yes", "no", "0.6",
             // "TT"). iOS uses a separate VAD gate; we approximate by
@@ -2118,7 +2171,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // question through the speaker, Deepgram transcribed
           // fragments, and Sonnet processed those fragments as the
           // inspector's reply.
-          if (isTTSEcho(text)) {
+          if (shouldDiscardTtsEchoForQuestion(text, isTTSEcho(text), activeQuestionForEcho)) {
             console.info(`[recording:tts-echo-discarded] text="${text.slice(0, 60)}"`);
             clientDiagnostic('pipeline_tts_echo_discarded', {
               textLength: text.length,
@@ -2416,7 +2469,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // value discriminator, so "same field, different value" now reads
       // back — audio-first invariant #1 (exactly once, never zero).
       const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
-      for (const conf of confirmations) {
+      const addressDeliveryToken = result.address_mirror_delivery_token ?? null;
+      let addressTerminalIndex = -1;
+      if (addressDeliveryToken) {
+        for (let i = confirmations.length - 1; i >= 0; i -= 1) {
+          if (typeof confirmations[i]?.text === 'string' && confirmations[i].text.trim()) {
+            addressTerminalIndex = i;
+            break;
+          }
+        }
+      }
+      for (const [confirmationIndex, conf] of confirmations.entries()) {
         if (!conf || typeof conf.text !== 'string' || conf.text.trim().length === 0) continue;
         const dedupeKey = buildConfirmationDedupeKey(conf);
         // §A1b — field-nil confirmations (apologies / system prompts)
@@ -2426,6 +2489,47 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // operation token belongs in the permanent store: reconnect replay of
         // the same owed suffix dedupes, while a later re-code has a new token.
         const fieldIsNil = conf.field == null && !isObservationRecodeConfirmation(conf);
+        const ownsAddressDelivery =
+          Boolean(addressDeliveryToken) && confirmationIndex === addressTerminalIndex;
+        if (ownsAddressDelivery && addressDeliveryToken) {
+          const deliveryStore = addressMirrorDeliveryStoreRef.current!;
+          if (deliveryStore.isHeard(addressDeliveryToken)) {
+            sonnetRef.current?.sendAddressMirrorDeliveryAck(addressDeliveryToken);
+            continue;
+          }
+          if (!deliveryStore.reserve(addressDeliveryToken)) continue;
+          const sentence = confirmationToSentence(conf);
+          if (!sentence) {
+            deliveryStore.discard(addressDeliveryToken);
+            continue;
+          }
+          // A prior ordinary frame may already have spoken this exact
+          // confirmation. Keep that normal dedupe record intact; the durable
+          // address terminal still gets its own audible delivery, but a queue
+          // discard must not erase an older heard confirmation's identity.
+          const confirmationKeyWasLive = confirmationDedupeStoreRef.current.isLive(
+            dedupeKey,
+            fieldIsNil
+          );
+          if (!confirmationKeyWasLive) {
+            confirmationDedupeStoreRef.current.reserve(dedupeKey, fieldIsNil);
+          }
+          const deliveryDedupeKey = addressMirrorDeliveryDedupeKey(addressDeliveryToken);
+          addressMirrorQueueReservationsRef.current.set(deliveryDedupeKey, {
+            token: addressDeliveryToken,
+            confirmationKey: confirmationKeyWasLive ? null : dedupeKey,
+          });
+          // The source read-back is owed by the durable controller even when
+          // the ordinary confirmation toggle is off.
+          const queued = speakConfirmation(sentence, {
+            force: true,
+            dedupeKey: deliveryDedupeKey,
+          });
+          if (!queued.enqueued) {
+            discardConfirmationReservation(deliveryDedupeKey);
+          }
+          continue;
+        }
         if (confirmationDedupeStoreRef.current.isLive(dedupeKey, fieldIsNil)) {
           clientDiagnostic('onExtraction_confirmation_deduped', {
             dedupeKey,
@@ -2471,7 +2575,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         setProcessingCount((n) => Math.max(0, n - 1));
       }
     },
-    [liveFill, schedulePushJobState]
+    [discardConfirmationReservation, liveFill, schedulePushJobState]
   );
 
   /** Open the Sonnet extraction WebSocket. Runs alongside Deepgram —
@@ -2513,12 +2617,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // discarded before it ever played is immediately re-speakable; a
     // TTL stamp left behind here would suppress a re-emitted apology for
     // up to 30 s despite it never being heard.
-    ttsQueueSetOnDiscarded((dedupeKey) => {
-      confirmationDedupeStoreRef.current.forget(dedupeKey);
-    });
+    ttsQueueSetOnDiscarded(discardConfirmationReservation);
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
     ttsQueueSetOnPlaybackStarted((dedupeKey) => {
+      const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
+      if (addressToken) {
+        const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
+        // Persist before ACK so an app/tab restart in the tiny post-start
+        // window cannot replay the same terminal audibly.
+        addressMirrorDeliveryStoreRef.current?.markPlaybackStarted(addressToken);
+        if (reservation?.confirmationKey) {
+          confirmationDedupeStoreRef.current.markPlaybackStarted(reservation.confirmationKey);
+        }
+        addressMirrorQueueReservationsRef.current.delete(dedupeKey);
+        sonnetRef.current?.sendAddressMirrorDeliveryAck(addressToken);
+        return;
+      }
       confirmationDedupeStoreRef.current.markPlaybackStarted(dedupeKey);
     });
 
@@ -2686,6 +2801,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             field: q.field ?? null,
             circuit: q.circuit ?? null,
             toolCallId: typeof q.tool_call_id === 'string' ? q.tool_call_id : null,
+            purpose: q.purpose ?? null,
           });
           clientDiagnostic('onQuestion_speaking', {
             queueDepth: next.length,
@@ -2953,6 +3069,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         schedulePushJobState();
       },
       onVoiceCommandResponse: (response) => {
+        const deliveryToken = response.address_mirror_delivery_token;
+        if (deliveryToken) {
+          const deliveryStore = addressMirrorDeliveryStoreRef.current!;
+          if (deliveryStore.isHeard(deliveryToken)) {
+            clientDiagnostic('address_mirror_voice_response_deduped', {
+              deliveryTokenShort: deliveryToken.slice(0, 16),
+            });
+            sonnetRef.current?.sendAddressMirrorDeliveryAck(deliveryToken);
+            return;
+          }
+          if (!deliveryStore.reserve(deliveryToken)) {
+            clientDiagnostic('address_mirror_voice_response_reserved', {
+              deliveryTokenShort: deliveryToken.slice(0, 16),
+            });
+            return;
+          }
+        }
         // iOS canon: DeepgramRecordingViewModel.handleVoiceCommandResponse
         // (DeepgramRecordingViewModel.swift:7446). Execute the action via
         // the same applier the local Calculate/Apply intents use, then
@@ -3000,7 +3133,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // toggle on both clients (documented opt-out), and answers still
           // queue behind read-backs on the existing FIFO (Resolved decision
           // 3 — no queue-priority change).
-          speakConfirmation(response.spoken_response, { force: true });
+          if (deliveryToken) {
+            const dedupeKey = addressMirrorDeliveryDedupeKey(deliveryToken);
+            addressMirrorQueueReservationsRef.current.set(dedupeKey, {
+              token: deliveryToken,
+              confirmationKey: null,
+            });
+            const queued = speakConfirmation(response.spoken_response, {
+              force: true,
+              dedupeKey,
+            });
+            if (!queued.enqueued) {
+              discardConfirmationReservation(dedupeKey);
+            }
+          } else {
+            speakConfirmation(response.spoken_response, { force: true });
+          }
+        } else if (deliveryToken) {
+          // A delivery token without an audible terminal is malformed. Release
+          // the reservation so the server retry remains speakable.
+          addressMirrorDeliveryStoreRef.current?.discard(deliveryToken);
         }
         sleepManagerRef.current?.onSpeechActivity();
       },
@@ -3104,7 +3256,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // can fire `client_diagnostic` envelopes without plumbing the session
     // reference through every layer. Cleared on teardownSonnet.
     setDiagnosticSink(session);
-  }, [applyExtraction, speakDirectPrompt]);
+  }, [applyExtraction, discardConfirmationReservation, speakDirectPrompt]);
 
   /** Open the mic stream and forward audio to Deepgram. Shared between
    *  `start()` and `resume()`. Also owns the SleepManager + ring buffer
@@ -3518,6 +3670,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // into a new recording started within 30 s would suppress that
     // session's first apology.
     confirmationDedupeStoreRef.current.reset();
+    addressMirrorDeliveryStoreRef.current?.clearReservations();
+    addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();
     // Capture the new session id synchronously and snapshot it locally so
     // that any async handler resolving below (mic permission prompt, WS
@@ -3736,6 +3890,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // field-nil TTL map + reservations) so the next session starts with
     // a clean slate.
     confirmationDedupeStoreRef.current.reset();
+    addressMirrorDeliveryStoreRef.current?.clearReservations();
+    addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
@@ -3895,9 +4051,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   /**
    * Tap-accept on a question — mirrors iOS handleTapResponse(accepted:
    * true) (AlertManager.swift:610 + line 785 "Updated"). Wires the
-   * accept through the same `ask_user_answered` channel a spoken "yes"
-   * would, so the backend's tool-call resolver sees one canonical
-   * answer shape regardless of whether the inspector tapped or spoke.
+   * accept through the same channel a spoken "yes" would use. Live Stage 6
+   * asks use ask_user_answered; rollback and direct mirror questions use
+   * transcript.in_response_to because their deterministic controllers do not
+   * consume the Stage 6 registry channel.
    * Plays the confirmation chime BEFORE TTS — same iOS ordering at
    * line 784–785.
    *
@@ -3905,8 +4062,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    * against double-emit, so a second tap on the same question is a
    * silent no-op on the wire.
    *
-   * Rejected (no tool_call_id): legacy questions don't have a wire
-   * back path — fall back to a silent dismiss.
+   * Server-owned mirror cards remain visible if no session handoff is
+   * available; dismissing them would strand the durable pending intent.
    */
   const acceptQuestion = React.useCallback(
     (index: number) => {
@@ -3926,26 +4083,44 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           questionPreview: target?.question?.slice(0, 80) ?? '',
         });
         if (!target) return;
-        const toolCallId = target.tool_call_id;
-        if (toolCallId && sonnetRef.current) {
+        const dispatch = buildQuestionTapDispatch(target, true);
+        let handedOff = false;
+        if (dispatch && sonnetRef.current) {
+          const exactToolCallId =
+            dispatch.askUserAnswered?.toolCallId ?? dispatch.inResponseTo?.tool_call_id ?? null;
+          const ownsLiveAsk = dispatch.askUserAnswered
+            ? sonnetRef.current.consumeInFlightToolCallId(exactToolCallId) === exactToolCallId
+            : true;
+          if (!dispatch.askUserAnswered && exactToolCallId) {
+            sonnetRef.current.consumeInFlightToolCallId(exactToolCallId);
+          }
           const utteranceId =
             typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
               ? crypto.randomUUID()
               : `u_${Date.now()}_tap`;
-          // Send a placeholder transcript so the wire ordering invariant
-          // holds (transcript-then-ask) — the backend's seenTranscript
-          // Utterances Set must be populated before the ask answer
-          // arrives, otherwise the fast-path dedupe misses and we burn
-          // the fuzzy fallback. Empty user_text would defeat the
-          // anchor; "yes" is the canonical positive shape.
-          sonnetRef.current.sendTranscript('yes', {
-            confirmationsEnabled: getConfirmationModeEnabled(),
-            utteranceId,
-          });
-          sonnetRef.current.sendAskUserAnswered(toolCallId, 'yes', utteranceId);
+          if (ownsLiveAsk) {
+            sonnetRef.current.sendTranscript(dispatch.transcript, {
+              confirmationsEnabled: getConfirmationModeEnabled(),
+              utteranceId,
+              inResponseTo: dispatch.inResponseTo,
+            });
+            if (dispatch.askUserAnswered) {
+              sonnetRef.current.sendAskUserAnswered(
+                dispatch.askUserAnswered.toolCallId,
+                dispatch.transcript,
+                utteranceId,
+                dispatch.askUserAnswered.purpose
+              );
+            }
+            inFlightQuestionRef.current.consumeMatchingQuestion(target.question, exactToolCallId);
+            handedOff = true;
+          }
         }
+        if (dispatch?.serverOwnsTerminalSpeech && !handedOff) return;
         playConfirmationChime();
-        speak('Updated');
+        if (!dispatch?.serverOwnsTerminalSpeech && !isServerOwnedAddressMirrorQuestion(target)) {
+          speak('Updated');
+        }
         // Drop the question from the queue + clear the auto-dismiss
         // timer.
         setQuestions((prev) => {
@@ -3975,20 +4150,44 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           questionPreview: target?.question?.slice(0, 80) ?? '',
         });
         if (!target) return;
-        const toolCallId = target.tool_call_id;
-        if (toolCallId && sonnetRef.current) {
+        const dispatch = buildQuestionTapDispatch(target, false);
+        let handedOff = false;
+        if (dispatch && sonnetRef.current) {
+          const exactToolCallId =
+            dispatch.askUserAnswered?.toolCallId ?? dispatch.inResponseTo?.tool_call_id ?? null;
+          const ownsLiveAsk = dispatch.askUserAnswered
+            ? sonnetRef.current.consumeInFlightToolCallId(exactToolCallId) === exactToolCallId
+            : true;
+          if (!dispatch.askUserAnswered && exactToolCallId) {
+            sonnetRef.current.consumeInFlightToolCallId(exactToolCallId);
+          }
           const utteranceId =
             typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
               ? crypto.randomUUID()
               : `u_${Date.now()}_tap`;
-          sonnetRef.current.sendTranscript('no', {
-            confirmationsEnabled: getConfirmationModeEnabled(),
-            utteranceId,
-          });
-          sonnetRef.current.sendAskUserAnswered(toolCallId, 'no', utteranceId);
+          if (ownsLiveAsk) {
+            sonnetRef.current.sendTranscript(dispatch.transcript, {
+              confirmationsEnabled: getConfirmationModeEnabled(),
+              utteranceId,
+              inResponseTo: dispatch.inResponseTo,
+            });
+            if (dispatch.askUserAnswered) {
+              sonnetRef.current.sendAskUserAnswered(
+                dispatch.askUserAnswered.toolCallId,
+                dispatch.transcript,
+                utteranceId,
+                dispatch.askUserAnswered.purpose
+              );
+            }
+            inFlightQuestionRef.current.consumeMatchingQuestion(target.question, exactToolCallId);
+            handedOff = true;
+          }
         }
+        if (dispatch?.serverOwnsTerminalSpeech && !handedOff) return;
         // No chime on reject — iOS line 788 only speaks the response.
-        speak('Okay, keeping it.');
+        if (!dispatch?.serverOwnsTerminalSpeech && !isServerOwnedAddressMirrorQuestion(target)) {
+          speak('Okay, keeping it.');
+        }
         setQuestions((prev) => {
           if (target.question) cancelDismissTimer(target.question);
           const next = prev.filter((_, i) => i !== index);

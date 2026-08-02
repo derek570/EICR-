@@ -605,8 +605,11 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     // All three writes are on the wire.
     const wireFields = new Set(r.extracted_readings.map((e) => e.field));
     expect(wireFields).toEqual(new Set(['r1_r2_ohm', 'measured_zs_ohm']));
-    expect(r.extracted_board_readings.map((e) => e.field)).toEqual([
-      'bonding_conductor_continuity',
+    expect(r.extracted_board_readings).toEqual([
+      expect.objectContaining({
+        field: 'bonding_conductor_continuity',
+        derived: true,
+      }),
     ]);
     // The dictated reading AND the calc write are read back; the mirror is not.
     expect(r.confirmations).toEqual([

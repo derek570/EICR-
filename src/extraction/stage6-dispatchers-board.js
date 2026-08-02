@@ -97,6 +97,8 @@ import {
   logImpedanceClamp,
   resolveBoardAwareEarthing,
 } from './impedance-clamp.js';
+import { canonicalisePostcodeHint } from './postcode-hint.js';
+import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
 
 // Frozen Set for O(1) membership checks. Built once at module load — the
 // underlying enum is itself frozen-by-convention (codegenned from
@@ -543,6 +545,41 @@ export async function dispatchRecordBoardReading(call, ctx) {
     encodeBoardReadingKey(input.field, input.board_id),
     boardMirror
   );
+
+  // Address regex retirement — locality enrichment follows the authoritative
+  // postcode write, never the client hint. The model chooses site vs client;
+  // only an exact canonical match to this turn's server lookup can derive the
+  // corresponding town/county family. Derived entries ride the ordinary board
+  // journal but are excluded from spoken confirmation candidacy.
+  if (writeCanonical === 'postcode' || writeCanonical === 'client_postcode') {
+    const lookup = ctx.postcodeLookupRef?.current ?? ctx.postcodeLookupResult;
+    const writtenPostcode = canonicalisePostcodeHint(input.value);
+    const lookupPostcode = canonicalisePostcodeHint(lookup?.postcode);
+    if (lookup?.valid === true && writtenPostcode && writtenPostcode === lookupPostcode) {
+      const family = writeCanonical === 'client_postcode' ? 'client' : 'site';
+      const localityChanges = applyPostcodeLookupToSnapshot(
+        session.stateSnapshot,
+        lookup,
+        session.sessionId,
+        { family }
+      );
+      for (const change of localityChanges) {
+        const derivedMirror = {
+          value: change.value,
+          confidence: input.confidence ?? 1.0,
+          source_turn_id: input.source_turn_id,
+          derived: true,
+          auto_resolved: true,
+        };
+        attachEffectiveBoardSlot(derivedMirror, change.field, null);
+        recordBoardReadingWrite(
+          perTurnWrites,
+          encodeBoardReadingKey(change.field, undefined),
+          derivedMirror
+        );
+      }
+    }
+  }
 
   // 4b) Bonding-continuity mirror derivation — 2026-06-12 field report
   // (session 15B88D6B, voiceFeedbackId 21): "I'd like this [main protective

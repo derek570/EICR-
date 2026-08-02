@@ -327,7 +327,33 @@ const HUNDREDS_PATTERN_LOCAL = /\b(one|two|three|four|five|six|seven|eight|nine|
 // Spaced UK postcode collapse
 const SPACED_POSTCODE_2L = /\b([a-z])\s+([a-z])\s+(\d{1,4})\s+([a-z])\s+([a-z])\b/gi;
 const PARTIAL_SPACED_POSTCODE = /\b([a-z]{1,2})\s+(\d{1,4})\s+([a-z])\s+([a-z])\b/gi;
-const POSTCODE_FORMAT_VALIDATION = /^[A-Z]{1,2}\d[0-9A-Z]?\d[A-Z]{2}$/;
+const POSTCODE_FORMAT_VALIDATION = /^(?:GIR0AA|[A-Z]{1,2}\d[0-9A-Z]?\d[A-Z]{2})$/;
+
+/** Lookup-only detector for the current final utterance. It intentionally
+ * does not share the stateful matcher's cumulative window and cannot create a
+ * RegexMatchResult write. Token-window collapsing handles Deepgram spellings
+ * such as "c l 165 n u" while the closed UK shape rejects prose. */
+export function detectPostcodeHint(transcript: string): string | undefined {
+  const tokens = String(transcript ?? '').match(/[A-Za-z0-9]+/g) ?? [];
+  let found: string | undefined;
+  let foundEnd = -1;
+  let foundLength = -1;
+  for (let start = 0; start < tokens.length; start += 1) {
+    let compact = '';
+    for (let end = start; end < tokens.length && end < start + 7; end += 1) {
+      compact += tokens[end].toUpperCase();
+      if (compact.length > 7) break;
+      if (POSTCODE_FORMAT_VALIDATION.test(compact)) {
+        if (end > foundEnd || (end === foundEnd && compact.length > foundLength)) {
+          found = `${compact.slice(0, -3)} ${compact.slice(-3)}`;
+          foundEnd = end;
+          foundLength = compact.length;
+        }
+      }
+    }
+  }
+  return found;
+}
 
 // Circuit reference + designation
 const CIRCUIT_REF_PATTERN =
@@ -577,8 +603,6 @@ const BOARD_MAIN_PATTERN =
 // Installation
 const CLIENT_PATTERN =
   /\b(?:client|customer|owner|homeowner)(?:\s+name)?\s+(?:is\s+|name\s+is\s+)(?:mrs?\s+|miss\s+|dr\s+)?(.+?)(?:\.|,|$)/gim;
-const ADDRESS_PATTERN =
-  /\b(?:address|property\s+at|located\s+at|premises\s+(?:is\s+)?(?:at\s+)?)\s+(?:is\s+|at\s+)?(\d+[.\s]+\w[\w\s,.]+?)(?:,\s*(?:next|recommend|client|customer|earthing|ze|pfc)|supplies|supply|\bin\b|$)/gim;
 const PREMISES_PATTERN = /\b(residential|commercial|industrial|domestic|agricultural)\b/gi;
 const NEXT_INSPECTION_PATTERN = /\b(?:next\s+inspection|recommend)\s+(?:in\s+)?(\d+)\s*years?/gi;
 const CLIENT_PHONE_PATTERN =
@@ -611,12 +635,6 @@ const ESTIMATED_AGE_PATTERN =
   /\b(?:estimated|installation)\s+(?:age|years?\s+old)\s*(?:is\s+|of\s+installation\s+)?[:\s]\s*(.+?)$/gim;
 const GENERAL_CONDITION_PATTERN =
   /\b(?:general\s+condition|overall\s+condition|condition\s+of\s+(?:the\s+)?installation)\s*(?:is\s+)?[:\s]\s*([^.!?\n]{3,150}?)(?=[.!?\n]|$)/gim;
-const CLIENT_SAME_ADDRESS_PATTERN =
-  /\b(?:client|customer)\s+(?:is\s+)?(?:at\s+)?(?:the\s+)?same\s+address|same\s+address\s+(?:for|as)\s+(?:the\s+)?(?:client|customer)|client\s+address\s+(?:is\s+)?(?:the\s+)?same/gim;
-const CLIENT_ADDRESS_PATTERN =
-  /\b(?:(?:client|customer)\s+(?:address\s+)?(?:is\s+|at\s+|lives\s+at\s+)?|(?:this\s+)?report\s+(?:is\s+)?for\s+|billing\s+address\s+(?:is\s+)?)(\d+[.\s]+\w[\w\s,.]+?)(?:,\s*(?:next|recommend|occupier|earthing|ze|pfc)|supplies|supply|\bin\b|$)/gim;
-const POSTCODE_PATTERN = /\b(?:post\s*code\s+(?:is\s+)?)?([A-Z]{1,2}\d[0-9A-Z]?\s*\d[A-Z]{2})\b/gi;
-const POSTCODE_FINAL_VALIDATION = /^[A-Z]{1,2}\d[0-9A-Z]?\s?\d[A-Z]{2}$/;
 
 // Compound phrases (mirrors Swift lines 1240-1262)
 const ZS_COMPOUND =
@@ -1421,38 +1439,6 @@ export class TranscriptFieldMatcher {
       const trimmed = client.trim();
       if (trimmed.length <= 100 && isValidMultiWord(trimmed, 2)) {
         result.installation_updates.client_name = trimmed;
-      }
-    }
-
-    if (hasMatch(CLIENT_SAME_ADDRESS_PATTERN, text)) {
-      result.installation_updates.client_address_same_as_installation = true;
-    }
-
-    let clientAddressMatched = false;
-    const clientAddr = lastCapture(CLIENT_ADDRESS_PATTERN, text);
-    if (clientAddr !== undefined) {
-      const trimmed = clientAddr.trim();
-      if (trimmed.length <= 200 && isValidMultiWord(trimmed, 5)) {
-        result.installation_updates.client_address = trimmed;
-        clientAddressMatched = true;
-      }
-    }
-
-    if (!clientAddressMatched) {
-      const addr = lastCapture(ADDRESS_PATTERN, text);
-      if (addr !== undefined) {
-        const trimmed = addr.trim();
-        if (trimmed.length <= 200 && isValidMultiWord(trimmed, 5)) {
-          result.installation_updates.address = trimmed;
-        }
-      }
-    }
-
-    const postcode = lastCapture(POSTCODE_PATTERN, text);
-    if (postcode !== undefined) {
-      const cleaned = postcode.trim().replace(/\s+/g, ' ').toUpperCase();
-      if (POSTCODE_FINAL_VALIDATION.test(cleaned)) {
-        result.installation_updates.postcode = cleaned;
       }
     }
 

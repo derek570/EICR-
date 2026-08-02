@@ -62,9 +62,65 @@ iOS (16kHz PCM audio)
 
 **Server-side live extraction:** Multi-turn tool loop, currently `gpt-5.6-luna` through the OpenAI Responses API (Fast service-tier trial). Prompt caching and conversation compaction preserve the rolling structured-certificate context.
 
+### Voice-address authority and postcode hints
+
+Address-family values are deliberately outside client regex extraction. Web
+and iOS do not locally write `address`, `postcode`, `client_address`,
+`client_postcode`, locality fields, or a same-address flag, and iOS no longer
+owns an address-mirror prompt/latch. The backend/model path is the only voice
+writer and the backend address-mirror controller is the only copy owner.
+
+Before the ask/regex split, each client may derive an optional `postcode_hint`
+from the current final utterance and carry it on the existing transcript
+envelope. It is lookup enrichment only: the backend validates it once, never
+reuses it on a later message, and waits for an authoritative site/client
+postcode write before applying `postcodes.io` town/county to that family.
+Question purpose/type metadata is round-tripped on both client answer paths so
+the durable server intent can recover across reconnects. Mirror-derived target
+writes remain designed-silent; the original dictated source write or a short
+server acknowledgement supplies the answer's audible terminal.
+
+Annotated transcript replies preserve the exact server `tool_call_id`; the
+backend forwards it to durable recovery and rejects a stale explicit
+generation before model extraction. A deciding address/postcode reply also
+receives a server prompt-clear frame before its terminal read-back, so neither
+client remains in answer mode after the copy has completed.
+
+On-screen answers preserve the same authority split: live Stage-6 mirror asks
+emit the paired transcript plus `ask_user_answered`, whereas rollback and
+direct questions emit one transcript with their exact `in_response_to`
+identity. Web/iOS remove only that tapped generation from their TTS question
+queues. Durable terminal voice frames carry a stable server token, which each
+client keeps in a bounded heard-set so a reconnect replay cannot speak the
+same decision twice.
+
+That token is operation identity, not a text-dedupe alias. An unheard address
+operation plays even when an older ordinary confirmation has identical prose;
+a pre-play discard releases only the new operation reservation and any
+ordinary key reserved with it. The backend emits one token-owning audio item
+per operation, aggregating multiple recovered source confirmations and, when
+present, the final voice-command acknowledgement. Playback-start ACK therefore
+means the whole owed terminal has begun, rather than only its last field.
+
+Explicit copy commands use an append-only durable operation ledger: even a
+complete no-question command is claimed before mutation, and incomplete or
+conflicting commands retain one stable clarification id across restart. The
+backend finalizes after the deciding source write even when legacy extraction
+uses its timeout-batch callback, then replays any committed-but-undelivered
+write/read-back ledger after the next session acknowledgement. Stable
+operation tokens make retries idempotent and keep old direct-question replies
+from resolving a newer command.
+
+Web and iOS preserve `purpose` on `ask_user_answered` and preserve the direct
+question's `tool_call_id` in transcript `in_response_to`. Their address-question
+tap paths send the answer but do not speak the normal local “Updated” or
+“keeping it” terminal; that speech is server-owned and therefore heard once.
+Question logs are hashed/redacted, and malformed postcode hints containing
+controls or non-ASCII separators are rejected before lookup.
+
 ### Regex fast-TTS path
 
-For five low-ambiguity circuit readings (`measured_zs_ohm`, `r1_r2_ohm`, both IR values, and `number_of_points`), iOS can request the canonical ElevenLabs read-back before the model loop completes. The matcher accepts either explicit `Circuit N …` phrasing or a natural exact designation such as “Number of points for the upstairs socket is 6.” Natural routing canonicalises singular/plural designations, strips a leading article, requires exactly one matching circuit on the selected board, and fails closed on duplicates, missing multi-board scope, or non-numeric refs. Sonnet/Luna still processes the same transcript and remains authoritative for the write.
+For five low-ambiguity circuit readings (`measured_zs_ohm`, `r1_r2_ohm`, both IR values, and `number_of_points`), iOS can request the canonical ElevenLabs read-back before the model loop completes. This five-field whitelist is unchanged by address-regex retirement. The matcher accepts either explicit `Circuit N …` phrasing or a natural exact designation such as “Number of points for the upstairs socket is 6.” Natural routing canonicalises singular/plural designations, strips a leading article, requires exactly one matching circuit on the selected board, and fails closed on duplicates, missing multi-board scope, or non-numeric refs. Sonnet/Luna still processes the same transcript and remains authoritative for the write.
 
 The fast clip and bundler safety-net share `field::circuit::board` slot identity. iOS marks the slot pending before the HTTP request; if fast audio starts, the later bundler line is suppressed, and if the request or playback fails, the parked bundler line is released. This preserves the audio-first invariant: one heard read-back, never zero or two. Two client seams must carry that identity: the deferred-confirmation flush and the ordinary inline-confirmation branch. Build 425 exposed that only the deferred branch did—an inline “Zs for the cooker is 0.22” fast clip played, then its bundler twin played because inline delivery passed `slotKey:nil`. Both branches now derive the same three-part key. This follows the earlier correction from a two-part caller key to the board-aware identity. `regex_attempt.fields_matched` also includes circuit-field hits.
 
@@ -75,6 +131,8 @@ In latency reports, **heard confirmation** is the client playback ACK/start time
 The TTS proxy returns `X-Voice-Latency-Correlation-Id` plus `X-Voice-Latency-Source`. Hit sources are `loaded_barrel_hit`, `loaded_barrel_hit_pending`, and `loaded_barrel_hit_late`; canonical alternatives are `confirmation` (streaming) and `legacy_confirmation` (buffered fallback). `APIClient` returns those headers beside the MP3 instead of discarding them. `AlertManager` carries the metadata with the exact bytes through FIFO waiting and the deferred-head hold, then adds it to `/api/voice-latency/playback-ack` only after `AVAudioPlayer.play()` returns true. Network receipt, decode failure, and `play()==false` do not count as heard.
 
 The established ACK `source` remains `bundler` (delivery path); additive `audio_source` records where the bytes originated, preserving existing dashboards. Backend rows expose `ios_playback_ack_correlation_id` and `ios_playback_ack_audio_source`; the unified `voice_latency.turn_perceived_latency_ms` row exposes the same values as `ios_playback_ack_correlation_id` and `ack_audio_source`. A same-correlation `voice_latency.outcome { outcome:"playback_started", acked_by_ios:true }` provides the direct PII-safe synthesis→audible join. Missing headers remain valid for rolling deploys and older servers.
+
+Address-mirror terminal speech has a separate durability ACK. A capable web or iOS client advertises `address_mirror_delivery_ack_v1`, reserves the server's `address_mirror_delivery_token` while TTS is queued, persists it in a bounded heard ledger immediately when playback starts, and then sends `address_mirror_delivery_ack`. Discard, pre-enqueue failure, or synthesis failure releases the reservation, allowing the server's leased outbox to retry. A reconnect/restart replay whose token is already heard is ACKed without speaking again. The operation token deliberately overrides an ordinary field/text confirmation collision: an unheard address operation still plays, and discarding it must not erase an older heard ordinary key. This is operation delivery state, not latency telemetry: the backend does not mark a capable client's address-mirror outbox row delivered merely because the WebSocket frame flushed.
 
 **Remote config:** `RemoteConfigService.swift` + `Resources/default_config.json` — keyword boosts and validation rules can be updated without app rebuild.
 

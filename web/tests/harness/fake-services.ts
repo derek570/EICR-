@@ -176,6 +176,7 @@ export class FakeSonnetSession implements SonnetSessionLike {
   readonly callbacks: FakeSonnetCallbacks;
   readonly sentTranscripts: SentTranscript[] = [];
   readonly sentAskAnswers: Array<{ toolCallId: string; text: string }> = [];
+  readonly sentAddressMirrorDeliveryAcks: string[] = [];
   readonly diagnostics: Array<{ category: string; payload: Record<string, unknown> }> = [];
   private inFlightToolCallId: string | null = null;
   private state: SonnetConnectionState = 'idle' as SonnetConnectionState;
@@ -197,17 +198,25 @@ export class FakeSonnetSession implements SonnetSessionLike {
   sendTranscript(text: string, options?: unknown): void {
     this.sentTranscripts.push({ text, options });
   }
-  sendAskUserAnswered(toolCallId: string, text: string): void {
+  sendAskUserAnswered(
+    toolCallId: string,
+    text: string,
+    _utteranceId?: string,
+    _purpose?: string | null
+  ): void {
     this.sentAskAnswers.push({ toolCallId, text });
+  }
+  sendAddressMirrorDeliveryAck(deliveryToken: string): void {
+    this.sentAddressMirrorDeliveryAcks.push(deliveryToken);
   }
   sendCompactRequest(): void {}
   sendJobStateUpdate(): void {}
   peekInFlightToolCallId(): string | null {
     return this.inFlightToolCallId;
   }
-  consumeInFlightToolCallId(): string | null {
-    const id = this.inFlightToolCallId;
-    this.inFlightToolCallId = null;
+  consumeInFlightToolCallId(expectedId?: string | null): string | null {
+    const id = expectedId ?? this.inFlightToolCallId;
+    if (this.inFlightToolCallId === id) this.inFlightToolCallId = null;
     return id;
   }
   clearInFlightToolCallIdByPrefix(): void {

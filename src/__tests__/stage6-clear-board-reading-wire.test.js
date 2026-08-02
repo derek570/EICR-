@@ -32,6 +32,7 @@ jest.unstable_mockModule('../storage.js', () => ({ uploadJson: jest.fn(async () 
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
+const { ADDRESS_MIRROR_DELIVERY } = await import('../extraction/address-mirror-controller.js');
 
 // Content signatures for OUR ledger frames — the reconnect path emits other
 // frames (session acks, session_resume board banners) that must not count.
@@ -105,13 +106,13 @@ function makeLedgerResult() {
   };
 }
 
-function makeFakeWs({ failAtLedgerIndex = null } = {}) {
+function makeFakeWs({ failAtLedgerIndex = null, callbackFailAtLedgerIndex = null } = {}) {
   const sent = [];
   let ledgerCount = 0;
   const ws = {
     readyState: 1,
     OPEN: 1,
-    send: jest.fn((payload) => {
+    send: jest.fn((payload, callback) => {
       let parsed;
       try {
         parsed = JSON.parse(payload);
@@ -122,15 +123,24 @@ function makeFakeWs({ failAtLedgerIndex = null } = {}) {
         if (failAtLedgerIndex !== null && ledgerCount === failAtLedgerIndex) {
           throw new Error(`injected send failure at ledger frame ${ledgerCount}`);
         }
+        if (callbackFailAtLedgerIndex !== null && ledgerCount === callbackFailAtLedgerIndex) {
+          callback?.(new Error(`injected callback failure at ledger frame ${ledgerCount}`));
+          return;
+        }
         ledgerCount += 1;
       }
       sent.push(parsed);
+      callback?.();
     }),
     ping: jest.fn(),
     close: jest.fn(),
     on: jest.fn(),
     _handlers: new Map(),
   };
+  // Jest mock wrappers report arity zero. Production `ws.send` exposes a
+  // callback-capable signature; pin that capability in this fake so the real
+  // ledger awaits callback success rather than taking its sync-stub fallback.
+  Object.defineProperty(ws.send, 'length', { value: 2 });
   ws.on.mockImplementation((event, handler) => ws._handlers.set(event, handler));
   ws._sent = sent;
   ws._emit = async (event, data) => {
@@ -160,12 +170,13 @@ function connect(fakeWsOpts) {
 }
 const sendFrame = (ws, frame) => ws._emit('message', Buffer.from(JSON.stringify(frame)));
 
-async function startSession(fakeWsOpts) {
+async function startSession(fakeWsOpts, capabilities) {
   const ws = connect(fakeWsOpts);
   await sendFrame(ws, {
     type: 'session_start',
     sessionId: 'sess-ledger',
     jobState: { certificateType: 'eicr' },
+    ...(capabilities ? { capabilities } : {}),
   });
   return { ws, entry: activeSessions.get('sess-ledger') };
 }
@@ -235,5 +246,61 @@ describe('§3.4c ordered frame ledger — reconnect flush through the REAL seam'
     // Complete the replay so afterEach leaves a clean store.
     await startSession();
     expect(entry.pendingExtractions).toHaveLength(0);
+  });
+
+  test('callback failure after queueing keeps the terminal owed for reconnect replay', async () => {
+    const { entry } = await startSession();
+    entry.pendingExtractions.push(makeLedgerResult());
+
+    const { ws: failed } = await startSession({ callbackFailAtLedgerIndex: 7 });
+    expect(ledgerFrames(failed)).toEqual(EXPECTED_ORDER.slice(0, 7));
+    expect(entry.pendingExtractions).toHaveLength(1);
+
+    const { ws: replay } = await startSession();
+    expect(ledgerFrames(replay)).toEqual(['vcr']);
+    expect(entry.pendingExtractions).toHaveLength(0);
+  });
+
+  test('address mirror VCR carries its stable client speech-dedupe token', async () => {
+    const { entry } = await startSession();
+    const result = makeLedgerResult();
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'operation-7', claimToken: 'lease-7' },
+      enumerable: false,
+    });
+    entry.pendingExtractions.push(result);
+
+    const { ws } = await startSession();
+    const vcr = ws._sent.find((frame) => frame.type === 'voice_command_response');
+    expect(vcr.address_mirror_delivery_token).toBe('direct:operation-7');
+  });
+
+  test('capable client socket flush leaves delivery pending until playback ACK', async () => {
+    const { entry } = await startSession();
+    const markDelivered = jest
+      .spyOn(entry.addressMirrorController, 'markDelivered')
+      .mockResolvedValue(true);
+    const result = makeLedgerResult();
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'operation-ack-1', claimToken: 'lease-ack-1' },
+      enumerable: false,
+    });
+    entry.pendingExtractions.push(result);
+
+    const { ws } = await startSession(undefined, {
+      voice_latency: { version: 1, supports: ['address_mirror_delivery_ack_v1'] },
+    });
+
+    expect(ledgerFrames(ws)).toEqual(EXPECTED_ORDER);
+    expect(markDelivered).not.toHaveBeenCalled();
+    await sendFrame(ws, {
+      type: 'address_mirror_delivery_ack',
+      delivery_token: 'direct:operation-ack-1',
+    });
+    expect(markDelivered).toHaveBeenCalledWith({
+      kind: 'direct',
+      token: 'operation-ack-1',
+    });
+    expect(entry.addressMirrorOutboxRetryHandle).toBeNull();
   });
 });

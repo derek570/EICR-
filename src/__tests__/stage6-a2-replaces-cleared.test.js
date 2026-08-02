@@ -82,9 +82,13 @@ jest.unstable_mockModule('../storage.js', () => ({
 
 const {
   projectExtractionResultForWire,
+  addressMirrorOccurrenceAnchor,
+  shouldAwaitAddressMirrorPlaybackAck,
   _test_validateAndCorrectFields,
   _test_buildResultFrameLedger,
 } = await import('../extraction/sonnet-stream.js');
+const { ADDRESS_MIRROR_DELIVERY, ADDRESS_MIRROR_DIRECT_FOLLOWUP } =
+  await import('../extraction/address-mirror-controller.js');
 
 const WIRE_CONTRACT_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -888,14 +892,14 @@ describe('A2 — wire contract (shared cross-client fixture)', () => {
       path.join(path.dirname(fileURLToPath(import.meta.url)), '../extraction/sonnet-stream.js'),
       'utf8'
     );
-    const batchStart = src.indexOf('session.onBatchResult = (result) =>');
+    const batchStart = src.indexOf('session.onBatchResult = async (result) =>');
     const syncStart = src.indexOf('const needsVcr = Boolean(spoken_response || action)');
     expect(batchStart).toBeGreaterThan(-1);
     expect(syncStart).toBeGreaterThan(-1);
-    expect(src.slice(batchStart, batchStart + 4_000)).toContain(
-      'sendResultFrameLedger(currentWs, session.stateSnapshot, result, session)'
+    expect(src.slice(batchStart, batchStart + 4_000)).toMatch(
+      /await sendResultFrameLedger\(\s*currentWs,\s*session\.stateSnapshot,\s*result,\s*session\s*\)/s
     );
-    expect(src.slice(syncStart, syncStart + 1_000)).toContain('sendResultFrameLedger(');
+    expect(src.slice(syncStart, syncStart + 1_000)).toMatch(/await sendResultFrameLedger\(/);
   });
 
   test('DRIFT LOCK — every extraction-frame egress site routes through the shared projection', () => {
@@ -1007,6 +1011,118 @@ describe('A2 — projectExtractionResultForWire', () => {
       some_future_frame_key: { nested: true },
     });
     expect(projected.some_future_frame_key).toEqual({ nested: true });
+  });
+
+  test('owed confirmation carries a stable address delivery token but no server internals', () => {
+    const result = {
+      extracted_readings: [],
+      confirmations: [{ text: 'Site address copied to client' }],
+    };
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'convenience', token: 'resolution-7', claimToken: 'lease-secret' },
+      enumerable: false,
+    });
+
+    const projected = projectExtractionResultForWire(result);
+
+    expect(projected.address_mirror_delivery_token).toBe('convenience:resolution-7');
+    expect(JSON.stringify(projected)).not.toContain('lease-secret');
+  });
+
+  test('one address delivery token owns one aggregate confirmation', () => {
+    const result = {
+      extracted_readings: [],
+      confirmations: [
+        { text: 'Address is 2 Test Road', expanded_text: 'Address is 2 Test Road' },
+        { text: 'Postcode is TE1 1ST', expanded_text: 'Postcode is T E 1 1 S T' },
+      ],
+    };
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'atomic-1' },
+      enumerable: false,
+    });
+
+    const projected = projectExtractionResultForWire(result);
+
+    expect(projected.confirmations).toHaveLength(1);
+    expect(projected.confirmations[0]).toMatchObject({
+      text: 'Address is 2 Test Road. Postcode is TE1 1ST.',
+      expanded_text: 'Address is 2 Test Road. Postcode is T E 1 1 S T.',
+      field: null,
+      circuit: null,
+    });
+    expect(projected.address_mirror_delivery_token).toBe('direct:atomic-1');
+  });
+
+  test('address confirmations fold into the single token-owning VCR and clear its deciding ask', () => {
+    const result = {
+      extracted_readings: [],
+      confirmations: [{ text: 'Address is 2 Test Road' }, { text: 'Postcode is TE1 1ST' }],
+      spoken_response: "Okay, I'll use the site address for the client",
+    };
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'atomic-vcr' },
+      enumerable: false,
+    });
+    Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {
+      value: { clearAskId: 'address-mirror-direct-atomic-vcr' },
+      enumerable: false,
+    });
+
+    const frames = _test_buildResultFrameLedger({}, result).map((frame) => JSON.parse(frame.json));
+
+    expect(frames[0]).toEqual({
+      type: 'cancel_pending_tts',
+      prefix: 'address-mirror-direct-atomic-vcr',
+    });
+    const extractionIndex = frames.findIndex((frame) => frame.type === 'extraction');
+    expect(extractionIndex).toBeGreaterThan(0);
+    expect(frames[extractionIndex].result.confirmations).toEqual([]);
+    expect(frames.at(-1)).toMatchObject({
+      type: 'voice_command_response',
+      spoken_response:
+        "Address is 2 Test Road. Postcode is TE1 1ST. Okay, I'll use the site address for the client.",
+      address_mirror_delivery_token: 'direct:atomic-vcr',
+    });
+  });
+
+  test('playback ACK capability alone decides whether socket flush may complete delivery', () => {
+    const result = {};
+    Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+      value: { kind: 'direct', token: 'operation-7' },
+      enumerable: false,
+    });
+    expect(
+      shouldAwaitAddressMirrorPlaybackAck(
+        { voiceLatency: { capabilities: { hasAddressMirrorDeliveryAckV1: true } } },
+        result
+      )
+    ).toBe(true);
+    expect(
+      shouldAwaitAddressMirrorPlaybackAck(
+        { voiceLatency: { capabilities: { hasAddressMirrorDeliveryAckV1: false } } },
+        result
+      )
+    ).toBe(false);
+    expect(
+      shouldAwaitAddressMirrorPlaybackAck(
+        { voiceLatency: { capabilities: { hasAddressMirrorDeliveryAckV1: true } } },
+        {}
+      )
+    ).toBe(false);
+  });
+
+  test('id-less direct command identity is per timestamp, never a permanent prose hash', () => {
+    expect(addressMirrorOccurrenceAnchor({ utterance_id: 'utt-1', timestamp: 'old' })).toBe(
+      'id:utt-1'
+    );
+    expect(addressMirrorOccurrenceAnchor({ timestamp: '2026-08-01T12:00:00Z' })).toBe(
+      'timestamp:2026-08-01T12:00:00Z'
+    );
+    expect(addressMirrorOccurrenceAnchor({ timestamp: '2026-08-01T12:01:00Z' })).not.toBe(
+      addressMirrorOccurrenceAnchor({ timestamp: '2026-08-01T12:00:00Z' })
+    );
+    expect(addressMirrorOccurrenceAnchor({})).not.toBe(addressMirrorOccurrenceAnchor({}));
   });
 });
 

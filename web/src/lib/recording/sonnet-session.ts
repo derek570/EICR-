@@ -45,6 +45,12 @@ export interface ExtractedReading {
   board_id?: string | null;
   confidence?: number;
   /**
+   * Server-owned provenance for an automatic consequence such as an address
+   * mirror or postcode locality enrichment. Omitted for dictated readings.
+   * Clients must not invent a per-field read-back for these silent writes.
+   */
+  derived?: true;
+  /**
    * A2 (2026-07-28) — set by the backend bundler when this write SUPERSEDED a
    * same-turn `clear_reading` for the identical circuit slot and the server
    * dropped that clear from the wire (the P5 2026-07-23 same-turn collapse).
@@ -312,6 +318,9 @@ export interface ExtractionResult {
   observations?: Observation[];
   validation_alerts?: ValidationAlert[];
   confirmations?: Confirmation[];
+  /** Stable durable-outbox identity. Present on extraction only when an
+   * owed confirmation (rather than a VCR) is the terminal audible family. */
+  address_mirror_delivery_token?: string | null;
   extraction_failed?: boolean;
   error_message?: string;
   /** Multi-board mutation ops — Phase 6 wire channel. Decoded on the
@@ -359,12 +368,14 @@ export interface SonnetQuestion {
   field?: string | null;
   circuit?: number | null;
   tool_call_id?: string | null;
+  purpose?: string | null;
 }
 
 export interface VoiceCommandResponse {
   understood: boolean;
   spoken_response: string;
   action: { type?: string; [k: string]: unknown } | null;
+  address_mirror_delivery_token?: string | null;
 }
 
 export interface CostUpdate {
@@ -654,6 +665,7 @@ export const VOICE_LATENCY_SUPPORTS: readonly string[] = [
   // /ep execution log. Rollback = server BOARD_CLEAR_DISABLED, never
   // un-advertising.
   'board_clear_v1',
+  'address_mirror_delivery_ack_v1',
 ];
 
 export class SonnetSession {
@@ -1094,6 +1106,7 @@ export class SonnetSession {
       confirmationsEnabled?: boolean;
       utteranceId?: string;
       regexResults?: RegexResultsWire;
+      postcodeHint?: string;
       /**
        * Preceding-TTS-question context. When a transcript arrives within
        * the post-TTS answer window, the client attaches the question text
@@ -1113,6 +1126,7 @@ export class SonnetSession {
         question: string;
         field?: string | null;
         circuit?: number | null;
+        purpose?: string | null;
       };
     }
   ): void {
@@ -1141,6 +1155,9 @@ export class SonnetSession {
     if (options?.regexResults && options.regexResults.length > 0) {
       msg.regexResults = options.regexResults;
     }
+    if (options?.postcodeHint) {
+      msg.postcode_hint = options.postcodeHint;
+    }
     // iOS canon: ServerWebSocketService.swift:516-518 — only attach when
     // the payload is non-empty. The `question` key is the load-bearer
     // (backend at sonnet-stream.js:3202 short-circuits without it).
@@ -1153,6 +1170,7 @@ export class SonnetSession {
       utteranceIdShort:
         typeof options?.utteranceId === 'string' ? options.utteranceId.slice(0, 11) : null,
       regexHints: options?.regexResults?.length ?? 0,
+      hasPostcodeHint: Boolean(options?.postcodeHint),
       confirmationsEnabled: options?.confirmationsEnabled ?? false,
       hasInResponseTo: Boolean(options?.inResponseTo?.question),
       state: this.state,
@@ -1196,7 +1214,12 @@ export class SonnetSession {
    * The Set persists across reconnect on the same session instance —
    * see field comment.
    */
-  sendAskUserAnswered(toolCallId: string, userText: string, consumedUtteranceId?: string): void {
+  sendAskUserAnswered(
+    toolCallId: string,
+    userText: string,
+    consumedUtteranceId?: string,
+    purpose?: string | null
+  ): void {
     if (!toolCallId || !userText) {
       pipelineLog('sonnet_send_ask_user_answered_skipped', {
         hasToolCallId: !!toolCallId,
@@ -1212,13 +1235,26 @@ export class SonnetSession {
     if (consumedUtteranceId) {
       msg.consumed_utterance_id = consumedUtteranceId;
     }
+    if (purpose) {
+      msg.purpose = purpose;
+    }
     pipelineLog('sonnet_send_ask_user_answered', {
       toolCallIdShort: toolCallId.slice(0, 16),
       userTextLength: userText.length,
       userTextPreview: userText.slice(0, 40),
       consumedUtteranceIdShort: consumedUtteranceId?.slice(0, 11) ?? null,
+      purpose: purpose ?? null,
     });
     this.sendBuffered(msg);
+  }
+
+  /** Persisted audible-start ACK for the address-mirror durable outbox. */
+  sendAddressMirrorDeliveryAck(deliveryToken: string): void {
+    if (!deliveryToken || deliveryToken.length > 160) return;
+    this.sendBuffered({
+      type: 'address_mirror_delivery_ack',
+      delivery_token: deliveryToken,
+    });
   }
 
   /**
@@ -1318,20 +1354,20 @@ export class SonnetSession {
    * a null result means "this transcript is just a normal turn —
    * emit transcript only".
    */
-  consumeInFlightToolCallId(): string | null {
-    const id = this.inFlightToolCallId;
+  consumeInFlightToolCallId(expectedId?: string | null): string | null {
+    const id = expectedId ?? this.inFlightToolCallId;
     if (!id) return null;
     if (this.firedToolCallIds.has(id)) {
       // The id is set but we've already fired for it — clear lazily and
       // tell the caller there's nothing in flight.
-      this.inFlightToolCallId = null;
+      if (this.inFlightToolCallId === id) this.inFlightToolCallId = null;
       return null;
     }
     // Mark BEFORE clearing the in-flight slot so re-entry on the same
     // boundary (a synchronous second final from the same audio chunk)
     // dedupes via the Set on its second pass.
     this.firedToolCallIds.add(id);
-    this.inFlightToolCallId = null;
+    if (this.inFlightToolCallId === id) this.inFlightToolCallId = null;
     return id;
   }
 
@@ -1582,7 +1618,12 @@ export class SonnetSession {
       return;
     }
     const type = msg.type as string | undefined;
-    if (type === 'transcript' || type === 'correction' || type === 'ask_user_answered') {
+    if (
+      type === 'transcript' ||
+      type === 'correction' ||
+      type === 'ask_user_answered' ||
+      type === 'address_mirror_delivery_ack'
+    ) {
       this.pendingMessages.push(msg);
     }
     // Other types disconnected = drop. Mirrors iOS SEND_DROPPED branch.
@@ -1756,6 +1797,10 @@ export class SonnetSession {
             observations,
             validation_alerts: validationAlerts,
             confirmations,
+            address_mirror_delivery_token:
+              typeof result.address_mirror_delivery_token === 'string'
+                ? result.address_mirror_delivery_token
+                : undefined,
             extraction_failed: result.extraction_failed,
             error_message: result.error_message,
             board_ops: boardOps,
@@ -1908,6 +1953,7 @@ export class SonnetSession {
           circuit:
             typeof json.context_circuit === 'number' ? (json.context_circuit as number) : null,
           tool_call_id: toolCallId,
+          purpose: typeof json.purpose === 'string' ? json.purpose : null,
         };
         clientDiagnostic('ask_user_started_dispatching_to_onQuestion', {
           hasOnQuestionCallback: typeof this.callbacks.onQuestion === 'function',
@@ -2042,6 +2088,9 @@ export class SonnetSession {
           understood: Boolean(json.understood),
           spoken_response: (json.spoken_response as string) ?? '',
           action: (json.action as VoiceCommandResponse['action']) ?? null,
+          ...(typeof json.address_mirror_delivery_token === 'string'
+            ? { address_mirror_delivery_token: json.address_mirror_delivery_token }
+            : {}),
         });
         break;
       }

@@ -21,13 +21,11 @@
  *     start cannot trip a null-coalescing surprise. Pre-existing
  *     rows backfill to false on migration apply (which is correct —
  *     they predate the feature; ask never fired so flag is false).
- *   - The flag is SET when the ask is EMITTED (server-side, by the
- *     ask-resolver), NOT when the inspector answers. This is the
- *     load-bearing semantic: if WebSocket drops between the ask
- *     hitting the wire and the answer landing, reconnect must not
- *     re-fire the ask, and the answer path only does copy/no-copy,
- *     it does NOT gate the flag. Reads happen at the start of each
- *     address-related dispatch turn.
+ *   - The flag is SET transactionally with a durable pending intent
+ *     immediately BEFORE the question is emitted. This claim-before-send,
+ *     at-most-once semantic survives reconnect/process restart. A rare send
+ *     failure may therefore omit the convenience question rather than risk
+ *     asking it twice; the durable row remains the answer authority.
  *
  * Migration 013 in the sequence — runs after 012_voice_feedback.cjs.
  * Auto-applies via the Fargate migration task that runs before the

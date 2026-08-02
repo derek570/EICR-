@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   TranscriptFieldMatcher,
+  detectPostcodeHint,
   parseSpokenDate,
   normalizeTranscript,
 } from '@/lib/recording/transcript-field-matcher';
@@ -44,6 +45,22 @@ describe('TranscriptFieldMatcher', () => {
 
   beforeEach(() => {
     matcher = new TranscriptFieldMatcher();
+  });
+
+  it('retires address-family regex writes but emits a pure spaced-postcode hint', () => {
+    const job = makeJob();
+    const text = 'Address is 29 Banana Road in Cheltenham c l 165 n u';
+    const result = matcher.match(text, job);
+    expect(result.installation_updates).not.toHaveProperty('address');
+    expect(result.installation_updates).not.toHaveProperty('postcode');
+    expect(detectPostcodeHint(text)).toBe('CL16 5NU');
+  });
+
+  it('postcode hint is current-utterance only and rejects chatter', () => {
+    expect(detectPostcodeHint('SW1A 1AA')).toBe('SW1A 1AA');
+    expect(detectPostcodeHint('postcode GIR 0AA')).toBe('GIR 0AA');
+    expect(detectPostcodeHint('the client address is the same')).toBeUndefined();
+    expect(detectPostcodeHint('not a postcode')).toBeUndefined();
   });
 
   // MARK: - Transcript Normalization (static)

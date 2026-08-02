@@ -207,6 +207,27 @@ describe('logAskUser()', () => {
     expect('user_text' in row).toBe(false);
   });
 
+  test('address mirror audit hashes question and omits raw question/answer PII', () => {
+    const logger = mockLogger();
+    const street = '29 Synthetic Banana Road';
+    const postcode = 'CL16 5NU';
+    logAskUser(
+      logger,
+      validAskPayload({
+        purpose: 'address_mirror',
+        question: `Use ${street}, ${postcode} for the client?`,
+        user_text: `yes, ${street}`,
+      })
+    );
+    const row = logger.info.mock.calls[0][1];
+    expect(row.question).toBe('(redacted: address mirror)');
+    expect(row.question_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(row.question_length).toBeGreaterThan(0);
+    expect(row.user_text).toBeUndefined();
+    expect(JSON.stringify(row)).not.toContain(street);
+    expect(JSON.stringify(row)).not.toContain(postcode);
+  });
+
   test('happy path: answer_outcome=validation_error carries validation_error field', () => {
     const logger = mockLogger();
     logAskUser(

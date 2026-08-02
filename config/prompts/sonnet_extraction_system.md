@@ -138,18 +138,15 @@ ADDRESS & POSTCODE:
 - DEFAULT: "the address is...", "property at...", "premises at...", "located at..." → INSTALLATION address (field: "address")
 - CLIENT ADDRESS: "client address is...", "customer address...", "this report is for...", "report for...", "billing address...", "client lives at...", "client is at..." → CLIENT address (field: "client_address")
 - NO IMPLICIT MIRRORING: Writing the installation address never auto-fills client_address; writing the client address never auto-fills the installation address. The two fields move together ONLY via the explicit "same address" phrase (next bullet) or an explicit ask_user follow-up (bullet after). If you find yourself emitting two record_reading writes from one address utterance, you are wrong — emit one.
-- "client is at the same address" / "same address for client" → set client_address to the same value as address (copy it)
-- AFTER writing the installation address (field "address") in this turn, IF client_address is still empty in the snapshot AND the inspector did not say "the client is at a different address" or similar, emit ONE ask_user with:
+- "client is at the same address" / "same address for client" is consumed by the server-owned mirror controller before extraction. Do not manufacture copy readings for it.
+- AFTER this turn's successful address-family writes make exactly one family complete (`address` + `postcode`), including matching values stored for that same family on earlier turns, IF the other family remains incomplete AND the inspector did not say the addresses differ, emit ONE ask_user with the appropriate reverse direction:
     field: "client_address"
     question: "Use the same address for the client?"
     expected_answer_type: "yes_no"
-  A "yes" answer copies installation_address → client_address (and postcode/town/county equivalents). A "no" answer leaves client_address empty for the inspector to dictate explicitly later. Skip this ask entirely if client_address is already populated, or if the inspector already qualified the address ("the installation address is X, the client is at Y").
+  Emit the question only as `{ "question":"Use the same address for the client?", "field":"client_address", "circuit":null, "heard_value":null, "type":"address_mirror", "purpose":"address_mirror" }`. The server claims and resolves it. After its answer, emit NO address-copy readings: the server owns the derived copy. If the source is incomplete, defer until a later turn completes it; do not record the rejected candidate as already asked. Skip this ask entirely if the other family is already complete, or if the inspector already qualified both addresses ("the installation address is X, the client is at Y").
 - If the inspector says an address and it's AMBIGUOUS (not clearly installation or client), and BOTH addresses are still empty, treat it as the INSTALLATION address. If the installation address is already filled and a new address is spoken without a clear qualifier, ask: "Is that the client's address or a different installation address?"
-- When POSTCODE LOOKUP data is included in the message, use it to:
-  1. Correct the spoken street address (Deepgram often mishears road names — use the confirmed area to infer the correct spelling)
-  2. Return the corrected address as field "address", the validated postcode as "postcode", and the town/county from the lookup
-  3. All four fields (address, postcode, town, county) are circuit 0. Client address equivalents are: client_address, client_postcode, client_town, client_county.
-- When a postcode lookup succeeds (valid=true), SILENTLY use the town/county from the lookup and correct obvious Deepgram mishearings of the street name. Do NOT ask for confirmation — if the postcode is valid, the address is obviously correct. Only ask if the spoken address names a COMPLETELY different city/region from the postcode lookup (e.g., postcode resolves to London but they said "Manchester").
+- POSTCODE LOOKUP data is current-utterance enrichment evidence, not a write and not a slot choice. Only an explicit extracted reading is authoritative. When included, emit the dictated `postcode` or `client_postcode` and choose its family from the inspector's words.
+- NEVER emit `town`, `county`, `client_town`, or `client_county` solely from postcode lookup evidence. The backend applies lookup locality later as `derived:true`, preserves manual locality, and keeps that computed consequence silent.
 - If the postcode lookup failed (invalid), ask: "I couldn't verify that postcode — could you repeat it?"
 - If only a street address was spoken (no postcode yet), extract the address but do NOT guess the postcode — wait for the inspector to say it
 
@@ -632,7 +629,7 @@ Return ONLY valid JSON in this format. Omit any top-level array that would be em
     { "type": "<str>", "severity": "<info|warning|critical>", "message": "<str>" }
   ],
   "questions_for_user": [
-    { "question": "<max 15 words>", "field": "<str|null>", "circuit": <int|null>, "heard_value": "<str|null>", "type": "<orphaned|out_of_range|unclear|tt_confirmation|circuit_disambiguation|observation_confirmation>" }
+    { "question": "<max 15 words>", "field": "<str|null>", "circuit": <int|null>, "heard_value": "<str|null>", "type": "<orphaned|out_of_range|unclear|tt_confirmation|circuit_disambiguation|observation_confirmation|address_mirror>", "purpose": "<address_mirror|null>" }
   ],
   "confirmations": [
     { "text": "Circuit 3 sockets, 0.35", "field": "zs", "circuit": 3 }

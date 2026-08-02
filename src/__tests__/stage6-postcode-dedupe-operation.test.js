@@ -33,6 +33,8 @@ async function writePostcode({
   value = 'RG1 5QA',
   callId = 'postcode-write',
   turnId = 'turn-1',
+  postcodeLookupResult,
+  postcodeLookupRef,
 }) {
   const input = {
     field: 'postcode',
@@ -49,6 +51,8 @@ async function writePostcode({
       turnId,
       perTurnWrites,
       round: 0,
+      postcodeLookupResult,
+      postcodeLookupRef,
     }
   );
   expect(result.is_error).toBe(false);
@@ -129,5 +133,97 @@ describe('PLAN-2C postcode dispatcher operation identity', () => {
     expect(postcodeConfirmation(later, 'turn-2').dedupe_token).toBe(
       'secfield_postcode_global_turn-2_ord0'
     );
+  });
+
+  test('matching lookup journals site locality as derived and keeps it silent', async () => {
+    const writes = createPerTurnWrites();
+    const session = makeSession();
+    await writePostcode({
+      perTurnWrites: writes,
+      session,
+      postcodeLookupResult: {
+        valid: true,
+        postcode: 'RG1 5QA',
+        town: 'Reading',
+        county: 'Berkshire',
+      },
+    });
+
+    const bundled = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'turn-1' }
+    );
+    expect(bundled.extracted_board_readings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'postcode', value: 'RG1 5QA' }),
+        expect.objectContaining({ field: 'town', value: 'Reading' }),
+        expect.objectContaining({ field: 'county', value: 'Berkshire' }),
+      ])
+    );
+    const derivedLocalities = [...writes.boardReadings.values()].filter((entry) => entry.derived);
+    expect(derivedLocalities).toHaveLength(2);
+    expect(bundled.confirmations.map((entry) => entry.field)).toEqual(['postcode']);
+    expect(session.stateSnapshot.circuits[0]).toMatchObject({
+      postcode: 'RG1 5QA',
+      town: 'Reading',
+      county: 'Berkshire',
+    });
+  });
+
+  test('answer-updated lookup ref outranks the opening utterance lookup', async () => {
+    const writes = createPerTurnWrites();
+    const session = makeSession();
+    await writePostcode({
+      perTurnWrites: writes,
+      session,
+      postcodeLookupResult: { valid: false, reason: 'opening_utterance_absent' },
+      postcodeLookupRef: {
+        current: {
+          valid: true,
+          postcode: 'RG1 5QA',
+          town: 'Reading',
+          county: 'Berkshire',
+        },
+      },
+    });
+
+    expect(session.stateSnapshot.circuits[0]).toMatchObject({
+      postcode: 'RG1 5QA',
+      town: 'Reading',
+      county: 'Berkshire',
+    });
+  });
+
+  test('client postcode enriches only client locality and mismatches derive nothing', async () => {
+    const writes = createPerTurnWrites();
+    const session = makeSession();
+    const result = await dispatchRecordBoardReading(
+      {
+        tool_call_id: 'client-postcode',
+        name: 'record_board_reading',
+        input: {
+          field: 'client_postcode',
+          value: 'RG1 5QA',
+          confidence: 1,
+          source_turn_id: 'turn-1',
+        },
+      },
+      {
+        session,
+        logger: makeLogger(),
+        turnId: 'turn-1',
+        perTurnWrites: writes,
+        round: 0,
+        postcodeLookupResult: {
+          valid: true,
+          postcode: 'SW1A 1AA',
+          town: 'Wrong Town',
+          county: 'Wrong County',
+        },
+      }
+    );
+    expect(result.is_error).toBe(false);
+    expect(session.stateSnapshot.circuits[0]).toEqual({ client_postcode: 'RG1 5QA' });
   });
 });

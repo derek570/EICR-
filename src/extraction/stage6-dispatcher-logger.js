@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 /**
  * Stage 6 dispatcher logger — single-source-of-truth for extraction-path log rows.
  *
@@ -404,20 +406,30 @@ export function logAskUser(logger, payload) {
     throw new Error(`invalid_lifecycle:${payload.lifecycle}`);
   }
 
+  const isAddressMirror = payload.purpose === 'address_mirror';
+  const rawQuestion = String(payload.question ?? '');
   const row = {
     sessionId: payload.sessionId,
     turnId: payload.turnId,
     phase: 3,
     mode: payload.mode,
     tool_call_id: payload.tool_call_id,
-    question: truncateQuestion(payload.question ?? '', ASK_USER_QUESTION_LOG_MAX),
+    question: isAddressMirror
+      ? '(redacted: address mirror)'
+      : truncateQuestion(rawQuestion, ASK_USER_QUESTION_LOG_MAX),
     reason: payload.reason ?? null,
     context_field: payload.context_field ?? null,
     context_circuit: payload.context_circuit ?? null,
     answer_outcome: payload.answer_outcome,
     wait_duration_ms: payload.wait_duration_ms ?? 0,
   };
-  if (payload.user_text !== undefined) row.user_text = payload.user_text;
+  if (isAddressMirror) {
+    row.purpose = 'address_mirror';
+    row.question_length = rawQuestion.length;
+    row.question_hash = createHash('sha256').update(rawQuestion).digest('hex');
+  } else if (payload.user_text !== undefined) {
+    row.user_text = payload.user_text;
+  }
   if (payload.validation_error !== undefined) row.validation_error = payload.validation_error;
   // Plan 03-10 Task 2 — sanitisation sub-object {truncated, stripped}
   // forwarded verbatim when the caller sets it. Kept dumb (single source of

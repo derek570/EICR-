@@ -10,6 +10,7 @@
 // replies. 1500ms still covers the common "...pause... 4XW" continuation
 // pattern but cuts a full second off every turn.
 
+import { createHash } from 'node:crypto';
 import logger from '../logger.js';
 import { normaliseValue } from './value-normalise.js';
 
@@ -27,6 +28,12 @@ import { normaliseValue } from './value-normalise.js';
 // class shape during Jest module init (the wrapper is purely
 // composition-over-the-class — never instantiates QuestionGate).
 export const QUESTION_GATE_DELAY_MS = 1500;
+
+const ADDRESS_MIRROR_MARKER = 'address_mirror';
+
+function hasAddressMirrorMarker(question) {
+  return question?.purpose === ADDRESS_MIRROR_MARKER || question?.type === ADDRESS_MIRROR_MARKER;
+}
 
 // Phase D: stop-word list used when comparing a question's `heard_value`
 // against newly-extracted observation text. These tokens would otherwise
@@ -132,6 +139,14 @@ export class QuestionGate {
     // numeric value.
     this.recentlyFlushedHeardValues = new Map(); // `${type}|${normHeard}` -> expiryMs
     this.HEARD_VALUE_DEDUPE_TTL_MS = 120000;
+    this.beforeSend = null;
+    this.flushPromise = null;
+    this.lifecycleEpoch = 0;
+  }
+
+  /** Async final-emission hook used by server-owned durable question claims. */
+  setBeforeSend(callback) {
+    this.beforeSend = typeof callback === 'function' ? callback : null;
   }
 
   // Stable signature for "same question": type+field+circuit+heard_value.
@@ -395,47 +410,138 @@ export class QuestionGate {
   }
 
   flush() {
+    if (this.flushPromise) return this.flushPromise;
     this.gateTimer = null;
-    if (this.pendingQuestions.length > 0) {
-      // Record signatures in the recent-flush map so an identical question
-      // re-emitted within DEDUPE_TTL_MS is suppressed in enqueue(). TTL is
-      // short enough that a legitimately-repeated ask later in the session
-      // still fires.
-      const now = Date.now();
-      const tupleExpiry = now + this.DEDUPE_TTL_MS;
-      const heardExpiry = now + this.HEARD_VALUE_DEDUPE_TTL_MS;
-      for (const q of this.pendingQuestions) {
-        this.recentlyFlushedSigs.set(this._questionSig(q), tupleExpiry);
-        const heardKey = this._heardValueKey(q);
-        if (heardKey) {
-          this.recentlyFlushedHeardValues.set(heardKey, heardExpiry);
-        }
+    if (this.pendingQuestions.length === 0) return Promise.resolve();
+
+    const epoch = this.lifecycleEpoch;
+    const candidates = this.pendingQuestions.splice(0);
+    const needsAddressMirrorClaim = candidates.some(hasAddressMirrorMarker);
+
+    // Preserve the historic synchronous flush for ordinary questions. A
+    // promise is retained only while the durable address-mirror claim is in
+    // flight, which serialises concurrent flushes without making fake-timer
+    // and reconnect callers wait for an otherwise unnecessary microtask.
+    if (!needsAddressMirrorClaim) {
+      this._emitApproved(candidates, epoch);
+      return Promise.resolve();
+    }
+
+    this.flushPromise = this._claimAndEmit(candidates, epoch).finally(() => {
+      this.flushPromise = null;
+      if (this.pendingQuestions.length > 0 && epoch === this.lifecycleEpoch) {
+        this.resetTimer();
       }
-      // Log full question payload (type/field/circuit/question-text/heard_value)
-      // so CloudWatch can reconstruct *exactly* what Sonnet asked per session,
-      // pairing with the ElevenLabs TTS success log (keys.js) to see the full
-      // Sonnet-question -> TTS-text chain. Previously this log only carried
-      // `count`, so when the inspector reported "it asked something weird" we
-      // had no record of the question wording on the server side (iOS
-      // debug-log upload is still broken — see MEMORY.md).
-      logger.info('Flushing questions to iOS', {
-        sessionId: this.sessionId,
-        count: this.pendingQuestions.length,
-        questions: this.pendingQuestions.map((q) => ({
+    });
+    return this.flushPromise;
+  }
+
+  async _claimAndEmit(candidates, epoch) {
+    const approved = [];
+    for (const q of candidates) {
+      const hasMirrorPurpose = q?.purpose === ADDRESS_MIRROR_MARKER;
+      const hasMirrorType = q?.type === ADDRESS_MIRROR_MARKER;
+
+      // The exact marker pair is the legacy trust boundary. A model can
+      // populate the open question shape with only one marker (or a
+      // contradictory type), but that must neither burn the one-shot claim
+      // nor escape the durable controller as an ordinary audible question.
+      if (hasMirrorType !== hasMirrorPurpose) {
+        logger.warn('Dropped malformed address mirror question', {
+          sessionId: this.sessionId,
+          reason: hasMirrorPurpose ? 'missing_type' : 'missing_purpose',
+        });
+        continue;
+      }
+
+      if (hasMirrorPurpose) {
+        if (typeof this.beforeSend !== 'function') {
+          logger.warn('Address mirror question claim unavailable', {
+            sessionId: this.sessionId,
+          });
+          continue;
+        }
+        let keep = false;
+        try {
+          keep = (await this.beforeSend(q)) === true;
+        } catch (error) {
+          logger.warn('Address mirror question claim failed', {
+            sessionId: this.sessionId,
+            error: error?.message ?? String(error),
+          });
+        }
+        if (!keep) continue;
+      }
+      approved.push(q);
+    }
+    this._emitApproved(approved, epoch);
+  }
+
+  _emitApproved(approved, epoch) {
+    if (epoch !== this.lifecycleEpoch || approved.length === 0) return;
+
+    // Record signatures in the recent-flush map so an identical question
+    // re-emitted within DEDUPE_TTL_MS is suppressed in enqueue(). TTL is
+    // short enough that a legitimately-repeated ask later in the session
+    // still fires.
+    const now = Date.now();
+    const tupleExpiry = now + this.DEDUPE_TTL_MS;
+    const heardExpiry = now + this.HEARD_VALUE_DEDUPE_TTL_MS;
+    for (const q of approved) {
+      this.recentlyFlushedSigs.set(this._questionSig(q), tupleExpiry);
+      const heardKey = this._heardValueKey(q);
+      if (heardKey) {
+        this.recentlyFlushedHeardValues.set(heardKey, heardExpiry);
+      }
+    }
+    // Log full question payload (type/field/circuit/question-text/heard_value)
+    // so CloudWatch can reconstruct *exactly* what Sonnet asked per session,
+    // pairing with the ElevenLabs TTS success log (keys.js) to see the full
+    // Sonnet-question -> TTS-text chain. Previously this log only carried
+    // `count`, so when the inspector reported "it asked something weird" we
+    // had no record of the question wording on the server side (iOS
+    // debug-log upload is still broken — see MEMORY.md).
+    logger.info('Flushing questions to iOS', {
+      sessionId: this.sessionId,
+      count: approved.length,
+      questions: approved.map((q) => {
+        const isAddressMirror = q?.purpose === 'address_mirror' || q?.type === 'address_mirror';
+        const base = {
           type: q.type || null,
+          purpose: q.purpose || null,
           field: q.field || null,
           circuit: q.circuit === null || q.circuit === undefined ? null : q.circuit,
-          question: typeof q.question === 'string' ? q.question.slice(0, 200) : null,
-          heard_value: q.heard_value || null,
-        })),
-      });
-      this.sendCallback(this.pendingQuestions);
-      this.pendingQuestions = [];
+        };
+        if (!isAddressMirror) {
+          return {
+            ...base,
+            question: typeof q.question === 'string' ? q.question.slice(0, 200) : null,
+            heard_value: q.heard_value || null,
+          };
+        }
+        const question = typeof q.question === 'string' ? q.question : '';
+        return {
+          ...base,
+          question_length: question.length,
+          question_hash: createHash('sha256').update(question).digest('hex'),
+        };
+      }),
+    });
+    const sent = this.sendCallback(approved);
+    if (sent === false) {
+      // The at-most-once mirror claim intentionally remains burned after a
+      // transport failure, but ordinary questions may be generated again.
+      for (const q of approved) {
+        this.recentlyFlushedSigs.delete(this._questionSig(q));
+        const heardKey = this._heardValueKey(q);
+        if (heardKey) this.recentlyFlushedHeardValues.delete(heardKey);
+      }
     }
   }
 
   // Clean up on session stop
   destroy() {
+    this.lifecycleEpoch += 1;
     if (this.gateTimer) clearTimeout(this.gateTimer);
     this.pendingQuestions = [];
     this.gateTimer = null;

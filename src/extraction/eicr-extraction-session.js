@@ -31,8 +31,14 @@ import {
   applyWrapPolicy,
 } from './stage6-snapshot-user-text.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
-import { lookupPostcode } from '../postcode_lookup.js';
 import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import {
+  buildPostcodeLookupNote,
+  canonicalisePostcodeHint,
+  combinePostcodeHintStates,
+  lookupResolvedPostcodeHint,
+  resolvePostcodeHintState,
+} from './postcode-hint.js';
 import { sanitizeReadingFieldContractWithReport } from './reading-field-contract-sanitizer.js';
 import logger from '../logger.js';
 
@@ -1130,9 +1136,7 @@ export class EICRExtractionSession {
     this._openaiApiKey = process.env.OPENAI_API_KEY;
     this.extractionApi = (process.env.OPENAI_EXTRACT_API || 'responses').trim();
     this._providerClients = new Map(Object.entries(options.providerClients || {}));
-    this.defaultExtractionModel = (
-      process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6'
-    ).trim();
+    this.defaultExtractionModel = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
     this.extractionProvider = providerForModel(this.defaultExtractionModel);
     this.client =
       this._providerClients.get(this.extractionProvider) ||
@@ -1220,7 +1224,7 @@ export class EICRExtractionSession {
     // Failed utterance recovery queue — utterances that failed JSON parse are queued
     // here and prepended to the next successful API call. Prevents data loss when
     // Sonnet breaks out of JSON mode. Entries older than 60s are discarded as stale.
-    this.failedUtteranceQueue = []; // Array of { text: string, timestamp: number }
+    this.failedUtteranceQueue = []; // Array of { text, timestamp, postcodeHintState }
 
     // (cacheKeepaliveHandle + pauseKeepaliveDeadlineHandle initialised above)
 
@@ -1288,9 +1292,12 @@ export class EICRExtractionSession {
   _createExtractionClient(provider) {
     if (provider === 'anthropic') {
       if (!this._anthropicApiKey) {
-        throw new ProviderResolutionError('ANTHROPIC_API_KEY missing for Anthropic extraction model', {
-          provider,
-        });
+        throw new ProviderResolutionError(
+          'ANTHROPIC_API_KEY missing for Anthropic extraction model',
+          {
+            provider,
+          }
+        );
       }
       return new Anthropic({ apiKey: this._anthropicApiKey });
     }
@@ -2506,7 +2513,11 @@ export class EICRExtractionSession {
     // id as this immediate placeholder or the web completion ledger can close
     // a newer turn when the delayed result arrives.
     const turnId = `legacy-${randomUUID()}`;
-    this.utteranceBuffer.push({ transcriptText, regexResults, options, turnId });
+    const effectiveOptions = { ...options };
+    if (!effectiveOptions.postcodeHintState) {
+      effectiveOptions.postcodeHintState = resolvePostcodeHintState({ regexResults });
+    }
+    this.utteranceBuffer.push({ transcriptText, regexResults, options: effectiveOptions, turnId });
 
     // Clear any existing flush timeout
     if (this.batchTimeoutHandle) {
@@ -2580,6 +2591,9 @@ export class EICRExtractionSession {
       confirmationsEnabled: batch.some((b) => b.options?.confirmationsEnabled),
       utteranceId: lastBufferedUtteranceId,
       turnId: lastBufferedTurnId,
+      postcodeHintState: combinePostcodeHintStates(
+        batch.map((item) => ({ postcodeHintState: item.options?.postcodeHintState }))
+      ),
     };
 
     logger.info(
@@ -2598,7 +2612,7 @@ export class EICRExtractionSession {
     try {
       const result = await this._processUtteranceBatch();
       if (result && this.onBatchResult) {
-        this.onBatchResult(result);
+        await this.onBatchResult(result);
       }
     } catch (error) {
       logger.error(`Session ${this.sessionId} Batch flush error: ${error.message}`);
@@ -2619,58 +2633,15 @@ export class EICRExtractionSession {
   }
 
   async _extractSingle(transcriptText, regexResults = [], options = {}) {
-    // Check if regex results contain a postcode — if so, look it up via postcodes.io
-    let postcodeLookupResult = null;
-    if (regexResults && regexResults.length > 0) {
-      const postcodeEntry = regexResults.find((r) => r.field === 'install.postcode' && r.value);
-      if (postcodeEntry) {
-        try {
-          const lookup = await lookupPostcode(postcodeEntry.value);
-          if (lookup) {
-            postcodeLookupResult = {
-              postcode: lookup.postcode,
-              town: lookup.town,
-              county: lookup.county,
-              valid: true,
-            };
-            logger.info(
-              `Session ${this.sessionId} Postcode lookup: ${postcodeEntry.value} → ${lookup.town}, ${lookup.county}`
-            );
-          } else {
-            postcodeLookupResult = {
-              postcode: postcodeEntry.value,
-              valid: false,
-            };
-            logger.info(
-              `Session ${this.sessionId} Postcode lookup: ${postcodeEntry.value} → not found`
-            );
-          }
-        } catch (err) {
-          logger.warn(`Session ${this.sessionId} Postcode lookup failed: ${err.message}`);
-        }
-      }
-    }
-
-    // Apply the lookup result back to circuits[0] BEFORE building the
-    // prompt and BEFORE Sonnet's tool loop runs. Previous behaviour
-    // (commit history pre-2026-06-01) only injected the lookup
-    // informationally into buildUserMessage; Sonnet still extracted
-    // town/county independently from the transcript and frequently
-    // ended up writing the ITL1 region ("South East", "South West")
-    // rather than the administrative county returned by postcodes.io.
-    // Sessions B95B2EE1 + D68ACD24 (2026-05-31, both RG1 5QA) both
-    // landed county="South East" in the final job snapshot despite
-    // a valid postcode lookup returning "Berkshire".
-    //
-    // Override policy (Derek 2026-06-01): lookup wins on empty OR on
-    // a drift signal (existing value matches a known UK region rather
-    // than a real administrative town/county). Manually-correct
-    // values are preserved.
-    applyPostcodeLookupToSnapshot(this.stateSnapshot, postcodeLookupResult, this.sessionId);
-
     // Build the windowed message history first (may reset circuitScheduleIncluded flag)
     const windowMessages = this.buildMessageWindow();
 
+    const postcodeLookupResult = await lookupResolvedPostcodeHint(options.postcodeHintState, {
+      logger,
+      sessionId: this.sessionId,
+      lane: 'legacy',
+    });
+    const postcodeLookupResults = [];
     let userMessage = this.buildUserMessage(transcriptText, regexResults, postcodeLookupResult);
     if (options.confirmationsEnabled) {
       userMessage += '\n\n[CONFIRMATIONS ENABLED]';
@@ -2681,12 +2652,30 @@ export class EICRExtractionSession {
     const recoverable = this.failedUtteranceQueue.filter((q) => now - q.timestamp < 60000);
     this.failedUtteranceQueue = [];
     if (recoverable.length > 0) {
-      const recoveredText = recoverable.map((q) => q.text).join(' ... ');
+      const recoveredLookups = await Promise.all(
+        recoverable.map(async (queued) => {
+          const queuedLookup = await lookupResolvedPostcodeHint(queued.postcodeHintState, {
+            logger,
+            sessionId: this.sessionId,
+            lane: 'legacy_recovery',
+          });
+          return {
+            lookup: queuedLookup,
+            message: this.buildUserMessage(queued.text, [], queuedLookup),
+          };
+        })
+      );
+      postcodeLookupResults.push(...recoveredLookups.map((item) => item.lookup));
+      const recoveredText = recoveredLookups.map((item) => item.message).join(' ... ');
       userMessage = `[Previously unprocessed]: ${recoveredText}\n\n[New]: ${userMessage}`;
       logger.info(
         `Session ${this.sessionId} Recovered ${recoverable.length} queued utterance(s) from failed extractions`
       );
     }
+    // The current/new utterance comes last in the composed model message, so
+    // it also wins if two queued invocations somehow share a postcode with
+    // different mocked lookup metadata.
+    postcodeLookupResults.push(postcodeLookupResult);
 
     // Build messages array: sliding window + new user message with cache_control.
     // Structured output is enforced via Anthropic tool-use (tool_choice forces
@@ -2753,7 +2742,11 @@ export class EICRExtractionSession {
         logger.error(
           `Session ${this.sessionId} Tool-use fallback parse failed: ${parseError.message}`
         );
-        this.failedUtteranceQueue.push({ text: transcriptText, timestamp: Date.now() });
+        this.failedUtteranceQueue.push({
+          text: transcriptText,
+          timestamp: Date.now(),
+          postcodeHintState: options.postcodeHintState,
+        });
         logger.info(
           `Session ${this.sessionId} Queued failed utterance for recovery (queue size: ${this.failedUtteranceQueue.length})`
         );
@@ -2791,6 +2784,22 @@ export class EICRExtractionSession {
     if (rejectedReadingCount > 0) {
       assistantHistoryText = JSON.stringify(result);
     }
+    // The server-side transactional claim, not model history, owns the
+    // one-shot mirror lifecycle. A source-incomplete candidate may be dropped
+    // later at QuestionGate's final claim seam; retaining it here would tell
+    // the next turn it had already been asked and strand split-turn
+    // address→postcode completion. Omit mirror candidates from both history
+    // and the generic askedQuestions digest; the durable job flag suppresses
+    // genuine repeats after an actual emit.
+    const nonMirrorQuestions = result.questions_for_user.filter(
+      (q) => q?.purpose !== 'address_mirror' && q?.type !== 'address_mirror'
+    );
+    if (nonMirrorQuestions.length !== result.questions_for_user.length) {
+      assistantHistoryText = JSON.stringify({
+        ...result,
+        questions_for_user: nonMirrorQuestions,
+      });
+    }
 
     // ALWAYS push to conversation history (even on extraction failure) to keep context in sync
     this.conversationHistory.push(
@@ -2801,8 +2810,8 @@ export class EICRExtractionSession {
     // Track metrics
     this.turnCount++;
     this.extractedReadingsCount += result.extracted_readings.length;
-    if (result.questions_for_user.length > 0) {
-      const newQuestions = result.questions_for_user.map(
+    if (nonMirrorQuestions.length > 0) {
+      const newQuestions = nonMirrorQuestions.map(
         (q) => `${q.field || 'unknown'}:${q.circuit || 'unknown'}`
       );
       this.askedQuestions.push(...newQuestions);
@@ -2943,6 +2952,47 @@ export class EICRExtractionSession {
 
     // Update rolling state snapshot with this response
     this.updateStateSnapshot(result);
+
+    // The model-selected postcode write owns address-family routing. Apply
+    // locality only after that write is authoritative so a client postcode
+    // can never pre-fill the site, and preserve a real/manual locality the
+    // same response already wrote. Only actual snapshot changes ride the wire.
+    // Recovery can place older failed utterances and the new utterance in one
+    // model response. Keep every invocation-local lookup and select it by the
+    // authoritative postcode write's canonical value; using only the new
+    // utterance's lookup silently lost locality for recovered postcodes.
+    const lookupByPostcode = new Map();
+    for (const lookup of postcodeLookupResults) {
+      if (lookup?.valid !== true) continue;
+      const canonical = canonicalisePostcodeHint(lookup.postcode);
+      if (canonical) lookupByPostcode.set(canonical, lookup);
+    }
+    for (const reading of result.extracted_readings.filter(
+      (candidate) =>
+        Number(candidate?.circuit) === 0 &&
+        (candidate.field === 'postcode' || candidate.field === 'client_postcode')
+    )) {
+      const matchedLookup = lookupByPostcode.get(canonicalisePostcodeHint(reading.value));
+      if (matchedLookup) {
+        const family = reading.field === 'client_postcode' ? 'client' : 'site';
+        const changes = applyPostcodeLookupToSnapshot(
+          this.stateSnapshot,
+          matchedLookup,
+          this.sessionId,
+          { family }
+        );
+        for (const change of changes) {
+          result.extracted_readings.push({
+            field: change.field,
+            circuit: 0,
+            value: change.value,
+            confidence: reading.confidence ?? 1,
+            source_turn_id: reading.source_turn_id ?? null,
+            derived: true,
+          });
+        }
+      }
+    }
 
     // Track token costs (model id from response so per-model rates apply
     // correctly when the tiered router escalated this turn to a different
@@ -3169,15 +3219,8 @@ export class EICRExtractionSession {
         parts.push(`Regex pre-filled fields (confirm or correct): ${JSON.stringify(regexResults)}`);
       }
     }
-    if (postcodeLookup) {
-      if (postcodeLookup.valid) {
-        parts.push(
-          `POSTCODE LOOKUP: "${postcodeLookup.postcode}" → ${postcodeLookup.town}, ${postcodeLookup.county} (valid)`
-        );
-      } else {
-        parts.push(`POSTCODE LOOKUP: "${postcodeLookup.postcode}" → not found (invalid postcode)`);
-      }
-    }
+    const postcodeNote = buildPostcodeLookupNote(postcodeLookup);
+    if (postcodeNote) parts.push(postcodeNote);
     // Stage 6 Phase 4 (STQ-03): circuit schedule, asked-questions digest, and
     // already-created-observations list live in the CACHED SYSTEM PREFIX in
     // non-off modes (see buildSystemBlocks / buildStateSnapshotMessage), so we

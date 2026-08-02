@@ -144,6 +144,9 @@ jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
+const { ADDRESS_MIRROR_ANSWER_GRACE_MS } =
+  await import('../extraction/address-mirror-ingress-arbiter.js');
+const { ADDRESS_MIRROR_DELIVERY } = await import('../extraction/address-mirror-controller.js');
 
 // ── Helpers (pattern lifted from sonnet-stream-resume.test.js) ───────────────
 
@@ -380,6 +383,313 @@ describe('Group B — inbound ask_user_answered routing', () => {
     });
 
     expect(ws._sent.find((m) => m.type === 'error')).toBeUndefined();
+  });
+
+  test('grace-expired address reply still reaches the durable exact-answer controller', async () => {
+    jest.useFakeTimers();
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-grace',
+      jobId: 'job-address-grace',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-grace');
+    entry.addressMirrorController.shouldHoldReplyTranscript = jest.fn(async () => true);
+    entry.addressMirrorController.noteReplyHoldReleased = jest.fn();
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(async () => ({
+      handled: true,
+      outcome: 'duplicate',
+      resolutionToken: 'already-resolved-token',
+    }));
+
+    const releasedTranscript = sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-grace',
+      text: 'yes',
+    });
+    await jest.advanceTimersByTimeAsync(ADDRESS_MIRROR_ANSWER_GRACE_MS);
+    await releasedTranscript;
+
+    expect(entry.addressMirrorIngressArbiter.wasReleased('utt-address-grace')).toBe(true);
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'addr-job-address-grace-client',
+      purpose: 'address_mirror',
+      user_text: 'yes',
+      consumed_utterance_id: 'utt-address-grace',
+    });
+
+    expect(entry.addressMirrorController.resolveRecoveredAnswer).toHaveBeenCalledWith({
+      context: { purpose: 'address_mirror' },
+      text: 'yes',
+      askId: 'addr-job-address-grace-client',
+      perTurnWrites: expect.any(Object),
+    });
+    expect(entry.consumedAskUtterances.has('utt-address-grace')).toBe(true);
+  });
+
+  test('annotated mirror transcript forwards its exact ask id to durable recovery', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-annotated-id',
+      jobId: 'job-address-annotated-id',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-annotated-id');
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(async () => ({
+      handled: true,
+      outcome: 'duplicate',
+      clearAskId: 'addr-exact-generation',
+    }));
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-annotated-id',
+      text: 'yes',
+      in_response_to: {
+        purpose: 'address_mirror',
+        type: 'address_mirror',
+        tool_call_id: 'addr-exact-generation',
+      },
+    });
+
+    expect(entry.addressMirrorController.resolveRecoveredAnswer).toHaveBeenCalledWith({
+      context: {
+        purpose: 'address_mirror',
+        type: 'address_mirror',
+        tool_call_id: 'addr-exact-generation',
+      },
+      text: 'yes',
+      askId: 'addr-exact-generation',
+      perTurnWrites: expect.any(Object),
+    });
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'cancel_pending_tts',
+        prefix: 'addr-exact-generation',
+      })
+    );
+  });
+
+  test('explicit stale mirror transcript id is consumed before model extraction', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-stale-id',
+      jobId: 'job-address-stale-id',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-stale-id');
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(async () => ({
+      handled: false,
+      reason: 'stale_address_mirror_ask_id',
+    }));
+    runShadowHarnessSpy.mockClear();
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-stale-id',
+      text: 'yes',
+      in_response_to: {
+        purpose: 'address_mirror',
+        type: 'address_mirror',
+        tool_call_id: 'addr-stale-generation',
+      },
+    });
+
+    expect(entry.addressMirrorController.resolveRecoveredAnswer).toHaveBeenCalledWith(
+      expect.objectContaining({ askId: 'addr-stale-generation' })
+    );
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'cancel_pending_tts',
+        prefix: 'addr-stale-generation',
+      })
+    );
+    expect(ws._sent).not.toContainEqual(
+      expect.objectContaining({ prefix: 'addr-current-generation' })
+    );
+  });
+
+  test('explicit stale mirror answer frame clears only its supplied generation', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-stale-answer-id',
+      jobId: 'job-address-stale-answer-id',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-stale-answer-id');
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(async () => ({
+      handled: false,
+      reason: 'stale_address_mirror_ask_id',
+    }));
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      tool_call_id: 'addr-stale-answer-generation',
+      purpose: 'address_mirror',
+      user_text: 'yes',
+      consumed_utterance_id: 'utt-stale-answer-generation',
+    });
+
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'cancel_pending_tts',
+        prefix: 'addr-stale-answer-generation',
+      })
+    );
+    expect(ws._sent).not.toContainEqual(
+      expect.objectContaining({ prefix: 'addr-current-answer-generation' })
+    );
+  });
+
+  test('opposite direct command beside a pending mirror ask is acknowledged without model fallthrough', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-opposite-command',
+      jobId: 'job-address-opposite-command',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-opposite-command');
+    entry.addressMirrorController.resolvePendingDirectCommand = jest.fn(
+      async ({ perTurnWrites }) => {
+        perTurnWrites.answer.stagedText =
+          'That conflicts with the address question I just asked. Please answer that question first.';
+        return { handled: true, outcome: 'conflict', changed: [] };
+      }
+    );
+    runShadowHarnessSpy.mockClear();
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-opposite-command',
+      text: 'use the client address for the site',
+      confirmations_enabled: false,
+    });
+
+    expect(entry.addressMirrorController.resolvePendingDirectCommand).toHaveBeenCalled();
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'voice_command_response',
+        spoken_response:
+          'That conflicts with the address question I just asked. Please answer that question first.',
+      })
+    );
+  });
+
+  test('ordinary direct target conflict still emits its deciding question', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-direct-conflict-question',
+      jobId: 'job-address-direct-conflict-question',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-address-direct-conflict-question');
+    entry.addressMirrorController.resolvePendingDirectCommand = jest.fn(async () => ({
+      handled: false,
+    }));
+    entry.addressMirrorController.applyDirectCommand = jest.fn(async () => ({
+      handled: true,
+      outcome: 'conflict',
+      changed: [],
+      question: 'The client address is already different. Should I replace it?',
+      questionId: 'address-mirror-direct-conflict-question',
+    }));
+    runShadowHarnessSpy.mockClear();
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-direct-conflict-question',
+      text: 'use the installation address for the customer',
+      confirmations_enabled: false,
+    });
+
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(ws._sent).toContainEqual(
+      expect.objectContaining({
+        type: 'question',
+        question_type: 'address_mirror_direct',
+        tool_call_id: 'address-mirror-direct-conflict-question',
+        question: 'The client address is already different. Should I replace it?',
+      })
+    );
+    expect(ws._sent.find((frame) => frame.type === 'extraction')).toBeUndefined();
+  });
+
+  test('legacy same-as-site clears the claimed ask before its old-client terminal', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-legacy-terminal-order',
+      jobId: 'job-address-legacy-terminal-order',
+      jobState: { certificateType: 'eicr' },
+      // Deliberately no delivery-ACK capability: build-428 compatibility is
+      // socket-flush complete, so sending audio before the clear would make a
+      // client-side awaiting gate drop it permanently.
+    });
+    const entry = activeSessions.get('sess-address-legacy-terminal-order');
+    const markDelivered = jest
+      .spyOn(entry.addressMirrorController, 'markDelivered')
+      .mockResolvedValue(true);
+    entry.addressMirrorController.resolveRecoveredAnswer = jest.fn(
+      async ({ text, askId, perTurnWrites }) => {
+        expect(text).toBe('same as site');
+        expect(askId).toBeNull(); // purpose/type-only legacy frame
+        perTurnWrites.answer.stagedText = 'Site address copied to client.';
+        Object.defineProperty(perTurnWrites, ADDRESS_MIRROR_DELIVERY, {
+          value: {
+            kind: 'convenience',
+            token: 'legacy-terminal-order-token',
+            claimToken: null,
+          },
+          enumerable: false,
+          configurable: true,
+        });
+        return {
+          handled: true,
+          outcome: 'yes',
+          resolutionToken: 'legacy-terminal-order-token',
+          clearAskId: 'legacy-address-mirror-generation-1',
+        };
+      }
+    );
+    ws._sent.length = 0;
+
+    await sendFrame(ws, {
+      type: 'transcript',
+      utterance_id: 'utt-address-legacy-terminal-order',
+      text: 'same as site',
+      confirmations_enabled: false,
+      in_response_to: {
+        type: 'address_mirror',
+        purpose: 'address_mirror',
+        question: 'Should I use this same address for the client?',
+      },
+    });
+
+    const clearIndex = ws._sent.findIndex((frame) => frame.type === 'cancel_pending_tts');
+    const extractionIndex = ws._sent.findIndex((frame) => frame.type === 'extraction');
+    const terminalIndex = ws._sent.findIndex((frame) => frame.type === 'voice_command_response');
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(clearIndex).toBeLessThan(extractionIndex);
+    expect(clearIndex).toBeLessThan(terminalIndex);
+    expect(ws._sent[clearIndex]).toMatchObject({
+      prefix: 'legacy-address-mirror-generation-1',
+    });
+    expect(markDelivered).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: expect.any(String), token: expect.any(String) })
+    );
   });
 
   test('invalid payload (missing tool_call_id) emits error envelope; registry untouched', async () => {
@@ -727,6 +1037,37 @@ describe('Group B — inbound ask_user_answered routing', () => {
       loggerModule.info.mock.calls.find((c) => c[0] === 'stage6.ask_user_answered_routed_to_engine')
     ).toBeDefined();
     resolveSpy.mockRestore();
+  });
+});
+
+describe('address mirror durable delivery ACK routing', () => {
+  test('owned capable-session ACK marks the exact kind/token and rejects malformed tokens', async () => {
+    const ws = connect(wss, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-address-ack',
+      jobId: 'job-1',
+      jobState: { certificateType: 'eicr' },
+      capabilities: {
+        voice_latency: { version: 1, supports: ['address_mirror_delivery_ack_v1'] },
+      },
+    });
+    const entry = activeSessions.get('sess-address-ack');
+    const markDelivered = jest
+      .spyOn(entry.addressMirrorController, 'markDelivered')
+      .mockResolvedValue(true);
+
+    await sendFrame(ws, {
+      type: 'address_mirror_delivery_ack',
+      delivery_token: 'direct:operation-7',
+    });
+    expect(markDelivered).toHaveBeenCalledWith({ kind: 'direct', token: 'operation-7' });
+
+    await sendFrame(ws, {
+      type: 'address_mirror_delivery_ack',
+      delivery_token: 'unknown:operation-8',
+    });
+    expect(markDelivered).toHaveBeenCalledTimes(1);
   });
 });
 

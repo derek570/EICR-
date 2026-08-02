@@ -79,8 +79,6 @@ const INSTALLATION_FIELD_TO_KEY: Record<
   string
 > = {
   client_name: 'client_name',
-  address: 'address',
-  postcode: 'postcode',
   premises_description: 'premises_description',
   next_inspection_years: 'next_inspection_years',
   client_phone: 'client_phone',
@@ -91,11 +89,6 @@ const INSTALLATION_FIELD_TO_KEY: Record<
   previous_certificate_number: 'previous_certificate_number',
   estimated_age_of_installation: 'estimated_age_of_installation',
   general_condition_of_installation: 'general_condition',
-  client_address: 'client_address',
-  client_town: 'client_town',
-  client_county: 'client_county',
-  client_postcode: 'client_postcode',
-  client_address_same_as_installation: 'client_address_same_as_installation',
   date_of_inspection: 'date_of_inspection',
 };
 

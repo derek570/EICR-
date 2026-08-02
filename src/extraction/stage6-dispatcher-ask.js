@@ -244,6 +244,10 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     opts?.responseEpochRef && typeof opts.responseEpochRef === 'object'
       ? opts.responseEpochRef
       : null;
+  const postcodeLookupRef =
+    opts?.postcodeLookupRef && typeof opts.postcodeLookupRef === 'object'
+      ? opts.postcodeLookupRef
+      : null;
   // Plan 2A channel 3 (2026-07-30, feedback id 112) — STAGING hook for the
   // partial-failure notice channel. Fired once per auto-resolved write that did
   // not land, with a fully-formed notice spec (see stageAskAutoResolveFailure).
@@ -253,6 +257,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // staging silently no-ops, which is the pre-plan-2A behaviour exactly.
   const stagePartialFailureNotice =
     typeof opts?.stagePartialFailureNotice === 'function' ? opts.stagePartialFailureNotice : null;
+  const addressMirrorController = opts?.addressMirrorController ?? null;
   // PLAN-2B lifecycle fence — one dispatcher instance belongs to one live
   // model generation. When the inspector abandons the server-brokered mdr-*
   // clarification, latch the rest of THIS generation so a model retry cannot
@@ -273,6 +278,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     const mode = session.toolCallsMode === 'shadow' ? 'shadow' : 'live';
     const sessionId = ctx?.sessionId ?? session.sessionId;
     const input = call.input ?? {};
+    const logAsk = (payload) =>
+      logAskUser(logger, {
+        ...payload,
+        ...(input.purpose === 'address_mirror' ? { purpose: 'address_mirror' } : {}),
+      });
     // Plan 03-09 integration fix (Decision 03-06 #5 ratified): read id from
     // BOTH shapes. runToolLoop dispatches with `{ tool_call_id, name, input }`
     // (Phase 1/2 convention); the dispatcher's Plan 03-05 unit tests pass
@@ -286,7 +296,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // payload is a bug regardless of whether we would block on it.
     const vErr = validateAskUser(input);
     if (vErr) {
-      logAskUser(logger, {
+      logAsk({
         sessionId,
         turnId,
         mode,
@@ -346,7 +356,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         length: rawQuestion.length,
         hash: hashPayload(rawQuestion),
       });
-      logAskUser(logger, {
+      logAsk({
         sessionId,
         turnId,
         mode,
@@ -378,7 +388,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         field: input.pending_write.field,
         source_turn_id: input.pending_write.source_turn_id ?? null,
       });
-      logAskUser(logger, {
+      logAsk({
         sessionId,
         turnId,
         mode,
@@ -403,7 +413,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
 
     // Step 2: shadow-mode short-circuit (Research §Q5, Open Question #5).
     if (mode === 'shadow') {
-      logAskUser(logger, {
+      logAsk({
         sessionId,
         turnId,
         mode,
@@ -420,6 +430,33 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         content: JSON.stringify({ answered: false, reason: 'shadow_mode' }),
         is_error: false,
       };
+    }
+
+    // Address retirement: the convenience ask is claimed transactionally by
+    // the server immediately before any in-memory registration or wire emit.
+    // Invalid/incomplete candidates do not burn the one-shot job flag.
+    if (input.purpose === 'address_mirror') {
+      const claimed = await addressMirrorController?.claimLiveAsk?.({
+        input,
+        askId: toolCallId,
+      });
+      if (!claimed?.ok) {
+        logger?.info?.('stage6.address_mirror_ask_not_claimed', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          reason: claimed?.reason ?? 'controller_unavailable',
+        });
+        return {
+          tool_use_id: toolCallId,
+          content: JSON.stringify({
+            answered: false,
+            reason: 'address_mirror_not_claimed',
+            disposition: claimed?.reason ?? 'controller_unavailable',
+          }),
+          is_error: false,
+        };
+      }
     }
 
     // Step 3–4: live path — register + emit + await.
@@ -512,6 +549,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
             // numeric attribution is the harder failure mode to detect
             // (poisons the slot map) than a re-ask.
             expectedAnswerShape: input.expected_answer_shape,
+            purpose: input.purpose ?? null,
             // 2026-04-27 — bug-1B fix. Buffer the pending write on the entry
             // so the dispatcher's resolution path can hand it to the answer
             // resolver alongside the user reply. Null when the ask is not
@@ -611,6 +649,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
                 context_field: input.context_field,
                 context_circuit: input.context_circuit,
                 expected_answer_shape: input.expected_answer_shape,
+                ...(input.purpose ? { purpose: input.purpose } : {}),
                 // PLAN-C P4d (row 4) — stamp the QUESTION frame with the
                 // response epoch at emit time (creation == emit for the
                 // dispatcher ask; the ref is not yet advanced for the initial
@@ -721,7 +760,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // envelope. Best-effort — if the logger itself throws we let
       // both errors propagate unchanged.
       try {
-        logAskUser(logger, {
+        logAsk({
           sessionId,
           turnId,
           mode,
@@ -767,6 +806,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // breach the cancellation guard's contract; the guard still stops all of
     // those below.
     advanceResponseEpoch(responseEpochRef, outcome);
+    if (postcodeLookupRef && outcome?.postcode_lookup_result?.valid === true) {
+      postcodeLookupRef.current = outcome.postcode_lookup_result;
+    }
 
     // P4 (ask-decline-ack-net) — stamp the INITIAL ask's resolution into the
     // per-turn ask-lifecycle ledger. `answered===true` (a real user reply — a
@@ -826,7 +868,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     if (outcome.dispatcher_error_diag !== undefined) {
       logPayload.dispatcher_error = outcome.dispatcher_error_diag;
     }
-    logAskUser(logger, logPayload);
+    logAsk(logPayload);
 
     // Step 6: return tool_result envelope. Body is a JSON string per the
     // runToolLoop contract. is_error is true ONLY for duplicate — other
@@ -864,6 +906,37 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     //
     // The legacy body shape is preserved when there's nothing to resolve
     // so existing call paths don't break.
+    const mirrorResolution = await addressMirrorController?.resolveLiveAnswer?.({
+      input,
+      outcome,
+      askId: toolCallId,
+    });
+    if (mirrorResolution?.handled) {
+      if (
+        (mirrorResolution.outcome === 'conflict' || mirrorResolution.outcome === 'duplicate') &&
+        typeof mirrorResolution.clearAskId === 'string' &&
+        ws?.readyState === ws?.OPEN
+      ) {
+        ws.send(
+          JSON.stringify({
+            type: 'cancel_pending_tts',
+            prefix: mirrorResolution.clearAskId,
+            sessionId,
+          })
+        );
+      }
+      return {
+        tool_use_id: toolCallId,
+        content: JSON.stringify({
+          answered: true,
+          address_mirror: mirrorResolution.outcome,
+          changed_fields: mirrorResolution.changed ?? [],
+          source_replay_count: mirrorResolution.replayedSource ?? 0,
+        }),
+        is_error: false,
+      };
+    }
+
     const body = await buildResolvedBody({
       outcome,
       pendingWrite: input.pending_write ?? null,

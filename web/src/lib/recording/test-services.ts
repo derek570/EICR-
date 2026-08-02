@@ -55,11 +55,17 @@ export interface SonnetSessionLike {
   pause(): void;
   resume(): void;
   sendTranscript(text: string, options?: unknown): void;
-  sendAskUserAnswered(toolCallId: string, text: string, utteranceId?: string): void;
+  sendAskUserAnswered(
+    toolCallId: string,
+    text: string,
+    utteranceId?: string,
+    purpose?: string | null
+  ): void;
+  sendAddressMirrorDeliveryAck(deliveryToken: string): void;
   sendCompactRequest(): void;
   sendJobStateUpdate(job: unknown): void;
   peekInFlightToolCallId(): string | null;
-  consumeInFlightToolCallId(): string | null;
+  consumeInFlightToolCallId(expectedId?: string | null): string | null;
   clearInFlightToolCallIdByPrefix(prefix: string): void;
   readonly connectionState: SonnetConnectionState;
   /** Diagnostic sink surface — recording-context wires the session into

@@ -36,6 +36,8 @@ export interface InFlightQuestion {
    *  `ask_user_started`. Travels through so the consumer can correlate
    *  later, but the slot mechanism itself is tool_call_id-agnostic. */
   toolCallId?: string | null;
+  /** Server-owned deterministic controller purpose. */
+  purpose?: string | null;
 }
 
 /** Shape attached to the outbound `transcript` frame as `in_response_to`.
@@ -45,6 +47,126 @@ export interface InFlightPayload {
   question: string;
   field?: string;
   circuit?: number;
+  purpose?: string;
+  tool_call_id?: string;
+}
+
+export interface QuestionTapDispatch {
+  transcript: string;
+  inResponseTo?: InFlightPayload;
+  askUserAnswered?: {
+    toolCallId: string;
+    purpose?: string | null;
+  };
+  serverOwnsTerminalSpeech: boolean;
+}
+
+/** Server owns the only terminal speech for deterministic address asks. */
+export function isServerOwnedAddressMirrorQuestion(question: {
+  purpose?: string | null;
+  question_type?: string | null;
+  type?: string | null;
+}): boolean {
+  return (
+    question.purpose === 'address_mirror' ||
+    question.question_type === 'address_mirror' ||
+    question.question_type === 'address_mirror_direct' ||
+    question.type === 'address_mirror' ||
+    question.type === 'address_mirror_direct'
+  );
+}
+
+/**
+ * Keep generic prompt-echo rejection for every ordinary question, but never
+ * let it consume a supported reply to a server-owned address operation.
+ * Phrases such as "use the same" intentionally overlap the prompt and are
+ * resolved by the backend's bounded yes/no parser; the exact purpose/type
+ * marker is the authority, never the question wording.
+ */
+export function shouldDiscardTtsEchoForQuestion(
+  transcript: string,
+  isEcho: boolean,
+  question: InFlightPayload | null
+): boolean {
+  if (!isEcho) return false;
+  if (!isServerOwnedAddressMirrorQuestion(question ?? {})) return true;
+
+  // Keep this deliberately identical to the backend controller's bounded
+  // address-mirror YES/NO grammar. Only an actual supported answer may pass
+  // through the overlap gate; the spoken prompt itself (or a fragment of it)
+  // must still be rejected as echo.
+  const clean = transcript.trim();
+  const yes =
+    /^(?:y|yes|yeah|yep|same|use (?:the )?same|same as (?:the )?(?:site|installation|client|customer))(?:[.!])?$/i;
+  const no =
+    /^(?:n|no|nope|different|separate|keep (?:them|the addresses) (?:different|separate))(?:[.!])?$/i;
+  return !(yes.test(clean) || no.test(clean));
+}
+
+/**
+ * Build the exact wire route for an on-screen Yes/No answer.
+ *
+ * The three address-mirror question lanes deliberately use two different
+ * backend ingress contracts:
+ *  - live Stage 6 asks require transcript-then-ask_user_answered;
+ *  - rollback/legacy questions resolve from transcript.in_response_to;
+ *  - direct-command clarifications also resolve from in_response_to, with
+ *    their exact server-minted question id.
+ *
+ * Keeping this as a pure function makes it impossible for the tap handlers to
+ * accidentally send every tool_call_id through ask_user_answered (the direct
+ * controller never consumes that channel), and gives wire-shape tests one
+ * authoritative seam.
+ */
+export function buildQuestionTapDispatch(
+  question: {
+    question: string;
+    question_type?: string | null;
+    field?: string | null;
+    circuit?: number | null;
+    tool_call_id?: string | null;
+    purpose?: string | null;
+  },
+  accepted: boolean
+): QuestionTapDispatch | null {
+  const transcript = accepted ? 'yes' : 'no';
+  const toolCallId =
+    typeof question.tool_call_id === 'string' && question.tool_call_id
+      ? question.tool_call_id
+      : null;
+
+  if (question.question_type === 'address_mirror_direct') {
+    const inResponseTo: InFlightPayload = {
+      type: 'address_mirror_direct',
+      question: question.question,
+    };
+    if (toolCallId) inResponseTo.tool_call_id = toolCallId;
+    return { transcript, inResponseTo, serverOwnsTerminalSpeech: true };
+  }
+
+  if (
+    !toolCallId &&
+    (question.purpose === 'address_mirror' || question.question_type === 'address_mirror')
+  ) {
+    const inResponseTo: InFlightPayload = {
+      type: 'address_mirror',
+      question: question.question,
+      purpose: 'address_mirror',
+    };
+    if (question.field != null) inResponseTo.field = question.field;
+    if (question.circuit != null) inResponseTo.circuit = question.circuit;
+    return { transcript, inResponseTo, serverOwnsTerminalSpeech: true };
+  }
+
+  if (toolCallId) {
+    return {
+      transcript,
+      askUserAnswered: { toolCallId, purpose: question.purpose },
+      serverOwnsTerminalSpeech: isServerOwnedAddressMirrorQuestion(question),
+    };
+  }
+
+  return null;
 }
 
 /**
@@ -171,6 +293,7 @@ export class InFlightQuestionTracker {
       field: entry.field,
       circuit: entry.circuit,
       toolCallId: entry.toolCallId,
+      purpose: entry.purpose,
       askedAt: this.now(),
     };
     // Purge stale pending entries so they can't shadow a future match.
@@ -214,6 +337,8 @@ export class InFlightQuestionTracker {
     };
     if (this.slot.field != null) payload.field = this.slot.field;
     if (this.slot.circuit != null) payload.circuit = this.slot.circuit;
+    if (this.slot.purpose != null) payload.purpose = this.slot.purpose;
+    if (this.slot.toolCallId != null) payload.tool_call_id = this.slot.toolCallId;
     if (transcriptConsumesInFlight(transcript)) {
       this.slot = null;
     }
@@ -249,6 +374,8 @@ export class InFlightQuestionTracker {
     };
     if (this.slot.field != null) payload.field = this.slot.field;
     if (this.slot.circuit != null) payload.circuit = this.slot.circuit;
+    if (this.slot.purpose != null) payload.purpose = this.slot.purpose;
+    if (this.slot.toolCallId != null) payload.tool_call_id = this.slot.toolCallId;
     return payload;
   }
 
@@ -266,6 +393,20 @@ export class InFlightQuestionTracker {
     if (age > this.staleWindowMs) {
       this.slot = null;
     }
+  }
+
+  /**
+   * Consume only the question answered by an on-screen tap. Matching the
+   * server id when present prevents an older card from clearing a newer
+   * identical prompt that has already entered the TTS FIFO.
+   */
+  consumeMatchingQuestion(question: string, toolCallId?: string | null): void {
+    const matches = (candidate: InFlightQuestion): boolean =>
+      candidate.question === question &&
+      (toolCallId == null || candidate.toolCallId === toolCallId);
+    if (this.slot && matches(this.slot)) this.slot = null;
+    const pendingIndex = this.pending.findIndex(matches);
+    if (pendingIndex >= 0) this.pending.splice(pendingIndex, 1);
   }
 
   /**

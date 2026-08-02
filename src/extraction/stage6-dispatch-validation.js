@@ -617,6 +617,13 @@ export function validateAskUser(input) {
   if (!ASK_USER_ANSWER_SHAPES.includes(input.expected_answer_shape)) {
     return { code: 'invalid_expected_answer_shape', field: 'expected_answer_shape' };
   }
+  const purpose = input.purpose ?? null;
+  if (purpose !== null && purpose !== 'address_mirror') {
+    return { code: 'invalid_purpose', field: 'purpose' };
+  }
+  if (purpose === 'address_mirror' && input.expected_answer_shape !== 'yes_no') {
+    return { code: 'invalid_address_mirror_answer_shape', field: 'expected_answer_shape' };
+  }
   // pending_write is OPTIONAL — null/absent is the common case for asks that
   // aren't resolving a buffered value (out_of_range_circuit, observation
   // confirmation, etc.). When PRESENT it must be a fully-shaped object.

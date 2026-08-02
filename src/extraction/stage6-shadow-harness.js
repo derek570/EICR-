@@ -65,9 +65,16 @@
  */
 
 import logger from '../logger.js';
-import { lookupPostcode } from '../postcode_lookup.js';
-import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import {
+  buildPostcodeLookupNote,
+  lookupResolvedPostcodeHint,
+  resolvePostcodeHintState,
+} from './postcode-hint.js';
 import { copyAfddPremisesRequirement } from './regulation-lookup.js';
+import {
+  ADDRESS_MIRROR_DELIVERY,
+  ADDRESS_MIRROR_DIRECT_FOLLOWUP,
+} from './address-mirror-controller.js';
 import { runToolLoop } from './stage6-tool-loop.js';
 // Loaded Barrel Phase 2.B/2.C wire-up (plan v10 §C). Per-turn
 // speculator instantiation in runLiveMode. Cache state is module-
@@ -109,6 +116,7 @@ import {
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
   EFFECTIVE_CIRCUIT_SLOT,
+  FORCE_CONFIRMATIONS,
   circuitDesignationKey,
   decodeBoardReadingKey,
   decodeReadingKey,
@@ -758,64 +766,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     current: typeof options.utteranceId === 'string' ? options.utteranceId : null,
   };
 
-  // ───────────────────────────────────────────────────────────────
-  // Postcode lookup → snapshot apply. 2026-06-02 — Codex round 5
-  // empirical finding (matrix harness vs prod 2026-06-01): commit
-  // db85f825's county-drift fix was wired ONLY into
-  // `_extractSingle` (eicr-extraction-session.js:1957-2005), which
-  // is the legacy `extractFromUtterance` path. `runLiveMode` (the
-  // production SONNET_TOOL_CALLS=live path) never called it, so the
-  // structural override that should clamp town/county to the
-  // postcodes.io canonical values when iOS's regex hint carries
-  // `install.postcode` was effectively unwired in prod for every
-  // session.
-  //
-  // Empirical confirmation from harness run 2026-06-01: address
-  // transcripts in live mode wrote address/town/postcode but never
-  // county. Sessions B95B2EE1 + D68ACD24 (2026-05-31 field tests)
-  // landed county="South East" — exactly the regression
-  // applyPostcodeLookupToSnapshot was designed to prevent, but the
-  // applier never ran.
-  //
-  // Wiring identical to `_extractSingle` so the SAME policy applies
-  // in both paths (lookup wins on empty OR on Sonnet drift to a UK
-  // ITL1 region; manual edits preserved). Runs BEFORE
-  // `runToolLoop` so the snapshot Sonnet reads via the cached
-  // system prompt (`buildSystemBlocks`) reflects the canonical
-  // values — Sonnet's same-value-skip then naturally avoids
-  // re-writing town/county and the override sticks.
-  //
-  // Failure modes are absorbed: a postcodes.io 5xx / network timeout
-  // logs a warn but never throws, exactly like the legacy path.
-  // ───────────────────────────────────────────────────────────────
-  let postcodeLookupResult = null;
-  if (Array.isArray(regexResults) && regexResults.length > 0) {
-    const postcodeEntry = regexResults.find((r) => r && r.field === 'install.postcode' && r.value);
-    if (postcodeEntry) {
-      try {
-        const lookup = await lookupPostcode(postcodeEntry.value);
-        if (lookup) {
-          postcodeLookupResult = {
-            postcode: lookup.postcode,
-            town: lookup.town,
-            county: lookup.county,
-            valid: true,
-          };
-          log?.info?.(
-            `Session ${session.sessionId} Postcode lookup (live): ${postcodeEntry.value} → ${lookup.town}, ${lookup.county}`
-          );
-        } else {
-          postcodeLookupResult = { postcode: postcodeEntry.value, valid: false };
-          log?.info?.(
-            `Session ${session.sessionId} Postcode lookup (live): ${postcodeEntry.value} → not found`
-          );
-        }
-      } catch (err) {
-        log?.warn?.(`Session ${session.sessionId} Postcode lookup (live) failed: ${err.message}`);
-      }
-    }
-  }
-  applyPostcodeLookupToSnapshot(session.stateSnapshot, postcodeLookupResult, session.sessionId);
+  // Lookup is current-turn enrichment only. It must not mutate a site slot
+  // before the authoritative postcode write chooses site versus client.
+  const postcodeHintState = options.postcodeHintState ?? resolvePostcodeHintState({ regexResults });
+  const postcodeLookupResult = await lookupResolvedPostcodeHint(postcodeHintState, {
+    logger: log,
+    sessionId: session.sessionId,
+    lane: 'live',
+  });
+  // A blocking ask can be answered by a later transcript carrying its own
+  // postcode hint. The mutable ref lets the answer dispatcher replace the
+  // opening utterance's lookup before any resumed postcode write dispatches.
+  const postcodeLookupRef = { current: postcodeLookupResult };
+  const postcodeLookupNote = buildPostcodeLookupNote(postcodeLookupResult);
 
   // Per-turn writes accumulator. Function-local — never stored on session
   // (Pitfall #2 — cross-turn leak prevention from shadow harness).
@@ -983,6 +946,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // opposite default would silence exactly the class this plan exists to
     // remove.
     let allRejected = false;
+    let addressMirrorDirectFollowup = null;
     // marker-② predicate-4 "already-spoken evidence": count of confirmations
     // PRODUCED this turn but suppressed by the backend applyConfirmationDebounce
     // (the inspector heard the same reading on a recent turn). Captured from
@@ -1166,6 +1130,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       hasLimRangedWriteV1,
       hasBoardClearV1,
       onUnknownToolRefusal,
+      postcodeLookupResult,
+      postcodeLookupRef,
     });
     // 2026-04-27 — bug-1B fix. Hook the ask dispatcher's server-side resolution
     // path into the normal write infrastructure: when ask_user carries a
@@ -1196,6 +1162,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       log,
       turnId
     );
+    const addressMirrorTurnController = entry?.addressMirrorController
+      ? {
+          claimLiveAsk: (args) =>
+            entry.addressMirrorController.claimLiveAsk({ ...args, perTurnWrites }),
+          resolveLiveAnswer: (args) =>
+            entry.addressMirrorController.resolveLiveAnswer({ ...args, perTurnWrites }),
+        }
+      : null;
     let dispatcher;
     let sortRecords;
     let askGateForTurn = null;
@@ -1203,6 +1177,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       let asks = createAskDispatcher(liveSession, log, turnId, pendingAsks, ws, {
         fallbackToLegacy: options.fallbackToLegacy === true,
         autoResolveWrite: liveAutoResolveWrite,
+        addressMirrorController: addressMirrorTurnController,
         // F7 Item 2 — the emission audit hook (initial + pvr broker sends).
         onAskUserStarted,
         // P4 — the resolution-time hook (initial await + pvr broker) that
@@ -1220,6 +1195,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // initial/pvr await when the resolved outcome carries a non-empty epoch
         // (direct-frame `utterance_id` OR transcript-origin `response_utterance_id`).
         responseEpochRef,
+        postcodeLookupRef,
         // Plan 2A channel 3 (2026-07-30, feedback id 112) — STAGING callback for
         // an auto-resolved write that did not land. A callback rather than the
         // `perTurnWrites` accumulator itself: the ask dispatcher has never held
@@ -1511,7 +1487,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const liveMessages = [
       ...windowMessages,
       ...orphanContextMessages,
-      { role: 'user', content: transcriptText },
+      {
+        role: 'user',
+        content: postcodeLookupNote
+          ? `${transcriptText}\n\n[${postcodeLookupNote}]`
+          : transcriptText,
+      },
     ];
 
     // readback-correction-optionb §6 — round-1 tool_choice:any no-op allowance:
@@ -1927,8 +1908,25 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
+    if (entry?.addressMirrorController) {
+      const successfulAddressFields = new Set(
+        projectBoardReadingWinners(perTurnWrites)
+          .filter((winner) => winner?.value?.derived !== true)
+          .map((winner) => decodeBoardReadingKey(winner.rawKey).field)
+      );
+      const directFinal = await entry.addressMirrorController.finalizeDirectAfterWrites({
+        successfulFields: successfulAddressFields,
+        perTurnWrites,
+        sourceAudible: options.confirmationsEnabled === true,
+      });
+      if (directFinal?.handled && typeof directFinal.question === 'string') {
+        addressMirrorDirectFollowup = directFinal;
+      }
+    }
+
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {
-      confirmationsEnabled: options.confirmationsEnabled === true,
+      confirmationsEnabled:
+        options.confirmationsEnabled === true || perTurnWrites[FORCE_CONFIRMATIONS] === true,
       // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
       // trip it on the /api/proxy/elevenlabs-tts POST body for cache
       // lookup. Omitted when undefined; legacy decoders ignore unknown
@@ -1972,6 +1970,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // wire-compat line.
       hasBoardClearV1,
     });
+    if (addressMirrorDirectFollowup) {
+      Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {
+        value: addressMirrorDirectFollowup,
+        enumerable: false,
+        configurable: false,
+      });
+    }
+    if (perTurnWrites[ADDRESS_MIRROR_DELIVERY]) {
+      Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
+        value: perTurnWrites[ADDRESS_MIRROR_DELIVERY],
+        enumerable: false,
+        configurable: true,
+      });
+    }
 
     // P5 (2026-07-23) — emit clear→write collapse telemetry (live path).
     emitClearWriteCollapseTelemetry(log, session, turnId, result);
@@ -1998,6 +2010,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           source: br.source,
         };
         if (br.board_id != null) synthesised.board_id = br.board_id;
+        // Preserve server-owned provenance across the legacy circuit:0 fold.
+        // This additive flag lets clients suppress local correction speech for
+        // automatic mirror/locality writes even when Voice confirmations are
+        // disabled; dictated readings continue to omit it and remain audible.
+        if (br.derived === true) synthesised.derived = true;
         // A2-multiboard item 7 (2026-07-28) — carry the collapse flag through
         // the fold. `extracted_board_readings` is STRIPPED below (the iOS
         // Codable decoder rejects the slot), so this synthesised circuit:0 copy

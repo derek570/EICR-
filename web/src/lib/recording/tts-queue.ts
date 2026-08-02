@@ -218,7 +218,10 @@ function pumpIfIdle(): void {
       }
     },
     onEnd: () => completeHead(myId),
-    onError: () => completeHead(myId),
+    // Synthesis/native playback can fail before `onStart`. In that case the
+    // inspector heard nothing, so release the caller's reservation before
+    // advancing. A post-start error remains heard and keeps its key.
+    onError: () => completeHead(myId, true),
     ready: (prepared) => {
       if (currentHeadId !== myId) {
         // Superseded during the fetch window — the prepared audio is stale.
@@ -253,9 +256,12 @@ function pumpIfIdle(): void {
  * FIRST). Never route a manual teardown advance through here — it would no-op
  * and stall the pump (`busy` stuck true → zero read-back).
  */
-function completeHead(id: number): void {
+function completeHead(id: number, failed = false): void {
   if (id !== currentHeadId) return;
   const finished = head;
+  if (failed && !startedPlayback && finished) {
+    fireDiscarded(finished);
+  }
   head = null;
   busy = false;
   currentHeadId = null;
