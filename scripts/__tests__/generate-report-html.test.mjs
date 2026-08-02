@@ -107,6 +107,23 @@ test("Plan 08-04 r3-#1 — baseline benign summary renders without injecting ext
   assert.ok(html.includes("1 High Street"));
 });
 
+test("GPT-5.6 cache economics render actual savings without stale Sonnet rates", () => {
+  const summary = benignSummary();
+  summary.cost_breakdown.sonnet.cache_economics = {
+    actualCost: 0.33,
+    noCacheCost: 1,
+    netSavings: 0.67,
+    netSavingsPercent: 67,
+  };
+  const html = runRenderer({ recommendations: [], summary });
+  assert.ok(html.includes("AI extraction"));
+  assert.ok(html.includes("Prompt cache saved"));
+  assert.ok(html.includes("67.0%"));
+  assert.ok(html.includes("model-priced"));
+  assert.ok(!html.includes("Sonnet 4.5"));
+  assert.ok(!html.includes("$0.30/M"));
+});
+
 test("Plan 08-04 r3-#1 — tool name with <script> payload is escaped (not live)", () => {
   const baseline = countLiveScriptTags(
     runRenderer({ recommendations: [], summary: benignSummary() }),

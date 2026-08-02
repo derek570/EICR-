@@ -30,6 +30,7 @@ jest.unstable_mockModule('@anthropic-ai/sdk', () => ({
 }));
 
 const { EICRExtractionSession } = await import('../extraction/eicr-extraction-session.js');
+const { getOpenAIStableSystemBlockCount } = await import('../extraction/system-prompt-renderer.js');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -267,6 +268,7 @@ describe('Commit 2 — schedule facts-only + buildSystemBlocks split', () => {
     expect(blocks[2].text).not.toContain('CIRCUIT SCHEDULE');
     // Stable prefix must NOT carry the volatile EXTRACTED block
     expect(blocks[1].text).not.toContain('EXTRACTED');
+    expect(getOpenAIStableSystemBlockCount(blocks)).toBe(2);
   });
 
   test('split_blocks: empty session collapses to single base block', () => {
@@ -274,6 +276,7 @@ describe('Commit 2 — schedule facts-only + buildSystemBlocks split', () => {
     const blocks = s.buildSystemBlocks();
     expect(blocks).toHaveLength(1);
     expect(blocks[0].text).toBe(s.systemPrompt);
+    expect(getOpenAIStableSystemBlockCount(blocks)).toBe(1);
   });
 
   test('case 21 — circuit E2E EXTRACTED visibility under split_blocks', () => {

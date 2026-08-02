@@ -22,6 +22,10 @@
 import { jest } from '@jest/globals';
 import { runToolLoop } from '../extraction/stage6-tool-loop.js';
 import { _internals } from '../extraction/openai-responses-adapter.js';
+import {
+  markOpenAIStableSystemPrefix,
+  renderSystemPrompt,
+} from '../extraction/system-prompt-renderer.js';
 
 // --- Round 1: reasoning, then one function_call. Streaming events + the
 // consistent buffered final response finalResponse() would return. ---
@@ -163,6 +167,121 @@ describe('openai-responses-adapter — request/response translation', () => {
       ])
     ).toBe('BASE SENTINEL\n\nSTABLE PREFIX END\n\nEXTRACTED\nPENDING');
     expect(_internals.flattenSystem([{ type: 'image', data: 'ignored' }])).toBe('');
+  });
+
+  test('explicit developer blocks preserve exact prompt bytes and mark only the stable-prefix end', () => {
+    const system = markOpenAIStableSystemPrefix(
+      [
+        { type: 'text', text: 'BASE SENTINEL' },
+        { type: 'text', text: 'STABLE PREFIX END' },
+        { type: 'text', text: 'EXTRACTED\nPENDING' },
+      ],
+      2
+    );
+    const converted = _internals.toExplicitSystemInput(system);
+    expect(converted.item.role).toBe('developer');
+    expect(converted.item.content.map((block) => block.text).join('')).toBe(
+      renderSystemPrompt(system)
+    );
+    expect(converted.item.content[0]).not.toHaveProperty('prompt_cache_breakpoint');
+    expect(converted.item.content[1].prompt_cache_breakpoint).toEqual({ mode: 'explicit' });
+    expect(converted.item.content[2]).not.toHaveProperty('prompt_cache_breakpoint');
+    expect(converted.stableText).toBe('BASE SENTINEL\n\nSTABLE PREFIX END');
+  });
+
+  test('explicit GPT-5.6 request carries a stable digest key; volatile-tail edits reuse it', async () => {
+    const previous = process.env.OPENAI_EXTRACT_PROMPT_CACHE;
+    process.env.OPENAI_EXTRACT_PROMPT_CACHE = 'explicit';
+    const payloads = [];
+    const openai = {
+      responses: {
+        stream: jest.fn((payload) => {
+          payloads.push(payload);
+          return makeMockOpenAIStream(ROUND1_STREAM_EVENTS, ROUND1_FINAL);
+        }),
+      },
+    };
+    const tools = [{ name: 'record_reading', input_schema: { type: 'object', properties: {} } }];
+    const makeSystem = (tail) =>
+      markOpenAIStableSystemPrefix(
+        [
+          { type: 'text', text: 'BASE' },
+          { type: 'text', text: 'STABLE' },
+          { type: 'text', text: tail },
+        ],
+        2
+      );
+    try {
+      for (const tail of ['EXTRACTED A', 'EXTRACTED B']) {
+        await _internals
+          .createStream(openai, {
+            model: 'gpt-5.6-luna',
+            system: makeSystem(tail),
+            messages: [{ role: 'user', content: 'reading' }],
+            tools,
+          })
+          .finalMessage();
+      }
+      expect(payloads).toHaveLength(2);
+      expect(payloads[0]).not.toHaveProperty('instructions');
+      expect(payloads[0].prompt_cache_options).toEqual({ mode: 'explicit' });
+      expect(payloads[0].prompt_cache_key).toMatch(/^certmate-s6-v1-[a-f0-9]{48}$/);
+      expect(payloads[1].prompt_cache_key).toBe(payloads[0].prompt_cache_key);
+      expect(payloads[0].input[0].role).toBe('developer');
+      expect(payloads[0].input[0].content.map((block) => block.text).join('')).toBe(
+        'BASE\n\nSTABLE\n\nEXTRACTED A'
+      );
+      expect(payloads[0].input[0].content[1].prompt_cache_breakpoint).toEqual({
+        mode: 'explicit',
+      });
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_EXTRACT_PROMPT_CACHE;
+      else process.env.OPENAI_EXTRACT_PROMPT_CACHE = previous;
+    }
+  });
+
+  test('implicit rollback and non-5.6 models retain the top-level instructions payload', async () => {
+    const previous = process.env.OPENAI_EXTRACT_PROMPT_CACHE;
+    const payloads = [];
+    const openai = {
+      responses: {
+        stream: jest.fn((payload) => {
+          payloads.push(payload);
+          return makeMockOpenAIStream(ROUND1_STREAM_EVENTS, ROUND1_FINAL);
+        }),
+      },
+    };
+    try {
+      process.env.OPENAI_EXTRACT_PROMPT_CACHE = 'implicit';
+      await _internals
+        .createStream(openai, {
+          model: 'gpt-5.6-luna',
+          system: 'SYSTEM',
+          messages: [],
+          tools: [],
+        })
+        .finalMessage();
+      process.env.OPENAI_EXTRACT_PROMPT_CACHE = 'explicit';
+      await _internals
+        .createStream(openai, {
+          model: 'gpt-5.5',
+          system: 'SYSTEM',
+          messages: [],
+          tools: [],
+        })
+        .finalMessage();
+      for (const payload of payloads) {
+        expect(payload.instructions).toBe('SYSTEM');
+        expect(payload).not.toHaveProperty('prompt_cache_options');
+        expect(payload).not.toHaveProperty('prompt_cache_key');
+      }
+      expect(() => _internals.resolvePromptCacheMode('typo', 'gpt-5.6-luna')).toThrow(
+        'Unsupported OPENAI_EXTRACT_PROMPT_CACHE'
+      );
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_EXTRACT_PROMPT_CACHE;
+      else process.env.OPENAI_EXTRACT_PROMPT_CACHE = previous;
+    }
   });
 
   test('toResponsesTools is FLAT (no nested function key)', () => {
@@ -499,6 +618,10 @@ describe('openai-responses-adapter — drives the REAL runToolLoop across two ro
     expect(out.usage.output_tokens).toBe(65); // 55 + 10
     expect(out.usage.cache_read_input_tokens).toBe(2047); // only round 2 had a cache hit
     expect(out.usage.cache_creation_input_tokens).toBe(2077); // 2062 + 15
+    expect(out.round_usage).toEqual([
+      expect.objectContaining({ round_idx: 0, cache_creation_input_tokens: 2062 }),
+      expect.objectContaining({ round_idx: 1, cache_read_input_tokens: 2047 }),
+    ]);
 
     // Round 2's request must carry the reasoning item echoed back BEFORE the
     // function_call it followed — proving continuity round-tripped through

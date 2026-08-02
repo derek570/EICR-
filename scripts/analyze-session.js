@@ -876,6 +876,7 @@ async function analyzeSession(sessionDir) {
     output: sonnetCostData.output || 0,
   };
   const sonnetCostUsd = sonnetCostData.cost || parseFloat(manifest.sonnetCostUSD || "0");
+  const cacheEconomics = sonnetCostData.cacheEconomics || null;
   const sonnetTurns = sonnetCostData.turns || costSummary?.extraction?.turns || sonnetPerformance.total_calls;
   const sonnetCompactions = sonnetCostData.compactions || costSummary?.extraction?.compactions || 0;
 
@@ -927,6 +928,7 @@ async function analyzeSession(sessionDir) {
       turns: sonnetTurns,
       compactions: sonnetCompactions,
       token_breakdown: sonnetTokenBreakdown,
+      cache_economics: cacheEconomics,
     },
     gpt_vision: {
       cost_usd: parseFloat(gptVisionCostUsd.toFixed(6)),
@@ -963,12 +965,14 @@ async function analyzeSession(sessionDir) {
 
   if (sonnetPromptStats.estimated_tokens > 0) {
     const promptTokens = sonnetPromptStats.estimated_tokens;
-    const turns = sonnetTurns || 1;
-    // First call: cache_write ($6.00/M, 1-hour extended cache), subsequent: cache_read ($0.30/M)
-    const firstCallCost = (promptTokens * 6.00) / 1_000_000;
-    const cachedCallCost = (promptTokens * 0.30) / 1_000_000;
-    const promptCostPerSession = firstCallCost + (Math.max(0, turns - 1) * cachedCallCost);
-    sonnetPromptAudit.cost_per_session = parseFloat(promptCostPerSession.toFixed(6));
+    // Prefer the provider/model/tier-aware observed input cost. Historical
+    // summaries without cacheEconomics keep a zero estimate rather than
+    // applying the old Sonnet 4.5 rates to GPT-5.6 traffic.
+    if (cacheEconomics) {
+      sonnetPromptAudit.cost_per_session = parseFloat(
+        Number(cacheEconomics.actualInputCost || 0).toFixed(6)
+      );
+    }
 
     if (promptTokens > 4000) {
       sonnetPromptAudit.warning = `System prompt is ~${promptTokens} tokens (>4000 threshold). Consider trimming to reduce cache write cost.`;

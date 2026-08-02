@@ -153,6 +153,13 @@ function buildCostDashboard() {
   const gv = cost.gpt_vision || {};
   const el = cost.elevenlabs || {};
   const tb = sn.token_breakdown || {};
+  const ce = sn.cache_economics || {};
+  const cacheSavings = Number(ce.netSavings || 0);
+  const cacheResult = ce.noCacheCost == null
+    ? '<div class="cost-item-detail">Cache saving unavailable for this historical session</div>'
+    : cacheSavings >= 0
+      ? `<div class="cost-item-detail">Prompt cache saved &pound;${toGBP(cacheSavings)} (${Number(ce.netSavingsPercent || 0).toFixed(1)}%) vs &pound;${toGBP(ce.noCacheCost)} without caching</div>`
+      : `<div class="cost-item-detail">Cold cache writes cost &pound;${toGBP(Math.abs(cacheSavings))} extra vs no caching so far</div>`;
 
   return `
     <div class="cost-total">
@@ -171,15 +178,16 @@ function buildCostDashboard() {
 
       <div class="cost-item">
         <div class="cost-item-header">
-          <span class="cost-item-name">Sonnet 4.5</span>
+          <span class="cost-item-name">AI extraction</span>
           <span class="cost-item-price">&pound;${toGBP(sn.cost_usd)}</span>
         </div>
         <div class="cost-item-detail">${sn.turns || 0} turns, ${sn.compactions || 0} compactions</div>
+        ${cacheResult}
         <div class="token-grid">
-          <div class="token-row"><span class="token-label">Cache Read</span><span class="token-val">${formatTokens(tb.cache_read)}</span><span class="token-rate">$0.30/M</span></div>
-          <div class="token-row"><span class="token-label">Cache Write</span><span class="token-val">${formatTokens(tb.cache_write)}</span><span class="token-rate">$6.00/M</span></div>
-          <div class="token-row"><span class="token-label">Input</span><span class="token-val">${formatTokens(tb.input)}</span><span class="token-rate">$3.00/M</span></div>
-          <div class="token-row"><span class="token-label">Output</span><span class="token-val">${formatTokens(tb.output)}</span><span class="token-rate">$15.00/M</span></div>
+          <div class="token-row"><span class="token-label">Cache Read</span><span class="token-val">${formatTokens(tb.cache_read)}</span><span class="token-rate">model-priced</span></div>
+          <div class="token-row"><span class="token-label">Cache Write</span><span class="token-val">${formatTokens(tb.cache_write)}</span><span class="token-rate">model-priced</span></div>
+          <div class="token-row"><span class="token-label">Input</span><span class="token-val">${formatTokens(tb.input)}</span><span class="token-rate">model-priced</span></div>
+          <div class="token-row"><span class="token-label">Output</span><span class="token-val">${formatTokens(tb.output)}</span><span class="token-rate">model-priced</span></div>
         </div>
       </div>
 
@@ -196,7 +204,7 @@ function buildCostDashboard() {
           <span class="cost-item-name">ElevenLabs TTS</span>
           <span class="cost-item-price">&pound;${toGBP(el.cost_usd)}</span>
         </div>
-        <div class="cost-item-detail">${el.characters || 0} chars @ $0.03/K</div>
+        <div class="cost-item-detail">${el.characters || 0} chars, model-priced</div>
       </div>
     </div>`;
 }

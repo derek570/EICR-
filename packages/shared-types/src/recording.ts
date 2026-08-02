@@ -12,6 +12,23 @@ export interface DeepgramWord {
   punctuated_word?: string;
 }
 
+export interface PromptCacheEconomicsTotals {
+  cacheReadCost: number;
+  cacheWriteCost: number;
+  uncachedInputCost: number;
+  outputCost: number;
+  actualInputCost: number;
+  actualCost: number;
+  noCacheInputCost: number;
+  noCacheCost: number;
+  netSavings: number;
+  netSavingsPercent: number;
+}
+
+export interface PromptCacheEconomics extends PromptCacheEconomicsTotals {
+  perModel?: Record<string, PromptCacheEconomicsTotals>;
+}
+
 export interface ServerCostUpdate {
   deepgramCost: number;
   sonnetCost: number;
@@ -23,6 +40,11 @@ export interface ServerCostUpdate {
   cacheWriteTokens: number;
   inputTokens: number;
   outputTokens: number;
+  /** Additive backend wire detail; older consumers safely ignore it. */
+  sonnet?: {
+    cacheEconomics?: PromptCacheEconomics;
+    [key: string]: unknown;
+  };
 }
 
 export interface UserQuestion {

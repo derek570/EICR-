@@ -50,11 +50,7 @@ import {
   isStage6FatalControlFlowError,
   throwIfStage6Cancelled,
 } from './stage6-control-flow-errors.js';
-import {
-  ProviderResolutionError,
-  assertSameProvider,
-  providerForModel,
-} from './model-provider.js';
+import { ProviderResolutionError, assertSameProvider, providerForModel } from './model-provider.js';
 
 // ---------------------------------------------------------------------------
 // Loaded Barrel Phase 2.C — perTurnWrites snapshot/diff helpers (plan v10 §C)
@@ -407,6 +403,10 @@ export async function runToolLoop({
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   };
+  // Per-API-round cache evidence. Aggregate usage remains the billing source;
+  // this additive array proves which round wrote/read the prefix and which
+  // explicit breakpoint/key version produced that result.
+  const roundUsage = [];
   // OpenAI Responses reports the tier it actually served (`priority` for a
   // Fast request today). Retain it so CostTracker can bill each 5.6 family at
   // the matching Standard/Fast rate.
@@ -585,6 +585,16 @@ export async function runToolLoop({
       usage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
       usage.cache_read_input_tokens += u.cache_read_input_tokens || 0;
     }
+    roundUsage.push({
+      round_idx: rounds - 1,
+      input_tokens: u?.input_tokens || 0,
+      output_tokens: u?.output_tokens || 0,
+      cache_creation_input_tokens: u?.cache_creation_input_tokens || 0,
+      cache_read_input_tokens: u?.cache_read_input_tokens || 0,
+      prompt_cache_mode: assistantMsg.prompt_cache?.mode ?? null,
+      prompt_cache_breakpoint_enabled: assistantMsg.prompt_cache?.breakpoint_enabled ?? false,
+      prompt_cache_key_id: assistantMsg.prompt_cache?.key_id ?? null,
+    });
     if (assistantMsg.service_tier) {
       if (serviceTier && serviceTier !== assistantMsg.service_tier) {
         logger?.warn?.('stage6.mixed_service_tier', {
@@ -1059,5 +1069,6 @@ export async function runToolLoop({
     tool_call_count_per_round: toolCallCountPerRound,
     tool_error_count_per_round: toolErrorCountPerRound,
     round_timings: roundTimings,
+    round_usage: roundUsage,
   };
 }
