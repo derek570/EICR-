@@ -337,7 +337,7 @@ Applied at **two seams**, with this consumer routing table:
 
 **Incidental INFO-log previews** (engine / dispatcher-logger) that derive from the now-canonical vars MAY read canonical — that is the documented, pinned behaviour (the load-bearing raw requirement is only the debug/corpus capture boundary, which has no live sink here).
 
-**Web:** zero wire change; web transcripts flow through the same backend ingest, so web benefits identically. The web client-side regex fast-hint tier still sees raw text (acceptable — Sonnet overwrites).
+**Web:** zero wire change; web transcripts flow through the same backend ingest, so web benefits identically. The web client-side regex fast-hint tier still sees raw text (acceptable — the server model overwrites).
 
 **Key files:** `src/extraction/transcript-normalise.js` (pure rules), `src/extraction/sonnet-stream.js` (the two seams), `src/__tests__/transcript-normalise.test.js` (unit), `src/__tests__/sonnet-stream-transcript-normalise-ingress.test.js` (the raw→canonical ingress proof for both seams — the direct replay runner bypasses these seams), `src/__tests__/sonnet-stream-transcript-normalise-ir-realengine.test.js` (drives the REAL insulation-resistance dialogue engine end-to-end through `handleTranscript` and asserts it records `ir_live_live_mohm=100` from a raw "A hundred megaohms").
 

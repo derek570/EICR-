@@ -291,14 +291,57 @@ describe('CostTracker', () => {
       expect(tracker.modelUsage.has('luna_fast')).toBe(true);
     });
 
+    test('cache economics counts a cold Fast write as a temporary loss', () => {
+      const economics = tracker.estimateModelUsageEconomics(
+        { cache_creation_input_tokens: 1_000_000 },
+        'gpt-5.6-luna',
+        'priority'
+      );
+      expect(economics.actualCost).toBeCloseTo(2.5, 6);
+      expect(economics.noCacheCost).toBeCloseTo(2.0, 6);
+      expect(economics.netSavings).toBeCloseTo(-0.5, 6);
+      expect(economics.netSavingsPercent).toBeCloseTo(-25, 6);
+    });
+
+    test('cache economics exposes cumulative net saving after warm reads', () => {
+      tracker.addSonnetUsage(
+        { cache_creation_input_tokens: 1_000_000 },
+        'gpt-5.6-luna',
+        'priority'
+      );
+      for (let i = 0; i < 4; i += 1) {
+        tracker.addSonnetUsage({ cache_read_input_tokens: 1_000_000 }, 'gpt-5.6-luna', 'priority');
+      }
+      const economics = tracker.cacheEconomics;
+      expect(economics.actualCost).toBeCloseTo(3.3, 6);
+      expect(economics.noCacheCost).toBeCloseTo(10, 6);
+      expect(economics.netSavings).toBeCloseTo(6.7, 6);
+      expect(economics.netSavingsPercent).toBeCloseTo(67, 6);
+      expect(tracker.toCostUpdate().sonnet.cacheEconomics).toEqual(
+        expect.objectContaining({
+          actualCost: 3.3,
+          noCacheCost: 10,
+          netSavings: 6.7,
+          netSavingsPercent: 67,
+        })
+      );
+    });
+
+    test('cache economics keeps Luna Fast and Terra Standard in separate rate buckets', () => {
+      tracker.addSonnetUsage({ cache_read_input_tokens: 1_000_000 }, 'gpt-5.6-luna', 'priority');
+      tracker.addSonnetUsage({ cache_read_input_tokens: 1_000_000 }, 'gpt-5.6-terra', 'standard');
+      const economics = tracker.toSessionSummary().sonnet.cacheEconomics;
+      expect(economics.actualCost).toBeCloseTo(0.45, 6);
+      expect(economics.noCacheCost).toBeCloseTo(4.5, 6);
+      expect(economics.perModel).toHaveProperty('luna_fast');
+      expect(economics.perModel).toHaveProperty('terra');
+    });
+
     test('Luna without response metadata follows the configured field-trial tier', () => {
       const previous = process.env.OPENAI_EXTRACT_SERVICE_TIER;
       process.env.OPENAI_EXTRACT_SERVICE_TIER = 'fast';
       try {
-        tracker.addSonnetUsage(
-          { cache_read_input_tokens: 1_000_000 },
-          'gpt-5.6-luna'
-        );
+        tracker.addSonnetUsage({ cache_read_input_tokens: 1_000_000 }, 'gpt-5.6-luna');
         expect(tracker.sonnetCost).toBeCloseTo(0.2, 6);
       } finally {
         if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;

@@ -31,12 +31,14 @@ describe('drift enforcement against ecs/task-def-backend.json', () => {
   test('the extraction routing values are pinned to the task-def snapshot', () => {
     expect(taskDef.SONNET_EXTRACT_MODEL).toBe('gpt-5.6-luna');
     expect(taskDef.OPENAI_EXTRACT_SERVICE_TIER).toBe('fast');
+    expect(taskDef.OPENAI_EXTRACT_PROMPT_CACHE).toBe('explicit');
     expect(taskDef.OBSERVATION_EXTRACT_MODEL).toBe('gpt-5.6-terra');
     expect(taskDef.OPENAI_OBSERVATION_SERVICE_TIER).toBe('standard');
     expect(taskDef.OPENAI_OBSERVATION_REASONING_EFFORT).toBe('low');
     expect(taskDef.VOICE_LATENCY_ROUND1_MODEL).toBe('');
     expect(taskDef.OBSERVATION_TIER_ROUTING).toBe('true');
     expect(PINNED_FROM_TASK_DEF).toContain('OBSERVATION_TIER_ROUTING');
+    expect(PINNED_FROM_TASK_DEF).toContain('OPENAI_EXTRACT_PROMPT_CACHE');
     expect(PINNED_FROM_TASK_DEF).toContain('OPENAI_OBSERVATION_SERVICE_TIER');
     expect(PINNED_FROM_TASK_DEF).toContain('OPENAI_OBSERVATION_REASONING_EFFORT');
   });

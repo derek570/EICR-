@@ -4044,6 +4044,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // stay stable when fixtures don't carry usage.
     // F7 Item 3 — null-safe on cancellation (toolLoopOut undefined → no usage
     // to bill; the `?.` short-circuits the whole condition).
+    let turnCostEconomics = null;
     if (
       session.costTracker &&
       typeof session.costTracker.addSonnetUsage === 'function' &&
@@ -4053,6 +4054,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         toolLoopOut.usage.cache_read_input_tokens > 0 ||
         toolLoopOut.usage.cache_creation_input_tokens > 0)
     ) {
+      if (typeof session.costTracker.estimateModelUsageEconomics === 'function') {
+        turnCostEconomics = session.costTracker.estimateModelUsageEconomics(
+          toolLoopOut.usage,
+          toolLoopOut.model,
+          toolLoopOut.service_tier
+        );
+      }
       session.costTracker.addSonnetUsage(
         toolLoopOut.usage,
         toolLoopOut.model,
@@ -4091,6 +4099,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       usage_output: toolLoopOut?.usage?.output_tokens ?? 0,
       usage_cache_read: toolLoopOut?.usage?.cache_read_input_tokens ?? 0,
       usage_cache_write: toolLoopOut?.usage?.cache_creation_input_tokens ?? 0,
+      prompt_cache_rounds: toolLoopOut?.round_usage ?? [],
+      turn_cost_usd: turnCostEconomics?.actualCost ?? null,
+      no_cache_cost_usd: turnCostEconomics?.noCacheCost ?? null,
+      cache_net_savings_usd: turnCostEconomics?.netSavings ?? null,
     });
 
     // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8).
@@ -4155,6 +4167,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           tool_call_count_per_round: toolLoopOut.tool_call_count_per_round ?? [],
           tool_error_count_per_round: toolLoopOut.tool_error_count_per_round ?? [],
           round_timings: toolLoopOut.round_timings ?? [],
+          round_usage: toolLoopOut.round_usage ?? [],
+          turn_cost_usd: turnCostEconomics?.actualCost ?? null,
+          no_cache_cost_usd: turnCostEconomics?.noCacheCost ?? null,
+          cache_net_savings_usd: turnCostEconomics?.netSavings ?? null,
           run_live_duration_ms: runLiveDurationMs,
           bundler_emitted_count: bundlerEmittedCount,
           readings_count: result.extracted_readings.length,

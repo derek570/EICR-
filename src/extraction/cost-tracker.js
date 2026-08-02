@@ -559,6 +559,100 @@ export class CostTracker {
     return cost;
   }
 
+  _economicsForUsage(usage, rates) {
+    const cacheReadTokens = usage.cache_read_input_tokens ?? usage.cacheReadTokens ?? 0;
+    const cacheWriteTokens = usage.cache_creation_input_tokens ?? usage.cacheWriteTokens ?? 0;
+    const inputTokens = usage.input_tokens ?? usage.inputTokens ?? 0;
+    const outputTokens = usage.output_tokens ?? usage.outputTokens ?? 0;
+    const cacheReadCost = (cacheReadTokens * rates.cacheRead) / 1_000_000;
+    const cacheWriteCost = (cacheWriteTokens * rates.cacheWrite) / 1_000_000;
+    const uncachedInputCost = (inputTokens * rates.input) / 1_000_000;
+    const outputCost = (outputTokens * rates.output) / 1_000_000;
+    const actualInputCost = cacheReadCost + cacheWriteCost + uncachedInputCost;
+    const actualCost = actualInputCost + outputCost;
+    const noCacheInputCost =
+      ((cacheReadTokens + cacheWriteTokens + inputTokens) * rates.input) / 1_000_000;
+    const noCacheCost = noCacheInputCost + outputCost;
+    const netSavings = noCacheCost - actualCost;
+    return {
+      cacheReadCost,
+      cacheWriteCost,
+      uncachedInputCost,
+      outputCost,
+      actualInputCost,
+      actualCost,
+      noCacheInputCost,
+      noCacheCost,
+      netSavings,
+      netSavingsPercent: noCacheCost > 0 ? (netSavings / noCacheCost) * 100 : 0,
+    };
+  }
+
+  /** Cost evidence for one model call/loop, before it is added to the ledger. */
+  estimateModelUsageEconomics(usage, modelId, serviceTier) {
+    const family = this._modelFamily(modelId, serviceTier);
+    const rates = this.MODEL_RATES[family] || this.SONNET_RATES;
+    return { family, ...this._economicsForUsage(usage || {}, rates) };
+  }
+
+  /**
+   * Cumulative actual-vs-no-cache counterfactual across mixed model/tier
+   * buckets. Cache writes can make netSavings negative on a cold session;
+   * exposing that truth is intentional.
+   */
+  get cacheEconomics() {
+    const perModel = {};
+    const totals = {
+      cacheReadCost: 0,
+      cacheWriteCost: 0,
+      uncachedInputCost: 0,
+      outputCost: 0,
+      actualInputCost: 0,
+      actualCost: 0,
+      noCacheInputCost: 0,
+      noCacheCost: 0,
+      netSavings: 0,
+      netSavingsPercent: 0,
+    };
+    const buckets = this.modelUsage.size > 0 ? this.modelUsage : new Map([['sonnet', this.sonnet]]);
+    for (const [family, usage] of buckets) {
+      const economics = this._economicsForUsage(
+        usage,
+        this.MODEL_RATES[family] || this.SONNET_RATES
+      );
+      perModel[family] = economics;
+      for (const key of Object.keys(totals)) {
+        if (key !== 'netSavingsPercent') totals[key] += economics[key];
+      }
+    }
+    totals.netSavingsPercent =
+      totals.noCacheCost > 0 ? (totals.netSavings / totals.noCacheCost) * 100 : 0;
+    return { ...totals, perModel };
+  }
+
+  _serialiseCacheEconomics() {
+    const economics = this.cacheEconomics;
+    const round = (value, digits = 6) => parseFloat(value.toFixed(digits));
+    const serialise = (value) => ({
+      cacheReadCost: round(value.cacheReadCost),
+      cacheWriteCost: round(value.cacheWriteCost),
+      uncachedInputCost: round(value.uncachedInputCost),
+      outputCost: round(value.outputCost),
+      actualInputCost: round(value.actualInputCost),
+      actualCost: round(value.actualCost),
+      noCacheInputCost: round(value.noCacheInputCost),
+      noCacheCost: round(value.noCacheCost),
+      netSavings: round(value.netSavings),
+      netSavingsPercent: round(value.netSavingsPercent, 2),
+    });
+    return {
+      ...serialise(economics),
+      perModel: Object.fromEntries(
+        Object.entries(economics.perModel).map(([family, value]) => [family, serialise(value)])
+      ),
+    };
+  }
+
   get totalCost() {
     return this.deepgramCost + this.sonnetCost + this.elevenLabsCost + this.gptVisionCost;
   }
@@ -575,6 +669,7 @@ export class CostTracker {
         output: this.sonnet.outputTokens,
         compactions: this.sonnet.compactions,
         cost: parseFloat(this.sonnetCost.toFixed(6)),
+        cacheEconomics: this._serialiseCacheEconomics(),
       },
       deepgram: {
         minutes: parseFloat(this.deepgramMinutes.toFixed(2)),

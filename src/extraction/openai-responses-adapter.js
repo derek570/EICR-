@@ -42,7 +42,8 @@
  * WHY the request/response shapes differ from openai-tooluse-adapter.js:
  *   - Tools are FLAT ({type:'function', name, description, parameters}), not
  *     nested under a `function` key.
- *   - System prompt -> `instructions` (top-level), not a messages[0] system row.
+ *   - GPT-5.6 explicit-cache mode -> a `developer` input item split at the
+ *     stable breakpoint; rollback/older models -> top-level `instructions`.
  *   - History -> `input` (an array of typed items), not `messages`. A prior
  *     assistant tool_use round becomes a `function_call` item; a tool_result
  *     becomes a `function_call_output` item keyed by call_id (not tool_use_id
@@ -86,16 +87,102 @@
  *   CostTracker-style consumers get the same three-bucket split Anthropic
  *   responses carry.
  *
- * SCOPE: read-back extraction path only; iOS/web wire contract unchanged.
+ * SCOPE: read-back extraction path only; additive cost telemetry is ignored
+ * safely by older iOS/web clients.
  */
+import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
-import { renderSystemPrompt } from './system-prompt-renderer.js';
+import {
+  SYSTEM_BLOCK_SEPARATOR,
+  getOpenAIStableSystemBlockCount,
+  renderSystemPrompt,
+} from './system-prompt-renderer.js';
 
 // ---------------------------------------------------------------------------
 // Anthropic -> Responses request translation
 // ---------------------------------------------------------------------------
 
 const flattenSystem = renderSystemPrompt;
+const PROMPT_CACHE_KEY_VERSION = 'certmate-s6-v1';
+
+function isGPT56Model(model) {
+  return /^gpt-5\.6(?:-|$)/i.test(String(model ?? '').trim());
+}
+
+/**
+ * Source-controlled rollback for GPT-5.6 explicit caching. `implicit` keeps
+ * the pre-change Responses payload. Older OpenAI model families also retain
+ * implicit caching because the explicit-breakpoint contract is GPT-5.6-only.
+ */
+function resolvePromptCacheMode(raw = process.env.OPENAI_EXTRACT_PROMPT_CACHE, model) {
+  const configured = String(raw ?? 'implicit')
+    .trim()
+    .toLowerCase();
+  if (configured !== 'explicit' && configured !== 'implicit') {
+    throw new Error(`Unsupported OPENAI_EXTRACT_PROMPT_CACHE: ${raw}`);
+  }
+  return configured === 'explicit' && isGPT56Model(model) ? 'explicit' : 'implicit';
+}
+
+function systemTextEntries(system) {
+  if (typeof system === 'string') {
+    return system.length > 0 ? [{ sourceIndex: 0, text: system }] : [];
+  }
+  if (!Array.isArray(system)) return [];
+  return system
+    .map((block, sourceIndex) => ({
+      sourceIndex,
+      text: typeof block === 'string' ? block : block?.type === 'text' ? block.text || '' : '',
+    }))
+    .filter(({ text }) => text.length > 0);
+}
+
+/**
+ * Convert the system blocks into one developer message while preserving the
+ * exact text produced by renderSystemPrompt(). The separator is prefixed to
+ * each later content block so the cache marker can sit at the stable-prefix
+ * boundary without changing a single model-visible byte.
+ */
+function toExplicitSystemInput(system) {
+  const entries = systemTextEntries(system);
+  if (entries.length === 0) return { item: null, stableText: '', breakpointEnabled: false };
+
+  const stableSourceCount = getOpenAIStableSystemBlockCount(system);
+  const stableEntries = entries.filter(({ sourceIndex }) => sourceIndex < stableSourceCount);
+  const stableLastSourceIndex = stableEntries.at(-1)?.sourceIndex;
+  const content = entries.map(({ sourceIndex, text }, index) => {
+    const block = {
+      type: 'input_text',
+      text: `${index === 0 ? '' : SYSTEM_BLOCK_SEPARATOR}${text}`,
+    };
+    if (sourceIndex === stableLastSourceIndex) {
+      block.prompt_cache_breakpoint = { mode: 'explicit' };
+    }
+    return block;
+  });
+
+  return {
+    item: { role: 'developer', content },
+    stableText: stableEntries.map(({ text }) => text).join(SYSTEM_BLOCK_SEPARATOR),
+    breakpointEnabled: stableEntries.length > 0,
+  };
+}
+
+/** PII-safe routing key: only a version label plus a digest leaves process. */
+function buildPromptCacheKey({ model, stableText, tools }) {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify({
+        version: PROMPT_CACHE_KEY_VERSION,
+        model: String(model ?? ''),
+        stableText,
+        tools: tools ?? [],
+      })
+    )
+    .digest('hex')
+    .slice(0, 48);
+  return `${PROMPT_CACHE_KEY_VERSION}-${digest}`;
+}
 
 /** Anthropic tool defs -> Responses API function tools (FLAT, no nested `function` key). */
 function toResponsesTools(tools) {
@@ -349,8 +436,8 @@ function resolveServiceTier(raw = process.env.OPENAI_EXTRACT_SERVICE_TIER) {
 }
 
 /** Preserve the provider's actual model + service tier for cost accounting. */
-function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier) {
-  return {
+function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier, promptCache) {
+  const message = {
     content: buildAnthropicContent(finalResp),
     usage: mapUsage(finalResp.usage),
     stop_reason: mapStopReason(finalResp),
@@ -358,6 +445,8 @@ function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier) {
     model: finalResp?.model || fallbackModel,
     service_tier: finalResp?.service_tier || fallbackServiceTier,
   };
+  if (promptCache) message.prompt_cache = promptCache;
+  return message;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,11 +484,18 @@ function createStream(openai, streamArgs, options) {
   } = streamArgs;
   const { signal } = options || {};
 
+  const responsesTools = toResponsesTools(tools);
+  const promptCacheMode = resolvePromptCacheMode(undefined, model);
+  const conversationInput = toResponsesInput(messages);
+  const promptCache = {
+    mode: promptCacheMode,
+    breakpoint_enabled: false,
+    key_id: null,
+  };
   const requestPayload = {
     model,
-    instructions: flattenSystem(system),
-    input: toResponsesInput(messages),
-    tools: toResponsesTools(tools),
+    input: conversationInput,
+    tools: responsesTools,
     tool_choice: 'auto',
     // Structured extraction with tool calls; visible output stays small, the
     // headroom is for reasoning tokens (counted inside output_tokens, not
@@ -411,6 +507,25 @@ function createStream(openai, streamArgs, options) {
       ).trim(),
     },
   };
+  if (promptCacheMode === 'explicit') {
+    const explicitSystem = toExplicitSystemInput(system);
+    requestPayload.input = explicitSystem.item
+      ? [explicitSystem.item, ...conversationInput]
+      : conversationInput;
+    if (explicitSystem.breakpointEnabled) {
+      const promptCacheKey = buildPromptCacheKey({
+        model,
+        stableText: explicitSystem.stableText,
+        tools: responsesTools,
+      });
+      requestPayload.prompt_cache_key = promptCacheKey;
+      requestPayload.prompt_cache_options = { mode: 'explicit' };
+      promptCache.breakpoint_enabled = true;
+      promptCache.key_id = promptCacheKey.slice(-12);
+    }
+  } else {
+    requestPayload.instructions = flattenSystem(system);
+  }
   const configuredServiceTier = String(
     serviceTierOverride ?? process.env.OPENAI_EXTRACT_SERVICE_TIER ?? 'standard'
   )
@@ -437,7 +552,7 @@ function createStream(openai, streamArgs, options) {
     async finalMessage() {
       const openaiStream = await getOpenaiStream();
       const finalResp = await openaiStream.finalResponse();
-      return toAnthropicMessage(finalResp, model, configuredServiceTier || 'standard');
+      return toAnthropicMessage(finalResp, model, configuredServiceTier || 'standard', promptCache);
     },
   };
 }
@@ -467,6 +582,11 @@ export function createOpenAIResponsesAdapter({ apiKey }) {
 
 export const _internals = Object.freeze({
   flattenSystem,
+  isGPT56Model,
+  resolvePromptCacheMode,
+  systemTextEntries,
+  toExplicitSystemInput,
+  buildPromptCacheKey,
   toResponsesTools,
   toResponsesInput,
   mapStopReason,

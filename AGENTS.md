@@ -35,8 +35,8 @@ Automated EICR/EIC certificate creation for electrical inspectors using an iOS-f
 2. **CCU Analysis** - GPT Vision extracts circuit data from consumer unit photos
 3. **Document Extraction** - GPT Vision extracts certificate data from previous certificates, handwritten notes, or photos
 4. **Voice Recording** - Inspector dictates test readings and observations into iOS app
-4. **Live Transcription** - Deepgram Nova-3 transcribes speech in real time (direct from iOS)
-5. **Live Extraction** - Server-side Sonnet 4.5 extracts structured certificate data via multi-turn conversation
+4. **Live Transcription** - Deepgram Flux transcribes speech in real time (direct from iOS)
+5. **Live Extraction** - Server-side GPT-5.6 Luna/Terra extracts structured certificate data via multi-turn conversation
 6. **Review & Edit** - Inspector reviews populated certificate in iOS app tabs
 7. **PDF Generation** - Generate complete EICR/EIC PDF certificates
 
@@ -48,7 +48,7 @@ The following are **MANDATORY** product invariants. They override older guidance
 
 1. **Every dictated reading is read back aloud — exactly once. Never silently entered into the UI.** A value that only appears on screen is invisible to a hands-free inspector, so every applied reading/correction MUST produce one spoken confirmation. *Exactly once* — not zero (silent entry) and not twice (the double-confirm bug). This holds for ALL apply paths, including client-initiated reassignments, not just server-extraction turns.
    - **Exception (by design):** automatic derivations and side-effect ticks — e.g. polarity auto-ticked from Zs, mirror-derived fields — are computed consequences, NOT dictated readings, and do **not** get a spoken confirmation.
-2. **Structurally complete readings are WRITTEN regardless of self-reported confidence, and read back aloud — never silently dropped.** A structurally complete dictated reading (field + circuit/board scope + value) is written at whatever confidence and read back; the inspector verifies by ear and corrects by speaking. Ask ONLY for structural gaps, contradictions, invalid/out-of-range values, or true non-values. The live model is Haiku 4.5, whose self-reported `confidence` is not a trustworthy gate, so we do NOT gate behaviour on it (`CONFIRMATION_MIN_CONFIDENCE` is now only the loaded-barrel speculator's pre-synth cost gate; the `< 0.5` write decision is a capability-gated PRE-APPLY rollout step in the dispatcher, not a behavioural confidence threshold). This supersedes BOTH the older "suppress low-confidence confirmations to cut noise" stance AND the interim "low-confidence readings ASK" stance — a dropped reading is invisible to a hands-free user.
+2. **Structurally complete readings are WRITTEN regardless of self-reported confidence, and read back aloud — never silently dropped.** A structurally complete dictated reading (field + circuit/board scope + value) is written at whatever confidence and read back; the inspector verifies by ear and corrects by speaking. Ask ONLY for structural gaps, contradictions, invalid/out-of-range values, or true non-values. The live extraction model's self-reported `confidence` is not a trustworthy gate, so we do NOT gate behaviour on it (`CONFIRMATION_MIN_CONFIDENCE` is now only the loaded-barrel speculator's pre-synth cost gate; the `< 0.5` write decision is a capability-gated PRE-APPLY rollout step in the dispatcher, not a behavioural confidence threshold). This supersedes BOTH the older "suppress low-confidence confirmations to cut noise" stance AND the interim "low-confidence readings ASK" stance — a dropped reading is invisible to a hands-free user.
 3. **Latency is a first-class concern.** The dictate→confirm loop is conversational; perceived latency between speaking and hearing the read-back directly shapes usability. Optimise for low perceived latency and treat regressions as bugs, not cosmetics.
 
 ## Tech Stack
@@ -56,8 +56,8 @@ The following are **MANDATORY** product invariants. They override older guidance
 | Component | Technology |
 |-----------|------------|
 | iOS App | SwiftUI (CertMateUnified) |
-| Transcription | Deepgram Nova-3 (direct WebSocket from iOS) |
-| Live Extraction | Codex Sonnet 4.5 (server-side multi-turn via WebSocket) |
+| Transcription | Deepgram Flux (direct WebSocket from iOS) |
+| Live Extraction | GPT-5.6 Luna Fast for ordinary turns; Terra Standard/low for observations (server-side Responses API multi-turn via WebSocket) |
 | CCU Photo AI | GPT Vision (consumer unit analysis) |
 | Document Extraction AI | GPT Vision (certificate/notes data extraction) |
 | Backend | Node.js (ES modules) — API, WebSocket, S3 |
@@ -134,15 +134,15 @@ gh run list --limit 5
 ## iOS Recording Pipeline (v3)
 
 ```
-iOS (16kHz PCM) -> DeepgramService (direct Nova-3 WS)
+iOS (16kHz PCM) -> DeepgramService (direct Flux WS)
     -> transcript -> NumberNormaliser -> TranscriptFieldMatcher (instant regex)
     -> ServerWebSocketService (wss://backend/api/sonnet-stream) + regex hints
-    -> Backend: multi-turn Sonnet 4.5 extraction (with regex context)
+    -> Backend: multi-turn GPT-5.6 extraction (with regex context)
     -> results + questions + cost updates back to iOS
 ```
 
-**Field priority (3-tier):** Pre-existing (CCU/manual) > Sonnet > Regex
-**Dual extraction:** Regex provides instant ~40ms field fill; Sonnet overwrites with higher accuracy 1-2s later. Regex hints (field names only) sent to backend as Sonnet context.
+**Field priority (3-tier):** Pre-existing (CCU/manual) > server LLM > Regex
+**Dual extraction:** Regex provides instant ~40ms field fill; the server LLM overwrites with higher accuracy later. Regex hints (field names only) are sent as model context.
 
 > Full details: [docs/reference/ios-pipeline.md](docs/reference/ios-pipeline.md)
 
@@ -215,7 +215,7 @@ Detailed docs split into focused reference files:
 
 ## Documentation Sync Rules
 
-When modifying UI fields: update `config/field_schema.json` + [field-reference.md](docs/reference/field-reference.md). When adding extractable fields to Sonnet: (1) add to prompt in `eicr-extraction-session.js`, (2) add case in `applySonnetReadings()`, (3) add keyword boosts in `default_config.json`.
+When modifying UI fields: update `config/field_schema.json` + [field-reference.md](docs/reference/field-reference.md). When adding live-model extractable fields: (1) add to the prompt in `eicr-extraction-session.js`, (2) add the apply case, (3) add keyword boosts in `default_config.json`.
 
 > Full sync checklist: [docs/reference/field-reference.md](docs/reference/field-reference.md#keeping-this-documentation-in-sync)
 
@@ -223,7 +223,7 @@ When modifying UI fields: update `config/field_schema.json` + [field-reference.m
 
 - **⚡ CCU pipeline (live):** single-shot `gpt-5.5` over the whole image via `src/extraction/ccu-single-shot.js`. **No per-slot cropping.** Stage-3/Stage-4 per-slot pipeline (`ccu-geometric.js`, `ccu-label-pass.js`) is LEGACY FALLBACK only, gated behind `CCU_USE_SINGLE_SHOT=false`. In-scope failure modes: gpt-5.5 mis-counts in long identical-MCB runs, label-column mis-alignment, post-merge enrichment overrides, `slotsToCircuits` phase-walking heuristics. NOT in scope: CV crop accuracy / slot crop boundaries (not in live path). Full details: [docs/reference/architecture.md#ccu-photo-extraction-pipeline](docs/reference/architecture.md#ccu-photo-extraction-pipeline).
 - **Web rebuild in production** since 2026-04-18 (PR #1, merge `9202351c`). certmate.uk serves Next 16 / React 19 PWA client from `web/`.
-- **Live in production:** Deepgram auto-sleep (3-tier Active/Dozing/Sleeping), server-side Sonnet v3 multi-turn extraction.
+- **Live in production:** Deepgram auto-sleep (3-tier Active/Dozing/Sleeping), server-side GPT-5.6 Responses multi-turn extraction with explicit stable-prefix caching.
 - **Next candidates:** wire `queueSaveJob` into JobProvider's save path (outbox plumbed, no production caller yet); Playwright E2E coverage for offline-sync.
 - **PARKED 2026-05-28:** PWA observation-photo auto-link sprint (Phases 3–6, 4 commits + 33 tests) on `origin/pwa-observation-photo-autolink-2026-05-13`. Awaiting rebase against post-2026-05-13 main (heavy collision in `web/src/lib/recording-context.tsx`). Playbook: [.planning-stage6-agentic/handoffs/pwa-observation-photo-autolink-2026-05-13/HANDOFF.md](.planning-stage6-agentic/handoffs/pwa-observation-photo-autolink-2026-05-13/HANDOFF.md).
 - **OPEN FOLLOWUP 2026-06-05 — voice-latency Phase 2.2 (deferred from PR #52, merged).** Surface proactively on any voice-latency or field-test discussion. Pick server `FINALIZER_TIMEOUT_MS` widen vs iOS Apple-native `local_fallback` emit once 1–2 field sessions hit the deployed code. Runbook: [CertMateUnified/.planning-stage6-agentic/handoffs/voice-latency-correlation-fix-2026-06-05/FOLLOWUP.md](../CertMateUnified/.planning-stage6-agentic/handoffs/voice-latency-correlation-fix-2026-06-05/FOLLOWUP.md).
@@ -234,6 +234,7 @@ Recent changes — one line each. **Full commit-body-level detail in [docs/refer
 
 | Date | Summary |
 |------|---------|
+| 2026-08-02 | **GPT-5.6 explicit cache + savings telemetry.** Luna/Terra now cache only the stable prompt/snapshot prefix behind a source rollback; per-round evidence and model/tier-aware actual-vs-no-cache economics show whether the session saved money, including cold-write losses. Reports no longer apply stale Sonnet rates. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-08-02 | **Address-mirror migration deploy fix.** JSONB object/array defaults now use raw node-pg-migrate SQL literals and text defaults omit literal quote characters; a rendered-SQL regression protects the cleanly rolled-back migration before retry. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-08-01 | **Terra observation trial activated.** Observation-shaped turns use `gpt-5.6-terra` Standard/low through the provider-safe Responses loop; ordinary readings remain Luna Fast. Sole-tester iOS trial only; the missing web processing cue remains a documented parity gap. Rollback is the source flag. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-08-01 | **GPT-5.6 provider-parity safety slice (independent Codex-reviewed; activation separate).** All live/shadow/legacy/keepalive extraction calls now resolve model + matching SDK atomically; missing keys, unknown providers and cross-provider round-one overrides fail before dispatch. OpenAI system blocks retain explicit boundaries, observation OpenAI tier/effort can override Luna Fast, routing telemetry names the provider, and current Luna/Terra/Sol Standard/Fast costs are tracked. Observation routing remains dark for this commit. Full detail: [changelog.md](docs/reference/changelog.md). |

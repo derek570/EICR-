@@ -11,6 +11,7 @@ import { createOpenAIToolUseAdapter } from './openai-tooluse-adapter.js';
 import { createOpenAIResponsesAdapter } from './openai-responses-adapter.js';
 import { ProviderResolutionError, providerForModel } from './model-provider.js';
 import { CostTracker } from './cost-tracker.js';
+import { markOpenAIStableSystemPrefix } from './system-prompt-renderer.js';
 import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
 import {
   buildDefaultMainBoard,
@@ -2997,6 +2998,11 @@ export class EICRExtractionSession {
     // Track token costs (model id from response so per-model rates apply
     // correctly when the tiered router escalated this turn to a different
     // model than the default).
+    const turnEconomics = this.costTracker.estimateModelUsageEconomics(
+      response.usage,
+      response.model,
+      response.service_tier
+    );
     this.costTracker.addSonnetUsage(response.usage, response.model, response.service_tier);
 
     // Log per-turn cost for debugging
@@ -3006,7 +3012,10 @@ export class EICRExtractionSession {
       cacheWrite: usage.cache_creation_input_tokens || 0,
       input: usage.input_tokens || 0,
       output: usage.output_tokens || 0,
-      turnCostUsd: parseFloat(this.costTracker.sonnetCost.toFixed(6)),
+      turnCostUsd: parseFloat(turnEconomics.actualCost.toFixed(6)),
+      noCacheCostUsd: parseFloat(turnEconomics.noCacheCost.toFixed(6)),
+      cacheNetSavingsUsd: parseFloat(turnEconomics.netSavings.toFixed(6)),
+      sessionExtractionCostUsd: parseFloat(this.costTracker.sonnetCost.toFixed(6)),
       totalCostUsd: parseFloat(this.costTracker.totalCost.toFixed(6)),
       readings: result.extracted_readings?.length || 0,
     });
@@ -3282,7 +3291,7 @@ export class EICRExtractionSession {
       text: this.systemPrompt,
       cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
     };
-    if (this.toolCallsMode === 'off') return [base];
+    if (this.toolCallsMode === 'off') return markOpenAIStableSystemPrefix([base], 1);
 
     // Phase 1 §2.5 — split_blocks branch (snapshot-restructure sprint
     // 2026-05-27). Emit [base, stable_prefix, volatile_tail], collapsing
@@ -3307,20 +3316,25 @@ export class EICRExtractionSession {
           cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
         });
       }
-      return blocks;
+      // OpenAI's explicit breakpoint sits after base + stable snapshot
+      // prefix, never after the turn-varying EXTRACTED/PENDING tail.
+      return markOpenAIStableSystemPrefix(blocks, prefix === '' ? 1 : 2);
     }
 
     // Default — single_block layout. Byte-identical to pre-Phase-1.
     const snapshot = this.buildStateSnapshotMessage();
-    if (!snapshot) return [base];
-    return [
-      base,
-      {
-        type: 'text',
-        text: snapshot,
-        cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
-      },
-    ];
+    if (!snapshot) return markOpenAIStableSystemPrefix([base], 1);
+    return markOpenAIStableSystemPrefix(
+      [
+        base,
+        {
+          type: 'text',
+          text: snapshot,
+          cache_control: { type: 'ephemeral', ttl: CACHE_TTL },
+        },
+      ],
+      1
+    );
   }
 
   /**

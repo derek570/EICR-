@@ -1,4 +1,4 @@
-> Last updated: 2026-08-01
+> Last updated: 2026-08-02
 > Related: [Architecture](architecture.md) | [iOS Pipeline](ios-pipeline.md) | [Field Reference](field-reference.md) | [File Structure](file-structure.md) | [Deployment History](deployment-history.md)
 > Hub: [../../CLAUDE.md](../../CLAUDE.md)
 
@@ -16,10 +16,11 @@ The production site runs at **https://certmate.uk**. Delivery is PR-only: commit
 
 ### Luna Fast field trial — rollback and verification
 
-- **Active:** `SONNET_EXTRACT_MODEL=gpt-5.6-luna` and `OPENAI_EXTRACT_SERVICE_TIER=fast` in `ecs/task-def-backend.json`.
+- **Active:** `SONNET_EXTRACT_MODEL=gpt-5.6-luna`, `OPENAI_EXTRACT_SERVICE_TIER=fast`, and `OPENAI_EXTRACT_PROMPT_CACHE=explicit` in `ecs/task-def-backend.json`.
 - **Luna Standard rollback:** set `OPENAI_EXTRACT_SERVICE_TIER` to `standard`, commit, merge, and let CI redeploy. This omits `service_tier` while retaining the same model.
+- **Prompt-cache rollback:** set `OPENAI_EXTRACT_PROMPT_CACHE=implicit`, commit, merge, and let CI redeploy. This restores top-level `instructions` and OpenAI's implicit breakpoint without changing model, reasoning, tools, or Fast tier.
 - **Model rollback:** restore `SONNET_EXTRACT_MODEL=claude-haiku-4-5-20251001` separately. Leaving the Fast variable present is harmless because only the OpenAI Responses adapter reads it.
-- **Verify:** after rollout, inspect `stage6_live_extraction`; `model` must be `gpt-5.6-luna` and `service_tier` should be `priority` (OpenAI's response label for Fast). The session cost summary should use the `luna_fast` rates, not Sonnet rates.
+- **Verify:** after rollout, inspect `stage6_live_extraction`; `model` must be `gpt-5.6-luna`, `service_tier` should be `priority` (OpenAI's response label for Fast), and each `prompt_cache_rounds[]` entry should show `prompt_cache_mode:"explicit"`, `prompt_cache_breakpoint_enabled:true`, plus a non-null digest-only `prompt_cache_key_id`. The first call may write; repeated stable-prefix calls should move tokens into `cache_read_input_tokens`. At session end, `cost_summary.json` → `sonnet.cacheEconomics` shows actual cost, no-cache counterfactual and net saving (negative is valid until cold writes amortise).
 - **Provider safety:** every extraction surface resolves model + SDK together. Missing keys, unknown providers and cross-provider round-one overrides fail before the first API request; there is no GPT-via-Anthropic fallback.
 
 ### Loaded Barrel audible-value telemetry

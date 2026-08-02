@@ -198,6 +198,8 @@ export function pickEarliestPlaybackAck(acks) {
  *   tool_call_count_per_round (array),
  *   tool_error_count_per_round (array), tool_names_per_round (array of
  *   arrays),
+ *   round_usage (per-round input/output/cache tokens + explicit-breakpoint evidence),
+ *   turn_cost_usd, no_cache_cost_usd, cache_net_savings_usd,
  *   sonnet_round1_ms, sonnet_round2_ms, dispatch_total_ms, bundler_ms,
  *   audible_first_byte_ms (server-side, may be null), audible_first_byte_source
  *   ('server_res_write' | 'ios_playback_ack' | null), path_classification,

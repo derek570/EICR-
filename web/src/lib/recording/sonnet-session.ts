@@ -387,6 +387,19 @@ export interface CostUpdate {
     cacheWrites?: number;
     input?: number;
     output?: number;
+    cacheEconomics?: {
+      cacheReadCost: number;
+      cacheWriteCost: number;
+      uncachedInputCost: number;
+      outputCost: number;
+      actualInputCost: number;
+      actualCost: number;
+      noCacheInputCost: number;
+      noCacheCost: number;
+      netSavings: number;
+      netSavingsPercent: number;
+      perModel?: Record<string, Record<string, number>>;
+    };
   };
   [key: string]: unknown;
 }
