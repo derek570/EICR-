@@ -272,7 +272,7 @@ describe('CostTracker', () => {
         'gpt-5.6-luna',
         'default'
       );
-      expect(tracker.sonnetCost).toBeCloseTo(0.1 + 1.25 + 1.0 + 6.0, 6);
+      expect(tracker.sonnetCost).toBeCloseTo(0.02 + 0.25 + 0.2 + 1.2, 6);
       expect(tracker.modelUsage.has('luna')).toBe(true);
     });
 
@@ -287,8 +287,47 @@ describe('CostTracker', () => {
         'gpt-5.6-luna',
         'priority'
       );
-      expect(tracker.sonnetCost).toBeCloseTo(0.2 + 2.5 + 2.0 + 12.0, 6);
+      expect(tracker.sonnetCost).toBeCloseTo(0.04 + 0.5 + 0.4 + 2.4, 6);
       expect(tracker.modelUsage.has('luna_fast')).toBe(true);
+    });
+
+    test('pins the complete July 30 GPT-5.6 Standard/Fast price schedule', () => {
+      expect(tracker.LUNA_RATES).toEqual({
+        cacheRead: 0.02,
+        cacheWrite: 0.25,
+        input: 0.2,
+        output: 1.2,
+      });
+      expect(tracker.LUNA_FAST_RATES).toEqual({
+        cacheRead: 0.04,
+        cacheWrite: 0.5,
+        input: 0.4,
+        output: 2.4,
+      });
+      expect(tracker.TERRA_RATES).toEqual({
+        cacheRead: 0.2,
+        cacheWrite: 2.5,
+        input: 2.0,
+        output: 12.0,
+      });
+      expect(tracker.TERRA_FAST_RATES).toEqual({
+        cacheRead: 0.4,
+        cacheWrite: 5.0,
+        input: 4.0,
+        output: 24.0,
+      });
+      expect(tracker.SOL_RATES).toEqual({
+        cacheRead: 0.5,
+        cacheWrite: 6.25,
+        input: 5.0,
+        output: 30.0,
+      });
+      expect(tracker.SOL_FAST_RATES).toEqual({
+        cacheRead: 1.0,
+        cacheWrite: 12.5,
+        input: 10.0,
+        output: 60.0,
+      });
     });
 
     test('cache economics counts a cold Fast write as a temporary loss', () => {
@@ -297,9 +336,9 @@ describe('CostTracker', () => {
         'gpt-5.6-luna',
         'priority'
       );
-      expect(economics.actualCost).toBeCloseTo(2.5, 6);
-      expect(economics.noCacheCost).toBeCloseTo(2.0, 6);
-      expect(economics.netSavings).toBeCloseTo(-0.5, 6);
+      expect(economics.actualCost).toBeCloseTo(0.5, 6);
+      expect(economics.noCacheCost).toBeCloseTo(0.4, 6);
+      expect(economics.netSavings).toBeCloseTo(-0.1, 6);
       expect(economics.netSavingsPercent).toBeCloseTo(-25, 6);
     });
 
@@ -313,15 +352,15 @@ describe('CostTracker', () => {
         tracker.addSonnetUsage({ cache_read_input_tokens: 1_000_000 }, 'gpt-5.6-luna', 'priority');
       }
       const economics = tracker.cacheEconomics;
-      expect(economics.actualCost).toBeCloseTo(3.3, 6);
-      expect(economics.noCacheCost).toBeCloseTo(10, 6);
-      expect(economics.netSavings).toBeCloseTo(6.7, 6);
+      expect(economics.actualCost).toBeCloseTo(0.66, 6);
+      expect(economics.noCacheCost).toBeCloseTo(2, 6);
+      expect(economics.netSavings).toBeCloseTo(1.34, 6);
       expect(economics.netSavingsPercent).toBeCloseTo(67, 6);
       expect(tracker.toCostUpdate().sonnet.cacheEconomics).toEqual(
         expect.objectContaining({
-          actualCost: 3.3,
-          noCacheCost: 10,
-          netSavings: 6.7,
+          actualCost: 0.66,
+          noCacheCost: 2,
+          netSavings: 1.34,
           netSavingsPercent: 67,
         })
       );
@@ -331,8 +370,8 @@ describe('CostTracker', () => {
       tracker.addSonnetUsage({ cache_read_input_tokens: 1_000_000 }, 'gpt-5.6-luna', 'priority');
       tracker.addSonnetUsage({ cache_read_input_tokens: 1_000_000 }, 'gpt-5.6-terra', 'standard');
       const economics = tracker.toSessionSummary().sonnet.cacheEconomics;
-      expect(economics.actualCost).toBeCloseTo(0.45, 6);
-      expect(economics.noCacheCost).toBeCloseTo(4.5, 6);
+      expect(economics.actualCost).toBeCloseTo(0.24, 6);
+      expect(economics.noCacheCost).toBeCloseTo(2.4, 6);
       expect(economics.perModel).toHaveProperty('luna_fast');
       expect(economics.perModel).toHaveProperty('terra');
     });
@@ -342,7 +381,7 @@ describe('CostTracker', () => {
       process.env.OPENAI_EXTRACT_SERVICE_TIER = 'fast';
       try {
         tracker.addSonnetUsage({ cache_read_input_tokens: 1_000_000 }, 'gpt-5.6-luna');
-        expect(tracker.sonnetCost).toBeCloseTo(0.2, 6);
+        expect(tracker.sonnetCost).toBeCloseTo(0.04, 6);
       } finally {
         if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
         else process.env.OPENAI_EXTRACT_SERVICE_TIER = previous;
@@ -363,13 +402,54 @@ describe('CostTracker', () => {
           'gpt-5.6-terra',
           'standard'
         );
-        expect(tracker.sonnetCost).toBeCloseTo(0.25 + 3.125 + 2.5 + 15.0, 6);
+        expect(tracker.sonnetCost).toBeCloseTo(0.2 + 2.5 + 2.0 + 12.0, 6);
         expect(tracker.modelUsage.has('terra')).toBe(true);
         expect(tracker.modelUsage.has('terra_fast')).toBe(false);
       } finally {
         if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
         else process.env.OPENAI_EXTRACT_SERVICE_TIER = previous;
       }
+    });
+
+    test('re-prices the mixed Luna Fast/Terra field session from its raw usage', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 105_854,
+          cache_creation_input_tokens: 35_545,
+          input_tokens: 12,
+          output_tokens: 361,
+        },
+        'gpt-5.6-luna',
+        'priority'
+      );
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 35_066,
+          cache_creation_input_tokens: 35_276,
+          input_tokens: 6,
+          output_tokens: 170,
+        },
+        'gpt-5.6-terra',
+        'standard'
+      );
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 105_820,
+          cache_creation_input_tokens: 35_678,
+          input_tokens: 12,
+          output_tokens: 475,
+        },
+        'gpt-5.6-luna',
+        'priority'
+      );
+
+      const economics = tracker.cacheEconomics;
+      expect(economics.actualCost).toBeCloseTo(0.14334966, 8);
+      expect(economics.noCacheCost).toBeCloseTo(0.2579108, 8);
+      expect(economics.netSavings).toBeCloseTo(0.11456114, 8);
+      expect(economics.netSavingsPercent).toBeCloseTo(44.4189, 4);
+      expect(economics.perModel.luna_fast.actualCost).toBeCloseTo(0.04609446, 8);
+      expect(economics.perModel.terra.actualCost).toBeCloseTo(0.0972552, 8);
     });
   });
 

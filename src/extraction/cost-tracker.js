@@ -29,33 +29,35 @@ export class CostTracker {
       input: 15.0,
       output: 75.0,
     };
-    // OpenAI GPT-5.6 Responses-API rates (verified 2026-08-01).
+    // OpenAI GPT-5.6 Responses-API short-context rates, effective 2026-07-30
+    // and verified 2026-08-02 against:
+    // https://developers.openai.com/api/docs/pricing
     // Fast is the same model at an accelerated service tier and is billed at
     // exactly 2x Standard. OpenAI's response currently reports Fast as
     // service_tier="priority", so both names map to the fast bucket below.
     this.LUNA_RATES = {
-      cacheRead: 0.1,
-      cacheWrite: 1.25,
-      input: 1.0,
-      output: 6.0,
+      cacheRead: 0.02,
+      cacheWrite: 0.25,
+      input: 0.2,
+      output: 1.2,
     };
     this.LUNA_FAST_RATES = {
+      cacheRead: 0.04,
+      cacheWrite: 0.5,
+      input: 0.4,
+      output: 2.4,
+    };
+    this.TERRA_RATES = {
       cacheRead: 0.2,
       cacheWrite: 2.5,
       input: 2.0,
       output: 12.0,
     };
-    this.TERRA_RATES = {
-      cacheRead: 0.25,
-      cacheWrite: 3.125,
-      input: 2.5,
-      output: 15.0,
-    };
     this.TERRA_FAST_RATES = {
-      cacheRead: 0.5,
-      cacheWrite: 6.25,
-      input: 5.0,
-      output: 30.0,
+      cacheRead: 0.4,
+      cacheWrite: 5.0,
+      input: 4.0,
+      output: 24.0,
     };
     this.SOL_RATES = {
       cacheRead: 0.5,
