@@ -41,15 +41,13 @@ const CORPUS = path.join(REPO, 'tests', 'fixtures', 'field-replay-corpus');
 // Per-model $/1M token rates. Both platforms use the SAME cache convention:
 // cache READ ~= 0.1x input (90% off), cache WRITE ~= 1.25x input (verified for
 // Anthropic in cost-tracker.js's HAIKU_RATES; verified for OpenAI live
-// 2026-07-31 via developers.openai.com/api/docs/pricing AND a live cache-cold/
-// cache-warm probe pair). Deliberately NOT delegating to CostTracker for cost
-// math: CostTracker._modelFamily() has no 'gpt' branch and silently falls back
-// to Sonnet rates for any unrecognized model id — it would grossly overprice
-// a gpt-* lane. This table is the source of truth for the A/B; keep it in
-// sync with cost-tracker.js's HAIKU_RATES if that ever changes.
+// 2026-08-02 via developers.openai.com/api/docs/pricing AND a live cache-cold/
+// cache-warm probe pair). This standalone lane deliberately keeps a tiny local
+// table so it has no dependency on the mutable session ledger, but the same
+// rates are pinned in CostTracker tests and must stay in sync.
 //
 // Luna's OFFICIAL pricing (developers.openai.com/api/docs/models/gpt-5.6-luna,
-// verified 2026-07-31 — NOT the $0.60 output figure some third-party
+// effective 2026-07-30 and verified 2026-08-02 — NOT third-party
 // aggregators list): input $0.20, output $1.20, cached input $0.02 (90% off).
 const RATES = {
   'claude-haiku-4-5-20251001': { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 },
@@ -150,9 +148,7 @@ async function main() {
   const { activeSessions } = await import(
     new URL('../../src/extraction/active-sessions.js', import.meta.url).href
   );
-  const projectLoggerModule = await import(
-    new URL('../../src/logger.js', import.meta.url).href
-  );
+  const projectLoggerModule = await import(new URL('../../src/logger.js', import.meta.url).href);
   const projectLogger = projectLoggerModule.default;
   // Silence winston to stderr-only so stdout stays clean JSON.
   for (const t of [...projectLogger.transports]) projectLogger.remove(t);
@@ -172,15 +168,22 @@ async function main() {
   for (const fixture of fixtures) {
     const corpusId = fixture.corpus_id;
     const sessionId = `ab_${model.replace(/[^a-z0-9]/gi, '')}_${randomUUID().slice(0, 8)}`;
-    const session = new EICRExtractionSession(ctorKey, sessionId, fixture.job_state?.certificateType ?? 'eicr', {
-      toolCallsMode: 'live',
-    });
+    const session = new EICRExtractionSession(
+      ctorKey,
+      sessionId,
+      fixture.job_state?.certificateType ?? 'eicr',
+      {
+        toolCallsMode: 'live',
+      }
+    );
     const capsList = fixture.client_capabilities?.value ?? [];
     activeSessions.set(sessionId, {
       session,
       voiceLatency: {
         flags: { loadedBarrel: false, suppression: false },
-        capabilities: { voice_latency: { version: 1, supports: Array.isArray(capsList) ? capsList : [] } },
+        capabilities: {
+          voice_latency: { version: 1, supports: Array.isArray(capsList) ? capsList : [] },
+        },
       },
     });
 
@@ -358,7 +361,9 @@ async function main() {
   const json = JSON.stringify(summary, null, 2);
   if (args.out) {
     fs.writeFileSync(args.out, json + '\n');
-    process.stderr.write(`run-lane[${model}]: wrote ${args.out} (${laneResults.length} fixtures, ${turnCount} turns, $${summary.est_cost_usd})\n`);
+    process.stderr.write(
+      `run-lane[${model}]: wrote ${args.out} (${laneResults.length} fixtures, ${turnCount} turns, $${summary.est_cost_usd})\n`
+    );
   } else {
     process.stdout.write(json + '\n');
   }

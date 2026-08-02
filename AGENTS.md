@@ -234,6 +234,7 @@ Recent changes — one line each. **Full commit-body-level detail in [docs/refer
 
 | Date | Summary |
 |------|---------|
+| 2026-08-02 | **July 30 GPT-5.6 price correction.** Backend telemetry now uses Luna's 80%-lower and Terra's 20%-lower official rates; an exact mixed-model field-session regression pins `$0.143350` model cost and `$0.185270` total job cost, with `$0.114561` saved by explicit caching. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-08-02 | **GPT-5.6 explicit cache + savings telemetry.** Luna/Terra now cache only the stable prompt/snapshot prefix behind a source rollback; per-round evidence and model/tier-aware actual-vs-no-cache economics show whether the session saved money, including cold-write losses. Reports no longer apply stale Sonnet rates. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-08-02 | **Address-mirror migration deploy fix.** JSONB object/array defaults now use raw node-pg-migrate SQL literals and text defaults omit literal quote characters; a rendered-SQL regression protects the cleanly rolled-back migration before retry. Full detail: [changelog.md](docs/reference/changelog.md). |
 | 2026-08-01 | **Terra observation trial activated.** Observation-shaped turns use `gpt-5.6-terra` Standard/low through the provider-safe Responses loop; ordinary readings remain Luna Fast. Sole-tester iOS trial only; the missing web processing cue remains a documented parity gap. Rollback is the source flag. Full detail: [changelog.md](docs/reference/changelog.md). |
