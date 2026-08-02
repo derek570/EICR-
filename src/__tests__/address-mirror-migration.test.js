@@ -12,7 +12,7 @@ const silentLogger = {
 };
 
 describe('address mirror migration', () => {
-  test('emits JSONB defaults as SQL literals rather than JSON strings', () => {
+  test('emits JSONB SQL literals and quote-free text defaults', () => {
     const pgm = new MigrationBuilder({}, undefined, false, silentLogger);
 
     migration.up(pgm);
@@ -20,7 +20,11 @@ describe('address mirror migration', () => {
 
     expect(sql).toContain('"source_snapshot" jsonb DEFAULT \'{}\'::jsonb NOT NULL');
     expect(sql.match(/"source_writes" jsonb DEFAULT '\[\]'::jsonb NOT NULL/g)).toHaveLength(2);
+    expect(sql.match(/"status" text DEFAULT \$pga\$pending\$pga\$ NOT NULL/g)).toHaveLength(2);
+    expect(sql).toContain('"legacy_question_type" text DEFAULT $pga$address_mirror$pga$ NOT NULL');
     expect(sql).not.toContain("$pga$'{}'::jsonb$pga$");
     expect(sql).not.toContain("$pga$'[]'::jsonb$pga$");
+    expect(sql).not.toContain("$pga$'pending'$pga$");
+    expect(sql).not.toContain("$pga$'address_mirror'$pga$");
   });
 });
