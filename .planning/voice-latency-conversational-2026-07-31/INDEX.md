@@ -1,6 +1,6 @@
 # Voice latency and conversational-mode plan batch
 
-Status: **DRAFT — not RP-reviewed and not approved for execution**
+Status: **DRAFT — not RP-reviewed and not approved for execution; Plan 01 core is live, retention supplement remains draft**
 Prepared: 2026-07-31
 Canonical backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 Canonical iOS repo: `/Users/derekbeckley/Developer/EICR_Automation/CertMateUnified`
@@ -30,7 +30,7 @@ The first two defects are latent or prompt-shape defects, not evidence that the 
 | Order | Plan | Purpose | Dependencies |
 |---|---|---|---|
 | 00 | [GPT-5.6 port parity](plan-00-gpt56-port-parity.md) | Correct prompt/provider parity and close the known IR miss | None; prerequisite for Plan 01 and any tier routing |
-| 01 | [Explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Stop repeatedly writing the changing ~34k-token prefix | Plan 00 |
+| 01 | [Explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Core explicit cache is live; refine 24-hour retention before considering any 25-minute Terra re-warm | Plan 00 |
 | 02 | [iOS incremental TTS playback](plan-02-ios-incremental-tts-streaming.md) | Play ElevenLabs PCM as chunks arrive instead of awaiting the whole response | Plan 00; enables the full benefit of Plan 03 |
 | 03 | [Persistent ElevenLabs session and tuning](plan-03-elevenlabs-persistent-session.md) | Reuse the multi-context socket and test safe synthesis settings | Plan 00; production rollout after Plan 02 |
 | 04 | [Deepgram Flux Eager EOT](plan-04-deepgram-flux-eager-eot.md) | Measure and cautiously speculate before authoritative EndOfTurn | Plan 00; independent of Plans 01–03 |

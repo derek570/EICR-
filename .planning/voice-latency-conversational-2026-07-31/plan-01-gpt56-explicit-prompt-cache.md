@@ -1,6 +1,6 @@
 # Plan 01 — explicit GPT-5.6 prompt caching
 
-Status: **DRAFT — not RP-reviewed**
+Status: **DRAFT SUPPLEMENT — core explicit cache is live; retention/keep-warm work is not RP-reviewed or implemented**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 Dependency: Plan 00 complete
 
@@ -13,16 +13,19 @@ This is not expected to solve the 200k TPM ceiling: OpenAI counts cached input t
 ## Verified starting point
 
 - `buildSystemBlocks()` already produces base, stable snapshot prefix and volatile snapshot tail blocks, with Anthropic `cache_control` markers.
-- `openai-responses-adapter.js` discards those markers and sends a single top-level `instructions` string.
-- Recent production usage showed approximately 34k cache-write tokens followed by approximately 34k cache-read tokens on multi-round turns, consistent with a changing implicit boundary being written on round one.
-- OpenAI's current prompt-caching guide supports explicit `prompt_cache_breakpoint` blocks, a stable `prompt_cache_key`, and `prompt_cache_options.mode="explicit"`. The exact Responses request shape must be probed against the installed SDK and official schema before implementation; do not assume a top-level `instructions` string can carry breakpoints.
+- The core of this plan shipped on 2026-08-02: `openai-responses-adapter.js` now maps those logical blocks into an explicit Responses cache breakpoint, derives a stable cache key and sends `prompt_cache_options.mode="explicit"`.
+- Production telemetry now separates cache reads and writes. The latest measured field session saved `$0.11456114` of GPT-5.6 model cost (`44.4189%`) through explicit caching under the corrected 2026-07-30 prices.
+- The live request omits `prompt_cache_options.ttl`, so the documented default minimum lifetime is 30 minutes. OpenAI does not document an ordinary cache read as renewing that lifetime.
+- The Responses API also exposes the independent `prompt_cache_retention` policy. Its `"24h"` setting can keep eligible cached prefixes active for up to 24 hours and must be evaluated before inventing timer traffic.
 
 Official implementation references:
 
 - [Prompt caching guide](https://developers.openai.com/api/docs/guides/prompt-caching)
 - [Responses API create reference](https://developers.openai.com/api/reference/resources/responses/methods/create)
 
-## Scope
+## Original core scope — live, retained as an audit checklist
+
+Do not re-implement Sections 1–4. During RP, verify the shipped implementation against these requirements and turn any genuine mismatch into a separate corrective item. The only new implementation candidate introduced by this supplement is Section 5, and that section begins with measurement rather than a timer.
 
 ### 1. Prove the supported request shape
 
@@ -67,6 +70,24 @@ Add PII-safe per-round fields:
 
 Compare at least 30 warm production-like turns per cohort. Report total and per-round p50/p75/p95. Separate first turn after deployment, first turn in session and warm turns.
 
+### 5. Terra retention before any 25-minute keep-alive
+
+Treat the proposed 25-minute Terra keep-alive as a hypothesis, not as an implementation instruction. Do not add an unconditional timer during refinement.
+
+1. **Evaluate 24-hour retention first.** Probe `prompt_cache_retention: "24h"` with the live Terra request shape and stable cache key. This is separate from `prompt_cache_options.ttl`: the latter remains the documented 30-minute minimum lifetime, while retention controls the maximum period for which an eligible prefix may remain active.
+2. **Prove whether reads renew the cache.** Run a controlled same-key sequence around the 30-minute boundary and inspect provider cache-read/cache-write tokens. The documentation describes an earlier breakpoint as read-only and does not promise that a read restarts its lifetime, so a 25-minute read cannot be called a keep-alive without evidence.
+3. **Only then evaluate forced re-warming.** If 24-hour retention is unavailable or does not retain reliably, test a forced cache rewrite behind a source-controlled, default-off flag. It may run only while a recording session is active and only after recent Terra/observation use. It must not enter the conversational tool loop, mutate session state, emit a client event, trigger TTS or race a live Luna/Terra turn.
+4. **Apply a cost gate.** The measured Terra stable prefix is 35,276 tokens, so one forced rewrite costs approximately `$0.08819` at the current `$2.50/M` cache-write rate. Two unconditional rewrites already cost approximately `$0.17638`, more than the latest complete cold-equivalent observation turn; any rewrite followed by no Terra use wastes the entire amount.
+5. **Instrument before deciding.** Record model, cache-key digest/version, scheduled/attempted/skipped status and reason, time since last Terra use/write, cache-read/write tokens, actual model cost, whether the next observation hit the cache, and the next observation's provider/first-audio latency. Never record prompt text or the raw key.
+
+Retention acceptance gates:
+
+- no change to conversation behaviour, model-visible content, tool calls, field writes, questions or exactly-once TTS;
+- a controlled probe demonstrates either a genuine post-30-minute cache hit with 24-hour retention or an actual lifetime refresh rather than a normal read;
+- projected field-use savings exceed added cache-write cost using observed Terra intervals, not a synthetic always-active workload;
+- default remains off until field data demonstrates a worthwhile latency benefit, and rollback is a source-controlled config change;
+- if 24-hour retention works, close the 25-minute timer proposal as unnecessary.
+
 ## Tests and acceptance gates
 
 - golden prompt equivalence for every snapshot format and answer-feature flag;
@@ -102,3 +123,5 @@ npm test
 - Can two sessions with incompatible stable snapshots collide on a key?
 - Does encrypted reasoning continuity accidentally move ahead of the breakpoint or force a rewrite?
 - Are cache savings being confused with TPM savings?
+- Does `prompt_cache_retention: "24h"` eliminate the proposed keep-alive, and has any claim that a read renews TTL been proven from token telemetry rather than assumed?
+- Can the proposal ever save more than its approximately `$0.08819` forced-write cost at the observed Terra-use cadence?
