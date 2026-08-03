@@ -11,6 +11,7 @@ const ENV_KEYS = [
   'OBSERVATION_TIER_ROUTING',
   'OPENAI_API_KEY',
   'OPENAI_EXTRACT_API',
+  'OPENAI_EXTRACT_SERVICE_TIER',
   'VOICE_LATENCY_ROUND1_MODEL',
   'OPENAI_OBSERVATION_SERVICE_TIER',
   'OPENAI_OBSERVATION_REASONING_EFFORT',
@@ -187,6 +188,105 @@ describe('canonical extraction provider resolution', () => {
     expect(openai.messages.create).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'gpt-5.6-luna' })
     );
+  });
+
+  test('two paused-session keepalives are distinct billable rounds with zero inspector turns', async () => {
+    jest.useFakeTimers();
+    process.env.SONNET_EXTRACT_MODEL = 'gpt-5.6-luna';
+    process.env.OPENAI_EXTRACT_SERVICE_TIER = 'fast';
+    const openai = createClient({
+      model: 'gpt-5.6-luna-2026-07-30',
+      response_model: 'gpt-5.6-luna-2026-07-30',
+      response_service_tier: 'priority',
+      usage: { input_tokens: 10, output_tokens: 2 },
+    });
+    const session = new EICRExtractionSession('anthropic-key', 'keepalive-accounting', 'eicr', {
+      providerClients: { openai },
+    });
+    const countsDuringDispatch = [];
+    const response = await openai.messages.create();
+    openai.messages.create.mockReset().mockImplementation(async () => {
+      countsDuringDispatch.push(session.costTracker.inFlightBillableInvocationCount);
+      return { ...response };
+    });
+    session.isActive = true;
+    session._resetCacheKeepalive();
+    session.pause();
+
+    try {
+      await jest.advanceTimersByTimeAsync(4 * 60 * 1000);
+      await jest.advanceTimersByTimeAsync(4 * 60 * 1000);
+
+      expect(countsDuringDispatch).toEqual([1, 1]);
+      expect(session.costTracker.sonnet.turns).toBe(0);
+      expect(session.costTracker.loopInvocations).toBe(2);
+      expect(session.costTracker.completedModelRounds).toBe(2);
+      expect(session.costTracker.inFlightBillableInvocationCount).toBe(0);
+      expect(session.costTracker.roundUsageEvidence.map((item) => item.kind)).toEqual([
+        'cache_keepalive',
+        'cache_keepalive',
+      ]);
+      expect(
+        new Set(session.costTracker.roundUsageEvidence.map((item) => item.loop_invocation_id)).size
+      ).toBe(2);
+      expect(session.costTracker.sonnet.inputTokens).toBe(20);
+      const firstEvidence = session.costTracker.roundUsageEvidence[0];
+      const costAfterBothKeepalives = session.costTracker.sonnetCost;
+      expect(
+        session.costTracker.ingestBillableUsage(
+          firstEvidence.loop_invocation_id,
+          [firstEvidence],
+          'cache_keepalive'
+        )
+      ).toBe(false);
+      expect(session.costTracker.sonnetCost).toBe(costAfterBothKeepalives);
+    } finally {
+      session._clearCacheKeepalive();
+      clearTimeout(session.pauseKeepaliveDeadlineHandle);
+      session.pauseKeepaliveDeadlineHandle = null;
+      jest.useRealTimers();
+    }
+  });
+
+  test('orphan review owns one non-inspector scope and never increments public turns', async () => {
+    process.env.SONNET_EXTRACT_MODEL = 'gpt-5.6-luna';
+    const openai = createClient({
+      model: 'gpt-5.6-luna',
+      response_model: 'gpt-5.6-luna',
+      response_service_tier: null,
+      content: [
+        {
+          type: 'tool_use',
+          input: { questions_for_user: [] },
+        },
+      ],
+      usage: { input_tokens: 7, output_tokens: 1 },
+    });
+    const session = new EICRExtractionSession('anthropic-key', 'orphan-accounting', 'eicr', {
+      providerClients: { openai },
+    });
+    const countsDuringDispatch = [];
+    const response = await openai.messages.create();
+    openai.messages.create.mockReset().mockImplementation(async () => {
+      countsDuringDispatch.push(session.costTracker.inFlightBillableInvocationCount);
+      return { ...response };
+    });
+    session.isActive = true;
+    session.conversationHistory = [
+      { role: 'user', content: 'one' },
+      { role: 'assistant', content: 'two' },
+      { role: 'user', content: 'three' },
+      { role: 'assistant', content: 'four' },
+    ];
+
+    await session.reviewForOrphanedValues();
+
+    expect(session.costTracker.sonnet.turns).toBe(0);
+    expect(session.costTracker.loopInvocations).toBe(1);
+    expect(session.costTracker.completedModelRounds).toBe(1);
+    expect(session.costTracker.inFlightBillableInvocationCount).toBe(0);
+    expect(session.costTracker.roundUsageEvidence[0].kind).toBe('orphan_review');
+    expect(countsDuringDispatch).toEqual([1]);
   });
 
   test('production selection inventory uses the canonical resolver or whole-loop fence', () => {
