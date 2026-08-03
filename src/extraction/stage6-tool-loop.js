@@ -388,25 +388,19 @@ export async function runToolLoop({
   // Phase 0: convenience timing for emitTurnCoreSummary (sonnet_round1_ms /
   // sonnet_round2_ms). Bundler/dispatch timings come from elsewhere.
   const allCalls = [];
-  // Per-round usage accumulator. Summed from each round's
-  // stream.finalMessage().usage (Anthropic Message.usage shape). Returned
-  // verbatim so callers can pipe it into CostTracker.addSonnetUsage. We
-  // intentionally do NOT bill per-round here — the call is one billable
-  // utterance from the session's perspective, and CostTracker.turns ===
-  // utterances is the contract every dashboard relies on (matches the
-  // legacy off-mode call site at eicr-extraction-session.js:1614 which
-  // also calls addSonnetUsage exactly once per extract()). The round
-  // count is preserved on the return value (rounds: number) for
-  // diagnostics that want per-round granularity.
+  // Compatibility aggregate summed from every final Message.usage. It remains
+  // useful to existing latency/debug consumers, but is not billing authority:
+  // callers ingest `round_usage` exactly once via CostTracker, while accepted
+  // inspector turns are counted separately at the authoritative ingress.
   const usage = {
     input_tokens: 0,
     output_tokens: 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   };
-  // Per-API-round cache evidence. Aggregate usage remains the billing source;
-  // this additive array proves which round wrote/read the prefix and which
-  // explicit breakpoint/key version produced that result.
+  // Per-API-round cache and billing evidence. This array proves which round
+  // wrote/read the prefix and which explicit breakpoint/key version produced
+  // that result.
   const roundUsage = [];
   // OpenAI Responses reports the tier it actually served (`priority` for a
   // Fast request today). Retain it so CostTracker can bill each 5.6 family at
