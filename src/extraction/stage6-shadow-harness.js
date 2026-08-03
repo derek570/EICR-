@@ -4051,6 +4051,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     if (typeof session.costTracker?.estimateRoundUsageEconomics === 'function') {
       turnCostEconomics = session.costTracker.estimateRoundUsageEconomics(billableRoundUsage);
     }
+    const billableUsageTotals = billableRoundUsage.reduce(
+      (totals, row) => {
+        totals.freshInput += row?.fresh_input_tokens ?? 0;
+        totals.output += row?.output_tokens ?? 0;
+        totals.cacheRead += row?.cache_read_input_tokens ?? 0;
+        totals.cacheWrite += row?.cache_write_input_tokens ?? 0;
+        return totals;
+      },
+      { freshInput: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    );
 
     // Mirror the legacy `this.extractedReadingsCount += result.extracted_readings.length`
     // at eicr-extraction-session.js:1474. Feeds cost_summary.extraction.readingsExtracted
@@ -4080,10 +4090,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // the legacy off-mode "Turn cost" log at eicr-extraction-session.js:1618).
       // Cumulative session totals live on session.costTracker and ride out
       // via cost_summary.json at session end.
-      usage_input: toolLoopOut?.usage?.input_tokens ?? 0,
-      usage_output: toolLoopOut?.usage?.output_tokens ?? 0,
-      usage_cache_read: toolLoopOut?.usage?.cache_read_input_tokens ?? 0,
-      usage_cache_write: toolLoopOut?.usage?.cache_creation_input_tokens ?? 0,
+      usage_input: billableUsageTotals.freshInput,
+      usage_output: billableUsageTotals.output,
+      usage_cache_read: billableUsageTotals.cacheRead,
+      usage_cache_write: billableUsageTotals.cacheWrite,
       prompt_cache_rounds: billableRoundUsage,
       turn_cost_usd: turnCostEconomics?.actualCost ?? null,
       no_cache_cost_usd: turnCostEconomics?.noCacheCost ?? null,

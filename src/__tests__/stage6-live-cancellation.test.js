@@ -41,7 +41,18 @@ const runToolLoopSpy = jest.fn(async (opts) => {
   }
   if (throwOnLoop) {
     // Simulate the watchdog ceiling aborting the loop AFTER some writes applied.
-    throw new ExtractionCancelledError('extraction_watchdog_absolute_ceiling');
+    const error = new ExtractionCancelledError('extraction_watchdog_absolute_ceiling');
+    error.billableUsage = {
+      round_usage: [
+        {
+          fresh_input_tokens: 17,
+          output_tokens: 5,
+          cache_read_input_tokens: 11,
+          cache_write_input_tokens: 7,
+        },
+      ],
+    };
+    throw error;
   }
   return {
     stop_reason: 'end_turn',
@@ -166,6 +177,24 @@ describe('F7 Item 3 — cancellation-finalization contract', () => {
       .map((c) => c[1]);
     expect(fbRows).toHaveLength(1);
     expect(fbRows[0].generationId).toBe('gen-cancel');
+  });
+
+  test('a billed cancellation logs token totals from attached round evidence', async () => {
+    throwOnLoop = true;
+    const opts = baseOpts();
+    await runShadowHarness(makeSession(), 'billed then cancelled', [], opts);
+
+    const row = opts.logger.info.mock.calls.find(
+      ([name]) => name === 'stage6_live_extraction'
+    )?.[1];
+    expect(row).toEqual(
+      expect.objectContaining({
+        usage_input: 17,
+        usage_output: 5,
+        usage_cache_read: 11,
+        usage_cache_write: 7,
+      })
+    );
   });
 
   test('a cancellation WITH a surviving reading does NOT also add the fallback (no double)', async () => {
