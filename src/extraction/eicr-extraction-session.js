@@ -2620,6 +2620,18 @@ export class EICRExtractionSession {
       }
       return null;
     })();
+    // Plan 00A review closure — the harness already recorded each accepted
+    // inspector turn before selecting live/shadow/legacy. Preserve the newest
+    // buffered turn's identity when the legacy leg collapses a batch into one
+    // model call; otherwise _extractSingle mints a third identity and public
+    // `sonnet.turns` counts the legacy sibling as another inspector utterance.
+    const lastBufferedExtractionTurnId = (() => {
+      for (let i = batch.length - 1; i >= 0; i--) {
+        const id = batch[i]?.options?.extractionTurnId;
+        if (typeof id === 'string' && id) return id;
+      }
+      return null;
+    })();
     // A batch's real result answers the newest buffered utterance. Earlier
     // items already closed their own processing slots via their placeholders;
     // the newest item did not receive a placeholder because it fired the batch.
@@ -2627,6 +2639,7 @@ export class EICRExtractionSession {
     const combinedOptions = {
       confirmationsEnabled: batch.some((b) => b.options?.confirmationsEnabled),
       utteranceId: lastBufferedUtteranceId,
+      extractionTurnId: lastBufferedExtractionTurnId,
       turnId: lastBufferedTurnId,
       postcodeHintState: combinePostcodeHintStates(
         batch.map((item) => ({ postcodeHintState: item.options?.postcodeHintState }))
