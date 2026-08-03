@@ -1,9 +1,7 @@
 import { jest } from '@jest/globals';
+import fs from 'node:fs';
 import { EICRExtractionSession } from '../extraction/eicr-extraction-session.js';
-import {
-  ProviderResolutionError,
-  providerForModel,
-} from '../extraction/model-provider.js';
+import { ProviderResolutionError, providerForModel } from '../extraction/model-provider.js';
 import { runToolLoop } from '../extraction/stage6-tool-loop.js';
 import { renderSystemPrompt } from '../extraction/system-prompt-renderer.js';
 
@@ -46,23 +44,44 @@ afterEach(() => {
 });
 
 describe('canonical extraction provider resolution', () => {
-  test('real split snapshot blocks render with explicit boundaries and unchanged block text', () => {
-    const anthropic = createClient();
-    const session = new EICRExtractionSession('anthropic-key', 'prompt-golden', 'eicr', {
-      providerClients: { anthropic },
-      toolCallsMode: 'live',
-      snapshotFormat: 'split_blocks',
-    });
-    session.updateStateSnapshot({
-      extracted_readings: [{ circuit: 3, field: 'measured_zs_ohm', value: '0.63' }],
-    });
-    const blocks = session.buildSystemBlocks();
-    const nonEmptyBlockTexts = blocks.map((block) => block.text).filter(Boolean);
+  test.each([false, true])(
+    'real split snapshot blocks preserve exact base/prefix/tail order (answers=%s)',
+    (agenticAnswersEnabled) => {
+      const anthropic = createClient();
+      const session = new EICRExtractionSession('anthropic-key', 'prompt-golden', 'eicr', {
+        providerClients: { anthropic },
+        toolCallsMode: 'live',
+        snapshotFormat: 'split_blocks',
+        agenticAnswersEnabled,
+      });
+      session.updateJobState({
+        circuits: [{ circuitNumber: 3, circuitDescription: 'Kitchen sockets' }],
+      });
+      session.updateStateSnapshot({
+        extracted_readings: [{ circuit: 3, field: 'measured_zs_ohm', value: '0.63' }],
+      });
+      const blocks = session.buildSystemBlocks();
+      const [base, stablePrefix, volatileTail] = blocks;
 
-    expect(nonEmptyBlockTexts.length).toBeGreaterThan(1);
-    expect(renderSystemPrompt(blocks)).toBe(nonEmptyBlockTexts.join('\n\n'));
-    expect(renderSystemPrompt(blocks)).toContain('\n\nEXTRACTED');
-  });
+      expect(blocks).toHaveLength(3);
+      expect(base.text).toBe(session.systemPrompt);
+      expect(stablePrefix.text).toBe(session.buildStableSnapshotPrefix());
+      expect(volatileTail.text).toBe(session.buildVolatileSnapshotTail());
+      expect(stablePrefix.text).toContain('CIRCUIT SCHEDULE');
+      expect(stablePrefix.text).not.toMatch(/(?:^|\n)(?:EXTRACTED|PENDING)(?:\n|$)/);
+      expect(volatileTail.text).toMatch(/(?:^|\n)EXTRACTED(?:\s|\()/);
+      expect(renderSystemPrompt(blocks)).toBe(
+        [base.text, stablePrefix.text, volatileTail.text].join('\n\n')
+      );
+      expect(renderSystemPrompt(blocks)).toContain('\n\nEXTRACTED');
+      expect(renderSystemPrompt(blocks)).not.toContain('cache_control');
+      expect(renderSystemPrompt(blocks).length).toBe(
+        base.text.length + stablePrefix.text.length + volatileTail.text.length + 4
+      );
+      expect(base.text.includes('`answer_user`')).toBe(agenticAnswersEnabled);
+      expect(base.text.includes('`inspect_session_state`')).toBe(agenticAnswersEnabled);
+    }
+  );
 
   test('classifies supported model families and rejects unknown identifiers', () => {
     expect(providerForModel(' gpt-5.6-luna ')).toBe('openai');
@@ -96,6 +115,39 @@ describe('canonical extraction provider resolution', () => {
       model: 'claude-sonnet-4-6',
       provider: 'anthropic',
     });
+  });
+
+  test('supported model changes between turns reuse the matching provider client', async () => {
+    process.env.SONNET_EXTRACT_MODEL = 'gpt-5.6-luna';
+    const openai = createClient({ model: 'gpt-5.6-luna' });
+    const session = new EICRExtractionSession('anthropic-key', 'same-client-switch', 'eicr', {
+      providerClients: { openai },
+    });
+
+    await session.callWithRetry([{ role: 'user', content: 'ordinary reading' }], 1, 'SYSTEM');
+    process.env.OBSERVATION_EXTRACT_MODEL = 'gpt-5.6-terra';
+    await session.callWithRetry(
+      [{ role: 'user', content: 'NEW utterance: observation cracked socket category two\n\n' }],
+      1,
+      'SYSTEM'
+    );
+
+    expect(openai.messages.create).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ model: 'gpt-5.6-luna' }),
+      { timeout: 30000 }
+    );
+    expect(openai.messages.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        model: 'gpt-5.6-terra',
+        service_tier: 'standard',
+        reasoning_effort: 'low',
+      }),
+      { timeout: 30000 }
+    );
+    expect(session._providerClients.get('openai')).toBe(openai);
+    expect(session._providerClients.size).toBe(1);
   });
 
   test('legacy observation routing uses the observation model matching client even with the live flag off', async () => {
@@ -136,27 +188,111 @@ describe('canonical extraction provider resolution', () => {
       expect.objectContaining({ model: 'gpt-5.6-luna' })
     );
   });
+
+  test('production selection inventory uses the canonical resolver or whole-loop fence', () => {
+    const sessionSource = fs.readFileSync(
+      new URL('../extraction/eicr-extraction-session.js', import.meta.url),
+      'utf8'
+    );
+    const harnessSource = fs.readFileSync(
+      new URL('../extraction/stage6-shadow-harness.js', import.meta.url),
+      'utf8'
+    );
+    const loopSource = fs.readFileSync(
+      new URL('../extraction/stage6-tool-loop.js', import.meta.url),
+      'utf8'
+    );
+
+    expect(sessionSource.match(/resolveExtractionTarget\(/g)).toHaveLength(3);
+    expect(harnessSource).toContain('return session.resolveExtractionTarget(model);');
+    expect(loopSource).toContain('assertSameProvider(model, configuredRound1Override);');
+    expect(loopSource).toContain('const modelProvider = providerForModel(model);');
+  });
+
+  test('keepalive cadence and paused-session budget remain the shipped 4m/15m contract', () => {
+    const source = fs.readFileSync(
+      new URL('../extraction/eicr-extraction-session.js', import.meta.url),
+      'utf8'
+    );
+    expect(source).toContain('const CACHE_KEEPALIVE_MS = 4 * 60 * 1000;');
+    expect(source).toContain('const PAUSE_KEEPALIVE_BUDGET_MS = 15 * 60 * 1000;');
+    expect(source).toContain(
+      'this.cacheKeepaliveHandle = setTimeout(() => this._sendCacheKeepalive(), CACHE_KEEPALIVE_MS);'
+    );
+    expect(source).not.toMatch(/25\s*\*\s*60\s*\*\s*1000/);
+  });
 });
 
 describe('whole-loop provider invariant', () => {
-  test('cross-provider round-one override fails before SDK dispatch', async () => {
-    process.env.VOICE_LATENCY_ROUND1_MODEL = 'claude-haiku-4-5-20251001';
-    const client = createClient();
+  test.each([
+    ['gpt-5.6-luna', 'openai', 'claude-haiku-4-5-20251001'],
+    ['claude-haiku-4-5-20251001', 'anthropic', 'gpt-5.6-luna'],
+  ])(
+    'cross-provider override %s -> %s fails before SDK dispatch',
+    async (model, provider, override) => {
+      process.env.VOICE_LATENCY_ROUND1_MODEL = override;
+      const client = createClient();
 
-    await expect(
-      runToolLoop({
-        client,
-        model: 'gpt-5.6-luna',
-        provider: 'openai',
-        system: 'SYSTEM',
-        messages: [{ role: 'user', content: 'reading' }],
-        tools: [],
-        dispatcher: jest.fn(),
-        ctx: {},
-        logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
-      })
-    ).rejects.toThrow(/Cross-provider round-one override is unsupported/);
+      await expect(
+        runToolLoop({
+          client,
+          model,
+          provider,
+          system: 'SYSTEM',
+          messages: [{ role: 'user', content: 'reading' }],
+          tools: [],
+          dispatcher: jest.fn(),
+          ctx: {},
+          logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+        })
+      ).rejects.toThrow(/Cross-provider round-one override is unsupported/);
 
-    expect(client.messages.stream).not.toHaveBeenCalled();
+      expect(client.messages.stream).not.toHaveBeenCalled();
+    }
+  );
+
+  test('same-provider Luna to Terra round-one override reaches the SDK once', async () => {
+    process.env.VOICE_LATENCY_ROUND1_MODEL = 'gpt-5.6-terra';
+    const events = [
+      {
+        type: 'message_start',
+        message: { id: 'm1', role: 'assistant', content: [], model: 'gpt-5.6-terra' },
+      },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+      { type: 'message_stop' },
+    ];
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        for (const event of events) yield event;
+      },
+      async finalMessage() {
+        return {
+          role: 'assistant',
+          content: [],
+          stop_reason: 'end_turn',
+          model: 'gpt-5.6-terra',
+          usage: {},
+        };
+      },
+    };
+    const client = { messages: { stream: jest.fn(() => stream) } };
+
+    await runToolLoop({
+      client,
+      model: 'gpt-5.6-luna',
+      provider: 'openai',
+      system: 'SYSTEM',
+      messages: [{ role: 'user', content: 'reading' }],
+      tools: [],
+      dispatcher: jest.fn(),
+      ctx: {},
+      logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
+    });
+
+    expect(client.messages.stream).toHaveBeenCalledTimes(1);
+    expect(client.messages.stream).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5.6-terra' }),
+      undefined
+    );
   });
 });
