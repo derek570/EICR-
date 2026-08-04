@@ -304,7 +304,9 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
   // synthesis failure remove the reservation with NO delivery evidence.
   const plan00Ctx = ownerEntry?.[EVALUATION_CONTEXT] ?? null;
   const plan00FastProducer = beginProducer(ownerEntry, 'fast_tts');
-  const plan00FastState = { settled: false };
+  // Dormancy: the settled-state object and both listeners exist ONLY under
+  // an evaluation context — the production route allocates nothing here.
+  const plan00FastState = plan00Ctx ? { settled: false } : null;
   if (plan00Ctx) {
     plan00Ctx.reserveFastTts?.({
       correlationId,
@@ -314,7 +316,16 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
       if (plan00FastState.settled) return;
       plan00FastState.settled = true;
       try {
-        plan00Ctx.finishFastTts?.(correlationId);
+        // Owner revalidation at settlement: a session that stopped (or an
+        // entry that disappeared/was replaced) during synthesis must NEVER
+        // promote provisional delivery evidence — the reservation is
+        // withdrawn with no delivery evidence instead.
+        const ownerNow = getActiveSessionEntry(sessionId);
+        if (ownerNow !== ownerEntry) {
+          plan00Ctx.abortFastTts?.(correlationId, 'owner_disappeared');
+        } else {
+          plan00Ctx.finishFastTts?.(correlationId);
+        }
       } catch {
         // isolated
       }

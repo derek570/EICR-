@@ -465,7 +465,7 @@
     ]
   },
   "combined_sha256": "0e68195961962f7b0ca8e39896f77caf2eabc4e7c2f2a5d0e337efed0bcebf38",
-  "semantic_oracle_digest": "9c4126990d82ca21a2b6c71320c36e34a38846da1f55c78639268267ee732b3b",
+  "semantic_oracle_digest": "dd280b12c2a3d960c086c24e854bf5be000ad1fd70ac6c5848f7759e0a6824b8",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -481,11 +481,11 @@
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "3eaa1f69e272f220aaff037ff1882719b1d1792c270ffb453ec5d7c9d6334e03"
+      "sha256": "5ca5549855203d226959aa31cdbd561a91f85f3481cdfd486a8cade4efc3f008"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "a1d7e7370788d7ec6a0758318de6d3685a6a27be02cd614d41016ec350bf0919"
+      "sha256": "a0b618c23055e7a9872de6ca96984b7a69406ecd0fa283836ab6a1f018c64439"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -517,7 +517,7 @@
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",
-      "sha256": "5b32c32cd8497d3df7703ba6caff4f9ea70c749e39ba26b5174e9290ea0988d6"
+      "sha256": "7d006e8c2bab3f97f0726358b959f861b83a636b3181555886f5387b074c8d09"
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",
@@ -565,7 +565,7 @@
     },
     {
       "path": "src/extraction/stage6-dispatcher-ask.js",
-      "sha256": "b98e8df95851a83fe027249eee173f2b3e40493a651b05aa19950aef68b02454"
+      "sha256": "240f72f028bfced6633fdd5d188674be32c123214b91e2bd656689e0992c932e"
     },
     {
       "path": "src/extraction/address-mirror-controller.js",

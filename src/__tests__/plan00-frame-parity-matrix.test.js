@@ -2,20 +2,28 @@
  * Plan 00B-2 C5 — the byte-level frame parity matrix (Codex finding 10).
  *
  * Four legs of the SAME deterministic scenario matrix:
- *   production  — NEITHER evaluationContextFactory NOR sessionFactory
- *   evaluation  — BOTH factories (the full mock-lane shape)
+ *   production   — NEITHER evaluationContextFactory NOR sessionFactory
+ *   evaluation   — BOTH factories (the full mock-lane shape)
  *   session-only — sessionFactory alone (the scripted client alone must be
  *                  byte-parity-clean)
  *   context-only — evaluationContextFactory alone (the evaluation seams
  *                  alone must be byte-parity-clean; this is the EXACT
  *                  live-lane configuration 00C will run)
  *
+ * The LIVE block drives the REAL tool-call path (SONNET_TOOL_CALLS=live,
+ * real EICRExtractionSession, the strict field-replay scripted client
+ * swapped in per turn): an extraction turn, a dispatcher ask answered on
+ * the DIRECT channel, a dispatcher ask answered on the TRANSCRIPT channel,
+ * and an observation turn, then a live session stop. The LEGACY block
+ * (same jest-faked client seam on every leg) covers the VCR-carrying turn,
+ * the legacy question channel, the reconnect flush of a buffered
+ * extraction, session stop and the 5-minute disconnect-timer expiry.
+ *
  * The comparison captures the EXACT argument passed to ws.send, in
  * sequence — no JSON.parse/re-stringify, no sorting, no redaction. The
  * determinism comes from injected/faked seams (fake timers with a fixed
- * epoch, a deterministic randomUUID, identical scripted clients and
- * inputs); the fix for a spurious diff is MORE determinism, never
- * normalisation.
+ * epoch; a deterministic randomUUID through BOTH import styles); the fix
+ * for a spurious diff is MORE determinism, never normalisation.
  *
  * The leak sweep derives from the ONE canonical frozen exported list of
  * every evaluation-only Symbol (EVALUATION_ONLY_SYMBOLS) across raw
@@ -54,48 +62,28 @@ jest.unstable_mockModule('../storage.js', () => ({
   }),
 }));
 
-const mockSessionInstances = [];
-class FakeEICRExtractionSession {
-  constructor(apiKey, sessionId, certType, _opts = undefined) {
-    this.sessionId = sessionId;
-    this.certType = certType;
-    this.turnCount = 0;
-    this.utteranceBuffer = [];
-    this.stateSnapshot = { boards: [], circuits: [], currentBoardId: null, observations: [] };
-    this.costTracker = {
-      toCostUpdate: () => ({ type: 'cost_update', cost: 0 }),
-      inFlightBillableInvocationCount: 0,
-      usageRevision: 0,
-    };
-    this.start = jest.fn();
-    this.stop = jest.fn(() => ({ totals: { cost: 0 } }));
-    this.flushUtteranceBuffer = jest.fn(async () => null);
-    this.extractFromUtterance = jest.fn(async () => ({
-      extracted_readings: [],
-      observations: [],
-      questions_for_user: [],
-    }));
-    this.updateJobState = jest.fn();
-    this.pause = jest.fn();
-    this.resume = jest.fn();
-    this.toolCallsMode = 'off';
-    this.applyModeChange = jest.fn();
-    mockSessionInstances.push(this);
-  }
-}
-jest.unstable_mockModule('../extraction/eicr-extraction-session.js', () => ({
-  EICRExtractionSession: FakeEICRExtractionSession,
-}));
-
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
+const { EICRExtractionSession } = await import('../extraction/eicr-extraction-session.js');
 const { EVALUATION_ONLY_SYMBOLS } = await import('../extraction/plan00-lifecycle-hooks.js');
 const { createAskLedger, createDeliveryLedger } =
   await import('../extraction/plan00-audibility-ledgers.js');
 const { createMutationObserver } = await import('../extraction/plan00-semantic-capture.js');
+const { makeTurnClient } = await import('../../scripts/field-replay/lib/replay-runner-core.mjs');
 
 const getKey = async () => 'parity-key';
 const verifyToken = jest.fn();
+
+const bootstrapClient = {
+  messages: {
+    create() {
+      throw new Error('parity bootstrap client must never dispatch');
+    },
+    stream() {
+      throw new Error('parity bootstrap client must be replaced before dispatch');
+    },
+  },
+};
 
 function makeFakeWs() {
   const sentRaw = [];
@@ -125,6 +113,88 @@ function frameBuffer(frame) {
   return Buffer.from(JSON.stringify(frame));
 }
 
+function scriptedTurnClient(rounds) {
+  return makeTurnClient({
+    baseRounds: rounds,
+    branches: [],
+    turnState: {},
+    violations: [],
+    corpusId: 'parity',
+    turnIndex: 1,
+  });
+}
+
+async function drainMicrotasks(times = 12) {
+  for (let i = 0; i < times; i += 1) {
+    await Promise.resolve();
+  }
+}
+
+/**
+ * Drive one LIVE tool-loop turn under a FIXED virtual-time schedule.
+ *
+ * The advance sequence is identical on every leg REGARDLESS of when the
+ * turn settles — early-stopping "when settled" would let a one-microtask
+ * difference in settle OBSERVATION depth shift the accumulated virtual
+ * time between legs, and any Date.now()-derived token minted later (e.g.
+ * a dialogue-script srv-* ask id) would then diff spuriously. Fixed
+ * schedule ⇒ byte-identical timestamps ⇒ any surviving diff is a REAL
+ * behavioural difference.
+ */
+async function driveLiveTurn({
+  session,
+  emit,
+  sentRaw,
+  sessionId,
+  text,
+  utteranceId,
+  rounds,
+  answerAfterAsk,
+}) {
+  session.client = scriptedTurnClient(rounds);
+  let settled = false;
+  const baseline = sentRaw.length;
+  const turnPromise = emit(
+    'message',
+    frameBuffer({
+      type: 'transcript',
+      sessionId,
+      text,
+      is_final: true,
+      utterance_id: utteranceId,
+      confirmations_enabled: true,
+    })
+  ).finally(() => {
+    settled = true;
+  });
+  await drainMicrotasks(20);
+  // Fires the 1.5s question gate (and anything shorter) deterministically.
+  await jest.advanceTimersByTimeAsync(2000);
+  await drainMicrotasks(10);
+  if (answerAfterAsk) {
+    let askFrame = null;
+    for (let i = sentRaw.length - 1; i >= baseline; i -= 1) {
+      const s = String(sentRaw[i]);
+      if (s.includes('"ask_user_started"')) {
+        askFrame = JSON.parse(s);
+        break;
+      }
+    }
+    if (askFrame) {
+      await answerAfterAsk(askFrame);
+      await drainMicrotasks(10);
+    }
+    await jest.advanceTimersByTimeAsync(2000);
+    await drainMicrotasks(10);
+  }
+  // Unconditional tail advance: fires the 45s ask timeout for any still-
+  // pending ask (an unanswered ask settles identically on every leg).
+  await jest.advanceTimersByTimeAsync(50000);
+  await drainMicrotasks(10);
+  if (!settled) throw new Error(`live turn ${utteranceId} failed to settle under the fixed pump`);
+  await turnPromise;
+}
+
 /**
  * Run the full deterministic scenario matrix under one leg configuration.
  * Returns the RAW sent-argument sequences per socket plus the diagnostics
@@ -134,7 +204,6 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
   uuidCounter = 0;
   loggedPayloads.length = 0;
   uploadedBodies.length = 0;
-  mockSessionInstances.length = 0;
   activeSessions.clear();
   sonnetSessionStore.clear();
   jest.setSystemTime(new Date('2026-08-04T12:00:00Z'));
@@ -149,160 +218,196 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
     });
   }
   if (withSessionFactory) {
+    // Mirror the env-resolved mode exactly as production construction does —
+    // hardcoding 'live' here would diverge the legacy-block session_ack
+    // (server_impedance_clamp is advertised in live mode only).
     initOptions.sessionFactory = ({ apiKey, sessionId, certificateType }) =>
-      new FakeEICRExtractionSession(apiKey, sessionId, certificateType, {
-        providerClients: {},
+      new EICRExtractionSession(apiKey, sessionId, certificateType, {
+        toolCallsMode: process.env.SONNET_TOOL_CALLS === 'live' ? 'live' : 'off',
+        providerClients: { anthropic: bootstrapClient },
       });
   }
   const wss = initSonnetStream(null, getKey, verifyToken, initOptions);
 
-  const sid = 'parity-session';
+  // ── LIVE block: the real tool-call path with the scripted client ──
+  process.env.SONNET_TOOL_CALLS = 'live';
+  const liveSid = 'parity-live';
   const a = makeFakeWs();
   wss.emit('connection', a.ws, { headers: {} }, 'parity-user');
-
-  // Scenario: session start (stage6 handshake).
   await a.emit(
     'message',
     frameBuffer({
       type: 'session_start',
-      sessionId: sid,
-      jobState: { certificateType: 'eicr', boards: [], circuits: [] },
+      sessionId: liveSid,
+      jobState: {
+        certificateType: 'eicr',
+        boards: [],
+        circuits: [{ circuit_ref: 4, circuit_designation: 'Upstairs sockets' }],
+      },
       capabilities: { voice_latency: { version: 1, supports: ['low_conf_readback_v1'] } },
       protocol_version: 'stage6',
     })
   );
+  const liveEntry = activeSessions.get(liveSid);
+  const liveSession = liveEntry.session;
 
-  // Scenario: extraction turn (mode off → the jest-faked session client
-  // seam; the scripted result is identical across legs).
-  const entry = activeSessions.get(sid);
-  entry.session.extractFromUtterance = jest.fn(async () => ({
-    extracted_readings: [{ field: 'r1_r2_ohm', circuit: 4, value: '0.32', confidence: 0.9 }],
-    observations: [],
-    questions_for_user: [],
-    confirmations: [{ field: 'r1_r2_ohm', circuit: 4, text: 'Circuit 4, R1 plus R2 0.32' }],
-    turn_id: 'parity-turn-1',
-  }));
-  await a.emit(
-    'message',
-    frameBuffer({
-      type: 'transcript',
-      sessionId: sid,
-      text: 'R1 plus R2 for circuit 4 is 0.32.',
-      is_final: true,
-      utterance_id: 'parity-utt-1',
-      confirmations_enabled: true,
-    })
-  );
-
-  // Scenario: ask turn (legacy question channel) + BOTH answer channels —
-  // a direct ask_user_answered frame and an in_response_to transcript.
-  entry.session.extractFromUtterance = jest.fn(async () => ({
-    extracted_readings: [],
-    observations: [],
-    questions_for_user: [
-      { type: 'unclear', question: 'Which circuit was that Zs for?', field: 'measured_zs_ohm' },
-    ],
-    turn_id: 'parity-turn-ask',
-  }));
-  await a.emit(
-    'message',
-    frameBuffer({
-      type: 'transcript',
-      sessionId: sid,
-      text: 'Zs is 0.51.',
-      is_final: true,
-      utterance_id: 'parity-utt-ask',
-      confirmations_enabled: true,
-    })
-  );
-  await jest.advanceTimersByTimeAsync(1600); // the 1.5s question-gate flush
-  await a.emit(
-    'message',
-    frameBuffer({
-      type: 'ask_user_answered',
-      sessionId: sid,
-      tool_call_id: 'toolu_parity_direct',
-      user_text: 'Circuit 4.',
-    })
-  );
-  entry.session.extractFromUtterance = jest.fn(async () => ({
-    extracted_readings: [],
-    observations: [],
-    questions_for_user: [],
-    turn_id: 'parity-turn-answer',
-  }));
-  await a.emit(
-    'message',
-    frameBuffer({
-      type: 'transcript',
-      sessionId: sid,
-      text: 'Circuit 4.',
-      is_final: true,
-      utterance_id: 'parity-utt-answer',
-      confirmations_enabled: true,
-      in_response_to: { type: 'unclear', question: 'Which circuit was that Zs for?' },
-    })
-  );
-
-  // Scenario: observation turn + a VCR-carrying turn (spoken_response).
-  entry.session.extractFromUtterance = jest.fn(async () => ({
-    extracted_readings: [],
-    observations: [
+  // Scenario: extraction turn.
+  await driveLiveTurn({
+    session: liveSession,
+    emit: a.emit,
+    sentRaw: a.sentRaw,
+    sessionId: liveSid,
+    text: 'R1 plus R2 for circuit 4 is 0.32.',
+    utteranceId: 'parity-utt-1',
+    rounds: [
       {
-        observation_id: 'parity-obs-1',
-        observation_text: 'Cracked socket front in the kitchen',
-        code: 'C2',
+        stop_reason: 'tool_use',
+        tool_calls: [
+          {
+            id: 'toolu_parity_r1r2',
+            name: 'record_reading',
+            input: {
+              field: 'r1_r2_ohm',
+              circuit: 4,
+              value: '0.32',
+              confidence: 0.9,
+              source_turn_id: 't1',
+            },
+          },
+        ],
       },
+      { stop_reason: 'end_turn', text: '' },
     ],
-    questions_for_user: [],
-    turn_id: 'parity-turn-obs',
-  }));
-  await a.emit(
-    'message',
-    frameBuffer({
-      type: 'transcript',
-      sessionId: sid,
-      text: 'Observation: cracked socket front in the kitchen, C2.',
-      is_final: true,
-      utterance_id: 'parity-utt-obs',
-      confirmations_enabled: true,
-    })
-  );
-  entry.session.extractFromUtterance = jest.fn(async () => ({
-    extracted_readings: [],
-    observations: [],
-    questions_for_user: [],
-    voice_command: { action: 'rename_circuit', circuit: 4 },
-    spoken_response: 'Renamed circuit 4 to kitchen sockets.',
-    action: 'rename_circuit',
-    turn_id: 'parity-turn-vcr',
-  }));
-  await a.emit(
-    'message',
-    frameBuffer({
-      type: 'transcript',
-      sessionId: sid,
-      text: 'Rename circuit 4 to kitchen sockets.',
-      is_final: true,
-      utterance_id: 'parity-utt-vcr',
-      confirmations_enabled: true,
-    })
-  );
+  });
 
-  // Scenario: reconnect flush — buffer an extraction on a CLOSED socket,
-  // then reconnect on a fresh socket and observe the replay frames.
-  a.ws.readyState = 3;
-  await a.emit(
-    'message',
-    frameBuffer({
-      type: 'transcript',
-      sessionId: sid,
-      text: 'Zs for circuit 4 is 0.63.',
-      is_final: true,
-      utterance_id: 'parity-utt-2',
-      confirmations_enabled: true,
-    })
-  );
+  // Scenario: dispatcher ask answered on the DIRECT channel.
+  await driveLiveTurn({
+    session: liveSession,
+    emit: a.emit,
+    sentRaw: a.sentRaw,
+    sessionId: liveSid,
+    text: 'The Zs was point five five.',
+    utteranceId: 'parity-utt-2',
+    rounds: [
+      {
+        stop_reason: 'tool_use',
+        tool_calls: [
+          {
+            id: 'toolu_parity_ask1',
+            name: 'ask_user',
+            input: {
+              question: 'Which circuit was that Zs for?',
+              reason: 'missing_context',
+              context_field: 'measured_zs_ohm',
+              context_circuit: null,
+              expected_answer_shape: 'circuit_ref',
+            },
+          },
+        ],
+      },
+      { stop_reason: 'end_turn', text: '' },
+    ],
+    answerAfterAsk: async (askFrame) => {
+      await a.emit(
+        'message',
+        frameBuffer({
+          type: 'ask_user_answered',
+          sessionId: liveSid,
+          tool_call_id: askFrame.tool_call_id,
+          user_text: 'Circuit 4.',
+        })
+      );
+    },
+  });
+
+  // Scenario: dispatcher ask answered on the TRANSCRIPT channel (a bare
+  // value reply — resolves via the overtake classifier, or settles on the
+  // deterministic timeout identically across legs). Wording deliberately
+  // avoids the dialogue-script trigger vocabulary so this is a MODEL ask.
+  await driveLiveTurn({
+    session: liveSession,
+    emit: a.emit,
+    sentRaw: a.sentRaw,
+    sessionId: liveSid,
+    text: 'Zs for circuit 4.',
+    utteranceId: 'parity-utt-3',
+    rounds: [
+      {
+        stop_reason: 'tool_use',
+        tool_calls: [
+          {
+            id: 'toolu_parity_ask2',
+            name: 'ask_user',
+            input: {
+              question: 'What was the reading value?',
+              reason: 'missing_value',
+              context_field: 'measured_zs_ohm',
+              context_circuit: 4,
+              expected_answer_shape: 'number',
+            },
+          },
+        ],
+      },
+      { stop_reason: 'end_turn', text: '' },
+    ],
+    answerAfterAsk: async () => {
+      // The TRANSCRIPT answer channel: a bare value reply while the ask is
+      // pending (resolves via the overtake classifier, or settles on the
+      // deterministic ask timeout — identical either way across legs).
+      await a
+        .emit(
+          'message',
+          frameBuffer({
+            type: 'transcript',
+            sessionId: liveSid,
+            text: '0.55.',
+            is_final: true,
+            utterance_id: 'parity-utt-3b',
+            confirmations_enabled: true,
+          })
+        )
+        .catch(() => {});
+    },
+  });
+
+  // Scenario: observation turn.
+  await driveLiveTurn({
+    session: liveSession,
+    emit: a.emit,
+    sentRaw: a.sentRaw,
+    sessionId: liveSid,
+    text: 'There is a cracked socket front in the kitchen, code C2.',
+    utteranceId: 'parity-utt-4',
+    rounds: [
+      {
+        stop_reason: 'tool_use',
+        tool_calls: [
+          {
+            id: 'toolu_parity_obs',
+            name: 'record_observation',
+            input: {
+              code: 'C2',
+              location: 'Kitchen',
+              text: 'Cracked socket front',
+              circuit: null,
+              suggested_regulation: '134.1.1',
+              schedule_item: null,
+              rationale: null,
+              clarification_chain_id: null,
+            },
+          },
+        ],
+      },
+      { stop_reason: 'end_turn', text: '' },
+    ],
+  });
+
+  // Scenario: live session stop.
+  await a.emit('message', frameBuffer({ type: 'session_stop', sessionId: liveSid }));
+
+  // ── LEGACY block: same jest-faked client seam on EVERY leg ──
+  process.env.SONNET_TOOL_CALLS = 'off';
+  const sid = 'parity-legacy';
   const b = makeFakeWs();
   wss.emit('connection', b.ws, { headers: {} }, 'parity-user');
   await b.emit(
@@ -315,14 +420,93 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
       protocol_version: 'stage6',
     })
   );
+  const legacyEntry = activeSessions.get(sid);
+  legacyEntry.session.toolCallsMode = 'off';
 
-  // Scenario: session stop on the live socket.
-  await b.emit('message', frameBuffer({ type: 'session_stop', sessionId: sid }));
+  // Scenario: legacy question turn + the question-gate flush.
+  legacyEntry.session.extractFromUtterance = jest.fn(async () => ({
+    extracted_readings: [],
+    observations: [],
+    questions_for_user: [
+      { type: 'unclear', question: 'Which circuit was that Zs for?', field: 'measured_zs_ohm' },
+    ],
+    turn_id: 'parity-turn-ask',
+  }));
+  await b.emit(
+    'message',
+    frameBuffer({
+      type: 'transcript',
+      sessionId: sid,
+      text: 'Zs is 0.51.',
+      is_final: true,
+      utterance_id: 'parity-utt-l1',
+      confirmations_enabled: true,
+    })
+  );
+  await jest.advanceTimersByTimeAsync(1600); // the 1.5s question-gate flush
 
-  // Scenario: disconnect-timer retry — a second session left to expire.
+  // Scenario: VCR-carrying turn (spoken_response + action).
+  legacyEntry.session.extractFromUtterance = jest.fn(async () => ({
+    extracted_readings: [],
+    observations: [],
+    questions_for_user: [],
+    voice_command: { action: 'rename_circuit', circuit: 4 },
+    spoken_response: 'Renamed circuit 4 to kitchen sockets.',
+    action: 'rename_circuit',
+    turn_id: 'parity-turn-vcr',
+  }));
+  await b.emit(
+    'message',
+    frameBuffer({
+      type: 'transcript',
+      sessionId: sid,
+      text: 'Rename circuit 4 to kitchen sockets.',
+      is_final: true,
+      utterance_id: 'parity-utt-l2',
+      confirmations_enabled: true,
+    })
+  );
+
+  // Scenario: reconnect flush — buffer an extraction on a CLOSED socket,
+  // then reconnect on a fresh socket and observe the replay frames.
+  legacyEntry.session.extractFromUtterance = jest.fn(async () => ({
+    extracted_readings: [{ field: 'measured_zs_ohm', circuit: 4, value: '0.63', confidence: 0.9 }],
+    observations: [],
+    questions_for_user: [],
+    turn_id: 'parity-turn-buffered',
+  }));
+  b.ws.readyState = 3;
+  await b.emit(
+    'message',
+    frameBuffer({
+      type: 'transcript',
+      sessionId: sid,
+      text: 'Zs for circuit 4 is 0.63.',
+      is_final: true,
+      utterance_id: 'parity-utt-l3',
+      confirmations_enabled: true,
+    })
+  );
   const c = makeFakeWs();
   wss.emit('connection', c.ws, { headers: {} }, 'parity-user');
   await c.emit(
+    'message',
+    frameBuffer({
+      type: 'session_start',
+      sessionId: sid,
+      jobState: { certificateType: 'eicr', boards: [], circuits: [] },
+      capabilities: { voice_latency: { version: 1, supports: ['low_conf_readback_v1'] } },
+      protocol_version: 'stage6',
+    })
+  );
+
+  // Scenario: session stop on the live socket.
+  await c.emit('message', frameBuffer({ type: 'session_stop', sessionId: sid }));
+
+  // Scenario: disconnect-timer retry — a third session left to expire.
+  const d = makeFakeWs();
+  wss.emit('connection', d.ws, { headers: {} }, 'parity-user');
+  await d.emit(
     'message',
     frameBuffer({
       type: 'session_start',
@@ -331,15 +515,17 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
       protocol_version: 'stage6',
     })
   );
-  await c.emit('close');
+  await d.emit('close');
   await jest.advanceTimersByTimeAsync(300001);
 
   return {
-    frames: { a: [...a.sentRaw], b: [...b.sentRaw], c: [...c.sentRaw] },
+    frames: { a: [...a.sentRaw], b: [...b.sentRaw], c: [...c.sentRaw], d: [...d.sentRaw] },
     logs: [...loggedPayloads],
     uploads: [...uploadedBodies],
   };
 }
+
+const SAVED_MODE = process.env.SONNET_TOOL_CALLS;
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -349,6 +535,8 @@ afterEach(() => {
   activeSessions.clear();
   sonnetSessionStore.clear();
   jest.useRealTimers();
+  if (SAVED_MODE === undefined) delete process.env.SONNET_TOOL_CALLS;
+  else process.env.SONNET_TOOL_CALLS = SAVED_MODE;
 });
 
 describe('C5 — byte-level frame parity across the four legs', () => {
@@ -370,18 +558,29 @@ describe('C5 — byte-level frame parity across the four legs', () => {
       withSessionFactory: false,
     });
 
-    // Sanity: the matrix genuinely produced frames on every socket.
-    expect(production.frames.a.length).toBeGreaterThan(0);
-    expect(production.frames.b.length).toBeGreaterThan(0);
+    // Sanity: the LIVE block genuinely exercised the tool-call path —
+    // a real reading write, BOTH dispatcher asks crossing the wire, and a
+    // real observation dispatch (the Codex finding-10 matrix) — and every
+    // socket produced frames.
+    const liveAsks = production.frames.a.filter((f) => f.includes('"ask_user_started"'));
+    expect(liveAsks.length).toBeGreaterThanOrEqual(2);
+    expect(production.frames.a.some((f) => f.includes('"r1_plus_r2"'))).toBe(true);
+    expect(
+      production.frames.a.some(
+        (f) => f.includes('"observations":[{') || f.includes('"observation_text"')
+      )
+    ).toBe(true);
+    expect(production.frames.b.some((f) => f.includes('"voice_command_response"'))).toBe(true);
     expect(production.frames.c.length).toBeGreaterThan(0);
+    expect(production.frames.d.length).toBeGreaterThan(0);
 
     for (const legName of ['evaluation', 'sessionOnly', 'contextOnly']) {
       const leg = { evaluation, sessionOnly, contextOnly }[legName];
-      for (const sock of ['a', 'b', 'c']) {
+      for (const sock of ['a', 'b', 'c', 'd']) {
         expect(leg.frames[sock]).toEqual(production.frames[sock]);
       }
     }
-  });
+  }, 60000);
 });
 
 describe('C5 — evaluation-only Symbol leak sweep (derived from the canonical frozen list)', () => {
@@ -398,6 +597,7 @@ describe('C5 — evaluation-only Symbol leak sweep (derived from the canonical f
       ...evaluation.frames.a,
       ...evaluation.frames.b,
       ...evaluation.frames.c,
+      ...evaluation.frames.d,
       ...evaluation.logs,
       ...evaluation.uploads,
     ].map((s) => (typeof s === 'string' ? s : String(s)));
@@ -414,7 +614,7 @@ describe('C5 — evaluation-only Symbol leak sweep (derived from the canonical f
         }
       }
     }
-  });
+  }, 60000);
 
   test('RED sensitivity proof: a leaked Symbol description IS caught, per Symbol', () => {
     for (const { symbol } of EVALUATION_ONLY_SYMBOLS) {
@@ -424,6 +624,71 @@ describe('C5 — evaluation-only Symbol leak sweep (derived from the canonical f
       const carrier = {};
       Object.defineProperty(carrier, symbol, { value: 'x', enumerable: false });
       expect(JSON.stringify(carrier)).toBe('{}');
+    }
+  });
+});
+
+describe('C5 — voice-latency playback-ack route parity (HTTP surface — cannot ride the WS sequence)', () => {
+  test('identical status, body and headers with and without an attached evaluation context', async () => {
+    const express = (await import('express')).default;
+    const request = (await import('supertest')).default;
+    const { createPlaybackAckRouter } = await import('../routes/voice-latency-playback-ack.js');
+    const { attachEvaluationContext, normaliseEvaluationContext } =
+      await import('../extraction/plan00-lifecycle-hooks.js');
+
+    const makeApp = (withContext) => {
+      const entry = { userId: 'route-user', session: {} };
+      if (withContext) {
+        const ctx = normaliseEvaluationContext(
+          { deliveryLedger: createDeliveryLedger(), askLedger: createAskLedger() },
+          { sessionId: 'parity-route' }
+        );
+        // Give the evaluation leg a matchable delivery row so its forwarding
+        // path genuinely runs (a resolved playback), not just a no-op miss.
+        ctx.recordDelivery(
+          [{ extractionTurnId: 't1', field: 'measured_zs_ohm', circuit: 4, boardId: null }],
+          { kind: 'confirmation', transport: 'ws_extraction', text: 'Circuit 4, Zs 0.63' }
+        );
+        attachEvaluationContext(entry, ctx);
+      }
+      const router = createPlaybackAckRouter({
+        requireAuth: (req, _res, next) => {
+          req.user = { id: 'route-user' };
+          next();
+        },
+        getActiveSessionEntry: () => entry,
+      });
+      const app = express();
+      app.use(express.json());
+      app.use('/api', router);
+      return app;
+    };
+
+    const bodies = [
+      {
+        sessionId: 'parity-route',
+        turnId: 't-route',
+        slot: { field: 'measured_zs_ohm', circuit: 4, boardId: null },
+        source: 'bundler',
+        at_ms: 1754300000000,
+      },
+      // Slot-less ACK (optional slot) and the fast_tts source path.
+      { sessionId: 'parity-route', turnId: 't-route', source: 'bundler', at_ms: 1754300000000 },
+      {
+        sessionId: 'parity-route',
+        turnId: 't-route',
+        source: 'fast_tts',
+        at_ms: 1754300000000,
+      },
+      // A validation failure must reject identically too.
+      { sessionId: 'parity-route', source: 'bundler' },
+    ];
+    for (const body of bodies) {
+      const prod = await request(makeApp(false)).post('/api/voice-latency/playback-ack').send(body);
+      const evald = await request(makeApp(true)).post('/api/voice-latency/playback-ack').send(body);
+      expect(evald.status).toBe(prod.status);
+      expect(evald.text).toBe(prod.text);
+      expect(evald.headers['content-type'] ?? null).toBe(prod.headers['content-type'] ?? null);
     }
   });
 });

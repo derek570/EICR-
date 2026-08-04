@@ -1866,6 +1866,12 @@ async function buildResolvedBody({
           ({ outcome: askOutcome } = await brokerRegisteredAsk({
             idPrefix: 'mdr',
             emissionSource: 'multi_description',
+            // Plan 00B-2 C2.3 — the mdr ask is the FIRST ask of its own
+            // multi-description flow (it arises from a WRITE attempt, not a
+            // prior ask), so there is genuinely no predecessor to link:
+            // explicit null, never an invented lineage. A future mdr
+            // re-ask round would thread the prior mdr id here.
+            replacesRuntimeId: null,
             pendingAsks,
             ws,
             logger,
@@ -3042,6 +3048,10 @@ async function runPendingValueChain(args) {
   let circuit = Number.isInteger(contextCircuit) ? contextCircuit : null;
   const asked = { field: 0, value: 0, circuit: 0 };
   const brokered = [];
+  // Plan 00B-2 C2.3 — replacement lineage: every pvr re-ask replaces its
+  // IMMEDIATE predecessor in the chain (the initial ask for the first
+  // broker; each broker's own id thereafter), never always the initial id.
+  let pvrPredecessorId = toolCallId;
 
   const terminalApology = () => {
     // Keep enough server-owned identity for the turn-final drain to retract
@@ -3105,7 +3115,7 @@ async function runPendingValueChain(args) {
           onAskRegistered,
           signal,
           responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
-          replacesRuntimeId: toolCallId, // Plan 00B-2 C2.3 — pvr re-ask replaces the initial ask
+          replacesRuntimeId: pvrPredecessorId, // Plan 00B-2 C2.3 — replaces the IMMEDIATE predecessor
           logger,
           sessionId,
           turnId,
@@ -3117,6 +3127,7 @@ async function runPendingValueChain(args) {
         });
         // F7 Item 3 — cancellation may have landed while the broker awaited.
         throwIfStage6Cancelled(signal);
+        pvrPredecessorId = pvrId; // C2.3 — the next re-ask replaces THIS broker
         brokered.push({ id: pvrId, shape: 'circuit_ref', answered: circOutcome.answered });
         if (!circOutcome.answered) {
           if (String(circOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
@@ -3189,7 +3200,7 @@ async function runPendingValueChain(args) {
         onAskRegistered,
         signal,
         responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
-        replacesRuntimeId: toolCallId, // Plan 00B-2 C2.3 — pvr re-ask replaces the initial ask
+        replacesRuntimeId: pvrPredecessorId, // Plan 00B-2 C2.3 — replaces the IMMEDIATE predecessor
         logger,
         sessionId,
         turnId,
@@ -3203,6 +3214,7 @@ async function runPendingValueChain(args) {
         pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
       });
       throwIfStage6Cancelled(signal);
+      pvrPredecessorId = pvrId; // C2.3 — the next re-ask replaces THIS broker
       brokered.push({ id: pvrId, shape: 'field_name', answered: fieldOutcome.answered });
       if (!fieldOutcome.answered) {
         if (String(fieldOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
@@ -3230,7 +3242,7 @@ async function runPendingValueChain(args) {
         onAskRegistered,
         signal,
         responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
-        replacesRuntimeId: toolCallId, // Plan 00B-2 C2.3 — pvr re-ask replaces the initial ask
+        replacesRuntimeId: pvrPredecessorId, // Plan 00B-2 C2.3 — replaces the IMMEDIATE predecessor
         logger,
         sessionId,
         turnId,
@@ -3241,6 +3253,7 @@ async function runPendingValueChain(args) {
         pendingValue: null,
       });
       throwIfStage6Cancelled(signal);
+      pvrPredecessorId = pvrId; // C2.3 — the next re-ask replaces THIS broker
       brokered.push({ id: pvrId, shape: 'value', answered: valueOutcome.answered });
       if (!valueOutcome.answered) {
         if (String(valueOutcome.reason ?? '').startsWith('broker_')) return terminalApology();

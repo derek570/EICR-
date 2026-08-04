@@ -1488,6 +1488,12 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
     bindingRegistry = result[PLAN00_FRAME_BINDING_REGISTRY];
     if (!bindingRegistry) {
       bindingRegistry = new Map();
+      // An evaluation-only RESULT identity minted once at first bundling —
+      // binding ids derive from it so two different results can never share
+      // an id (e.g. both minting `0:extraction`); replays of the SAME
+      // result object reuse the registry and therefore the same ids.
+      bindingRegistry.resultSerial = evalCtx.frameBindingSerial =
+        (evalCtx.frameBindingSerial ?? 0) + 1;
       Object.defineProperty(result, PLAN00_FRAME_BINDING_REGISTRY, {
         value: bindingRegistry,
         enumerable: false,
@@ -1532,7 +1538,10 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
         if (bindingRegistry) {
           binding = bindingRegistry.get(bindingKey);
           if (!binding) {
-            binding = { bindingId: `fb-${bindingKey}`, attempts: 0 };
+            binding = {
+              bindingId: `fb-${bindingRegistry.resultSerial}-${bindingKey}`,
+              attempts: 0,
+            };
             bindingRegistry.set(bindingKey, binding);
           }
           binding.attempts += 1;
@@ -1574,21 +1583,81 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
  */
 function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
   try {
+    const mirrorDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
+    const collectMirrorOps = () => {
+      const readings = Array.isArray(result?.extracted_readings)
+        ? result.extracted_readings
+        : Array.isArray(result?.readings)
+          ? result.readings
+          : [];
+      return readings
+        .filter((r) => r && r.field != null)
+        .map((r) => ({
+          extractionTurnId: evalCtx.mutationObserver?.openTurnId ?? null,
+          field: r.field,
+          circuit: r.circuit ?? null,
+          boardId: r.board_id ?? null,
+        }));
+    };
     if (frameKind === 'extraction') {
-      const openTurnId = evalCtx.mutationObserver?.openTurnId ?? null;
+      // An address-mirror result can carry its sole collapsed terminal on
+      // the EXTRACTION frame (normaliseAddressMirrorAudibleTerminal folds
+      // the fragments) — detect the delivery symbol BEFORE ordinary
+      // confirmation handling so the multi-write unit is recorded and its
+      // fieldless terminal is never mis-classified as non-mutating speech.
+      if (mirrorDelivery && typeof mirrorDelivery.token === 'string') {
+        evalCtx.recordAddressMirrorTerminal({
+          claimLineage: `${mirrorDelivery.kind}:${mirrorDelivery.token}`,
+          ops: collectMirrorOps(),
+          text:
+            (Array.isArray(result?.confirmations) &&
+              result.confirmations.find((c) => c && c.field == null)?.text) ||
+            null,
+        });
+        return;
+      }
       for (const c of Array.isArray(result?.confirmations) ? result.confirmations : []) {
         if (c && c.field != null) {
-          evalCtx.recordDelivery(
-            [
-              {
-                extractionTurnId: openTurnId,
-                field: c.field,
-                circuit: c.circuit ?? null,
-                boardId: c.board_id ?? null,
-              },
-            ],
-            { kind: 'confirmation', transport: 'ws_extraction', text: c.text ?? null }
-          );
+          if (c.field === 'field_cleared') {
+            // The frozen v1 expectation schema has no clear-op shape; the
+            // judge's narrow field_cleared rule binds this confirmation to
+            // its authoritative clear receipt at verdict time — the
+            // delivery row keeps the descriptor identity.
+            evalCtx.recordDelivery(
+              [
+                {
+                  extractionTurnId: evalCtx.mutationObserver?.openTurnId ?? null,
+                  field: c.field,
+                  circuit: c.circuit ?? null,
+                  boardId: c.board_id ?? null,
+                },
+              ],
+              { kind: 'confirmation', transport: 'ws_extraction', text: c.text ?? null }
+            );
+            continue;
+          }
+          // Ordinary operation-backed read-back: bind to the CANONICAL
+          // unclaimed mutation receipt (the receipt's own turn identity +
+          // ordinal), never a synthesized partial key. A confirmation that
+          // resolves to zero or multiple receipts is operation-backed
+          // speech lacking its binding — INVALID.
+          const res = evalCtx.resolveDeliveryReceipt({
+            field: c.field,
+            circuit: c.circuit ?? null,
+            boardId: c.board_id ?? null,
+          });
+          if (!res.identity) {
+            evalCtx.deliveryLedger?.markInvalid?.(
+              `confirmation_delivery_binding_${res.unresolved}`,
+              { field: c.field ?? null, circuit: c.circuit ?? null }
+            );
+            continue;
+          }
+          evalCtx.recordDelivery([res.identity], {
+            kind: 'confirmation',
+            transport: 'ws_extraction',
+            text: c.text ?? null,
+          });
         } else if (c) {
           evalCtx.recordNonMutatingAudible({
             channel: 'ws_extraction',
@@ -1600,24 +1669,11 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
       return;
     }
     if (frameKind === 'voice_command_response') {
-      const delivery = result?.[ADDRESS_MIRROR_DELIVERY];
-      if (delivery && typeof delivery.token === 'string') {
-        const readings = Array.isArray(result?.extracted_readings)
-          ? result.extracted_readings
-          : Array.isArray(result?.readings)
-            ? result.readings
-            : [];
-        const ops = readings
-          .filter((r) => r && r.field != null)
-          .map((r) => ({
-            extractionTurnId: evalCtx.mutationObserver?.openTurnId ?? null,
-            field: r.field,
-            circuit: r.circuit ?? null,
-            boardId: r.board_id ?? null,
-          }));
+      if (mirrorDelivery && typeof mirrorDelivery.token === 'string') {
         evalCtx.recordAddressMirrorTerminal({
-          claimLineage: `${delivery.kind}:${delivery.token}`,
-          ops,
+          claimLineage: `${mirrorDelivery.kind}:${mirrorDelivery.token}`,
+          ops: collectMirrorOps(),
+          text: result?.spoken_response ?? null,
         });
       } else if (result?.spoken_response) {
         evalCtx.recordNonMutatingAudible({
@@ -4930,6 +4986,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           writes
         );
         attachAddressMirrorAskClear(result, recovered.clearAskId);
+        // Plan 00B-2 C2.6 — recovery provenance: a recovered delivery whose
+        // claim lineage this process holds NO prior-send evidence for is
+        // flagged BEFORE the send; the evidence layer records the replay
+        // normally but marks its operations delivery_history_ambiguous
+        // (exactly-once history is never reconstructed). Dormant lookup.
+        {
+          const replayEvalCtx = entry[EVALUATION_CONTEXT] ?? null;
+          const replayDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
+          if (replayEvalCtx && typeof replayDelivery?.token === 'string') {
+            const lineage = `${replayDelivery.kind}:${replayDelivery.token}`;
+            if (!replayEvalCtx.addressMirrorUnits?.has(lineage)) {
+              replayEvalCtx.noteAddressMirrorRecovery(lineage);
+            }
+          }
+        }
         const sent = await sendResultFrameLedger(
           ws,
           entry.session?.stateSnapshot,
@@ -7128,10 +7199,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         });
       }
       summary.observation_refinement_unmatched = entry.pendingRefinements.size;
-      // Plan 00B-2 C3 (finding 6) — the clear moves BELOW the evidence
-      // freeze at the bottom of this teardown, so owed refinements are
-      // still visible to the quiescence check (owed refinements ⇒
-      // `non_quiescent_at_stop`) and no evidence is erased pre-check.
+      // Plan 00B-2 C3 (finding 6) — on an EVALUATION session the clear
+      // moves below the evidence freeze at the bottom of this teardown, so
+      // owed refinements stay visible to the quiescence check (owed
+      // refinements ⇒ `non_quiescent_at_stop`) and no evidence is erased
+      // pre-check. A DORMANT session keeps the original clear position
+      // byte/timing-identically (production dormancy).
+      if (!entry[LIFECYCLE_LEDGER]) {
+        entry.pendingRefinements.clear();
+      }
     }
 
     // Attach job identity so cost can be traced back to the job

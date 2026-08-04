@@ -836,13 +836,72 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     appendSub('non_mutating_audible', { channel: channel ?? null, audible_kind: kind ?? null });
   };
 
+  // ── C2.5 authoritative receipt binding for operation-backed speech ──
+  // A spoken read-back binds to the CANONICAL mutation receipt (the
+  // authoritative identity: the receipt's own extraction_turn_id +
+  // turn_ordinal + slot), never to a synthesized partial key. Each receipt
+  // is claimable by at most ONE delivery; zero or multiple unclaimed
+  // matches are a binding failure (INVALID is reserved for operation-backed
+  // speech lacking its binding).
+  ctx.deliveryClaimedReceipts = new Set();
+  ctx.resolveDeliveryReceipt = ({
+    field,
+    circuit = null,
+    boardId = null,
+    value = null,
+    turnId = null,
+  }) => {
+    const mo = ctx.mutationObserver;
+    if (!mo) return { identity: null, unresolved: 'no_mutation_observer' };
+    const matches = mo.receipts.filter(
+      (rc) =>
+        (rc.kind === 'reading' || rc.kind === 'board_reading') &&
+        !ctx.deliveryClaimedReceipts.has(rc.operation_id) &&
+        rc.field === field &&
+        (rc.circuit ?? null) === (circuit ?? null) &&
+        (boardId == null || rc.board_id == null || rc.board_id === boardId) &&
+        (value == null || rc.value == null || String(rc.value) === String(value)) &&
+        (turnId == null || rc.extraction_turn_id === turnId)
+    );
+    if (matches.length !== 1) {
+      return { identity: null, unresolved: matches.length === 0 ? 'unmatched' : 'ambiguous' };
+    }
+    const rc = matches[0];
+    ctx.deliveryClaimedReceipts.add(rc.operation_id);
+    return {
+      identity: {
+        extractionTurnId: rc.extraction_turn_id ?? null,
+        field: rc.field,
+        circuit: rc.circuit ?? null,
+        boardId: rc.board_id ?? null,
+        ordinal: rc.turn_ordinal ?? 0,
+      },
+      unresolved: null,
+    };
+  };
+
   // ── C2.5/C2.6 address-mirror audibility units (Tier 2) ──
   // The collapsed terminal is ONE multi-operation unit keyed by its
   // delivery claim lineage; `address_mirror_delivery_ack` correlates by
   // token + claim lineage to exactly one unit. Duplicate/stale/wrong-token
   // acks resolve to no unit and stay non-authoritative telemetry.
   ctx.addressMirrorUnits = new Map();
+  // C2.6 — recovery provenance: replayAddressMirrorOutbox flags a lineage
+  // BEFORE its recovered send. A recovery under a claim lineage this
+  // process has NO prior-send evidence for records the replay normally but
+  // marks every bound operation `delivery_history_ambiguous` — exactly-once
+  // history is never reconstructed (00C may never use an ambiguous
+  // operation for a manual exactly-once PASS).
+  ctx.pendingRecoveryLineages = new Set();
+  ctx.noteAddressMirrorRecovery = (claimLineage) => {
+    if (claimLineage) ctx.pendingRecoveryLineages.add(claimLineage);
+  };
   ctx.recordAddressMirrorTerminal = ({ claimLineage, ops, text = null }) => {
+    if (ctx.addressMirrorUnits.has(claimLineage)) {
+      // The same result can surface the terminal on more than one frame
+      // (extraction + VCR) — one unit per claim lineage, never two.
+      return;
+    }
     const identities = Array.isArray(ops) ? ops : [];
     if (identities.length === 0) {
       // No operation-backed content — the spoken terminal is non-mutating
@@ -851,12 +910,23 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       return;
     }
     if (!ctx.deliveryLedger) return;
+    const isForeignRecovery = ctx.pendingRecoveryLineages.delete(claimLineage);
     ctx.recordDelivery(identities, {
       kind: 'address_mirror_terminal',
       transport: 'ws_vcr',
       claimLineage,
     });
     ctx.addressMirrorUnits.set(claimLineage, identities);
+    if (isForeignRecovery) {
+      for (const op of identities) {
+        ctx.deliveryLedger.markDeliveryHistoryAmbiguous(op);
+      }
+      appendSub('delivery_evidence', {
+        family: 'address_mirror',
+        delivery_kind: 'delivery_history_ambiguous',
+        op_keys: identities.map((op) => operationIdentityKey(op)),
+      });
+    }
   };
   ctx.recordAddressMirrorAck = ({ claimLineage, ackBody }) => {
     const identities = ctx.addressMirrorUnits.get(claimLineage);
@@ -908,27 +978,34 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     if (!r || !r.finished || r.promoted || !ctx.deliveryLedger) return;
     const mo = ctx.mutationObserver;
     if (!mo) return;
+    // The fast-path correlation contract binds this client-minted
+    // correlation id to exactly one server-minted extraction turn at
+    // transcript ingress (bindFastCorrelation). When the binding exists,
+    // ONLY that turn's receipts are promotion candidates — a repeated
+    // same-field reading in a different turn can never promote this
+    // reservation. Board identity participates in the match so two boards'
+    // identical slots stay distinct.
+    const boundTurn = mo.fastCorrelationTurn(correlationId);
     const candidateOps = mo.receipts
-      .filter((rc) => rc.kind === 'reading' && rc.field === r.candidate.field)
+      .filter(
+        (rc) =>
+          rc.kind === 'reading' &&
+          rc.field === r.candidate.field &&
+          (boundTurn == null || rc.extraction_turn_id === boundTurn) &&
+          (r.candidate.board_id == null ||
+            rc.board_id == null ||
+            rc.board_id === r.candidate.board_id)
+      )
       .map((rc) => ({
         extractionTurnId: rc.extraction_turn_id ?? null,
         field: rc.field,
         circuit: rc.circuit ?? null,
         boardId: rc.board_id ?? null,
+        ordinal: rc.turn_ordinal ?? 0,
         value: rc.value,
-        circuit_raw: rc.circuit ?? null,
       }));
     if (candidateOps.length === 0) return; // receipt may still arrive — settle later
-    ctx.deliveryLedger.promoteProvisional(
-      correlationId,
-      candidateOps.map((op) => ({
-        extractionTurnId: op.extractionTurnId,
-        field: op.field,
-        circuit: op.circuit,
-        boardId: op.boardId,
-        value: op.value,
-      }))
-    );
+    ctx.deliveryLedger.promoteProvisional(correlationId, candidateOps);
     r.promoted = true;
     appendSub('delivery_evidence', {
       family: 'fast_tts',
@@ -994,15 +1071,36 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       ctx.deliveryPrepared.delete(payload);
       const ops = descriptor?.operations ?? [];
       if (ops.length === 0) return;
-      ctx.recordDelivery(
-        ops.map((op) => ({
-          extractionTurnId: ctx.mutationObserver?.openTurnId ?? null,
+      // Bind each descriptor slot to its CANONICAL mutation receipt. The
+      // dialogue completion read-back legitimately acknowledges slots
+      // WRITTEN IN EARLIER TURNS of the same episode (each answer turn
+      // drains its own write), so the binding matches across turns on
+      // slot + value + unclaimed — a same-slot-same-value duplicate across
+      // turns is ambiguous and fails closed. A slot that resolves to zero
+      // or multiple unclaimed receipts is operation-backed speech lacking
+      // its binding — INVALID.
+      const identities = [];
+      for (const op of ops) {
+        const res = ctx.resolveDeliveryReceipt({
           field: op.field,
           circuit: op.circuit,
           boardId: op.board_id,
-        })),
-        { kind: 'dialogue_confirmation', transport: 'dialogue_ws' }
-      );
+          value: op.value,
+        });
+        if (!res.identity) {
+          ctx.deliveryLedger?.markInvalid?.(`dialogue_delivery_binding_${res.unresolved}`, {
+            field: op.field ?? null,
+            circuit: op.circuit ?? null,
+          });
+          return;
+        }
+        identities.push(res.identity);
+      }
+      ctx.recordDelivery(identities, {
+        kind: 'dialogue_confirmation',
+        transport: 'dialogue_ws',
+        text: payload?.question ?? null,
+      });
     },
     abort(payload, _reason) {
       ctx.deliveryPrepared.delete(payload);
