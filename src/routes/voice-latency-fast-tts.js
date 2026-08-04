@@ -180,6 +180,19 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
       hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
     });
   }
+
+  // Plan 00B §B3 — active-session OWNER check. A fast-TTS provisional
+  // delivery is pre-operation audibility evidence; it may only ever be
+  // recorded for the session's OWN authenticated user. Cross-user requests
+  // are rejected outright (same 404 shape as an unknown session, so a
+  // probing caller cannot distinguish "wrong user" from "no session").
+  const ownerEntry = getActiveSessionEntry(sessionId);
+  if (ownerEntry && ownerEntry.userId !== req.user?.id) {
+    return rejectWithDecrement(res, sessionId, correlationId, 404, {
+      error: 'session not found',
+      hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    });
+  }
   if (vl.flags?.regexFastTts !== true) {
     // Flag-off: route exists but is gated. Return 404 to match the
     // legacy "endpoint inactive" semantics rather than 503.

@@ -68,6 +68,9 @@ function seedSession({
 } = {}) {
   const stateSnapshot = boards ? { boards } : { boards: [] };
   activeSessions.set(sessionId, {
+    // Plan 00B §B3 — the route now proves session ownership; entries carry
+    // their owner exactly as production entries do.
+    userId: 'test-user',
     session: {
       sessionId,
       stateSnapshot,
@@ -223,6 +226,18 @@ describe('rejection paths — all call decrementExpectedAcksByCorrelation before
       .send(basicBody());
     expect(res.status).toBe(412);
     expect(res.body.error).toMatch(/regex_fast_v2/);
+  });
+
+  test('404 for a cross-user request — ownership is proven, never assumed (Plan 00B §B3)', async () => {
+    seedSession({});
+    // The session belongs to another user; the response is byte-shaped like
+    // an unknown session so a probing caller learns nothing.
+    activeSessions.get('SESS').userId = 'someone-else';
+    const res = await request(buildApp())
+      .post('/api/voice-latency/regex-fast-tts')
+      .send(basicBody());
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('session not found');
   });
 
   test('422 when boardId is unknown to session', async () => {
