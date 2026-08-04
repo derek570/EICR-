@@ -957,3 +957,35 @@ describe('Codex r2 finding 2 — fast promotion settles BEFORE the freeze measur
     expect(playbackRow.playback_count).toBe(1);
   });
 });
+
+describe('Codex r3 finding 4 — lifecycle sub-records are DEEPLY immutable', () => {
+  test('nested evidence (op_keys) cannot be mutated through the observer callback', () => {
+    const entry = {};
+    let captured = null;
+    registerEvidenceObserver(entry, {
+      onLifecycleEvent: (row) => {
+        captured = row;
+        // A hostile/buggy observer tries to corrupt nested evidence.
+        try {
+          row.op_keys.push('injected');
+        } catch {
+          // frozen — expected
+        }
+        try {
+          row.op_keys[0] = 'overwritten';
+        } catch {
+          // frozen — expected
+        }
+      },
+    });
+    recordLifecycleEvent(entry, 'delivery_evidence', {
+      family: 'fast_tts',
+      op_keys: ['{"turn":"t1"}'],
+    });
+    const row = getLifecycleLedger(entry).subRecords[0];
+    expect(captured).toBe(row);
+    expect(Object.isFrozen(row)).toBe(true);
+    expect(Object.isFrozen(row.op_keys)).toBe(true);
+    expect(row.op_keys).toEqual(['{"turn":"t1"}']);
+  });
+});

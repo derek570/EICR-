@@ -479,7 +479,7 @@
     ]
   },
   "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
-  "semantic_oracle_digest": "15bfa13265ff5ebee1c8555bc0e48d6eee1a399822a6945e96fa61a6ed8e1571",
+  "semantic_oracle_digest": "fea5cc1c62a67d78ddfff6652a3c1488ef59f4c42bd1eb117ce21c2c195617a6",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -495,7 +495,7 @@
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "74c22ac943a1fe885afdd1cc47a73df6286ae731daedb483727fcf3a9857a5bb"
+      "sha256": "914b1b95805ad412b5e93b9ea91c30c60f83b24e25da40d36eb16b24c8e821be"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
@@ -547,7 +547,7 @@
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
-      "sha256": "5f3c79c1795fea8282507bca2125ddeb6948c698ec95b21a2ad01ab3698b2ef9"
+      "sha256": "aa1e1e742238bcd90ef4af21838ed7ad3e91ba1eba0294f88fbfa68727bd38f0"
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
@@ -555,7 +555,7 @@
     },
     {
       "path": "scripts/model-ab/run-semantic-lane.mjs",
-      "sha256": "594938a809e30f4084ffcdb63c880d8373e7e6823f0cda4881bbb5ed2facd66b"
+      "sha256": "dc7cee9b24fa4621718f78155f03488f2810eb84527c5884a782e8212030ef8e"
     },
     {
       "path": "scripts/model-ab/lib/lane-driver.mjs",

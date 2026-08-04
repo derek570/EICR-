@@ -242,3 +242,69 @@ describe('lane runner gate', () => {
     expect(src).toContain('REFUSED');
   });
 });
+
+const { execFileSync } = await import('node:child_process');
+const os = await import('node:os');
+
+describe('lane runner live gate — EXECUTED (Codex r3 finding 3)', () => {
+  const runnerPath = path.join(repoRoot, 'scripts', 'model-ab', 'run-semantic-lane.mjs');
+
+  function runLane(args, envOverrides = {}) {
+    try {
+      const stdout = execFileSync(process.execPath, [runnerPath, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+        env: { ...process.env, ...envOverrides },
+      });
+      return { status: 0, out: stdout };
+    } catch (err) {
+      return { status: err.status ?? -1, out: `${err.stdout ?? ''}${err.stderr ?? ''}` };
+    }
+  }
+
+  test('a nonexistent attestation path exits non-zero with a refusal, never acceptance', () => {
+    const res = runLane(['--mode=live', '--attestation-record=/definitely/missing/attn.json']);
+    expect(res.status).not.toBe(0);
+    expect(res.out).toContain('REFUSED');
+    expect(res.out).not.toContain('accepted');
+  }, 90000);
+
+  test('a VALID current-anchor attestation still exits non-zero: no lane is executed here', () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(
+        path.join(repoRoot, 'scripts', 'model-ab', 'plan00-expectation-manifest.json'),
+        'utf8'
+      )
+    );
+    const record = {
+      expectations_attested: { combined_sha256: manifest.combined_sha256 },
+    };
+    const tmp = path.join(os.tmpdir(), `plan00-attn-${process.pid}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(record));
+    try {
+      const res = runLane(['--mode=live', `--attestation-record=${tmp}`], {
+        SONNET_TOOL_CALLS: 'live',
+      });
+      expect(res.status).not.toBe(0);
+      expect(res.out).toContain('NO LANE WAS EXECUTED');
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  }, 90000);
+
+  test('a STALE attested anchor is refused', () => {
+    const record = {
+      expectations_attested: { combined_sha256: 'deadbeef'.repeat(8) },
+    };
+    const tmp = path.join(os.tmpdir(), `plan00-attn-stale-${process.pid}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(record));
+    try {
+      const res = runLane(['--mode=live', `--attestation-record=${tmp}`]);
+      expect(res.status).not.toBe(0);
+      expect(res.out).toContain('REFUSED');
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  }, 90000);
+});

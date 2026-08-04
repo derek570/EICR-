@@ -164,9 +164,20 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  // Codex r3 finding 3 — this entry point deliberately does NOT construct
+  // real vendor clients (Plan 00B stores no cohort budget/pacing config;
+  // execution is Plan 00C's cohort runner, which composes the SAME
+  // bootLaneDriver/driveFixture library with real clients under the
+  // attested record). A zero-work invocation must therefore NOT exit as a
+  // success — a caller mistaking this for a completed live run would have
+  // zero verdicts and a green exit code.
   console.error(
-    'live lane: attestation record accepted; cohort execution (the same lane driver with real clients) is owned by Plan 00C.'
+    'live lane: attestation record accepted — but NO LANE WAS EXECUTED. ' +
+      'This entry point validates the attestation/isolation gate only; cohort execution ' +
+      '(bootLaneDriver/driveFixture with real clients) is owned by the Plan 00C cohort runner. ' +
+      'Exiting non-zero so a zero-verdict invocation can never read as a completed run.'
   );
+  process.exitCode = 3;
 }
 
 const isDirect = process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop());

@@ -196,7 +196,11 @@ export function getEvaluationContext(entry) {
 function appendLedgerRow(ledger, observer, kind, detail) {
   if (!(kind in ledger.revisions)) ledger.revisions[kind] = 0;
   ledger.revisions[kind] += 1;
-  const row = Object.freeze({ kind, revision: ledger.revisions[kind], ...detail });
+  // Codex r3 finding 4 — DEEP freeze: a shallow-frozen row left nested
+  // evidence (op_keys arrays) mutable through the observer callback, and a
+  // corrupted value would sit in the live ledger for the completion freeze
+  // to copy. deepFreezeCopy is the same helper the freeze latches use.
+  const row = deepFreezeCopy({ kind, revision: ledger.revisions[kind], ...detail });
   ledger.subRecords.push(row);
   if (observer && typeof observer.onLifecycleEvent === 'function') {
     try {

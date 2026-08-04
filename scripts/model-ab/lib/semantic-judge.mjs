@@ -28,13 +28,14 @@ const norm = (v) => (v == null ? null : String(v));
  * expectations hold.
  */
 function matchOperation(expected, receipts, consumed, { boardWildcard = false } = {}, eligible = null) {
+  // Codex r3 finding 2 — an EXPLICITLY board-scoped expectation demands the
+  // receipt's board identity (a board-null receipt satisfying board `main`
+  // is wrong credit in multi-board evidence); the null-leniency survives
+  // only under the single-board wildcard.
   const matchesSlot = (r) =>
     r.field === expected.field &&
     (r.circuit ?? null) === (expected.circuit ?? null) &&
-    (boardWildcard ||
-      expected.board_id == null ||
-      r.board_id == null ||
-      r.board_id === expected.board_id);
+    (boardWildcard || expected.board_id == null || r.board_id === expected.board_id);
 
   for (let i = 0; i < receipts.length; i += 1) {
     if (consumed.has(i)) continue;
@@ -54,7 +55,7 @@ function matchOperation(expected, receipts, consumed, { boardWildcard = false } 
           if (matchesSlot(w) && w.kind === 'reading' && norm(w.value) === norm(expected.value)) {
             consumed.add(i);
             consumed.add(j);
-            return { matched: true, via: 'clear_then_write' };
+            return { matched: true, via: 'clear_then_write', indices: [i, j] };
           }
         }
         return { matched: false, reason: 'clear_without_matching_write' };
@@ -62,7 +63,7 @@ function matchOperation(expected, receipts, consumed, { boardWildcard = false } 
       if (r.kind === 'reading' && norm(r.value) === norm(expected.value)) {
         // plain overwrite — valid per the pinned-IR rule.
         consumed.add(i);
-        return { matched: true, via: 'plain_overwrite' };
+        return { matched: true, via: 'plain_overwrite', indices: [i] };
       }
       if (r.kind === 'reading') return { matched: false, reason: 'wrong_value', actual: r.value };
       continue;
@@ -73,7 +74,7 @@ function matchOperation(expected, receipts, consumed, { boardWildcard = false } 
       return { matched: false, reason: 'wrong_value', actual: r.value };
     }
     consumed.add(i);
-    return { matched: true, via: r.kind };
+    return { matched: true, via: r.kind, indices: [i] };
   }
   return { matched: false, reason: 'operation_missing' };
 }
@@ -176,6 +177,11 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
   // ── operations, over the receipts (index-consumed, §B2 extra sweep) ──
   const receipts = ev.receipts ?? [];
   const consumed = new Set();
+  // Codex r3 finding 1 — per-receipt audibility from the DECLARED op, so
+  // the implied-declared delivery exemption still enforces the op's own
+  // exactly-once playback mandate when the projection carries no explicit
+  // audible_outputs row for it.
+  const receiptAudibility = new Map();
   const turns = expectation.turns ?? [];
   for (let t = 0; t < turns.length; t += 1) {
     const eligible =
@@ -186,6 +192,8 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
       const res = matchOperation(op, receipts, consumed, opts, eligible);
       if (!res.matched) {
         mismatches.push({ class: res.reason, expected: op, actual: res.actual ?? null });
+      } else if (Array.isArray(res.indices)) {
+        for (const idx of res.indices) receiptAudibility.set(idx, op.audibility ?? null);
       }
     }
   }
@@ -434,7 +442,21 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
     if (keys.length > 0) {
       const backing = keys.map(findBackingReceipt);
       if (backing.every((idx) => idx >= 0)) {
-        for (const idx of backing) impliedClaimedReceipts.add(consumedReceiptIdx[idx]);
+        const receiptIndices = backing.map((idx) => consumedReceiptIdx[idx]);
+        for (const idx of receiptIndices) impliedClaimedReceipts.add(idx);
+        // Codex r3 finding 1 — the implied read-back of an
+        // audibility-MANDATORY op still requires its exactly-once playback
+        // proof; the exemption covers the DECLARATION, never the mandate.
+        if (receiptIndices.some((idx) => receiptAudibility.get(idx) === 'exactly_once')) {
+          const starts = playbackFor(deliveries[i]);
+          if (starts.length !== 1) {
+            mismatches.push({
+              class: 'playback_proof_missing',
+              expected: { implied_for: 'exactly_once_operation', playback_starts: 1 },
+              actual: starts.length,
+            });
+          }
+        }
         continue;
       }
     }

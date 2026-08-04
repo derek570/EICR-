@@ -924,3 +924,93 @@ describe('Codex r2 driver hardening — two-turn pump + exact ingress', () => {
     }
   }, 60000);
 });
+
+describe('Codex r3 judge hardening — implied playback mandate + board strictness', () => {
+  const r3Key = operationIdentityKey({
+    extractionTurnId: 't1',
+    field: 'ir_live_live_mohm',
+    circuit: 3,
+    boardId: null,
+    ordinal: 1,
+  });
+  const r3Receipt = {
+    kind: 'reading',
+    field: 'ir_live_live_mohm',
+    circuit: 3,
+    board_id: null,
+    value: '100',
+    extraction_turn_id: 't1',
+    turn_ordinal: 1,
+    parent_operation_id: null,
+  };
+  const r3Op = {
+    ordinal: 1,
+    kind: 'reading',
+    field: 'ir_live_live_mohm',
+    circuit: 3,
+    value: '100',
+    audibility: 'exactly_once',
+  };
+  const r3Delivery = {
+    op_key: r3Key,
+    op_keys: [r3Key],
+    kind: 'confirmation',
+    transport: 'ws_extraction',
+    text: 'IR 100',
+    at_seq: 1,
+  };
+
+  test('an IMPLIED delivery for an exactly_once op still requires its playback proof', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [r3Op], audible_outputs: [] }),
+      frozenWith(baseEvidence({ receipts: [r3Receipt], deliveries: [r3Delivery], playbacks: [] }))
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.mismatches.some((m) => m.class === 'playback_proof_missing')).toBe(true);
+    // With the playback present, the same shape PASSES.
+    const ok = judgeFrozenEvidence(
+      expectationWith({ operations: [r3Op], audible_outputs: [] }),
+      frozenWith(
+        baseEvidence({
+          receipts: [r3Receipt],
+          deliveries: [r3Delivery],
+          playbacks: [{ op_key: r3Key, ack_body_hash: 'h1' }],
+        })
+      )
+    );
+    expect(ok.verdict).toBe('PASS');
+  });
+
+  test('a board-NULL receipt never satisfies an explicitly board-scoped expectation (no wildcard)', () => {
+    const boardOp = {
+      ordinal: 1,
+      kind: 'reading',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      board_id: 'main',
+      value: '0.63',
+    };
+    const nullBoardReceipt = {
+      kind: 'reading',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      board_id: null,
+      value: '0.63',
+      parent_operation_id: null,
+    };
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [boardOp], audible_outputs: [] }),
+      frozenWith(baseEvidence({ receipts: [nullBoardReceipt] })),
+      { boardWildcard: false }
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.mismatches.some((m) => m.class === 'operation_missing')).toBe(true);
+    // The single-board wildcard keeps its leniency.
+    const lenient = judgeFrozenEvidence(
+      expectationWith({ operations: [boardOp], audible_outputs: [] }),
+      frozenWith(baseEvidence({ receipts: [nullBoardReceipt] })),
+      { boardWildcard: true }
+    );
+    expect(lenient.verdict).toBe('PASS');
+  });
+});
