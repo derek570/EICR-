@@ -438,6 +438,31 @@ describe('offline playback-ack route (exported factory, zero database)', () => {
   });
 });
 
+describe('trusted-input coverage — the lane driver cannot silently depend on an untracked input', () => {
+  test('every production/capture import of lane-driver.mjs is enumerated in SEMANTIC_ORACLE_INPUTS', async () => {
+    const fs = await import('node:fs');
+    const { SEMANTIC_ORACLE_INPUTS } =
+      await import('../../scripts/model-ab/lib/expectation-projection.mjs');
+    const src = fs.readFileSync(
+      path.join(repoRoot, 'scripts/model-ab/lib/lane-driver.mjs'),
+      'utf8'
+    );
+    const imported = new Set();
+    for (const m of src.matchAll(/srcMod\('([^']+)'\)/g)) imported.add(`src/${m[1]}`);
+    for (const m of src.matchAll(/flLib\('([^']+)'\)/g)) {
+      imported.add(`scripts/field-replay/lib/${m[1]}`);
+    }
+    for (const m of src.matchAll(/'scripts\/model-ab\/lib\/([^']+)'/g)) {
+      imported.add(`scripts/model-ab/lib/${m[1]}`);
+    }
+    imported.add('scripts/model-ab/lib/lane-driver.mjs'); // the driver itself
+    expect(imported.size).toBeGreaterThanOrEqual(8);
+    const tracked = new Set(SEMANTIC_ORACLE_INPUTS);
+    const missing = [...imported].filter((p) => !tracked.has(p));
+    expect(missing).toEqual([]);
+  });
+});
+
 describe('mock-mode acceptance — 9/9 through the REAL server', () => {
   test('runVendorLaneMock judges every vendor-lane fixture PASS', async () => {
     const { runVendorLaneMock } = await import('../../scripts/model-ab/lib/lane-driver.mjs');

@@ -254,6 +254,24 @@ export const SEMANTIC_ORACLE_INPUTS = Object.freeze([
   'scripts/model-ab/lib/semantic-judge.mjs',
   'scripts/field-replay/lib/fixture-schema.mjs',
   'scripts/model-ab/run-semantic-lane.mjs',
+  // Plan 00B-2 (composition seam) — newly created OR newly trusted/modified
+  // transitive oracle inputs: the real-server lane driver + its scripted
+  // client source, the ask/delivery seam producers, and the C3 cost/effort
+  // evidence chain (the accepted-ingest sink, the attribution row gaining
+  // reasoning_effort, the streaming dispatch site and both OpenAI adapters
+  // whose request payloads anchor the same-value contract).
+  'scripts/model-ab/lib/lane-driver.mjs',
+  'scripts/field-replay/lib/replay-runner-core.mjs',
+  'scripts/field-replay/lib/replay-clock.mjs',
+  'scripts/field-replay/lib/network-guard.mjs',
+  'src/extraction/dialogue-engine/helpers/wire-emit.js',
+  'src/extraction/stage6-dispatcher-ask.js',
+  'src/extraction/address-mirror-controller.js',
+  'src/extraction/cost-tracker.js',
+  'src/extraction/round-usage-attribution.js',
+  'src/extraction/stage6-tool-loop.js',
+  'src/extraction/openai-tooluse-adapter.js',
+  'src/extraction/openai-responses-adapter.js',
 ]);
 
 export function computeSemanticOracleDigest(repoRoot) {

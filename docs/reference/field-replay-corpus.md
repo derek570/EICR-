@@ -150,3 +150,52 @@ The corpus now feeds a REAL-SERVER semantic oracle beside the recorded gate
   that record (`--mode=mock` proves plumbing only). Named non-safety strata
   gaps (multi-board routing, direct observation create/delete) are recorded
   in the manifest for Derek's 00C decision.
+
+### Plan 00B-2 — executable composition (2026-08-04)
+
+The 00B modules became a production-composed, EXECUTABLE whole (the five
+CODEX-HELD structural findings 1/2/3/6/10 of the parent run):
+
+- **Composition seam** — `evaluationContextFactory({sessionId, userId})`
+  runs ONCE per fresh entry at session CREATION (before `session.start`);
+  the result is normalised into one server-owned evaluation context
+  ({observer, mutationObserver, askLedger, deliveryLedger} all optional; a
+  bare observer stays valid), the mutation observer attaches to session AND
+  snapshot, and ONLY the normalised context is stashed non-enumerably on
+  the ENTRY via the `EVALUATION_CONTEXT` Symbol. Reconnect/resume preserve
+  the same instance; every production seam resolves it from the active
+  entry.
+- **Seam wiring (two-tier evidence)** — Tier 1 (dispatcher asks, result-
+  frame delivery, playback ACKs, fast-TTS) carries the full semantic
+  contract and is proven by the mock-lane gate; Tier 2 (dialogue-script +
+  address-mirror) is wired to the SAME ledgers but proven by focused
+  real-ingress integration tests (`plan00-tier2-seams.test.js`) — the
+  corpus records a `dialogue_answer_ingress` exclusion by design, and the
+  family evidence obligation is recorded INTO Plan 00C's canonical plan
+  (completion-manifest family fields + the `dialogue_hearing_attestation`
+  post-completion event).
+- **Producer-aware quiescence** — `beginProducer(entry, kind)` single-use
+  handles over the eight canonical async producer kinds fold into
+  `readInFlightCounts`; boundary-keyed `start`/`completion` latches
+  (single-flight per key) replace the single freeze latch; an INELIGIBLE
+  completion still builds/publishes 00C's durable audit candidate, with the
+  quiescence outcome inside `counts`; the judged evidence is the
+  deep-frozen `frozen.evidence` sibling latched at the chokepoint (live
+  ledgers stay diagnostics-only). `round_usage` lifecycle sub-records (one
+  per accepted `ingestBillableUsage` round row, hand-built allowlist) plus
+  the transport×turn reasoning-effort resolver give 00C its executed
+  cost/effort evidence.
+- **Real-server mock lane** — `scripts/model-ab/lib/lane-driver.mjs` boots
+  the REAL `initSonnetStream`, drives each fixture through the captured WS
+  listener (exact ingress mapping, non-awaited transcript promise, bounded
+  deterministic answer pump under the field-replay replay clock, strict
+  per-turn scripted client via the exported `makeTurnClient`), POSTs
+  production playback-ACK bodies through the REAL exported route factory
+  offline, and judges ONLY the retained entry's completion-latch
+  `frozen.evidence` (`judgeFrozenEvidence`). Acceptance: **9/9 fixtures
+  PASS end-to-end**, committed as `plan00-lane-driver.test.js`.
+- **Byte parity + leak sweep** — `plan00-frame-parity-matrix.test.js` pins
+  EXACT `ws.send` sequences across production/evaluation/both single-factory
+  legs over the deterministic scenario matrix, and sweeps every frame,
+  logger payload and storage body against the canonical frozen
+  `EVALUATION_ONLY_SYMBOLS` list.
