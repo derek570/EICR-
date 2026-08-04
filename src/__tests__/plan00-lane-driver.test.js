@@ -913,7 +913,9 @@ describe('Codex r2 driver hardening — two-turn pump + exact ingress', () => {
         boot,
         fixture,
         expectation,
-        judge: judgeFrozenEvidence,
+        // Single-board synthetic job — same wildcard rule as
+        // runVendorLaneMock (§B5 pinned IR contract).
+        judge: (e, f2, o) => judgeFrozenEvidence(e, f2, { boardWildcard: true, ...(o ?? {}) }),
       });
       // Pre-fix, turn 2's pump rediscovered turn 1's ask frame in the
       // session-lifetime `sent` array and failed `unexpected_ask:...`.

@@ -286,7 +286,7 @@ describe('lane runner live gate — EXECUTED (Codex r3 finding 3)', () => {
       const res = runLane(['--mode=live', `--attestation-record=${tmp}`], {
         SONNET_TOOL_CALLS: 'live',
       });
-      expect(res.status).not.toBe(0);
+      expect(res.status).toBe(3);
       expect(res.out).toContain('NO LANE WAS EXECUTED');
     } finally {
       fs.unlinkSync(tmp);
@@ -300,9 +300,14 @@ describe('lane runner live gate — EXECUTED (Codex r3 finding 3)', () => {
     const tmp = path.join(os.tmpdir(), `plan00-attn-stale-${process.pid}.json`);
     fs.writeFileSync(tmp, JSON.stringify(record));
     try {
-      const res = runLane(['--mode=live', `--attestation-record=${tmp}`]);
-      expect(res.status).not.toBe(0);
-      expect(res.out).toContain('REFUSED');
+      // Isolation env satisfied so the run REACHES the anchor comparison —
+      // without it the earlier isolation refusal would keep this test green
+      // even if the anchor check were deleted.
+      const res = runLane(['--mode=live', `--attestation-record=${tmp}`], {
+        SONNET_TOOL_CALLS: 'live',
+      });
+      expect(res.status).toBe(2);
+      expect(res.out).toContain('does not match the current combined manifest anchor');
     } finally {
       fs.unlinkSync(tmp);
     }

@@ -28,14 +28,15 @@ const norm = (v) => (v == null ? null : String(v));
  * expectations hold.
  */
 function matchOperation(expected, receipts, consumed, { boardWildcard = false } = {}, eligible = null) {
-  // Codex r3 finding 2 — an EXPLICITLY board-scoped expectation demands the
-  // receipt's board identity (a board-null receipt satisfying board `main`
-  // is wrong credit in multi-board evidence); the null-leniency survives
-  // only under the single-board wildcard.
+  // Codex r3 finding 2 + mini-review r3 — board identity is EXACT outside
+  // the single-board wildcard: a board-null receipt never satisfies board
+  // `main`, and an UNSCOPED expectation never absorbs a `sub-a` receipt
+  // (both are wrong credit in multi-board evidence). The wildcard ignores
+  // board entirely (single-board jobs, §B5 pinned IR contract).
   const matchesSlot = (r) =>
     r.field === expected.field &&
     (r.circuit ?? null) === (expected.circuit ?? null) &&
-    (boardWildcard || expected.board_id == null || r.board_id === expected.board_id);
+    (boardWildcard || (expected.board_id ?? null) === (r.board_id ?? null));
 
   for (let i = 0; i < receipts.length; i += 1) {
     if (consumed.has(i)) continue;
@@ -55,7 +56,10 @@ function matchOperation(expected, receipts, consumed, { boardWildcard = false } 
           if (matchesSlot(w) && w.kind === 'reading' && norm(w.value) === norm(expected.value)) {
             consumed.add(i);
             consumed.add(j);
-            return { matched: true, via: 'clear_then_write', indices: [i, j] };
+            // Only the WRITE is the audible half of a clear_then_write —
+            // the collapsed clear itself is designed-silent, so the op's
+            // audibility mandate binds to the write receipt alone.
+            return { matched: true, via: 'clear_then_write', indices: [i, j], audibleIndices: [j] };
           }
         }
         return { matched: false, reason: 'clear_without_matching_write' };
@@ -193,7 +197,9 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
       if (!res.matched) {
         mismatches.push({ class: res.reason, expected: op, actual: res.actual ?? null });
       } else if (Array.isArray(res.indices)) {
-        for (const idx of res.indices) receiptAudibility.set(idx, op.audibility ?? null);
+        for (const idx of res.audibleIndices ?? res.indices) {
+          receiptAudibility.set(idx, op.audibility ?? null);
+        }
       }
     }
   }
@@ -472,6 +478,39 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
       class: 'undeclared_audible',
       actual: { kind: r.kind ?? null, channel: r.channel ?? null, text: r.text ?? null },
     });
+  }
+
+  // Mini-review r3 finding 1 — EXISTENCE half of the audibility mandate:
+  // an exactly_once operation whose receipt has NO delivery row at all is
+  // a silently-written reading (Audio-First #1's zero-times direction) —
+  // the per-delivery playback checks above can only fire when a delivery
+  // exists.
+  const receiptHasDelivery = (r) =>
+    deliveries.some((d) => {
+      const keys = d.op_keys ?? (d.op_key ? [d.op_key] : []);
+      return keys.some((k) => {
+        const id = parseOpKey(k);
+        return (
+          id &&
+          id.field === r.field &&
+          (id.circuit ?? null) === (r.circuit ?? null) &&
+          (id.board_id ?? null) === (r.board_id ?? null) &&
+          ((r.extraction_turn_id ?? null) === (id.turn ?? null) ||
+            id.turn == null ||
+            r.extraction_turn_id == null) &&
+          ((r.turn_ordinal ?? 0) === (id.ordinal ?? 0) || id.ordinal == null)
+        );
+      });
+    });
+  for (const [idx, aud] of receiptAudibility) {
+    if (aud !== 'exactly_once') continue;
+    if (!receiptHasDelivery(receipts[idx])) {
+      mismatches.push({
+        class: 'audibility_mandate_missing',
+        expected: { audibility: 'exactly_once', deliveries: 1 },
+        actual: { field: receipts[idx].field, circuit: receipts[idx].circuit ?? null },
+      });
+    }
   }
 
   // §B2 extra-mutation sweep over the un-consumed receipts.
