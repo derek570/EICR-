@@ -154,7 +154,7 @@ function recordDispatcherAskProduced(
   if (!ctx) return;
   try {
     ctx.recordAskProduced({
-      family: 'dispatcher',
+      producerId: 'dispatcher_ask',
       runtimeId,
       liveAskKey: buildLiveAskKey({
         origin: 'dispatcher',

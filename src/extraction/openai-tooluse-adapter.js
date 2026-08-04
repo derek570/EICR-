@@ -340,6 +340,8 @@ function createStream(openai, streamArgs, options) {
         requested_service_tier: 'standard',
         response_model: responseModel,
         response_service_tier: responseServiceTier,
+        // Plan 00B-3 C5 — the ACTUAL API transport that served this round.
+        api_transport: 'chat_completions',
       };
     },
   };

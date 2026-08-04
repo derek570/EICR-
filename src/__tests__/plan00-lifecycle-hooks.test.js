@@ -376,6 +376,11 @@ describe('plan00-lifecycle-hooks module', () => {
       producer_address_mirror_ingress: 0,
       producer_address_mirror_answer: 0,
       producer_address_mirror_ack: 0,
+      // Plan 00B-3 C2 — per-family open-ask quiescence counts (no
+      // evaluation context on this entry -> all zero).
+      open_asks_dispatcher: 0,
+      open_asks_dialogue_script: 0,
+      open_asks_address_mirror: 0,
     });
   });
 
@@ -948,13 +953,26 @@ describe('Codex r2 finding 2 — fast promotion settles BEFORE the freeze measur
     // And the lifecycle sub-records carry the REAL resolved identity, not
     // an empty op_keys placeholder, plus the consumed-ACK playback row.
     const sub = frozen.evidence.sub_records ?? [];
-    const deliveryRow = sub.find((r) => r.kind === 'delivery_evidence' && r.family === 'fast_tts');
+    // Plan 00B-3 C3 — the semantic-family/transport split (migrated pin):
+    // rows carry producer_id + semantic_family + transport, never the
+    // overloaded legacy `family` key.
+    const deliveryRow = sub.find(
+      (r) => r.kind === 'delivery_evidence' && r.semantic_family === 'fast_tts'
+    );
     expect(deliveryRow).toBeTruthy();
+    expect(deliveryRow.producer_id).toBe('fast_tts_promotion');
+    expect(deliveryRow.transport).toBe('fast_tts');
     expect(deliveryRow.op_keys).toHaveLength(1);
     expect(JSON.parse(deliveryRow.op_keys[0]).field).toBe('measured_zs_ohm');
-    const playbackRow = sub.find((r) => r.kind === 'playback_evidence' && r.family === 'fast_tts');
-    expect(playbackRow).toBeTruthy();
-    expect(playbackRow.playback_count).toBe(1);
+    // Plan 00B-3 C5 — one playback sub-record PER authoritative start,
+    // carrying its own ACK-body hash (replaces the aggregate playback_count
+    // row).
+    const playbackRows = sub.filter(
+      (r) => r.kind === 'playback_evidence' && r.semantic_family === 'fast_tts'
+    );
+    expect(playbackRows).toHaveLength(1);
+    expect(playbackRows[0].producer_id).toBe('fast_tts_staged_ack');
+    expect(typeof playbackRows[0].ack_body_hash).toBe('string');
   });
 });
 
@@ -999,7 +1017,11 @@ describe('Codex r4 finding 3 — one dialogue transcript resolves EXACTLY ONE sr
     );
     attachEvaluationContext(entry, ctx);
     for (const id of ['srv-a', 'srv-b']) {
-      ctx.recordAskProduced({ family: 'dialogue_script', runtimeId: id, key: `{"q":"${id}"}` });
+      ctx.recordAskProduced({
+        producerId: 'dialogue_script_ask',
+        runtimeId: id,
+        liveAskKey: `{"q":"${id}"}`,
+      });
       ctx.recordAskEmitted({ runtimeId: id });
       ctx.recordSrvAnswerFrame({ runtimeId: id, consumedUtteranceId: 'utt-shared' });
     }

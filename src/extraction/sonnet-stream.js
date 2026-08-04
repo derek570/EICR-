@@ -351,7 +351,7 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry
   const questionId = followup.questionId ?? null;
   if (evalCtx && questionId && !evalCtx.askRuntimeBindings.has(questionId)) {
     evalCtx.recordAskProduced({
-      family: 'address_mirror',
+      producerId: 'address_mirror_ask',
       runtimeId: questionId,
       liveAskKey: buildLiveAskKey({
         origin: 'address_mirror',
@@ -1633,10 +1633,11 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
       if (unresolved > 0) {
         // Operation-backed speech whose canonical binding cannot be
         // established — fail closed (capture INVALID), never invent keys.
-        evalCtx.deliveryLedger?.markInvalid?.('mirror_terminal_receipt_binding', {
-          lineage,
-          unresolved,
-          resolved: ops.length,
+        evalCtx.recordDeliveryRejected({
+          producerId: 'address_mirror_terminal',
+          reason: 'mirror_terminal_receipt_binding',
+          claimLineage: lineage,
+          detail: { lineage, unresolved, resolved: ops.length },
         });
         return;
       }
@@ -1673,8 +1674,8 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
                 },
               ],
               {
+                producerId: 'result_frame_confirmation',
                 kind: 'confirmation',
-                transport: 'ws_extraction',
                 text: c.text ?? null,
                 wireTurnId: typeof result?.turn_id === 'string' ? result.turn_id : null,
                 dedupeToken: typeof c.dedupe_token === 'string' ? c.dedupe_token : null,
@@ -1694,15 +1695,17 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
             turnId: resultTurnId,
           });
           if (!res.identity) {
-            evalCtx.deliveryLedger?.markInvalid?.(
-              `confirmation_delivery_binding_${res.unresolved}`,
-              { field: c.field ?? null, circuit: c.circuit ?? null }
-            );
+            evalCtx.recordDeliveryRejected({
+              producerId: 'result_frame_confirmation',
+              reason: `confirmation_delivery_binding_${res.unresolved}`,
+              field: c.field ?? null,
+              circuit: c.circuit ?? null,
+            });
             continue;
           }
           evalCtx.recordDelivery([res.identity], {
+            producerId: 'result_frame_confirmation',
             kind: 'confirmation',
-            transport: 'ws_extraction',
             text: c.text ?? null,
             wireTurnId: typeof result?.turn_id === 'string' ? result.turn_id : null,
           });
@@ -1737,7 +1740,7 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
       if (questionId) {
         if (!evalCtx.askRuntimeBindings.has(questionId)) {
           evalCtx.recordAskProduced({
-            family: 'address_mirror',
+            producerId: 'address_mirror_ask',
             runtimeId: questionId,
             liveAskKey: buildLiveAskKey({
               origin: 'address_mirror',

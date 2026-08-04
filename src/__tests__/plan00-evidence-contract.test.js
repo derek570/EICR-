@@ -65,6 +65,7 @@ import {
 } from '../extraction/plan00-evidence-projection.js';
 import { attributeRoundUsage } from '../extraction/round-usage-attribution.js';
 import { SEMANTIC_ORACLE_INPUTS } from '../../scripts/model-ab/lib/expectation-projection.mjs';
+import { composeCaptureInvalid } from '../../scripts/model-ab/lib/semantic-judge.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const contractDir = path.join(
@@ -704,7 +705,11 @@ describe('C5 — freeze-time canonical rows', () => {
         reason: 'fast_provisional_unconsumed',
       }),
     ]);
-    expect(frozen.eligible).toBe(false);
+    // The latch's own `eligible` flag deliberately keeps its quiescence-only
+    // meaning; the C5 ineligibility rides the freeze row into the PROJECTION
+    // (fold HOLD/INVALID), where 00C consumes it.
+    expect(frozen.eligible).toBe(true);
+    expect(buildEvidenceProjectionV1(frozen.candidate).eligible_for_family_credit).toBe(false);
     // the rows sit INSIDE the latched snapshot with stable revisions
     expect(frozen.counts.revision_instability).toBe(0);
     const latchedSnapshot = frozen.candidate; // observer.buildCandidate identity
@@ -724,7 +729,8 @@ describe('C5 — freeze-time canonical rows', () => {
     expect(freezeRows).toEqual([
       expect.objectContaining({ condition: 'delivery_prepared_outstanding', count: 1 }),
     ]);
-    expect(frozen.eligible).toBe(false);
+    // quiescence-only latch flag; ineligibility rides the row into the fold
+    expect(buildEvidenceProjectionV1(frozen.candidate).eligible_for_family_credit).toBe(false);
   });
 
   test('mutation and producer invalid latches surface as freeze-time rows', () => {
@@ -744,7 +750,8 @@ describe('C5 — freeze-time canonical rows', () => {
       .map((r) => r.condition)
       .sort();
     expect(conditions).toEqual(['mutation_invalid', 'producer_invalid']);
-    expect(frozen.eligible).toBe(false);
+    // quiescence-only latch flag; ineligibility rides the rows into the fold
+    expect(buildEvidenceProjectionV1(frozen.candidate).eligible_for_family_credit).toBe(false);
   });
 });
 
@@ -965,6 +972,51 @@ describe('three-way agreement (C0)', () => {
     });
     expect(frozen.evidence.sub_records).toBe(frozen.candidate.sub_records);
     expect(Object.isFrozen(frozen.evidence.sub_records)).toBe(true);
+  });
+});
+
+// ── 5b. The windowed-judge quiescence carve-out (C2) ───────────────────────
+
+describe('windowed-judge carve-out — open-Tier-2-ask-ONLY non-quiescence (C2)', () => {
+  test('an open dialogue_script ask at stop no longer holds the WINDOWED judge (00C counts stay strict)', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_jw' });
+    ctx.recordAskProduced({
+      producerId: 'dialogue_script_ask',
+      runtimeId: 'srv_jw',
+      liveAskKey: K('jw'),
+    });
+    ctx.recordAskEmitted({ runtimeId: 'srv_jw' });
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_jw',
+      boundary: 'session_stopped',
+    });
+    // the FREEZE stays strict: ineligible, counts carry the open ask — this
+    // is exactly what 00C's completion fold consumes
+    expect(frozen.eligible).toBe(false);
+    expect(frozen.counts.open_asks_dialogue_script).toBe(1);
+    expect(frozen.counts.non_quiescent_at_stop).toBe(1);
+    // the WINDOWED judge proceeds past quiescence (dialogue asks are outside
+    // the corpus observation boundary; a stable open ask mutates nothing)
+    expect(composeCaptureInvalid(frozen)).toBeNull();
+  });
+
+  test('any OTHER non-quiescence beside the open ask still holds the judge', () => {
+    const entry = makeEntry();
+    entry.isExtracting = true; // an in-flight extraction CAN still mutate evidence
+    const ctx = composeCtx(entry, { sessionId: 'sess_jw2' });
+    ctx.recordAskProduced({
+      producerId: 'dialogue_script_ask',
+      runtimeId: 'srv_jw2',
+      liveAskKey: K('jw2'),
+    });
+    ctx.recordAskEmitted({ runtimeId: 'srv_jw2' });
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_jw2',
+      boundary: 'session_stopped',
+    });
+    expect(frozen.eligible).toBe(false);
+    expect(composeCaptureInvalid(frozen)).toEqual({ reason: 'non_quiescent_at_stop' });
   });
 });
 

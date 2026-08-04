@@ -479,7 +479,7 @@
     ]
   },
   "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
-  "semantic_oracle_digest": "cba69cd8c4a954884fab98986b41a9355b1c33362609107601eb9b64f7ad3692",
+  "semantic_oracle_digest": "bf5cbdf7b12f43468adc64e095ef0c57194eea00da17d66811e00047817a862a",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -491,15 +491,15 @@
     },
     {
       "path": "src/extraction/plan00-audibility-ledgers.js",
-      "sha256": "c98996ff47b75ced489078ea4d60e66a12d4448ebd3920d34f8e60f206a9a334"
+      "sha256": "e4bfe2d5590efbac50a28999daf038b489193925af9a4be329cc1e434e24cb0d"
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "8e10f9df83aa2ca65261418ba66ad9463a2ecd823b527da93b2a4047235b92fc"
+      "sha256": "25b2b97b99fa2751bb62d530b6f514c16f789aa3beb29878d4217741b92684f1"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "9a7f262afae7601a4a0dea4745bc732ee1eec739ff044dfe1403ceafa2d66d90"
+      "sha256": "ff43afba525f8caf427066a345ce2333e01dcb3e1c52d96e25e96ba39b7afec0"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -507,7 +507,7 @@
     },
     {
       "path": "src/extraction/eicr-extraction-session.js",
-      "sha256": "912b0a42da3e4cb643265d61ea6ac966a8674aecae9ab6514765ec8e6552dc4c"
+      "sha256": "115e61b0b600e091c03d5baab314cdf10a62eff2ee44abc894753b602637a33e"
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
@@ -543,11 +543,11 @@
     },
     {
       "path": "scripts/model-ab/lib/expectation-projection.mjs",
-      "sha256": "536b746119a2c10d44f6bc31031c750849a211f69ad095123381144cc49b14e1"
+      "sha256": "f9567bfcef718006aae7d17eea076b66c3b2addf834569f0b39f5c5d0d6559c8"
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
-      "sha256": "ccb1f9e7e094ad2a029d4cb6731e866a5b0307095289bddc15fe6612197cc0c0"
+      "sha256": "016b3f3ea5afdea23719d327a80bcf7b3c6fc917803677f6cba0dd24222b1db8"
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
@@ -579,7 +579,7 @@
     },
     {
       "path": "src/extraction/stage6-dispatcher-ask.js",
-      "sha256": "240f72f028bfced6633fdd5d188674be32c123214b91e2bd656689e0992c932e"
+      "sha256": "2d7e29cd3918070a7219a5a2b7cb84a14d1dd68aa1dc298d27e40b4190e4c85b"
     },
     {
       "path": "src/extraction/address-mirror-controller.js",
@@ -591,19 +591,47 @@
     },
     {
       "path": "src/extraction/round-usage-attribution.js",
-      "sha256": "d65f8c0f180079c1c443394692f1ed071f9fdbcc725061af42191eb795118c91"
+      "sha256": "7436b387a450432cf36573f06e1a7e3a71f999a6cc34433bc5de93bbb621e45c"
     },
     {
       "path": "src/extraction/stage6-tool-loop.js",
-      "sha256": "0c35208468019aa7a23475adf48685a422b104a99d331a911091e25ca015180b"
+      "sha256": "ff9b6395f54427d5a3dfe23b0d12f34d7781523c1c4ec06deb921646e194f9ca"
     },
     {
       "path": "src/extraction/openai-tooluse-adapter.js",
-      "sha256": "26f7a9ae39faf66e3c234c8205dea22dc2f2ce5f2f44222b3b21c2c2dec12eda"
+      "sha256": "e639077b65d81503f89969be3308a8693f7b0b8e103dbd81dc302ac8169ed656"
     },
     {
       "path": "src/extraction/openai-responses-adapter.js",
-      "sha256": "a27e20add24a7b5048b5ad3c9ad053ec7c88f0d63f6d1a93d1c8b280d0875960"
+      "sha256": "77fcc105da66225152ef8b5adff568e5edbe8043ca8f03e75d8f53de7a952319"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json",
+      "sha256": "75484cf32e991d4ee93d6bb7306bef9f98009478c44ef1775654ecb8c2d15fbf"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-v1.json",
+      "sha256": "8689b0117417aa159dde8994226ad8439be5915178af86fa75dedb267ddb5226"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-v1.json",
+      "sha256": "3b75adac90847b5d7e83aaa2d2ab8f46604bf23006e040f31717ec5d54af4a73"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json",
+      "sha256": "004e697dc00fb2542ee7dec67204995ab96ea16bda50fa728dc0d314f498ccd7"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json",
+      "sha256": "202eb4df62def596ae9e473a9267aa6c32c05ec63288da937782bba2a2b3e1c9"
+    },
+    {
+      "path": "src/extraction/plan00-evidence-registry.js",
+      "sha256": "b084e2b4b0c8c0baaa3457b7daa2fe049a5ee598c13170161cfc831302aedc15"
+    },
+    {
+      "path": "src/extraction/plan00-evidence-projection.js",
+      "sha256": "07dc66114d0fae88d2f595fef043f47a0ffcff1b0c541feebe548a69fe11f81a"
     }
   ],
   "strata_named_gaps": [

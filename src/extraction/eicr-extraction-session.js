@@ -2214,6 +2214,11 @@ export class EICRExtractionSession {
       usage: response?.usage,
       roundIdx,
       promptCache: response?.prompt_cache ?? null,
+      // Plan 00B-3 C5 — actual API transport: adapter-stamped for OpenAI
+      // responses; a bare Anthropic SDK response carries none, so the
+      // anthropic transport is attributed here. Never a configured guess.
+      apiTransport:
+        response?.api_transport ?? (provider === 'openai' ? null : 'anthropic_messages'),
     });
   }
 

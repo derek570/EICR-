@@ -692,7 +692,11 @@ describe('C5 — voice-latency playback-ack route parity (HTTP surface — canno
         // path genuinely runs (a resolved playback), not just a no-op miss.
         ctx.recordDelivery(
           [{ extractionTurnId: 't1', field: 'measured_zs_ohm', circuit: 4, boardId: null }],
-          { kind: 'confirmation', transport: 'ws_extraction', text: 'Circuit 4, Zs 0.63' }
+          {
+            producerId: 'result_frame_confirmation',
+            kind: 'confirmation',
+            text: 'Circuit 4, Zs 0.63',
+          }
         );
         attachEvaluationContext(entry, ctx);
       }

@@ -172,7 +172,12 @@ export function createAskLedger() {
     },
     markInvalid,
 
-    /** Stage 1 — semantic production, pre-wire, pre-lossy-projection. */
+    /**
+     * Stage 1 — semantic production, pre-wire, pre-lossy-projection.
+     * Plan 00B-3 C1 — every transition method returns an explicit VERDICT
+     * `{accepted, reason}` and the caller derives the sub-record from it
+     * (one derivation, never a parallel append beside the ledger).
+     */
     produced(liveAskKey, meta = {}) {
       entries.push({
         key: liveAskKey,
@@ -181,6 +186,7 @@ export function createAskLedger() {
         meta,
         history: ['produced'],
       });
+      return { accepted: true, reason: null };
     },
 
     /**
@@ -191,22 +197,22 @@ export function createAskLedger() {
     emitted(liveAskKey, runtimeId) {
       if (entries.some((e) => e.runtime_id === runtimeId)) {
         markInvalid('runtime_id_already_bound', { runtimeId });
-        return;
+        return { accepted: false, reason: 'runtime_id_already_bound' };
       }
       const candidates = entries.filter((e) => e.key === liveAskKey && e.state === 'produced');
       if (candidates.length !== 1) {
-        markInvalid(
-          candidates.length === 0 ? 'emitted_without_produced' : 'ambiguous_produced_match',
-          {
-            liveAskKey,
-            candidates: candidates.length,
-          }
-        );
-        return;
+        const reason =
+          candidates.length === 0 ? 'emitted_without_produced' : 'ambiguous_produced_match';
+        markInvalid(reason, {
+          liveAskKey,
+          candidates: candidates.length,
+        });
+        return { accepted: false, reason };
       }
       candidates[0].state = 'emitted';
       candidates[0].runtime_id = runtimeId;
       candidates[0].history.push('emitted');
+      return { accepted: true, reason: null };
     },
 
     /**
@@ -214,28 +220,32 @@ export function createAskLedger() {
      * the frame id must equal the outstanding emitted id; a logged prefix is
      * never proof. Non-answered terminals (timeout, user_moved_on,
      * session_stopped, superseded, reissued) close the entry with that class.
+     *
+     * Plan 00B-3 C1 (SANCTIONED ledger change, schema-v1 rejection_reasons):
+     * `answered_without_full_proof` is a TRANSITION REJECTION, not a
+     * structural contradiction — it returns `{accepted:false}` WITHOUT
+     * latching invalid and leaves the entry 'emitted' (still open, so it
+     * counts non-quiescent at stop). Invalid latches are reserved for
+     * structural contradictions (`resolution_without_emitted`,
+     * `runtime_id_already_bound`, ...).
      */
     resolved(runtimeId, terminal, detail = {}) {
       const entry = entries.find((e) => e.runtime_id === runtimeId && e.state === 'emitted');
       if (!entry) {
         markInvalid('resolution_without_emitted', { runtimeId, terminal });
-        return;
+        return { accepted: false, reason: 'resolution_without_emitted' };
       }
       if (terminal === 'answered') {
         // §B3: answered requires BOTH the direct answer frame id match AND
         // the paired transcript reaching engine resolution.
         if (detail.answer_frame_id !== runtimeId || detail.transcript_resolved !== true) {
-          markInvalid('answered_without_full_proof', {
-            runtimeId,
-            answer_frame_id: detail.answer_frame_id ?? null,
-            transcript_resolved: detail.transcript_resolved === true,
-          });
-          return;
+          return { accepted: false, reason: 'answered_without_full_proof' };
         }
       }
       entry.state = terminal;
       entry.terminal_detail = detail;
       entry.history.push(terminal);
+      return { accepted: true, reason: null };
     },
 
     /**
@@ -248,16 +258,18 @@ export function createAskLedger() {
       const entry = entries.find((e) => e.runtime_id === runtimeId && e.state === 'emitted');
       if (!entry) {
         markInvalid('reissue_without_emitted', { runtimeId });
-        return;
+        return { accepted: false, reason: 'reissue_without_emitted' };
       }
       entry.history.push('reissued_attempt');
+      return { accepted: true, reason: null };
     },
 
     /**
      * Plan 00B-2 C2.3 — REPLACEMENT ask linkage (new runtime id, e.g. every
      * `pvr-*`/`mdr-*` broker re-ask). An OPEN predecessor terminal-resolves
      * as `reissued` with a successor link; an already-terminal predecessor
-     * only gains the link (never re-opened).
+     * only gains the link (never re-opened — `transitioned:false`, so the
+     * caller appends no transition row for a link-only annotation).
      */
     linkReplacement(predecessorRuntimeId, successorRuntimeId) {
       const entry = entries.find((e) => e.runtime_id === predecessorRuntimeId);
@@ -266,18 +278,19 @@ export function createAskLedger() {
           predecessorRuntimeId,
           successorRuntimeId,
         });
-        return;
+        return { accepted: false, reason: 'replacement_predecessor_unknown', transitioned: false };
       }
       if (entry.state === 'emitted' || entry.state === 'produced') {
         entry.state = 'reissued';
         entry.terminal_detail = { successor_runtime_id: successorRuntimeId };
         entry.history.push('reissued');
-        return;
+        return { accepted: true, reason: null, transitioned: true };
       }
       entry.terminal_detail = {
         ...(entry.terminal_detail ?? {}),
         successor_runtime_id: successorRuntimeId,
       };
+      return { accepted: true, reason: null, transitioned: false };
     },
 
     /** Asks still open (produced-or-emitted) — reconnect must preserve them. */
@@ -339,33 +352,46 @@ export function createDeliveryLedger() {
         text = null,
         wireTurnId = null,
         dedupeToken = null,
+        // Plan 00B-3 C3 — the registry producer id + its derived semantic
+        // family, stamped on the LEDGER row too so the frozen-ledger
+        // projection can derive families identically to sub_records.
+        producerId = null,
+        semanticFamily = null,
+        correlationId = null,
       } = {}
     ) {
       seq += 1;
       const identities = Array.isArray(opIdentity) ? opIdentity : [opIdentity];
       const opKeys = identities.map((op) => operationIdentityKey(op));
-      deliveries.push(
-        Object.freeze({
-          op_key: opKeys[0] ?? null,
-          op_keys: Object.freeze(opKeys),
-          kind: kind ?? 'confirmation',
-          transport,
-          claim_lineage: claimLineage,
-          // Plan 00B-2 C4 — the SPOKEN text of the delivery (evaluation-only
-          // judging surface for text_exact matchers; null for producers that
-          // carry no prose).
-          text,
-          // Codex r2 finding 7 — the WIRE turn id (result.turn_id) the
-          // client echoes on its playback ACK, so ACK resolution can bind
-          // turn-exactly instead of crediting a stale/other-turn ACK.
-          wire_turn_id: wireTurnId,
-          // Mini-review r2 finding 5 — the wire dedupe_token (for a
-          // field_cleared confirmation it is `clear_<field>_…`, the only
-          // structured carrier of WHICH field was cleared).
-          dedupe_token: dedupeToken,
-          at_seq: seq,
-        })
-      );
+      const row = Object.freeze({
+        op_key: opKeys[0] ?? null,
+        op_keys: Object.freeze(opKeys),
+        kind: kind ?? 'confirmation',
+        transport,
+        producer_id: producerId,
+        semantic_family: semanticFamily,
+        claim_lineage: claimLineage,
+        // Plan 00B-2 C4 — the SPOKEN text of the delivery (evaluation-only
+        // judging surface for text_exact matchers; null for producers that
+        // carry no prose). NEVER copied onto sub-records (00C PII rule).
+        text,
+        // Codex r2 finding 7 — the WIRE turn id (result.turn_id) the
+        // client echoes on its playback ACK, so ACK resolution can bind
+        // turn-exactly instead of crediting a stale/other-turn ACK.
+        wire_turn_id: wireTurnId,
+        // Mini-review r2 finding 5 — the wire dedupe_token (for a
+        // field_cleared confirmation it is `clear_<field>_…`, the only
+        // structured carrier of WHICH field was cleared).
+        dedupe_token: dedupeToken,
+        correlation_id: correlationId,
+        at_seq: seq,
+        // Plan 00B-3 C5 — the stable, replay-stable delivery ref the
+        // dialogue_hearing_attestation event and the fold's exactly-once
+        // rules resolve against (deterministic from the ledger sequence).
+        delivery_ref: `d:${seq}`,
+      });
+      deliveries.push(row);
+      return row;
     },
 
     /**
@@ -426,9 +452,10 @@ export function createDeliveryLedger() {
       const prov = provisionals.find((p) => p.correlation_id === correlationId);
       if (!prov) {
         markInvalid('fast_ack_without_provisional', { correlationId });
-        return;
+        return { accepted: false, reason: 'fast_ack_without_provisional' };
       }
       prov.staged_acks.push(ackBody);
+      return { accepted: true, reason: null };
     },
 
     /**
@@ -442,7 +469,7 @@ export function createDeliveryLedger() {
       const prov = provisionals.find((p) => p.correlation_id === correlationId);
       if (!prov) {
         markInvalid('fast_promotion_without_provisional', { correlationId });
-        return null;
+        return { accepted: false, reason: 'fast_promotion_without_provisional' };
       }
       const matches = (candidateOps ?? []).filter(
         (op) =>
@@ -453,31 +480,50 @@ export function createDeliveryLedger() {
             op.circuit == null)
       );
       if (matches.length !== 1) {
-        markInvalid(
-          matches.length === 0 ? 'fast_promotion_unmatched' : 'fast_promotion_ambiguous',
-          {
-            correlationId,
-            matches: matches.length,
-          }
-        );
-        return null;
+        const reason =
+          matches.length === 0 ? 'fast_promotion_unmatched' : 'fast_promotion_ambiguous';
+        markInvalid(reason, {
+          correlationId,
+          matches: matches.length,
+        });
+        return { accepted: false, reason };
       }
       const op = matches[0];
       prov.resolved_op_key = operationIdentityKey(op);
-      this.recordDeliveryAttempt(op, { kind: 'fast_tts', transport: 'fast_tts' });
+      const deliveryRow = this.recordDeliveryAttempt(op, {
+        kind: 'fast_tts',
+        transport: 'fast_tts',
+        producerId: 'fast_tts_promotion',
+        semanticFamily: 'fast_tts',
+        correlationId,
+      });
       // Mini-review r2 finding 2 — count AUTHORITATIVE playback rows (a
       // byte-identical retry ACK dedupes to one row; counting staged
-      // BODIES would hand 00C contradictory evidence).
-      let playbackCount = 0;
+      // BODIES would hand 00C contradictory evidence). Plan 00B-3 C5 — the
+      // per-ACK authoritative rows (with their body hashes) are returned so
+      // the caller can append one playback sub-record PER start.
+      const playbackRows = [];
       for (const ack of prov.staged_acks) {
-        if (this.recordPlaybackAck(ack, [op])) playbackCount += 1;
+        const verdict = this.recordPlaybackAck(ack, [op], {
+          producerId: 'fast_tts_staged_ack',
+          semanticFamily: 'fast_tts',
+          transport: 'http_playback_ack',
+          source: 'fast_tts',
+        });
+        if (verdict.accepted === 'authoritative') playbackRows.push(verdict.row);
       }
       prov.staged_acks = [];
       // Codex r2 finding 2 — the caller's lifecycle sub-record needs the
-      // resolved identity + how many authoritative playback starts were
-      // recorded, so the frozen builder snapshot carries real
-      // op_keys/playback evidence.
-      return { op, playback_count: playbackCount };
+      // resolved identity + the authoritative playback starts recorded, so
+      // the frozen builder snapshot carries real op_keys/playback evidence.
+      return {
+        accepted: true,
+        reason: null,
+        op,
+        playback_count: playbackRows.length,
+        playback_rows: playbackRows,
+        delivery_row: deliveryRow,
+      };
     },
 
     /** Any provisional never consumed by a promotion invalidates evidence. */
@@ -497,26 +543,48 @@ export function createDeliveryLedger() {
      * distinct playback starts. A successful server send never synthesizes
      * playback.
      */
-    recordPlaybackAck(ackBody, matchingOps) {
+    recordPlaybackAck(
+      ackBody,
+      matchingOps,
+      { producerId = null, semanticFamily = null, transport = null, source = null } = {}
+    ) {
       const ops = matchingOps ?? [];
       if (ops.length !== 1) {
-        markInvalid(ops.length === 0 ? 'playback_ack_unmatched' : 'playback_ack_ambiguous', {
+        const reason = ops.length === 0 ? 'playback_ack_unmatched' : 'playback_ack_ambiguous';
+        markInvalid(reason, {
           matches: ops.length,
         });
-        return null;
+        return { accepted: false, reason, matches: ops.length, row: null, existing: null };
       }
       const opKey = operationIdentityKey(ops[0]);
       if (!deliveries.some((d) => d.op_key === opKey)) {
         markInvalid('playback_without_delivery_attempt', { opKey });
-        return null;
+        return {
+          accepted: false,
+          reason: 'playback_without_delivery_attempt',
+          matches: 1,
+          row: null,
+          existing: null,
+        };
       }
       const hash = ackBodyHash(ackBody);
-      if (playbacks.some((p) => p.op_key === opKey && p.ack_body_hash === hash)) {
-        return null; // byte-identical retransmission — one start
+      const existing = playbacks.find((p) => p.op_key === opKey && p.ack_body_hash === hash);
+      if (existing) {
+        // Plan 00B-3 C1 ternary — byte-identical retransmission: an
+        // accepted-IDEMPOTENT verdict keyed to the EXISTING authoritative
+        // event; never a second start, never invalidating.
+        return { accepted: 'idempotent', reason: null, row: null, existing };
       }
-      const row = Object.freeze({ op_key: opKey, ack_body_hash: hash });
+      const row = Object.freeze({
+        op_key: opKey,
+        ack_body_hash: hash,
+        producer_id: producerId,
+        semantic_family: semanticFamily,
+        transport,
+        source,
+      });
       playbacks.push(row);
-      return row;
+      return { accepted: 'authoritative', reason: null, row, existing: null };
     },
   };
 }

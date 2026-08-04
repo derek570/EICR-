@@ -453,6 +453,8 @@ function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier, promp
     response_service_tier: finalResp?.service_tier ?? null,
     requested_model: fallbackModel,
     requested_service_tier: fallbackServiceTier ?? null,
+    // Plan 00B-3 C5 — the ACTUAL API transport that served this round.
+    api_transport: 'responses',
   };
   if (promptCache) message.prompt_cache = promptCache;
   return message;

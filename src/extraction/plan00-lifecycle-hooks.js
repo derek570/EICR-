@@ -49,6 +49,7 @@ import {
   PLAN00_AUDIBILITY_DESCRIPTOR,
   PLAN00_FRAME_BINDING_REGISTRY,
 } from './plan00-audibility-ledgers.js';
+import { producerEntry, STOP_BOUNDARY_TERMINALS } from './plan00-evidence-registry.js';
 
 export const EVIDENCE_OBSERVER = Symbol('plan00.evidenceObserver');
 export const LIFECYCLE_LEDGER = Symbol('plan00.lifecycleLedger');
@@ -283,6 +284,26 @@ export function readInFlightCounts(entry) {
   const session = entry?.session || null;
   const costTracker = session?.costTracker || null;
   const producerCounts = entry?.[LIFECYCLE_LEDGER]?.producerCounts || null;
+  // Plan 00B-3 C2 — per-family open-ask counts from the evaluation ask
+  // ledger, one key per ASK_QUIESCENCE_FAMILIES member. An entry is OPEN
+  // for quiescence while produced/emitted, AND when terminal-resolved with
+  // a STOP-BOUNDARY terminal (an ask open AT the stop boundary renders the
+  // freeze ineligible even after stop-expiry resolves it — the closed
+  // non-quiescent set; any other terminal closes it). Dormant: one Symbol
+  // lookup when no evaluation context is attached.
+  const askLedger = entry?.[EVALUATION_CONTEXT]?.askLedger ?? null;
+  const openAsks = { dispatcher: 0, dialogue_script: 0, address_mirror: 0 };
+  if (askLedger) {
+    for (const e of askLedger.entries) {
+      const open =
+        e.state === 'produced' ||
+        e.state === 'emitted' ||
+        STOP_BOUNDARY_TERMINALS.includes(e.state);
+      if (!open) continue;
+      const family = e.meta?.family;
+      if (family in openAsks) openAsks[family] += 1;
+    }
+  }
   return {
     // 00A billable scopes — inspector AND non-inspector (keepalive, orphan
     // review) loops still holding an open begin..end scope.
@@ -317,6 +338,11 @@ export function readInFlightCounts(entry) {
     producer_address_mirror_ingress: producerCounts?.address_mirror_ingress ?? 0,
     producer_address_mirror_answer: producerCounts?.address_mirror_answer ?? 0,
     producer_address_mirror_ack: producerCounts?.address_mirror_ack ?? 0,
+    // Plan 00B-3 C2 — Tier-2 ask quiescence: every family's open-ask count
+    // must be zero for an eligible completion freeze.
+    open_asks_dispatcher: openAsks.dispatcher,
+    open_asks_dialogue_script: openAsks.dialogue_script,
+    open_asks_address_mirror: openAsks.address_mirror,
   };
 }
 
@@ -480,6 +506,67 @@ export function freezeEvidenceCompletion(entry, { sessionId, boundary }) {
       // isolated
     }
   }
+  // Plan 00B-3 C5 — freeze-time canonical rows, in the PINNED ordering:
+  // AFTER ctx.settleFastTts() and BEFORE the revisionsBefore read, so the
+  // rows are covered by the frozen revisions AND the latched snapshot and
+  // can never trip revision_instability.
+  if (ctx) {
+    // Unconsumed fast-TTS provisionals FOLD into the delivery-ledger invalid
+    // latch via the EXISTING non-throwing check (one derivation — never a
+    // parallel unconsumed-provisional scan, never a throw into teardown).
+    if (
+      ctx.deliveryLedger &&
+      typeof ctx.deliveryLedger.assertNoUnconsumedProvisionals === 'function'
+    ) {
+      try {
+        ctx.deliveryLedger.assertNoUnconsumedProvisionals();
+      } catch (_err) {
+        // isolated
+      }
+    }
+    // Condition-gated: a row is appended ONLY when the invalid/outstanding
+    // condition holds — never a zero/null placeholder (schema-v1
+    // freeze_invalid). Any of these rows renders the 00C session INELIGIBLE
+    // for family credit; the latch's own `eligible` flag deliberately keeps
+    // its quiescence-only meaning (the judge reads the latches separately).
+    const freezeObserver = entry[EVIDENCE_OBSERVER];
+    const freezeRow = (detail) => appendLedgerRow(ledger, freezeObserver, 'freeze_invalid', detail);
+    if (ctx.askLedger?.invalid) {
+      freezeRow({
+        condition: 'ask_invalid',
+        reason: ctx.askLedger.invalid.reason ?? null,
+        count: null,
+      });
+    }
+    if (ctx.deliveryLedger?.invalid) {
+      freezeRow({
+        condition: 'delivery_invalid',
+        reason: ctx.deliveryLedger.invalid.reason ?? null,
+        count: null,
+      });
+    }
+    if (ledger.producerInvalid) {
+      freezeRow({
+        condition: 'producer_invalid',
+        reason: ledger.producerInvalid.reason ?? null,
+        count: null,
+      });
+    }
+    if (ctx.mutationObserver?.invalid) {
+      freezeRow({
+        condition: 'mutation_invalid',
+        reason: ctx.mutationObserver.invalid.reason ?? null,
+        count: null,
+      });
+    }
+    if (ctx.deliveryPrepared.size > 0) {
+      freezeRow({
+        condition: 'delivery_prepared_outstanding',
+        reason: null,
+        count: ctx.deliveryPrepared.size,
+      });
+    }
+  }
   const revisionsBefore = readRevisionSnapshot(entry);
   const inFlight = readInFlightCounts(entry);
   const revisionsAfter = readRevisionSnapshot(entry);
@@ -565,6 +652,10 @@ const CONTEXT_ROLE_KEYS = Object.freeze([
 
 const ROUND_USAGE_ALLOWLIST = Object.freeze([
   'provider',
+  // Plan 00B-3 C5 — WHICH API served the round (adapter-stamped actual
+  // transport: anthropic_messages | chat_completions | responses; never
+  // configuration). The Terra/cache gates consume the actual transport.
+  'api_transport',
   'requested_model',
   'requested_tier',
   'response_model',
@@ -630,21 +721,66 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     appendLedgerRow(ledger, ctx.observer, kind, detail);
   };
 
+  // Plan 00B-3 C3 — registry admission. record* APIs accept REGISTRY IDs,
+  // never free-form family strings; an UNKNOWN id (or an id of the wrong
+  // event class) appends an uncreditable `producer_unknown` row and marks
+  // the OWNING ledger invalid — fail-loud, never silent absence.
+  const resolveProducer = (producerId, eventClass) => {
+    const producer = producerEntry(producerId);
+    if (producer && producer.event_class === eventClass) return producer;
+    appendSub('producer_unknown', {
+      event_class: eventClass,
+      producer_id_raw: producerId ?? null,
+    });
+    const owner = eventClass === 'ask' ? ctx.askLedger : ctx.deliveryLedger;
+    owner?.markInvalid?.('unknown_producer_id', {
+      producer_id: producerId ?? null,
+      event_class: eventClass,
+    });
+    return null;
+  };
+
+  // Plan 00B-3 C1 — the rejected-audit append (one mutually exclusive row
+  // per attempted transition; distinct discriminator, projects zero credit).
+  const appendAskRejected = ({ family, stageAttempted, runtimeId, terminalAttempted, reason }) => {
+    const detail = {
+      family: family ?? null,
+      stage_attempted: stageAttempted,
+      runtime_id: runtimeId ?? null,
+      reason,
+    };
+    if (terminalAttempted !== undefined) detail.terminal_attempted = terminalAttempted;
+    appendSub('ask_transition_rejected', detail);
+  };
+
   // ── ask lifecycle helpers (exactly-once ownership map callers) ──
-  ctx.recordAskProduced = ({ family, runtimeId, liveAskKey, meta = null }) => {
+  // Plan 00B-3 C1 — every sub-record is DERIVED FROM the ledger verdict
+  // (one derivation, never a parallel append beside it).
+  ctx.recordAskProduced = ({ producerId, runtimeId, liveAskKey, meta = null }) => {
     if (!ctx.askLedger) return;
+    const producer = resolveProducer(producerId, 'ask');
+    if (!producer) return;
+    const family = producer.quiescence_family;
     if (ctx.askRuntimeBindings.has(runtimeId)) {
       ctx.askLedger.markInvalid('duplicate_runtime_binding', { runtimeId });
+      appendAskRejected({
+        family,
+        stageAttempted: 'produced',
+        runtimeId,
+        reason: 'duplicate_runtime_binding',
+      });
       return;
     }
-    ctx.askRuntimeBindings.set(runtimeId, { key: liveAskKey, family, meta });
-    ctx.askLedger.produced(liveAskKey, { family, ...(meta ?? {}) });
-    appendSub('ask_lifecycle', {
-      family,
-      stage: 'produced',
-      runtime_id: runtimeId,
-      live_ask_key: liveAskKey,
-    });
+    ctx.askRuntimeBindings.set(runtimeId, { key: liveAskKey, family, producerId, meta });
+    const verdict = ctx.askLedger.produced(liveAskKey, { family, ...(meta ?? {}) });
+    if (verdict?.accepted) {
+      appendSub('ask_lifecycle', {
+        family,
+        stage: 'produced',
+        runtime_id: runtimeId,
+        live_ask_key: liveAskKey,
+      });
+    }
   };
 
   ctx.recordAskEmitted = ({ runtimeId }) => {
@@ -652,6 +788,12 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     const binding = ctx.askRuntimeBindings.get(runtimeId);
     if (!binding) {
       ctx.askLedger.markInvalid('emitted_without_binding', { runtimeId });
+      appendAskRejected({
+        family: null,
+        stageAttempted: 'emitted',
+        runtimeId,
+        reason: 'emitted_without_binding',
+      });
       return;
     }
     const already = ctx.askLedger.entries.find(
@@ -660,43 +802,84 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     if (already) {
       // Same-id re-send (reconnect/resume replay of the address-mirror
       // direct question — the only production same-id re-send).
-      ctx.askLedger.reissuedAttempt(runtimeId);
-      appendSub('ask_lifecycle', {
-        family: binding.family,
-        stage: 'reissued_attempt',
-        runtime_id: runtimeId,
-      });
+      const verdict = ctx.askLedger.reissuedAttempt(runtimeId);
+      if (verdict?.accepted) {
+        appendSub('ask_lifecycle', {
+          family: binding.family,
+          stage: 'reissued_attempt',
+          runtime_id: runtimeId,
+        });
+      } else {
+        appendAskRejected({
+          family: binding.family,
+          stageAttempted: 'reissued_attempt',
+          runtimeId,
+          reason: verdict?.reason ?? null,
+        });
+      }
       return;
     }
-    ctx.askLedger.emitted(binding.key, runtimeId);
-    appendSub('ask_lifecycle', {
-      family: binding.family,
-      stage: 'emitted',
-      runtime_id: runtimeId,
-    });
+    const verdict = ctx.askLedger.emitted(binding.key, runtimeId);
+    if (verdict?.accepted) {
+      appendSub('ask_lifecycle', {
+        family: binding.family,
+        stage: 'emitted',
+        runtime_id: runtimeId,
+      });
+    } else {
+      appendAskRejected({
+        family: binding.family,
+        stageAttempted: 'emitted',
+        runtimeId,
+        reason: verdict?.reason ?? null,
+      });
+    }
   };
 
   ctx.recordAskResolved = ({ runtimeId, terminal, detail = {} }) => {
     if (!ctx.askLedger) return;
     const binding = ctx.askRuntimeBindings.get(runtimeId) ?? null;
-    ctx.askLedger.resolved(runtimeId, terminal, detail);
-    appendSub('ask_lifecycle', {
-      family: binding?.family ?? null,
-      stage: 'resolved',
-      runtime_id: runtimeId,
-      terminal,
-    });
+    const verdict = ctx.askLedger.resolved(runtimeId, terminal, detail);
+    if (verdict?.accepted) {
+      appendSub('ask_lifecycle', {
+        family: binding?.family ?? null,
+        stage: 'resolved',
+        runtime_id: runtimeId,
+        terminal,
+      });
+    } else {
+      appendAskRejected({
+        family: binding?.family ?? null,
+        stageAttempted: 'resolved',
+        runtimeId,
+        terminalAttempted: terminal ?? null,
+        reason: verdict?.reason ?? null,
+      });
+    }
   };
 
   ctx.recordAskReplacement = ({ predecessorRuntimeId, successorRuntimeId }) => {
     if (!ctx.askLedger) return;
-    ctx.askLedger.linkReplacement(predecessorRuntimeId, successorRuntimeId);
-    appendSub('ask_lifecycle', {
-      family: ctx.askRuntimeBindings.get(predecessorRuntimeId)?.family ?? null,
-      stage: 'replaced',
-      runtime_id: predecessorRuntimeId,
-      successor_runtime_id: successorRuntimeId,
-    });
+    const family = ctx.askRuntimeBindings.get(predecessorRuntimeId)?.family ?? null;
+    const verdict = ctx.askLedger.linkReplacement(predecessorRuntimeId, successorRuntimeId);
+    if (verdict?.accepted && verdict.transitioned) {
+      appendSub('ask_lifecycle', {
+        family,
+        stage: 'replaced',
+        runtime_id: predecessorRuntimeId,
+        successor_runtime_id: successorRuntimeId,
+      });
+    } else if (verdict && !verdict.accepted) {
+      appendAskRejected({
+        family,
+        stageAttempted: 'replaced',
+        runtimeId: predecessorRuntimeId,
+        reason: verdict.reason ?? null,
+      });
+    }
+    // accepted-but-not-transitioned = a link-only annotation on an already
+    // terminal predecessor: no transition happened, no row (the successor's
+    // own produced row carries the lineage).
   };
 
   // ── C2.4 srv-* two-half join ──
@@ -724,6 +907,12 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
         utterance_id: utteranceId,
         candidates: candidates.length,
       });
+      appendAskRejected({
+        family: 'dialogue_script',
+        stageAttempted: 'resolved',
+        runtimeId: null,
+        reason: 'srv_answer_ambiguous',
+      });
       return;
     }
     const runtimeId = candidates[0];
@@ -748,43 +937,120 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   };
 
   // ── delivery / playback / non-mutating audible ──
+  // Plan 00B-3 C3 — registry-ID admission; the SEMANTIC family and the
+  // transport are DERIVED from the registry entry and stamped as separate
+  // fields (the legacy overloaded `family` key is retired). C5 — the row
+  // carries the ledger's stable delivery_ref + at_seq and the operation
+  // aliases (claim lineage, wire turn id, dedupe token). NEVER the spoken
+  // text (00C PII rule).
   ctx.recordDelivery = (
     opIdentities,
     {
+      producerId,
       kind,
-      transport = null,
       claimLineage = null,
       text = null,
       wireTurnId = null,
       dedupeToken = null,
+      correlationId = null,
     } = {}
   ) => {
     if (!ctx.deliveryLedger) return;
-    ctx.deliveryLedger.recordDeliveryAttempt(opIdentities, {
+    const producer = resolveProducer(producerId, 'delivery');
+    if (!producer) return;
+    const row = ctx.deliveryLedger.recordDeliveryAttempt(opIdentities, {
       kind,
-      transport,
+      transport: producer.transport,
       claimLineage,
       text,
       wireTurnId,
       dedupeToken,
+      producerId,
+      semanticFamily: producer.semantic_family,
+      correlationId,
     });
-    const keys = (Array.isArray(opIdentities) ? opIdentities : [opIdentities]).map((op) =>
-      operationIdentityKey(op)
-    );
     appendSub('delivery_evidence', {
-      family: transport ?? null,
+      producer_id: producerId,
+      semantic_family: producer.semantic_family,
+      transport: producer.transport,
       delivery_kind: kind ?? 'confirmation',
-      op_keys: keys,
+      op_keys: [...row.op_keys],
+      delivery_ref: row.delivery_ref,
+      at_seq: row.at_seq,
+      claim_lineage: claimLineage,
+      wire_turn_id: wireTurnId,
+      dedupe_token: dedupeToken,
+      correlation_id: correlationId,
     });
   };
 
-  ctx.recordPlayback = (ackBody, matchingOps, { source = null } = {}) => {
+  // Plan 00B-3 C1 — an attempted operation-backed delivery whose receipt
+  // binding failed: latch + the visible-but-uncreditable rejected audit row,
+  // in ONE derivation.
+  ctx.recordDeliveryRejected = ({
+    producerId,
+    reason,
+    field = null,
+    circuit = null,
+    claimLineage = null,
+    detail = null,
+  }) => {
+    ctx.deliveryLedger?.markInvalid?.(reason, detail ?? { field, circuit });
+    appendSub('delivery_rejected', {
+      producer_id: producerId ?? null,
+      reason,
+      field,
+      circuit,
+      claim_lineage: claimLineage,
+    });
+  };
+
+  ctx.recordPlayback = (
+    ackBody,
+    matchingOps,
+    { producerId, source = null, correlationId = null } = {}
+  ) => {
     if (!ctx.deliveryLedger) return null;
-    const row = ctx.deliveryLedger.recordPlaybackAck(ackBody, matchingOps);
-    if (row) {
-      appendSub('playback_evidence', { op_key: row.op_key, source });
+    const producer = resolveProducer(producerId, 'playback');
+    if (!producer) return null;
+    const verdict = ctx.deliveryLedger.recordPlaybackAck(ackBody, matchingOps, {
+      producerId,
+      semanticFamily: producer.semantic_family,
+      transport: producer.transport,
+      source,
+    });
+    if (verdict.accepted === 'authoritative') {
+      appendSub('playback_evidence', {
+        producer_id: producerId,
+        semantic_family: producer.semantic_family,
+        transport: producer.transport,
+        op_key: verdict.row.op_key,
+        source,
+        ack_body_hash: verdict.row.ack_body_hash,
+        correlation_id: correlationId,
+      });
+      return verdict.row;
     }
-    return row;
+    if (verdict.accepted === 'idempotent') {
+      // C1 ternary — byte-identical retransmission: an idempotent audit row
+      // keyed to the EXISTING authoritative event; no additional credit.
+      appendSub('playback_idempotent', {
+        producer_id: producerId,
+        semantic_family: producer.semantic_family,
+        transport: producer.transport,
+        op_key: verdict.existing.op_key,
+        ack_body_hash: verdict.existing.ack_body_hash,
+      });
+      return null;
+    }
+    // integrity rejection at the ledger admission layer — the invalidating
+    // rejected audit row (the latch fired inside the ledger).
+    appendSub('playback_rejected', {
+      producer_id: producerId,
+      reason: verdict.reason ?? null,
+      matches: verdict.matches ?? null,
+    });
+    return null;
   };
 
   // C2.6 — route-side playback forwarding. A fast_tts ACK stages beside its
@@ -795,7 +1061,14 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   // negatives read the absence).
   ctx.stageFastPlaybackAck = ({ correlationId, ackBody }) => {
     if (!ctx.deliveryLedger) return;
-    ctx.deliveryLedger.stageFastAck(correlationId, ackBody);
+    const verdict = ctx.deliveryLedger.stageFastAck(correlationId, ackBody);
+    if (verdict && verdict.accepted === false) {
+      appendSub('playback_rejected', {
+        producer_id: 'fast_tts_staged_ack',
+        reason: verdict.reason ?? null,
+        matches: null,
+      });
+    }
   };
 
   ctx.resolvePlaybackFromSlot = ({ slot, ackBody, source = null, turnId = null }) => {
@@ -832,7 +1105,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
             ordinal: id.ordinal ?? 0,
           },
         ],
-        { source }
+        { producerId: 'playback_ack_slot', source }
       );
     }
     const seen = new Set();
@@ -864,7 +1137,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       }
     }
     if (matches.length !== 1) return null;
-    return ctx.recordPlayback(ackBody, matches, { source });
+    return ctx.recordPlayback(ackBody, matches, { producerId: 'playback_ack_slot', source });
   };
 
   ctx.recordNonMutatingAudible = ({ channel, kind, text = null }) => {
@@ -950,8 +1223,8 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     if (!ctx.deliveryLedger) return;
     const isForeignRecovery = ctx.pendingRecoveryLineages.delete(claimLineage);
     ctx.recordDelivery(identities, {
+      producerId: 'address_mirror_terminal',
       kind: 'address_mirror_terminal',
-      transport: 'ws_vcr',
       claimLineage,
     });
     ctx.addressMirrorUnits.set(claimLineage, identities);
@@ -960,9 +1233,17 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
         ctx.deliveryLedger.markDeliveryHistoryAmbiguous(op);
       }
       appendSub('delivery_evidence', {
-        family: 'address_mirror',
+        producer_id: 'address_mirror_terminal',
+        semantic_family: 'address_mirror',
+        transport: 'ws_vcr',
         delivery_kind: 'delivery_history_ambiguous',
         op_keys: identities.map((op) => operationIdentityKey(op)),
+        delivery_ref: null,
+        at_seq: null,
+        claim_lineage: claimLineage,
+        wire_turn_id: null,
+        dedupe_token: null,
+        correlation_id: null,
       });
     }
   };
@@ -970,6 +1251,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     const identities = ctx.addressMirrorUnits.get(claimLineage);
     if (!identities) return null;
     return ctx.recordPlayback(ackBody, [identities[0]], {
+      producerId: 'address_mirror_delivery_ack',
       source: 'address_mirror_delivery_ack',
     });
   };
@@ -1048,21 +1330,44 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     if (candidateOps.length === 0) return; // receipt may still arrive — settle later
     const promotion = ctx.deliveryLedger.promoteProvisional(correlationId, candidateOps);
     r.promoted = true;
+    if (!promotion?.accepted) {
+      // One derivation from the ledger verdict — the promotion failure
+      // latched inside the ledger; this is its rejected audit row.
+      appendSub('delivery_rejected', {
+        producer_id: 'fast_tts_promotion',
+        reason: promotion?.reason ?? null,
+        field: r.candidate.field ?? null,
+        circuit: r.candidate.circuit ?? null,
+        claim_lineage: null,
+      });
+      return;
+    }
     appendSub('delivery_evidence', {
-      family: 'fast_tts',
+      producer_id: 'fast_tts_promotion',
+      semantic_family: 'fast_tts',
+      transport: 'fast_tts',
       delivery_kind: 'fast_tts',
-      op_keys: promotion?.op ? [operationIdentityKey(promotion.op)] : [],
+      op_keys: [...promotion.delivery_row.op_keys],
+      delivery_ref: promotion.delivery_row.delivery_ref,
+      at_seq: promotion.delivery_row.at_seq,
+      claim_lineage: null,
+      wire_turn_id: null,
+      dedupe_token: null,
       correlation_id: correlationId,
     });
-    if (promotion?.playback_count > 0) {
-      // Staged early ACKs consumed by this promotion — surfaced on the
-      // lifecycle channel so the frozen builder snapshot carries the
-      // playback evidence 00C derives its confirmation/ACK ledger from.
+    // Staged early ACKs consumed by this promotion — ONE playback sub-record
+    // per AUTHORITATIVE start, each carrying its own ACK-body hash (C5), so
+    // the frozen builder snapshot carries the playback evidence 00C derives
+    // its confirmation/ACK ledger from.
+    for (const prow of promotion.playback_rows) {
       appendSub('playback_evidence', {
-        family: 'fast_tts',
-        op_keys: promotion?.op ? [operationIdentityKey(promotion.op)] : [],
+        producer_id: 'fast_tts_staged_ack',
+        semantic_family: 'fast_tts',
+        transport: 'http_playback_ack',
+        op_key: prow.op_key,
+        source: 'fast_tts',
+        ack_body_hash: prow.ack_body_hash,
         correlation_id: correlationId,
-        playback_count: promotion.playback_count,
       });
     }
   };
@@ -1107,7 +1412,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
         pendingWrite: null,
         chainRole: null,
       });
-      ctx.recordAskProduced({ family: 'dialogue_script', runtimeId, liveAskKey: key });
+      ctx.recordAskProduced({ producerId: 'dialogue_script_ask', runtimeId, liveAskKey: key });
     },
     emitted(payload) {
       if (!ctx.askLedger || !payload) return;
@@ -1140,7 +1445,9 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
           value: op.value,
         });
         if (!res.identity) {
-          ctx.deliveryLedger?.markInvalid?.(`dialogue_delivery_binding_${res.unresolved}`, {
+          ctx.recordDeliveryRejected({
+            producerId: 'dialogue_confirmation',
+            reason: `dialogue_delivery_binding_${res.unresolved}`,
             field: op.field ?? null,
             circuit: op.circuit ?? null,
           });
@@ -1149,8 +1456,8 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
         identities.push(res.identity);
       }
       ctx.recordDelivery(identities, {
+        producerId: 'dialogue_confirmation',
         kind: 'dialogue_confirmation',
-        transport: 'dialogue_ws',
         text: payload?.question ?? null,
       });
     },

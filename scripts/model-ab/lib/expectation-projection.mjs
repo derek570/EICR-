@@ -291,6 +291,19 @@ export const SEMANTIC_ORACLE_INPUTS = Object.freeze([
   'src/extraction/stage6-tool-loop.js',
   'src/extraction/openai-tooluse-adapter.js',
   'src/extraction/openai-responses-adapter.js',
+  // Plan 00B-3 (oracle-evidence contract) — the executable derivability
+  // contract's two-sided committed artifact (pre-authored schema + hand-
+  // authored fixtures) and its producer-owned registry/projector. The
+  // future 00C consumer (src/extraction/plan00-session-manifest.js) is
+  // EXPLICITLY excluded — it stays under 00C's own
+  // deployed_evidence_runtime_digest per the digest-partition rule.
+  'tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json',
+  'tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-v1.json',
+  'tests/fixtures/test-contracts/plan00-evidence-contract/projection-v1.json',
+  'tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json',
+  'tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json',
+  'src/extraction/plan00-evidence-registry.js',
+  'src/extraction/plan00-evidence-projection.js',
 ]);
 
 export function computeSemanticOracleDigest(repoRoot) {

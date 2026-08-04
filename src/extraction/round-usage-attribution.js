@@ -112,6 +112,10 @@ export function attributeRoundUsage({
   // 00C's Terra gate rejects configuration-only evidence, so this field is
   // what proves an executed low/none round.
   reasoningEffort = null,
+  // Plan 00B-3 C5 — WHICH API served the round (adapter-stamped actual
+  // transport: anthropic_messages | chat_completions | responses). Callers
+  // that thread nothing attribute null — never a configuration guess.
+  apiTransport = null,
 }) {
   const transportProvider = provider;
   const requestedTierNormalized =
@@ -156,6 +160,7 @@ export function attributeRoundUsage({
   return {
     round_idx: roundIdx,
     provider: transportProvider,
+    api_transport: apiTransport ?? null,
     requested_model: requestedModel,
     requested_tier: transportProvider === 'openai' ? (requestedTier ?? null) : null,
     response_model: responseModel ?? null,

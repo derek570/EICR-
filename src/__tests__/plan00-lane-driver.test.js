@@ -368,7 +368,7 @@ describe('offline playback-ack route (exported factory, zero database)', () => {
     const { entry, ctx } = makeEvalEntry();
     ctx.recordDelivery(
       [{ extractionTurnId: 't1', field: 'measured_zs_ohm', circuit: 4, boardId: null }],
-      { kind: 'confirmation', transport: 'ws_extraction', text: 'Circuit 4, Zs 0.63' }
+      { producerId: 'result_frame_confirmation', kind: 'confirmation', text: 'Circuit 4, Zs 0.63' }
     );
     const { app } = makeApp({ entry });
     const res = await request(app)
@@ -412,11 +412,11 @@ describe('offline playback-ack route (exported factory, zero database)', () => {
     const { entry, ctx } = makeEvalEntry();
     ctx.recordDelivery(
       [{ extractionTurnId: 't1', field: 'measured_zs_ohm', circuit: 4, boardId: null }],
-      { kind: 'confirmation', transport: 'ws_extraction', text: 'A' }
+      { producerId: 'result_frame_confirmation', kind: 'confirmation', text: 'A' }
     );
     ctx.recordDelivery(
       [{ extractionTurnId: 't1', field: 'r1_r2_ohm', circuit: 7, boardId: null }],
-      { kind: 'confirmation', transport: 'ws_extraction', text: 'B' }
+      { producerId: 'result_frame_confirmation', kind: 'confirmation', text: 'B' }
     );
     const { app } = makeApp({ entry });
     const post = (b) =>
@@ -784,14 +784,14 @@ describe('Codex r2 route hardening — turn-exact playback ACK binding', () => {
       ordinal,
     });
     ctx.recordDelivery([slotId('utt-1', 1)], {
+      producerId: 'result_frame_confirmation',
       kind: 'confirmation',
-      transport: 'ws_extraction',
       text: 'Zs 0.63',
       wireTurnId: 's-turn-1',
     });
     ctx.recordDelivery([slotId('utt-2', 1)], {
+      producerId: 'result_frame_confirmation',
       kind: 'confirmation',
-      transport: 'ws_extraction',
       text: 'Zs 0.71',
       wireTurnId: 's-turn-2',
     });

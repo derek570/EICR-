@@ -94,26 +94,42 @@ describe('ask ledger — produced → emitted → answered', () => {
     expect(ledger.invalid?.reason).toBe('resolution_without_emitted');
   });
 
-  test('RED: answered without the paired transcript is not proof', () => {
+  // Plan 00B-3 C1 (SANCTIONED ledger change): answered_without_full_proof
+  // is a TRANSITION REJECTION, not a structural contradiction — resolved()
+  // returns {accepted:false, reason} WITHOUT latching invalid, and the
+  // entry stays 'emitted' (open, so it counts non-quiescent at stop).
+  test('answered without the paired transcript is REJECTED without an invalid latch', () => {
     const ledger = createAskLedger();
     ledger.produced(KEY);
     ledger.emitted(KEY, 'toolu_1');
-    ledger.resolved('toolu_1', 'answered', {
+    const verdict = ledger.resolved('toolu_1', 'answered', {
       answer_frame_id: 'toolu_1',
       transcript_resolved: false,
     });
-    expect(ledger.invalid?.reason).toBe('answered_without_full_proof');
+    expect(verdict).toEqual({ accepted: false, reason: 'answered_without_full_proof' });
+    expect(ledger.invalid).toBeNull();
+    expect(ledger.entries[0].state).toBe('emitted');
+    expect(ledger.open()).toHaveLength(1);
   });
 
-  test('RED: a transcript without the matching answer frame id is not proof', () => {
+  test('a transcript without the matching answer frame id is REJECTED without an invalid latch', () => {
     const ledger = createAskLedger();
     ledger.produced(KEY);
     ledger.emitted(KEY, 'toolu_1');
-    ledger.resolved('toolu_1', 'answered', {
+    const verdict = ledger.resolved('toolu_1', 'answered', {
       answer_frame_id: 'toolu_OTHER',
       transcript_resolved: true,
     });
-    expect(ledger.invalid?.reason).toBe('answered_without_full_proof');
+    expect(verdict).toEqual({ accepted: false, reason: 'answered_without_full_proof' });
+    expect(ledger.invalid).toBeNull();
+    expect(ledger.entries[0].state).toBe('emitted');
+    // a later FULL-proof resolution still succeeds (the rejection was not terminal)
+    const accepted = ledger.resolved('toolu_1', 'answered', {
+      answer_frame_id: 'toolu_1',
+      transcript_resolved: true,
+    });
+    expect(accepted).toEqual({ accepted: true, reason: null });
+    expect(ledger.entries[0].state).toBe('answered');
   });
 
   test('closed/throwing send never reaches emitted; the ask stays open (produced)', () => {

@@ -628,6 +628,12 @@ export async function runToolLoop({
           provider === 'openai' && openAIReasoningEffort !== undefined
             ? openAIReasoningEffort
             : null,
+        // Plan 00B-3 C5 — the ACTUAL API transport that served this round:
+        // the OpenAI adapters stamp api_transport on their finalMessage
+        // (chat_completions | responses); a bare Anthropic SDK message
+        // carries none, so the anthropic transport is attributed here.
+        apiTransport:
+          assistantMsg.api_transport ?? (provider === 'openai' ? null : 'anthropic_messages'),
         promptCache: {
           mode: assistantMsg.prompt_cache?.mode ?? null,
           breakpoint_enabled: assistantMsg.prompt_cache?.breakpoint_enabled ?? false,

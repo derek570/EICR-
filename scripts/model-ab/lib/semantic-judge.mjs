@@ -550,10 +550,44 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
   };
 }
 
+/**
+ * Plan 00B-3 C2 — windowed-judging carve-out for OPEN-TIER-2-ASK-ONLY
+ * non-quiescence. The C2 quiescence fold makes an ask still open at the
+ * stop boundary freeze the completion INELIGIBLE (counts.open_asks_*),
+ * which is exactly what 00C's completion fold must consume (it reads the
+ * counts directly and its "non_quiescent_at_stop is always
+ * evidence-ineligible" rule is UNCHANGED). The recorded corpus, however,
+ * judges a declared TURN WINDOW, and dialogue-script asks live OUTSIDE the
+ * corpus's observation boundary (the dialogue_answer_ingress exclusion —
+ * a fixture cannot even declare the trailing script ask its transcript
+ * provokes). An emitted-but-unresolved ask is a STABLE state waiting on a
+ * human — unlike an in-flight extraction/producer it cannot mutate the
+ * judged evidence — so when the ONLY non-quiescence is open_asks_* (every
+ * other count zero, revisions stable) the windowed judge proceeds to the
+ * ordinary evidence checks instead of holding.
+ */
+function isOpenAskOnlyNonQuiescence(frozen) {
+  if (frozen?.reason !== 'non_quiescent_at_stop') return false;
+  const counts = frozen.counts ?? {};
+  if ((counts.revision_instability ?? 0) !== 0) return false;
+  let sawOpenAsk = false;
+  for (const [key, value] of Object.entries(counts)) {
+    if (key === 'non_quiescent_at_stop' || key === 'revision_instability') continue;
+    if (key.startsWith('open_asks_')) {
+      if (value !== 0) sawOpenAsk = true;
+      continue;
+    }
+    if (value !== 0) return false;
+  }
+  return sawOpenAsk;
+}
+
 /** Compose the C4 captureInvalid latch from a completion freeze. */
 export function composeCaptureInvalid(frozen) {
   if (!frozen) return { reason: 'no_completion_freeze' };
-  if (frozen.eligible !== true) return { reason: frozen.reason ?? 'freeze_ineligible' };
+  if (frozen.eligible !== true && !isOpenAskOnlyNonQuiescence(frozen)) {
+    return { reason: frozen.reason ?? 'freeze_ineligible' };
+  }
   const ev = frozen.evidence;
   if (!ev) return { reason: 'no_frozen_evidence' };
   if (ev.mutation_invalid) return { reason: `mutation_invalid:${ev.mutation_invalid.reason}` };
