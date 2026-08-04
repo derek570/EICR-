@@ -477,6 +477,16 @@ export function freezeEvidenceCompletion(entry, { sessionId, boundary }) {
     revision_instability: revisionsStable ? 0 : 1,
   });
 
+  // C2.7 — settle any finish-then-receipt fast-TTS promotions before the
+  // evidence is latched (either-arrival-order promotion contract).
+  if (ctx && typeof ctx.settleFastTts === 'function') {
+    try {
+      ctx.settleFastTts();
+    } catch (_err) {
+      // isolated
+    }
+  }
+
   // ONE latched immutable sub-record copy, used IDENTICALLY as the builder
   // snapshot's `sub_records` and as `frozen.evidence.sub_records` (identity
   // agreement is test-pinned). The live array stays append-mutable.
@@ -742,6 +752,50 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     return row;
   };
 
+  // C2.6 — route-side playback forwarding. A fast_tts ACK stages beside its
+  // correlation reservation (promotion later resolves it); an ordinary ACK
+  // becomes a playback_start ONLY when its slot resolves to EXACTLY ONE
+  // delivered audibility unit — zero/ambiguous matches stay telemetry-only
+  // (never guessed, never invalid at this seam; the judge's missing-playback
+  // negatives read the absence).
+  ctx.stageFastPlaybackAck = ({ correlationId, ackBody }) => {
+    if (!ctx.deliveryLedger) return;
+    ctx.deliveryLedger.stageFastAck(correlationId, ackBody);
+  };
+
+  ctx.resolvePlaybackFromSlot = ({ slot, ackBody, source = null }) => {
+    if (!ctx.deliveryLedger || !slot || typeof slot.field !== 'string') return null;
+    const seen = new Set();
+    const matches = [];
+    for (const d of ctx.deliveryLedger.deliveries) {
+      const keys = Array.isArray(d.op_keys) ? d.op_keys : d.op_key ? [d.op_key] : [];
+      for (const key of keys) {
+        if (seen.has(key)) continue;
+        let id;
+        try {
+          id = JSON.parse(key);
+        } catch {
+          continue;
+        }
+        const circuitMatches = (id.circuit ?? null) === (slot.circuit ?? null);
+        const boardMatches =
+          slot.boardId == null || id.board_id == null || id.board_id === slot.boardId;
+        if (id.field === slot.field && circuitMatches && boardMatches) {
+          seen.add(key);
+          matches.push({
+            extractionTurnId: id.turn ?? null,
+            field: id.field,
+            circuit: id.circuit ?? null,
+            boardId: id.board_id ?? null,
+            ordinal: id.ordinal ?? 0,
+          });
+        }
+      }
+    }
+    if (matches.length !== 1) return null;
+    return ctx.recordPlayback(ackBody, matches, { source });
+  };
+
   ctx.recordNonMutatingAudible = ({ channel, kind, text = null }) => {
     ctx.nonMutatingAudible.push(
       Object.freeze({ channel: channel ?? null, kind: kind ?? null, text })
@@ -777,6 +831,81 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     return ctx.recordPlayback(ackBody, [identities[0]], {
       source: 'address_mirror_delivery_ack',
     });
+  };
+
+  // ── C2.7 fast-TTS reservation lifecycle ──
+  // A NON-DELIVERY reservation created before key lookup/synthesis; ONLY a
+  // response `finish` transitions toward a provisional delivered attempt;
+  // close-before-finish / synthesis failure / owner disappearance removes
+  // the reservation with NO delivery evidence. Promotion requires finish +
+  // the uniquely bound mutation receipt, in EITHER arrival order (the
+  // freeze-time settle pass covers finish-then-receipt).
+  ctx.fastTtsReservations = new Map();
+  ctx.reserveFastTts = ({ correlationId, candidate }) => {
+    if (!ctx.deliveryLedger) return;
+    ctx.deliveryLedger.recordProvisionalFastDelivery({
+      correlationId,
+      ownerVerified: true,
+      candidate,
+    });
+    ctx.fastTtsReservations.set(correlationId, {
+      candidate: {
+        field: candidate?.field ?? null,
+        circuit: candidate?.circuit ?? null,
+        board_id: candidate?.board_id ?? null,
+        value: candidate?.value == null ? null : String(candidate.value),
+      },
+      finished: false,
+      promoted: false,
+    });
+  };
+  ctx.finishFastTts = (correlationId) => {
+    const r = ctx.fastTtsReservations.get(correlationId);
+    if (!r || !ctx.deliveryLedger) return;
+    r.finished = true;
+    ctx.attemptFastPromotion(correlationId);
+  };
+  ctx.abortFastTts = (correlationId, _reason) => {
+    if (!ctx.deliveryLedger) return;
+    ctx.fastTtsReservations.delete(correlationId);
+    ctx.deliveryLedger.withdrawProvisional(correlationId);
+  };
+  ctx.attemptFastPromotion = (correlationId) => {
+    const r = ctx.fastTtsReservations.get(correlationId);
+    if (!r || !r.finished || r.promoted || !ctx.deliveryLedger) return;
+    const mo = ctx.mutationObserver;
+    if (!mo) return;
+    const candidateOps = mo.receipts
+      .filter((rc) => rc.kind === 'reading' && rc.field === r.candidate.field)
+      .map((rc) => ({
+        extractionTurnId: rc.extraction_turn_id ?? null,
+        field: rc.field,
+        circuit: rc.circuit ?? null,
+        boardId: rc.board_id ?? null,
+        value: rc.value,
+        circuit_raw: rc.circuit ?? null,
+      }));
+    if (candidateOps.length === 0) return; // receipt may still arrive — settle later
+    ctx.deliveryLedger.promoteProvisional(
+      correlationId,
+      candidateOps.map((op) => ({
+        extractionTurnId: op.extractionTurnId,
+        field: op.field,
+        circuit: op.circuit,
+        boardId: op.boardId,
+        value: op.value,
+      }))
+    );
+    r.promoted = true;
+    appendSub('delivery_evidence', {
+      family: 'fast_tts',
+      delivery_kind: 'fast_tts',
+      op_keys: [],
+      correlation_id: correlationId,
+    });
+  };
+  ctx.settleFastTts = () => {
+    for (const id of ctx.fastTtsReservations.keys()) ctx.attemptFastPromotion(id);
   };
 
   // ── C3 round_usage sink (attached to the CostTracker pre-start) ──

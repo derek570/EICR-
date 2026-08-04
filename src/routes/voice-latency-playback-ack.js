@@ -50,11 +50,13 @@
 import { Router } from 'express';
 import * as auth from '../auth.js';
 import logger from '../logger.js';
-import { recordPlaybackAck } from '../extraction/voice-latency-turn-summary.js';
+import { recordPlaybackAck as productionRecordPlaybackAck } from '../extraction/voice-latency-turn-summary.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
-import { recordOutcome } from '../extraction/voice-latency-telemetry.js';
-
-const router = Router();
+import { recordOutcome as productionRecordOutcome } from '../extraction/voice-latency-telemetry.js';
+// Plan 00B-2 C2.6 — active-entry resolution for the proven-owner-mismatch
+// check + the evaluation-only ledger forwarding hook.
+import { getActiveSessionEntry as productionGetActiveSessionEntry } from '../extraction/active-sessions.js';
+import { EVALUATION_CONTEXT } from '../extraction/plan00-lifecycle-hooks.js';
 
 const SOURCE_ENUM = new Set(['fast_tts', 'bundler', 'local_fallback']);
 const AUDIO_SOURCE_ENUM = new Set([
@@ -142,82 +144,129 @@ function validateBody(body) {
   return null;
 }
 
-router.post('/voice-latency/playback-ack', auth.requireAuth, async (req, res) => {
-  if (isKillSwitchActive()) {
-    return res.status(503).json({ error: 'kill switch active' });
-  }
+/**
+ * Plan 00B-2 C4 — the router is an EXPORTED FACTORY whose dependencies
+ * default to the production implementations (the default export below is
+ * created from those defaults — production byte-identical). The mock lane
+ * mounts this factory in a minimal express app with a strict offline auth
+ * middleware so the route's validation and owner check run UNMODIFIED with
+ * ZERO database access.
+ */
+export function createPlaybackAckRouter({
+  requireAuth = auth.requireAuth,
+  getActiveSessionEntry = productionGetActiveSessionEntry,
+  recordPlaybackAck = productionRecordPlaybackAck,
+  recordOutcome = productionRecordOutcome,
+} = {}) {
+  const router = Router();
 
-  const err = validateBody(req.body);
-  if (err) {
-    return res.status(400).json({ error: err });
-  }
+  router.post('/voice-latency/playback-ack', requireAuth, async (req, res) => {
+    if (isKillSwitchActive()) {
+      return res.status(503).json({ error: 'kill switch active' });
+    }
 
-  const {
-    sessionId,
-    turnId,
-    slot,
-    source,
-    at_ms,
-    monotonic_at_ms,
-    process_uptime_id,
-    correlation_id,
-    audio_source,
-  } = req.body;
-  try {
-    recordPlaybackAck(sessionId, turnId ?? '', {
-      slot: slot ?? null,
+    const err = validateBody(req.body);
+    if (err) {
+      return res.status(400).json({ error: err });
+    }
+
+    const {
+      sessionId,
+      turnId,
+      slot,
       source,
       at_ms,
-      // Voice-latency plan 2026-06-03 Tier 1.3: forward optional fields
-      // through; recordPlaybackAck spreads them onto received_acks so the
-      // eventual turn_audio_summary row carries them (and the on-time emit
-      // / late-ACK row variants below flatten the earliest-monotonic ACK
-      // onto top-level row fields per the §CloudWatch query contract).
-      monotonic_at_ms: monotonic_at_ms ?? null,
-      process_uptime_id: process_uptime_id ?? null,
-      correlation_id: correlation_id ?? null,
-      // Additive byte-origin label. `source` remains the established
-      // playback delivery path (`bundler` for queued confirmations), so
-      // existing dashboards keep their buckets while Loaded Barrel can
-      // be split from canonical fallback audio.
-      audio_source: audio_source ?? null,
-    });
-  } catch (errInner) {
-    logger.warn('voice_latency.playback_ack_emit_error', {
-      sessionId,
-      turnId,
-      error: errInner?.message || String(errInner),
-    });
-    // Still 204 — telemetry failure must not surface to the client. The
-    // ACK is fire-and-forget from iOS's perspective.
-  }
-  // Direct PII-safe correlation ledger: the same correlation id used by
-  // speculative/canonical synthesis now gains an iOS-confirmed audible
-  // start. This is deliberately a second no-throw telemetry branch so a
-  // turn-summary failure cannot erase the evidence that playback began.
-  try {
-    if (correlation_id) {
-      recordOutcome(correlation_id, 'playback_started', {
-        acked_by_ios: true,
-        meta: {
-          sessionId,
-          turnId: turnId || null,
-          source,
-          audio_source: audio_source ?? null,
-          field: slot?.field ?? null,
-          circuit: slot?.circuit ?? null,
-          boardId: slot?.boardId ?? null,
-        },
+      monotonic_at_ms,
+      process_uptime_id,
+      correlation_id,
+      audio_source,
+    } = req.body;
+    // Plan 00B-2 C2.6 — owner check scoped to PROVEN mismatch only: entry
+    // present + a DIFFERENT authenticated user → the indistinguishable 404
+    // (reveals nothing about session existence). Entry-absent keeps today's
+    // production behaviour — the ACK stays telemetry-only.
+    const ownerEntry = getActiveSessionEntry(sessionId);
+    if (ownerEntry && req.user?.id !== undefined && ownerEntry.userId !== req.user.id) {
+      return res.status(404).end();
+    }
+    try {
+      recordPlaybackAck(sessionId, turnId ?? '', {
+        slot: slot ?? null,
+        source,
+        at_ms,
+        // Voice-latency plan 2026-06-03 Tier 1.3: forward optional fields
+        // through; recordPlaybackAck spreads them onto received_acks so the
+        // eventual turn_audio_summary row carries them (and the on-time emit
+        // / late-ACK row variants below flatten the earliest-monotonic ACK
+        // onto top-level row fields per the §CloudWatch query contract).
+        monotonic_at_ms: monotonic_at_ms ?? null,
+        process_uptime_id: process_uptime_id ?? null,
+        correlation_id: correlation_id ?? null,
+        // Additive byte-origin label. `source` remains the established
+        // playback delivery path (`bundler` for queued confirmations), so
+        // existing dashboards keep their buckets while Loaded Barrel can
+        // be split from canonical fallback audio.
+        audio_source: audio_source ?? null,
+      });
+    } catch (errInner) {
+      logger.warn('voice_latency.playback_ack_emit_error', {
+        sessionId,
+        turnId,
+        error: errInner?.message || String(errInner),
+      });
+      // Still 204 — telemetry failure must not surface to the client. The
+      // ACK is fire-and-forget from iOS's perspective.
+    }
+    // Direct PII-safe correlation ledger: the same correlation id used by
+    // speculative/canonical synthesis now gains an iOS-confirmed audible
+    // start. This is deliberately a second no-throw telemetry branch so a
+    // turn-summary failure cannot erase the evidence that playback began.
+    try {
+      if (correlation_id) {
+        recordOutcome(correlation_id, 'playback_started', {
+          acked_by_ios: true,
+          meta: {
+            sessionId,
+            turnId: turnId || null,
+            source,
+            audio_source: audio_source ?? null,
+            field: slot?.field ?? null,
+            circuit: slot?.circuit ?? null,
+            boardId: slot?.boardId ?? null,
+          },
+        });
+      }
+    } catch (outcomeErr) {
+      logger.warn('voice_latency.playback_ack_outcome_error', {
+        sessionId,
+        turnId,
+        error: outcomeErr?.message || String(outcomeErr),
       });
     }
-  } catch (outcomeErr) {
-    logger.warn('voice_latency.playback_ack_outcome_error', {
-      sessionId,
-      turnId,
-      error: outcomeErr?.message || String(outcomeErr),
-    });
-  }
-  return res.status(204).end();
-});
+    // Plan 00B-2 C2.6 — evaluation-only ledger forwarding (dormant Symbol
+    // lookup). A `fast_tts` ACK stages beside its correlation reservation; an
+    // ordinary ACK becomes a playback_start ONLY when its slot resolves to
+    // EXACTLY ONE delivered audibility unit — everything else stays
+    // telemetry (zero/ambiguous matches are the judge's missing-playback
+    // negatives, never guessed here).
+    try {
+      const evalCtx = ownerEntry?.[EVALUATION_CONTEXT] ?? null;
+      if (evalCtx) {
+        if (source === 'fast_tts' && correlation_id) {
+          evalCtx.stageFastPlaybackAck?.({ correlationId: correlation_id, ackBody: req.body });
+        } else {
+          evalCtx.resolvePlaybackFromSlot?.({ slot: slot ?? null, ackBody: req.body, source });
+        }
+      }
+    } catch (_evalErr) {
+      // Evaluation capture is behaviour-isolated — never surfaces to iOS.
+    }
+    return res.status(204).end();
+  });
+
+  return router;
+}
+
+const router = createPlaybackAckRouter();
 
 export default router;

@@ -47,6 +47,13 @@ import {
   RESPONSE_EPOCH_REQUIRED,
 } from './helpers/wire-emit.js';
 import { applyDerivations } from './helpers/derivations.js';
+// Plan 00B-2 C2.5 — evaluation-only audibility descriptors for the engine's
+// SPOKEN payloads (dormant: attached only when the per-turn delivery
+// observer Symbol is stamped on the ws).
+import {
+  attachAudibilityDescriptor,
+  PLAN00_DELIVERY_EMIT_OBSERVER,
+} from '../plan00-audibility-ledgers.js';
 import { circuitExistsInSnapshot } from '../stage6-multi-board-shape.js';
 import { applyReadingToSnapshot, applyReadingFlagAware } from '../stage6-snapshot-mutators.js';
 import {
@@ -394,20 +401,27 @@ export function processDialogueTurn(ctx) {
             // UNCORRECTED breadcrumb therefore renders byte-identically to
             // pre-Plan-D and only a clamped one grows the extra sentence.
             const correctionClause = formatCorrectionClause(clamped.correction);
-            safeSend(
-              ws,
-              buildScriptInfo({
-                toolCallIdPrefix: crumbSchema.toolCallIdPrefix,
-                sessionId,
-                kind: 'correction',
-                text:
-                  correctionClause === null
-                    ? `Got it, ${label} ${effective}.`
-                    : `Got it, ${label} ${effective}. ${correctionClause}.`,
-                now,
-                responseEpoch,
-              })
-            );
+            const correctionInfoPayload = buildScriptInfo({
+              toolCallIdPrefix: crumbSchema.toolCallIdPrefix,
+              sessionId,
+              kind: 'correction',
+              text:
+                correctionClause === null
+                  ? `Got it, ${label} ${effective}.`
+                  : `Got it, ${label} ${effective}. ${correctionClause}.`,
+              now,
+              responseEpoch,
+            });
+            // Plan 00B-2 C2.5 — the SPOKEN payload carries the audibility
+            // descriptor (the extraction payload above is UI-only and never
+            // prepares/commits). Dormant: attach only when the delivery
+            // observer is stamped for this turn.
+            if (ws && ws[PLAN00_DELIVERY_EMIT_OBSERVER]) {
+              attachAudibilityDescriptor(correctionInfoPayload, [
+                { field: crumb.field, circuit: crumb.circuit_ref, value: effective },
+              ]);
+            }
+            safeSend(ws, correctionInfoPayload);
             // The script's own row keeps its shape and now reports the STORED
             // value (it previously reported the raw dictated one).
             logger?.info?.(`${crumbSchema.logEventPrefix}_post_completion_correction`, {
@@ -3826,17 +3840,27 @@ function handleBulkApplyReply({
   if (parse.scope !== 'none' && targetCircuits.length > 0) {
     const confirm = formatBulkApplyConfirm(parse.scope, parse, fieldsLabel);
     if (confirm) {
-      safeSend(
-        ws,
-        buildScriptInfo({
-          toolCallIdPrefix: schema.toolCallIdPrefix,
-          sessionId,
-          kind: 'bulk_apply_done',
-          text: confirm,
-          now,
-          responseEpoch,
-        })
-      );
+      const bulkDonePayload = buildScriptInfo({
+        toolCallIdPrefix: schema.toolCallIdPrefix,
+        sessionId,
+        kind: 'bulk_apply_done',
+        text: confirm,
+        now,
+        responseEpoch,
+      });
+      // Plan 00B-2 C2.5 — ONE grouped spoken frame acknowledging every
+      // bulk-applied write forms ONE multi-operation audibility unit; the
+      // per-ref extraction payloads above are UI-only.
+      if (ws && ws[PLAN00_DELIVERY_EMIT_OBSERVER]) {
+        const bulkOps = [];
+        for (const ref of targetCircuits) {
+          for (const [field, value] of Object.entries(values)) {
+            bulkOps.push({ field, circuit: ref, value });
+          }
+        }
+        attachAudibilityDescriptor(bulkDonePayload, bulkOps);
+      }
+      safeSend(ws, bulkDonePayload);
     }
     // Clear the bulk-apply state and the rest of the script. Don't
     // call finishScript here — the bulk-apply confirm IS the closing
@@ -3872,17 +3896,27 @@ function finishScript({
   const state = session.dialogueScriptState;
   if (!state) return;
   const { circuit_ref, values } = state;
-  safeSend(
-    ws,
-    buildScriptInfo({
-      toolCallIdPrefix: schema.toolCallIdPrefix,
-      sessionId,
-      kind: 'done',
-      text: schema.finishMessage({ values }),
-      now,
-      responseEpoch,
-    })
-  );
+  const donePayload = buildScriptInfo({
+    toolCallIdPrefix: schema.toolCallIdPrefix,
+    sessionId,
+    kind: 'done',
+    text: schema.finishMessage({ values }),
+    now,
+    responseEpoch,
+  });
+  // Plan 00B-2 C2.5 — the completion read-back acknowledges every slot the
+  // script wrote for this circuit: one multi-operation audibility unit.
+  if (ws && ws[PLAN00_DELIVERY_EMIT_OBSERVER]) {
+    attachAudibilityDescriptor(
+      donePayload,
+      Object.entries(values ?? {}).map(([field, value]) => ({
+        field,
+        circuit: circuit_ref,
+        value,
+      }))
+    );
+  }
+  safeSend(ws, donePayload);
   logger?.info?.(`${schema.logEventPrefix}_completed`, {
     sessionId,
     circuit_ref,

@@ -2650,6 +2650,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             // visible in the same log file as the engine's subsequent
             // designation_match / circuit_resolved rows.
             if (msg.tool_call_id.startsWith('srv-')) {
+              // Plan 00B-2 C2.4 — the TWO-HALF, control-flow-preserving
+              // srv-* join: record ONLY the answer-frame half here (runtime
+              // id + consumed utterance id) and keep the immediate break;
+              // handleTranscript resolves the engine-consumption half only
+              // when the accepted transcript's utterance id exactly matches
+              // under the same runtime binding. Frame-only evidence never
+              // closes an ask.
+              {
+                const srvEntry = activeSessions.get(currentSessionId);
+                srvEntry?.[EVALUATION_CONTEXT]?.recordSrvAnswerFrame?.({
+                  runtimeId: msg.tool_call_id,
+                  consumedUtteranceId:
+                    typeof msg.consumed_utterance_id === 'string'
+                      ? msg.consumed_utterance_id
+                      : null,
+                });
+              }
               logger.info('stage6.ask_user_answered_routed_to_engine', {
                 sessionId: currentSessionId,
                 tool_call_id: msg.tool_call_id,
@@ -5927,119 +5944,167 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       //                                             circuit answer; pass
       //                                             the (possibly cleaned)
       //                                             transcript on to Sonnet.
-      const ringScriptOutcome = processRingContinuityTurn({
-        ws,
-        session: entry.session,
-        sessionId,
-        transcriptText,
-        // P1 ring-script-hardening (Fix 4) — the UN-ANNOTATED reply. The
-        // in_response_to annotation above prepends the quoted TTS question
-        // onto transcriptText; the engine's confirmation branch must parse
-        // the un-annotated reply (otherwise extractNamedFieldValues reads
-        // R1/Rn/R2 out of the QUOTED "All correct?" question and
-        // detectPositive matches "correct" inside it even when the reply is
-        // "No."). transcriptText stays the model-bound fallthrough text.
-        // P6 — this is the CANONICAL (normalised) reply, NOT annotated:
-        // canonicalTranscriptText carries the Seam-A normalisation but never
-        // the bracketed TTS-question prefix, preserving the un-annotated
-        // contract while the script sees the same "Zs"/"100" text the model does.
-        rawReplyText: canonicalTranscriptText,
-        logger,
-        // PLAN-C P4d (row 1) — the creation-time response epoch for any
-        // ask_user_started this active-path turn emits is THIS transcript's
-        // utterance id, so the client chime watchdog disarms on the spoken ask.
-        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-        // id 93 — one consistent verdict for ALL THREE wrapper calls this
-        // turn (the token was consumed once, above; the engine skips entry
-        // for guarded schemas when true).
-        suppressDestructiveEntry,
-      });
-      if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
-        // Script handled the turn end-to-end. Return — the finally block
-        // at line ~3290 clears the watchdog, flips isExtracting, and
-        // drains pendingTranscripts against the LIVE entry.ws (handling
-        // the reconnect-mid-turn case the r19 MAJOR remediation fixed).
-        // No Sonnet call, no shadow harness, no question-gate pass on
-        // this turn. The script already emitted the wire events iOS
-        // needs (`extraction` + `ask_user_started`).
-        return;
-      }
-      if (ringScriptOutcome.handled && ringScriptOutcome.fallthrough) {
-        // Topic switch or unresolvable circuit-answer. Use the script's
-        // returned transcript (currently identical to input — kept in
-        // the contract so future cleanup doesn't churn callers) and
-        // continue to the normal Sonnet path.
-        if (typeof ringScriptOutcome.transcriptText === 'string') {
-          transcriptText = ringScriptOutcome.transcriptText;
+      // Plan 00B-2 C2.2 — Tier-2 evaluation bracket. Turns the dialogue
+      // engine consumes never reach runLiveMode, so the sibling per-turn
+      // observers are stamped HERE around the wrapper-call region (plain
+      // assign; identity-compare delete in the REGION-LOCAL finally below —
+      // never the handler's outer finally), and the mutation observer's
+      // turn scope for these turns uses the already-minted SERVER
+      // generationId (client utterance_id stays correlation metadata only).
+      const plan00Tier2Ctx = entry[EVALUATION_CONTEXT] ?? null;
+      let plan00Tier2TurnScopeEntered = false;
+      if (plan00Tier2Ctx && ws) {
+        ws[PLAN00_ASK_EMIT_OBSERVER] = plan00Tier2Ctx.askEmit;
+        ws[PLAN00_DELIVERY_EMIT_OBSERVER] = plan00Tier2Ctx.deliveryEmit;
+        if (plan00Tier2Ctx.mutationObserver) {
+          plan00Tier2Ctx.mutationObserver.enterTurnScope(generationId);
+          plan00Tier2TurnScopeEntered = true;
         }
       }
-
-      // Insulation resistance script — 2026-04-29. Same shape as the ring
-      // continuity script: server-driven micro-conversation that captures
-      // L-L and L-E readings (and the test voltage if not already set)
-      // deterministically when the inspector says "insulation resistance
-      // for circuit N". Sits AFTER the ring script call so the entry
-      // patterns are mutually exclusive — ring's "ring continuity" trigger
-      // beats IR's "insulation resistance" trigger when both somehow
-      // appear (they shouldn't), and IR's topic-switch list includes ring
-      // patterns so an inspector mid-ring can't accidentally re-enter IR.
-      // See `src/extraction/insulation-resistance-script.js` for design.
-      const irScriptOutcome = processInsulationResistanceTurn({
-        ws,
-        session: entry.session,
-        sessionId,
-        transcriptText,
-        // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
-        // for IR today (no confirmation block) but keeps the engine contract
-        // uniform across the three wrapper call sites. P6 — CANONICAL,
-        // un-annotated (see the ring-script call).
-        rawReplyText: canonicalTranscriptText,
-        logger,
-        // PLAN-C P4d (row 1) — see the ring-script call above.
-        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-        // id 93 — same verdict as the ring call: the arm/consume seam wraps
-        // all three wrappers, so the FIRST family call can never burn the
-        // token before the IR/PD families are evaluated.
-        suppressDestructiveEntry,
-      });
-      if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
-        return;
-      }
-      if (irScriptOutcome.handled && irScriptOutcome.fallthrough) {
-        if (typeof irScriptOutcome.transcriptText === 'string') {
-          transcriptText = irScriptOutcome.transcriptText;
+      try {
+        const ringScriptOutcome = processRingContinuityTurn({
+          ws,
+          session: entry.session,
+          sessionId,
+          transcriptText,
+          // P1 ring-script-hardening (Fix 4) — the UN-ANNOTATED reply. The
+          // in_response_to annotation above prepends the quoted TTS question
+          // onto transcriptText; the engine's confirmation branch must parse
+          // the un-annotated reply (otherwise extractNamedFieldValues reads
+          // R1/Rn/R2 out of the QUOTED "All correct?" question and
+          // detectPositive matches "correct" inside it even when the reply is
+          // "No."). transcriptText stays the model-bound fallthrough text.
+          // P6 — this is the CANONICAL (normalised) reply, NOT annotated:
+          // canonicalTranscriptText carries the Seam-A normalisation but never
+          // the bracketed TTS-question prefix, preserving the un-annotated
+          // contract while the script sees the same "Zs"/"100" text the model does.
+          rawReplyText: canonicalTranscriptText,
+          logger,
+          // PLAN-C P4d (row 1) — the creation-time response epoch for any
+          // ask_user_started this active-path turn emits is THIS transcript's
+          // utterance id, so the client chime watchdog disarms on the spoken ask.
+          responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          // id 93 — one consistent verdict for ALL THREE wrapper calls this
+          // turn (the token was consumed once, above; the engine skips entry
+          // for guarded schemas when true).
+          suppressDestructiveEntry,
+        });
+        if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
+          // Script handled the turn end-to-end. Return — the finally block
+          // at line ~3290 clears the watchdog, flips isExtracting, and
+          // drains pendingTranscripts against the LIVE entry.ws (handling
+          // the reconnect-mid-turn case the r19 MAJOR remediation fixed).
+          // No Sonnet call, no shadow harness, no question-gate pass on
+          // this turn. The script already emitted the wire events iOS
+          // needs (`extraction` + `ask_user_started`).
+          // Plan 00B-2 C2.4 — the engine CONSUMED this transcript: resolve
+          // the srv-* two-half join for any answer frame anchored on this
+          // utterance id.
+          plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
+            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
+          return;
         }
-      }
+        if (ringScriptOutcome.handled && ringScriptOutcome.fallthrough) {
+          // Topic switch or unresolvable circuit-answer. Use the script's
+          // returned transcript (currently identical to input — kept in
+          // the contract so future cleanup doesn't churn callers) and
+          // continue to the normal Sonnet path.
+          if (typeof ringScriptOutcome.transcriptText === 'string') {
+            transcriptText = ringScriptOutcome.transcriptText;
+          }
+        }
 
-      // Protective-device script (PR2) — RCBO / OCPD / RCD as a
-      // single dialogue family. Same wire-shape contract as ring +
-      // IR; entry triggers are mutually exclusive via topic-switch
-      // lists and `\bRCBO\b` / `\bRCD\b` word boundaries. RCBO is
-      // checked first so direct-RCBO entry wins over OCPD's broader
-      // trigger; OCPD and RCD pivot to RCBO via the BS-EN 61009
-      // derivation on their bs_en slots.
-      const pdScriptOutcome = processProtectiveDeviceTurn({
-        ws,
-        session: entry.session,
-        sessionId,
-        transcriptText,
-        // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
-        // for the protective-device family today (no confirmation block).
-        // P6 — CANONICAL, un-annotated (see the ring-script call).
-        rawReplyText: canonicalTranscriptText,
-        logger,
-        // PLAN-C P4d (row 1) — see the ring-script call above.
-        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-        // id 93 — same verdict as the ring/IR calls (RCD is the guarded
-        // schema in this three-schema registry).
-        suppressDestructiveEntry,
-      });
-      if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
-        return;
-      }
-      if (pdScriptOutcome.handled && pdScriptOutcome.fallthrough) {
-        if (typeof pdScriptOutcome.transcriptText === 'string') {
-          transcriptText = pdScriptOutcome.transcriptText;
+        // Insulation resistance script — 2026-04-29. Same shape as the ring
+        // continuity script: server-driven micro-conversation that captures
+        // L-L and L-E readings (and the test voltage if not already set)
+        // deterministically when the inspector says "insulation resistance
+        // for circuit N". Sits AFTER the ring script call so the entry
+        // patterns are mutually exclusive — ring's "ring continuity" trigger
+        // beats IR's "insulation resistance" trigger when both somehow
+        // appear (they shouldn't), and IR's topic-switch list includes ring
+        // patterns so an inspector mid-ring can't accidentally re-enter IR.
+        // See `src/extraction/insulation-resistance-script.js` for design.
+        const irScriptOutcome = processInsulationResistanceTurn({
+          ws,
+          session: entry.session,
+          sessionId,
+          transcriptText,
+          // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
+          // for IR today (no confirmation block) but keeps the engine contract
+          // uniform across the three wrapper call sites. P6 — CANONICAL,
+          // un-annotated (see the ring-script call).
+          rawReplyText: canonicalTranscriptText,
+          logger,
+          // PLAN-C P4d (row 1) — see the ring-script call above.
+          responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          // id 93 — same verdict as the ring call: the arm/consume seam wraps
+          // all three wrappers, so the FIRST family call can never burn the
+          // token before the IR/PD families are evaluated.
+          suppressDestructiveEntry,
+        });
+        if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
+          plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
+            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
+          return;
+        }
+        if (irScriptOutcome.handled && irScriptOutcome.fallthrough) {
+          if (typeof irScriptOutcome.transcriptText === 'string') {
+            transcriptText = irScriptOutcome.transcriptText;
+          }
+        }
+
+        // Protective-device script (PR2) — RCBO / OCPD / RCD as a
+        // single dialogue family. Same wire-shape contract as ring +
+        // IR; entry triggers are mutually exclusive via topic-switch
+        // lists and `\bRCBO\b` / `\bRCD\b` word boundaries. RCBO is
+        // checked first so direct-RCBO entry wins over OCPD's broader
+        // trigger; OCPD and RCD pivot to RCBO via the BS-EN 61009
+        // derivation on their bs_en slots.
+        const pdScriptOutcome = processProtectiveDeviceTurn({
+          ws,
+          session: entry.session,
+          sessionId,
+          transcriptText,
+          // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
+          // for the protective-device family today (no confirmation block).
+          // P6 — CANONICAL, un-annotated (see the ring-script call).
+          rawReplyText: canonicalTranscriptText,
+          logger,
+          // PLAN-C P4d (row 1) — see the ring-script call above.
+          responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          // id 93 — same verdict as the ring/IR calls (RCD is the guarded
+          // schema in this three-schema registry).
+          suppressDestructiveEntry,
+        });
+        if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
+          plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
+            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
+          return;
+        }
+        if (pdScriptOutcome.handled && pdScriptOutcome.fallthrough) {
+          if (typeof pdScriptOutcome.transcriptText === 'string') {
+            transcriptText = pdScriptOutcome.transcriptText;
+          }
+        }
+      } finally {
+        // Plan 00B-2 C2.2 — REGION-LOCAL teardown: closes after the wrapper
+        // region on every exit (consumed returns included) and before
+        // runShadowHarness, so the harness turn scope never overlaps the
+        // engine turn scope and the stamped observers never leak past the
+        // dialogue region.
+        if (plan00Tier2Ctx && ws) {
+          if (ws[PLAN00_ASK_EMIT_OBSERVER] === plan00Tier2Ctx.askEmit) {
+            delete ws[PLAN00_ASK_EMIT_OBSERVER];
+          }
+          if (ws[PLAN00_DELIVERY_EMIT_OBSERVER] === plan00Tier2Ctx.deliveryEmit) {
+            delete ws[PLAN00_DELIVERY_EMIT_OBSERVER];
+          }
+        }
+        if (plan00Tier2TurnScopeEntered) {
+          plan00Tier2Ctx.mutationObserver.exitTurnScope();
         }
       }
 

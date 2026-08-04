@@ -65,7 +65,14 @@
  */
 
 import logger from '../logger.js';
-import { MUTATION_OBSERVER } from './plan00-semantic-capture.js';
+import { MUTATION_OBSERVER, getMutationObserver } from './plan00-semantic-capture.js';
+// Plan 00B-2 C2 — evaluation-only sibling per-turn observer Symbols + the
+// entry-stashed context Symbol. Dormant single-Symbol lookups everywhere.
+import {
+  PLAN00_ASK_EMIT_OBSERVER,
+  PLAN00_DELIVERY_EMIT_OBSERVER,
+} from './plan00-audibility-ledgers.js';
+import { EVALUATION_CONTEXT } from './plan00-lifecycle-hooks.js';
 import { randomUUID } from 'node:crypto';
 import {
   buildPostcodeLookupNote,
@@ -889,6 +896,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // observer is attached; the finally only removes OUR own observer.
   let f7EmissionWs = null;
   let f7EmissionObserver = null;
+  // Plan 00B-2 C2.2 — sibling evaluation-only per-turn observer mirrors
+  // (same lifecycle as the production pair above; identity-compare delete
+  // in the finally).
+  let plan00SiblingWs = null;
+  let plan00SiblingAskObserver = null;
+  let plan00SiblingDeliveryObserver = null;
 
   // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 12.2). Wrap the
   // body in try/finally so the per-turn entry maps are always torn down
@@ -1129,6 +1142,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     if (ws) ws[ASK_STARTED_OBSERVER] = onAskUserStarted;
     f7EmissionWs = ws;
     f7EmissionObserver = onAskUserStarted;
+    // Plan 00B-2 C2.2 — evaluation-only SIBLING per-turn observers, stamped
+    // beside the production observer with the SAME assign/identity-compare-
+    // delete lifecycle (see the finally below). Dormant lookup: nothing is
+    // stamped when the entry carries no evaluation context.
+    const plan00EvalCtx = getActiveSessionEntry(session.sessionId)?.[EVALUATION_CONTEXT] ?? null;
+    if (ws && plan00EvalCtx) {
+      ws[PLAN00_ASK_EMIT_OBSERVER] = plan00EvalCtx.askEmit;
+      ws[PLAN00_DELIVERY_EMIT_OBSERVER] = plan00EvalCtx.deliveryEmit;
+      plan00SiblingWs = ws;
+      plan00SiblingAskObserver = plan00EvalCtx.askEmit;
+      plan00SiblingDeliveryObserver = plan00EvalCtx.deliveryEmit;
+    }
 
     // Pass `ws` through createWriteDispatcher's extraCtx so the
     // start_dialogue_script dispatcher (added 2026-04-30 Silvertown
@@ -4289,6 +4314,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     if (f7EmissionWs && f7EmissionWs[ASK_STARTED_OBSERVER] === f7EmissionObserver) {
       delete f7EmissionWs[ASK_STARTED_OBSERVER];
     }
+    // Plan 00B-2 C2.2 — same identity-compare teardown for the evaluation
+    // sibling observers (survives a mid-turn socket rebind: a rebound ws is
+    // a different object, so the compare fails and nothing is deleted).
+    if (plan00SiblingWs && plan00SiblingWs[PLAN00_ASK_EMIT_OBSERVER] === plan00SiblingAskObserver) {
+      delete plan00SiblingWs[PLAN00_ASK_EMIT_OBSERVER];
+    }
+    if (
+      plan00SiblingWs &&
+      plan00SiblingWs[PLAN00_DELIVERY_EMIT_OBSERVER] === plan00SiblingDeliveryObserver
+    ) {
+      delete plan00SiblingWs[PLAN00_DELIVERY_EMIT_OBSERVER];
+    }
   }
 }
 
@@ -4372,6 +4409,34 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   const log = options.logger ?? logger;
   const mode = session.toolCallsMode ?? 'off';
 
+  // Plan 00B-2 C2.5 — evaluation-only harness turn scope: entered after the
+  // extractionTurnId is minted, cleared in the outer finally. Dormant single
+  // Symbol lookup. The regex fast-path correlation id binds exactly once to
+  // this server-minted turn BEFORE live execution.
+  const plan00MutationObserver = getMutationObserver(session);
+  if (plan00MutationObserver) {
+    plan00MutationObserver.enterTurnScope(extractionTurnId);
+    if (typeof options.regexFastCorrelationId === 'string' && options.regexFastCorrelationId) {
+      plan00MutationObserver.bindFastCorrelation(options.regexFastCorrelationId);
+    }
+  }
+  try {
+    return await runShadowHarnessDispatch(session, transcriptText, regexResults, options, {
+      log,
+      mode,
+    });
+  } finally {
+    if (plan00MutationObserver) plan00MutationObserver.exitTurnScope();
+  }
+}
+
+async function runShadowHarnessDispatch(
+  session,
+  transcriptText,
+  regexResults,
+  options,
+  { log, mode }
+) {
   // FAST PATH — zero observable difference from pre-stage-6 world.
   if (mode === 'off') {
     return session.extractFromUtterance(transcriptText, regexResults, options);

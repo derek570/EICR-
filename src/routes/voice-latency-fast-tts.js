@@ -71,6 +71,9 @@ import { isRegexFastEligible } from '../extraction/regex-fast-eligibility.js';
 import { getActiveSessionEntry, getVoiceLatencyForSession } from '../extraction/active-sessions.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
 import { decrementExpectedAcksByCorrelation } from '../extraction/voice-latency-turn-summary.js';
+// Plan 00B-2 C2.7/C3 — evaluation-only fast-TTS reservation + producer.
+// Dormant Symbol lookups; production sessions carry no evaluation context.
+import { EVALUATION_CONTEXT, beginProducer } from '../extraction/plan00-lifecycle-hooks.js';
 
 const router = Router();
 const FORCED_OUTPUT_FORMAT = 'mp3_22050_32';
@@ -294,83 +297,135 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
     }
   }
 
-  const apiKey = await getElevenLabsKey();
-  if (!apiKey) {
-    return rejectWithDecrement(res, sessionId, correlationId, 500, {
-      error: 'ElevenLabs API key not configured',
+  // Plan 00B-2 C2.7 — evaluation-only NON-DELIVERY reservation +
+  // fast_tts producer, created BEFORE key lookup/synthesis. The one-shot
+  // finish/close listeners share a settled flag: only `finish` transitions
+  // toward a provisional delivered attempt; close-before-finish and
+  // synthesis failure remove the reservation with NO delivery evidence.
+  const plan00Ctx = ownerEntry?.[EVALUATION_CONTEXT] ?? null;
+  const plan00FastProducer = beginProducer(ownerEntry, 'fast_tts');
+  const plan00FastState = { settled: false };
+  if (plan00Ctx) {
+    plan00Ctx.reserveFastTts?.({
+      correlationId,
+      candidate: { field, circuit, board_id: boardId, value: fastClamp.value },
+    });
+    res.once('finish', () => {
+      if (plan00FastState.settled) return;
+      plan00FastState.settled = true;
+      try {
+        plan00Ctx.finishFastTts?.(correlationId);
+      } catch {
+        // isolated
+      }
+    });
+    res.once('close', () => {
+      if (plan00FastState.settled) return;
+      plan00FastState.settled = true;
+      try {
+        plan00Ctx.abortFastTts?.(correlationId, 'close_before_finish');
+      } catch {
+        // isolated
+      }
     });
   }
-
-  const { ElevenLabsStreamClient, contentTypeForFormat } =
-    await import('../extraction/elevenlabs-stream-client.js');
-  const { recordSpan, recordOutcome } = await import('../extraction/voice-latency-telemetry.js');
-
-  // Force MP3 output (Pivot 7). iOS's playFastPathAudio uses AVAudioPlayer
-  // which handles MP3 natively. PCM would require iOS-side framing
-  // which we don't ship.
-  const client = new ElevenLabsStreamClient({
-    apiKey,
-    outputFormat: FORCED_OUTPUT_FORMAT,
-  });
-
-  recordSpan(correlationId, 'backend_recv', t0, process.hrtime.bigint(), {
-    transcript: typeof transcript === 'string' ? transcript.slice(0, 80) : null,
-    field,
-    circuit,
-    boardId,
-  });
-
-  res.set('Content-Type', contentTypeForFormat(client.outputFormat));
-  res.set('Transfer-Encoding', 'chunked');
-  res.set('Cache-Control', 'no-store');
-  res.set('X-Voice-Latency-Correlation-Id', correlationId);
-  res.set('X-Voice-Latency-Source', 'fast_path');
-
-  let terminal = 'failed';
   try {
-    const opts = {
-      onAudio: (buf) => {
-        if (!res.writableEnded) res.write(buf);
-      },
-    };
-    const timings = await client.synth(text, opts);
-    terminal = 'completed';
-    if (!res.writableEnded) res.end();
-    ElevenLabsStreamClient.logSynthSpans(correlationId, timings, recordSpan);
-    recordOutcome(correlationId, 'sent_to_client', { meta: { sessionId, source: 'fast_path' } });
-    logger.info('voice_latency.fast_path_complete', {
-      correlationId,
-      sessionId,
-      turnId,
-      slotKey,
-      text_preview: text.slice(0, 80),
-      backend_to_first_audio_ms:
-        timings.firstAudioNs > 0n ? Number((timings.firstAudioNs - t0) / 1000000n) : null,
-      total_ms: Number((process.hrtime.bigint() - t0) / 1000000n),
-    });
-  } catch (err) {
-    terminal = String(err?.message || '').includes('aborted') ? 'cancelled' : 'failed';
-    recordOutcome(correlationId, terminal === 'cancelled' ? 'cancelled' : 'synth_failed', {
-      meta: { sessionId, error: err?.message },
-    });
-    if (!res.headersSent) {
-      // Decrement here too — the synth failed BEFORE any audio reached
-      // the wire, so iOS will treat this as a hard reject and not call
-      // playback-ack.
-      return rejectWithDecrement(res, sessionId, correlationId, 502, {
-        error: err?.message || 'fast_path_failed',
-        hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+    const apiKey = await getElevenLabsKey();
+    if (!apiKey) {
+      if (plan00Ctx && !plan00FastState.settled) {
+        plan00FastState.settled = true;
+        plan00Ctx.abortFastTts?.(correlationId, 'synthesis_unavailable');
+      }
+      return rejectWithDecrement(res, sessionId, correlationId, 500, {
+        error: 'ElevenLabs API key not configured',
       });
-    } else if (!res.writableEnded) {
-      res.end();
     }
-    logger.warn('voice_latency.fast_path_failed', {
-      correlationId,
-      sessionId,
-      turnId,
-      slotKey,
-      error: err?.message,
+
+    const { ElevenLabsStreamClient, contentTypeForFormat } =
+      await import('../extraction/elevenlabs-stream-client.js');
+    const { recordSpan, recordOutcome } = await import('../extraction/voice-latency-telemetry.js');
+
+    // Force MP3 output (Pivot 7). iOS's playFastPathAudio uses AVAudioPlayer
+    // which handles MP3 natively. PCM would require iOS-side framing
+    // which we don't ship.
+    const client = new ElevenLabsStreamClient({
+      apiKey,
+      outputFormat: FORCED_OUTPUT_FORMAT,
     });
+
+    recordSpan(correlationId, 'backend_recv', t0, process.hrtime.bigint(), {
+      transcript: typeof transcript === 'string' ? transcript.slice(0, 80) : null,
+      field,
+      circuit,
+      boardId,
+    });
+
+    res.set('Content-Type', contentTypeForFormat(client.outputFormat));
+    res.set('Transfer-Encoding', 'chunked');
+    res.set('Cache-Control', 'no-store');
+    res.set('X-Voice-Latency-Correlation-Id', correlationId);
+    res.set('X-Voice-Latency-Source', 'fast_path');
+
+    let terminal = 'failed';
+    try {
+      const opts = {
+        onAudio: (buf) => {
+          if (!res.writableEnded) res.write(buf);
+        },
+      };
+      const timings = await client.synth(text, opts);
+      terminal = 'completed';
+      if (!res.writableEnded) res.end();
+      ElevenLabsStreamClient.logSynthSpans(correlationId, timings, recordSpan);
+      recordOutcome(correlationId, 'sent_to_client', { meta: { sessionId, source: 'fast_path' } });
+      logger.info('voice_latency.fast_path_complete', {
+        correlationId,
+        sessionId,
+        turnId,
+        slotKey,
+        text_preview: text.slice(0, 80),
+        backend_to_first_audio_ms:
+          timings.firstAudioNs > 0n ? Number((timings.firstAudioNs - t0) / 1000000n) : null,
+        total_ms: Number((process.hrtime.bigint() - t0) / 1000000n),
+      });
+    } catch (err) {
+      terminal = String(err?.message || '').includes('aborted') ? 'cancelled' : 'failed';
+      // Plan 00B-2 C2.7 — synthesis failure removes the reservation with NO
+      // delivery evidence, and pre-empts the later finish/close events.
+      if (plan00Ctx && !plan00FastState.settled) {
+        plan00FastState.settled = true;
+        try {
+          plan00Ctx.abortFastTts?.(correlationId, 'synthesis_failed');
+        } catch {
+          // isolated
+        }
+      }
+      recordOutcome(correlationId, terminal === 'cancelled' ? 'cancelled' : 'synth_failed', {
+        meta: { sessionId, error: err?.message },
+      });
+      if (!res.headersSent) {
+        // Decrement here too — the synth failed BEFORE any audio reached
+        // the wire, so iOS will treat this as a hard reject and not call
+        // playback-ack.
+        return rejectWithDecrement(res, sessionId, correlationId, 502, {
+          error: err?.message || 'fast_path_failed',
+          hint: 'iOS MUST silently abandon — do NOT fall back to native TTS',
+        });
+      } else if (!res.writableEnded) {
+        res.end();
+      }
+      logger.warn('voice_latency.fast_path_failed', {
+        correlationId,
+        sessionId,
+        turnId,
+        slotKey,
+        error: err?.message,
+      });
+    }
+  } finally {
+    // Plan 00B-2 C3 — the fast_tts producer holds freeze eligibility open
+    // for the route's whole async lifecycle; completes exactly once.
+    plan00FastProducer.complete();
   }
 });
 
