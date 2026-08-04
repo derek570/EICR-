@@ -737,6 +737,46 @@ describe('CostTracker — Plan 00A billable invocation authority', () => {
     );
   });
 
+  test('an exact requested==response echo outside the known families stays attributed', () => {
+    // A provider echoing the request byte-for-byte is definitionally not a
+    // metadata contradiction, even for model ids the family tables don't
+    // enumerate (legacy dated ids, future family pins). Without the
+    // short-circuit every round of a self-consistent rollback/trial config
+    // would be a permanent false validation_error — and verdict-fatal for
+    // the evaluation lane that consumes attribution_status.
+    const anthropicEcho = attributeRoundUsage({
+      provider: 'anthropic',
+      requestedModel: 'claude-3-5-haiku-20241022',
+      requestedTier: null,
+      responseModel: 'claude-3-5-haiku-20241022',
+      responseTier: null,
+      usage: { input_tokens: 5, output_tokens: 3 },
+      roundIdx: 0,
+    });
+    expect(anthropicEcho).toEqual(
+      expect.objectContaining({
+        billing_model: 'claude-3-5-haiku-20241022',
+        model_provenance: 'returned',
+        attribution_status: 'attributed',
+        validation_error: null,
+      })
+    );
+    expect(() => assertUsageAttributionValid([anthropicEcho])).not.toThrow();
+
+    const openaiEcho = row({ requestedModel: 'gpt-5.7-nova', responseModel: 'gpt-5.7-nova' });
+    expect(openaiEcho.model_provenance).toBe('returned');
+    expect(openaiEcho.attribution_status).toBe('attributed');
+
+    // Genuinely differing strings outside the known families keep the
+    // fail-closed contradiction verdict.
+    const nonEcho = row({
+      requestedModel: 'gpt-5.7-nova',
+      responseModel: 'gpt-5.7-nova-2027-01-01',
+    });
+    expect(nonEcho.attribution_status).toBe('validation_error');
+    expect(nonEcho.validation_error).toBe('response_model_family_mismatch');
+  });
+
   test.each([
     ['same-family contradiction', 'gpt-5.6-terra', 'validation_error'],
     ['cross-provider metadata', 'claude-sonnet-4-6', 'unattributed_provider_usage'],

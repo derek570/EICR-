@@ -157,3 +157,19 @@ None.
 ### Follow-ups noticed
 
 None. The independent-review infrastructure failure is fully captured by this terminal outcome and its retained lane artifacts; it is not a latent CertMate product task.
+
+## Independent review rerun — 2026-08-04 (post-hold, pre-merge)
+
+The CLAUDE-UNAVAILABLE hold was resolved the next morning by rerunning the independent gate as three fresh read-only Claude review lanes (wire/contract, accounting/failure, adversarial/edge) over the full final branch diff (`af530a7a..62c9cc07`), each verifying claims directly in a checkout of the branch head. All three lanes returned substantive prose reports.
+
+**Verdict: zero BLOCKERs across all three lanes; PR authorised to merge after closing the two IMPORTANTs below.**
+
+1. **IMPORTANT (all three lanes converged, independently):** `classifyReturnedModel` stamped `validation_error: response_model_family_mismatch` on an exact requested==response model echo whenever the id fell outside the enumerated family tables (legacy dated ids, future family pins) — a permanent false contradiction on a self-consistent rollback/trial config, verdict-fatal for the evaluation lane consuming `attribution_status`. Fixed: exact trimmed-lowercase echo short-circuits to `returned`/`attributed` before the family comparison; genuinely differing unknown-family strings keep the fail-closed verdict. Pinned in `cost-tracker.test.js`.
+2. **IMPORTANT (accounting lane):** the Chat-Completions comparison adapter drops `streamArgs.service_tier` (requests are served at OpenAI Standard) but reported no request metadata, so attribution inherited the loop-level Fast env default under `OPENAI_EXTRACT_API=chat_completions` — 2× mis-billing plus a false `fast_response_tier_missing` on every comparison-lane round. Fixed: the adapter truthfully reports `requested_service_tier:'standard'` plus raw response model/tier; the legacy `_certmateAccounting` stamp prefers the adapter's report. Request behaviour deliberately unchanged. Pinned in `openai-tooluse-adapter.test.js`.
+3. **NIT (wire lane), fixed as docs-only:** the deployment runbook's verify bullet demanded `stage6_live_extraction.model === 'gpt-5.6-luna'`, but the field reports the RETURNED billing model, which may be version-stamped — reworded to accept `gpt-5.6-luna-*` and point at `prompt_cache_rounds[].requested_model` for the pin.
+
+The two probe findings retained from the failed lanes' diagnostic output were re-verified: the batched `extractionTurnId` BLOCKER was already closed by `1de46849` (fix confirmed to cover all three flush paths), and the Terra observation-tier risk is a non-defect (the observation loop threads its own `'standard'` tier and the Responses adapter always reports a non-null requested tier, so the env-Fast fallback never engages — pinned by `request_implied_standard` coverage).
+
+Remaining NITs recorded as follow-ups in the changelog row (billing-tier `default` spelling; provenance canonical-mode automation; `attachBillableUsage` primitive-throw guard; guarded `finally` accounting; token-field coercion; non-inspector contradiction warn row; dead per-family `bucket.turns`).
+
+Verification after fixes: focused suites 125/125 (cost-tracker, tooluse/responses adapters, tool-result parity, provider routing); full backend suite 306/306 suites, 7623 passed / 19 skipped on Node 20.

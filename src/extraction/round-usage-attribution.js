@@ -54,6 +54,23 @@ function classifyReturnedModel(transportProvider, requestedModel, responseModel)
     };
   }
 
+  // An exact requested==response echo is never a metadata contradiction,
+  // whatever the family tables enumerate. Without this short-circuit a model
+  // id outside the known families (legacy dated ids, a future family pin)
+  // stamps every round `response_model_family_mismatch` on a self-consistent
+  // config — saturating usageValidationErrors and failing the evaluation
+  // verdict lane that consumes attribution_status.
+  const requestedId = typeof requestedModel === 'string' ? requestedModel.trim().toLowerCase() : '';
+  const returnedId = typeof responseModel === 'string' ? responseModel.trim().toLowerCase() : '';
+  if (requestedId && requestedId === returnedId) {
+    return {
+      billingModel: responseModel,
+      modelProvenance: 'returned',
+      attributionStatus: 'attributed',
+      validationError: null,
+    };
+  }
+
   const requestedFamily = modelFamily(transportProvider, requestedModel);
   const returnedFamily = modelFamily(transportProvider, responseModel);
   if (!requestedFamily || returnedFamily !== requestedFamily) {

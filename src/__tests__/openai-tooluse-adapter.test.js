@@ -14,6 +14,7 @@
 import { jest } from '@jest/globals';
 import { runToolLoop } from '../extraction/stage6-tool-loop.js';
 import { _internals } from '../extraction/openai-tooluse-adapter.js';
+import { attributeRoundUsage } from '../extraction/round-usage-attribution.js';
 
 // A record_reading tool call, in OpenAI shape.
 const OPENAI_TOOLCALL_RESPONSE = {
@@ -312,5 +313,80 @@ describe('openai-tooluse-adapter — drives the REAL runToolLoop', () => {
     );
     expect(toolResultMsg.content[0].is_error).toBe(true);
     expect(out.aborted).toBe(false);
+  });
+});
+
+/**
+ * Truthful billing metadata (PR #153 review closure) — this adapter NEVER
+ * forwards `service_tier` to Chat Completions, so its rounds are served and
+ * billed at OpenAI's Standard tier regardless of OPENAI_EXTRACT_SERVICE_TIER.
+ * finalMessage() must say so: reporting `requested_service_tier: 'standard'`
+ * (plus the raw response model/tier) stops per-round attribution falling back
+ * to the loop-level Fast env default — which mis-billed every comparison-lane
+ * round at 2× and stamped a permanent `fast_response_tier_missing`
+ * contradiction under OPENAI_EXTRACT_API=chat_completions.
+ */
+describe('openai-tooluse-adapter — truthful billing metadata', () => {
+  test('finalMessage reports Standard requested tier and the raw response model/tier', async () => {
+    const resp = {
+      ...OPENAI_ENDTURN_RESPONSE,
+      model: 'gpt-5.6-luna-2026-07-30',
+      service_tier: 'default',
+    };
+    const openai = { chat: { completions: { create: jest.fn(async () => resp) } } };
+    const stream = _internals.createStream(
+      openai,
+      {
+        model: 'gpt-5.6-luna',
+        max_tokens: 512,
+        system: 'SYS',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+        // Even when the loop asks for Fast, the adapter does not forward it —
+        // the truthful requested tier is still 'standard'.
+        service_tier: 'fast',
+      },
+      {}
+    );
+    const final = await stream.finalMessage();
+
+    expect(openai.chat.completions.create.mock.calls[0][0]).not.toHaveProperty('service_tier');
+    expect(final.requested_service_tier).toBe('standard');
+    expect(final.response_model).toBe('gpt-5.6-luna-2026-07-30');
+    expect(final.response_service_tier).toBe('default');
+
+    const evidence = attributeRoundUsage({
+      provider: 'openai',
+      requestedModel: 'gpt-5.6-luna',
+      requestedTier: final.requested_service_tier,
+      responseModel: final.response_model,
+      responseTier: final.response_service_tier,
+      usage: final.usage,
+      roundIdx: 0,
+    });
+    expect(evidence.attribution_status).toBe('attributed');
+    expect(['standard', 'default']).toContain(evidence.billing_tier);
+    expect(evidence.validation_error).toBeNull();
+  });
+
+  test('absent response metadata maps to nulls, never adapter-invented values', async () => {
+    const openai = {
+      chat: { completions: { create: jest.fn(async () => OPENAI_ENDTURN_RESPONSE) } },
+    };
+    const stream = _internals.createStream(
+      openai,
+      {
+        model: 'gpt-5.6-luna',
+        max_tokens: 512,
+        system: 'SYS',
+        messages: [{ role: 'user', content: 'hello' }],
+        tools: [],
+      },
+      {}
+    );
+    const final = await stream.finalMessage();
+    expect(final.requested_service_tier).toBe('standard');
+    expect(final.response_model).toBeNull();
+    expect(final.response_service_tier).toBeNull();
   });
 });

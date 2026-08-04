@@ -3211,7 +3211,12 @@ export class EICRExtractionSession {
             requestedModel: target.model,
             requestedTier:
               target.provider === 'openai'
-                ? (requestParams.service_tier ??
+                ? // The adapter's own report wins: the Chat-Completions
+                  // comparison adapter never sends a tier and truthfully
+                  // reports 'standard', so the env Fast default must not be
+                  // attributed to a request that never carried it.
+                  (response?.requested_service_tier ??
+                  requestParams.service_tier ??
                   (model === defaultModel
                     ? (process.env.OPENAI_EXTRACT_SERVICE_TIER || 'standard').trim()
                     : 'standard'))

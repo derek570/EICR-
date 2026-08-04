@@ -297,6 +297,8 @@ function createStream(openai, streamArgs, options) {
             stopReason,
             usage: mapUsage(resp.usage),
             content: buildAnthropicContent(message),
+            responseModel: resp.model ?? null,
+            responseServiceTier: resp.service_tier ?? null,
           };
         });
     }
@@ -312,9 +314,24 @@ function createStream(openai, streamArgs, options) {
       }
     },
     // finalMessage() half — the assistant turn + usage for runToolLoop.
+    // This adapter never sends `service_tier` on the request (Chat
+    // Completions comparison lane runs at OpenAI's Standard/default tier
+    // regardless of OPENAI_EXTRACT_SERVICE_TIER), so the truthful requested
+    // tier is always 'standard'. Reporting it — plus the raw response
+    // model/tier — keeps per-round billing attribution from falling back to
+    // the loop-level Fast env default and mis-billing every round as Fast
+    // with a fast_response_tier_missing contradiction.
     async finalMessage() {
-      const { content, usage, stopReason } = await run();
-      return { content, usage, stop_reason: stopReason, role: 'assistant' };
+      const { content, usage, stopReason, responseModel, responseServiceTier } = await run();
+      return {
+        content,
+        usage,
+        stop_reason: stopReason,
+        role: 'assistant',
+        requested_service_tier: 'standard',
+        response_model: responseModel,
+        response_service_tier: responseServiceTier,
+      };
     },
   };
 }
@@ -352,4 +369,5 @@ export const _internals = Object.freeze({
   buildAnthropicContent,
   synthesizeEvents,
   mapUsage,
+  createStream,
 });
