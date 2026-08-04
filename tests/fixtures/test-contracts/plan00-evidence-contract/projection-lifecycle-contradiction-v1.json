@@ -1,0 +1,121 @@
+{
+  "_comment": "Plan 00B-3 cycle-6 (R6-1) — HAND-COMPUTED expected projection for snapshot-lifecycle-contradiction-v1.json.",
+  "projection": "evidence_projection_v1",
+  "session_id": "sess_fixture_c",
+  "boundary": "session_stopped",
+  "quiescence": {
+    "non_quiescent_at_stop": 0,
+    "revision_instability": 0
+  },
+  "open_asks": {
+    "dispatcher": 0,
+    "dialogue_script": 0,
+    "address_mirror": 0
+  },
+  "ineligible_conditions": [],
+  "unknown_producers": [],
+  "count_contradictions": [],
+  "rejection_regime_contradictions": [
+    {
+      "class": "orphan_transition_rejection",
+      "kind": "ask_transition_rejected",
+      "seq": 4,
+      "reason": "answered_without_full_proof"
+    }
+  ],
+  "lifecycle_state_contradictions": [
+    {
+      "class": "invalid_lifecycle_transition",
+      "seq": 3,
+      "family": "dialogue_script",
+      "runtime_id": "srv_c",
+      "stage": "emitted",
+      "prior_state": "closed"
+    },
+    {
+      "class": "invalid_lifecycle_transition",
+      "seq": 5,
+      "family": "dialogue_script",
+      "runtime_id": "srv_c",
+      "stage": "resolved",
+      "prior_state": "closed"
+    }
+  ],
+  "eligible_for_family_credit": false,
+  "ask_families": {
+    "dispatcher": {
+      "produced": 0,
+      "emitted": 0,
+      "reissued_attempts": 0,
+      "replaced": 0,
+      "join_expired": 0,
+      "resolved_terminals": {},
+      "rejected": [],
+      "open": 0
+    },
+    "dialogue_script": {
+      "produced": 1,
+      "emitted": 2,
+      "reissued_attempts": 0,
+      "replaced": 0,
+      "join_expired": 0,
+      "resolved_terminals": {
+        "answered": 2
+      },
+      "rejected": [
+        {
+          "seq": 4,
+          "stage_attempted": "resolved",
+          "reason": "answered_without_full_proof",
+          "terminal_attempted": "answered",
+          "runtime_id": "srv_c"
+        }
+      ],
+      "open": 0
+    },
+    "address_mirror": {
+      "produced": 0,
+      "emitted": 0,
+      "reissued_attempts": 0,
+      "replaced": 0,
+      "join_expired": 0,
+      "resolved_terminals": {},
+      "rejected": [],
+      "open": 0
+    }
+  },
+  "unscoped_rejected_asks": [],
+  "deliveries": {
+    "ordinary_confirmation": [],
+    "dialogue_script": [],
+    "address_mirror": [],
+    "fast_tts": []
+  },
+  "delivery_history_ambiguous_op_keys": [],
+  "rejected_deliveries": [],
+  "playbacks": {
+    "ordinary_confirmation": [],
+    "dialogue_script": [],
+    "address_mirror": [],
+    "fast_tts": []
+  },
+  "idempotent_playbacks": [],
+  "rejected_playbacks": [],
+  "round_usage": {
+    "rounds": [],
+    "loop_invocations": 0,
+    "completed_rounds": 0,
+    "usage_revision": 0
+  },
+  "family_gates": {
+    "dialogue_script": {
+      "ask_lifecycle_complete": true,
+      "operation_bound_delivery": false
+    },
+    "address_mirror": {
+      "ask_lifecycle_complete": false,
+      "operation_bound_delivery": false,
+      "playback_ack_proof": false
+    }
+  }
+}

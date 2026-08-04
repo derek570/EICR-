@@ -131,9 +131,9 @@
       "id": "plan00c_three_day_evidence",
       "label": "Plan 00C three-day evidence gate",
       "source_identifier": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00c-three-day-evidence-gate-2026-08-03/PLAN-final.md",
-      "source_sha256": "5bd343a37fd95ba7d3e4d6b770d2543b40db99f47d9f680246135c8af8e758d4",
+      "source_sha256": "11fa8bdcbeebf379005a7f03be656acc33f8eb7d74f30d8c41e4f358f801739d",
       "committed_markdown_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00C-final.md",
-      "committed_markdown_sha256": "aa83e51114a43429033a1ee4b809872ea3e938459a58e9e2eac8895b1e171cab",
+      "committed_markdown_sha256": "2e1521f978c6b6813aed0918d5aaf9f3da1fca0b59d6001d1dd38aa28ab1228e",
       "committed_policy_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00C-final.md.ep-policy.json",
       "committed_policy_sha256": "9e2a6ccd24797d9b1c49b1730c0f7ff5238c57119507c75fc9fa1bf3ddbba260"
     }

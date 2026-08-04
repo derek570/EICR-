@@ -1,0 +1,89 @@
+{
+  "_comment": "Plan 00B-3 cycle-6 (R6-1) — HAND-AUTHORED lifecycle-contradiction snapshot: the exact produced->emitted->resolved->emitted->rejected->resolved terminal-reopening sequence. The impossible accepted rows are invalid_lifecycle_transition contradictions, the rejection stays orphaned against the CLOSED terminal state, and the session is INELIGIBLE. Shared with 00C Stage A's builder acceptance.",
+  "sessionId": "sess_fixture_c",
+  "boundary": "session_stopped",
+  "counts": {
+    "billable_invocations_in_flight": 0,
+    "extraction_in_flight": 0,
+    "queued_transcripts": 0,
+    "buffered_utterances": 0,
+    "pending_extraction_frames": 0,
+    "outbox_retry_armed": 0,
+    "refinements_in_flight": 0,
+    "pending_asks": 0,
+    "producer_frame_send": 0,
+    "producer_outbox_replay": 0,
+    "producer_refinement": 0,
+    "producer_confirmation_drain": 0,
+    "producer_fast_tts": 0,
+    "producer_address_mirror_ingress": 0,
+    "producer_address_mirror_answer": 0,
+    "producer_address_mirror_ack": 0,
+    "open_asks_dispatcher": 0,
+    "open_asks_dialogue_script": 0,
+    "open_asks_address_mirror": 0,
+    "non_quiescent_at_stop": 0,
+    "revision_instability": 0
+  },
+  "revisions": {
+    "successful_frame": 0,
+    "confirmation_delivery": 0,
+    "outbox_replay": 0,
+    "refinement": 0,
+    "extraction": 0,
+    "queued_transcript": 0,
+    "ask": 0,
+    "ask_lifecycle": 5,
+    "ask_transition_rejected": 1,
+    "usage_revision": 0
+  },
+  "sub_records": [
+    {
+      "kind": "ask_lifecycle",
+      "revision": 1,
+      "family": "dialogue_script",
+      "stage": "produced",
+      "runtime_id": "srv_c",
+      "live_ask_key": "{\"origin\":\"dialogue_script\",\"purpose\":null,\"reason\":\"missing_value\",\"context_field\":\"ir_live_earth_mohm\",\"board_id\":null,\"circuits\":[\"3\"],\"expected_answer_shape\":\"number\",\"observation_clarification_kind\":null,\"pending_write\":null,\"chain_role\":null}"
+    },
+    {
+      "kind": "ask_lifecycle",
+      "revision": 2,
+      "family": "dialogue_script",
+      "stage": "emitted",
+      "runtime_id": "srv_c"
+    },
+    {
+      "kind": "ask_lifecycle",
+      "revision": 3,
+      "family": "dialogue_script",
+      "stage": "resolved",
+      "runtime_id": "srv_c",
+      "terminal": "answered"
+    },
+    {
+      "kind": "ask_lifecycle",
+      "revision": 4,
+      "family": "dialogue_script",
+      "stage": "emitted",
+      "runtime_id": "srv_c"
+    },
+    {
+      "kind": "ask_transition_rejected",
+      "revision": 1,
+      "family": "dialogue_script",
+      "stage_attempted": "resolved",
+      "runtime_id": "srv_c",
+      "terminal_attempted": "answered",
+      "reason": "answered_without_full_proof"
+    },
+    {
+      "kind": "ask_lifecycle",
+      "revision": 5,
+      "family": "dialogue_script",
+      "stage": "resolved",
+      "runtime_id": "srv_c",
+      "terminal": "answered"
+    }
+  ]
+}

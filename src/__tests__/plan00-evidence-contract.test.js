@@ -85,6 +85,8 @@ const projectionA = loadJson('projection-v1.json');
 const snapshotB = loadJson('snapshot-ineligible-v1.json');
 const projectionB = loadJson('projection-ineligible-v1.json');
 const ackSequences = loadJson('ack-sequences-v1.json');
+const snapshotC = loadJson('snapshot-lifecycle-contradiction-v1.json');
+const projectionC = loadJson('projection-lifecycle-contradiction-v1.json');
 
 const stripComment = ({ _comment, ...rest }) => rest;
 
@@ -363,6 +365,7 @@ function validateSnapshot(snap) {
 describe('fixture validation against schema-v1 (C0)', () => {
   test('fixture A (eligible) validates', () => validateSnapshot(snapshotA));
   test('fixture B (ineligible) validates', () => validateSnapshot(snapshotB));
+  test('fixture C (lifecycle contradiction) validates', () => validateSnapshot(snapshotC));
 
   test('the validator genuinely rejects: missing required, unknown extra, mistyped, stage-incompatible', () => {
     expect(() =>
@@ -517,6 +520,10 @@ describe('two-sided fixture (C0)', () => {
 
   test('fixture B: the ineligible projection carries the named rejected case, freeze rows and zero credit', () => {
     expect(buildEvidenceProjectionV1(stripComment(snapshotB))).toEqual(stripComment(projectionB));
+  });
+
+  test('fixture C: the terminal-reopening sequence is a SHARED ineligible fixture (00C Stage A reuses these bytes)', () => {
+    expect(buildEvidenceProjectionV1(stripComment(snapshotC))).toEqual(stripComment(projectionC));
   });
 
   test('fixture B named case composition: rejected resolution visible, uncreditable, non-quiescent', () => {
@@ -2178,6 +2185,8 @@ describe('SEMANTIC_ORACLE_INPUTS membership (C0)', () => {
     'tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json',
     'tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json',
     'tests/fixtures/test-contracts/plan00-evidence-contract/ack-sequences-v1.json',
+    'tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-lifecycle-contradiction-v1.json',
+    'tests/fixtures/test-contracts/plan00-evidence-contract/projection-lifecycle-contradiction-v1.json',
     'src/extraction/plan00-evidence-registry.js',
     'src/extraction/plan00-evidence-projection.js',
   ];
