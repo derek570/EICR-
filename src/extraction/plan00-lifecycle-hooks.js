@@ -464,6 +464,18 @@ export function freezeEvidenceCompletion(entry, { sessionId, boundary }) {
 
   const observer = entry[EVIDENCE_OBSERVER];
   const ctx = entry[EVALUATION_CONTEXT] || null;
+  // C2.7 — settle any finish-then-receipt fast-TTS promotions BEFORE the
+  // revision/quiescence measurement (Codex r2 finding 2: settling after the
+  // snapshot left the frozen revisions stale relative to the promotion's
+  // delivery/playback writes, so an eligible freeze could carry an unbound
+  // delivery).
+  if (ctx && typeof ctx.settleFastTts === 'function') {
+    try {
+      ctx.settleFastTts();
+    } catch (_err) {
+      // isolated
+    }
+  }
   const revisionsBefore = readRevisionSnapshot(entry);
   const inFlight = readInFlightCounts(entry);
   const revisionsAfter = readRevisionSnapshot(entry);
@@ -476,16 +488,6 @@ export function freezeEvidenceCompletion(entry, { sessionId, boundary }) {
     non_quiescent_at_stop: countsZero ? 0 : 1,
     revision_instability: revisionsStable ? 0 : 1,
   });
-
-  // C2.7 — settle any finish-then-receipt fast-TTS promotions before the
-  // evidence is latched (either-arrival-order promotion contract).
-  if (ctx && typeof ctx.settleFastTts === 'function') {
-    try {
-      ctx.settleFastTts();
-    } catch (_err) {
-      // isolated
-    }
-  }
 
   // ONE latched immutable sub-record copy, used IDENTICALLY as the builder
   // snapshot's `sub_records` and as `frozen.evidence.sub_records` (identity
@@ -728,7 +730,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   // ── delivery / playback / non-mutating audible ──
   ctx.recordDelivery = (
     opIdentities,
-    { kind, transport = null, claimLineage = null, text = null } = {}
+    { kind, transport = null, claimLineage = null, text = null, wireTurnId = null } = {}
   ) => {
     if (!ctx.deliveryLedger) return;
     ctx.deliveryLedger.recordDeliveryAttempt(opIdentities, {
@@ -736,6 +738,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       transport,
       claimLineage,
       text,
+      wireTurnId,
     });
     const keys = (Array.isArray(opIdentities) ? opIdentities : [opIdentities]).map((op) =>
       operationIdentityKey(op)
@@ -767,16 +770,22 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     ctx.deliveryLedger.stageFastAck(correlationId, ackBody);
   };
 
-  ctx.resolvePlaybackFromSlot = ({ slot, ackBody, source = null }) => {
+  ctx.resolvePlaybackFromSlot = ({ slot, ackBody, source = null, turnId = null }) => {
     if (!ctx.deliveryLedger) return null;
+    // Codex r2 finding 7 — turn-exact ACK binding: when BOTH the ACK and a
+    // delivery row carry a wire turn id, only same-turn rows are candidates.
+    // A row recorded without one (older producers) stays turn-agnostic.
+    const turnCompatible = (d) =>
+      turnId == null || d.wire_turn_id == null || d.wire_turn_id === turnId;
     if (!slot || typeof slot.field !== 'string') {
       // A slot-less ACK (production iOS omits the slot for board-scope
       // confirmations, whose circuit has no 0-99 integer form) can still
       // resolve to EXACTLY ONE delivered audibility unit: when the ledger
       // holds precisely one delivery row, the resolution is unambiguous;
       // anything else stays telemetry.
-      if (ctx.deliveryLedger.deliveries.length !== 1) return null;
-      const only = ctx.deliveryLedger.deliveries[0];
+      const slotless = ctx.deliveryLedger.deliveries.filter(turnCompatible);
+      if (slotless.length !== 1) return null;
+      const only = slotless[0];
       const key = (only.op_keys ?? [only.op_key])[0];
       let id;
       try {
@@ -801,6 +810,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     const seen = new Set();
     const matches = [];
     for (const d of ctx.deliveryLedger.deliveries) {
+      if (!turnCompatible(d)) continue;
       const keys = Array.isArray(d.op_keys) ? d.op_keys : d.op_key ? [d.op_key] : [];
       for (const key of keys) {
         if (seen.has(key)) continue;
@@ -1008,14 +1018,25 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
         value: rc.value,
       }));
     if (candidateOps.length === 0) return; // receipt may still arrive — settle later
-    ctx.deliveryLedger.promoteProvisional(correlationId, candidateOps);
+    const promotion = ctx.deliveryLedger.promoteProvisional(correlationId, candidateOps);
     r.promoted = true;
     appendSub('delivery_evidence', {
       family: 'fast_tts',
       delivery_kind: 'fast_tts',
-      op_keys: [],
+      op_keys: promotion?.op ? [operationIdentityKey(promotion.op)] : [],
       correlation_id: correlationId,
     });
+    if (promotion?.playback_count > 0) {
+      // Staged early ACKs consumed by this promotion — surfaced on the
+      // lifecycle channel so the frozen builder snapshot carries the
+      // playback evidence 00C derives its confirmation/ACK ledger from.
+      appendSub('playback_evidence', {
+        family: 'fast_tts',
+        op_keys: promotion?.op ? [operationIdentityKey(promotion.op)] : [],
+        correlation_id: correlationId,
+        playback_count: promotion.playback_count,
+      });
+    }
   };
   ctx.settleFastTts = () => {
     for (const id of ctx.fastTtsReservations.keys()) ctx.attemptFastPromotion(id);

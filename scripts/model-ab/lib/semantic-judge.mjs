@@ -27,7 +27,7 @@ const norm = (v) => (v == null ? null : String(v));
  * explicit clear followed by the write, provided final semantics and order
  * expectations hold.
  */
-function matchOperation(expected, receipts, consumed, { boardWildcard = false } = {}) {
+function matchOperation(expected, receipts, consumed, { boardWildcard = false } = {}, eligible = null) {
   const matchesSlot = (r) =>
     r.field === expected.field &&
     (r.circuit ?? null) === (expected.circuit ?? null) &&
@@ -38,6 +38,10 @@ function matchOperation(expected, receipts, consumed, { boardWildcard = false } 
 
   for (let i = 0; i < receipts.length; i += 1) {
     if (consumed.has(i)) continue;
+    // Codex r2 finding 6 — turn membership: when the driver supplies the
+    // per-turn extraction turn ids, an expectation only matches receipts
+    // committed in ITS OWN turn (cross-turn identity beats index order).
+    if (eligible && !eligible(i)) continue;
     const r = receipts[i];
     if (!matchesSlot(r)) continue;
     if (expected.state_transition === 'clear_then_write') {
@@ -45,6 +49,7 @@ function matchOperation(expected, receipts, consumed, { boardWildcard = false } 
         // explicit clear — the write must follow on the same slot.
         for (let j = i + 1; j < receipts.length; j += 1) {
           if (consumed.has(j)) continue;
+          if (eligible && !eligible(j)) continue;
           const w = receipts[j];
           if (matchesSlot(w) && w.kind === 'reading' && norm(w.value) === norm(expected.value)) {
             consumed.add(i);
@@ -162,12 +167,23 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
   const ev = frozen.evidence;
   const mismatches = [];
 
+  // Turn membership (Codex r2 finding 6): the driver supplies each fixture
+  // turn's extraction turn id; receipts, deliveries and the field_cleared
+  // narrow rule then judge turn-exactly. Without the map (unit tests,
+  // legacy callers) matching stays whole-capture.
+  const turnIds = Array.isArray(opts.turnIds) ? opts.turnIds : null;
+
   // ── operations, over the receipts (index-consumed, §B2 extra sweep) ──
   const receipts = ev.receipts ?? [];
   const consumed = new Set();
-  for (const turn of expectation.turns ?? []) {
-    for (const op of turn.operations ?? []) {
-      const res = matchOperation(op, receipts, consumed, opts);
+  const turns = expectation.turns ?? [];
+  for (let t = 0; t < turns.length; t += 1) {
+    const eligible =
+      turnIds && turnIds[t] != null
+        ? (i) => (receipts[i].extraction_turn_id ?? null) === turnIds[t]
+        : null;
+    for (const op of turns[t].operations ?? []) {
+      const res = matchOperation(op, receipts, consumed, opts, eligible);
       if (!res.matched) {
         mismatches.push({ class: res.reason, expected: op, actual: res.actual ?? null });
       }
@@ -177,15 +193,24 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
   // ── audible outputs, per projected kind/count/field/circuit/text ──
   const deliveries = ev.deliveries ?? [];
   const consumedDeliveries = new Set();
+  const consumedNonMutating = new Set();
   // Two-tier evidence boundary (00B-2 C2): the corpus gate carries the FULL
   // semantic contract for TIER-1 (dispatcher/pending-value) asks only. A
   // Tier-2 dialogue-script/address-mirror ask (e.g. the IR script's
   // follow-up slot ask auto-entered from a Sonnet write) is proven by the
   // focused real-ingress integration tests, never counted here.
+  //
+  // Codex r2 finding 3 — only entries whose history proves a REAL emission
+  // count (a produced-only row never crossed the wire), and every expected
+  // ask CONSUMES entries so one emitted ask can never satisfy two
+  // expectations.
   const emittedAsks = (ev.ask_entries ?? []).filter(
-    (e) => e.state !== 'produced' && (e.meta?.family ?? 'dispatcher') === 'dispatcher'
+    (e) =>
+      (e.meta?.family ?? 'dispatcher') === 'dispatcher' &&
+      Array.isArray(e.history) &&
+      e.history.includes('emitted')
   );
-  let declaredAskCount = 0;
+  const consumedAsks = new Set();
 
   const parseOpKey = (key) => {
     try {
@@ -194,10 +219,18 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
       return null;
     }
   };
-  const deliveryMatches = (d, match) => {
-    if (match?.text_exact != null) return d.text === match.text_exact;
+  // Codex r2 finding 5 — text_exact NO LONGER short-circuits: when a
+  // matcher carries both text and field terms, BOTH must hold. Turn scoping
+  // applies through the op_keys' embedded turn when available.
+  const deliveryMatches = (d, match, expectedTurnId) => {
+    if (match?.text_exact != null && d.text !== match.text_exact) return false;
+    const keys = d.op_keys ?? (d.op_key ? [d.op_key] : []);
+    if (expectedTurnId != null) {
+      const anyTurnKnown = keys.some((k) => parseOpKey(k)?.turn != null);
+      if (anyTurnKnown && !keys.some((k) => parseOpKey(k)?.turn === expectedTurnId)) return false;
+    }
     if (match?.field != null) {
-      return (d.op_keys ?? []).some((k) => {
+      return keys.some((k) => {
         const id = parseOpKey(k);
         return (
           id &&
@@ -211,28 +244,45 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
   const playbackFor = (d) =>
     (ev.playbacks ?? []).filter((p) => (d.op_keys ?? [d.op_key]).includes(p.op_key));
 
-  for (const turn of expectation.turns ?? []) {
-    for (const audible of turn.audible_outputs ?? []) {
+  for (let t = 0; t < turns.length; t += 1) {
+    const expectedTurnId = turnIds ? (turnIds[t] ?? null) : null;
+    for (const audible of turns[t].audible_outputs ?? []) {
       if (audible.kind === 'ask_user') {
-        declaredAskCount += audible.count ?? 1;
-        if (emittedAsks.length < (audible.count ?? 1)) {
+        const want = audible.count ?? 1;
+        let taken = 0;
+        for (let i = 0; i < emittedAsks.length && taken < want; i += 1) {
+          if (consumedAsks.has(i)) continue;
+          consumedAsks.add(i);
+          taken += 1;
+        }
+        if (taken < want) {
           mismatches.push({
             class: 'ask_missing',
-            expected: { kind: 'ask_user', count: audible.count ?? 1 },
-            actual: emittedAsks.length,
+            expected: { kind: 'ask_user', count: want },
+            actual: taken,
           });
         }
         continue;
       }
       if (audible.kind === 'field_null_fallback') {
-        const rows = (ev.non_mutating_audible ?? []).filter((r) =>
-          audible.match?.text_exact != null ? r.text === audible.match.text_exact : true
-        );
-        if (rows.length !== (audible.count ?? 1)) {
+        // Codex r2 finding 4 — CONSUME matched rows so the undeclared-
+        // audible sweep below sees only genuine leftovers.
+        const rowsAll = ev.non_mutating_audible ?? [];
+        const want = audible.count ?? 1;
+        let taken = 0;
+        for (let i = 0; i < rowsAll.length && taken < want; i += 1) {
+          if (consumedNonMutating.has(i)) continue;
+          if (audible.match?.text_exact != null && rowsAll[i].text !== audible.match.text_exact) {
+            continue;
+          }
+          consumedNonMutating.add(i);
+          taken += 1;
+        }
+        if (taken !== want) {
           mismatches.push({
             class: 'audibility_count_mismatch',
-            expected: { kind: audible.kind, match: audible.match, count: audible.count ?? 1 },
-            actual: rows.length,
+            expected: { kind: audible.kind, match: audible.match, count: want },
+            actual: taken,
           });
         }
         continue;
@@ -241,7 +291,7 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
       // delivery rows, consume them, and require EXACTLY ONE authoritative
       // playback start per audibility-mandatory expectation.
       const rows = deliveries.filter(
-        (d, i) => !consumedDeliveries.has(i) && deliveryMatches(d, audible.match)
+        (d, i) => !consumedDeliveries.has(i) && deliveryMatches(d, audible.match, expectedTurnId)
       );
       if (rows.length !== (audible.count ?? 1)) {
         mismatches.push({
@@ -261,17 +311,38 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
             actual: starts.length,
           });
         }
-        // C4 field_cleared narrow rule: the frozen v1 schema has no
-        // clear-op shape, so the matched clear confirmation's descriptor
-        // must identify EXACTLY ONE same-turn authoritative clear receipt,
-        // then consumed for the extra-mutation sweep.
+        // C4 field_cleared narrow rule (Codex r2 finding 5): the matched
+        // clear confirmation's descriptor must identify EXACTLY ONE
+        // authoritative clear receipt from the SAME turn (when turn ids are
+        // known) and a compatible circuit — a prior-turn clear of another
+        // target can never satisfy it.
         if (audible.match?.field === 'field_cleared') {
+          const descriptorCircuit = (() => {
+            const keys = row.op_keys ?? (row.op_key ? [row.op_key] : []);
+            for (const k of keys) {
+              const id = parseOpKey(k);
+              if (id && id.field === 'field_cleared') return id.circuit ?? null;
+            }
+            return null;
+          })();
           const clearIdx = [];
           for (let i = 0; i < receipts.length; i += 1) {
             if (consumed.has(i)) continue;
-            if (receipts[i].kind === 'clear' || receipts[i].kind === 'board_clear') {
-              clearIdx.push(i);
+            const r = receipts[i];
+            if (r.kind !== 'clear' && r.kind !== 'board_clear') continue;
+            if (
+              expectedTurnId != null &&
+              (r.extraction_turn_id ?? null) !== expectedTurnId
+            ) {
+              continue;
             }
+            if (
+              descriptorCircuit != null &&
+              (r.circuit ?? null) !== descriptorCircuit
+            ) {
+              continue;
+            }
+            clearIdx.push(i);
           }
           if (clearIdx.length !== 1) {
             mismatches.push({
@@ -287,12 +358,55 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
     }
   }
 
-  // Undeclared extra ASKS fail the sample.
-  if (emittedAsks.length > declaredAskCount) {
+  // Undeclared extra ASKS fail the sample (consumption-based).
+  const leftoverAsks = emittedAsks.filter((_e, i) => !consumedAsks.has(i));
+  if (leftoverAsks.length > 0) {
     mismatches.push({
       class: 'undeclared_ask',
-      expected: { emitted_asks: declaredAskCount },
+      expected: { emitted_asks: consumedAsks.size },
       actual: emittedAsks.length,
+    });
+  }
+
+  // Codex r2 finding 4 — undeclared AUDIBLE sweep: a delivery or
+  // non-mutating audible row no expectation consumed is undeclared speech
+  // and fails the sample exactly like an undeclared mutation.
+  //
+  // IMPLIED-DECLARED exemption: a delivery whose op_keys ALL reference
+  // receipts consumed by DECLARED operation expectations is the read-back
+  // of a declared write — under Audio-First every applied reading is read
+  // back exactly once, so the projection does not (and need not) duplicate
+  // each operation as an audible row. A delivery backing any UNDECLARED
+  // receipt still fails.
+  const consumedReceiptIdx = [...consumed];
+  const backsConsumedReceipt = (key) => {
+    const id = parseOpKey(key);
+    if (!id) return false;
+    return consumedReceiptIdx.some((i) => {
+      const r = receipts[i];
+      return (
+        r.field === id.field &&
+        (r.circuit ?? null) === (id.circuit ?? null) &&
+        ((r.extraction_turn_id ?? null) === (id.turn ?? null) || id.turn == null) &&
+        ((r.turn_ordinal ?? 0) === (id.ordinal ?? 0) || id.ordinal == null)
+      );
+    });
+  };
+  for (let i = 0; i < deliveries.length; i += 1) {
+    if (consumedDeliveries.has(i)) continue;
+    const keys = deliveries[i].op_keys ?? (deliveries[i].op_key ? [deliveries[i].op_key] : []);
+    if (keys.length > 0 && keys.every(backsConsumedReceipt)) continue;
+    mismatches.push({
+      class: 'undeclared_delivery',
+      actual: { kind: deliveries[i].kind ?? null, text: deliveries[i].text ?? null },
+    });
+  }
+  for (let i = 0; i < (ev.non_mutating_audible ?? []).length; i += 1) {
+    if (consumedNonMutating.has(i)) continue;
+    const r = ev.non_mutating_audible[i];
+    mismatches.push({
+      class: 'undeclared_audible',
+      actual: { kind: r.kind ?? null, channel: r.channel ?? null, text: r.text ?? null },
     });
   }
 

@@ -1605,12 +1605,18 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
       // resolver for the duplicate would falsely unmatch already-claimed
       // receipts.
       if (evalCtx.addressMirrorUnits?.has(lineage)) return;
-      const readings = Array.isArray(result?.extracted_readings)
+      const circuitReadings = Array.isArray(result?.extracted_readings)
         ? result.extracted_readings
         : Array.isArray(result?.readings)
           ? result.readings
           : [];
-      const withFields = readings.filter((r) => r && r.field != null);
+      // The mirror's own writes are BOARD-scope and ride the
+      // `extracted_board_readings` key (circuit readings stay in
+      // `readings`) — both fold into the one collapsed unit.
+      const boardReadings = Array.isArray(result?.extracted_board_readings)
+        ? result.extracted_board_readings
+        : [];
+      const withFields = [...circuitReadings, ...boardReadings].filter((r) => r && r.field != null);
       const ops = [];
       let unresolved = 0;
       for (const r of withFields) {
@@ -1666,7 +1672,12 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
                   boardId: c.board_id ?? null,
                 },
               ],
-              { kind: 'confirmation', transport: 'ws_extraction', text: c.text ?? null }
+              {
+                kind: 'confirmation',
+                transport: 'ws_extraction',
+                text: c.text ?? null,
+                wireTurnId: typeof result?.turn_id === 'string' ? result.turn_id : null,
+              }
             );
             continue;
           }
@@ -1692,6 +1703,7 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
             kind: 'confirmation',
             transport: 'ws_extraction',
             text: c.text ?? null,
+            wireTurnId: typeof result?.turn_id === 'string' ? result.turn_id : null,
           });
         } else if (c) {
           evalCtx.recordNonMutatingAudible({
@@ -2808,6 +2820,28 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               // while this path is suspended freezes INELIGIBLE until it
               // terminates.
               const answerProducer = beginProducer(entry, 'address_mirror_answer');
+              // Plan 00B-2 C2 (Codex r2 finding 1) — the controller's
+              // stageBoardWrite mutates the observed snapshot through the
+              // REAL atoms, so under evaluation this region must carry a
+              // turn scope + a declared producer origin or every real mirror
+              // write latches `commit_without_origin_frame` and the terminal
+              // can never bind. Evaluation-only: the observer is absent in
+              // production and the bracket is a null lookup.
+              const answerMirrorMo = entry[EVALUATION_CONTEXT]?.mutationObserver ?? null;
+              let answerMirrorScopeOpened = false;
+              if (answerMirrorMo && answerMirrorMo.openTurnId == null) {
+                try {
+                  answerMirrorMo.enterTurnScope(
+                    typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id
+                      ? msg.consumed_utterance_id
+                      : `mirror-answer-${msg.tool_call_id}`
+                  );
+                  answerMirrorScopeOpened = true;
+                  answerMirrorMo.setOriginFrame({ origin: 'ask_auto_resolve' });
+                } catch {
+                  // isolated — the observer has already latched INVALID
+                }
+              }
               try {
                 const mirrorWrites = createPerTurnWrites();
                 // A grace-expired transcript may already have entered model
@@ -2905,6 +2939,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
                   break;
                 }
               } finally {
+                if (answerMirrorScopeOpened) {
+                  try {
+                    answerMirrorMo.clearOriginFrame();
+                    answerMirrorMo.exitTurnScope();
+                  } catch {
+                    // isolated
+                  }
+                }
                 answerProducer.complete();
               }
             }
@@ -5387,6 +5429,27 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // resolution region: recovered/direct resolution + controller
         // mutation through result replay).
         const mirrorIngressProducer = beginProducer(entry, 'address_mirror_ingress');
+        // Plan 00B-2 C2 (Codex r2 finding 1) — same bracket as the
+        // answer-recovery region: the controller mutates the observed
+        // snapshot through the real atoms, so evaluation needs a turn scope
+        // + declared origin here or real mirror writes can never produce
+        // valid receipts. The scope id matches the utterance id the staged
+        // result will carry, so the terminal binds turn-exactly.
+        const ingressMirrorMo = entry[EVALUATION_CONTEXT]?.mutationObserver ?? null;
+        let ingressMirrorScopeOpened = false;
+        if (ingressMirrorMo && ingressMirrorMo.openTurnId == null) {
+          try {
+            ingressMirrorMo.enterTurnScope(
+              typeof msg.utterance_id === 'string' && msg.utterance_id
+                ? msg.utterance_id
+                : `mirror-${reservationKey.slice(-12)}`
+            );
+            ingressMirrorScopeOpened = true;
+            ingressMirrorMo.setOriginFrame({ origin: 'ask_auto_resolve' });
+          } catch {
+            // isolated — the observer has already latched INVALID
+          }
+        }
         try {
           const mirrorWrites = createPerTurnWrites();
           const context =
@@ -5531,6 +5594,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             return;
           }
         } finally {
+          if (ingressMirrorScopeOpened) {
+            try {
+              ingressMirrorMo.clearOriginFrame();
+              ingressMirrorMo.exitTurnScope();
+            } catch {
+              // isolated
+            }
+          }
           mirrorIngressProducer.complete();
         }
       }

@@ -508,3 +508,53 @@ describe('C3 — round_usage sub-records through a REAL CostTracker', () => {
     expect(tracker.roundUsageEvidence).toHaveLength(1);
   });
 });
+
+describe('Tier-2 (b2) — Codex r2 finding 1: the REAL controller through the REAL seams', () => {
+  test('a direct mirror command produces receipt-backed unit identities (no fabricated ops, observer VALID)', async () => {
+    const { factory, roles } = makeFullContextFactory('sess-am-real');
+    const wss = initSonnetStream(null, getKey, verifyToken, {
+      evaluationContextFactory: factory,
+    });
+    const ws = connect(wss);
+    // NO jobId in jobState → the entry's REAL controller runs LOCAL-mode
+    // (zero DB); this test deliberately does NOT inject a fake controller —
+    // the whole point is that stageBoardWrite's snapshot mutations traverse
+    // the real atoms under the new mirror-region turn-scope/origin bracket.
+    await sendFrame(ws, { type: 'session_start', sessionId: 'sess-am-real', jobState: {} });
+    const entry = activeSessions.get('sess-am-real');
+    expect(entry.addressMirrorController).toBeTruthy();
+    // Seed a complete SITE address the way pre-recorded job state would.
+    entry.session.stateSnapshot.circuits[0] = {
+      address: '12 High Street',
+      postcode: 'AB1 2CD',
+    };
+    await sendFrame(ws, transcriptFrame('sess-am-real', 'Same address for the client'));
+
+    // The controller's writes committed through the REAL atoms under an
+    // open evaluation turn scope with a declared origin — the capture is
+    // VALID and every receipt carries a real turn identity.
+    expect(roles.mutationObserver.invalid).toBeNull();
+    const mirrorReceipts = roles.mutationObserver.receipts.filter((r) =>
+      String(r.field ?? '').startsWith('client_')
+    );
+    expect(mirrorReceipts.length).toBeGreaterThanOrEqual(2);
+    for (const r of mirrorReceipts) {
+      expect(typeof r.extraction_turn_id).toBe('string');
+      expect(r.extraction_turn_id.length).toBeGreaterThan(0);
+    }
+
+    // Exactly ONE mirror unit, and its op_keys are the receipts' own
+    // canonical identities (turn + ordinal), never invented {null, 0} keys.
+    const units = roles.deliveryLedger.deliveries.filter(
+      (d) => d.kind === 'address_mirror_terminal'
+    );
+    expect(units).toHaveLength(1);
+    const ids = (units[0].op_keys ?? []).map((k) => JSON.parse(k));
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    for (const id of ids) {
+      expect(typeof id.turn).toBe('string');
+      expect(id.turn.length).toBeGreaterThan(0);
+    }
+    expect(roles.deliveryLedger.invalid).toBeNull();
+  });
+});

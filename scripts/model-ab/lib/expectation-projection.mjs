@@ -43,6 +43,20 @@ export function sha256Hex(text) {
  */
 export function projectFixtureExpectation(fixture) {
   const turns = Array.isArray(fixture.turns) ? fixture.turns : [];
+  // Codex r2 finding 4 companion — audibility-NET fixtures (marker-①/②/F7
+  // class) declare their spoken contract through the recorded lane's
+  // `red_proof_failure_id: audibility.*` oracle, NOT through
+  // expected_audible_outputs (the corpus schema demands byte-exact text
+  // there, and the nets rotate their apology pools). The projection
+  // translates that oracle: when such a fixture declares NO audible
+  // outputs anywhere, its final turn carries ONE implied field-null
+  // expectation — so the judge's undeclared-audible sweep can stay strict
+  // for every other sample.
+  const declaresAnyAudible = turns.some((t) => (t.expected_audible_outputs ?? []).length > 0);
+  const audibilityNetImplied =
+    typeof fixture.red_proof_failure_id === 'string' &&
+    fixture.red_proof_failure_id.startsWith('audibility.') &&
+    !declaresAnyAudible;
   return {
     schema_version: 1,
     status: EXPECTATION_STATUS,
@@ -74,16 +88,21 @@ export function projectFixtureExpectation(fixture) {
         state_transition: op.state_transition ?? null,
         audibility: op.audibility ?? null,
       })),
-      audible_outputs: (t.expected_audible_outputs ?? []).map((out) => {
-        // Strip generated-id matchers (recorded-lane correlation only);
-        // keep the semantic text/regex matchers verbatim.
-        const { tool_call_id: _toolCallId, ...semanticMatch } = out.match ?? {};
-        return {
-          kind: out.kind ?? null,
-          count: out.count ?? 1,
-          match: Object.keys(semanticMatch).length > 0 ? semanticMatch : null,
-        };
-      }),
+      audible_outputs: [
+        ...(t.expected_audible_outputs ?? []).map((out) => {
+          // Strip generated-id matchers (recorded-lane correlation only);
+          // keep the semantic text/regex matchers verbatim.
+          const { tool_call_id: _toolCallId, ...semanticMatch } = out.match ?? {};
+          return {
+            kind: out.kind ?? null,
+            count: out.count ?? 1,
+            match: Object.keys(semanticMatch).length > 0 ? semanticMatch : null,
+          };
+        }),
+        ...(audibilityNetImplied && t === turns[turns.length - 1]
+          ? [{ kind: 'field_null_fallback', count: 1, match: null, implied: 'audibility_net' }]
+          : []),
+      ],
     })),
   };
 }

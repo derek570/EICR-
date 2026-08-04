@@ -898,3 +898,62 @@ describe('evaluation context through the REAL sonnet-stream lifecycle', () => {
     expect(activeSessions.has('sess-dormant-1')).toBe(false);
   });
 });
+
+describe('Codex r2 finding 2 — fast promotion settles BEFORE the freeze measurement, with real sub-records', () => {
+  test('finish-then-receipt promotion is settled by the completion freeze and carries op_keys + playback evidence', () => {
+    const entry = {};
+    const mo = createMutationObserver({ sessionId: 's-fast' });
+    const ctx = normaliseEvaluationContext(
+      { mutationObserver: mo, deliveryLedger: createDeliveryLedger() },
+      { sessionId: 's-fast' }
+    );
+    attachEvaluationContext(entry, ctx);
+
+    // A real turn: bind the fast correlation, commit the receipt.
+    mo.enterTurnScope('utt-fast-1');
+    mo.bindFastCorrelation('corr-1');
+    mo.setOriginFrame({ origin: 'model_direct' });
+    mo.commit({
+      kind: 'reading',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      board_id: null,
+      value: '0.63',
+    });
+    mo.clearOriginFrame();
+    mo.exitTurnScope();
+
+    // Reservation + an EARLY staged ACK + synthesis finish — the receipt
+    // already exists, so finish promotes.
+    ctx.reserveFastTts({
+      correlationId: 'corr-1',
+      candidate: { field: 'measured_zs_ohm', circuit: 4, board_id: null, value: '0.63' },
+    });
+    ctx.stageFastPlaybackAck({
+      correlationId: 'corr-1',
+      ackBody: { sessionId: 's-fast', turnId: 't1', source: 'fast_tts', at_ms: 1 },
+    });
+    ctx.finishFastTts('corr-1');
+
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 's-fast',
+      boundary: 'session_stopped',
+    });
+    expect(frozen.eligible).toBe(true);
+    // The promotion's delivery + playback are IN the frozen evidence (the
+    // settle ran before the revision measurement — a post-measurement
+    // settle left them unbound with stale revisions).
+    expect(frozen.evidence.deliveries.some((d) => d.kind === 'fast_tts')).toBe(true);
+    expect(frozen.evidence.playbacks).toHaveLength(1);
+    // And the lifecycle sub-records carry the REAL resolved identity, not
+    // an empty op_keys placeholder, plus the consumed-ACK playback row.
+    const sub = frozen.evidence.sub_records ?? [];
+    const deliveryRow = sub.find((r) => r.kind === 'delivery_evidence' && r.family === 'fast_tts');
+    expect(deliveryRow).toBeTruthy();
+    expect(deliveryRow.op_keys).toHaveLength(1);
+    expect(JSON.parse(deliveryRow.op_keys[0]).field).toBe('measured_zs_ohm');
+    const playbackRow = sub.find((r) => r.kind === 'playback_evidence' && r.family === 'fast_tts');
+    expect(playbackRow).toBeTruthy();
+    expect(playbackRow.playback_count).toBe(1);
+  });
+});

@@ -183,7 +183,10 @@ describe('judge adapter negatives — each class FAILS the sample', () => {
               state: 'answered',
               runtime_id: 'toolu_x',
               meta: { family: 'dispatcher' },
-              history: [],
+              // A REAL emitted ask: the judge counts only entries whose
+              // history proves emission (produced-only rows never crossed
+              // the wire — Codex r2 finding 3).
+              history: ['produced', 'emitted', 'answered'],
             },
           ],
         })
@@ -472,4 +475,452 @@ describe('mock-mode acceptance — 9/9 through the REAL server', () => {
     expect(allPass).toBe(true);
     expect(summary).not.toContain('INVALID_HOLD');
   }, 120000);
+});
+
+describe('Codex r2 judge hardening — consumption, sweeps, turn membership', () => {
+  const opFor = (turn, field = 'measured_zs_ohm', circuit = 4, ordinal = 1) =>
+    operationIdentityKey({ extractionTurnId: turn, field, circuit, boardId: null, ordinal });
+
+  const emittedAskEntry = (id) => ({
+    key: '{}',
+    state: 'answered',
+    runtime_id: id,
+    meta: { family: 'dispatcher' },
+    history: ['produced', 'emitted', 'answered'],
+  });
+
+  test('one emitted ask can NEVER satisfy two ask expectations (consumption)', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          { operations: [], audible_outputs: [{ kind: 'ask_user', count: 1, match: null }] },
+          { operations: [], audible_outputs: [{ kind: 'ask_user', count: 1, match: null }] },
+        ],
+      },
+      frozenWith(baseEvidence({ ask_entries: [emittedAskEntry('toolu_1')] }))
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.mismatches.some((m) => m.class === 'ask_missing')).toBe(true);
+  });
+
+  test('a produced-only (never-emitted) ask entry is NOT emission evidence', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [{ operations: [], audible_outputs: [{ kind: 'ask_user', count: 1, match: null }] }],
+      },
+      frozenWith(
+        baseEvidence({
+          ask_entries: [
+            {
+              key: '{}',
+              state: 'produced',
+              runtime_id: null,
+              meta: { family: 'dispatcher' },
+              history: ['produced'],
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('ask_missing');
+  });
+
+  test('an UNDECLARED delivery (no matching expectation, undeclared op) FAILS the sweep', () => {
+    const strayKey = opFor('t9', 'r1_r2_ohm', 9);
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [{ operations: [], audible_outputs: [] }],
+      },
+      frozenWith(
+        baseEvidence({
+          deliveries: [
+            {
+              op_key: strayKey,
+              op_keys: [strayKey],
+              kind: 'confirmation',
+              text: 'stray',
+              at_seq: 1,
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('undeclared_delivery');
+  });
+
+  test('a delivery backing a DECLARED consumed operation is implied-declared (Audio-First read-back)', () => {
+    const receipt = {
+      kind: 'reading',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      board_id: null,
+      value: '0.63',
+      extraction_turn_id: 't1',
+      turn_ordinal: 1,
+      parent_operation_id: null,
+    };
+    const key = opFor('t1', 'measured_zs_ohm', 4, 1);
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [
+              { ordinal: 1, kind: 'reading', field: 'measured_zs_ohm', circuit: 4, value: '0.63' },
+            ],
+            audible_outputs: [],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          receipts: [receipt],
+          deliveries: [
+            { op_key: key, op_keys: [key], kind: 'confirmation', text: 'Zs 0.63', at_seq: 1 },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('PASS');
+  });
+
+  test('an UNDECLARED non-mutating audible row (apology on a silent expectation) FAILS', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [{ operations: [], audible_outputs: [] }],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'Sorry, say again?',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('undeclared_audible');
+  });
+
+  test('field_cleared: a clear receipt from ANOTHER turn can never satisfy the confirmation', () => {
+    const clearReceipt = {
+      kind: 'clear',
+      field: 'earth_loop_impedance_ze',
+      circuit: null,
+      board_id: null,
+      value: null,
+      extraction_turn_id: 'tOTHER',
+      parent_operation_id: null,
+    };
+    const clearedKey = operationIdentityKey({
+      extractionTurnId: 'tA',
+      field: 'field_cleared',
+      circuit: null,
+      boardId: null,
+      ordinal: 0,
+    });
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'reading_confirmation',
+                count: 1,
+                match: { field: 'field_cleared', circuit: null, text_exact: 'Ze cleared' },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          receipts: [clearReceipt],
+          deliveries: [
+            {
+              op_key: clearedKey,
+              op_keys: [clearedKey],
+              kind: 'confirmation',
+              text: 'Ze cleared',
+              at_seq: 1,
+            },
+          ],
+          playbacks: [{ op_key: clearedKey, ack_body_hash: 'h1' }],
+        })
+      ),
+      { turnIds: ['tA'] }
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.mismatches.some((m) => m.class === 'field_cleared_receipt_mismatch')).toBe(true);
+  });
+
+  test('turn membership: an operation committed in the WRONG turn FAILS its expectation', () => {
+    const receipt = {
+      kind: 'reading',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      board_id: null,
+      value: '0.63',
+      extraction_turn_id: 'tB',
+      parent_operation_id: null,
+    };
+    const expectation = {
+      schema_version: 1,
+      corpus_id: 'frc_test',
+      turns: [
+        {
+          operations: [
+            { ordinal: 1, kind: 'reading', field: 'measured_zs_ohm', circuit: 4, value: '0.63' },
+          ],
+          audible_outputs: [],
+        },
+        { operations: [], audible_outputs: [] },
+      ],
+    };
+    const v = judgeFrozenEvidence(expectation, frozenWith(baseEvidence({ receipts: [receipt] })), {
+      turnIds: ['tA', 'tB'],
+    });
+    expect(v.verdict).toBe('FAIL');
+    expect(v.mismatches.some((m) => m.class === 'operation_missing')).toBe(true);
+    // And the same receipts judged WITHOUT the turn map (legacy callers)
+    // still match whole-capture.
+    const legacy = judgeFrozenEvidence(
+      expectation,
+      frozenWith(baseEvidence({ receipts: [receipt] }))
+    );
+    expect(legacy.verdict).toBe('PASS');
+  });
+
+  test('turn membership: receipts out of INDEX order still PASS when turn identity agrees', () => {
+    const rB = {
+      kind: 'reading',
+      field: 'r1_r2_ohm',
+      circuit: 2,
+      board_id: null,
+      value: '0.22',
+      extraction_turn_id: 'tB',
+      parent_operation_id: null,
+    };
+    const rA = {
+      kind: 'reading',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      board_id: null,
+      value: '0.63',
+      extraction_turn_id: 'tA',
+      parent_operation_id: null,
+    };
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [
+              { ordinal: 1, kind: 'reading', field: 'measured_zs_ohm', circuit: 4, value: '0.63' },
+            ],
+            audible_outputs: [],
+          },
+          {
+            operations: [
+              { ordinal: 1, kind: 'reading', field: 'r1_r2_ohm', circuit: 2, value: '0.22' },
+            ],
+            audible_outputs: [],
+          },
+        ],
+      },
+      frozenWith(baseEvidence({ receipts: [rB, rA] })),
+      { turnIds: ['tA', 'tB'] }
+    );
+    expect(v.verdict).toBe('PASS');
+  });
+});
+
+describe('Codex r2 route hardening — turn-exact playback ACK binding', () => {
+  function makeTurnBoundApp() {
+    const entry = { userId: 'route-user', session: {} };
+    const ctx = normaliseEvaluationContext(
+      { deliveryLedger: createDeliveryLedger() },
+      { sessionId: 's-turnbound' }
+    );
+    attachEvaluationContext(entry, ctx);
+    const router = createPlaybackAckRouter({
+      requireAuth: (req, _res, next) => {
+        req.user = { id: 'route-user' };
+        next();
+      },
+      getActiveSessionEntry: () => entry,
+    });
+    const app = express();
+    app.use(express.json());
+    app.use('/api', router);
+    return { app, ctx };
+  }
+
+  test("an ACK naming its turn binds ONLY that turn's delivery; a wrong-turn ACK stays telemetry", async () => {
+    const { app, ctx } = makeTurnBoundApp();
+    const slotId = (turn, ordinal) => ({
+      extractionTurnId: turn,
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      ordinal,
+    });
+    ctx.recordDelivery([slotId('utt-1', 1)], {
+      kind: 'confirmation',
+      transport: 'ws_extraction',
+      text: 'Zs 0.63',
+      wireTurnId: 's-turn-1',
+    });
+    ctx.recordDelivery([slotId('utt-2', 1)], {
+      kind: 'confirmation',
+      transport: 'ws_extraction',
+      text: 'Zs 0.71',
+      wireTurnId: 's-turn-2',
+    });
+    const body = (turnId) => ({
+      sessionId: 's-turnbound',
+      turnId,
+      slot: { field: 'measured_zs_ohm', circuit: 4, boardId: null },
+      source: 'bundler',
+      at_ms: 1754300000000,
+    });
+    // Same slot on two turns — WITHOUT turn binding this would be ambiguous
+    // and neither ACK could ever bind (pre-fix behaviour).
+    const r2 = await request(app).post('/api/voice-latency/playback-ack').send(body('s-turn-2'));
+    expect(r2.status).toBe(204);
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(1);
+    const boundKey = ctx.deliveryLedger.playbacks[0].op_key;
+    expect(JSON.parse(boundKey).turn).toBe('utt-2');
+    // A stale ACK naming a turn with no delivery row: telemetry only.
+    const r3 = await request(app).post('/api/voice-latency/playback-ack').send(body('s-turn-9'));
+    expect(r3.status).toBe(204);
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(1);
+  });
+});
+
+describe('Codex r2 driver hardening — two-turn pump + exact ingress', () => {
+  test("a two-turn fixture never reprocesses turn 1's ask on turn 2 (session-lifetime frame set)", async () => {
+    const { bootLaneDriver, driveFixture } =
+      await import('../../scripts/model-ab/lib/lane-driver.mjs');
+    const { projectFixtureExpectation } =
+      await import('../../scripts/model-ab/lib/expectation-projection.mjs');
+    const boot = await bootLaneDriver({ repoRoot });
+    try {
+      const fixture = {
+        corpus_id: 'frc_twoturn_synthetic',
+        job_state: {
+          certificateType: 'eicr',
+          boards: [],
+          circuits: [{ circuit_ref: 4, circuit_designation: 'Sockets' }],
+        },
+        client_capabilities: { value: ['low_conf_readback_v1'] },
+        fallback_to_legacy: { value: false },
+        turns: [
+          {
+            turn_index: 1,
+            transcript: 'The Zs was recorded earlier.',
+            confirmations_enabled: { value: true },
+            regex_results: [],
+            model_rounds: [
+              {
+                stop_reason: 'tool_use',
+                tool_calls: [
+                  {
+                    id: 'toolu_tt_ask',
+                    name: 'ask_user',
+                    input: {
+                      question: 'Which circuit was that for?',
+                      reason: 'missing_context',
+                      context_field: 'measured_zs_ohm',
+                      context_circuit: null,
+                      expected_answer_shape: 'circuit_ref',
+                    },
+                  },
+                ],
+              },
+              { stop_reason: 'end_turn', text: '' },
+            ],
+            ask_answers: [
+              {
+                match: { context_field: 'measured_zs_ohm' },
+                answer: { user_text: 'Circuit 4.', answered: true },
+                answer_channel: 'direct',
+                at_ms_after_ask: 100,
+              },
+            ],
+            expected_operations: [],
+            expected_audible_outputs: [
+              { output_id: 'out_ask', kind: 'ask_user', count: 1, match: {} },
+              // The P4 answered-ask decline/ack net speaks one field-null
+              // acknowledgment for an answered turn that produced no write —
+              // real behaviour the strict undeclared-audible sweep demands
+              // be declared.
+              { output_id: 'out_ack', kind: 'field_null_fallback', count: 1, match: {} },
+            ],
+          },
+          {
+            turn_index: 2,
+            transcript: 'Zs for circuit 4 is 0.63.',
+            confirmations_enabled: { value: true },
+            regex_results: [],
+            model_rounds: [
+              {
+                stop_reason: 'tool_use',
+                tool_calls: [
+                  {
+                    id: 'toolu_tt_write',
+                    name: 'record_reading',
+                    input: {
+                      field: 'measured_zs_ohm',
+                      circuit: 4,
+                      value: '0.63',
+                      confidence: 0.9,
+                      source_turn_id: 't2',
+                    },
+                  },
+                ],
+              },
+              { stop_reason: 'end_turn', text: '' },
+            ],
+            ask_answers: [],
+            expected_operations: [
+              { kind: 'reading', field: 'measured_zs_ohm', circuit: 4, value: '0.63' },
+            ],
+            expected_audible_outputs: [],
+          },
+        ],
+      };
+      const expectation = projectFixtureExpectation(fixture);
+      const result = await driveFixture({
+        boot,
+        fixture,
+        expectation,
+        judge: judgeFrozenEvidence,
+      });
+      // Pre-fix, turn 2's pump rediscovered turn 1's ask frame in the
+      // session-lifetime `sent` array and failed `unexpected_ask:...`.
+      expect(result.reason ?? '').not.toMatch(/^unexpected_ask/);
+      expect(result.verdict).toBe('PASS');
+    } finally {
+      boot.clockCtl.uninstall();
+    }
+  }, 60000);
 });

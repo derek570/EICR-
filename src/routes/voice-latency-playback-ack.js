@@ -255,7 +255,14 @@ export function createPlaybackAckRouter({
         if (source === 'fast_tts' && correlation_id) {
           evalCtx.stageFastPlaybackAck?.({ correlationId: correlation_id, ackBody: req.body });
         } else {
-          evalCtx.resolvePlaybackFromSlot?.({ slot: slot ?? null, ackBody: req.body, source });
+          evalCtx.resolvePlaybackFromSlot?.({
+            slot: slot ?? null,
+            ackBody: req.body,
+            source,
+            // Codex r2 finding 7 — the validated wire turn id binds the ACK
+            // to its own turn's delivery row (turn-agnostic when absent).
+            turnId: typeof req.body?.turnId === 'string' ? req.body.turnId : null,
+          });
         }
       }
     } catch (_evalErr) {

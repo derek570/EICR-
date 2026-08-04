@@ -3,7 +3,7 @@
   "status": "UNREVIEWED-DRAFT",
   "generated_by": "scripts/model-ab/run-semantic-lane.mjs (Plan 00B B6)",
   "vendor_live_expectations": {
-    "sha256": "9eee3231041b44aa05e1dd588e31a82fcfd13c431624c8e0428fe52d8377134e",
+    "sha256": "09fa4d187707a5b4617bad79b83a3f9263f6a9ebe0b116c9687e1986456ccdf9",
     "fixture_ids": [
       "frc_342b5176bba77d4e9a031c6541d60e63",
       "frc_4687948efcd06a3cd9dce203a3aa4ffe",
@@ -353,7 +353,14 @@
             },
             "ask_answers": [],
             "operations": [],
-            "audible_outputs": []
+            "audible_outputs": [
+              {
+                "kind": "field_null_fallback",
+                "count": 1,
+                "match": null,
+                "implied": "audibility_net"
+              }
+            ]
           }
         ]
       },
@@ -390,7 +397,14 @@
             },
             "ask_answers": [],
             "operations": [],
-            "audible_outputs": []
+            "audible_outputs": [
+              {
+                "kind": "field_null_fallback",
+                "count": 1,
+                "match": null,
+                "implied": "audibility_net"
+              }
+            ]
           }
         ]
       },
@@ -464,8 +478,8 @@
       }
     ]
   },
-  "combined_sha256": "0e68195961962f7b0ca8e39896f77caf2eabc4e7c2f2a5d0e337efed0bcebf38",
-  "semantic_oracle_digest": "f4a72d6beba3e5d2987fafdfd77a6aa199ae5e6c3f042af6aa8fa10cbbe3a462",
+  "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
+  "semantic_oracle_digest": "5c76a6ce84b451958cd3d73a3c88ce5bec934ea31dda2392939c801647f4e424",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -477,15 +491,15 @@
     },
     {
       "path": "src/extraction/plan00-audibility-ledgers.js",
-      "sha256": "109593dcf481febee6c68cfe56bdad96fd6c0b8604955ab5f5f13a373b1952c6"
+      "sha256": "9d70a4f4b0419fdaf45bd87cb0497493e8c3286c6f1ce6541b33128cfec72341"
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "36cf4262d29931993982c946e29fb3f753e700fd0c4eb3f81d329423f385c1c1"
+      "sha256": "404d19585466482ae1a1214cff1d53f5a60527639be9eac2ad5d0f1cb244e240"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "e3ec74914397a9f72d02ee91d876e04b9d4756c218716a8bc3c56c9736e02def"
+      "sha256": "af364729fb9553dd12ad37c3f08bcb57885a636e31ad5fae2eb54f565757f393"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -521,7 +535,7 @@
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",
-      "sha256": "338cf60c2cccb401322d2eb4f01d4520afb929820c0d6603856e5d743fda7eb1"
+      "sha256": "216b7be4cb9095abd324dfc5c8a09be37db684ca7c5b5996f9f8b6cc2140cf4c"
     },
     {
       "path": "scripts/model-ab/lib/mutation-classification.mjs",
@@ -529,11 +543,11 @@
     },
     {
       "path": "scripts/model-ab/lib/expectation-projection.mjs",
-      "sha256": "cbba344d4a29b11d7ff67206be74e89d8f73e251a4dd9757f3a54f868f26074d"
+      "sha256": "536b746119a2c10d44f6bc31031c750849a211f69ad095123381144cc49b14e1"
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
-      "sha256": "82ba6cfa336fc11cf6ca0bf1ded16ebe47ef10fd7394aff1c2223765e6aa541e"
+      "sha256": "70aa06816fe12bf44040a02579a78d71c47e41017337f7a672bfe323dff67444"
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
@@ -541,11 +555,11 @@
     },
     {
       "path": "scripts/model-ab/run-semantic-lane.mjs",
-      "sha256": "674d30f72e1d1bbc568bde609548247909258d754f1bd40ef8923a3d6e3fe6ad"
+      "sha256": "594938a809e30f4084ffcdb63c880d8373e7e6823f0cda4881bbb5ed2facd66b"
     },
     {
       "path": "scripts/model-ab/lib/lane-driver.mjs",
-      "sha256": "0fa550bfe66b0e2eac323a595494f3cc3e10d89023e8d0eb8be9d20eb241a2ef"
+      "sha256": "2c8528582c4c9a5ea1ad08d77428b415e6b9c6c6fe37364eaf5c5c3cf84768b4"
     },
     {
       "path": "scripts/field-replay/lib/replay-runner-core.mjs",
@@ -605,5 +619,7 @@
       "safety_critical": false,
       "dated": "2026-08-04"
     }
-  ]
+  ],
+  "vendor_live_sha256": "09fa4d187707a5b4617bad79b83a3f9263f6a9ebe0b116c9687e1986456ccdf9",
+  "deterministic_egress_sha256": "4a9d8a8e9d5c5a386e209e18dc5bc063b8edf545808f6c963ddd1a5c01b618f5"
 }

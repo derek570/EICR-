@@ -249,6 +249,13 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
 
   const violations = [];
   let failure = null;
+  // Codex r2 finding 9 — SESSION-lifetime: `sent` retains every frame the
+  // session ever sent, so a per-turn set would rediscover (and try to
+  // re-answer) a PREVIOUS turn's ask frame on the next turn's pump.
+  const askFramesSeen = new Set();
+  // Codex r2 finding 6 — the judge needs each fixture turn's extraction
+  // turn id to bind expectations turn-exactly.
+  const turnIds = [];
 
   for (const turn of fixture.turns ?? []) {
     // Per-turn strict scripted client, swapped in IMMEDIATELY before the
@@ -265,8 +272,8 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
 
     const declaredAnswers = [...(turn.ask_answers ?? [])];
     const answeredIds = new Set();
-    const askFramesSeen = new Set();
     const utteranceId = `lane-utt-${corpusId}-${turn.turn_index}`;
+    turnIds.push(utteranceId);
 
     // START the transcript-handler promise WITHOUT awaiting — a dispatcher
     // ask keeps it pending while it awaits its answer.
@@ -282,6 +289,12 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
           utterance_id: utteranceId,
           regexResults: turn.regex_results ?? [],
           confirmations_enabled: true,
+          // Codex r2 finding 10 — exact fixture-to-wire ingress: a recorded
+          // reply anchored to a production question must traverse the SAME
+          // anchored path it took live, never an ordinary transcript.
+          ...(turn.in_response_to && typeof turn.in_response_to === 'object'
+            ? { in_response_to: turn.in_response_to }
+            : {}),
         })
       )
     ).finally(() => {
@@ -445,7 +458,7 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
   // stop — the RETAINED reference is the only thing the accessor can serve.
   const frozen = getCompletionFreeze(entryRef);
   void EVALUATION_CONTEXT;
-  return { corpus_id: corpusId, ...judge(expectation, frozen) };
+  return { corpus_id: corpusId, ...judge(expectation, frozen, { turnIds }) };
 }
 
 /**

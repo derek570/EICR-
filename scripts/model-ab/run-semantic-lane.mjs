@@ -29,6 +29,7 @@
  * actual/no-cache cost. No transcripts, no prompts, no dispatcher payloads.
  */
 
+import fs from 'node:fs';
 import process from 'node:process';
 import {
   renderExpectationManifests,
@@ -78,6 +79,37 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  if (args.mode === 'live') {
+    // Codex r2 finding 8 — the record must EXIST and parse, not merely be
+    // named: a truthiness-only check accepted a nonexistent path and
+    // printed acceptance. Required shape is Plan 00C's attestation record —
+    // a JSON object naming the attested combined manifest anchor.
+    let record = null;
+    try {
+      const raw = fs.readFileSync(args.attestationRecord, 'utf8');
+      record = JSON.parse(raw);
+    } catch (err) {
+      console.error(
+        `REFUSED: attestation record unreadable/unparseable at ${args.attestationRecord}: ${err?.message}`
+      );
+      process.exitCode = 2;
+      return;
+    }
+    if (
+      !record ||
+      typeof record !== 'object' ||
+      Array.isArray(record) ||
+      typeof record.expectations_attested !== 'object' ||
+      typeof record.expectations_attested?.combined_sha256 !== 'string'
+    ) {
+      console.error(
+        'REFUSED: attestation record malformed — expected { expectations_attested: { combined_sha256 } } (Plan 00C shape).'
+      );
+      process.exitCode = 2;
+      return;
+    }
+    args.attestation = record;
+  }
 
   const manifests = renderExpectationManifests(repoRoot);
   const oracle = computeSemanticOracleDigest(repoRoot);
@@ -119,6 +151,16 @@ async function main() {
   const problems = assertLaneIsolationEnv();
   if (problems.length > 0) {
     console.error(`REFUSED: lane isolation violated — ${problems.join('; ')}`);
+    process.exitCode = 2;
+    return;
+  }
+  // The attested anchor must be the CURRENT combined manifest anchor — an
+  // attestation over yesterday's expectations never authorises today's.
+  if (args.attestation.expectations_attested.combined_sha256 !== manifests.combined_sha256) {
+    console.error(
+      `REFUSED: attested combined anchor ${args.attestation.expectations_attested.combined_sha256} ` +
+        `does not match the current combined manifest anchor ${manifests.combined_sha256}.`
+    );
     process.exitCode = 2;
     return;
   }

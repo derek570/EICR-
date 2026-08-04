@@ -332,7 +332,7 @@ export function createDeliveryLedger() {
      */
     recordDeliveryAttempt(
       opIdentity,
-      { kind, transport = null, claimLineage = null, text = null } = {}
+      { kind, transport = null, claimLineage = null, text = null, wireTurnId = null } = {}
     ) {
       seq += 1;
       const identities = Array.isArray(opIdentity) ? opIdentity : [opIdentity];
@@ -348,6 +348,10 @@ export function createDeliveryLedger() {
           // judging surface for text_exact matchers; null for producers that
           // carry no prose).
           text,
+          // Codex r2 finding 7 — the WIRE turn id (result.turn_id) the
+          // client echoes on its playback ACK, so ACK resolution can bind
+          // turn-exactly instead of crediting a stale/other-turn ACK.
+          wire_turn_id: wireTurnId,
           at_seq: seq,
         })
       );
@@ -427,7 +431,7 @@ export function createDeliveryLedger() {
       const prov = provisionals.find((p) => p.correlation_id === correlationId);
       if (!prov) {
         markInvalid('fast_promotion_without_provisional', { correlationId });
-        return;
+        return null;
       }
       const matches = (candidateOps ?? []).filter(
         (op) =>
@@ -445,13 +449,18 @@ export function createDeliveryLedger() {
             matches: matches.length,
           }
         );
-        return;
+        return null;
       }
       const op = matches[0];
       prov.resolved_op_key = operationIdentityKey(op);
       this.recordDeliveryAttempt(op, { kind: 'fast_tts', transport: 'fast_tts' });
+      const playbackCount = prov.staged_acks.length;
       for (const ack of prov.staged_acks) this.recordPlaybackAck(ack, [op]);
       prov.staged_acks = [];
+      // Codex r2 finding 2 — the caller's lifecycle sub-record needs the
+      // resolved identity + how many staged ACKs were consumed, so the
+      // frozen builder snapshot carries real op_keys/playback evidence.
+      return { op, playback_count: playbackCount };
     },
 
     /** Any provisional never consumed by a promotion invalidates evidence. */
