@@ -49,6 +49,17 @@ import {
   parseDirectAddressMirrorCommand,
 } from './address-mirror-controller.js';
 import { createAddressMirrorIngressArbiter } from './address-mirror-ingress-arbiter.js';
+// Plan 00B §B1 — dormant evaluation lifecycle hooks. Every call below is a
+// single optional property lookup when no evidence observer is registered
+// (production traffic never registers one); only the evaluation server
+// option (`initOptions.evaluationContextFactory`) activates them.
+import {
+  registerEvidenceObserver,
+  freezeEvidenceCompletion,
+  notifySuccessfulFrame,
+  notifyConfirmationDelivery,
+  LIFECYCLE_LEDGER,
+} from './plan00-lifecycle-hooks.js';
 import {
   createPerTurnWrites,
   encodeBoardReadingKey,
@@ -1399,7 +1410,7 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
  * retries (board_ops / observationUpdates / field_corrections are immutable
  * once bundled).
  */
-async function sendResultFrameLedger(ws, snapshot, result, session = {}) {
+async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry = null) {
   const frames = buildResultFrameLedger(snapshot, result, session);
   const stored = result[EXTRACTION_EMISSION_CURSOR];
   let start = Number.isInteger(stored) && stored >= 0 ? stored : 0;
@@ -1433,6 +1444,17 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}) {
     } catch (err) {
       persistCursor(i);
       return { ok: false, cursor: i, frameKind: frames[i].kind, error: err };
+    }
+    // Plan 00B §B1 — successful-frame evidence callback. The ledger-Symbol
+    // guard keeps the dormant path to ONE property lookup with ZERO
+    // allocation (the detail object is only built when an evaluation
+    // observer registered a ledger); fires only AFTER the frame sent.
+    if (entry?.[LIFECYCLE_LEDGER]) {
+      notifySuccessfulFrame(entry, {
+        frame_kind: frames[i].kind,
+        frame_index: i,
+        frame_count: frames.length,
+      });
     }
   }
   // Completed — clear the cursor so a later (unrelated) requeue of the same
@@ -1749,8 +1771,18 @@ function validateAndCorrectFields(result, sessionId) {
   return result;
 }
 
-export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
+export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initOptions = {}) {
   const wss = new WebSocketServer({ noServer: true });
+
+  // Plan 00B §B1 — test/evaluation-only server option. When provided, each
+  // activeSessions entry gets an evaluation context registered at creation
+  // (before any message traffic) so the semantic-oracle harness can observe
+  // the REAL lifecycle without threading new parameters through the
+  // connection closure. Production callers (src/index.js) never pass this.
+  const evaluationContextFactory =
+    typeof initOptions?.evaluationContextFactory === 'function'
+      ? initOptions.evaluationContextFactory
+      : null;
 
   // Phase 1.3 — single shared periodic flusher for the per-session
   // realtimeLogBuffer (one tick every FLUSH_INTERVAL_MS over the whole
@@ -2037,7 +2069,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 sessionId: newSessionId,
                 ack,
                 activeEntryKey,
-              } = handleSessionResumeRehydrate(
+              } = await handleSessionResumeRehydrate(
                 ws,
                 userId,
                 msg.sessionId,
@@ -2509,7 +2541,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   ws,
                   entry.session.stateSnapshot,
                   result,
-                  entry.session
+                  entry.session,
+                  entry
                 );
                 if (!sent.ok) entry.pendingExtractions.push(result);
                 else await finalizeAddressMirrorResultDelivery(entry, result, currentSessionId);
@@ -3115,68 +3148,91 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // 5 minutes covers the vast majority of between-circuit pauses without leaking
         // memory from abandoned sessions.
         entry.disconnectTimer = setTimeout(() => {
-          logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
-          // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release any in-flight
-          // blocking ask_user Promises BEFORE the registry becomes unreachable
-          // via activeSessions.delete. A post-delete ask resolution would be
-          // a leak — the awaiting dispatcher would hang for the tool-loop's
-          // full timeout (20s per STA-03) even though the session is gone.
-          // rejectAll('session_terminated') wakes every pending ask with
-          // {answered:false, reason:'session_terminated', wait_duration_ms}
-          // so Sonnet can still terminate the turn gracefully.
-          entry.pendingAsks.rejectAll('session_terminated');
-          entry.addressMirrorIngressArbiter?.clear();
-          if (entry.addressMirrorOutboxRetryHandle) {
-            clearTimeout(entry.addressMirrorOutboxRetryHandle);
-            entry.addressMirrorOutboxRetryHandle = null;
-          }
-          // Plan 05-04 — cancel the rolling-window release timer + clear
-          // the askTurns array so the activeSessions entry is fully
-          // garbage-collectible after the .delete() below. Optional-
-          // chained because handleSessionStart's reconnect path may
-          // run BEFORE this timer fires (Open Question #2: reconnect
-          // PRESERVES restrained-mode state by not destroying it here).
-          entry.restrainedMode?.destroy();
-          // Plan 05-03 — release per-key ask counter on disconnect-delete.
-          // Idempotent (Map.clear on empty is a no-op); same lifecycle as
-          // restrainedMode above. Reconnect within the 30s grace window
-          // does NOT reach this path (handleSessionStart clears the
-          // disconnectTimer first), so the budget survives the reconnect
-          // and the 2-ask cap is preserved across hang-up + reconnect.
-          entry.askBudget?.destroy();
-          entry.questionGate.destroy();
-          // Stop the EICRExtractionSession so its cache-keepalive +
-          // pause-keepalive timers cancel and `isActive` flips to false.
-          // Without this, the keepalive `setTimeout` chain
-          // (eicr-extraction-session.js:1373) keeps firing every
-          // CACHE_KEEPALIVE_MS forever — the timer holds a closure-strong
-          // reference to `this`, so even after activeSessions.delete()
-          // drops the entry, GC can't reclaim the session. CloudWatch
-          // proof: sess_moxffh2j_82f8 (2026-05-08 21:28 UTC) showed
-          // cleanup at 21:34:06 followed by "Cache keepalive sent"
-          // logs at 21:36:12 / 21:40:13 / 21:44:15 — three orphaned
-          // refreshes after the session was supposedly torn down,
-          // each costing one Anthropic round-trip and pinning the
-          // session's full prompt + state-snapshot in memory until
-          // the process restarts. Optional-chained for safety —
-          // handleSessionStart's reconnect path destroys the entry
-          // before constructing a new session, but a future code
-          // path could still set entry.session=null at teardown.
-          entry.session?.stop?.();
-          // Phase 1.3 — final flush for any stragglers still buffered
-          // when the 5-min reconnect window expires. ws_close flushed at
-          // close time but a subsequent retry-on-error left the batch
-          // back in the buffer; this is the last chance to land it
-          // before activeSessions.delete drops the entry.
-          if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
-            flushRealtimeLogSession(currentSessionId, entry, {
-              reason: 'session_timeout',
-            }).catch(() => {});
-          }
-          activeSessions.delete(currentSessionId);
+          // Plan 00B §B1 — route the expiry through the per-entry teardown
+          // arbiter. If an explicit stop already owns teardown, this firing
+          // must NOT run a second body (pre-arbiter it would have).
+          if (entry.teardownPromise) return;
+          beginEntryTeardown(entry, currentSessionId, 'session_terminated', () =>
+            runDisconnectTimeoutTeardown(currentSessionId, entry)
+          );
         }, 300000);
       }
     });
+
+    // Plan 00B §B1 — the 5-minute disconnect-expiry teardown body, extracted
+    // verbatim from the setTimeout closure so the arbiter owns exactly one
+    // copy of it. Behaviour is byte-identical to the pre-arbiter inline body
+    // plus the dormant evidence freeze before the delete.
+    async function runDisconnectTimeoutTeardown(currentSessionId, entry) {
+      logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
+      // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release any in-flight
+      // blocking ask_user Promises BEFORE the registry becomes unreachable
+      // via activeSessions.delete. A post-delete ask resolution would be
+      // a leak — the awaiting dispatcher would hang for the tool-loop's
+      // full timeout (20s per STA-03) even though the session is gone.
+      // rejectAll('session_terminated') wakes every pending ask with
+      // {answered:false, reason:'session_terminated', wait_duration_ms}
+      // so Sonnet can still terminate the turn gracefully.
+      entry.pendingAsks.rejectAll('session_terminated');
+      entry.addressMirrorIngressArbiter?.clear();
+      if (entry.addressMirrorOutboxRetryHandle) {
+        clearTimeout(entry.addressMirrorOutboxRetryHandle);
+        entry.addressMirrorOutboxRetryHandle = null;
+      }
+      // Plan 05-04 — cancel the rolling-window release timer + clear
+      // the askTurns array so the activeSessions entry is fully
+      // garbage-collectible after the .delete() below. Optional-
+      // chained because handleSessionStart's reconnect path may
+      // run BEFORE this timer fires (Open Question #2: reconnect
+      // PRESERVES restrained-mode state by not destroying it here).
+      entry.restrainedMode?.destroy();
+      // Plan 05-03 — release per-key ask counter on disconnect-delete.
+      // Idempotent (Map.clear on empty is a no-op); same lifecycle as
+      // restrainedMode above. Reconnect within the 30s grace window
+      // does NOT reach this path (handleSessionStart clears the
+      // disconnectTimer first), so the budget survives the reconnect
+      // and the 2-ask cap is preserved across hang-up + reconnect.
+      entry.askBudget?.destroy();
+      entry.questionGate.destroy();
+      // Stop the EICRExtractionSession so its cache-keepalive +
+      // pause-keepalive timers cancel and `isActive` flips to false.
+      // Without this, the keepalive `setTimeout` chain
+      // (eicr-extraction-session.js:1373) keeps firing every
+      // CACHE_KEEPALIVE_MS forever — the timer holds a closure-strong
+      // reference to `this`, so even after activeSessions.delete()
+      // drops the entry, GC can't reclaim the session. CloudWatch
+      // proof: sess_moxffh2j_82f8 (2026-05-08 21:28 UTC) showed
+      // cleanup at 21:34:06 followed by "Cache keepalive sent"
+      // logs at 21:36:12 / 21:40:13 / 21:44:15 — three orphaned
+      // refreshes after the session was supposedly torn down,
+      // each costing one Anthropic round-trip and pinning the
+      // session's full prompt + state-snapshot in memory until
+      // the process restarts. Optional-chained for safety —
+      // handleSessionStart's reconnect path destroys the entry
+      // before constructing a new session, but a future code
+      // path could still set entry.session=null at teardown.
+      entry.session?.stop?.();
+      // Phase 1.3 — final flush for any stragglers still buffered
+      // when the 5-min reconnect window expires. ws_close flushed at
+      // close time but a subsequent retry-on-error left the batch
+      // back in the buffer; this is the last chance to land it
+      // before activeSessions.delete drops the entry.
+      if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
+        flushRealtimeLogSession(currentSessionId, entry, {
+          reason: 'session_timeout',
+        }).catch(() => {});
+      }
+      // Plan 00B §B1 — dormant evidence freeze before the entry is dropped.
+      // On the expiry path a session almost always still holds unfinished
+      // work (that is WHY it expired), so this typically freezes
+      // evidence-ineligible as `non_quiescent_at_stop` — deliberately, and
+      // without touching the existing expiry behaviour above.
+      freezeEvidenceCompletion(entry, {
+        sessionId: currentSessionId,
+        boundary: 'session_terminated',
+      });
+      activeSessions.delete(currentSessionId);
+    }
   });
 
   async function handleSessionStart(ws, userId, msg, getAnthropicKey) {
@@ -3265,6 +3321,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // shape it cannot decode, defeating STI-06's degradation contract.
     }
     // off mode: protocolVersion ignored. No log noise — by-design no-op.
+
+    // Plan 00B §B1 — teardown-arbiter observation. A reconnect that lands
+    // while the entry is mid-teardown (explicit stop or disconnect-timeout
+    // body between its first await and activeSessions.delete) must NOT
+    // apply a mode change, clear a timer, rebind the socket or touch any
+    // other state on the dying entry. Await the one teardown promise,
+    // re-read activeSessions, and fall through to whichever path now
+    // applies — after a completed teardown that is the fresh-session path
+    // below, exactly as if the entry had never been found.
+    {
+      const stopping = activeSessions.get(sessionId);
+      if (stopping && (stopping.isStopping || stopping.teardownPromise)) {
+        try {
+          await (stopping.teardownPromise ?? Promise.resolve());
+        } catch (_e) {
+          // A teardown-body failure is its own log line; the reconnect
+          // still proceeds against the re-read registry state.
+        }
+      }
+    }
 
     // Reuse existing session if reconnecting (within 30s timeout or old ws still open)
     if (activeSessions.has(sessionId)) {
@@ -3563,7 +3639,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             currentWs,
             session.stateSnapshot,
             result,
-            session
+            session,
+            entryRef
           );
           if (!out.ok) {
             if (entryRef) entryRef.pendingExtractions.push(result);
@@ -3922,6 +3999,22 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     });
 
     const createdEntry = activeSessions.get(sessionId);
+    // Plan 00B §B1 — evaluation-context attachment (test/evaluation-only
+    // server option). Registered at entry creation, before the address-
+    // mirror rehydrate and before any message traffic, so the observer sees
+    // the entire lifecycle. Production servers never pass the factory, so
+    // this branch never runs live. [ASSUMED] the plan's "before
+    // start/rehydration" is satisfied here: `session.start(jobState)` runs
+    // earlier in this function (input-state seeding, classified
+    // input_state_seed by §B2 and captured via canonical pre-state), while
+    // every observable message/outbox/timer invocation happens after this
+    // point — there is no entry to attach to before activeSessions.set.
+    if (evaluationContextFactory) {
+      registerEvidenceObserver(
+        createdEntry,
+        evaluationContextFactory({ sessionId, userId, entry: createdEntry })
+      );
+    }
     createdEntry.addressMirrorIngressArbiter = createAddressMirrorIngressArbiter();
     createdEntry.addressMirrorController = createAddressMirrorController({
       userId,
@@ -4057,7 +4150,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
    * to the new socket, the same shape as `handleSessionStart`'s reconnection
    * branch does, so extraction callbacks target the live socket.
    */
-  function handleSessionResumeRehydrate(
+  async function handleSessionResumeRehydrate(
     ws,
     userId,
     requestedSessionId,
@@ -4112,7 +4205,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     const { clientSessionId } = peeked;
-    const entry = activeSessions.get(clientSessionId);
+    let entry = activeSessions.get(clientSessionId);
+
+    // Plan 00B §B1 — teardown-arbiter observation (rehydrate flavour). An
+    // entry mid-teardown must never be rebound: await the one teardown
+    // promise, re-read the registry, and fall through to the existing
+    // entry-missing miss path (the teardown deletes the entry).
+    if (entry && (entry.isStopping || entry.teardownPromise)) {
+      try {
+        await (entry.teardownPromise ?? Promise.resolve());
+      } catch (_e) {
+        // teardown-body failures log themselves; resume follows the
+        // re-read registry state.
+      }
+      entry = activeSessions.get(clientSessionId);
+    }
 
     // TTL-valid store hit but the runtime entry is gone (e.g. the 5-min
     // disconnectTimer fired and cleaned up activeSessions, but the store
@@ -4376,7 +4483,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           ws,
           entry.session?.stateSnapshot,
           result,
-          entry.session
+          entry.session,
+          entry
         );
         if (!out.ok) {
           logger.error('Failed to flush buffered extraction', {
@@ -4507,7 +4615,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         ws,
         entry.session?.stateSnapshot,
         result,
-        entry.session
+        entry.session,
+        entry
       );
       if (!sent.ok) {
         entry.pendingExtractions.push(result);
@@ -4934,7 +5043,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             ws,
             entry.session.stateSnapshot,
             result,
-            entry.session
+            entry.session,
+            entry
           );
           if (!sent.ok) entry.pendingExtractions.push(result);
           else await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
@@ -6233,7 +6343,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           ws,
           entry.session.stateSnapshot,
           result,
-          entry.session
+          entry.session,
+          entry
         );
         if (ledgerOut.ok) {
           await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
@@ -6498,17 +6609,50 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     await handleTranscript(ws, sessionId, { text: correctionText });
   }
 
+  // Plan 00B §B1 — per-entry teardown ARBITER. Exactly one teardown body may
+  // run for an entry, whichever of the four teardown-observing paths
+  // (explicit stop, disconnect-timeout expiry, session_start reconnect,
+  // session_resume rehydrate) reaches it first. The first caller
+  // SYNCHRONOUSLY marks the entry stopping and installs ONE promise that
+  // owns the whole ordered teardown (utterance-buffer flush, session.stop,
+  // evidence freeze, acknowledgement/delete ordering). Duplicate callers
+  // await that promise and never run teardown independently — pre-arbiter,
+  // a stop frame racing the 5-minute disconnect timer could run BOTH
+  // bodies concurrently (double session.stop, double rejectAll, and the
+  // stop path's session_ack racing the timer's activeSessions.delete).
+  function beginEntryTeardown(entry, sessionId, reason, work) {
+    if (entry.teardownPromise) return entry.teardownPromise;
+    // Synchronous, before any await: the very next event-loop tick must see
+    // both the flag (handleTranscript guard) and the promise (arbiter).
+    entry.isStopping = true;
+    entry.teardownReason = reason;
+    entry.teardownPromise = (async () => {
+      await work();
+    })();
+    return entry.teardownPromise;
+  }
+
   async function handleSessionStop(ws, sessionId) {
     if (!sessionId || !activeSessions.has(sessionId)) return;
     const entry = activeSessions.get(sessionId);
 
-    // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — flip the isStopping
-    // flag BEFORE any rejectAll / flush / S3 awaits. Combined with the
-    // handleTranscript guard at its entry, this ensures any subsequent
-    // transcript arriving during teardown is silently dropped (no harness,
-    // no dispatcher, no register). Set synchronously so the very next
-    // event-loop tick sees it — before any `await` below yields.
-    entry.isStopping = true;
+    // §B1 arbiter — a teardown is already in flight (disconnect timer fired
+    // first, or a duplicate stop frame). Await it; never run independently.
+    if (entry.teardownPromise) {
+      await entry.teardownPromise;
+      return;
+    }
+    await beginEntryTeardown(entry, sessionId, 'session_stopped', () =>
+      runSessionStopTeardown(ws, sessionId, entry)
+    );
+  }
+
+  async function runSessionStopTeardown(ws, sessionId, entry) {
+    // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — the isStopping flag is
+    // flipped by beginEntryTeardown BEFORE any rejectAll / flush / S3 awaits.
+    // Combined with the handleTranscript guard at its entry, this ensures any
+    // subsequent transcript arriving during teardown is silently dropped (no
+    // harness, no dispatcher, no register).
     entry.addressMirrorIngressArbiter?.clear();
     if (entry.addressMirrorOutboxRetryHandle) {
       clearTimeout(entry.addressMirrorOutboxRetryHandle);
@@ -6626,6 +6770,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // session-stop teardown isn't blocked by a transient S3 hiccup.
       }
     }
+
+    // Plan 00B §B1 — evidence completion freeze. Dormant no-op unless an
+    // evaluation observer was registered at entry creation. Placed after
+    // every existing flush/reject point and immediately before the entry
+    // leaves activeSessions, so an ELIGIBLE freeze proves genuine
+    // quiescence (all in-flight counts zero, revisions stable) and anything
+    // else freezes evidence-ineligible as `non_quiescent_at_stop` without
+    // delaying or changing session_ack/stop behaviour.
+    freezeEvidenceCompletion(entry, { sessionId, boundary: 'session_stopped' });
 
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });
