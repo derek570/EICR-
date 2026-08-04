@@ -53,6 +53,7 @@
       "resolved_terminals": {},
       "rejected": [
         {
+          "seq": 4,
           "stage_attempted": "resolved",
           "reason": "answered_without_full_proof",
           "terminal_attempted": "answered",
@@ -120,6 +121,7 @@
   "count_contradictions": [],
   "unscoped_rejected_asks": [
     {
+      "seq": 7,
       "stage_attempted": "emitted",
       "reason": "emitted_without_binding",
       "terminal_attempted": null,

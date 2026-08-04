@@ -309,6 +309,7 @@ describe('two-sided fixture (C0)', () => {
     // visible as a rejection…
     expect(proj.ask_families.dialogue_script.rejected).toEqual([
       {
+        seq: 4,
         stage_attempted: 'resolved',
         reason: 'answered_without_full_proof',
         terminal_attempted: 'answered',

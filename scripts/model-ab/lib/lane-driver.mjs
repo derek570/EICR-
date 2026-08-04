@@ -548,14 +548,15 @@ export async function runVendorLaneMock({ repoRoot, log = () => {} }) {
         judge: (exp, frozen, opts) =>
           judgeFrozenEvidence(exp, frozen, {
             boardWildcard: boardCount <= 1,
-            // Codex r1 (B-2/C-4) — the corpus judges a declared turn WINDOW
-            // and dialogue-script asks live OUTSIDE it (the
-            // dialogue_answer_ingress exclusion): a fixture cannot even
+            ...(opts ?? {}),
+            // Codex r1 (B-2/C-4) + mini-review M-6 — the corpus judges a
+            // declared turn WINDOW and dialogue-script asks live OUTSIDE it
+            // (the dialogue_answer_ingress exclusion): a fixture cannot even
             // declare the trailing script ask its transcript provokes.
             // Dispatcher and address-mirror asks ARE window-observable and
-            // stay strict.
+            // stay strict. Assigned AFTER the opts spread so no driveFixture
+            // option can widen or disable the policy.
             windowedOpenAskFamilies: ['dialogue_script'],
-            ...(opts ?? {}),
           }),
         log,
       });

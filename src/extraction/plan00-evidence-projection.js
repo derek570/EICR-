@@ -56,6 +56,41 @@ function groupByFamily(members) {
 }
 
 /**
+ * Codex r1 (B-1) + mini-review M-4 — the reconstruction and the freeze-time
+ * counts must AGREE, fail-CLOSED: a missing/invalid closed count key is a
+ * contradiction (never silently zero), each family's counted open asks must
+ * equal the row-derived count, and the aggregate `non_quiescent_at_stop`
+ * outcome must equal what the in-flight counts themselves imply. Shared by
+ * BOTH projection sides so the agreement invariant covers it.
+ */
+function collectCountContradictions(counts, askFamilies) {
+  const contradictions = [];
+  for (const family of ASK_QUIESCENCE_FAMILIES) {
+    const counted = counts[`open_asks_${family}`];
+    const derived = askFamilies[family].open;
+    if (!Number.isInteger(counted) || counted < 0) {
+      contradictions.push({ family, counted: counted ?? null, derived });
+    } else if (counted !== derived) {
+      contradictions.push({ family, counted, derived });
+    }
+  }
+  const anyInFlight = Object.entries(counts).some(
+    ([key, value]) =>
+      key !== 'non_quiescent_at_stop' && key !== 'revision_instability' && value !== 0
+  );
+  const expectedAggregate = anyInFlight ? 1 : 0;
+  const statedAggregate = counts.non_quiescent_at_stop;
+  if (statedAggregate !== expectedAggregate) {
+    contradictions.push({
+      family: 'aggregate_non_quiescent',
+      counted: statedAggregate ?? null,
+      derived: expectedAggregate,
+    });
+  }
+  return contradictions;
+}
+
+/**
  * Reconstruct the complete evidence_projection_v1 from the five-key
  * snapshot. Pure; deterministic; array order of `sub_records` is the global
  * event order (schema-v1 ordering rule).
@@ -138,6 +173,7 @@ export function buildEvidenceProjectionV1(snapshot) {
         const family = ASK_QUIESCENCE_FAMILIES.includes(row.family) ? row.family : null;
         const target = family ? askFamilies[family] : null;
         const rejection = {
+          seq,
           stage_attempted: row.stage_attempted ?? null,
           reason: row.reason ?? null,
           terminal_attempted: row.terminal_attempted ?? null,
@@ -154,7 +190,8 @@ export function buildEvidenceProjectionV1(snapshot) {
       case 'delivery_evidence': {
         const family = SEMANTIC_FAMILIES.includes(row.semantic_family) ? row.semantic_family : null;
         if (row.delivery_kind === 'delivery_history_ambiguous') {
-          for (const key of row.op_keys ?? []) ambiguousOpKeys.push(key);
+          // Mini-review M-3 — ordered ambiguity records (seq preserved).
+          for (const key of row.op_keys ?? []) ambiguousOpKeys.push({ seq, op_key: key });
           break;
         }
         if (!family) break;
@@ -253,12 +290,7 @@ export function buildEvidenceProjectionV1(snapshot) {
   // AGREE: a snapshot whose rows say an ask is open while its counts say
   // zero (or vice versa) is a contract contradiction, and a fold must HOLD
   // on it rather than trust either side.
-  const countContradictions = [];
-  for (const family of ASK_QUIESCENCE_FAMILIES) {
-    const counted = counts[`open_asks_${family}`] ?? 0;
-    const derived = askFamilies[family].open;
-    if (counted !== derived) countContradictions.push({ family, counted, derived });
-  }
+  const countContradictions = collectCountContradictions(counts, askFamilies);
 
   const eligible =
     quiescence.non_quiescent_at_stop === 0 &&
@@ -424,12 +456,7 @@ export function projectFrozenLedgersV1(completionLatch) {
     non_quiescent_at_stop: counts.non_quiescent_at_stop ?? 0,
     revision_instability: counts.revision_instability ?? 0,
   };
-  const countContradictions = [];
-  for (const family of ASK_QUIESCENCE_FAMILIES) {
-    const counted = counts[`open_asks_${family}`] ?? 0;
-    const derived = askFamilies[family].open;
-    if (counted !== derived) countContradictions.push({ family, counted, derived });
-  }
+  const countContradictions = collectCountContradictions(counts, askFamilies);
   const eligible =
     quiescence.non_quiescent_at_stop === 0 &&
     quiescence.revision_instability === 0 &&
@@ -496,6 +523,11 @@ export function comparableSubset(projection) {
   );
   rest.playbacks = Object.fromEntries(
     Object.entries(rest.playbacks).map(([f, list]) => [f, list.map(stripSeq)])
+  );
+  // ambiguity: the build side carries ordered {seq, op_key} records, the
+  // frozen side bare op_key strings — compare on the keys.
+  rest.delivery_history_ambiguous_op_keys = rest.delivery_history_ambiguous_op_keys.map((e) =>
+    typeof e === 'string' ? e : e.op_key
   );
   const askFamilies = {};
   for (const [family, fam] of Object.entries(rest.ask_families)) {

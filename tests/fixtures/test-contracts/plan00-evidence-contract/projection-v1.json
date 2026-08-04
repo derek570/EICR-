@@ -129,7 +129,10 @@
     ]
   },
   "delivery_history_ambiguous_op_keys": [
-    "{\"turn\":\"turn_3\",\"field\":\"client_address\",\"circuit\":null,\"board_id\":null,\"ordinal\":0}"
+    {
+      "seq": 17,
+      "op_key": "{\"turn\":\"turn_3\",\"field\":\"client_address\",\"circuit\":null,\"board_id\":null,\"ordinal\":0}"
+    }
   ],
   "rejected_deliveries": [],
   "playbacks": {

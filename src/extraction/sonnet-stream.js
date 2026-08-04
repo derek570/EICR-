@@ -1505,6 +1505,15 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
   // at its call sites: the A2 wire-contract suite regex-pins the 5-arg call
   // sites). Dormant no-op handle without a lifecycle ledger.
   const frameSendProducer = beginProducer(entry, 'frame_send');
+  // Plan 00B-3 (Codex r1 mini-review M-1) — ONE evidence send-generation per
+  // frame-send loop invocation: every terminal-bearing frame of THIS send
+  // shares it, and ANY replay (same object reconnect flush OR a result
+  // reconstructed from the durable outbox) is a NEW loop invocation and so a
+  // new generation. Frame-binding `attempts` was NOT a sound identity — a
+  // reconstructed result restarts its counters at 1. Evaluation-only.
+  const evidenceSendGeneration = evalCtx
+    ? (evalCtx.mirrorSendGeneration = (evalCtx.mirrorSendGeneration ?? 0) + 1)
+    : null;
   try {
     for (let i = start; i < frames.length; i += 1) {
       if (!ws || ws.readyState !== ws.OPEN) {
@@ -1553,7 +1562,7 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
           ...(binding ? { binding_id: binding.bindingId, attempt_ordinal: binding.attempts } : {}),
         });
         if (evalCtx) {
-          recordFrameDeliveryEvidence(evalCtx, frames[i].kind, result, binding?.attempts ?? null);
+          recordFrameDeliveryEvidence(evalCtx, frames[i].kind, result, evidenceSendGeneration);
         }
       }
     }

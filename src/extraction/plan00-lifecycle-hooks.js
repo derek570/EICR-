@@ -304,14 +304,19 @@ export function readInFlightCounts(entry) {
     // teardown's awaited flushes: open AT the stop boundary is the fact
     // the freeze must see (the latch is a Set of entry references).
     const stopLatched = evalCtx?.stopBoundaryOpenAsks ?? null;
-    for (const e of askLedger.entries) {
+    const boundaryCut = evalCtx?.stopBoundaryEntryCount ?? null;
+    for (let idx = 0; idx < askLedger.entries.length; idx += 1) {
+      const e = askLedger.entries[idx];
       const open =
         e.state === 'produced' ||
         e.state === 'emitted' ||
         // Codex r1 (B-5) — `unknown_terminal` joins the stop-boundary set:
         // a genuinely unknown outcome must not quietly close an ask.
         NON_QUIESCENT_TERMINALS.includes(e.state) ||
-        (stopLatched != null && stopLatched.has(e));
+        (stopLatched != null && stopLatched.has(e)) ||
+        // Mini-review M-5 — produced AFTER the stop boundary: born during
+        // teardown, non-quiescent whatever its terminal.
+        (boundaryCut != null && idx >= boundaryCut);
       if (!open) continue;
       const family = e.meta?.family;
       if (family in openAsks) openAsks[family] += 1;
@@ -957,6 +962,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   // renders THIS session's completion freeze ineligible even if it resolves
   // with a quiescence-compatible terminal during the teardown's awaits.
   ctx.stopBoundaryOpenAsks = null;
+  ctx.stopBoundaryEntryCount = null;
   ctx.latchStopBoundary = () => {
     if (ctx.stopBoundaryOpenAsks || !ctx.askLedger) return;
     const latched = new Set();
@@ -964,6 +970,11 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       if (e.state === 'produced' || e.state === 'emitted') latched.add(e);
     }
     ctx.stopBoundaryOpenAsks = latched;
+    // Mini-review M-5 — an ask PRODUCED after the boundary (during the
+    // teardown's awaited flushes) is non-quiescent whatever terminal it
+    // later reaches; the entries array is append-only, so the index cut
+    // identifies post-boundary entries without new state on them.
+    ctx.stopBoundaryEntryCount = ctx.askLedger.entries.length;
   };
 
   ctx.expireSrvJoins = (reason) => {
@@ -1048,9 +1059,20 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     // fail-loud `unknown_rejection_reason` (schema-v1 rejection_reasons).
     const producer = resolveProducer(producerId, 'delivery');
     if (!producer) return;
-    const knownReason = Object.prototype.hasOwnProperty.call(REJECTION_REASONS, reason)
-      ? reason
-      : 'unknown_rejection_reason';
+    // Mini-review M-2 — the reason must be a DELIVERY structural-latch
+    // reason whose declared row kind IS delivery_rejected; an ask/playback/
+    // pre-admission/freeze reason routed here contradicts its own regime
+    // and fails loud as unknown_rejection_reason.
+    const spec = Object.prototype.hasOwnProperty.call(REJECTION_REASONS, reason)
+      ? REJECTION_REASONS[reason]
+      : null;
+    const knownReason =
+      spec &&
+      spec.source_ledger === 'delivery' &&
+      spec.regime === 'structural_latch' &&
+      spec.row_kind === 'delivery_rejected'
+        ? reason
+        : 'unknown_rejection_reason';
     ctx.deliveryLedger?.markInvalid?.(knownReason, detail ?? { field, circuit });
     appendSub('delivery_rejected', {
       producer_id: producerId,
@@ -1290,13 +1312,18 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       // successful send and must append its own delivery attempt (Codex r1
       // C-6: 00C's delivery_attempt preserves every send/replay; the unit
       // and its ACK correlation stay singular).
+      // Mini-review M-1 — identity is a SET of observed send generations
+      // (never a monotonic ordinal): a reconstructed outbox result's frames
+      // arrive under a fresh generation whatever its internal counters say,
+      // while the dual frame of one send shares its generation. A null
+      // generation is indistinguishable from the dual frame and is skipped
+      // (conservative: the pre-A2 status quo, never a double-count).
       if (
         attempt != null &&
-        existing.lastAttempt != null &&
-        attempt > existing.lastAttempt &&
+        !existing.observedAttempts.has(attempt) &&
         existing.identities.length > 0
       ) {
-        existing.lastAttempt = attempt;
+        existing.observedAttempts.add(attempt);
         ctx.recordDelivery(existing.identities, {
           producerId: 'address_mirror_terminal',
           kind: 'address_mirror_terminal',
@@ -1321,7 +1348,10 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       claimLineage,
       claimToken,
     });
-    ctx.addressMirrorUnits.set(claimLineage, { identities, lastAttempt: attempt ?? null });
+    ctx.addressMirrorUnits.set(claimLineage, {
+      identities,
+      observedAttempts: new Set(attempt != null ? [attempt] : []),
+    });
     if (isForeignRecovery) {
       for (const op of identities) {
         ctx.deliveryLedger.markDeliveryHistoryAmbiguous(op);
