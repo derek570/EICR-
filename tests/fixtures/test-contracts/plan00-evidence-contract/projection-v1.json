@@ -245,5 +245,6 @@
   },
   "count_contradictions": [],
   "unscoped_rejected_asks": [],
-  "rejection_regime_contradictions": []
+  "rejection_regime_contradictions": [],
+  "lifecycle_state_contradictions": []
 }

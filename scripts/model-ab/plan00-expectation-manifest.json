@@ -479,7 +479,7 @@
     ]
   },
   "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
-  "semantic_oracle_digest": "4678cc738b498e912eef47a2e70d851b8c9db76f6aa0e488b741b71b3fbd4d94",
+  "semantic_oracle_digest": "351085c8d6e8a1db1766ab800bab53aa4fa41edd281945eb28e5a8468ca84a1b",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -615,7 +615,7 @@
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-v1.json",
-      "sha256": "1291e7ed9c932eee710edfb22d2a2ceaf57ae1531fd7da369c4a5ac2ff28655c"
+      "sha256": "290bf76626825e75f435c7ceff1a1c3d0dd956fbda2c3afa68648437cbe6b704"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json",
@@ -623,7 +623,7 @@
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json",
-      "sha256": "494012364f03e3e11ccde3cd498cdb23b04bce60ea2404a2f99ae79c84dd0ac7"
+      "sha256": "e4b85dbcf746b7f388514cc325d0e07bf9b27c9e66fb89388be9706818a318d2"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/ack-sequences-v1.json",
@@ -635,7 +635,7 @@
     },
     {
       "path": "src/extraction/plan00-evidence-projection.js",
-      "sha256": "eec253ce420789dfad40b3da2455e98a97b8742f58a5c01de458740e15d20ceb"
+      "sha256": "e5fa3f1346089a0295f24dddd201674b9f70b4fa68070ed8c41224417c42f33f"
     }
   ],
   "strata_named_gaps": [

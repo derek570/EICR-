@@ -133,5 +133,6 @@
       "runtime_id": "ghost_1"
     }
   ],
-  "rejection_regime_contradictions": []
+  "rejection_regime_contradictions": [],
+  "lifecycle_state_contradictions": []
 }

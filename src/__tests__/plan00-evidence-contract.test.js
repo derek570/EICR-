@@ -2051,6 +2051,102 @@ describe('Cycle-4 pins — sequence-positional transition-rejection binding (R4-
   });
 });
 
+describe('Cycle-5 pin — terminal lifecycle states can never reopen (R5-1)', () => {
+  test('an impossible accepted emitted-after-resolution row is a lifecycle contradiction and cannot launder a rejection', () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: {
+        open_asks_dispatcher: 0,
+        open_asks_dialogue_script: 0,
+        open_asks_address_mirror: 0,
+        non_quiescent_at_stop: 0,
+        revision_instability: 0,
+      },
+      revisions: { usage_revision: 0 },
+      sub_records: [
+        {
+          kind: 'ask_lifecycle',
+          revision: 1,
+          family: 'dialogue_script',
+          stage: 'produced',
+          runtime_id: 'r',
+          live_ask_key: 'k',
+        },
+        {
+          kind: 'ask_lifecycle',
+          revision: 2,
+          family: 'dialogue_script',
+          stage: 'emitted',
+          runtime_id: 'r',
+        },
+        {
+          kind: 'ask_lifecycle',
+          revision: 3,
+          family: 'dialogue_script',
+          stage: 'resolved',
+          runtime_id: 'r',
+          terminal: 'answered',
+        },
+        // impossible: an accepted emitted row REOPENING a terminal runtime
+        {
+          kind: 'ask_lifecycle',
+          revision: 4,
+          family: 'dialogue_script',
+          stage: 'emitted',
+          runtime_id: 'r',
+        },
+        {
+          kind: 'ask_transition_rejected',
+          revision: 1,
+          family: 'dialogue_script',
+          stage_attempted: 'resolved',
+          runtime_id: 'r',
+          terminal_attempted: 'answered',
+          reason: 'answered_without_full_proof',
+        },
+        {
+          kind: 'ask_lifecycle',
+          revision: 5,
+          family: 'dialogue_script',
+          stage: 'resolved',
+          runtime_id: 'r',
+          terminal: 'answered',
+        },
+      ],
+    });
+    // the impossible emitted row did NOT mutate the terminal state…
+    expect(proj.lifecycle_state_contradictions).toEqual([
+      {
+        class: 'invalid_lifecycle_transition',
+        seq: 3,
+        family: 'dialogue_script',
+        runtime_id: 'r',
+        stage: 'emitted',
+        prior_state: 'closed',
+      },
+      {
+        class: 'invalid_lifecycle_transition',
+        seq: 5,
+        family: 'dialogue_script',
+        runtime_id: 'r',
+        stage: 'resolved',
+        prior_state: 'closed',
+      },
+    ]);
+    // …so the rejection still sees a CLOSED runtime (orphan) and nothing is laundered
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'orphan_transition_rejection',
+        kind: 'ask_transition_rejected',
+        seq: 4,
+        reason: 'answered_without_full_proof',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+});
+
 describe('Cycle-4 pins — field-spec grammar closure (R4-3)', () => {
   test('every type used by any field_spec is declared in the grammar AND supported by the validator', () => {
     const grammar = new Set(schema.field_spec_type_grammar);

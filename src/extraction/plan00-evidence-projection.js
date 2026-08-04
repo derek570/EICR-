@@ -249,6 +249,22 @@ export function buildEvidenceProjectionV1(snapshot) {
   // position against the family-qualified lifecycle state machine: the
   // state of `family::runtime_id` when the rejection row occurs.
   const askRejectionContexts = [];
+  // Cycle-5 (R5-1) — the tracker VALIDATES accepted transitions instead of
+  // last-write-registering them: absent->produced->emitted->terminal, with
+  // reissued_attempt only while emitted and terminals NEVER reopening. An
+  // impossible accepted row is a lifecycle-state contradiction and does not
+  // mutate the state (so a terminal stays terminal).
+  const lifecycleStateContradictions = [];
+  const invalidTransition = (seq, family, runtimeId, stage, priorState) => {
+    lifecycleStateContradictions.push({
+      class: 'invalid_lifecycle_transition',
+      seq,
+      family,
+      runtime_id: runtimeId,
+      stage,
+      prior_state: priorState ?? null,
+    });
+  };
 
   const deliveries = groupByFamily(SEMANTIC_FAMILIES);
   const playbacks = groupByFamily(SEMANTIC_FAMILIES);
@@ -269,35 +285,57 @@ export function buildEvidenceProjectionV1(snapshot) {
         const family = ASK_QUIESCENCE_FAMILIES.includes(row.family) ? row.family : null;
         if (!family) break;
         const fam = askFamilies[family];
+        const stateKey = row.runtime_id != null ? askKey(family, row.runtime_id) : null;
+        const prior = stateKey != null ? (askStates.get(stateKey) ?? null) : null;
         switch (row.stage) {
           case 'produced':
             fam.produced += 1;
-            if (row.runtime_id != null) askStates.set(askKey(family, row.runtime_id), 'produced');
+            if (stateKey != null) {
+              if (prior != null) invalidTransition(seq, family, row.runtime_id, 'produced', prior);
+              else askStates.set(stateKey, 'produced');
+            }
             break;
           case 'emitted':
             fam.emitted += 1;
-            if (row.runtime_id != null) askStates.set(askKey(family, row.runtime_id), 'emitted');
+            if (stateKey != null) {
+              if (prior !== 'produced')
+                invalidTransition(seq, family, row.runtime_id, 'emitted', prior);
+              else askStates.set(stateKey, 'emitted');
+            }
             break;
           case 'reissued_attempt':
             fam.reissued_attempts += 1;
+            if (stateKey != null && prior !== 'emitted') {
+              invalidTransition(seq, family, row.runtime_id, 'reissued_attempt', prior);
+            }
             break;
           case 'resolved': {
             const terminal = row.terminal ?? 'unknown_terminal';
             fam.resolved_terminals[terminal] = (fam.resolved_terminals[terminal] ?? 0) + 1;
-            if (row.runtime_id != null) {
-              // Stop-boundary terminals close the ledger entry but remain
-              // non-quiescent for the freeze they race with (schema-v1
-              // ask_terminals rule).
-              askStates.set(
-                askKey(family, row.runtime_id),
-                NON_QUIESCENT_TERMINALS.includes(terminal) ? 'open_at_stop' : 'closed'
-              );
+            if (stateKey != null) {
+              if (prior !== 'emitted') {
+                invalidTransition(seq, family, row.runtime_id, 'resolved', prior);
+              } else {
+                // Stop-boundary terminals close the ledger entry but remain
+                // non-quiescent for the freeze they race with (schema-v1
+                // ask_terminals rule).
+                askStates.set(
+                  stateKey,
+                  NON_QUIESCENT_TERMINALS.includes(terminal) ? 'open_at_stop' : 'closed'
+                );
+              }
             }
             break;
           }
           case 'replaced':
             fam.replaced += 1;
-            if (row.runtime_id != null) askStates.set(askKey(family, row.runtime_id), 'closed');
+            if (stateKey != null) {
+              if (prior !== 'produced' && prior !== 'emitted') {
+                invalidTransition(seq, family, row.runtime_id, 'replaced', prior);
+              } else {
+                askStates.set(stateKey, 'closed');
+              }
+            }
             break;
           case 'join_expired':
             fam.join_expired += 1;
@@ -450,7 +488,8 @@ export function buildEvidenceProjectionV1(snapshot) {
     ineligibleConditions.length === 0 &&
     unknownProducers.length === 0 &&
     countContradictions.length === 0 &&
-    regimeContradictions.length === 0;
+    regimeContradictions.length === 0 &&
+    lifecycleStateContradictions.length === 0;
 
   const askComplete = (family) => {
     const fam = askFamilies[family];
@@ -472,6 +511,7 @@ export function buildEvidenceProjectionV1(snapshot) {
     unknown_producers: unknownProducers,
     count_contradictions: countContradictions,
     rejection_regime_contradictions: regimeContradictions,
+    lifecycle_state_contradictions: lifecycleStateContradictions,
     eligible_for_family_credit: eligible,
     ask_families: askFamilies,
     unscoped_rejected_asks: unscopedRejectedAsks,
@@ -667,6 +707,7 @@ export function comparableSubset(projection) {
     idempotent_playbacks: _ip,
     unscoped_rejected_asks: _ura,
     rejection_regime_contradictions: _rrc,
+    lifecycle_state_contradictions: _lsc,
     round_usage: _ru,
     ...rest
   } = projection;
