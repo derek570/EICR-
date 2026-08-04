@@ -546,7 +546,17 @@ export async function runVendorLaneMock({ repoRoot, log = () => {} }) {
         // Mini-review r2 finding 6 — the wrapper MUST forward driveFixture's
         // opts (turnIds) or the 9/9 acceptance silently judges whole-capture.
         judge: (exp, frozen, opts) =>
-          judgeFrozenEvidence(exp, frozen, { boardWildcard: boardCount <= 1, ...(opts ?? {}) }),
+          judgeFrozenEvidence(exp, frozen, {
+            boardWildcard: boardCount <= 1,
+            // Codex r1 (B-2/C-4) — the corpus judges a declared turn WINDOW
+            // and dialogue-script asks live OUTSIDE it (the
+            // dialogue_answer_ingress exclusion): a fixture cannot even
+            // declare the trailing script ask its transcript provokes.
+            // Dispatcher and address-mirror asks ARE window-observable and
+            // stay strict.
+            windowedOpenAskFamilies: ['dialogue_script'],
+            ...(opts ?? {}),
+          }),
         log,
       });
       log(

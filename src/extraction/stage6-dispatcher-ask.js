@@ -156,6 +156,9 @@ function recordDispatcherAskProduced(
     ctx.recordAskProduced({
       producerId: 'dispatcher_ask',
       runtimeId,
+      // Codex r1 (C-7) — the successor's produced row carries the broker
+      // predecessor lineage (reconstructable for link-only replacements).
+      replacesRuntimeId,
       liveAskKey: buildLiveAskKey({
         origin: 'dispatcher',
         purpose: input.purpose ?? null,

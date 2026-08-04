@@ -302,6 +302,7 @@ export const SEMANTIC_ORACLE_INPUTS = Object.freeze([
   'tests/fixtures/test-contracts/plan00-evidence-contract/projection-v1.json',
   'tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json',
   'tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json',
+  'tests/fixtures/test-contracts/plan00-evidence-contract/ack-sequences-v1.json',
   'src/extraction/plan00-evidence-registry.js',
   'src/extraction/plan00-evidence-projection.js',
 ]);

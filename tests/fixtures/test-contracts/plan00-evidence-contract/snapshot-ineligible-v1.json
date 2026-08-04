@@ -34,7 +34,7 @@
     "queued_transcript": 0,
     "ask": 0,
     "ask_lifecycle": 5,
-    "ask_transition_rejected": 1,
+    "ask_transition_rejected": 2,
     "delivery_rejected": 1,
     "playback_rejected": 1,
     "producer_unknown": 1,
@@ -96,6 +96,14 @@
       "producer_id": "playback_ack_slot",
       "reason": "playback_without_delivery_attempt",
       "matches": 1
+    },
+    {
+      "kind": "ask_transition_rejected",
+      "revision": 2,
+      "family": null,
+      "stage_attempted": "emitted",
+      "runtime_id": "ghost_1",
+      "reason": "emitted_without_binding"
     },
     {
       "kind": "producer_unknown",

@@ -358,6 +358,10 @@ export function createDeliveryLedger() {
         producerId = null,
         semanticFamily = null,
         correlationId = null,
+        // Codex r1 (C-5) — the PERSISTED outbox delivery-claim token
+        // (process lineage); claim_lineage stays the logical kind:token
+        // ACK alias.
+        deliveryClaimToken = null,
       } = {}
     ) {
       seq += 1;
@@ -371,6 +375,7 @@ export function createDeliveryLedger() {
         producer_id: producerId,
         semantic_family: semanticFamily,
         claim_lineage: claimLineage,
+        delivery_claim_token: deliveryClaimToken,
         // Plan 00B-2 C4 — the SPOKEN text of the delivery (evaluation-only
         // judging surface for text_exact matchers; null for producers that
         // carry no prose). NEVER copied onto sub-records (00C PII rule).
@@ -447,12 +452,16 @@ export function createDeliveryLedger() {
       if (idx >= 0) provisionals.splice(idx, 1);
     },
 
-    /** Stage an early ACK beside the provisional it correlates to. */
+    /**
+     * Stage an early ACK beside the provisional it correlates to.
+     * Codex r1 (C-2) — a wrong/stale/unknown correlation is PRE-ADMISSION
+     * telemetry per the C1 ternary (schema-v1 regime `pre_admission`): no
+     * latch, no row; a later valid ACK for the real operation succeeds.
+     */
     stageFastAck(correlationId, ackBody) {
       const prov = provisionals.find((p) => p.correlation_id === correlationId);
       if (!prov) {
-        markInvalid('fast_ack_without_provisional', { correlationId });
-        return { accepted: false, reason: 'fast_ack_without_provisional' };
+        return { accepted: false, reason: 'fast_ack_without_provisional', preAdmission: true };
       }
       prov.staged_acks.push(ackBody);
       return { accepted: true, reason: null };
@@ -503,6 +512,7 @@ export function createDeliveryLedger() {
       // per-ACK authoritative rows (with their body hashes) are returned so
       // the caller can append one playback sub-record PER start.
       const playbackRows = [];
+      const idempotentRows = [];
       for (const ack of prov.staged_acks) {
         const verdict = this.recordPlaybackAck(ack, [op], {
           producerId: 'fast_tts_staged_ack',
@@ -511,6 +521,9 @@ export function createDeliveryLedger() {
           source: 'fast_tts',
         });
         if (verdict.accepted === 'authoritative') playbackRows.push(verdict.row);
+        // Codex r1 (A-3/B-3) — byte-identical staged retransmissions keep
+        // their accepted-IDEMPOTENT audit trail through promotion.
+        else if (verdict.accepted === 'idempotent') idempotentRows.push(verdict.existing);
       }
       prov.staged_acks = [];
       // Codex r2 finding 2 — the caller's lifecycle sub-record needs the
@@ -522,6 +535,7 @@ export function createDeliveryLedger() {
         op,
         playback_count: playbackRows.length,
         playback_rows: playbackRows,
+        idempotent_rows: idempotentRows,
         delivery_row: deliveryRow,
       };
     },

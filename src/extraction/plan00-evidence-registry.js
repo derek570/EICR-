@@ -66,6 +66,164 @@ export const STOP_BOUNDARY_TERMINALS = Object.freeze([
 ]);
 
 /**
+ * Codex r1 (B-5) — quiescence-counted terminal classification is otherwise
+ * fail-OPEN for `unknown_terminal` (the dispatcher's explicit fallback when
+ * an outcome carries no reason): a genuinely unknown outcome must not
+ * quietly close an ask as quiescence-compatible. The full non-quiescent set
+ * is the three stop-boundary terminals PLUS this explicit unknown fallback.
+ */
+export const NON_QUIESCENT_TERMINALS = Object.freeze([
+  ...STOP_BOUNDARY_TERMINALS,
+  'unknown_terminal',
+]);
+
+/**
+ * Codex r1 (A-4) — the EXECUTABLE per-reason rejection-regime table,
+ * byte-compared against schema-v1.json's `rejection_reasons` by the
+ * contract test. `structural_latch` reasons latch the owning ledger invalid
+ * AND appear as the rejected audit row; the ONE `transition_rejection`
+ * (answered_without_full_proof) produces ONLY the audit row and leaves the
+ * entry open; `pre_admission` reasons are telemetry — no row, no latch.
+ */
+export const REJECTION_REASONS = Object.freeze({
+  duplicate_runtime_binding: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  emitted_without_produced: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  ambiguous_produced_match: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  emitted_without_binding: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  runtime_id_already_bound: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  resolution_without_emitted: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  answered_without_full_proof: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'transition_rejection',
+    row_kind: 'ask_transition_rejected',
+  }),
+  reissue_without_emitted: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  replacement_predecessor_unknown: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  srv_answer_ambiguous: Object.freeze({
+    source_ledger: 'ask',
+    regime: 'structural_latch',
+    row_kind: 'ask_transition_rejected',
+  }),
+  confirmation_delivery_binding_unmatched: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  confirmation_delivery_binding_ambiguous: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  confirmation_delivery_binding_no_mutation_observer: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  dialogue_delivery_binding_unmatched: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  dialogue_delivery_binding_ambiguous: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  dialogue_delivery_binding_no_mutation_observer: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  mirror_terminal_receipt_binding: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  fast_provisional_without_owner_proof: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  fast_ack_without_provisional: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'pre_admission',
+    row_kind: null,
+  }),
+  fast_promotion_without_provisional: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  fast_promotion_unmatched: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  fast_promotion_ambiguous: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+  fast_provisional_unconsumed: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'freeze_invalid',
+  }),
+  playback_ack_unmatched: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'playback_rejected',
+  }),
+  playback_ack_ambiguous: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'playback_rejected',
+  }),
+  playback_without_delivery_attempt: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'playback_rejected',
+  }),
+  unknown_rejection_reason: Object.freeze({
+    source_ledger: 'delivery',
+    regime: 'structural_latch',
+    row_kind: 'delivery_rejected',
+  }),
+});
+
+/**
  * C3 — ONE closed producer registry backing both enums. Every producer ID
  * maps to {event_class, quiescence_family, semantic_family, transport}.
  * Null semantic_family is legal ONLY for event_class 'ask' (pure ask

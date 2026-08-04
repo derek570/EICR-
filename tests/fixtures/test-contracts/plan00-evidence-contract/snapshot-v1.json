@@ -42,7 +42,11 @@
     "usage_revision": 4
   },
   "sub_records": [
-    { "kind": "successful_frame", "revision": 1, "frame_kind": "session_ack" },
+    {
+      "kind": "successful_frame",
+      "revision": 1,
+      "frame_kind": "session_ack"
+    },
     {
       "kind": "round_usage",
       "revision": 1,
@@ -215,7 +219,8 @@
       "claim_lineage": "result:tok_9",
       "wire_turn_id": null,
       "dedupe_token": null,
-      "correlation_id": null
+      "correlation_id": null,
+      "delivery_claim_token": "clm_tok_9"
     },
     {
       "kind": "delivery_evidence",
@@ -305,6 +310,10 @@
       "channel": "ws_vcr",
       "audible_kind": "voice_command_response"
     },
-    { "kind": "confirmation_delivery", "revision": 1, "frame_kind": "confirmation" }
+    {
+      "kind": "confirmation_delivery",
+      "revision": 1,
+      "frame_kind": "confirmation"
+    }
   ]
 }

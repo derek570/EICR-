@@ -479,7 +479,7 @@
     ]
   },
   "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
-  "semantic_oracle_digest": "fd570fd60192cfd9cd76d572b7e85c4afefa365a9fc72fd91fdead1e9fc3eee5",
+  "semantic_oracle_digest": "d290eff265dff53e136a312bb3063a4fde063014e8a6be7d26be69c85ab8340b",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -491,15 +491,15 @@
     },
     {
       "path": "src/extraction/plan00-audibility-ledgers.js",
-      "sha256": "e4bfe2d5590efbac50a28999daf038b489193925af9a4be329cc1e434e24cb0d"
+      "sha256": "f1b0c3542faa6e9d33f5fed8f151b6e7d540fa62b71c2b6398af80b2ecb0d825"
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "d4237ecfb9b30fa060e84616649769bcaa6e27198c900f391127aafb117f483a"
+      "sha256": "d14d4388db0a60f68d63f8dcd2b1975664ea849c6714edcec8d6e47719ebc0dc"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "ff43afba525f8caf427066a345ce2333e01dcb3e1c52d96e25e96ba39b7afec0"
+      "sha256": "1a1b2dc9f3023c6ed9028f35188a2166bdc8b921e5d8ba8be9d44a8971a3fc0f"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -543,11 +543,11 @@
     },
     {
       "path": "scripts/model-ab/lib/expectation-projection.mjs",
-      "sha256": "f9567bfcef718006aae7d17eea076b66c3b2addf834569f0b39f5c5d0d6559c8"
+      "sha256": "d6e4bf0ea7b01538c735443a607af70bdf88572e3dac694f2dc614d422bcbb09"
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
-      "sha256": "016b3f3ea5afdea23719d327a80bcf7b3c6fc917803677f6cba0dd24222b1db8"
+      "sha256": "eb7ed52cf0dd395537d431b2f110a199d71fcae1df84d75f8dbd6c6e1d80efb7"
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
@@ -559,7 +559,7 @@
     },
     {
       "path": "scripts/model-ab/lib/lane-driver.mjs",
-      "sha256": "399f0e09c7a8c3bdb7481bf4c0082a1ce2cbc3d5c6f5b2f7d492ad656a04c709"
+      "sha256": "99c57dea069a330f2723b09a0b0f70273a86099ed8dec636b8422ff344cc13ca"
     },
     {
       "path": "scripts/field-replay/lib/replay-runner-core.mjs",
@@ -579,7 +579,7 @@
     },
     {
       "path": "src/extraction/stage6-dispatcher-ask.js",
-      "sha256": "2d7e29cd3918070a7219a5a2b7cb84a14d1dd68aa1dc298d27e40b4190e4c85b"
+      "sha256": "cd9149f348f8f10766435ea79d1cd6f24dd7330e1283816d3c06b6bf67d09132"
     },
     {
       "path": "src/extraction/address-mirror-controller.js",
@@ -607,31 +607,35 @@
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json",
-      "sha256": "75484cf32e991d4ee93d6bb7306bef9f98009478c44ef1775654ecb8c2d15fbf"
+      "sha256": "c1d8a51b3f687730aa981e171667ef931c941e50458f1ccbc691185e1c46fb78"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-v1.json",
-      "sha256": "8689b0117417aa159dde8994226ad8439be5915178af86fa75dedb267ddb5226"
+      "sha256": "4db43f39ab60007ebd0350a0fe3f3b93b357c71c035bc564262381324be18b4d"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-v1.json",
-      "sha256": "3b75adac90847b5d7e83aaa2d2ab8f46604bf23006e040f31717ec5d54af4a73"
+      "sha256": "def1df95df048f8bb31eee5a1a3fc9f1fb9dd8a8ac1895835b7854f1bc360cf3"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json",
-      "sha256": "004e697dc00fb2542ee7dec67204995ab96ea16bda50fa728dc0d314f498ccd7"
+      "sha256": "391a70bc0f6cdd2132d0f29d874c35b1e8eaebb34850f2396e55e7bde5c41087"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json",
-      "sha256": "202eb4df62def596ae9e473a9267aa6c32c05ec63288da937782bba2a2b3e1c9"
+      "sha256": "438c21e8b10f06fc7ca6c65b959f04356a5f6438d318b5cf66c8b0f3a944bf49"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/ack-sequences-v1.json",
+      "sha256": "f4ba274c1b13386fce7d45075a1b2fd39207a571cc2373c77f15df89de07c543"
     },
     {
       "path": "src/extraction/plan00-evidence-registry.js",
-      "sha256": "b084e2b4b0c8c0baaa3457b7daa2fe049a5ee598c13170161cfc831302aedc15"
+      "sha256": "76ee9e35bec4ef622c3a85da0698fed9c41fba91bcb6f81140a2b2d47e0866c6"
     },
     {
       "path": "src/extraction/plan00-evidence-projection.js",
-      "sha256": "07dc66114d0fae88d2f595fef043f47a0ffcff1b0c541feebe548a69fe11f81a"
+      "sha256": "0a0368e3f20cba62ea96218cff1f471c52b560e64f0e7c2926b83faa338bfb88"
     }
   ],
   "strata_named_gaps": [

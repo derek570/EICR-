@@ -49,7 +49,11 @@ import {
   PLAN00_AUDIBILITY_DESCRIPTOR,
   PLAN00_FRAME_BINDING_REGISTRY,
 } from './plan00-audibility-ledgers.js';
-import { producerEntry, STOP_BOUNDARY_TERMINALS } from './plan00-evidence-registry.js';
+import {
+  producerEntry,
+  NON_QUIESCENT_TERMINALS,
+  REJECTION_REASONS,
+} from './plan00-evidence-registry.js';
 
 export const EVIDENCE_OBSERVER = Symbol('plan00.evidenceObserver');
 export const LIFECYCLE_LEDGER = Symbol('plan00.lifecycleLedger');
@@ -291,14 +295,23 @@ export function readInFlightCounts(entry) {
   // freeze ineligible even after stop-expiry resolves it — the closed
   // non-quiescent set; any other terminal closes it). Dormant: one Symbol
   // lookup when no evaluation context is attached.
-  const askLedger = entry?.[EVALUATION_CONTEXT]?.askLedger ?? null;
+  const evalCtx = entry?.[EVALUATION_CONTEXT] ?? null;
+  const askLedger = evalCtx?.askLedger ?? null;
   const openAsks = { dispatcher: 0, dialogue_script: 0, address_mirror: 0 };
   if (askLedger) {
+    // Codex r1 (C-3) — entries OPEN when teardown began stay counted even
+    // if they resolve with a quiescence-compatible terminal during the
+    // teardown's awaited flushes: open AT the stop boundary is the fact
+    // the freeze must see (the latch is a Set of entry references).
+    const stopLatched = evalCtx?.stopBoundaryOpenAsks ?? null;
     for (const e of askLedger.entries) {
       const open =
         e.state === 'produced' ||
         e.state === 'emitted' ||
-        STOP_BOUNDARY_TERMINALS.includes(e.state);
+        // Codex r1 (B-5) — `unknown_terminal` joins the stop-boundary set:
+        // a genuinely unknown outcome must not quietly close an ask.
+        NON_QUIESCENT_TERMINALS.includes(e.state) ||
+        (stopLatched != null && stopLatched.has(e));
       if (!open) continue;
       const family = e.meta?.family;
       if (family in openAsks) openAsks[family] += 1;
@@ -756,7 +769,13 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   // ── ask lifecycle helpers (exactly-once ownership map callers) ──
   // Plan 00B-3 C1 — every sub-record is DERIVED FROM the ledger verdict
   // (one derivation, never a parallel append beside it).
-  ctx.recordAskProduced = ({ producerId, runtimeId, liveAskKey, meta = null }) => {
+  ctx.recordAskProduced = ({
+    producerId,
+    runtimeId,
+    liveAskKey,
+    meta = null,
+    replacesRuntimeId = null,
+  }) => {
     if (!ctx.askLedger) return;
     const producer = resolveProducer(producerId, 'ask');
     if (!producer) return;
@@ -772,14 +791,23 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       return;
     }
     ctx.askRuntimeBindings.set(runtimeId, { key: liveAskKey, family, producerId, meta });
-    const verdict = ctx.askLedger.produced(liveAskKey, { family, ...(meta ?? {}) });
+    // Codex r1 (B-1) — the REGISTRY-derived family wins over caller meta:
+    // spreading meta after `family` let a caller overwrite the ledger
+    // family, splitting the quiescence count from the sub-record family.
+    const verdict = ctx.askLedger.produced(liveAskKey, { ...(meta ?? {}), family });
     if (verdict?.accepted) {
-      appendSub('ask_lifecycle', {
+      const detail = {
         family,
         stage: 'produced',
         runtime_id: runtimeId,
         live_ask_key: liveAskKey,
-      });
+      };
+      // Codex r1 (C-7) — the successor's produced row carries the broker
+      // predecessor lineage, so a link-only replacement (already-terminal
+      // predecessor, no transition row) stays reconstructable from
+      // sub_records alone.
+      if (replacesRuntimeId != null) detail.replaces_runtime_id = replacesRuntimeId;
+      appendSub('ask_lifecycle', detail);
     }
   };
 
@@ -924,6 +952,20 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     });
   };
 
+  // Codex r1 (C-3) — stop-boundary open-ask latch, invoked SYNCHRONOUSLY at
+  // teardown begin (before any awaited flush). An ask open at this instant
+  // renders THIS session's completion freeze ineligible even if it resolves
+  // with a quiescence-compatible terminal during the teardown's awaits.
+  ctx.stopBoundaryOpenAsks = null;
+  ctx.latchStopBoundary = () => {
+    if (ctx.stopBoundaryOpenAsks || !ctx.askLedger) return;
+    const latched = new Set();
+    for (const e of ctx.askLedger.entries) {
+      if (e.state === 'produced' || e.state === 'emitted') latched.add(e);
+    }
+    ctx.stopBoundaryOpenAsks = latched;
+  };
+
   ctx.expireSrvJoins = (reason) => {
     if (ctx.srvAnswerHalves.size > 0) {
       appendSub('ask_lifecycle', {
@@ -949,6 +991,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       producerId,
       kind,
       claimLineage = null,
+      claimToken = null,
       text = null,
       wireTurnId = null,
       dedupeToken = null,
@@ -968,6 +1011,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       producerId,
       semanticFamily: producer.semantic_family,
       correlationId,
+      deliveryClaimToken: claimToken,
     });
     appendSub('delivery_evidence', {
       producer_id: producerId,
@@ -978,6 +1022,9 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       delivery_ref: row.delivery_ref,
       at_seq: row.at_seq,
       claim_lineage: claimLineage,
+      // Codex r1 (C-5) — the PERSISTED outbox delivery-claim token (process
+      // lineage); claim_lineage stays the logical kind:token ACK alias.
+      delivery_claim_token: claimToken,
       wire_turn_id: wireTurnId,
       dedupe_token: dedupeToken,
       correlation_id: correlationId,
@@ -995,10 +1042,19 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     claimLineage = null,
     detail = null,
   }) => {
-    ctx.deliveryLedger?.markInvalid?.(reason, detail ?? { field, circuit });
+    // Codex r1 (A-4/B-4) — the closed vocabularies stay closed HERE too:
+    // an unregistered producer id routes through the producer_unknown
+    // fail-loud path, and an unregistered reason is recorded as the
+    // fail-loud `unknown_rejection_reason` (schema-v1 rejection_reasons).
+    const producer = resolveProducer(producerId, 'delivery');
+    if (!producer) return;
+    const knownReason = Object.prototype.hasOwnProperty.call(REJECTION_REASONS, reason)
+      ? reason
+      : 'unknown_rejection_reason';
+    ctx.deliveryLedger?.markInvalid?.(knownReason, detail ?? { field, circuit });
     appendSub('delivery_rejected', {
-      producer_id: producerId ?? null,
-      reason,
+      producer_id: producerId,
+      reason: knownReason,
       field,
       circuit,
       claim_lineage: claimLineage,
@@ -1061,14 +1117,26 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   // negatives read the absence).
   ctx.stageFastPlaybackAck = ({ correlationId, ackBody }) => {
     if (!ctx.deliveryLedger) return;
-    const verdict = ctx.deliveryLedger.stageFastAck(correlationId, ackBody);
-    if (verdict && verdict.accepted === false) {
-      appendSub('playback_rejected', {
-        producer_id: 'fast_tts_staged_ack',
-        reason: verdict.reason ?? null,
-        matches: null,
-      });
+    const r = ctx.fastTtsReservations.get(correlationId);
+    if (!r) {
+      // Codex r1 (C-2) — wrong/stale/unknown correlation: PRE-ADMISSION
+      // telemetry (no row, no latch); a later valid ACK succeeds.
+      return;
     }
+    if (r.promoted && r.promotedOp) {
+      // Codex r1 (C-1) — the COMMON ordering: finish -> promotion ->
+      // client playback ACK. The reservation is already resolved to its
+      // authoritative operation, so the ACK resolves immediately through
+      // the ordinary ternary playback path instead of being staged into a
+      // bucket nothing will ever consume.
+      ctx.recordPlayback(ackBody, [r.promotedOp], {
+        producerId: 'fast_tts_staged_ack',
+        source: 'fast_tts',
+        correlationId,
+      });
+      return;
+    }
+    ctx.deliveryLedger.stageFastAck(correlationId, ackBody);
   };
 
   ctx.resolvePlaybackFromSlot = ({ slot, ackBody, source = null, turnId = null }) => {
@@ -1207,10 +1275,35 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   ctx.noteAddressMirrorRecovery = (claimLineage) => {
     if (claimLineage) ctx.pendingRecoveryLineages.add(claimLineage);
   };
-  ctx.recordAddressMirrorTerminal = ({ claimLineage, ops, text = null }) => {
-    if (ctx.addressMirrorUnits.has(claimLineage)) {
+  ctx.recordAddressMirrorTerminal = ({
+    claimLineage,
+    ops,
+    text = null,
+    claimToken = null,
+    attempt = null,
+  }) => {
+    const existing = ctx.addressMirrorUnits.get(claimLineage);
+    if (existing) {
       // The same result can surface the terminal on more than one frame
-      // (extraction + VCR) — one unit per claim lineage, never two.
+      // (extraction + VCR) — one unit per claim lineage, never two. But a
+      // REPLAY (a NEW frame-binding attempt ordinal) is a distinct
+      // successful send and must append its own delivery attempt (Codex r1
+      // C-6: 00C's delivery_attempt preserves every send/replay; the unit
+      // and its ACK correlation stay singular).
+      if (
+        attempt != null &&
+        existing.lastAttempt != null &&
+        attempt > existing.lastAttempt &&
+        existing.identities.length > 0
+      ) {
+        existing.lastAttempt = attempt;
+        ctx.recordDelivery(existing.identities, {
+          producerId: 'address_mirror_terminal',
+          kind: 'address_mirror_terminal',
+          claimLineage,
+          claimToken,
+        });
+      }
       return;
     }
     const identities = Array.isArray(ops) ? ops : [];
@@ -1226,8 +1319,9 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       producerId: 'address_mirror_terminal',
       kind: 'address_mirror_terminal',
       claimLineage,
+      claimToken,
     });
-    ctx.addressMirrorUnits.set(claimLineage, identities);
+    ctx.addressMirrorUnits.set(claimLineage, { identities, lastAttempt: attempt ?? null });
     if (isForeignRecovery) {
       for (const op of identities) {
         ctx.deliveryLedger.markDeliveryHistoryAmbiguous(op);
@@ -1248,9 +1342,9 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     }
   };
   ctx.recordAddressMirrorAck = ({ claimLineage, ackBody }) => {
-    const identities = ctx.addressMirrorUnits.get(claimLineage);
-    if (!identities) return null;
-    return ctx.recordPlayback(ackBody, [identities[0]], {
+    const unit = ctx.addressMirrorUnits.get(claimLineage);
+    if (!unit || unit.identities.length === 0) return null;
+    return ctx.recordPlayback(ackBody, [unit.identities[0]], {
       producerId: 'address_mirror_delivery_ack',
       source: 'address_mirror_delivery_ack',
     });
@@ -1280,6 +1374,9 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       },
       finished: false,
       promoted: false,
+      // Codex r1 (C-1) — set at promotion so a post-promotion client ACK
+      // resolves immediately against the authoritative operation.
+      promotedOp: null,
     });
   };
   ctx.finishFastTts = (correlationId) => {
@@ -1330,6 +1427,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     if (candidateOps.length === 0) return; // receipt may still arrive — settle later
     const promotion = ctx.deliveryLedger.promoteProvisional(correlationId, candidateOps);
     r.promoted = true;
+    if (promotion?.accepted) r.promotedOp = promotion.op;
     if (!promotion?.accepted) {
       // One derivation from the ledger verdict — the promotion failure
       // latched inside the ledger; this is its rejected audit row.
@@ -1368,6 +1466,18 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
         source: 'fast_tts',
         ack_body_hash: prow.ack_body_hash,
         correlation_id: correlationId,
+      });
+    }
+    // Codex r1 (A-3/B-3) — byte-identical staged retransmissions keep their
+    // accepted-IDEMPOTENT audit rows through promotion (the ordinary ACK
+    // path already appends them; the staged path must not lose them).
+    for (const idem of promotion.idempotent_rows ?? []) {
+      appendSub('playback_idempotent', {
+        producer_id: 'fast_tts_staged_ack',
+        semantic_family: 'fast_tts',
+        transport: 'http_playback_ack',
+        op_key: idem.op_key,
+        ack_body_hash: idem.ack_body_hash,
       });
     }
   };

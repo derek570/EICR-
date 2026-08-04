@@ -57,6 +57,8 @@ import {
   NON_PRODUCER_ROW_KINDS,
   PRODUCER_ROW_KINDS,
   STOP_BOUNDARY_TERMINALS,
+  NON_QUIESCENT_TERMINALS,
+  REJECTION_REASONS,
 } from '../extraction/plan00-evidence-registry.js';
 import {
   buildEvidenceProjectionV1,
@@ -82,6 +84,7 @@ const snapshotA = loadJson('snapshot-v1.json');
 const projectionA = loadJson('projection-v1.json');
 const snapshotB = loadJson('snapshot-ineligible-v1.json');
 const projectionB = loadJson('projection-ineligible-v1.json');
+const ackSequences = loadJson('ack-sequences-v1.json');
 
 const stripComment = ({ _comment, ...rest }) => rest;
 
@@ -161,6 +164,26 @@ describe('contract schema drift (C0 anti-shaping)', () => {
     expect([...STOP_BOUNDARY_TERMINALS]).toEqual(schema.ask_terminals.stop_boundary_non_quiescent);
   });
 
+  test('the NON-quiescent terminal set (stop boundary + unknown_terminal) byte-agrees', () => {
+    expect([...NON_QUIESCENT_TERMINALS]).toEqual(schema.ask_terminals.non_quiescent_terminals);
+  });
+
+  test('the code rejection-regime table byte-agrees with the schema (both directions)', () => {
+    const codeReasons = Object.keys(REJECTION_REASONS).sort();
+    const schemaReasons = Object.keys(schema.rejection_reasons).sort();
+    expect(codeReasons).toEqual(schemaReasons);
+    for (const reason of codeReasons) {
+      const code = REJECTION_REASONS[reason];
+      const spec = schema.rejection_reasons[reason];
+      expect({ reason, ...code }).toEqual({
+        reason,
+        source_ledger: spec.source_ledger,
+        regime: spec.regime,
+        row_kind: spec.row_kind ?? null,
+      });
+    }
+  });
+
   test('every row kind is either a producer row kind or an allowlisted non-producer kind', () => {
     const all = new Set([...PRODUCER_ROW_KINDS, ...NON_PRODUCER_ROW_KINDS]);
     expect([...all].sort()).toEqual(Object.keys(schema.row_kinds).sort());
@@ -193,9 +216,14 @@ describe('contract schema drift (C0 anti-shaping)', () => {
 
   test('the rejection-reason vocabulary is closed and regime-classified', () => {
     for (const [reason, spec] of Object.entries(schema.rejection_reasons)) {
-      expect(['structural_latch', 'transition_rejection']).toContain(spec.regime);
+      expect(['structural_latch', 'transition_rejection', 'pre_admission']).toContain(spec.regime);
       expect(['ask', 'delivery']).toContain(spec.source_ledger);
-      expect(typeof spec.row_kind).toBe('string');
+      // pre-admission reasons are telemetry: NO row kind by definition
+      if (spec.regime === 'pre_admission') {
+        expect(spec.row_kind).toBeNull();
+      } else {
+        expect(typeof spec.row_kind).toBe('string');
+      }
       // the ONE transition rejection is the sanctioned no-latch reason
       if (spec.regime === 'transition_rejection') {
         expect(reason).toBe('answered_without_full_proof');
@@ -227,7 +255,11 @@ describe('fixture validation against schema-v1 (C0)', () => {
           expect(row.transport).toBe(producer.transport);
         }
       }
-      if (row.kind === 'ask_lifecycle' || row.kind === 'ask_transition_rejected') {
+      if (row.kind === 'ask_lifecycle') {
+        expect(ASK_QUIESCENCE_FAMILIES).toContain(row.family);
+      }
+      if (row.kind === 'ask_transition_rejected' && row.family !== null) {
+        // schema: family is nullable on rejected rows (unresolvable binding)
         expect(ASK_QUIESCENCE_FAMILIES).toContain(row.family);
       }
       if (
@@ -996,9 +1028,34 @@ describe('windowed-judge carve-out — open-Tier-2-ask-ONLY non-quiescence (C2)'
     expect(frozen.eligible).toBe(false);
     expect(frozen.counts.open_asks_dialogue_script).toBe(1);
     expect(frozen.counts.non_quiescent_at_stop).toBe(1);
-    // the WINDOWED judge proceeds past quiescence (dialogue asks are outside
-    // the corpus observation boundary; a stable open ask mutates nothing)
-    expect(composeCaptureInvalid(frozen)).toBeNull();
+    // the carve-out is OPT-IN (Codex r1 B-2/C-4): with no declared window
+    // the judge is STRICT; only a caller declaring dialogue_script as
+    // window-external proceeds (a stable open ask mutates nothing, and
+    // dialogue asks are outside the corpus observation boundary).
+    expect(composeCaptureInvalid(frozen)).toEqual({ reason: 'non_quiescent_at_stop' });
+    expect(
+      composeCaptureInvalid(frozen, { windowedOpenAskFamilies: ['dialogue_script'] })
+    ).toBeNull();
+  });
+
+  test('an open DISPATCHER ask never passes the carve-out, even with a declared window', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_jw3' });
+    ctx.recordAskProduced({
+      producerId: 'dispatcher_ask',
+      runtimeId: 'toolu_jw3',
+      liveAskKey: K('jw3'),
+    });
+    ctx.recordAskEmitted({ runtimeId: 'toolu_jw3' });
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_jw3',
+      boundary: 'session_stopped',
+    });
+    expect(frozen.eligible).toBe(false);
+    // dispatcher asks are window-OBSERVABLE — the carve-out never covers them
+    expect(composeCaptureInvalid(frozen, { windowedOpenAskFamilies: ['dialogue_script'] })).toEqual(
+      { reason: 'non_quiescent_at_stop' }
+    );
   });
 
   test('any OTHER non-quiescence beside the open ask still holds the judge', () => {
@@ -1016,7 +1073,366 @@ describe('windowed-judge carve-out — open-Tier-2-ask-ONLY non-quiescence (C2)'
       boundary: 'session_stopped',
     });
     expect(frozen.eligible).toBe(false);
-    expect(composeCaptureInvalid(frozen)).toEqual({ reason: 'non_quiescent_at_stop' });
+    expect(composeCaptureInvalid(frozen, { windowedOpenAskFamilies: ['dialogue_script'] })).toEqual(
+      { reason: 'non_quiescent_at_stop' }
+    );
+  });
+});
+
+// ── 5c. Codex r1 fix wave — regression pins ────────────────────────────────
+
+describe('Codex r1 pins — quiescence hardening', () => {
+  test('unknown_terminal never quietly closes an ask (counts non-quiescent)', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_ut' });
+    ctx.recordAskProduced({
+      producerId: 'dispatcher_ask',
+      runtimeId: 'toolu_ut',
+      liveAskKey: K('ut'),
+    });
+    ctx.recordAskEmitted({ runtimeId: 'toolu_ut' });
+    ctx.recordAskResolved({ runtimeId: 'toolu_ut', terminal: 'unknown_terminal', detail: {} });
+    expect(readInFlightCounts(entry).open_asks_dispatcher).toBe(1);
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_ut',
+      boundary: 'session_stopped',
+    });
+    expect(frozen.eligible).toBe(false);
+  });
+
+  test('an ask open at the stop boundary stays counted even if it resolves answered during teardown awaits', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_race' });
+    ctx.recordAskProduced({
+      producerId: 'dialogue_script_ask',
+      runtimeId: 'srv_race',
+      liveAskKey: K('race'),
+    });
+    ctx.recordAskEmitted({ runtimeId: 'srv_race' });
+    // teardown begins — the latch fires synchronously
+    ctx.latchStopBoundary();
+    // the answer lands DURING the teardown's awaited flushes
+    ctx.recordAskResolved({
+      runtimeId: 'srv_race',
+      terminal: 'answered',
+      detail: { answer_frame_id: 'srv_race', transcript_resolved: true },
+    });
+    expect(ctx.askLedger.entries[0].state).toBe('answered');
+    // …but it was OPEN at the stop boundary, so it still counts
+    expect(readInFlightCounts(entry).open_asks_dialogue_script).toBe(1);
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_race',
+      boundary: 'session_stopped',
+    });
+    expect(frozen.eligible).toBe(false);
+  });
+
+  test('the reconstruction and the counts must AGREE (count contradiction => ineligible)', () => {
+    const snap = {
+      sessionId: 'sess_contra',
+      boundary: 'session_stopped',
+      counts: {
+        open_asks_dispatcher: 0,
+        open_asks_dialogue_script: 0,
+        open_asks_address_mirror: 0,
+        non_quiescent_at_stop: 0,
+        revision_instability: 0,
+      },
+      revisions: { usage_revision: 0 },
+      sub_records: [
+        {
+          kind: 'ask_lifecycle',
+          revision: 1,
+          family: 'dialogue_script',
+          stage: 'produced',
+          runtime_id: 'x',
+          live_ask_key: 'k',
+        },
+        {
+          kind: 'ask_lifecycle',
+          revision: 2,
+          family: 'dialogue_script',
+          stage: 'emitted',
+          runtime_id: 'x',
+        },
+      ],
+    };
+    const proj = buildEvidenceProjectionV1(snap);
+    expect(proj.count_contradictions).toEqual([
+      { family: 'dialogue_script', counted: 0, derived: 1 },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+});
+
+describe('Codex r1 pins — fast-TTS ACK lifecycle', () => {
+  function promoteScenario() {
+    const entry = makeEntry();
+    const sessionId = 'sess_fp';
+    const mo = createMutationObserver({ sessionId });
+    const ctx = normaliseEvaluationContext(
+      {
+        observer: { buildCandidate: (snap) => snap, publish: () => {} },
+        mutationObserver: mo,
+        askLedger: createAskLedger(),
+        deliveryLedger: createDeliveryLedger(),
+      },
+      { sessionId }
+    );
+    attachEvaluationContext(entry, ctx);
+    mo.enterTurnScope('utt-fp');
+    mo.bindFastCorrelation('corr_fp');
+    mo.setOriginFrame({ origin: 'model_direct' });
+    mo.commit({
+      kind: 'reading',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      board_id: null,
+      value: '0.63',
+    });
+    mo.clearOriginFrame();
+    mo.exitTurnScope();
+    ctx.reserveFastTts({
+      correlationId: 'corr_fp',
+      candidate: { field: 'measured_zs_ohm', circuit: 4, board_id: null, value: '0.63' },
+    });
+    return { entry, ctx };
+  }
+
+  test('an ACK arriving AFTER promotion resolves immediately (the common ordering is never lost)', () => {
+    const { entry, ctx } = promoteScenario();
+    ctx.finishFastTts('corr_fp'); // receipt already exists -> promotes now
+    expect(ctx.fastTtsReservations.get('corr_fp').promoted).toBe(true);
+    ctx.stageFastPlaybackAck({ correlationId: 'corr_fp', ackBody: { ok: true, late: 1 } });
+    const rows = rowsOfKind(entry, 'playback_evidence').filter(
+      (r) => r.semantic_family === 'fast_tts'
+    );
+    expect(rows).toHaveLength(1);
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(1);
+    expect(ctx.deliveryLedger.invalid).toBeNull();
+  });
+
+  test('byte-identical staged retransmissions keep their idempotent audit rows THROUGH promotion', () => {
+    const { entry, ctx } = promoteScenario();
+    const ack = { ok: true, n: 9 };
+    ctx.stageFastPlaybackAck({ correlationId: 'corr_fp', ackBody: ack });
+    ctx.stageFastPlaybackAck({ correlationId: 'corr_fp', ackBody: ack }); // byte-identical dup
+    ctx.finishFastTts('corr_fp'); // promotion consumes both staged ACKs
+    expect(
+      rowsOfKind(entry, 'playback_evidence').filter((r) => r.semantic_family === 'fast_tts')
+    ).toHaveLength(1);
+    const idem = rowsOfKind(entry, 'playback_idempotent').filter(
+      (r) => r.semantic_family === 'fast_tts'
+    );
+    expect(idem).toHaveLength(1);
+    expect(ctx.deliveryLedger.invalid).toBeNull();
+  });
+
+  test('a wrong/stale fast correlation is PRE-ADMISSION telemetry: no row, no latch, later valid ACK succeeds', () => {
+    const { entry, ctx } = promoteScenario();
+    ctx.stageFastPlaybackAck({ correlationId: 'corr_STALE', ackBody: { ok: true } });
+    expect(subRecords(entry).filter((r) => r.kind === 'playback_rejected')).toHaveLength(0);
+    expect(ctx.deliveryLedger.invalid).toBeNull();
+    ctx.finishFastTts('corr_fp');
+    ctx.stageFastPlaybackAck({ correlationId: 'corr_fp', ackBody: { ok: true, v: 2 } });
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(1);
+    expect(ctx.deliveryLedger.invalid).toBeNull();
+  });
+});
+
+describe('Codex r1 pins — replacement lineage and mirror replays', () => {
+  test('the successor produced row carries replaces_runtime_id (link-only replacements stay reconstructable)', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_rl' });
+    ctx.recordAskProduced({
+      producerId: 'dispatcher_ask',
+      runtimeId: 'toolu_pred',
+      liveAskKey: K('p1'),
+    });
+    ctx.recordAskEmitted({ runtimeId: 'toolu_pred' });
+    ctx.recordAskResolved({ runtimeId: 'toolu_pred', terminal: 'timeout', detail: {} }); // already terminal
+    ctx.recordAskProduced({
+      producerId: 'dispatcher_ask',
+      runtimeId: 'pvr-succ',
+      liveAskKey: K('p2'),
+      replacesRuntimeId: 'toolu_pred',
+    });
+    ctx.recordAskReplacement({
+      predecessorRuntimeId: 'toolu_pred',
+      successorRuntimeId: 'pvr-succ',
+    });
+    const produced = rowsOfKind(entry, 'ask_lifecycle').filter(
+      (r) => r.stage === 'produced' && r.runtime_id === 'pvr-succ'
+    );
+    expect(produced).toHaveLength(1);
+    expect(produced[0].replaces_runtime_id).toBe('toolu_pred');
+    // link-only: the already-terminal predecessor gets NO transition row
+    expect(rowsOfKind(entry, 'ask_lifecycle').filter((r) => r.stage === 'replaced')).toHaveLength(
+      0
+    );
+    expect(rowsOfKind(entry, 'ask_transition_rejected')).toHaveLength(0);
+  });
+
+  test('a mirror REPLAY (new frame-binding attempt) appends its own delivery attempt; the dual frame does not', () => {
+    const entry = makeEntry();
+    const sessionId = 'sess_mr';
+    const mo = createMutationObserver({ sessionId });
+    const ctx = normaliseEvaluationContext(
+      {
+        observer: { buildCandidate: (snap) => snap, publish: () => {} },
+        mutationObserver: mo,
+        askLedger: createAskLedger(),
+        deliveryLedger: createDeliveryLedger(),
+      },
+      { sessionId }
+    );
+    attachEvaluationContext(entry, ctx);
+    const op = {
+      extractionTurnId: 'tM',
+      field: 'client_address',
+      circuit: null,
+      boardId: null,
+      ordinal: 0,
+    };
+    // first send, extraction frame (attempt 1)
+    ctx.recordAddressMirrorTerminal({
+      claimLineage: 'result:tok_m',
+      ops: [op],
+      text: 'Address copied.',
+      claimToken: 'clm_m',
+      attempt: 1,
+    });
+    // same send, VCR frame (same attempt) — the dual-frame duplicate
+    ctx.recordAddressMirrorTerminal({
+      claimLineage: 'result:tok_m',
+      ops: null,
+      text: 'Address copied.',
+      claimToken: 'clm_m',
+      attempt: 1,
+    });
+    expect(rowsOfKind(entry, 'delivery_evidence')).toHaveLength(1);
+    expect(rowsOfKind(entry, 'delivery_evidence')[0].delivery_claim_token).toBe('clm_m');
+    // reconnect replay — a NEW attempt ordinal: one replay delivery attempt
+    ctx.recordAddressMirrorTerminal({
+      claimLineage: 'result:tok_m',
+      ops: null,
+      text: 'Address copied.',
+      claimToken: 'clm_m',
+      attempt: 2,
+    });
+    expect(rowsOfKind(entry, 'delivery_evidence')).toHaveLength(2);
+    // the logical unit stays SINGULAR: one ACK still resolves one playback
+    const row = ctx.recordAddressMirrorAck({
+      claimLineage: 'result:tok_m',
+      ackBody: { type: 'address_mirror_delivery_ack', kind: 'result', token: 'tok_m' },
+    });
+    expect(row).toBeTruthy();
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(1);
+  });
+});
+
+describe('Codex r1 — the reusable ACK-sequence action fixture (shared with 00C Stage A)', () => {
+  const OP = (o) => ({
+    extractionTurnId: o.turn,
+    field: o.field,
+    circuit: o.circuit ?? null,
+    boardId: null,
+    ordinal: 0,
+  });
+
+  test.each(ackSequences.cases.map((c) => [c.name, c]))('%s', (_name, kase) => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: `sess_${_name}` });
+    for (const act of kase.actions) {
+      if (act.action === 'delivery') {
+        ctx.recordDelivery([OP(act.op)], { producerId: act.producer_id, kind: act.kind });
+      } else if (act.action === 'playback') {
+        ctx.recordPlayback(act.ack_body, [OP(act.op)], {
+          producerId: act.producer_id,
+          source: act.source,
+        });
+      } else if (act.action === 'playback_slot' || act.action === 'playback_slot_miss') {
+        ctx.resolvePlaybackFromSlot({ slot: act.slot, ackBody: act.ack_body, source: 'ordinary' });
+      } else if (act.action === 'fast_ack') {
+        ctx.stageFastPlaybackAck({ correlationId: act.correlation_id, ackBody: act.ack_body });
+      } else {
+        throw new Error(`unknown fixture action: ${act.action}`);
+      }
+    }
+    expect(rowsOfKind(entry, 'playback_evidence')).toHaveLength(kase.expected.playback_evidence);
+    expect(rowsOfKind(entry, 'playback_idempotent')).toHaveLength(
+      kase.expected.playback_idempotent
+    );
+    expect(rowsOfKind(entry, 'playback_rejected')).toHaveLength(kase.expected.playback_rejected);
+    expect(ctx.deliveryLedger.invalid).toEqual(kase.expected.delivery_invalid);
+  });
+});
+
+describe('Codex r1 — executable rejection-regime table', () => {
+  test('transition rejection: answered_without_full_proof — row, NO latch, entry stays open', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_rr1' });
+    ctx.recordAskProduced({ producerId: 'dispatcher_ask', runtimeId: 'r1', liveAskKey: K('rr1') });
+    ctx.recordAskEmitted({ runtimeId: 'r1' });
+    ctx.recordAskResolved({
+      runtimeId: 'r1',
+      terminal: 'answered',
+      detail: { answer_frame_id: 'WRONG', transcript_resolved: true },
+    });
+    expect(rowsOfKind(entry, 'ask_transition_rejected')).toHaveLength(1);
+    expect(ctx.askLedger.invalid).toBeNull();
+    expect(ctx.askLedger.open()).toHaveLength(1);
+  });
+
+  test.each([
+    ['duplicate_runtime_binding'],
+    ['resolution_without_emitted'],
+    ['reissue_without_emitted'],
+    ['replacement_predecessor_unknown'],
+    ['emitted_without_binding'],
+  ])('structural ask rejection %s — row AND latch', (reason) => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: `sess_${reason}` });
+    if (reason === 'duplicate_runtime_binding') {
+      ctx.recordAskProduced({ producerId: 'dispatcher_ask', runtimeId: 'd1', liveAskKey: K('a') });
+      ctx.recordAskProduced({ producerId: 'dispatcher_ask', runtimeId: 'd1', liveAskKey: K('a') });
+    } else if (reason === 'resolution_without_emitted') {
+      ctx.recordAskResolved({ runtimeId: 'ghost', terminal: 'timeout', detail: {} });
+    } else if (reason === 'reissue_without_emitted') {
+      ctx.recordAskProduced({ producerId: 'dispatcher_ask', runtimeId: 'd2', liveAskKey: K('b') });
+      ctx.recordAskEmitted({ runtimeId: 'd2' });
+      ctx.recordAskResolved({ runtimeId: 'd2', terminal: 'timeout', detail: {} });
+      ctx.recordAskEmitted({ runtimeId: 'd2' }); // re-send of a terminal entry
+    } else if (reason === 'replacement_predecessor_unknown') {
+      ctx.recordAskReplacement({ predecessorRuntimeId: 'nope', successorRuntimeId: 'succ' });
+    } else if (reason === 'emitted_without_binding') {
+      ctx.recordAskEmitted({ runtimeId: 'unbound' });
+    }
+    const rejected = rowsOfKind(entry, 'ask_transition_rejected');
+    expect(rejected.length).toBeGreaterThanOrEqual(1);
+    expect(rejected.some((r) => r.reason === reason)).toBe(true);
+    expect(ctx.askLedger.invalid?.reason).toBe(reason);
+  });
+
+  test('unknown rejection reason fails loud as unknown_rejection_reason (closed vocabulary)', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_ur' });
+    ctx.recordDeliveryRejected({ producerId: 'dialogue_confirmation', reason: 'made_up_reason' });
+    const rows = rowsOfKind(entry, 'delivery_rejected');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe('unknown_rejection_reason');
+    expect(ctx.deliveryLedger.invalid?.reason).toBe('unknown_rejection_reason');
+  });
+
+  test('an unregistered producer on the rejected helper routes through producer_unknown', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_up' });
+    ctx.recordDeliveryRejected({
+      producerId: 'not_registered',
+      reason: 'dialogue_delivery_binding_ambiguous',
+    });
+    expect(rowsOfKind(entry, 'delivery_rejected')).toHaveLength(0);
+    expect(rowsOfKind(entry, 'producer_unknown')).toHaveLength(1);
   });
 });
 
@@ -1029,6 +1445,7 @@ describe('SEMANTIC_ORACLE_INPUTS membership (C0)', () => {
     'tests/fixtures/test-contracts/plan00-evidence-contract/projection-v1.json',
     'tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json',
     'tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json',
+    'tests/fixtures/test-contracts/plan00-evidence-contract/ack-sequences-v1.json',
     'src/extraction/plan00-evidence-registry.js',
     'src/extraction/plan00-evidence-projection.js',
   ];

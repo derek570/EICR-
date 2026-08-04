@@ -100,6 +100,21 @@ describe('evidence-producer source-coverage scan (C3)', () => {
     expect(offenders).toEqual([]);
   });
 
+  test('no low-level ledger append (recordDeliveryAttempt/recordPlaybackAck/semanticFamily) outside the evidence adapters', () => {
+    // Codex r1 (B-4) — the registry only closes if the RAW ledger APIs are
+    // unreachable from production source outside the two evidence modules.
+    const LEDGERS_FILE = path.join('src', 'extraction', 'plan00-audibility-ledgers.js');
+    const offenders = [];
+    for (const { rel, text } of sources) {
+      if (rel === ADAPTERS_FILE || rel === LEDGERS_FILE) continue;
+      for (const fn of ['recordDeliveryAttempt', 'recordPlaybackAck']) {
+        if (new RegExp(`\\.${fn}\\s*\\(`).test(text)) offenders.push({ rel, fn });
+      }
+      if (/semanticFamily\s*:/.test(text)) offenders.push({ rel, fn: 'semanticFamily arg' });
+    }
+    expect(offenders).toEqual([]);
+  });
+
   test('every recordLifecycleEvent/notify* append site is an allowlisted non-producer row kind', () => {
     const allow = new Set(NON_PRODUCER_ROW_KINDS);
     const offenders = [];

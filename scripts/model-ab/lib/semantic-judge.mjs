@@ -165,7 +165,9 @@ export function judgeSample(expectation, evidence, opts = {}) {
  * producers and unconsumed fast-TTS reservations/provisionals.
  */
 export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
-  const invalid = composeCaptureInvalid(frozen);
+  const invalid = composeCaptureInvalid(frozen, {
+    windowedOpenAskFamilies: opts.windowedOpenAskFamilies ?? [],
+  });
   if (invalid) {
     return { verdict: 'INVALID_HOLD', reason: invalid.reason, mismatches: [] };
   }
@@ -566,7 +568,14 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
  * other count zero, revisions stable) the windowed judge proceeds to the
  * ordinary evidence checks instead of holding.
  */
-function isOpenAskOnlyNonQuiescence(frozen) {
+function isOpenAskOnlyNonQuiescence(frozen, windowedOpenAskFamilies) {
+  if (!Array.isArray(windowedOpenAskFamilies) || windowedOpenAskFamilies.length === 0) {
+    // Codex r1 (B-2/C-4) — STRICT BY DEFAULT: the carve-out exists only for
+    // callers that explicitly declare which ask families live outside their
+    // observation window. Every other consumer (00C's fold reads the counts
+    // directly and never calls this) holds on ANY ineligible freeze.
+    return false;
+  }
   if (frozen?.reason !== 'non_quiescent_at_stop') return false;
   const counts = frozen.counts ?? {};
   if ((counts.revision_instability ?? 0) !== 0) return false;
@@ -574,7 +583,13 @@ function isOpenAskOnlyNonQuiescence(frozen) {
   for (const [key, value] of Object.entries(counts)) {
     if (key === 'non_quiescent_at_stop' || key === 'revision_instability') continue;
     if (key.startsWith('open_asks_')) {
-      if (value !== 0) sawOpenAsk = true;
+      if (value !== 0) {
+        // Only a DECLARED window-external family may be open — a dispatcher
+        // ask (or any undeclared family) still holds the judge.
+        const family = key.slice('open_asks_'.length);
+        if (!windowedOpenAskFamilies.includes(family)) return false;
+        sawOpenAsk = true;
+      }
       continue;
     }
     if (value !== 0) return false;
@@ -583,9 +598,9 @@ function isOpenAskOnlyNonQuiescence(frozen) {
 }
 
 /** Compose the C4 captureInvalid latch from a completion freeze. */
-export function composeCaptureInvalid(frozen) {
+export function composeCaptureInvalid(frozen, { windowedOpenAskFamilies = [] } = {}) {
   if (!frozen) return { reason: 'no_completion_freeze' };
-  if (frozen.eligible !== true && !isOpenAskOnlyNonQuiescence(frozen)) {
+  if (frozen.eligible !== true && !isOpenAskOnlyNonQuiescence(frozen, windowedOpenAskFamilies)) {
     return { reason: frozen.reason ?? 'freeze_ineligible' };
   }
   const ev = frozen.evidence;

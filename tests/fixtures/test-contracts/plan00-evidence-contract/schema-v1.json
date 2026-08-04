@@ -9,21 +9,55 @@
     "Layer split: evidence_projection_v1 covers ONLY facts derivable from the five-key allowlisted completion snapshot {sessionId, boundary, counts, revisions, sub_records}. The 00C-owned manifest ENVELOPE (trusted timestamps/status, deployment identity, content addressing, publication receipts) is EXCLUDED and never reconstructed from sub_records.",
     "The asynchronous PRODUCER_KINDS counter registry (plan00-lifecycle-hooks.js) is a SEPARATE contract, deliberately NOT replaced by producer_registry below.",
     "Spoken text / model prose is EXCLUDED from every sub-record by design (00C: transcript, model prose, tool payloads and customer data stay out of manifests). Text lives only in the evaluation-side delivery-ledger rows.",
-    "Ordering rule: the sub_records array order IS the global event order (append-only, replay-deterministic). delivery rows additionally carry the delivery ledger's monotonic at_seq and a stable delivery_ref derived from it."
+    "Ordering rule: the sub_records array order IS the global event order (append-only, replay-deterministic). delivery rows additionally carry the delivery ledger's monotonic at_seq and a stable delivery_ref derived from it.",
+    "Ordering (Codex r1 A-1/B-7): the sub_records array order IS the global event order; evidence_projection_v1 stamps each projected delivery/playback/idempotent/rejected/ambiguity event with `seq` = its sub_records array index at projection time, so grouped projections retain the cross-class interleaving the fold's ordering rules need. Trusted wall-clock timestamps remain 00C ENVELOPE facts by the layer split — never reconstructed from sub_records."
   ],
-  "snapshot_keys": ["sessionId", "boundary", "counts", "revisions", "sub_records"],
-  "ask_quiescence_families": ["dispatcher", "dialogue_script", "address_mirror"],
+  "snapshot_keys": [
+    "sessionId",
+    "boundary",
+    "counts",
+    "revisions",
+    "sub_records"
+  ],
+  "ask_quiescence_families": [
+    "dispatcher",
+    "dialogue_script",
+    "address_mirror"
+  ],
   "quiescence_count_keys": {
     "open_asks_dispatcher": "open (produced|emitted) askLedger entries whose registry quiescence_family is dispatcher, plus entries terminal-resolved with a stop-boundary terminal",
     "open_asks_dialogue_script": "same rule for dialogue_script",
     "open_asks_address_mirror": "same rule for address_mirror"
   },
   "ask_terminals": {
-    "pre_stop_examples": ["answered", "timeout", "user_moved_on", "superseded", "reissued", "validation_error", "prompt_leak_blocked"],
-    "stop_boundary_non_quiescent": ["session_stopped", "session_terminated", "connection_loss_at_stop"],
-    "rule": "The dispatcher's terminal vocabulary is open-ended, so quiescence compatibility is defined by the CLOSED non-quiescent set: an entry terminal-resolved with a stop_boundary_non_quiescent member still counts in its family's open_asks_* key; ANY other terminal closes the entry as quiescence-compatible. An ask still open AT the stop boundary renders the completion freeze INELIGIBLE even if stop-expiry later terminal-resolves it, and the latched completion freeze can never be flipped eligible by a post-freeze resolution."
+    "pre_stop_examples": [
+      "answered",
+      "timeout",
+      "user_moved_on",
+      "superseded",
+      "reissued",
+      "validation_error",
+      "prompt_leak_blocked"
+    ],
+    "stop_boundary_non_quiescent": [
+      "session_stopped",
+      "session_terminated",
+      "connection_loss_at_stop"
+    ],
+    "rule": "The dispatcher's terminal vocabulary is open-ended, so quiescence compatibility is defined by the CLOSED non-quiescent set: an entry terminal-resolved with a stop_boundary_non_quiescent member still counts in its family's open_asks_* key; ANY other terminal closes the entry as quiescence-compatible. An ask still open AT the stop boundary renders the completion freeze INELIGIBLE even if stop-expiry later terminal-resolves it, and the latched completion freeze can never be flipped eligible by a post-freeze resolution. Codex r1 (B-5): `unknown_terminal` (the dispatcher's explicit fallback when an outcome carries no reason) also counts NON-quiescent — a genuinely unknown outcome must not quietly close an ask.",
+    "non_quiescent_terminals": [
+      "session_stopped",
+      "session_terminated",
+      "connection_loss_at_stop",
+      "unknown_terminal"
+    ]
   },
-  "semantic_families": ["ordinary_confirmation", "dialogue_script", "address_mirror", "fast_tts"],
+  "semantic_families": [
+    "ordinary_confirmation",
+    "dialogue_script",
+    "address_mirror",
+    "fast_tts"
+  ],
   "transports": [
     "ws_extraction",
     "ws_vcr",
@@ -121,7 +155,8 @@
         "terminal": "string, resolved stage only",
         "successor_runtime_id": "string, replaced stage only",
         "expired": "number, join_expired stage only",
-        "reason": "string|null, join_expired stage only"
+        "reason": "string|null, join_expired stage only",
+        "replaces_runtime_id": "string|null, produced stage only — the predecessor runtime id when this ask REPLACES a broker predecessor (carries the lineage for link-only replacements of already-terminal predecessors)"
       },
       "rule": "Appended ONLY when the owning askLedger ACCEPTED the transition (the row is derived from the ledger verdict — one derivation, never a parallel append)."
     },
@@ -151,9 +186,10 @@
         "claim_lineage": "string|null",
         "wire_turn_id": "string|null",
         "dedupe_token": "string|null",
-        "correlation_id": "string|null, fast_tts_promotion only"
+        "correlation_id": "string|null, fast_tts_promotion only",
+        "delivery_claim_token": "string|null — the PERSISTED outbox delivery-claim token (process lineage) on address-mirror rows; claim_lineage stays the logical `kind:token` ACK alias"
       },
-      "rule": "The legacy overloaded `family` key (which carried the TRANSPORT) is retired; semantic_family and transport are separate fields. No spoken text on the row."
+      "rule": "The legacy overloaded `family` key (which carried the TRANSPORT) is retired; semantic_family and transport are separate fields. No spoken text on the row. EXCEPTION: a delivery_kind=delivery_history_ambiguous row is an UNCREDITABLE recovery marker (discriminated by delivery_kind, never projected as delivery credit) and carries delivery_ref:null/at_seq:null — it marks operations, not a send."
     },
     "delivery_rejected": {
       "class": "rejected_audit",
@@ -237,7 +273,10 @@
     "non_mutating_audible": {
       "class": "non_producer",
       "credit_bearing": false,
-      "fields": { "channel": "string|null", "audible_kind": "string|null" }
+      "fields": {
+        "channel": "string|null",
+        "audible_kind": "string|null"
+      }
     },
     "freeze_invalid": {
       "class": "freeze_state",
@@ -261,21 +300,55 @@
     "successful_frame": {
       "class": "non_producer",
       "credit_bearing": false,
-      "fields": { "note": "production-shaped frame descriptor; not consumed by evidence_projection_v1" }
+      "fields": {
+        "note": "production-shaped frame descriptor; not consumed by evidence_projection_v1"
+      }
     },
     "confirmation_delivery": {
       "class": "non_producer",
       "credit_bearing": false,
-      "fields": { "note": "production-shaped delivery descriptor; not consumed by evidence_projection_v1" }
+      "fields": {
+        "note": "production-shaped delivery descriptor; not consumed by evidence_projection_v1"
+      }
     }
   },
   "rejection_reasons": {
-    "duplicate_runtime_binding": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "produced" },
-    "emitted_without_produced": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "emitted" },
-    "ambiguous_produced_match": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "emitted" },
-    "emitted_without_binding": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "emitted" },
-    "runtime_id_already_bound": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "emitted" },
-    "resolution_without_emitted": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "resolved" },
+    "duplicate_runtime_binding": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "produced"
+    },
+    "emitted_without_produced": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "emitted"
+    },
+    "ambiguous_produced_match": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "emitted"
+    },
+    "emitted_without_binding": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "emitted"
+    },
+    "runtime_id_already_bound": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "emitted"
+    },
+    "resolution_without_emitted": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "resolved"
+    },
     "answered_without_full_proof": {
       "source_ledger": "ask",
       "regime": "transition_rejection",
@@ -285,30 +358,112 @@
       "entry_stays_open": true,
       "note": "SANCTIONED behaviour change to the shipped ledger: a rejected answered resolution produces ONLY the rejected audit row, does NOT latch invalid, and leaves the entry 'emitted' so it counts non-quiescent at stop. askLedger.resolved() returns {accepted, reason} instead of undefined."
     },
-    "reissue_without_emitted": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "reissued_attempt" },
-    "replacement_predecessor_unknown": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "replaced" },
-    "srv_answer_ambiguous": { "source_ledger": "ask", "regime": "structural_latch", "row_kind": "ask_transition_rejected", "stage_attempted": "resolved" },
-    "confirmation_delivery_binding_unmatched": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "confirmation_delivery_binding_ambiguous": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "confirmation_delivery_binding_no_mutation_observer": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "dialogue_delivery_binding_unmatched": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "dialogue_delivery_binding_ambiguous": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "dialogue_delivery_binding_no_mutation_observer": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "mirror_terminal_receipt_binding": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "fast_provisional_without_owner_proof": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "fast_ack_without_provisional": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "playback_rejected" },
-    "fast_promotion_without_provisional": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "fast_promotion_unmatched": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
-    "fast_promotion_ambiguous": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "delivery_rejected" },
+    "reissue_without_emitted": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "reissued_attempt"
+    },
+    "replacement_predecessor_unknown": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "replaced"
+    },
+    "srv_answer_ambiguous": {
+      "source_ledger": "ask",
+      "regime": "structural_latch",
+      "row_kind": "ask_transition_rejected",
+      "stage_attempted": "resolved"
+    },
+    "confirmation_delivery_binding_unmatched": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "confirmation_delivery_binding_ambiguous": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "confirmation_delivery_binding_no_mutation_observer": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "dialogue_delivery_binding_unmatched": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "dialogue_delivery_binding_ambiguous": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "dialogue_delivery_binding_no_mutation_observer": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "mirror_terminal_receipt_binding": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "fast_provisional_without_owner_proof": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "fast_ack_without_provisional": {
+      "source_ledger": "delivery",
+      "regime": "pre_admission",
+      "row_kind": null,
+      "note": "Codex r1 (C-2): a wrong/stale/unknown fast-TTS correlation is PRE-ADMISSION telemetry — no row, no latch; a later valid ACK succeeds. Reclassified from structural_latch during the diff review (the C1 ternary's wrong/stale rule)."
+    },
+    "fast_promotion_without_provisional": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "fast_promotion_unmatched": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
+    "fast_promotion_ambiguous": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected"
+    },
     "fast_provisional_unconsumed": {
       "source_ledger": "delivery",
       "regime": "structural_latch",
       "row_kind": "freeze_invalid",
       "note": "Freeze-time fold only: assertNoUnconsumedProvisionals() latches delivery_invalid; the condition reaches sub_records as the delivery_invalid freeze_invalid row."
     },
-    "playback_ack_unmatched": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "playback_rejected" },
-    "playback_ack_ambiguous": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "playback_rejected" },
-    "playback_without_delivery_attempt": { "source_ledger": "delivery", "regime": "structural_latch", "row_kind": "playback_rejected" }
+    "playback_ack_unmatched": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "playback_rejected"
+    },
+    "playback_ack_ambiguous": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "playback_rejected"
+    },
+    "playback_without_delivery_attempt": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "playback_rejected"
+    },
+    "unknown_rejection_reason": {
+      "source_ledger": "delivery",
+      "regime": "structural_latch",
+      "row_kind": "delivery_rejected",
+      "note": "Fail-loud fallback when a rejected-append helper receives a reason outside this closed vocabulary — the vocabulary stays closed because an unregistered reason cannot ship silently."
+    }
   },
   "verdict_taxonomy": {
     "pre_admission": "Unmatched/wrong/stale/zero-or-ambiguous slot or correlation resolutions filtered ABOVE the ledger admission layer are NOT transition attempts: no row, no latch — telemetry only (the judge's missing-playback negatives read the absence). A later valid ACK for the same operation succeeds normally.",
@@ -318,10 +473,17 @@
   },
   "named_fixture_case_composition": {
     "case": "answered_without_full_proof at session stop",
-    "rows": ["ask_lifecycle produced", "ask_lifecycle emitted", "ask_transition_rejected (stage_attempted resolved, reason answered_without_full_proof)"],
+    "rows": [
+      "ask_lifecycle produced",
+      "ask_lifecycle emitted",
+      "ask_transition_rejected (stage_attempted resolved, reason answered_without_full_proof)"
+    ],
     "freeze": "INELIGIBLE via non_quiescent_at_stop (the rejected ask remains open and counts in its family's open_asks_* key); NO ask_invalid latch and NO freeze_invalid row from this rejection alone."
   },
-  "session_ineligibility_row_classes": ["freeze_invalid", "producer_unknown"],
+  "session_ineligibility_row_classes": [
+    "freeze_invalid",
+    "producer_unknown"
+  ],
   "family_gate_rules": {
     "dialogue_script": {
       "ask_lifecycle_complete": "at least one dialogue_script ask with produced+emitted+resolved(answered) accepted rows",

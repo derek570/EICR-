@@ -269,10 +269,19 @@ describe('fast-TTS provisional binding', () => {
     expect(ledger.invalid?.reason).toBe('fast_provisional_unconsumed');
   });
 
-  test('RED: a fast ACK with no provisional to correlate to is INVALID', () => {
+  // Plan 00B-3 (Codex r1 C-2, sanctioned reclassification): a wrong/stale/
+  // unknown fast correlation is PRE-ADMISSION telemetry per the C1 ternary
+  // (schema-v1 regime pre_admission) — no latch, no row; a later valid ACK
+  // succeeds. The old pin latched the ledger invalid here.
+  test('a fast ACK with no provisional to correlate to is pre-admission telemetry (no latch)', () => {
     const ledger = createDeliveryLedger();
-    ledger.stageFastAck('c-unknown', { x: 1 });
-    expect(ledger.invalid?.reason).toBe('fast_ack_without_provisional');
+    const verdict = ledger.stageFastAck('c-unknown', { x: 1 });
+    expect(verdict).toEqual({
+      accepted: false,
+      reason: 'fast_ack_without_provisional',
+      preAdmission: true,
+    });
+    expect(ledger.invalid).toBeNull();
   });
 });
 

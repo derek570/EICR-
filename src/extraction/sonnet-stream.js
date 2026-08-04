@@ -1553,7 +1553,7 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
           ...(binding ? { binding_id: binding.bindingId, attempt_ordinal: binding.attempts } : {}),
         });
         if (evalCtx) {
-          recordFrameDeliveryEvidence(evalCtx, frames[i].kind, result);
+          recordFrameDeliveryEvidence(evalCtx, frames[i].kind, result, binding?.attempts ?? null);
         }
       }
     }
@@ -1581,7 +1581,7 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
  * token, per the parent B3 scoping decision — identity is never derived
  * from a result envelope).
  */
-function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
+function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptOrdinal = null) {
   try {
     const mirrorDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
     // A frame can be sent AFTER the harness turn scope has closed (buffered
@@ -1603,8 +1603,20 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
       // One unit per claim lineage — the same result surfaces the terminal
       // on both the extraction and VCR frames, and re-running the receipt
       // resolver for the duplicate would falsely unmatch already-claimed
-      // receipts.
-      if (evalCtx.addressMirrorUnits?.has(lineage)) return;
+      // receipts. Codex r1 (C-6): the hooks distinguish that dual-frame
+      // duplicate (same frame-binding attempt ordinal) from a REPLAY (a
+      // new attempt), which appends its own delivery-attempt row against
+      // the stored unit — never re-resolving receipts.
+      if (evalCtx.addressMirrorUnits?.has(lineage)) {
+        evalCtx.recordAddressMirrorTerminal?.({
+          claimLineage: lineage,
+          ops: null,
+          text,
+          claimToken: mirrorDelivery.claimToken ?? null,
+          attempt: attemptOrdinal,
+        });
+        return;
+      }
       const circuitReadings = Array.isArray(result?.extracted_readings)
         ? result.extracted_readings
         : Array.isArray(result?.readings)
@@ -1641,7 +1653,13 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
         });
         return;
       }
-      evalCtx.recordAddressMirrorTerminal({ claimLineage: lineage, ops, text });
+      evalCtx.recordAddressMirrorTerminal({
+        claimLineage: lineage,
+        ops,
+        text,
+        claimToken: mirrorDelivery.claimToken ?? null,
+        attempt: attemptOrdinal,
+      });
     };
     if (frameKind === 'extraction') {
       // An address-mirror result can carry its sole collapsed terminal on
@@ -7234,6 +7252,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     // both the flag (handleTranscript guard) and the promise (arbiter).
     entry.isStopping = true;
     entry.teardownReason = reason;
+    // Plan 00B-3 C2 (Codex r1 C-3) — latch the asks open AT the stop
+    // boundary SYNCHRONOUSLY, before the teardown body's awaited flushes:
+    // an ask that resolves during those awaits was still open when the
+    // stop began and must hold this session's completion freeze
+    // ineligible. Dormant single Symbol lookup.
+    entry[EVALUATION_CONTEXT]?.latchStopBoundary?.();
     entry.teardownPromise = (async () => {
       try {
         await work();

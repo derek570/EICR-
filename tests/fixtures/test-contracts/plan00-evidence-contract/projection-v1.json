@@ -3,8 +3,15 @@
   "projection": "evidence_projection_v1",
   "session_id": "sess_fixture_a",
   "boundary": "session_stopped",
-  "quiescence": { "non_quiescent_at_stop": 0, "revision_instability": 0 },
-  "open_asks": { "dispatcher": 0, "dialogue_script": 0, "address_mirror": 0 },
+  "quiescence": {
+    "non_quiescent_at_stop": 0,
+    "revision_instability": 0
+  },
+  "open_asks": {
+    "dispatcher": 0,
+    "dialogue_script": 0,
+    "address_mirror": 0
+  },
   "ineligible_conditions": [],
   "unknown_producers": [],
   "eligible_for_family_credit": true,
@@ -15,7 +22,9 @@
       "reissued_attempts": 0,
       "replaced": 0,
       "join_expired": 0,
-      "resolved_terminals": { "answered": 1 },
+      "resolved_terminals": {
+        "answered": 1
+      },
       "rejected": [],
       "open": 0
     },
@@ -25,7 +34,9 @@
       "reissued_attempts": 0,
       "replaced": 0,
       "join_expired": 0,
-      "resolved_terminals": { "answered": 1 },
+      "resolved_terminals": {
+        "answered": 1
+      },
       "rejected": [],
       "open": 0
     },
@@ -35,7 +46,9 @@
       "reissued_attempts": 1,
       "replaced": 0,
       "join_expired": 0,
-      "resolved_terminals": { "answered": 1 },
+      "resolved_terminals": {
+        "answered": 1
+      },
       "rejected": [],
       "open": 0
     }
@@ -43,6 +56,7 @@
   "deliveries": {
     "ordinary_confirmation": [
       {
+        "seq": 5,
         "delivery_ref": "d:1",
         "at_seq": 1,
         "producer_id": "result_frame_confirmation",
@@ -54,11 +68,13 @@
         "claim_lineage": null,
         "wire_turn_id": "turn_1",
         "dedupe_token": null,
-        "correlation_id": null
+        "correlation_id": null,
+        "delivery_claim_token": null
       }
     ],
     "dialogue_script": [
       {
+        "seq": 11,
         "delivery_ref": "d:2",
         "at_seq": 2,
         "producer_id": "dialogue_confirmation",
@@ -70,11 +86,13 @@
         "claim_lineage": null,
         "wire_turn_id": null,
         "dedupe_token": null,
-        "correlation_id": null
+        "correlation_id": null,
+        "delivery_claim_token": null
       }
     ],
     "address_mirror": [
       {
+        "seq": 16,
         "delivery_ref": "d:3",
         "at_seq": 3,
         "producer_id": "address_mirror_terminal",
@@ -87,11 +105,13 @@
         "claim_lineage": "result:tok_9",
         "wire_turn_id": null,
         "dedupe_token": null,
-        "correlation_id": null
+        "correlation_id": null,
+        "delivery_claim_token": "clm_tok_9"
       }
     ],
     "fast_tts": [
       {
+        "seq": 19,
         "delivery_ref": "d:4",
         "at_seq": 4,
         "producer_id": "fast_tts_promotion",
@@ -103,7 +123,8 @@
         "claim_lineage": null,
         "wire_turn_id": null,
         "dedupe_token": null,
-        "correlation_id": "corr_1"
+        "correlation_id": "corr_1",
+        "delivery_claim_token": null
       }
     ]
   },
@@ -114,6 +135,7 @@
   "playbacks": {
     "ordinary_confirmation": [
       {
+        "seq": 6,
         "op_key": "{\"turn\":\"turn_1\",\"field\":\"measured_zs_ohm\",\"circuit\":4,\"board_id\":null,\"ordinal\":0}",
         "ack_body_hash": "5c47a1de2f6f8a09b3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091a2b",
         "source": "ordinary",
@@ -124,6 +146,7 @@
     "dialogue_script": [],
     "address_mirror": [
       {
+        "seq": 18,
         "op_key": "{\"turn\":\"turn_3\",\"field\":\"client_address\",\"circuit\":null,\"board_id\":null,\"ordinal\":0}",
         "ack_body_hash": "9d8c7b6a5f4e3d2c1b0a99887766554433221100ffeeddccbbaa998877665544",
         "source": "address_mirror_delivery_ack",
@@ -133,6 +156,7 @@
     ],
     "fast_tts": [
       {
+        "seq": 20,
         "op_key": "{\"turn\":\"turn_4\",\"field\":\"measured_zs_ohm\",\"circuit\":9,\"board_id\":null,\"ordinal\":0}",
         "ack_body_hash": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
         "source": "fast_tts",
@@ -143,6 +167,7 @@
   },
   "idempotent_playbacks": [
     {
+      "seq": 7,
       "op_key": "{\"turn\":\"turn_1\",\"field\":\"measured_zs_ohm\",\"circuit\":4,\"board_id\":null,\"ordinal\":0}",
       "ack_body_hash": "5c47a1de2f6f8a09b3d4e5f60718293a4b5c6d7e8f9012a3b4c5d6e7f8091a2b",
       "producer_id": "playback_ack_slot"
@@ -214,5 +239,7 @@
       "operation_bound_delivery": true,
       "playback_ack_proof": true
     }
-  }
+  },
+  "count_contradictions": [],
+  "unscoped_rejected_asks": []
 }
