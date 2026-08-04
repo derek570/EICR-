@@ -115,7 +115,6 @@ function collectRegimeContradictions({
   rejectedDeliveries,
   rejectedPlaybacks,
   ineligibleConditions,
-  emittedAskBindings,
 }) {
   const contradictions = [];
   const hasCondition = (condition) => ineligibleConditions.some((c) => c.condition === condition);
@@ -146,6 +145,27 @@ function collectRegimeContradictions({
       });
       continue;
     }
+    // Cycle-4 (R4-2) — the rejection's stage must equal its reason's
+    // declared stage (and answered_without_full_proof carries the
+    // 'answered' terminal it rejected).
+    if ((spec.stage_attempted ?? null) != null && rej.stage_attempted !== spec.stage_attempted) {
+      contradictions.push({
+        class: 'reason_stage_mismatch',
+        kind: 'ask_transition_rejected',
+        seq: rej.seq,
+        reason: rej.reason,
+      });
+      continue;
+    }
+    if (rej.reason === 'answered_without_full_proof' && rej.terminal_attempted !== 'answered') {
+      contradictions.push({
+        class: 'reason_stage_mismatch',
+        kind: 'ask_transition_rejected',
+        seq: rej.seq,
+        reason: rej.reason,
+      });
+      continue;
+    }
     if (spec.regime === 'structural_latch' && !hasCondition('ask_invalid')) {
       contradictions.push({
         class: 'structural_rejection_without_latch',
@@ -155,15 +175,11 @@ function collectRegimeContradictions({
       });
     }
     if (spec.regime === 'transition_rejection') {
-      // Cycle-3 (R3-2) — the rejection must name a genuinely EMITTED
-      // binding of ITS OWN family: null identity and cross-family borrows
-      // are impossible rows, not benign gaps.
-      const family = rej.family ?? null;
-      const bound =
-        family != null &&
-        rej.runtime_id != null &&
-        emittedAskBindings.has(`${family}::${rej.runtime_id}`);
-      if (!bound) {
+      // Cycle-4 (R4-1) — validated AT SEQUENCE POSITION: the named runtime
+      // must be in the EMITTED state when the rejection occurs. A rejection
+      // before emission, after resolution/replacement, with null identity,
+      // or borrowing another family's id is an impossible row.
+      if (rej.state_at_seq !== 'emitted') {
         contradictions.push({
           class: 'orphan_transition_rejection',
           kind: 'ask_transition_rejected',
@@ -229,10 +245,10 @@ export function buildEvidenceProjectionV1(snapshot) {
   // key `${family}::${runtime_id}` -> 'open' | 'closed' | 'open_at_stop'
   const askStates = new Map();
   const askKey = (family, runtimeId) => `${family}::${runtimeId}`;
-  // Cycle-2 (R2-2) + cycle-3 (R3-2) — FAMILY-QUALIFIED emitted bindings
-  // (`family::runtime_id` of accepted emitted rows): a transition rejection
-  // must name a genuinely emitted binding of ITS OWN family.
-  const emittedAskBindings = new Set();
+  // Cycle-4 (R4-1) — transition rejections are validated AT their sequence
+  // position against the family-qualified lifecycle state machine: the
+  // state of `family::runtime_id` when the rejection row occurs.
+  const askRejectionContexts = [];
 
   const deliveries = groupByFamily(SEMANTIC_FAMILIES);
   const playbacks = groupByFamily(SEMANTIC_FAMILIES);
@@ -252,20 +268,15 @@ export function buildEvidenceProjectionV1(snapshot) {
       case 'ask_lifecycle': {
         const family = ASK_QUIESCENCE_FAMILIES.includes(row.family) ? row.family : null;
         if (!family) break;
-        if (row.stage === 'emitted' && row.runtime_id != null) {
-          emittedAskBindings.add(askKey(family, row.runtime_id));
-        }
         const fam = askFamilies[family];
         switch (row.stage) {
           case 'produced':
             fam.produced += 1;
-            if (row.runtime_id != null) askStates.set(askKey(family, row.runtime_id), 'open');
+            if (row.runtime_id != null) askStates.set(askKey(family, row.runtime_id), 'produced');
             break;
           case 'emitted':
             fam.emitted += 1;
-            if (row.runtime_id != null && !askStates.has(askKey(family, row.runtime_id))) {
-              askStates.set(askKey(family, row.runtime_id), 'open');
-            }
+            if (row.runtime_id != null) askStates.set(askKey(family, row.runtime_id), 'emitted');
             break;
           case 'reissued_attempt':
             fam.reissued_attempts += 1;
@@ -310,6 +321,14 @@ export function buildEvidenceProjectionV1(snapshot) {
         // Codex r1 (A-5) — a rejection whose family is unresolvable
         // (schema-legal null) stays VISIBLE instead of being dropped.
         else unscopedRejectedAsks.push(rejection);
+        askRejectionContexts.push({
+          ...rejection,
+          family,
+          state_at_seq:
+            family != null && row.runtime_id != null
+              ? (askStates.get(askKey(family, row.runtime_id)) ?? null)
+              : null,
+        });
         // A rejected transition never closes the entry — an open ask stays
         // open (the named fixture case's quiescence consequence).
         break;
@@ -403,7 +422,7 @@ export function buildEvidenceProjectionV1(snapshot) {
   }
 
   for (const [key, state] of askStates) {
-    if (state === 'closed') continue;
+    if (state === 'closed') continue; // produced/emitted/open_at_stop count open
     const family = key.slice(0, key.indexOf('::'));
     if (askFamilies[family]) askFamilies[family].open += 1;
   }
@@ -418,22 +437,11 @@ export function buildEvidenceProjectionV1(snapshot) {
   // zero (or vice versa) is a contract contradiction, and a fold must HOLD
   // on it rather than trust either side.
   const countContradictions = collectCountContradictions(counts, askFamilies);
-  // Scoped rejection records live inside their family bucket without a
-  // family key — reattach it for the regime composition (unscoped stay
-  // family:null, which the transition-rejection binding check treats as an
-  // impossible row).
-  const allAskRejections = [
-    ...Object.entries(askFamilies).flatMap(([family, fam]) =>
-      fam.rejected.map((r) => ({ ...r, family }))
-    ),
-    ...unscopedRejectedAsks.map((r) => ({ ...r, family: null })),
-  ];
   const regimeContradictions = collectRegimeContradictions({
-    askRejections: allAskRejections,
+    askRejections: askRejectionContexts,
     rejectedDeliveries,
     rejectedPlaybacks,
     ineligibleConditions,
-    emittedAskBindings,
   });
 
   const eligible =

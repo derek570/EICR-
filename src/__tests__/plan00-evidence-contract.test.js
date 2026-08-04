@@ -175,12 +175,15 @@ describe('contract schema drift (C0 anti-shaping)', () => {
     for (const reason of codeReasons) {
       const code = REJECTION_REASONS[reason];
       const spec = schema.rejection_reasons[reason];
-      expect({ reason, ...code }).toEqual({
+      const expected = {
         reason,
         source_ledger: spec.source_ledger,
         regime: spec.regime,
         row_kind: spec.row_kind ?? null,
-      });
+      };
+      // Cycle-4 (R4-2) — ask reasons additionally pin their attempted stage.
+      if (spec.stage_attempted != null) expected.stage_attempted = spec.stage_attempted;
+      expect({ reason, ...code }).toEqual(expected);
     }
   });
 
@@ -1913,6 +1916,159 @@ describe('Cycle-2 pins — closed count domain (R2-3)', () => {
       { family: 'address_mirror', counted: null, derived: 0 },
     ]);
     expect(proj.eligible_for_family_credit).toBe(false);
+  });
+});
+
+// ── 5e. Cycle-4 pins — positional binding + grammar closure ────────────────
+
+describe('Cycle-4 pins — sequence-positional transition-rejection binding (R4-1/R4-2)', () => {
+  const baseCounts4 = {
+    open_asks_dispatcher: 0,
+    open_asks_dialogue_script: 0,
+    open_asks_address_mirror: 0,
+    non_quiescent_at_stop: 0,
+    revision_instability: 0,
+  };
+  const lifecycleRows = (runtime) => [
+    {
+      kind: 'ask_lifecycle',
+      revision: 1,
+      family: 'dialogue_script',
+      stage: 'produced',
+      runtime_id: runtime,
+      live_ask_key: 'k',
+    },
+    {
+      kind: 'ask_lifecycle',
+      revision: 2,
+      family: 'dialogue_script',
+      stage: 'emitted',
+      runtime_id: runtime,
+    },
+    {
+      kind: 'ask_lifecycle',
+      revision: 3,
+      family: 'dialogue_script',
+      stage: 'resolved',
+      runtime_id: runtime,
+      terminal: 'answered',
+    },
+  ];
+  const rejection = (over = {}) => ({
+    kind: 'ask_transition_rejected',
+    revision: 1,
+    family: 'dialogue_script',
+    stage_attempted: 'resolved',
+    runtime_id: 'srv_p',
+    terminal_attempted: 'answered',
+    reason: 'answered_without_full_proof',
+    ...over,
+  });
+  const project = (sub_records, counts = {}) =>
+    buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: { ...baseCounts4, ...counts },
+      revisions: { usage_revision: 0 },
+      sub_records,
+    });
+
+  test('a rejection BEFORE emission cannot borrow the future binding', () => {
+    const proj = project([rejection(), ...lifecycleRows('srv_p')]);
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'orphan_transition_rejection',
+        kind: 'ask_transition_rejected',
+        seq: 0,
+        reason: 'answered_without_full_proof',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('a rejection AFTER an accepted resolution cannot borrow the closed binding', () => {
+    const proj = project([...lifecycleRows('srv_p'), rejection()]);
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'orphan_transition_rejection',
+        kind: 'ask_transition_rejected',
+        seq: 3,
+        reason: 'answered_without_full_proof',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('a rejection whose stage_attempted contradicts its reason is a stage mismatch', () => {
+    const rows = lifecycleRows('srv_p').slice(0, 2); // produced + emitted (open)
+    const proj = project([...rows, rejection({ stage_attempted: 'produced' })], {
+      open_asks_dialogue_script: 1,
+      non_quiescent_at_stop: 1,
+    });
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'reason_stage_mismatch',
+        kind: 'ask_transition_rejected',
+        seq: 2,
+        reason: 'answered_without_full_proof',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('answered_without_full_proof must carry the answered terminal it rejected', () => {
+    const rows = lifecycleRows('srv_p').slice(0, 2);
+    const proj = project([...rows, rejection({ terminal_attempted: 'timeout' })], {
+      open_asks_dialogue_script: 1,
+      non_quiescent_at_stop: 1,
+    });
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'reason_stage_mismatch',
+        kind: 'ask_transition_rejected',
+        seq: 2,
+        reason: 'answered_without_full_proof',
+      },
+    ]);
+  });
+
+  test('the valid rejected-while-emitted-then-retried ordering stays ZERO contradictions', () => {
+    const rows = [
+      ...lifecycleRows('srv_p').slice(0, 2), // produced + emitted
+      rejection(), // rejected while emitted — valid
+      {
+        kind: 'ask_lifecycle',
+        revision: 3,
+        family: 'dialogue_script',
+        stage: 'resolved',
+        runtime_id: 'srv_p',
+        terminal: 'answered',
+      },
+    ];
+    const proj = project(rows);
+    expect(proj.rejection_regime_contradictions).toEqual([]);
+    expect(proj.eligible_for_family_credit).toBe(true);
+  });
+});
+
+describe('Cycle-4 pins — field-spec grammar closure (R4-3)', () => {
+  test('every type used by any field_spec is declared in the grammar AND supported by the validator', () => {
+    const grammar = new Set(schema.field_spec_type_grammar);
+    const usedTypes = new Set();
+    for (const kindSpec of Object.values(schema.row_kinds)) {
+      const spec = kindSpec.field_spec;
+      if (!spec || spec.unvalidated_fields || spec.allowlist_is_spec) continue;
+      const tables = [spec.required ?? {}, spec.optional ?? {}];
+      for (const stage of Object.values(spec.stages ?? {})) {
+        tables.push(stage.required ?? {}, stage.optional ?? {});
+      }
+      for (const table of tables) for (const t of Object.values(table)) usedTypes.add(t);
+    }
+    for (const t of usedTypes) {
+      expect({ type: t, declared: grammar.has(t) }).toEqual({ type: t, declared: true });
+      // supported: typeOk must not throw for a probe value
+      expect(() => typeOk(t, null)).not.toThrow();
+    }
   });
 });
 

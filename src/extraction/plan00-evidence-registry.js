@@ -88,51 +88,61 @@ export const NON_QUIESCENT_TERMINALS = Object.freeze([
 export const REJECTION_REASONS = Object.freeze({
   duplicate_runtime_binding: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'produced',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),
   emitted_without_produced: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'emitted',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),
   ambiguous_produced_match: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'emitted',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),
   emitted_without_binding: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'emitted',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),
   runtime_id_already_bound: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'emitted',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),
   resolution_without_emitted: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'resolved',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),
   answered_without_full_proof: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'resolved',
     regime: 'transition_rejection',
     row_kind: 'ask_transition_rejected',
   }),
   reissue_without_emitted: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'reissued_attempt',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),
   replacement_predecessor_unknown: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'replaced',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),
   srv_answer_ambiguous: Object.freeze({
     source_ledger: 'ask',
+    stage_attempted: 'resolved',
     regime: 'structural_latch',
     row_kind: 'ask_transition_rejected',
   }),

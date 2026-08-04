@@ -686,6 +686,7 @@
     "number",
     "number|null",
     "boolean",
+    "boolean|null",
     "hex64",
     "array<string>",
     "family",
@@ -699,6 +700,6 @@
     "json"
   ],
   "rejection_regime_composition": {
-    "rule": "Cycle-2 (R2-2): the regime table COMPOSES into projection eligibility. A structural ask rejection row requires a freeze_invalid row with condition ask_invalid; a structural delivery/playback rejection row requires condition delivery_invalid; a transition-rejection row must reference an ask that EXISTS in the stream (an orphan rejection is a contradiction; a later accepted resolution legitimately closes it); a row carrying a pre_admission or unregistered reason is itself a contradiction. Any rejection_regime_contradiction renders the session INELIGIBLE (fold HOLD/INVALID). Cycle-3 (R3-2): a transition-rejection row requires NON-NULL family AND runtime_id naming a genuinely EMITTED binding of that same family (family-qualified — a dialogue rejection can never borrow a dispatcher id); every rejected row's reason must declare THAT row's kind as its row_kind (a reason routed onto the wrong row kind is a contradiction)."
+    "rule": "Cycle-2 (R2-2): the regime table COMPOSES into projection eligibility. A structural ask rejection row requires a freeze_invalid row with condition ask_invalid; a structural delivery/playback rejection row requires condition delivery_invalid; a transition-rejection row must reference an ask that EXISTS in the stream (an orphan rejection is a contradiction; a later accepted resolution legitimately closes it); a row carrying a pre_admission or unregistered reason is itself a contradiction. Any rejection_regime_contradiction renders the session INELIGIBLE (fold HOLD/INVALID). Cycle-3 (R3-2): a transition-rejection row requires NON-NULL family AND runtime_id naming a genuinely EMITTED binding of that same family (family-qualified — a dialogue rejection can never borrow a dispatcher id); every rejected row's reason must declare THAT row's kind as its row_kind (a reason routed onto the wrong row kind is a contradiction). Cycle-4 (R4-1/R4-2): transition rejections are validated AT THEIR SEQUENCE POSITION against a family-qualified lifecycle state machine — the named runtime must be in the EMITTED state when the rejection occurs (a rejection before emission or after resolution/replacement is an orphan contradiction) — and every ask rejection's stage_attempted must equal its reason's declared stage (answered_without_full_proof additionally requires terminal_attempted 'answered')."
   }
 }
