@@ -599,3 +599,22 @@ describe('Tier-2 (b3) — mini-review r2 concern 1: the RECOVERY region bracket'
     expect(receipt.origin).toBe('ask_auto_resolve');
   });
 });
+
+describe('Tier-2 (b4) — Codex r4 finding 2: mirror regions fail CLOSED on a concurrent open scope', () => {
+  test('an already-open turn scope at mirror ingress latches INVALID instead of borrowing the turn', async () => {
+    const { factory, roles } = makeFullContextFactory('sess-am-conc');
+    const wss = initSonnetStream(null, getKey, verifyToken, {
+      evaluationContextFactory: factory,
+    });
+    const ws = connect(wss);
+    await sendFrame(ws, { type: 'session_start', sessionId: 'sess-am-conc', jobState: {} });
+    const entry = activeSessions.get('sess-am-conc');
+    entry.session.stateSnapshot.circuits[0] = { address: '1 Test Way', postcode: 'ZZ9 9ZZ' };
+    // A concurrent suspended turn holds the scope open.
+    roles.mutationObserver.enterTurnScope('utt-other-turn');
+    await sendFrame(ws, transcriptFrame('sess-am-conc', 'Same address for the client'));
+    expect(roles.mutationObserver.invalid).not.toBeNull();
+    expect(roles.mutationObserver.invalid.reason).toBe('mirror_scope_conflict');
+    roles.mutationObserver.exitTurnScope();
+  });
+});

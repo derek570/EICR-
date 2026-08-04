@@ -2830,6 +2830,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               // production and the bracket is a null lookup.
               const answerMirrorMo = entry[EVALUATION_CONTEXT]?.mutationObserver ?? null;
               let answerMirrorScopeOpened = false;
+              if (answerMirrorMo && answerMirrorMo.openTurnId != null) {
+                // Codex r4 finding 2 — an already-open scope here means a
+                // concurrent suspended turn: silently borrowing its id
+                // would credit this region's writes to the WRONG turn.
+                // Fail CLOSED (capture INVALID), never throw into
+                // production.
+                answerMirrorMo.markInvalid('mirror_scope_conflict', {
+                  open_turn_id: answerMirrorMo.openTurnId,
+                  region: 'address_mirror_answer',
+                });
+              }
               if (answerMirrorMo && answerMirrorMo.openTurnId == null) {
                 try {
                   answerMirrorMo.enterTurnScope(
@@ -5438,6 +5449,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // result will carry, so the terminal binds turn-exactly.
         const ingressMirrorMo = entry[EVALUATION_CONTEXT]?.mutationObserver ?? null;
         let ingressMirrorScopeOpened = false;
+        if (ingressMirrorMo && ingressMirrorMo.openTurnId != null) {
+          // Codex r4 finding 2 — same fail-closed rule as the answer
+          // region: never borrow a concurrent suspended turn's scope.
+          ingressMirrorMo.markInvalid('mirror_scope_conflict', {
+            open_turn_id: ingressMirrorMo.openTurnId,
+            region: 'address_mirror_ingress',
+          });
+        }
         if (ingressMirrorMo && ingressMirrorMo.openTurnId == null) {
           try {
             ingressMirrorMo.enterTurnScope(

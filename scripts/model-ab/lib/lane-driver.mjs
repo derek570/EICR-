@@ -388,10 +388,33 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
       }
     }
 
-    try {
-      await turnPromise;
-    } catch (err) {
-      failure = failure ?? `turn_threw:${err?.message ?? String(err)}`;
+    // Codex r4 finding 4 — a pumpError exit (unexpected_ask / iteration
+    // cap / unsupported timer) can leave the transcript promise BLOCKED on
+    // an ask whose timeout the stopped clock will never fire: awaiting it
+    // unconditionally deadlocks the gate. Bounded settle first (fire
+    // remaining ledgered timers), then await ONLY a settled promise —
+    // an unsettled one is abandoned (its eventual rejection swallowed) and
+    // the pumpError becomes the INVALID_HOLD reason.
+    if (!settled) {
+      for (let i = 0; i < 64 && !settled; i += 1) {
+        try {
+          const res = await clockCtl.advanceNext({ declaredTimeoutAskIds: new Set() });
+          if (!res.advanced) break;
+        } catch {
+          break;
+        }
+        await clockCtl.drainMicrotasks();
+      }
+    }
+    if (settled) {
+      try {
+        await turnPromise;
+      } catch (err) {
+        failure = failure ?? `turn_threw:${err?.message ?? String(err)}`;
+      }
+    } else {
+      turnPromise.catch(() => {});
+      failure = failure ?? pumpError ?? 'turn_never_settled';
     }
     if (pumpError) failure = failure ?? pumpError;
     if (declaredAnswers.length > 0) {

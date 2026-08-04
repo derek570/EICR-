@@ -989,3 +989,24 @@ describe('Codex r3 finding 4 — lifecycle sub-records are DEEPLY immutable', ()
     expect(row.op_keys).toEqual(['{"turn":"t1"}']);
   });
 });
+
+describe('Codex r4 finding 3 — one dialogue transcript resolves EXACTLY ONE srv-* ask', () => {
+  test('two open bindings naming one utterance fail CLOSED (never two answered terminals)', () => {
+    const entry = {};
+    const ctx = normaliseEvaluationContext(
+      { askLedger: createAskLedger() },
+      { sessionId: 's-srv' }
+    );
+    attachEvaluationContext(entry, ctx);
+    for (const id of ['srv-a', 'srv-b']) {
+      ctx.recordAskProduced({ family: 'dialogue_script', runtimeId: id, key: `{"q":"${id}"}` });
+      ctx.recordAskEmitted({ runtimeId: id });
+      ctx.recordSrvAnswerFrame({ runtimeId: id, consumedUtteranceId: 'utt-shared' });
+    }
+    ctx.resolveSrvEngineConsumption({ utteranceId: 'utt-shared' });
+    const answered = ctx.askLedger.entries.filter((e) => e.state === 'answered');
+    expect(answered).toHaveLength(0);
+    expect(ctx.askLedger.invalid).not.toBeNull();
+    expect(ctx.askLedger.invalid.reason).toBe('srv_answer_ambiguous');
+  });
+});

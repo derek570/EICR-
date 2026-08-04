@@ -707,16 +707,32 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
 
   ctx.resolveSrvEngineConsumption = ({ utteranceId }) => {
     if (!ctx.askLedger || utteranceId == null) return;
+    // Codex r4 finding 3 — ONE dialogue transcript resolves EXACTLY ONE
+    // srv-* ask. Two open bindings both naming this utterance (duplicate /
+    // stale frames) are an ambiguity the join must fail CLOSED on — never
+    // two answered terminals from one spoken reply.
+    const candidates = [];
     for (const [runtimeId, half] of ctx.srvAnswerHalves) {
       if (half.consumedUtteranceId !== utteranceId) continue;
       if (!ctx.askRuntimeBindings.has(runtimeId)) continue;
-      ctx.srvAnswerHalves.delete(runtimeId);
-      ctx.recordAskResolved({
-        runtimeId,
-        terminal: 'answered',
-        detail: { answer_frame_id: runtimeId, transcript_resolved: true },
-      });
+      candidates.push(runtimeId);
     }
+    if (candidates.length === 0) return;
+    if (candidates.length > 1) {
+      for (const runtimeId of candidates) ctx.srvAnswerHalves.delete(runtimeId);
+      ctx.askLedger.markInvalid('srv_answer_ambiguous', {
+        utterance_id: utteranceId,
+        candidates: candidates.length,
+      });
+      return;
+    }
+    const runtimeId = candidates[0];
+    ctx.srvAnswerHalves.delete(runtimeId);
+    ctx.recordAskResolved({
+      runtimeId,
+      terminal: 'answered',
+      detail: { answer_frame_id: runtimeId, transcript_resolved: true },
+    });
   };
 
   ctx.expireSrvJoins = (reason) => {

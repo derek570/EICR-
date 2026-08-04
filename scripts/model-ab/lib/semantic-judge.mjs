@@ -268,16 +268,24 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
     for (const audible of turns[t].audible_outputs ?? []) {
       if (audible.kind === 'ask_user') {
         const want = audible.count ?? 1;
+        // Codex r4 finding 1 — a turn that DECLARES its answer requires the
+        // consumed ask to have reached the ANSWERED terminal: crediting a
+        // ['produced','emitted','timeout'] entry against a declared-answer
+        // expectation would pass a broken answer ingress. Turns without
+        // declared answers accept any genuinely emitted ask (fixtures may
+        // legitimately let an ask time out).
+        const requireAnswered = (turns[t].ask_answers ?? []).length > 0;
         let taken = 0;
         for (let i = 0; i < emittedAsks.length && taken < want; i += 1) {
           if (consumedAsks.has(i)) continue;
+          if (requireAnswered && emittedAsks[i].state !== 'answered') continue;
           consumedAsks.add(i);
           taken += 1;
         }
         if (taken < want) {
           mismatches.push({
-            class: 'ask_missing',
-            expected: { kind: 'ask_user', count: want },
+            class: requireAnswered ? 'ask_not_answered' : 'ask_missing',
+            expected: { kind: 'ask_user', count: want, answered_required: requireAnswered },
             actual: taken,
           });
         }

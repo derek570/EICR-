@@ -1016,3 +1016,105 @@ describe('Codex r3 judge hardening — implied playback mandate + board strictne
     expect(lenient.verdict).toBe('PASS');
   });
 });
+
+describe('Codex r4 hardening — answered terminals, bounded pump', () => {
+  test('a timed-out ask never satisfies a DECLARED-answer expectation', () => {
+    const timedOut = {
+      key: '{}',
+      state: 'timeout',
+      runtime_id: 'toolu_t',
+      meta: { family: 'dispatcher' },
+      history: ['produced', 'emitted', 'timeout'],
+    };
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [{ kind: 'ask_user', count: 1, match: null }],
+            ask_answers: [{ answer_text: 'Circuit 4.', answered: true, channel: 'direct' }],
+          },
+        ],
+      },
+      frozenWith(baseEvidence({ ask_entries: [timedOut] }))
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.mismatches.some((m) => m.class === 'ask_not_answered')).toBe(true);
+    // Without a declared answer the emitted-then-timed-out ask is legitimate.
+    const noAnswerDeclared = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [{ kind: 'ask_user', count: 1, match: null }],
+            ask_answers: [],
+          },
+        ],
+      },
+      frozenWith(baseEvidence({ ask_entries: [timedOut] }))
+    );
+    expect(noAnswerDeclared.verdict).toBe('PASS');
+  });
+
+  test('an UNDECLARED dispatcher ask terminates the lane bounded (INVALID_HOLD, no deadlock)', async () => {
+    const { bootLaneDriver, driveFixture } =
+      await import('../../scripts/model-ab/lib/lane-driver.mjs');
+    const { projectFixtureExpectation } =
+      await import('../../scripts/model-ab/lib/expectation-projection.mjs');
+    const boot = await bootLaneDriver({ repoRoot });
+    try {
+      const fixture = {
+        corpus_id: 'frc_deadlock_synthetic',
+        job_state: { certificateType: 'eicr', boards: [], circuits: [] },
+        client_capabilities: { value: ['low_conf_readback_v1'] },
+        fallback_to_legacy: { value: false },
+        turns: [
+          {
+            turn_index: 1,
+            transcript: 'Zs for circuit 9.',
+            confirmations_enabled: { value: true },
+            regex_results: [],
+            model_rounds: [
+              {
+                stop_reason: 'tool_use',
+                tool_calls: [
+                  {
+                    id: 'toolu_dead_ask',
+                    name: 'ask_user',
+                    input: {
+                      question: 'What was the value?',
+                      reason: 'missing_value',
+                      context_field: 'measured_zs_ohm',
+                      context_circuit: 9,
+                      expected_answer_shape: 'number',
+                    },
+                  },
+                ],
+              },
+              { stop_reason: 'end_turn', text: '' },
+            ],
+            // NO declared answers — the emitted ask is undeclared for the
+            // pump, which pre-fix deadlocked awaiting the blocked turn.
+            ask_answers: [],
+            expected_operations: [],
+            expected_audible_outputs: [],
+          },
+        ],
+      };
+      const result = await driveFixture({
+        boot,
+        fixture,
+        expectation: projectFixtureExpectation(fixture),
+        judge: (e, f2, o) => judgeFrozenEvidence(e, f2, { boardWildcard: true, ...(o ?? {}) }),
+      });
+      expect(result.verdict).toBe('INVALID_HOLD');
+      expect(String(result.reason)).toMatch(/^unexpected_ask/);
+    } finally {
+      boot.clockCtl.uninstall();
+    }
+  }, 60000);
+});
