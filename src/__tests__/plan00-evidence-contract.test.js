@@ -2059,13 +2059,26 @@ describe('Cycle-4 pins — sequence-positional transition-rejection binding (R4-
   });
 });
 
-describe('Cycle-7 pins — the lifecycle grammar is EXECUTABLE (R7-1)', () => {
+describe('Cycle-7 pins — the lifecycle grammar is EXECUTABLE (R7-1, hardened in R8-1)', () => {
   test('the registry transition table byte-agrees with the schema grammar', () => {
     const schemaTable = schema.lifecycle_transition_grammar.transitions;
     expect(Object.keys(LIFECYCLE_TRANSITIONS).sort()).toEqual(Object.keys(schemaTable).sort());
     for (const [state, stages] of Object.entries(schemaTable)) {
       expect([...LIFECYCLE_TRANSITIONS[state]]).toEqual(stages);
     }
+  });
+
+  // Cycle-8 (R8-1) — the stage UNIVERSE is DERIVED from the exported table
+  // (never a hand-written literal) and must equal the schema's non-join
+  // lifecycle stages, so a consistently-added new stage gains matrix cases
+  // automatically instead of silently falling through the switch.
+  const STAGE_UNIVERSE = [...new Set(Object.values(LIFECYCLE_TRANSITIONS).flat())].sort();
+
+  test('the derived stage universe equals the schema non-join lifecycle stages', () => {
+    const schemaStages = Object.keys(schema.row_kinds.ask_lifecycle.field_spec.stages)
+      .filter((st) => st !== 'join_expired')
+      .sort();
+    expect(STAGE_UNIVERSE).toEqual(schemaStages);
   });
 
   const PREFIX_FOR_CLASS = {
@@ -2081,9 +2094,38 @@ describe('Cycle-7 pins — the lifecycle grammar is EXECUTABLE (R7-1)', () => {
     if (stage === 'replaced') return { ...base, stage, successor_runtime_id: 'succ' };
     return { ...base, stage };
   };
+  // the state a stage WOULD leave the runtime in, were it accepted
+  const wouldBeState = (stage, prior) => {
+    if (stage === 'produced') return 'produced';
+    if (stage === 'emitted') return 'emitted';
+    if (stage === 'reissued_attempt') return prior; // state-preserving
+    return 'terminal'; // resolved / replaced
+  };
+  const project = (rows) =>
+    buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: {
+        open_asks_dispatcher: 0,
+        open_asks_dialogue_script: 0,
+        open_asks_address_mirror: 0,
+        non_quiescent_at_stop: 0,
+        revision_instability: 0,
+      },
+      revisions: { usage_revision: 0 },
+      sub_records: rows,
+    });
+  const COUNTER_FOR_STAGE = {
+    produced: (fam) => fam.produced,
+    emitted: (fam) => fam.emitted,
+    reissued_attempt: (fam) => fam.reissued_attempts,
+    resolved: (fam) => Object.values(fam.resolved_terminals).reduce((a, b) => a + b, 0),
+    replaced: (fam) => fam.replaced,
+  };
+
   const cases = [];
   for (const priorClass of Object.keys(LIFECYCLE_TRANSITIONS)) {
-    for (const stage of ['produced', 'emitted', 'reissued_attempt', 'resolved', 'replaced']) {
+    for (const stage of STAGE_UNIVERSE) {
       cases.push([priorClass, stage, LIFECYCLE_TRANSITIONS[priorClass].includes(stage)]);
     }
   }
@@ -2091,32 +2133,47 @@ describe('Cycle-7 pins — the lifecycle grammar is EXECUTABLE (R7-1)', () => {
   test.each(cases)(
     'prior=%s stage=%s -> allowed=%s (full matrix from the ONE exported table)',
     (priorClass, stage, allowed) => {
-      const rows = [
-        ...PREFIX_FOR_CLASS[priorClass].map((st, i) => rowFor(st, i + 1)),
-        rowFor(stage, PREFIX_FOR_CLASS[priorClass].length + 1),
-      ];
-      const openAfter =
-        (priorClass === 'terminal' && !allowed) || (priorClass === 'absent' && !allowed) ? 0 : null; // only assert state preservation where it is unambiguous
-      const proj = buildEvidenceProjectionV1({
-        sessionId: 's',
-        boundary: 'session_stopped',
-        counts: {
-          open_asks_dispatcher: 0,
-          open_asks_dialogue_script: 0,
-          open_asks_address_mirror: 0,
-          non_quiescent_at_stop: 0,
-          revision_instability: 0,
-        },
-        revisions: { usage_revision: 0 },
-        sub_records: rows,
-      });
-      const violations = proj.lifecycle_state_contradictions.filter(
-        (c) => c.seq === rows.length - 1
-      );
-      expect(violations.length === 0).toBe(allowed);
-      if (openAfter !== null) {
-        // an invalid row must not mutate the tracked state
-        expect(proj.ask_families.dialogue_script.open).toBe(openAfter);
+      const prefix = PREFIX_FOR_CLASS[priorClass].map((st, i) => rowFor(st, i + 1));
+      const probeSeq = prefix.length;
+      const rows = [...prefix, rowFor(stage, probeSeq + 1)];
+      const baseline = project(prefix);
+      const proj = project(rows);
+      const probeViolations = proj.lifecycle_state_contradictions.filter((c) => c.seq === probeSeq);
+      expect(probeViolations.length === 0).toBe(allowed);
+      // every stage reaches its explicit per-stage COUNTING effect (never
+      // the default branch), accepted or rejected alike
+      const before = COUNTER_FOR_STAGE[stage](baseline.ask_families.dialogue_script);
+      const after = COUNTER_FOR_STAGE[stage](proj.ask_families.dialogue_script);
+      expect(after).toBe(before + 1);
+
+      const wouldBe = wouldBeState(stage, priorClass);
+      if (!allowed && stage !== 'reissued_attempt' && wouldBe !== priorClass) {
+        // Cycle-8 (R8-1) — STATE PRESERVATION for every disallowed pair
+        // whose acceptance WOULD have changed the state: append a
+        // discriminating follow-up separating the true prior state from
+        // the state the rejected probe would have produced. (When the
+        // would-be state equals the prior — e.g. a duplicate produced —
+        // preservation is trivially guaranteed and no discriminator
+        // exists.)
+        const allowedFromPrior = LIFECYCLE_TRANSITIONS[priorClass];
+        const allowedFromWouldBe = LIFECYCLE_TRANSITIONS[wouldBe] ?? [];
+        // prefer a follow-up allowed from the WOULD-BE state but not from
+        // the prior (expect a contradiction => state stayed prior); else one
+        // allowed from the prior but not from the would-be state (expect
+        // none => state stayed prior).
+        let followUp = allowedFromWouldBe.find((st) => !allowedFromPrior.includes(st));
+        let expectViolation = true;
+        if (followUp == null) {
+          followUp = allowedFromPrior.find((st) => !allowedFromWouldBe.includes(st));
+          expectViolation = false;
+        }
+        expect(followUp).toBeDefined(); // the grammar always discriminates
+        const followSeq = rows.length;
+        const proj2 = project([...rows, rowFor(followUp, followSeq + 1)]);
+        const followViolations = proj2.lifecycle_state_contradictions.filter(
+          (c) => c.seq === followSeq
+        );
+        expect(followViolations.length > 0).toBe(expectViolation);
       }
     }
   );
