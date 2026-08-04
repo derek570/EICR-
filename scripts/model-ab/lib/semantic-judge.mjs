@@ -225,19 +225,24 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
   const deliveryMatches = (d, match, expectedTurnId) => {
     if (match?.text_exact != null && d.text !== match.text_exact) return false;
     const keys = d.op_keys ?? (d.op_key ? [d.op_key] : []);
-    if (expectedTurnId != null) {
-      const anyTurnKnown = keys.some((k) => parseOpKey(k)?.turn != null);
-      if (anyTurnKnown && !keys.some((k) => parseOpKey(k)?.turn === expectedTurnId)) return false;
-    }
+    // Mini-review r2 finding 6 — when a field term is present, ONE key must
+    // satisfy BOTH the turn and field/circuit terms (a multi-key unit could
+    // otherwise pass the turn test with one key and the field test with
+    // another).
     if (match?.field != null) {
       return keys.some((k) => {
         const id = parseOpKey(k);
+        if (!id) return false;
+        if (expectedTurnId != null && id.turn != null && id.turn !== expectedTurnId) return false;
         return (
-          id &&
           id.field === match.field &&
           (match.circuit === undefined || (id.circuit ?? null) === (match.circuit ?? null))
         );
       });
+    }
+    if (expectedTurnId != null) {
+      const anyTurnKnown = keys.some((k) => parseOpKey(k)?.turn != null);
+      if (anyTurnKnown && !keys.some((k) => parseOpKey(k)?.turn === expectedTurnId)) return false;
     }
     return true;
   };
@@ -325,6 +330,29 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
             }
             return null;
           })();
+          // Mini-review r2 finding 5 — the wire dedupe_token
+          // (`clear_<field>_<circuit|board>_<turnId>_ord<N>`) is the only
+          // structured carrier of WHICH field was cleared; a same-turn
+          // clear of a DIFFERENT field (pfc vs ze) must never satisfy the
+          // confirmation. Spellings are alias-tolerant (raw
+          // `earth_loop_impedance_ze` vs wire `ze`).
+          const tokenField = (() => {
+            const tok = row.dedupe_token;
+            if (typeof tok !== 'string' || !tok.startsWith('clear_')) return null;
+            const m = tok.match(/^clear_(.+?)_(?:\d+|board)_.+_ord\d+$/);
+            return m ? m[1] : null;
+          })();
+          const CLEAR_FIELD_ALIASES = new Map([
+            ['pfc', 'prospective_fault_current'],
+            ['ze', 'earth_loop_impedance_ze'],
+          ]);
+          const clearFieldCompatible = (receiptField) => {
+            if (tokenField == null || receiptField == null) return true;
+            if (receiptField === tokenField) return true;
+            if (receiptField.endsWith(tokenField) || tokenField.endsWith(receiptField)) return true;
+            const alias = CLEAR_FIELD_ALIASES.get(tokenField);
+            return alias != null && receiptField === alias;
+          };
           const clearIdx = [];
           for (let i = 0; i < receipts.length; i += 1) {
             if (consumed.has(i)) continue;
@@ -342,6 +370,7 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
             ) {
               continue;
             }
+            if (!clearFieldCompatible(r.field ?? null)) continue;
             clearIdx.push(i);
           }
           if (clearIdx.length !== 1) {
@@ -379,14 +408,21 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
   // each operation as an audible row. A delivery backing any UNDECLARED
   // receipt still fails.
   const consumedReceiptIdx = [...consumed];
-  const backsConsumedReceipt = (key) => {
+  // Mini-review r2 finding 4 — the exemption carries CARDINALITY: each
+  // consumed receipt vouches for AT MOST ONE undeclared delivery (a second
+  // duplicate read-back of the same operation is undeclared speech), and
+  // board identity participates in the reconciliation.
+  const impliedClaimedReceipts = new Set();
+  const findBackingReceipt = (key) => {
     const id = parseOpKey(key);
-    if (!id) return false;
-    return consumedReceiptIdx.some((i) => {
+    if (!id) return -1;
+    return consumedReceiptIdx.findIndex((i) => {
+      if (impliedClaimedReceipts.has(i)) return false;
       const r = receipts[i];
       return (
         r.field === id.field &&
         (r.circuit ?? null) === (id.circuit ?? null) &&
+        (r.board_id ?? null) === (id.board_id ?? null) &&
         ((r.extraction_turn_id ?? null) === (id.turn ?? null) || id.turn == null) &&
         ((r.turn_ordinal ?? 0) === (id.ordinal ?? 0) || id.ordinal == null)
       );
@@ -395,7 +431,13 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
   for (let i = 0; i < deliveries.length; i += 1) {
     if (consumedDeliveries.has(i)) continue;
     const keys = deliveries[i].op_keys ?? (deliveries[i].op_key ? [deliveries[i].op_key] : []);
-    if (keys.length > 0 && keys.every(backsConsumedReceipt)) continue;
+    if (keys.length > 0) {
+      const backing = keys.map(findBackingReceipt);
+      if (backing.every((idx) => idx >= 0)) {
+        for (const idx of backing) impliedClaimedReceipts.add(consumedReceiptIdx[idx]);
+        continue;
+      }
+    }
     mismatches.push({
       class: 'undeclared_delivery',
       actual: { kind: deliveries[i].kind ?? null, text: deliveries[i].text ?? null },

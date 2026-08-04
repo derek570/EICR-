@@ -1677,6 +1677,7 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
                 transport: 'ws_extraction',
                 text: c.text ?? null,
                 wireTurnId: typeof result?.turn_id === 'string' ? result.turn_id : null,
+                dedupeToken: typeof c.dedupe_token === 'string' ? c.dedupe_token : null,
               }
             );
             continue;

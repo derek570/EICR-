@@ -332,7 +332,14 @@ export function createDeliveryLedger() {
      */
     recordDeliveryAttempt(
       opIdentity,
-      { kind, transport = null, claimLineage = null, text = null, wireTurnId = null } = {}
+      {
+        kind,
+        transport = null,
+        claimLineage = null,
+        text = null,
+        wireTurnId = null,
+        dedupeToken = null,
+      } = {}
     ) {
       seq += 1;
       const identities = Array.isArray(opIdentity) ? opIdentity : [opIdentity];
@@ -352,6 +359,10 @@ export function createDeliveryLedger() {
           // client echoes on its playback ACK, so ACK resolution can bind
           // turn-exactly instead of crediting a stale/other-turn ACK.
           wire_turn_id: wireTurnId,
+          // Mini-review r2 finding 5 — the wire dedupe_token (for a
+          // field_cleared confirmation it is `clear_<field>_…`, the only
+          // structured carrier of WHICH field was cleared).
+          dedupe_token: dedupeToken,
           at_seq: seq,
         })
       );
@@ -454,12 +465,18 @@ export function createDeliveryLedger() {
       const op = matches[0];
       prov.resolved_op_key = operationIdentityKey(op);
       this.recordDeliveryAttempt(op, { kind: 'fast_tts', transport: 'fast_tts' });
-      const playbackCount = prov.staged_acks.length;
-      for (const ack of prov.staged_acks) this.recordPlaybackAck(ack, [op]);
+      // Mini-review r2 finding 2 — count AUTHORITATIVE playback rows (a
+      // byte-identical retry ACK dedupes to one row; counting staged
+      // BODIES would hand 00C contradictory evidence).
+      let playbackCount = 0;
+      for (const ack of prov.staged_acks) {
+        if (this.recordPlaybackAck(ack, [op])) playbackCount += 1;
+      }
       prov.staged_acks = [];
       // Codex r2 finding 2 — the caller's lifecycle sub-record needs the
-      // resolved identity + how many staged ACKs were consumed, so the
-      // frozen builder snapshot carries real op_keys/playback evidence.
+      // resolved identity + how many authoritative playback starts were
+      // recorded, so the frozen builder snapshot carries real
+      // op_keys/playback evidence.
       return { op, playback_count: playbackCount };
     },
 

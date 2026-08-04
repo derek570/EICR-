@@ -558,3 +558,44 @@ describe('Tier-2 (b2) — Codex r2 finding 1: the REAL controller through the RE
     expect(roles.deliveryLedger.invalid).toBeNull();
   });
 });
+
+describe('Tier-2 (b3) — mini-review r2 concern 1: the RECOVERY region bracket', () => {
+  test('an ask_user_answered mirror recovery write commits under a turn scope with a declared origin', async () => {
+    const { factory, roles } = makeFullContextFactory('sess-am-rec');
+    const wss = initSonnetStream(null, getKey, verifyToken, {
+      evaluationContextFactory: factory,
+    });
+    const ws = connect(wss);
+    await sendFrame(ws, { type: 'session_start', sessionId: 'sess-am-rec', jobState: {} });
+    const entry = activeSessions.get('sess-am-rec');
+    // The controller transition is faked; the WRITE goes through the REAL
+    // atom against the REAL observed snapshot INSIDE the recovery region —
+    // exactly the mutation shape stageBoardWrite performs. Pre-bracket this
+    // latched `commit_without_origin_frame` with a null turn.
+    const { applyBoardReadingFlagAware } =
+      await import('../extraction/stage6-snapshot-mutators.js');
+    entry.addressMirrorController = {
+      resolveRecoveredAnswer: async () => {
+        applyBoardReadingFlagAware(entry.session.stateSnapshot, {
+          field: 'client_address',
+          value: '99 Recovery Road',
+          boardId: null,
+        });
+        return { handled: true, outcome: 'duplicate', changed: [] };
+      },
+    };
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      sessionId: 'sess-am-rec',
+      tool_call_id: 'mir-rec-ask-1',
+      user_text: 'yes',
+      purpose: 'address_mirror',
+      consumed_utterance_id: 'utt-rec-1',
+    });
+    expect(roles.mutationObserver.invalid).toBeNull();
+    const receipt = roles.mutationObserver.receipts.find((r) => r.field === 'client_address');
+    expect(receipt).toBeTruthy();
+    expect(receipt.extraction_turn_id).toBe('utt-rec-1');
+    expect(receipt.origin).toBe('ask_auto_resolve');
+  });
+});

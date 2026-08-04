@@ -289,11 +289,17 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
           utterance_id: utteranceId,
           regexResults: turn.regex_results ?? [],
           confirmations_enabled: true,
-          // Codex r2 finding 10 — exact fixture-to-wire ingress: a recorded
-          // reply anchored to a production question must traverse the SAME
-          // anchored path it took live, never an ordinary transcript.
-          ...(turn.in_response_to && typeof turn.in_response_to === 'object'
-            ? { in_response_to: turn.in_response_to }
+          // Codex r2 finding 10 + mini-review r2 finding 10 — exact
+          // fixture-to-wire ingress: the fixture stores a PROVENANCED
+          // scalar ({value, provenance}); only a truthy OBJECT value is a
+          // real wire question context. Forwarding the wrapper itself made
+          // every false-valued fixture truthy at production's presence
+          // check.
+          ...(turn.in_response_to &&
+          typeof turn.in_response_to === 'object' &&
+          turn.in_response_to.value &&
+          typeof turn.in_response_to.value === 'object'
+            ? { in_response_to: turn.in_response_to.value }
             : {}),
         })
       )
@@ -514,8 +520,10 @@ export async function runVendorLaneMock({ repoRoot, log = () => {} }) {
         boot,
         fixture,
         expectation,
-        judge: (exp, frozen) =>
-          judgeFrozenEvidence(exp, frozen, { boardWildcard: boardCount <= 1 }),
+        // Mini-review r2 finding 6 — the wrapper MUST forward driveFixture's
+        // opts (turnIds) or the 9/9 acceptance silently judges whole-capture.
+        judge: (exp, frozen, opts) =>
+          judgeFrozenEvidence(exp, frozen, { boardWildcard: boardCount <= 1, ...(opts ?? {}) }),
         log,
       });
       log(

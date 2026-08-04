@@ -730,7 +730,14 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   // ── delivery / playback / non-mutating audible ──
   ctx.recordDelivery = (
     opIdentities,
-    { kind, transport = null, claimLineage = null, text = null, wireTurnId = null } = {}
+    {
+      kind,
+      transport = null,
+      claimLineage = null,
+      text = null,
+      wireTurnId = null,
+      dedupeToken = null,
+    } = {}
   ) => {
     if (!ctx.deliveryLedger) return;
     ctx.deliveryLedger.recordDeliveryAttempt(opIdentities, {
@@ -739,6 +746,7 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       claimLineage,
       text,
       wireTurnId,
+      dedupeToken,
     });
     const keys = (Array.isArray(opIdentities) ? opIdentities : [opIdentities]).map((op) =>
       operationIdentityKey(op)
