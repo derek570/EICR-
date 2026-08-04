@@ -19,19 +19,9 @@
     "open_asks_address_mirror": "same rule for address_mirror"
   },
   "ask_terminals": {
-    "pre_stop_quiescence_compatible": [
-      "answered",
-      "timeout",
-      "user_moved_on",
-      "superseded",
-      "reissued",
-      "cancelled",
-      "cancellation",
-      "user_cancelled",
-      "expired"
-    ],
+    "pre_stop_examples": ["answered", "timeout", "user_moved_on", "superseded", "reissued", "validation_error", "prompt_leak_blocked"],
     "stop_boundary_non_quiescent": ["session_stopped", "session_terminated", "connection_loss_at_stop"],
-    "rule": "An ask still open AT the stop boundary renders the completion freeze INELIGIBLE even if stop-expiry later terminal-resolves it: entries resolved with a stop-boundary terminal still count in their family's open_asks_* key, and the latched completion freeze can never be flipped eligible by a post-freeze resolution."
+    "rule": "The dispatcher's terminal vocabulary is open-ended, so quiescence compatibility is defined by the CLOSED non-quiescent set: an entry terminal-resolved with a stop_boundary_non_quiescent member still counts in its family's open_asks_* key; ANY other terminal closes the entry as quiescence-compatible. An ask still open AT the stop boundary renders the completion freeze INELIGIBLE even if stop-expiry later terminal-resolves it, and the latched completion freeze can never be flipped eligible by a post-freeze resolution."
   },
   "semantic_families": ["ordinary_confirmation", "dialogue_script", "address_mirror", "fast_tts"],
   "transports": [
