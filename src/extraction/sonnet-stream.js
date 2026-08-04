@@ -1584,20 +1584,57 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
 function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
   try {
     const mirrorDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
-    const collectMirrorOps = () => {
+    // A frame can be sent AFTER the harness turn scope has closed (buffered
+    // reconnect replay, or simply post-dispatch egress), so identities are
+    // NEVER derived from the observer's open-turn state at send time
+    // (mini-review r1 finding 5 — that invented `{turn:null, ordinal:0}`
+    // keys). Every operation-backed unit binds through the canonical
+    // receipt resolver instead; `result.utterance_id` is the same value the
+    // harness minted as the receipts' extraction_turn_id (its explicit
+    // fallback), so a buffered older result binds to its OWN turn's
+    // receipts even when a newer same-slot write has since accumulated
+    // (mini-review r1 finding 4).
+    const resultTurnId =
+      typeof result?.utterance_id === 'string' && result.utterance_id.length > 0
+        ? result.utterance_id
+        : null;
+    const stageMirrorTerminal = (text) => {
+      const lineage = `${mirrorDelivery.kind}:${mirrorDelivery.token}`;
+      // One unit per claim lineage — the same result surfaces the terminal
+      // on both the extraction and VCR frames, and re-running the receipt
+      // resolver for the duplicate would falsely unmatch already-claimed
+      // receipts.
+      if (evalCtx.addressMirrorUnits?.has(lineage)) return;
       const readings = Array.isArray(result?.extracted_readings)
         ? result.extracted_readings
         : Array.isArray(result?.readings)
           ? result.readings
           : [];
-      return readings
-        .filter((r) => r && r.field != null)
-        .map((r) => ({
-          extractionTurnId: evalCtx.mutationObserver?.openTurnId ?? null,
+      const withFields = readings.filter((r) => r && r.field != null);
+      const ops = [];
+      let unresolved = 0;
+      for (const r of withFields) {
+        const res = evalCtx.resolveDeliveryReceipt({
           field: r.field,
           circuit: r.circuit ?? null,
           boardId: r.board_id ?? null,
-        }));
+          value: r.value == null ? null : String(r.value),
+          turnId: resultTurnId,
+        });
+        if (res.identity) ops.push(res.identity);
+        else unresolved += 1;
+      }
+      if (unresolved > 0) {
+        // Operation-backed speech whose canonical binding cannot be
+        // established — fail closed (capture INVALID), never invent keys.
+        evalCtx.deliveryLedger?.markInvalid?.('mirror_terminal_receipt_binding', {
+          lineage,
+          unresolved,
+          resolved: ops.length,
+        });
+        return;
+      }
+      evalCtx.recordAddressMirrorTerminal({ claimLineage: lineage, ops, text });
     };
     if (frameKind === 'extraction') {
       // An address-mirror result can carry its sole collapsed terminal on
@@ -1606,14 +1643,11 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
       // confirmation handling so the multi-write unit is recorded and its
       // fieldless terminal is never mis-classified as non-mutating speech.
       if (mirrorDelivery && typeof mirrorDelivery.token === 'string') {
-        evalCtx.recordAddressMirrorTerminal({
-          claimLineage: `${mirrorDelivery.kind}:${mirrorDelivery.token}`,
-          ops: collectMirrorOps(),
-          text:
-            (Array.isArray(result?.confirmations) &&
-              result.confirmations.find((c) => c && c.field == null)?.text) ||
-            null,
-        });
+        stageMirrorTerminal(
+          (Array.isArray(result?.confirmations) &&
+            result.confirmations.find((c) => c && c.field == null)?.text) ||
+            null
+        );
         return;
       }
       for (const c of Array.isArray(result?.confirmations) ? result.confirmations : []) {
@@ -1645,6 +1679,7 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
             field: c.field,
             circuit: c.circuit ?? null,
             boardId: c.board_id ?? null,
+            turnId: resultTurnId,
           });
           if (!res.identity) {
             evalCtx.deliveryLedger?.markInvalid?.(
@@ -1670,11 +1705,7 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
     }
     if (frameKind === 'voice_command_response') {
       if (mirrorDelivery && typeof mirrorDelivery.token === 'string') {
-        evalCtx.recordAddressMirrorTerminal({
-          claimLineage: `${mirrorDelivery.kind}:${mirrorDelivery.token}`,
-          ops: collectMirrorOps(),
-          text: result?.spoken_response ?? null,
-        });
+        stageMirrorTerminal(result?.spoken_response ?? null);
       } else if (result?.spoken_response) {
         evalCtx.recordNonMutatingAudible({
           channel: 'ws_vcr',

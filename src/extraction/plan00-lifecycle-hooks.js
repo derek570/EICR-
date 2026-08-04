@@ -980,18 +980,21 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     if (!mo) return;
     // The fast-path correlation contract binds this client-minted
     // correlation id to exactly one server-minted extraction turn at
-    // transcript ingress (bindFastCorrelation). When the binding exists,
-    // ONLY that turn's receipts are promotion candidates — a repeated
-    // same-field reading in a different turn can never promote this
-    // reservation. Board identity participates in the match so two boards'
-    // identical slots stay distinct.
+    // transcript ingress (bindFastCorrelation). Promotion REQUIRES that
+    // binding — a missing binding treated as a wildcard would let ANY
+    // later same-field receipt promote the reservation across turns
+    // (mini-review r1 finding 3). Fail closed instead: the unpromoted
+    // provisional then invalidates the capture at completion freeze,
+    // never crediting the wrong operation. Board identity participates in
+    // the match so two boards' identical slots stay distinct.
     const boundTurn = mo.fastCorrelationTurn(correlationId);
+    if (boundTurn == null) return;
     const candidateOps = mo.receipts
       .filter(
         (rc) =>
           rc.kind === 'reading' &&
           rc.field === r.candidate.field &&
-          (boundTurn == null || rc.extraction_turn_id === boundTurn) &&
+          rc.extraction_turn_id === boundTurn &&
           (r.candidate.board_id == null ||
             rc.board_id == null ||
             rc.board_id === r.candidate.board_id)

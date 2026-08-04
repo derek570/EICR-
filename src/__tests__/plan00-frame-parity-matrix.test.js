@@ -113,14 +113,14 @@ function frameBuffer(frame) {
   return Buffer.from(JSON.stringify(frame));
 }
 
-function scriptedTurnClient(rounds) {
+function scriptedTurnClient(rounds, violations, turnIndex = 1) {
   return makeTurnClient({
     baseRounds: rounds,
     branches: [],
     turnState: {},
-    violations: [],
+    violations,
     corpusId: 'parity',
-    turnIndex: 1,
+    turnIndex,
   });
 }
 
@@ -150,8 +150,10 @@ async function driveLiveTurn({
   utteranceId,
   rounds,
   answerAfterAsk,
+  violations,
+  turnIndex,
 }) {
-  session.client = scriptedTurnClient(rounds);
+  session.client = scriptedTurnClient(rounds, violations, turnIndex);
   let settled = false;
   const baseline = sentRaw.length;
   const turnPromise = emit(
@@ -193,6 +195,10 @@ async function driveLiveTurn({
   await drainMicrotasks(10);
   if (!settled) throw new Error(`live turn ${utteranceId} failed to settle under the fixed pump`);
   await turnPromise;
+  // Strict round consumption: every declared model round must have been
+  // consumed exactly once — an under-consumed turn (e.g. the model path
+  // silently not running) latches a violation instead of passing vacuously.
+  session.client.assertFullyConsumed();
 }
 
 /**
@@ -208,14 +214,20 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
   sonnetSessionStore.clear();
   jest.setSystemTime(new Date('2026-08-04T12:00:00Z'));
 
+  const violations = [];
+  const evalContexts = [];
   const initOptions = {};
   if (withContextFactory) {
-    initOptions.evaluationContextFactory = () => ({
-      observer: null,
-      mutationObserver: createMutationObserver({ sessionId: 'parity' }),
-      askLedger: createAskLedger(),
-      deliveryLedger: createDeliveryLedger(),
-    });
+    initOptions.evaluationContextFactory = () => {
+      const roles = {
+        observer: null,
+        mutationObserver: createMutationObserver({ sessionId: 'parity' }),
+        askLedger: createAskLedger(),
+        deliveryLedger: createDeliveryLedger(),
+      };
+      evalContexts.push(roles);
+      return roles;
+    };
   }
   if (withSessionFactory) {
     // Mirror the env-resolved mode exactly as production construction does —
@@ -256,9 +268,11 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
     session: liveSession,
     emit: a.emit,
     sentRaw: a.sentRaw,
+    violations,
     sessionId: liveSid,
     text: 'R1 plus R2 for circuit 4 is 0.32.',
     utteranceId: 'parity-utt-1',
+    turnIndex: 1,
     rounds: [
       {
         stop_reason: 'tool_use',
@@ -285,9 +299,11 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
     session: liveSession,
     emit: a.emit,
     sentRaw: a.sentRaw,
+    violations,
     sessionId: liveSid,
     text: 'The Zs was point five five.',
     utteranceId: 'parity-utt-2',
+    turnIndex: 2,
     rounds: [
       {
         stop_reason: 'tool_use',
@@ -328,9 +344,11 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
     session: liveSession,
     emit: a.emit,
     sentRaw: a.sentRaw,
+    violations,
     sessionId: liveSid,
     text: 'Zs for circuit 4.',
     utteranceId: 'parity-utt-3',
+    turnIndex: 3,
     rounds: [
       {
         stop_reason: 'tool_use',
@@ -339,11 +357,15 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
             id: 'toolu_parity_ask2',
             name: 'ask_user',
             input: {
-              question: 'What was the reading value?',
-              reason: 'missing_value',
+              question: 'Which circuit is that reading for?',
+              reason: 'missing_context',
               context_field: 'measured_zs_ohm',
-              context_circuit: 4,
-              expected_answer_shape: 'number',
+              context_circuit: null,
+              // circuit_ref is the ONE shape the transcript-channel overtake
+              // classifier resolves from a bare spoken reply (a bare number
+              // answer to a `number` ask is deliberately ambiguous — see
+              // stage6-overtake-classifier.js).
+              expected_answer_shape: 'circuit_ref',
             },
           },
         ],
@@ -351,16 +373,17 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
       { stop_reason: 'end_turn', text: '' },
     ],
     answerAfterAsk: async () => {
-      // The TRANSCRIPT answer channel: a bare value reply while the ask is
-      // pending (resolves via the overtake classifier, or settles on the
-      // deterministic ask timeout — identical either way across legs).
+      // The TRANSCRIPT answer channel: the overtake classifier consumes the
+      // reply into the pending ask (verdict `answers`), so the transcript is
+      // never forwarded as its own model turn. The ask-ledger assertion in
+      // the test proves the ANSWERED terminal — a timeout would fail it.
       await a
         .emit(
           'message',
           frameBuffer({
             type: 'transcript',
             sessionId: liveSid,
-            text: '0.55.',
+            text: 'Circuit 7.',
             is_final: true,
             utterance_id: 'parity-utt-3b',
             confirmations_enabled: true,
@@ -375,9 +398,11 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
     session: liveSession,
     emit: a.emit,
     sentRaw: a.sentRaw,
+    violations,
     sessionId: liveSid,
     text: 'There is a cracked socket front in the kitchen, code C2.',
     utteranceId: 'parity-utt-4',
+    turnIndex: 4,
     rounds: [
       {
         stop_reason: 'tool_use',
@@ -522,6 +547,8 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
     frames: { a: [...a.sentRaw], b: [...b.sentRaw], c: [...c.sentRaw], d: [...d.sentRaw] },
     logs: [...loggedPayloads],
     uploads: [...uploadedBodies],
+    violations,
+    evalContexts,
   };
 }
 
@@ -573,6 +600,24 @@ describe('C5 — byte-level frame parity across the four legs', () => {
     expect(production.frames.b.some((f) => f.includes('"voice_command_response"'))).toBe(true);
     expect(production.frames.c.length).toBeGreaterThan(0);
     expect(production.frames.d.length).toBeGreaterThan(0);
+
+    // Discrimination (mini-review r1 finding 10): the scenarios must have
+    // RUN as intended, not merely produced identical bytes.
+    // (a) Every scripted model round was consumed exactly once on every leg
+    //     — an under-consumed turn latches a strict-consumption violation.
+    for (const leg of [production, evaluation, sessionOnly, contextOnly]) {
+      expect(leg.violations).toEqual([]);
+    }
+    // (b) BOTH dispatcher asks genuinely resolved as ANSWERED through their
+    //     intended channels — proven on the evaluation leg's ask ledger
+    //     (the same run whose frames are byte-identical to production, so
+    //     the proof carries across). A timeout terminal would fail here.
+    const liveAskLedger = evaluation.evalContexts[0]?.askLedger;
+    expect(liveAskLedger).toBeTruthy();
+    const askStates = new Map(liveAskLedger.entries.map((e) => [e.runtime_id, e.state]));
+    expect(askStates.get('toolu_parity_ask1')).toBe('answered'); // direct channel
+    expect(askStates.get('toolu_parity_ask2')).toBe('answered'); // transcript channel
+    expect(liveAskLedger.invalid).toBeNull();
 
     for (const legName of ['evaluation', 'sessionOnly', 'contextOnly']) {
       const leg = { evaluation, sessionOnly, contextOnly }[legName];

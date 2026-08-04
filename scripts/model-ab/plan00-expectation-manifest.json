@@ -465,7 +465,7 @@
     ]
   },
   "combined_sha256": "0e68195961962f7b0ca8e39896f77caf2eabc4e7c2f2a5d0e337efed0bcebf38",
-  "semantic_oracle_digest": "dd280b12c2a3d960c086c24e854bf5be000ad1fd70ac6c5848f7759e0a6824b8",
+  "semantic_oracle_digest": "f4a72d6beba3e5d2987fafdfd77a6aa199ae5e6c3f042af6aa8fa10cbbe3a462",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -481,11 +481,11 @@
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "5ca5549855203d226959aa31cdbd561a91f85f3481cdfd486a8cade4efc3f008"
+      "sha256": "36cf4262d29931993982c946e29fb3f753e700fd0c4eb3f81d329423f385c1c1"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "a0b618c23055e7a9872de6ca96984b7a69406ecd0fa283836ab6a1f018c64439"
+      "sha256": "e3ec74914397a9f72d02ee91d876e04b9d4756c218716a8bc3c56c9736e02def"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
