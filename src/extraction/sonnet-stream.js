@@ -54,12 +54,24 @@ import { createAddressMirrorIngressArbiter } from './address-mirror-ingress-arbi
 // (production traffic never registers one); only the evaluation server
 // option (`initOptions.evaluationContextFactory`) activates them.
 import {
-  registerEvidenceObserver,
   freezeEvidenceCompletion,
+  freezeEvidenceStart,
+  normaliseEvaluationContext,
+  attachEvaluationContext,
   notifySuccessfulFrame,
   notifyConfirmationDelivery,
+  beginProducer,
   LIFECYCLE_LEDGER,
+  EVALUATION_CONTEXT,
+  PLAN00_ROUND_USAGE_SINK,
 } from './plan00-lifecycle-hooks.js';
+import { attachMutationObserver, getMutationObserver } from './plan00-semantic-capture.js';
+import {
+  PLAN00_ASK_EMIT_OBSERVER,
+  PLAN00_DELIVERY_EMIT_OBSERVER,
+  PLAN00_FRAME_BINDING_REGISTRY,
+  buildLiveAskKey,
+} from './plan00-audibility-ledgers.js';
 import {
   createPerTurnWrites,
   encodeBoardReadingKey,
@@ -330,8 +342,31 @@ function attachAddressMirrorAskClear(result, clearAskId) {
   return result;
 }
 
-function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null) {
+function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry = null) {
   if (typeof followup?.question !== 'string' || ws?.readyState !== ws?.OPEN) return false;
+  // Plan 00B-2 C2.1 — the address-mirror direct question is BOUND (runtime
+  // id → full liveAskKey) pre-send; the emitted record lands only after the
+  // successful send below. Dormant single-Symbol lookup.
+  const evalCtx = entry?.[EVALUATION_CONTEXT] ?? null;
+  const questionId = followup.questionId ?? null;
+  if (evalCtx && questionId && !evalCtx.askRuntimeBindings.has(questionId)) {
+    evalCtx.recordAskProduced({
+      family: 'address_mirror',
+      runtimeId: questionId,
+      liveAskKey: buildLiveAskKey({
+        origin: 'address_mirror',
+        purpose: 'address_mirror',
+        reason: followup.outcome ?? null,
+        contextField: null,
+        boardId: null,
+        circuits: [],
+        expectedAnswerShape: followup.outcome === 'conflict' ? 'yes_no' : 'free_text',
+        observationClarificationKind: null,
+        pendingWrite: null,
+        chainRole: null,
+      }),
+    });
+  }
   ws.send(
     JSON.stringify({
       type: 'question',
@@ -344,6 +379,11 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null) {
       utterance_id: typeof utteranceId === 'string' ? utteranceId : null,
     })
   );
+  // Post-successful-send seam: same-id re-sends (reconnect replay) append a
+  // reissued attempt to the same open entry — never a second produced row.
+  if (evalCtx && questionId) {
+    evalCtx.recordAskEmitted({ runtimeId: questionId });
+  }
   return true;
 }
 
@@ -853,6 +893,18 @@ async function refineObservationsAsync(entry, sessionId, observations, turnId = 
   const toRefine = observations.filter(needsRefinement);
   if (toRefine.length === 0) return;
 
+  // Plan 00B-2 C3 — refinement producer boundary: from refinement dispatch
+  // to its match/unmatched terminal for THIS async body (the owed-until-
+  // client-matched tail is separately counted by refinements_in_flight).
+  const producer = beginProducer(entry, 'refinement');
+  try {
+    await refineObservationsAsyncBody(entry, sessionId, toRefine, turnId);
+  } finally {
+    producer.complete();
+  }
+}
+
+async function refineObservationsAsyncBody(entry, sessionId, toRefine, turnId) {
   const openai = await getOpenAIClient();
   if (!openai) return;
 
@@ -1423,39 +1475,81 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
       writable: true,
     });
   };
-  for (let i = start; i < frames.length; i += 1) {
-    if (!ws || ws.readyState !== ws.OPEN) {
-      persistCursor(i);
-      return { ok: false, cursor: i, frameKind: frames[i].kind, error: null };
-    }
-    try {
-      if (ws.send.length >= 2) {
-        await new Promise((resolve, reject) => {
-          ws.send(frames[i].json, (error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
-      } else {
-        // Focused unit-test sockets use synchronous one-argument stubs. The
-        // production `ws` implementation exposes the callback form above.
-        ws.send(frames[i].json);
-      }
-    } catch (err) {
-      persistCursor(i);
-      return { ok: false, cursor: i, frameKind: frames[i].kind, error: err };
-    }
-    // Plan 00B §B1 — successful-frame evidence callback. The ledger-Symbol
-    // guard keeps the dormant path to ONE property lookup with ZERO
-    // allocation (the detail object is only built when an evaluation
-    // observer registered a ledger); fires only AFTER the frame sent.
-    if (entry?.[LIFECYCLE_LEDGER]) {
-      notifySuccessfulFrame(entry, {
-        frame_kind: frames[i].kind,
-        frame_index: i,
-        frame_count: frames.length,
+  // Plan 00B-2 C2.5 — replay-stable frame binding registry: binding ids
+  // live NON-ENUMERABLY on the RAW RESULT at first bundle-to-frames, keyed
+  // by stable frame index + kind; a resume rebuild copies the same id.
+  // Retained until the result's durable terminal (the cursor delete below
+  // deliberately leaves the registry in place — the ids must survive a
+  // later replay of the same result object). Evaluation-only: nothing is
+  // stamped without a context.
+  const evalCtx = entry?.[EVALUATION_CONTEXT] ?? null;
+  let bindingRegistry = null;
+  if (evalCtx) {
+    bindingRegistry = result[PLAN00_FRAME_BINDING_REGISTRY];
+    if (!bindingRegistry) {
+      bindingRegistry = new Map();
+      Object.defineProperty(result, PLAN00_FRAME_BINDING_REGISTRY, {
+        value: bindingRegistry,
+        enumerable: false,
+        configurable: true,
       });
     }
+  }
+  // Plan 00B-2 C3 — frame_send producer boundary, INSIDE the ledger (never
+  // at its call sites: the A2 wire-contract suite regex-pins the 5-arg call
+  // sites). Dormant no-op handle without a lifecycle ledger.
+  const frameSendProducer = beginProducer(entry, 'frame_send');
+  try {
+    for (let i = start; i < frames.length; i += 1) {
+      if (!ws || ws.readyState !== ws.OPEN) {
+        persistCursor(i);
+        return { ok: false, cursor: i, frameKind: frames[i].kind, error: null };
+      }
+      try {
+        if (ws.send.length >= 2) {
+          await new Promise((resolve, reject) => {
+            ws.send(frames[i].json, (error) => {
+              if (error) reject(error);
+              else resolve();
+            });
+          });
+        } else {
+          // Focused unit-test sockets use synchronous one-argument stubs. The
+          // production `ws` implementation exposes the callback form above.
+          ws.send(frames[i].json);
+        }
+      } catch (err) {
+        persistCursor(i);
+        return { ok: false, cursor: i, frameKind: frames[i].kind, error: err };
+      }
+      // Plan 00B §B1 — successful-frame evidence callback. The ledger-Symbol
+      // guard keeps the dormant path to ONE property lookup with ZERO
+      // allocation (the detail object is only built when an evaluation
+      // observer registered a ledger); fires only AFTER the frame sent.
+      if (entry?.[LIFECYCLE_LEDGER]) {
+        const bindingKey = `${i}:${frames[i].kind}`;
+        let binding = null;
+        if (bindingRegistry) {
+          binding = bindingRegistry.get(bindingKey);
+          if (!binding) {
+            binding = { bindingId: `fb-${bindingKey}`, attempts: 0 };
+            bindingRegistry.set(bindingKey, binding);
+          }
+          binding.attempts += 1;
+        }
+        notifySuccessfulFrame(entry, {
+          frame_kind: frames[i].kind,
+          frame_index: i,
+          frame_count: frames.length,
+          ...(binding ? { binding_id: binding.bindingId, attempt_ordinal: binding.attempts } : {}),
+        });
+        if (evalCtx) {
+          recordFrameDeliveryEvidence(evalCtx, frames[i].kind, result);
+        }
+      }
+    }
+  } finally {
+    frameSendProducer.complete();
   }
   // Completed — clear the cursor so a later (unrelated) requeue of the same
   // object starts fresh, and so tests can assert it never leaks.
@@ -1464,6 +1558,108 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
     ok: true,
     vcrSent: frames.some((frame) => frame.kind === 'voice_command_response'),
   };
+}
+
+/**
+ * Plan 00B-2 C2.5 — Tier-1 delivery evidence at the result-frame egress.
+ * Classification: an OPERATION-BACKED read-back (non-null field) binds to
+ * its canonical slot identity (turn scope from the mutation observer's open
+ * turn); NON-MUTATING speech (field-null confirmations, VCR
+ * spoken_response) is captured as emitted audible evidence and judged
+ * directly — it NEVER enters the deliveryLedger. The address-mirror
+ * collapsed terminal is ONE multi-operation audibility unit keyed by its
+ * delivery claim lineage (the `address_mirror_delivery_ack` correlates by
+ * token, per the parent B3 scoping decision — identity is never derived
+ * from a result envelope).
+ */
+function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
+  try {
+    if (frameKind === 'extraction') {
+      const openTurnId = evalCtx.mutationObserver?.openTurnId ?? null;
+      for (const c of Array.isArray(result?.confirmations) ? result.confirmations : []) {
+        if (c && c.field != null) {
+          evalCtx.recordDelivery(
+            [
+              {
+                extractionTurnId: openTurnId,
+                field: c.field,
+                circuit: c.circuit ?? null,
+                boardId: c.board_id ?? null,
+              },
+            ],
+            { kind: 'confirmation', transport: 'ws_extraction' }
+          );
+        } else if (c) {
+          evalCtx.recordNonMutatingAudible({
+            channel: 'ws_extraction',
+            kind: 'field_null_confirmation',
+            text: c.text ?? null,
+          });
+        }
+      }
+      return;
+    }
+    if (frameKind === 'voice_command_response') {
+      const delivery = result?.[ADDRESS_MIRROR_DELIVERY];
+      if (delivery && typeof delivery.token === 'string') {
+        const readings = Array.isArray(result?.extracted_readings)
+          ? result.extracted_readings
+          : Array.isArray(result?.readings)
+            ? result.readings
+            : [];
+        const ops = readings
+          .filter((r) => r && r.field != null)
+          .map((r) => ({
+            extractionTurnId: evalCtx.mutationObserver?.openTurnId ?? null,
+            field: r.field,
+            circuit: r.circuit ?? null,
+            boardId: r.board_id ?? null,
+          }));
+        evalCtx.recordAddressMirrorTerminal({
+          claimLineage: `${delivery.kind}:${delivery.token}`,
+          ops,
+        });
+      } else if (result?.spoken_response) {
+        evalCtx.recordNonMutatingAudible({
+          channel: 'ws_vcr',
+          kind: 'voice_command_response',
+          text: result.spoken_response ?? null,
+        });
+      }
+      return;
+    }
+    if (frameKind === 'address_mirror_direct_question') {
+      // Reconnect/resume replay of the direct question is the ONE
+      // production same-id re-send — recordAskEmitted reissues when the id
+      // is already emitted, else records the first emission.
+      const followup = result?.[ADDRESS_MIRROR_DIRECT_FOLLOWUP];
+      const questionId = followup?.questionId ?? null;
+      if (questionId) {
+        if (!evalCtx.askRuntimeBindings.has(questionId)) {
+          evalCtx.recordAskProduced({
+            family: 'address_mirror',
+            runtimeId: questionId,
+            liveAskKey: buildLiveAskKey({
+              origin: 'address_mirror',
+              purpose: 'address_mirror',
+              reason: followup?.outcome ?? null,
+              contextField: null,
+              boardId: null,
+              circuits: [],
+              expectedAnswerShape: followup?.outcome === 'conflict' ? 'yes_no' : 'free_text',
+              observationClarificationKind: null,
+              pendingWrite: null,
+              chainRole: null,
+            }),
+          });
+        }
+        evalCtx.recordAskEmitted({ runtimeId: questionId });
+      }
+    }
+  } catch (_err) {
+    // Evidence capture is behaviour-isolated; a capture failure is the
+    // evaluation run's own problem, never the production send path's.
+  }
 }
 
 function attachAddressMirrorDelivery(result, perTurnWrites) {
@@ -1774,15 +1970,25 @@ function validateAndCorrectFields(result, sessionId) {
 export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initOptions = {}) {
   const wss = new WebSocketServer({ noServer: true });
 
-  // Plan 00B §B1 — test/evaluation-only server option. When provided, each
-  // activeSessions entry gets an evaluation context registered at creation
-  // (before any message traffic) so the semantic-oracle harness can observe
-  // the REAL lifecycle without threading new parameters through the
-  // connection closure. Production callers (src/index.js) never pass this.
+  // Plan 00B §B1 + 00B-2 C1 — test/evaluation-only server option. When
+  // provided, each fresh activeSessions entry gets a FULL evaluation context
+  // (observer + mutation observer + ask/delivery ledgers, normalised once)
+  // composed at session creation, before start/rehydration and before any
+  // message traffic, so the semantic-oracle harness can observe the REAL
+  // lifecycle without threading new parameters through the connection
+  // closure. The sole production caller is src/server.js (src/index.js does
+  // not exist) and it never passes initOptions, so this branch never runs
+  // live.
   const evaluationContextFactory =
     typeof initOptions?.evaluationContextFactory === 'function'
       ? initOptions.evaluationContextFactory
       : null;
+  // Plan 00B-2 C4 — evaluation-only scripted-session factory (mock lane).
+  // EICRExtractionSession constructs its provider client synchronously during
+  // session start, so the mock lane substitutes construction itself; the
+  // default branch below (handleSessionStart) is the exact production path.
+  const sessionFactory =
+    typeof initOptions?.sessionFactory === 'function' ? initOptions.sessionFactory : null;
 
   // Phase 1.3 — single shared periodic flusher for the per-session
   // realtimeLogBuffer (one tick every FLUSH_INTERVAL_MS over the whole
@@ -2114,7 +2320,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
                   sendAddressMirrorDirectQuestion(
                     ws,
                     await resumedEntry?.addressMirrorController?.currentDirectQuestion(),
-                    null
+                    null,
+                    resumedEntry
                   );
                 }
 
@@ -2336,17 +2543,36 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               });
               break;
             }
-            const marked = await entry.addressMirrorController.markDelivered({ kind, token });
-            if (marked) {
-              if (entry.addressMirrorOutboxRetryHandle) {
-                clearTimeout(entry.addressMirrorOutboxRetryHandle);
-                entry.addressMirrorOutboxRetryHandle = null;
+            // Plan 00B-2 C3 — address_mirror_ack producer boundary (token
+            // validation passed → markDelivered → retry-clear → outbox
+            // replay; the nested outbox_replay producer intentionally
+            // overlaps this one — documented nesting).
+            const ackProducer = beginProducer(entry, 'address_mirror_ack');
+            try {
+              const marked = await entry.addressMirrorController.markDelivered({ kind, token });
+              if (marked) {
+                if (entry.addressMirrorOutboxRetryHandle) {
+                  clearTimeout(entry.addressMirrorOutboxRetryHandle);
+                  entry.addressMirrorOutboxRetryHandle = null;
+                }
+                // Plan 00B-2 C2.6 — evaluation-only forwarding hook AFTER
+                // the controller accepted the owner/job token: the token +
+                // claim lineage correlate to exactly one address-mirror
+                // audibility unit; duplicate/stale/wrong-token acks stay
+                // non-authoritative (recordAddressMirrorAck resolves no
+                // unit and records nothing).
+                entry[EVALUATION_CONTEXT]?.recordAddressMirrorAck?.({
+                  claimLineage: `${kind}:${token}`,
+                  ackBody: { type: 'address_mirror_delivery_ack', kind, token },
+                });
+                logger.info('stage6.address_mirror_delivery_acknowledged', {
+                  sessionId: currentSessionId,
+                  kind,
+                });
+                await replayAddressMirrorOutbox(ws, entry, currentSessionId);
               }
-              logger.info('stage6.address_mirror_delivery_acknowledged', {
-                sessionId: currentSessionId,
-                kind,
-              });
-              await replayAddressMirrorOutbox(ws, entry, currentSessionId);
+            } finally {
+              ackProducer.complete();
             }
             break;
           }
@@ -2473,89 +2699,109 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               }
             }
             if (!hasLiveRegistryAsk && entry.addressMirrorController) {
-              const mirrorWrites = createPerTurnWrites();
-              // A grace-expired transcript may already have entered model
-              // extraction before its paired exact answer frame arrives. The
-              // seen/released marker prevents a SECOND model exposure; it must
-              // not block the durable controller, or a process-restarted
-              // one-shot intent is stranded forever behind the permanent job
-              // latch.
-              const recovered = await entry.addressMirrorController.resolveRecoveredAnswer({
-                context:
-                  msg.purpose === ADDRESS_MIRROR_PURPOSE
-                    ? { purpose: ADDRESS_MIRROR_PURPOSE }
-                    : null,
-                text: msg.user_text,
-                askId: msg.tool_call_id,
-                perTurnWrites: mirrorWrites,
-              });
-              if (
-                !recovered.handled &&
-                (recovered.reason === 'stale_address_mirror_ask_id' ||
-                  recovered.reason === 'stale_direct_question')
-              ) {
-                sendAddressMirrorAskClear(ws, msg.tool_call_id, currentSessionId);
-                if (directResponseUtteranceId) {
-                  entry.consumedAskUtterances.add(directResponseUtteranceId);
-                  entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
-                }
-                logger.info('stage6.address_mirror_stale_answer_cleared', {
-                  sessionId: currentSessionId,
-                  stale_tool_call_id: msg.tool_call_id,
-                  reason: recovered.reason,
+              // Plan 00B-2 C3 — address_mirror_answer producer boundary (the
+              // ask_user_answered controller transitions). A stop landing
+              // while this path is suspended freezes INELIGIBLE until it
+              // terminates.
+              const answerProducer = beginProducer(entry, 'address_mirror_answer');
+              try {
+                const mirrorWrites = createPerTurnWrites();
+                // A grace-expired transcript may already have entered model
+                // extraction before its paired exact answer frame arrives. The
+                // seen/released marker prevents a SECOND model exposure; it must
+                // not block the durable controller, or a process-restarted
+                // one-shot intent is stranded forever behind the permanent job
+                // latch.
+                const recovered = await entry.addressMirrorController.resolveRecoveredAnswer({
+                  context:
+                    msg.purpose === ADDRESS_MIRROR_PURPOSE
+                      ? { purpose: ADDRESS_MIRROR_PURPOSE }
+                      : null,
+                  text: msg.user_text,
+                  askId: msg.tool_call_id,
+                  perTurnWrites: mirrorWrites,
                 });
-                break;
-              }
-              if (recovered.handled && recovered.outcome === 'duplicate') {
-                if (directResponseUtteranceId) {
-                  entry.consumedAskUtterances.add(directResponseUtteranceId);
-                  entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                if (
+                  !recovered.handled &&
+                  (recovered.reason === 'stale_address_mirror_ask_id' ||
+                    recovered.reason === 'stale_direct_question')
+                ) {
+                  sendAddressMirrorAskClear(ws, msg.tool_call_id, currentSessionId);
+                  if (directResponseUtteranceId) {
+                    entry.consumedAskUtterances.add(directResponseUtteranceId);
+                    entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                  }
+                  logger.info('stage6.address_mirror_stale_answer_cleared', {
+                    sessionId: currentSessionId,
+                    stale_tool_call_id: msg.tool_call_id,
+                    reason: recovered.reason,
+                  });
+                  break;
                 }
-                logger.info('stage6.address_mirror_duplicate_answer_consumed', {
-                  sessionId: currentSessionId,
-                  tool_call_id: msg.tool_call_id,
-                });
-                if (recovered.clearAskId) {
-                  sendAddressMirrorAskClear(ws, recovered.clearAskId, currentSessionId);
+                if (recovered.handled && recovered.outcome === 'duplicate') {
+                  if (directResponseUtteranceId) {
+                    entry.consumedAskUtterances.add(directResponseUtteranceId);
+                    entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                  }
+                  logger.info('stage6.address_mirror_duplicate_answer_consumed', {
+                    sessionId: currentSessionId,
+                    tool_call_id: msg.tool_call_id,
+                  });
+                  if (recovered.clearAskId) {
+                    sendAddressMirrorAskClear(ws, recovered.clearAskId, currentSessionId);
+                  }
+                  break;
                 }
-                break;
-              }
-              if (
-                recovered.handled &&
-                (recovered.outcome === 'yes' ||
-                  recovered.outcome === 'no' ||
-                  recovered.outcome === 'conflict')
-              ) {
-                const result = attachAddressMirrorDelivery(
-                  bundleToolCallsIntoResult(mirrorWrites, null, {
-                    confirmationsEnabled: true,
-                    turnId: `${currentSessionId}-address-mirror-${
-                      recovered.resolutionToken ?? 'recovery'
-                    }`,
-                    utteranceId: directResponseUtteranceId,
-                  }),
-                  mirrorWrites
-                );
-                attachAddressMirrorAskClear(result, recovered.clearAskId ?? msg.tool_call_id);
-                const sent = await sendResultFrameLedger(
-                  ws,
-                  entry.session.stateSnapshot,
-                  result,
-                  entry.session,
-                  entry
-                );
-                if (!sent.ok) entry.pendingExtractions.push(result);
-                else await finalizeAddressMirrorResultDelivery(entry, result, currentSessionId);
-                if (directResponseUtteranceId) {
-                  entry.consumedAskUtterances.add(directResponseUtteranceId);
-                  entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                if (
+                  recovered.handled &&
+                  (recovered.outcome === 'yes' ||
+                    recovered.outcome === 'no' ||
+                    recovered.outcome === 'conflict')
+                ) {
+                  const result = attachAddressMirrorDelivery(
+                    bundleToolCallsIntoResult(mirrorWrites, null, {
+                      confirmationsEnabled: true,
+                      turnId: `${currentSessionId}-address-mirror-${
+                        recovered.resolutionToken ?? 'recovery'
+                      }`,
+                      utteranceId: directResponseUtteranceId,
+                    }),
+                    mirrorWrites
+                  );
+                  attachAddressMirrorAskClear(result, recovered.clearAskId ?? msg.tool_call_id);
+                  const sent = await sendResultFrameLedger(
+                    ws,
+                    entry.session.stateSnapshot,
+                    result,
+                    entry.session,
+                    entry
+                  );
+                  if (!sent.ok) entry.pendingExtractions.push(result);
+                  else await finalizeAddressMirrorResultDelivery(entry, result, currentSessionId);
+                  if (directResponseUtteranceId) {
+                    entry.consumedAskUtterances.add(directResponseUtteranceId);
+                    entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                  }
+                  // Plan 00B-2 C2.4 — address-mirror asks close at the
+                  // controller transition that accepts the matching answer.
+                  entry[EVALUATION_CONTEXT]?.recordAskResolved?.({
+                    runtimeId: recovered.clearAskId ?? msg.tool_call_id,
+                    terminal: 'answered',
+                    detail: {
+                      answer_frame_id: recovered.clearAskId ?? msg.tool_call_id,
+                      transcript_resolved: true,
+                      outcome: recovered.outcome,
+                    },
+                  });
+                  logger.info('stage6.address_mirror_answer_recovered', {
+                    sessionId: currentSessionId,
+                    tool_call_id: msg.tool_call_id,
+                    outcome: recovered.outcome,
+                  });
+                  break;
                 }
-                logger.info('stage6.address_mirror_answer_recovered', {
-                  sessionId: currentSessionId,
-                  tool_call_id: msg.tool_call_id,
-                  outcome: recovered.outcome,
-                });
-                break;
+              } finally {
+                answerProducer.complete();
               }
             }
 
@@ -3228,6 +3474,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       // evidence-ineligible as `non_quiescent_at_stop` — deliberately, and
       // without touching the existing expiry behaviour above.
       if (entry[LIFECYCLE_LEDGER]) {
+        entry[EVALUATION_CONTEXT]?.expireSrvJoins?.('session_terminated');
         freezeEvidenceCompletion(entry, {
           sessionId: currentSessionId,
           boundary: 'session_terminated',
@@ -3568,7 +3815,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       sendAddressMirrorDirectQuestion(
         ws,
         await existing.addressMirrorController?.currentDirectQuestion(),
-        null
+        null,
+        existing
       );
 
       // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
@@ -3607,8 +3855,46 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     if (!apiKey) throw new Error('Anthropic API key not available');
 
     const certType = jobState?.certificateType || 'eicr';
-    const session = new EICRExtractionSession(apiKey, sessionId, certType);
+    // Plan 00B-2 C4 — evaluation-only session factory (mock lane). Used ONLY
+    // when explicitly supplied via initOptions; the default branch is the
+    // exact production construction (dormancy/parity test-pinned).
+    const session = sessionFactory
+      ? sessionFactory({ apiKey, sessionId, certificateType: certType })
+      : new EICRExtractionSession(apiKey, sessionId, certType);
     logger.info('Session using prompt', { sessionId, certType });
+    // Plan 00B-2 C1 — full evaluation-context composition, at creation and
+    // BEFORE session.start/rehydration (finding 2). The factory runs EXACTLY
+    // ONCE per fresh entry — the reconnect branch above and session_resume's
+    // rehydrate re-bind the EXISTING entry, observers persist, and
+    // re-attachment never runs (double-attach throws by design). The factory
+    // signature is ({sessionId, userId}) — the entry does not exist yet; the
+    // normalised context is stashed on the entry AFTER activeSessions.set.
+    let evaluationContext = null;
+    if (evaluationContextFactory) {
+      evaluationContext = normaliseEvaluationContext(
+        evaluationContextFactory({ sessionId, userId }),
+        { sessionId }
+      );
+      if (evaluationContext?.mutationObserver) {
+        // Same instance, BOTH targets — atoms receive the session or its
+        // snapshot depending on the seam, and the snapshot exists from the
+        // constructor's ensureMultiBoardShape. Constructor/job-state
+        // hydration stays input_state_seed (direct writes, no receipts), so
+        // attaching before start is safe.
+        attachMutationObserver(session, evaluationContext.mutationObserver);
+        attachMutationObserver(session.stateSnapshot, evaluationContext.mutationObserver);
+      }
+      if (evaluationContext && session.costTracker) {
+        // C3 — per-round usage sink, attached BEFORE session.start so every
+        // accepted ingestBillableUsage call is observable. Non-enumerable:
+        // cost summaries JSON.stringify the tracker.
+        Object.defineProperty(session.costTracker, PLAN00_ROUND_USAGE_SINK, {
+          value: (row, meta) => evaluationContext.roundUsageSink(row, meta),
+          enumerable: false,
+          configurable: true,
+        });
+      }
+    }
     const questionGate = new QuestionGate((questions) => {
       // Send gated questions to iOS
       let sent = false;
@@ -3627,6 +3913,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     // Set up batch flush callback — when the batch timeout fires asynchronously,
     // this delivers the extraction result to iOS the same way handleTranscript does.
     session.onBatchResult = async (result) => {
+      // Plan 00B-2 C3 — confirmation_drain producer boundary: the batch
+      // timeout delivers confirmations asynchronously outside any
+      // transcript handler, so an in-flight drain must hold freeze
+      // eligibility open. Dormant no-op handle without a ledger.
+      const confirmationDrainProducer = beginProducer(
+        activeSessions.get(sessionId),
+        'confirmation_drain'
+      );
       try {
         const entryRef = activeSessions.get(sessionId);
         await finalizeLegacyAddressMirrorDirect(entryRef, result);
@@ -3796,6 +4090,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         }
       } catch (err) {
         logger.error('Batch flush callback error', { sessionId, error: err.message });
+      } finally {
+        confirmationDrainProducer.complete();
       }
     };
 
@@ -4001,21 +4297,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     });
 
     const createdEntry = activeSessions.get(sessionId);
-    // Plan 00B §B1 — evaluation-context attachment (test/evaluation-only
-    // server option). Registered at entry creation, before the address-
-    // mirror rehydrate and before any message traffic, so the observer sees
-    // the entire lifecycle. Production servers never pass the factory, so
-    // this branch never runs live. [ASSUMED] the plan's "before
-    // start/rehydration" is satisfied here: `session.start(jobState)` runs
-    // earlier in this function (input-state seeding, classified
-    // input_state_seed by §B2 and captured via canonical pre-state), while
-    // every observable message/outbox/timer invocation happens after this
-    // point — there is no entry to attach to before activeSessions.set.
-    if (evaluationContextFactory) {
-      registerEvidenceObserver(
-        createdEntry,
-        evaluationContextFactory({ sessionId, userId, entry: createdEntry })
-      );
+    // Plan 00B-2 C1 — stash the normalised evaluation context on the ENTRY
+    // (one non-enumerable Symbol; never on the session), initialise the
+    // server-owned lifecycle ledger, and register observer callbacks only
+    // when the observer role was supplied. The factory itself already ran
+    // at session creation (before session.start) so the mutation observer
+    // saw every post-start commit; the entry-side stash happens here, before
+    // the address-mirror rehydrate and before any message traffic. The C3
+    // START candidate is invoked and published exactly once per fresh entry;
+    // reconnect/resume reuse the latch, never re-invoke.
+    if (evaluationContext) {
+      attachEvaluationContext(createdEntry, evaluationContext);
+      freezeEvidenceStart(createdEntry, { sessionId });
     }
     createdEntry.addressMirrorIngressArbiter = createAddressMirrorIngressArbiter();
     createdEntry.addressMirrorController = createAddressMirrorController({
@@ -4096,7 +4389,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     sendAddressMirrorDirectQuestion(
       ws,
       await createdEntry.addressMirrorController.currentDirectQuestion(),
-      null
+      null,
+      createdEntry
     );
 
     // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
@@ -4591,41 +4885,50 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
 
   async function replayAddressMirrorOutbox(ws, entry, sessionId) {
     if (!entry?.addressMirrorController || ws?.readyState !== ws?.OPEN) return;
-    // The direct ledger is append-only, so more than one terminal operation
-    // can survive a process crash. Drain a bounded FIFO; each successful send
-    // marks exactly that operation delivered before asking the controller for
-    // the next one.
-    for (let i = 0; i < 16; i += 1) {
-      const writes = createPerTurnWrites();
-      const recovered = await entry.addressMirrorController.recoverUndelivered(writes);
-      if (!recovered?.handled || recovered.outcome === 'duplicate') {
-        if (recovered?.reason === 'delivery_claimed') {
-          scheduleAddressMirrorOutboxRetry(entry, sessionId);
+    // Plan 00B-2 C3 — outbox_replay producer boundary. Where the ACK branch
+    // triggers this replay, the nested producer intentionally overlaps
+    // `address_mirror_ack` (documented nesting — both counters held, both
+    // completed in their own finally).
+    const producer = beginProducer(entry, 'outbox_replay');
+    try {
+      // The direct ledger is append-only, so more than one terminal operation
+      // can survive a process crash. Drain a bounded FIFO; each successful send
+      // marks exactly that operation delivered before asking the controller for
+      // the next one.
+      for (let i = 0; i < 16; i += 1) {
+        const writes = createPerTurnWrites();
+        const recovered = await entry.addressMirrorController.recoverUndelivered(writes);
+        if (!recovered?.handled || recovered.outcome === 'duplicate') {
+          if (recovered?.reason === 'delivery_claimed') {
+            scheduleAddressMirrorOutboxRetry(entry, sessionId);
+          }
+          return;
         }
-        return;
+        const result = attachAddressMirrorDelivery(
+          bundleToolCallsIntoResult(writes, null, {
+            confirmationsEnabled: true,
+            turnId: `${sessionId}-address-mirror-outbox-${recovered.resolutionToken ?? i}`,
+            utteranceId: null,
+          }),
+          writes
+        );
+        attachAddressMirrorAskClear(result, recovered.clearAskId);
+        const sent = await sendResultFrameLedger(
+          ws,
+          entry.session?.stateSnapshot,
+          result,
+          entry.session,
+          entry
+        );
+        if (!sent.ok) {
+          entry.pendingExtractions.push(result);
+          return;
+        }
+        const delivered = await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
+        if (!delivered) return;
       }
-      const result = attachAddressMirrorDelivery(
-        bundleToolCallsIntoResult(writes, null, {
-          confirmationsEnabled: true,
-          turnId: `${sessionId}-address-mirror-outbox-${recovered.resolutionToken ?? i}`,
-          utteranceId: null,
-        }),
-        writes
-      );
-      attachAddressMirrorAskClear(result, recovered.clearAskId);
-      const sent = await sendResultFrameLedger(
-        ws,
-        entry.session?.stateSnapshot,
-        result,
-        entry.session,
-        entry
-      );
-      if (!sent.ok) {
-        entry.pendingExtractions.push(result);
-        return;
-      }
-      const delivered = await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
-      if (!delivered) return;
+    } finally {
+      producer.complete();
     }
   }
 
@@ -4776,24 +5079,33 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       typeof msg.utterance_id === 'string' &&
       msg.utterance_id &&
       parseAddressMirrorAnswer(canonicalTranscriptText) &&
-      entry.addressMirrorIngressArbiter &&
-      (await entry.addressMirrorController?.shouldHoldReplyTranscript())
+      entry.addressMirrorIngressArbiter
     ) {
-      const disposition = await entry.addressMirrorIngressArbiter.hold(msg.utterance_id);
-      if (disposition === 'consumed' || entry.isStopping) {
-        logger.info('stage6.address_mirror_reply_transcript_consumed', {
-          sessionId,
-          utterance_id: msg.utterance_id,
-          reason: disposition === 'consumed' ? 'paired_answer_frame' : 'session_stopping',
-        });
-        consumeDestructiveToken('address_mirror_reply_hold');
-        return;
+      // Plan 00B-2 C3 — address_mirror_ingress producer boundary, begun
+      // BEFORE the region's first await (shouldHoldReplyTranscript) so a
+      // stop landing while it is suspended freezes INELIGIBLE.
+      const ingressProducer = beginProducer(entry, 'address_mirror_ingress');
+      try {
+        if (await entry.addressMirrorController?.shouldHoldReplyTranscript()) {
+          const disposition = await entry.addressMirrorIngressArbiter.hold(msg.utterance_id);
+          if (disposition === 'consumed' || entry.isStopping) {
+            logger.info('stage6.address_mirror_reply_transcript_consumed', {
+              sessionId,
+              utterance_id: msg.utterance_id,
+              reason: disposition === 'consumed' ? 'paired_answer_frame' : 'session_stopping',
+            });
+            consumeDestructiveToken('address_mirror_reply_hold');
+            return;
+          }
+          logger.info('stage6.address_mirror_reply_hold_released', {
+            sessionId,
+            utterance_id: msg.utterance_id,
+          });
+          entry.addressMirrorController?.noteReplyHoldReleased();
+        }
+      } finally {
+        ingressProducer.complete();
       }
-      logger.info('stage6.address_mirror_reply_hold_released', {
-        sessionId,
-        utterance_id: msg.utterance_id,
-      });
-      entry.addressMirrorController?.noteReplyHoldReleased();
     }
 
     // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
@@ -4952,122 +5264,155 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         return;
       }
       if (!entry.addressMirrorReservations.has(reservationKey)) {
-        const mirrorWrites = createPerTurnWrites();
-        const context =
-          msg.in_response_to && typeof msg.in_response_to === 'object' ? msg.in_response_to : null;
-        const hasRecoveredAnswerAnchor =
-          context?.purpose === ADDRESS_MIRROR_PURPOSE ||
-          context?.type === ADDRESS_MIRROR_QUESTION_TYPE;
-        const hasDirectClarificationAnchor = context?.type === ADDRESS_MIRROR_DIRECT_QUESTION_TYPE;
-        const recoveredAskId =
-          typeof context?.tool_call_id === 'string' && context.tool_call_id.length > 0
-            ? context.tool_call_id
-            : null;
-        let mirrorOutcome = hasRecoveredAnswerAnchor
-          ? await entry.addressMirrorController.resolveRecoveredAnswer({
+        // Plan 00B-2 C3 — address_mirror_ingress producer boundary (main
+        // resolution region: recovered/direct resolution + controller
+        // mutation through result replay).
+        const mirrorIngressProducer = beginProducer(entry, 'address_mirror_ingress');
+        try {
+          const mirrorWrites = createPerTurnWrites();
+          const context =
+            msg.in_response_to && typeof msg.in_response_to === 'object'
+              ? msg.in_response_to
+              : null;
+          const hasRecoveredAnswerAnchor =
+            context?.purpose === ADDRESS_MIRROR_PURPOSE ||
+            context?.type === ADDRESS_MIRROR_QUESTION_TYPE;
+          const hasDirectClarificationAnchor =
+            context?.type === ADDRESS_MIRROR_DIRECT_QUESTION_TYPE;
+          const recoveredAskId =
+            typeof context?.tool_call_id === 'string' && context.tool_call_id.length > 0
+              ? context.tool_call_id
+              : null;
+          let mirrorOutcome = hasRecoveredAnswerAnchor
+            ? await entry.addressMirrorController.resolveRecoveredAnswer({
+                context,
+                text: canonicalTranscriptText,
+                askId: recoveredAskId,
+                perTurnWrites: mirrorWrites,
+              })
+            : { handled: false };
+          if (!mirrorOutcome.handled && hasDirectClarificationAnchor) {
+            mirrorOutcome = await entry.addressMirrorController.resolveDirectClarification({
               context,
               text: canonicalTranscriptText,
-              askId: recoveredAskId,
               perTurnWrites: mirrorWrites,
-            })
-          : { handled: false };
-        if (!mirrorOutcome.handled && hasDirectClarificationAnchor) {
-          mirrorOutcome = await entry.addressMirrorController.resolveDirectClarification({
-            context,
-            text: canonicalTranscriptText,
-            perTurnWrites: mirrorWrites,
-          });
-        }
-        if (
-          !mirrorOutcome.handled &&
-          (mirrorOutcome.reason === 'stale_direct_question' ||
-            mirrorOutcome.reason === 'stale_address_mirror_ask_id')
-        ) {
-          sendAddressMirrorAskClear(ws, recoveredAskId, sessionId);
-          entry.addressMirrorReservations.add(reservationKey);
-          stampSeenTranscript();
-          consumeDestructiveToken(
-            mirrorOutcome.reason === 'stale_direct_question'
-              ? 'address_mirror_stale_direct_question'
-              : 'address_mirror_stale_recovered_question'
-          );
-          return;
-        }
-        const directCommand = parseDirectAddressMirrorCommand(canonicalTranscriptText);
-        if (!mirrorOutcome.handled && directCommand) {
-          mirrorOutcome = await entry.addressMirrorController.resolvePendingDirectCommand({
-            text: canonicalTranscriptText,
-            perTurnWrites: mirrorWrites,
-          });
-        }
-        if (!mirrorOutcome.handled && directCommand) {
-          mirrorOutcome = await entry.addressMirrorController.applyDirectCommand(
-            canonicalTranscriptText,
-            mirrorWrites,
-            occurrenceAnchor
-          );
-        }
+            });
+          }
+          if (
+            !mirrorOutcome.handled &&
+            (mirrorOutcome.reason === 'stale_direct_question' ||
+              mirrorOutcome.reason === 'stale_address_mirror_ask_id')
+          ) {
+            sendAddressMirrorAskClear(ws, recoveredAskId, sessionId);
+            entry.addressMirrorReservations.add(reservationKey);
+            stampSeenTranscript();
+            consumeDestructiveToken(
+              mirrorOutcome.reason === 'stale_direct_question'
+                ? 'address_mirror_stale_direct_question'
+                : 'address_mirror_stale_recovered_question'
+            );
+            return;
+          }
+          const directCommand = parseDirectAddressMirrorCommand(canonicalTranscriptText);
+          if (!mirrorOutcome.handled && directCommand) {
+            mirrorOutcome = await entry.addressMirrorController.resolvePendingDirectCommand({
+              text: canonicalTranscriptText,
+              perTurnWrites: mirrorWrites,
+            });
+          }
+          if (!mirrorOutcome.handled && directCommand) {
+            mirrorOutcome = await entry.addressMirrorController.applyDirectCommand(
+              canonicalTranscriptText,
+              mirrorWrites,
+              occurrenceAnchor
+            );
+          }
 
-        const terminalMirrorOutcome = new Set([
-          'yes',
-          'no',
-          'copied',
-          'duplicate',
-          'already_pending',
-        ]);
-        const isTerminalMirrorOutcome =
-          terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
-          (mirrorOutcome.outcome === 'conflict' &&
-            (mirrorOutcome.clearAskId || typeof mirrorOutcome.question !== 'string'));
-        if (mirrorOutcome.handled && isTerminalMirrorOutcome) {
-          entry.addressMirrorReservations.add(reservationKey);
-          while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
-            const oldest = entry.addressMirrorReservations.values().next().value;
-            entry.addressMirrorReservations.delete(oldest);
+          const terminalMirrorOutcome = new Set([
+            'yes',
+            'no',
+            'copied',
+            'duplicate',
+            'already_pending',
+          ]);
+          const isTerminalMirrorOutcome =
+            terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
+            (mirrorOutcome.outcome === 'conflict' &&
+              (mirrorOutcome.clearAskId || typeof mirrorOutcome.question !== 'string'));
+          if (mirrorOutcome.handled && isTerminalMirrorOutcome) {
+            entry.addressMirrorReservations.add(reservationKey);
+            while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
+              const oldest = entry.addressMirrorReservations.values().next().value;
+              entry.addressMirrorReservations.delete(oldest);
+            }
+            // Plan 00B-2 C2.4 — the controller transition accepted a matching
+            // answer to a live address-mirror ask: close that ask. Only when
+            // an ask anchor actually resolved (yes/no/conflict on an anchored
+            // question) — a direct command with no open ask closes nothing.
+            if (
+              (hasRecoveredAnswerAnchor || hasDirectClarificationAnchor) &&
+              (mirrorOutcome.clearAskId || recoveredAskId) &&
+              (mirrorOutcome.outcome === 'yes' ||
+                mirrorOutcome.outcome === 'no' ||
+                mirrorOutcome.outcome === 'conflict')
+            ) {
+              entry[EVALUATION_CONTEXT]?.recordAskResolved?.({
+                runtimeId: mirrorOutcome.clearAskId ?? recoveredAskId,
+                terminal: 'answered',
+                detail: {
+                  answer_frame_id: mirrorOutcome.clearAskId ?? recoveredAskId,
+                  transcript_resolved: true,
+                  outcome: mirrorOutcome.outcome,
+                },
+              });
+            }
+            const mirrorTurnId = `${sessionId}-address-mirror-${
+              mirrorOutcome.resolutionToken ??
+              (typeof msg.utterance_id === 'string' && msg.utterance_id
+                ? msg.utterance_id
+                : reservationKey.slice(-12))
+            }`;
+            const result = attachAddressMirrorDelivery(
+              bundleToolCallsIntoResult(mirrorWrites, null, {
+                confirmationsEnabled:
+                  msg.confirmations_enabled === true || (mirrorOutcome.replayedSource ?? 0) > 0,
+                turnId: mirrorTurnId,
+                utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              }),
+              mirrorWrites
+            );
+            attachAddressMirrorAskClear(result, mirrorOutcome.clearAskId);
+            const sent = await sendResultFrameLedger(
+              ws,
+              entry.session.stateSnapshot,
+              result,
+              entry.session,
+              entry
+            );
+            if (!sent.ok) entry.pendingExtractions.push(result);
+            else await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
+            stampSeenTranscript();
+            consumeDestructiveToken('address_mirror_controller');
+            return;
           }
-          const mirrorTurnId = `${sessionId}-address-mirror-${
-            mirrorOutcome.resolutionToken ??
-            (typeof msg.utterance_id === 'string' && msg.utterance_id
-              ? msg.utterance_id
-              : reservationKey.slice(-12))
-          }`;
-          const result = attachAddressMirrorDelivery(
-            bundleToolCallsIntoResult(mirrorWrites, null, {
-              confirmationsEnabled:
-                msg.confirmations_enabled === true || (mirrorOutcome.replayedSource ?? 0) > 0,
-              turnId: mirrorTurnId,
-              utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-            }),
-            mirrorWrites
-          );
-          attachAddressMirrorAskClear(result, mirrorOutcome.clearAskId);
-          const sent = await sendResultFrameLedger(
-            ws,
-            entry.session.stateSnapshot,
-            result,
-            entry.session,
-            entry
-          );
-          if (!sent.ok) entry.pendingExtractions.push(result);
-          else await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
-          stampSeenTranscript();
-          consumeDestructiveToken('address_mirror_controller');
-          return;
-        }
-        if (mirrorOutcome.handled && typeof mirrorOutcome.question === 'string') {
-          entry.addressMirrorReservations.add(reservationKey);
-          while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
-            const oldest = entry.addressMirrorReservations.values().next().value;
-            entry.addressMirrorReservations.delete(oldest);
+          if (mirrorOutcome.handled && typeof mirrorOutcome.question === 'string') {
+            entry.addressMirrorReservations.add(reservationKey);
+            while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
+              const oldest = entry.addressMirrorReservations.values().next().value;
+              entry.addressMirrorReservations.delete(oldest);
+            }
+            sendAddressMirrorDirectQuestion(
+              ws,
+              mirrorOutcome,
+              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              entry
+            );
+            stampSeenTranscript();
+            consumeDestructiveToken('address_mirror_controller_question');
+            return;
           }
-          sendAddressMirrorDirectQuestion(
-            ws,
-            mirrorOutcome,
-            typeof msg.utterance_id === 'string' ? msg.utterance_id : null
-          );
-          stampSeenTranscript();
-          consumeDestructiveToken('address_mirror_controller_question');
-          return;
+        } finally {
+          mirrorIngressProducer.complete();
         }
       }
     }
@@ -6718,7 +7063,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         });
       }
       summary.observation_refinement_unmatched = entry.pendingRefinements.size;
-      entry.pendingRefinements.clear();
+      // Plan 00B-2 C3 (finding 6) — the clear moves BELOW the evidence
+      // freeze at the bottom of this teardown, so owed refinements are
+      // still visible to the quiescence check (owed refinements ⇒
+      // `non_quiescent_at_stop`) and no evidence is erased pre-check.
     }
 
     // Attach job identity so cost can be traced back to the job
@@ -6803,7 +7151,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     // else freezes evidence-ineligible as `non_quiescent_at_stop` without
     // delaying or changing session_ack/stop behaviour.
     if (entry[LIFECYCLE_LEDGER]) {
+      entry[EVALUATION_CONTEXT]?.expireSrvJoins?.('session_stopped');
       freezeEvidenceCompletion(entry, { sessionId, boundary: 'session_stopped' });
+    }
+    // Plan 00B-2 C3 (finding 6) — owed-refinement evidence was captured by
+    // the freeze above; only now may the map be cleared.
+    if (entry.pendingRefinements && entry.pendingRefinements.size > 0) {
+      entry.pendingRefinements.clear();
     }
 
     activeSessions.delete(sessionId);

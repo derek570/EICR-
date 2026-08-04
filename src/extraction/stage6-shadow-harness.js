@@ -319,6 +319,25 @@ function resolveSessionExtractionTarget(session, model) {
 }
 
 /**
+ * Plan 00B-2 C3 — the ONE effective-OpenAI-reasoning-effort resolver,
+ * DEFAULT-PRESERVING across the full transport×turn-type matrix (see the
+ * call-site comment in runLiveMode for why the per-API unset-env defaults
+ * deliberately differ). Exported for the transport×turn matrix tests.
+ */
+export function resolveOpenAIReasoningEffort({ extractionApi, isObservationTurn }) {
+  if (extractionApi === 'chat_completions') {
+    // Ordinary AND observation turns: the tooluse adapter's own env-only
+    // resolution, never the observation override (function tools + non-'none'
+    // effort draw HTTP 400 on chat-completions).
+    return (process.env.OPENAI_EXTRACT_REASONING_EFFORT || 'none').trim();
+  }
+  if (isObservationTurn) {
+    return (process.env.OPENAI_OBSERVATION_REASONING_EFFORT || 'low').trim();
+  }
+  return (process.env.OPENAI_EXTRACT_REASONING_EFFORT || 'low').trim();
+}
+
+/**
  * Bug-H fix (2026-04-28) — rewrite Stage 6 per-turn observations into the
  * legacy iOS-compatible wire shape. See the call site in `runShadowHarness`
  * for the full motivation; this function is exported so the unit test can
@@ -1566,9 +1585,33 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       routeToObservationTier && selectedTarget.provider === 'openai'
         ? (process.env.OPENAI_OBSERVATION_SERVICE_TIER || 'standard').trim()
         : undefined;
-    const observationOpenAIReasoningEffort =
-      routeToObservationTier && selectedTarget.provider === 'openai'
-        ? (process.env.OPENAI_OBSERVATION_REASONING_EFFORT || 'low').trim()
+    // Plan 00B-2 C3 — the effective OpenAI reasoning effort is resolved ONCE
+    // here (the dispatch site knows session.extractionApi) and used for BOTH
+    // the SDK request and the round-usage attribution, so 00C can prove the
+    // ACTUALLY EXECUTED effort (its Terra gate rejects configuration-only
+    // evidence). The per-API unset-env defaults DIFFER deliberately and are
+    // LIVE-operative: non-'none' effort with function tools draws HTTP 400 on
+    // chat-completions, while 'none' on Responses reproduces the documented
+    // Luna reasoning-off looping — so a single default in either direction is
+    // a production regression. Chat Completions retains
+    // OPENAI_EXTRACT_REASONING_EFFORT || 'none' for ordinary AND observation
+    // turns (the tooluse adapter deliberately ignores the observation
+    // override — honouring a 'low' there would flip its observation payloads
+    // none→low and draw the 400); Responses uses
+    // OPENAI_OBSERVATION_REASONING_EFFORT || 'low' for observation turns and
+    // OPENAI_EXTRACT_REASONING_EFFORT || 'low' otherwise. Every ACTUAL
+    // request payload stays byte-identical to the pre-00B-2 behaviour for
+    // both transports when the env is unset: the tooluse adapter keeps its
+    // env-only resolution (this value reaches attribution only, and equals
+    // the adapter's own computation by construction), and the Responses
+    // adapter's streamArgs-override-else-env fallback yields the same string
+    // either way.
+    const openAIReasoningEffort =
+      selectedTarget.provider === 'openai'
+        ? resolveOpenAIReasoningEffort({
+            extractionApi: session.extractionApi,
+            isObservationTurn: routeToObservationTier,
+          })
         : undefined;
     // Observation-tier turns LOCK the model across every round (disable the
     // round-1 VOICE_LATENCY_ROUND1_MODEL Haiku override so the escalation isn't
@@ -1621,7 +1664,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         model: selectedTarget.model,
         provider: selectedTarget.provider,
         openAIServiceTier: observationOpenAIServiceTier,
-        openAIReasoningEffort: observationOpenAIReasoningEffort,
+        openAIReasoningEffort,
         // Lock the selected model across every round for observation-tier
         // turns (disable the round-1 latency override); reading turns keep it.
         allowRound1ModelOverride: !round1OverrideLocked,

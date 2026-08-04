@@ -23,6 +23,79 @@
 
 import { createHash } from 'node:crypto';
 
+/**
+ * Plan 00B-2 C2 — evaluation-only per-turn emission observer Symbols.
+ *
+ * Both are stamped PER-TURN beside the production `ASK_STARTED_OBSERVER`
+ * (assign at turn start, identity-compare delete at turn end) by
+ * runLiveMode's entry-resolution seam and by handleTranscript's Tier-2
+ * dialogue wrapper region. `safeSend` (dialogue engine) and the dispatcher
+ * emission sites read them via a single dormant optional-chain lookup —
+ * nothing is stamped, read or allocated outside an evaluation run.
+ *
+ * PLAN00_ASK_EMIT_OBSERVER receives every `ask_user_started` payload whose
+ * `expected_answer_shape !== 'none'` (the ask-ledger admission rule — a
+ * `'none'` frame is dialogue speech, not an ask, and routes through the
+ * delivery observer instead).
+ *
+ * PLAN00_DELIVERY_EMIT_OBSERVER is the prepare/commit/abort seam for
+ * dialogue audible payloads carrying a PLAN00_AUDIBILITY_DESCRIPTOR (an
+ * ordered list of the mutation slot identities the spoken prose
+ * acknowledges) — and the classification sink for descriptor-less
+ * non-mutating speech.
+ */
+export const PLAN00_ASK_EMIT_OBSERVER = Symbol('plan00.askEmitObserver');
+export const PLAN00_DELIVERY_EMIT_OBSERVER = Symbol('plan00.deliveryEmitObserver');
+
+/**
+ * Plan 00B-2 C2.5 — evaluation-only audibility descriptor. Attached
+ * NON-ENUMERABLY to the actual SPOKEN dialogue payload (never the UI-only
+ * extraction payload) by the producer that knows which receipts its prose
+ * acknowledges. Shape: { operations: [{field, circuit, board_id, value}] }
+ * in spoken-acknowledgement order.
+ */
+export const PLAN00_AUDIBILITY_DESCRIPTOR = Symbol('plan00.audibilityDescriptor');
+
+/**
+ * Plan 00B-2 C2.5 — replay-stable frame binding registry, stamped
+ * NON-ENUMERABLY on the RAW RESULT object at first bundle-to-frames. Keys
+ * are `${frameIndex}:${frameKind}` (the ledger rebuild is deterministic
+ * from the result, so the key is stable across resume replays); values are
+ * { bindingId, attempts } and survive until the result's durable terminal.
+ */
+export const PLAN00_FRAME_BINDING_REGISTRY = Symbol('plan00.frameBindingRegistry');
+
+/**
+ * Attach an audibility descriptor to a spoken payload. Dormant unless the
+ * caller has already proven an evaluation observer is present (the callers
+ * guard on ws[PLAN00_DELIVERY_EMIT_OBSERVER] — a single Symbol lookup — so
+ * production never allocates here).
+ */
+export function attachAudibilityDescriptor(payload, operations) {
+  if (!payload || typeof payload !== 'object') return payload;
+  Object.defineProperty(payload, PLAN00_AUDIBILITY_DESCRIPTOR, {
+    value: Object.freeze({
+      operations: Object.freeze(
+        (operations ?? []).map((op) =>
+          Object.freeze({
+            field: op.field ?? null,
+            circuit: op.circuit ?? null,
+            board_id: op.board_id ?? null,
+            value: op.value == null ? null : String(op.value),
+          })
+        )
+      ),
+    }),
+    enumerable: false,
+    configurable: true,
+  });
+  return payload;
+}
+
+export function getAudibilityDescriptor(payload) {
+  return (payload && payload[PLAN00_AUDIBILITY_DESCRIPTOR]) || null;
+}
+
 /** Canonical operation identity key. */
 export function operationIdentityKey({ extractionTurnId, field, circuit, boardId, ordinal }) {
   return JSON.stringify({
@@ -165,6 +238,48 @@ export function createAskLedger() {
       entry.history.push(terminal);
     },
 
+    /**
+     * Plan 00B-2 C2.3 — deterministic reissue, SAME runtime id. The only
+     * production same-id re-send is the reconnect/resume replay of the
+     * address-mirror direct question: the emission attempt appends to the
+     * SAME open entry's history — no second produced row, no terminal.
+     */
+    reissuedAttempt(runtimeId) {
+      const entry = entries.find((e) => e.runtime_id === runtimeId && e.state === 'emitted');
+      if (!entry) {
+        markInvalid('reissue_without_emitted', { runtimeId });
+        return;
+      }
+      entry.history.push('reissued_attempt');
+    },
+
+    /**
+     * Plan 00B-2 C2.3 — REPLACEMENT ask linkage (new runtime id, e.g. every
+     * `pvr-*`/`mdr-*` broker re-ask). An OPEN predecessor terminal-resolves
+     * as `reissued` with a successor link; an already-terminal predecessor
+     * only gains the link (never re-opened).
+     */
+    linkReplacement(predecessorRuntimeId, successorRuntimeId) {
+      const entry = entries.find((e) => e.runtime_id === predecessorRuntimeId);
+      if (!entry) {
+        markInvalid('replacement_predecessor_unknown', {
+          predecessorRuntimeId,
+          successorRuntimeId,
+        });
+        return;
+      }
+      if (entry.state === 'emitted' || entry.state === 'produced') {
+        entry.state = 'reissued';
+        entry.terminal_detail = { successor_runtime_id: successorRuntimeId };
+        entry.history.push('reissued');
+        return;
+      }
+      entry.terminal_detail = {
+        ...(entry.terminal_detail ?? {}),
+        successor_runtime_id: successorRuntimeId,
+      };
+    },
+
     /** Asks still open (produced-or-emitted) — reconnect must preserve them. */
     open() {
       return entries.filter((e) => e.state === 'produced' || e.state === 'emitted');
@@ -208,12 +323,21 @@ export function createDeliveryLedger() {
      * replay / dialogue confirmation / VCR spoken_response. Multiple
      * deliveries for one operation are all retained — never discarded, never
      * presented as proof the client suppressed playback.
+     *
+     * Plan 00B-2 C2.5 — a single spoken frame genuinely acknowledging
+     * MULTIPLE writes (the address-mirror collapsed terminal, bulk/grouped
+     * dialogue lines) passes an ARRAY of op identities and forms ONE
+     * multi-operation audibility unit: `op_key` stays the first identity
+     * (back-compat), `op_keys` carries the ordered full set.
      */
     recordDeliveryAttempt(opIdentity, { kind, transport = null, claimLineage = null } = {}) {
       seq += 1;
+      const identities = Array.isArray(opIdentity) ? opIdentity : [opIdentity];
+      const opKeys = identities.map((op) => operationIdentityKey(op));
       deliveries.push(
         Object.freeze({
-          op_key: operationIdentityKey(opIdentity),
+          op_key: opKeys[0] ?? null,
+          op_keys: Object.freeze(opKeys),
           kind: kind ?? 'confirmation',
           transport,
           claim_lineage: claimLineage,
@@ -234,6 +358,11 @@ export function createDeliveryLedger() {
 
     isDeliveryHistoryAmbiguous(opIdentity) {
       return ambiguousOps.has(operationIdentityKey(opIdentity));
+    },
+
+    /** Plan 00B-2 C3 — freeze-time evidence projection of the ambiguous set. */
+    ambiguousOpKeys() {
+      return [...ambiguousOps];
     },
 
     /**
@@ -257,6 +386,17 @@ export function createDeliveryLedger() {
         staged_acks: [],
         resolved_op_key: null,
       });
+    },
+
+    /**
+     * Plan 00B-2 C2.7 — remove a fast-TTS reservation with NO delivery
+     * evidence: close-before-finish, synthesis failure or owner
+     * disappearance. Withdrawing an unknown correlation id is a no-op (the
+     * reservation may never have been created on a declined route).
+     */
+    withdrawProvisional(correlationId) {
+      const idx = provisionals.findIndex((p) => p.correlation_id === correlationId);
+      if (idx >= 0) provisionals.splice(idx, 1);
     },
 
     /** Stage an early ACK beside the provisional it correlates to. */

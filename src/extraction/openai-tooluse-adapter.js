@@ -278,6 +278,15 @@ function createStream(openai, streamArgs, options) {
     // will 400 — reasoning-WITH-tools requires porting this adapter to the
     // Responses API (documented follow-up; a latency/quality question, not a
     // blocker for the correctness+cost trial).
+    //
+    // Plan 00B-2 C3 — this adapter DELIBERATELY ignores
+    // streamArgs.reasoning_effort entirely (including direct
+    // EICRExtractionSession callers that supply `reasoning_effort: low`):
+    // the env-only resolution here IS the request payload on this
+    // transport. The tool-loop dispatch resolver (stage6-shadow-harness
+    // resolveOpenAIReasoningEffort) computes the same value for
+    // ATTRIBUTION — authoritative for what is recorded, never for what is
+    // sent here.
     requestPayload.reasoning_effort = (
       process.env.OPENAI_EXTRACT_REASONING_EFFORT || 'none'
     ).trim();

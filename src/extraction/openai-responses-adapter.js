@@ -511,6 +511,12 @@ function createStream(openai, streamArgs, options) {
     // billed separately — see mapUsage docstring).
     max_output_tokens: Math.max((max_tokens || 4096) * 4, 8192),
     reasoning: {
+      // Plan 00B-2 C3 — the tool-loop dispatch resolver
+      // (stage6-shadow-harness resolveOpenAIReasoningEffort) is
+      // authoritative and always threads streamArgs.reasoning_effort for
+      // live OpenAI turns; the env fallback here is RETAINED for callers
+      // that thread nothing (the create() cache-keepalive path) and yields
+      // the same string when the env is unset.
       effort: String(
         reasoningEffortOverride ?? process.env.OPENAI_EXTRACT_REASONING_EFFORT ?? 'low'
       ).trim(),

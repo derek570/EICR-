@@ -96,6 +96,16 @@ export function createMutationObserver({ sessionId = null } = {}) {
   const receipts = [];
   let originFrame = null;
   let invalid = null;
+  // Plan 00B-2 C2.5 — evaluation-only turn scope. Harness turns enter after
+  // runShadowHarness mints `extractionTurnId` (cleared in its outer finally);
+  // Tier-2 engine turns enter in handleTranscript's region-local bracket
+  // with the server-minted generationId. Every receipt records the OPEN
+  // turn's id + a monotonic per-turn ordinal.
+  let currentTurn = null; // { turnId, ordinal }
+  // Plan 00B-2 C2.5 — regex fast-path correlation binding: each normalized
+  // correlation id binds exactly once to the server-minted turn BEFORE live
+  // execution. Re-binding is a capture error.
+  const fastCorrelationTurns = new Map();
 
   const observer = {
     sessionId,
@@ -108,6 +118,52 @@ export function createMutationObserver({ sessionId = null } = {}) {
 
     markInvalid(reason, detail) {
       if (!invalid) invalid = Object.freeze({ reason, detail: detail ?? null });
+    },
+
+    /**
+     * Enter an evaluation turn scope. A second enter while one is open
+     * THROWS (capture INVALID first) — overlapping turn scopes would make
+     * receipt→turn attribution ambiguous, the exact class the oracle holds.
+     */
+    enterTurnScope(turnId) {
+      if (currentTurn) {
+        this.markInvalid('turn_scope_reentered', {
+          open_turn_id: currentTurn.turnId,
+          requested_turn_id: turnId ?? null,
+        });
+        throw new Error('plan00: enterTurnScope while a turn scope is open');
+      }
+      if (typeof turnId !== 'string' || turnId.length === 0) {
+        this.markInvalid('turn_scope_id_malformed', { turnId: turnId ?? null });
+        throw new Error('plan00: enterTurnScope requires a non-empty turn id');
+      }
+      currentTurn = { turnId, ordinal: 0 };
+    },
+
+    exitTurnScope() {
+      currentTurn = null;
+    },
+
+    get openTurnId() {
+      return currentTurn?.turnId ?? null;
+    },
+
+    /** Bind a normalized regex fast-path correlation id to the OPEN turn. */
+    bindFastCorrelation(correlationId) {
+      if (!correlationId) return;
+      if (!currentTurn) {
+        this.markInvalid('fast_correlation_outside_turn', { correlationId });
+        return;
+      }
+      if (fastCorrelationTurns.has(correlationId)) {
+        this.markInvalid('fast_correlation_rebound', { correlationId });
+        return;
+      }
+      fastCorrelationTurns.set(correlationId, currentTurn.turnId);
+    },
+
+    fastCorrelationTurn(correlationId) {
+      return fastCorrelationTurns.get(correlationId) ?? null;
     },
 
     setOriginFrame(frame) {
@@ -180,9 +236,14 @@ export function createMutationObserver({ sessionId = null } = {}) {
         }
         seq += 1;
         opCounter += 1;
+        if (currentTurn) currentTurn.ordinal += 1;
         const receipt = Object.freeze({
           operation_id: `evalop-${opCounter}`,
           seq,
+          // Plan 00B-2 C2.5 — turn-scoped operation identity. Null outside a
+          // turn scope (constructor hydration / input_state_seed writes).
+          extraction_turn_id: currentTurn?.turnId ?? null,
+          turn_ordinal: currentTurn?.ordinal ?? null,
           kind: payload.kind,
           field: payload.field ?? null,
           board_id: payload.board_id ?? null,
@@ -216,7 +277,13 @@ export function createMutationObserver({ sessionId = null } = {}) {
      * Any other unmatched overlay row, or any receipt-slot double-claim,
      * makes capture INVALID/HOLD. Never creates a commit from a journal row.
      */
-    joinJournalOverlay({ rows, writeSequenceOf, slotOf, nonMutatingSources = [] }) {
+    joinJournalOverlay({
+      rows,
+      writeSequenceOf,
+      slotOf,
+      nonMutatingSources = [],
+      extractionTurnId = null,
+    }) {
       try {
         const claimed = new Set();
         for (const row of rows) {
@@ -226,6 +293,9 @@ export function createMutationObserver({ sessionId = null } = {}) {
             (r) =>
               !claimed.has(r) &&
               r.write_sequence == null &&
+              // Plan 00B-2 C2.5 — turn-aware overlay: a per-turn journal may
+              // only claim receipts committed inside the SAME server turn.
+              (extractionTurnId == null || r.extraction_turn_id === extractionTurnId) &&
               r.field === (slot.field ?? null) &&
               (r.circuit ?? null) === (slot.circuit ?? null) &&
               (slot.board_id == null || r.board_id == null || r.board_id === slot.board_id)
