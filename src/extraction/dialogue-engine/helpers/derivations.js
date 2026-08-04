@@ -23,6 +23,7 @@
  * types) the match is a direct string equality. Omitting `value`
  * makes the derivation unconditional — fires on every write.
  */
+import { MUTATION_OBSERVER } from '../../plan00-semantic-capture.js';
 import { applyReadingToSnapshot } from '../../stage6-snapshot-mutators.js';
 import { bsCodeDigits } from '../parsers/bs-code.js';
 
@@ -92,11 +93,27 @@ export function applyDerivations({ session, schema, slot, value }) {
     if (derivation.sets && typeof derivation.sets === 'object') {
       const state = session.dialogueScriptState;
       for (const [extraField, extraValue] of Object.entries(derivation.sets)) {
-        applyReadingToSnapshot(session.stateSnapshot, {
-          circuit: state?.circuit_ref ?? null,
-          field: extraField,
-          value: extraValue,
-        });
+        // Plan 00B §B2 — derived provenance declared at the producer: the
+        // triggering slot write is the parent, named by its exact slot.
+        const setsObserver = session.stateSnapshot?.[MUTATION_OBSERVER] ?? null;
+        if (setsObserver) {
+          setsObserver.setOriginFrame({
+            origin: 'dialogue_script_derived',
+            derivation_kind: 'sets',
+            parent_slot: { field: slot.field, circuit: state?.circuit_ref ?? null },
+            source_slot: { field: slot.field, circuit: state?.circuit_ref ?? null },
+            meta: { schema: schema?.name ?? null, derived_field: extraField },
+          });
+        }
+        try {
+          applyReadingToSnapshot(session.stateSnapshot, {
+            circuit: state?.circuit_ref ?? null,
+            field: extraField,
+            value: extraValue,
+          });
+        } finally {
+          if (setsObserver) setsObserver.clearOriginFrame();
+        }
         // Also reflect into the live state.values so the next
         // nextMissingSlot iteration sees it filled.
         if (state) state.values[extraField] = extraValue;
@@ -111,11 +128,25 @@ export function applyDerivations({ session, schema, slot, value }) {
     if (Array.isArray(derivation.mirrors)) {
       const state = session.dialogueScriptState;
       for (const mirrorField of derivation.mirrors) {
-        applyReadingToSnapshot(session.stateSnapshot, {
-          circuit: state?.circuit_ref ?? null,
-          field: mirrorField,
-          value,
-        });
+        const mirrorObserver = session.stateSnapshot?.[MUTATION_OBSERVER] ?? null;
+        if (mirrorObserver) {
+          mirrorObserver.setOriginFrame({
+            origin: 'dialogue_script_derived',
+            derivation_kind: 'mirror',
+            parent_slot: { field: slot.field, circuit: state?.circuit_ref ?? null },
+            source_slot: { field: slot.field, circuit: state?.circuit_ref ?? null },
+            meta: { schema: schema?.name ?? null, derived_field: mirrorField },
+          });
+        }
+        try {
+          applyReadingToSnapshot(session.stateSnapshot, {
+            circuit: state?.circuit_ref ?? null,
+            field: mirrorField,
+            value,
+          });
+        } finally {
+          if (mirrorObserver) mirrorObserver.clearOriginFrame();
+        }
         if (state) state.values[mirrorField] = value;
         result.mirrorWrites.push({ field: mirrorField, value });
       }

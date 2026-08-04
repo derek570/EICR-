@@ -65,6 +65,7 @@
  */
 
 import logger from '../logger.js';
+import { MUTATION_OBSERVER } from './plan00-semantic-capture.js';
 import { randomUUID } from 'node:crypto';
 import {
   buildPostcodeLookupNote,
@@ -716,11 +717,25 @@ export function applyOrphanRecoveredReading({ session, result, tuple, turnId }) 
     earthing: resolveBoardAwareEarthing(session.stateSnapshot, null),
   });
   const orphanValue = orphanClamp.value;
-  applyReadingFlagAware(session.stateSnapshot, {
-    circuit: tuple.circuit,
-    field: stage6Field,
-    value: orphanValue,
-  });
+  // Plan 00B §B2 — the orphan net completes the model turn's inspector
+  // utterance deterministically; its committed write is attributed to the
+  // model path with a via-marker so expectations can distinguish it.
+  const orphanObserver = session.stateSnapshot?.[MUTATION_OBSERVER] ?? null;
+  if (orphanObserver) {
+    orphanObserver.setOriginFrame({
+      origin: 'model_direct',
+      meta: { via: 'orphan_recovery', field: stage6Field },
+    });
+  }
+  try {
+    applyReadingFlagAware(session.stateSnapshot, {
+      circuit: tuple.circuit,
+      field: stage6Field,
+      value: orphanValue,
+    });
+  } finally {
+    if (orphanObserver) orphanObserver.clearOriginFrame();
+  }
   if (!Array.isArray(result.extracted_readings)) result.extracted_readings = [];
   const reading = {
     field: stage6Field,

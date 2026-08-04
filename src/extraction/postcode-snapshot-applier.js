@@ -25,6 +25,11 @@
  */
 
 import logger from '../logger.js';
+// Plan 00B §B2 — postcode-derived locality writes are semantic direct
+// writes and must route through the canonical board-reading atom (with a
+// silent_deterministic origin frame naming the postcode write as parent).
+import { applyBoardReadingToSnapshot } from './stage6-snapshot-mutators.js';
+import { MUTATION_OBSERVER } from './plan00-semantic-capture.js';
 
 /**
  * UK ITL1 regions + a few common Deepgram mishearings that Sonnet has
@@ -99,12 +104,34 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, optio
   // inspector's postcode write (Audio-First exception), not separately
   // dictated readings. Keep this helper snapshot-only: it must never stage
   // either field into perTurnWrites or synthesize a second confirmation.
+  // Plan 00B §B2 — the storage write itself now flows through the canonical
+  // board-reading atom (same circuits[0] slot, byte-identical state) so the
+  // evaluation observer sees a silent_deterministic commit parented to the
+  // postcode write that triggered it.
+  const parentField = options.parentField ?? (family === 'client' ? 'client_postcode' : 'postcode');
+  const observer = snapshot[MUTATION_OBSERVER] ?? null;
+  const writeDerived = (field, value) => {
+    if (observer) {
+      observer.setOriginFrame({
+        origin: 'silent_deterministic',
+        derivation_kind: 'postcode_locality',
+        parent_slot: { field: parentField, circuit: null },
+        source_slot: { field: parentField, circuit: null },
+        meta: { family },
+      });
+    }
+    try {
+      applyBoardReadingToSnapshot(snapshot, { field, value });
+    } finally {
+      if (observer) observer.clearOriginFrame();
+    }
+  };
   if (lookup.town && shouldOverride(circ0[townField])) {
-    circ0[townField] = lookup.town;
+    writeDerived(townField, lookup.town);
     changes.push({ field: townField, value: lookup.town });
   }
   if (lookup.county && shouldOverride(circ0[countyField])) {
-    circ0[countyField] = lookup.county;
+    writeDerived(countyField, lookup.county);
     changes.push({ field: countyField, value: lookup.county });
   }
 

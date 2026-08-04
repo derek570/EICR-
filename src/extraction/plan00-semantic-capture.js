@@ -122,9 +122,15 @@ export function createMutationObserver({ sessionId = null } = {}) {
       // Derived origins MUST carry real parent provenance at the producer
       // boundary (§B2): parent_operation_id + derivation_kind + exact source
       // slot. A derived frame without them is a capture error, not a guess.
+      // Producers name their trigger by SLOT (field/board/circuit) — they
+      // cannot know evaluation-owned operation ids. `parent_slot` is
+      // resolved to the triggering receipt at commit time; a direct
+      // `parent_operation_id` is also accepted (tests / replays).
       if (
         (frame.origin === 'dialogue_script_derived' || frame.origin === 'silent_deterministic') &&
-        (!frame.parent_operation_id || !frame.derivation_kind || !frame.source_slot)
+        (!(frame.parent_operation_id || frame.parent_slot) ||
+          !frame.derivation_kind ||
+          !frame.source_slot)
       ) {
         this.markInvalid('derived_provenance_missing', {
           origin: frame.origin,
@@ -153,6 +159,25 @@ export function createMutationObserver({ sessionId = null } = {}) {
         // sample is INVALID/HOLD unless the harness declared the frame.
         const frame = originFrame;
         if (!frame) this.markInvalid('commit_without_origin_frame', { kind: payload.kind });
+        // Resolve a slot-named parent to the most recent matching receipt.
+        // A derived commit whose declared trigger slot matches NO earlier
+        // receipt is a provenance failure (§B2: missing/wrong parent is
+        // semantic FAIL), latched as INVALID while the receipt still
+        // records for completeness.
+        let resolvedParentId = frame?.parent_operation_id ?? null;
+        if (!resolvedParentId && frame?.parent_slot) {
+          const ps = frame.parent_slot;
+          const parent = [...receipts]
+            .reverse()
+            .find(
+              (r) =>
+                r.field === (ps.field ?? null) &&
+                (r.circuit ?? null) === (ps.circuit ?? null) &&
+                (ps.board_id == null || r.board_id == null || r.board_id === ps.board_id)
+            );
+          if (parent) resolvedParentId = parent.operation_id;
+          else this.markInvalid('derived_parent_unresolved', { parent_slot: ps });
+        }
         seq += 1;
         opCounter += 1;
         const receipt = Object.freeze({
@@ -167,7 +192,7 @@ export function createMutationObserver({ sessionId = null } = {}) {
           detail: payload.detail ?? null,
           origin: frame?.origin ?? null,
           origin_meta: frame?.meta ?? null,
-          parent_operation_id: frame?.parent_operation_id ?? null,
+          parent_operation_id: resolvedParentId,
           derivation_kind: frame?.derivation_kind ?? null,
           source_slot: frame?.source_slot ?? null,
           // Filled by the journal overlay join, never at commit time.

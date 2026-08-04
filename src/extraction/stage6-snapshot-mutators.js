@@ -994,3 +994,24 @@ export function markDistributionCircuitInSnapshot(
   }
   return { changed };
 }
+
+/**
+ * Plan 00B §B2 — narrowly-named canonical atom for the LEGACY observation
+ * apply path (off/shadow modes). The legacy leg reuses the model-provided
+ * observation_id and its own record shape, which appendObservation (atom id
+ * ownership) cannot reproduce state-identically — so the direct push moves
+ * here verbatim instead. Live-mode observations keep using appendObservation.
+ */
+export function appendLegacyObservationRecord(session, record) {
+  if (!Array.isArray(session.extractedObservations)) session.extractedObservations = [];
+  session.extractedObservations.push(record);
+  emitMutationCommit(session, {
+    kind: 'observation_create',
+    field: null,
+    circuit: record?.circuit ?? null,
+    board_id: null,
+    value: null,
+    detail: { observation_id: record?.id ?? null, code: record?.code ?? null, leg: 'legacy' },
+  });
+  return record;
+}

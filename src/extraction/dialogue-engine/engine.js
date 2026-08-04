@@ -22,6 +22,7 @@
  * enforced via mutually-exclusive triggers.
  */
 
+import { MUTATION_OBSERVER } from '../plan00-semantic-capture.js';
 import {
   parseCircuitDigitWithSpan,
   findCircuitByDesignation,
@@ -362,11 +363,23 @@ export function processDialogueTurn(ctx) {
               earthing: resolveBoardAwareEarthing(session.stateSnapshot, currentBoardId),
             });
             const effective = clamped.value;
-            applyReadingFlagAware(session.stateSnapshot, {
-              circuit: crumb.circuit_ref,
-              field: crumb.field,
-              value: effective,
-            });
+            // Plan 00B §B2 — resume-drained dialogue write.
+            const crumbObserver = session.stateSnapshot?.[MUTATION_OBSERVER] ?? null;
+            if (crumbObserver) {
+              crumbObserver.setOriginFrame({
+                origin: 'dialogue_script_direct',
+                meta: { resume_drained: true, field: crumb.field },
+              });
+            }
+            try {
+              applyReadingFlagAware(session.stateSnapshot, {
+                circuit: crumb.circuit_ref,
+                field: crumb.field,
+                value: effective,
+              });
+            } finally {
+              if (crumbObserver) crumbObserver.clearOriginFrame();
+            }
             safeSend(
               ws,
               buildExtractionPayload(
@@ -3775,7 +3788,19 @@ function handleBulkApplyReply({
   for (const ref of targetCircuits) {
     const circuitWrites = [];
     for (const [field, value] of Object.entries(values)) {
-      applyReadingToSnapshot(session.stateSnapshot, { circuit: ref, field, value });
+      // Plan 00B §B2 — bulk propagation is a dialogue-direct write per ref.
+      const bulkObserver = session.stateSnapshot?.[MUTATION_OBSERVER] ?? null;
+      if (bulkObserver) {
+        bulkObserver.setOriginFrame({
+          origin: 'dialogue_script_direct',
+          meta: { bulk_propagation: true, field },
+        });
+      }
+      try {
+        applyReadingToSnapshot(session.stateSnapshot, { circuit: ref, field, value });
+      } finally {
+        if (bulkObserver) bulkObserver.clearOriginFrame();
+      }
       circuitWrites.push({ field, value });
       writeCount += 1;
     }

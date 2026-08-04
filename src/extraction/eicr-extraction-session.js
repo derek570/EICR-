@@ -4,6 +4,7 @@
 
 import fssync from 'node:fs';
 import path from 'node:path';
+import { MUTATION_OBSERVER } from './plan00-semantic-capture.js';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
@@ -13,7 +14,11 @@ import { ProviderResolutionError, providerForModel } from './model-provider.js';
 import { attributeRoundUsage } from './round-usage-attribution.js';
 import { CostTracker } from './cost-tracker.js';
 import { markOpenAIStableSystemPrefix } from './system-prompt-renderer.js';
-import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
+import {
+  applyReadingFlagAware,
+  clearReadingFlagAware,
+  appendLegacyObservationRecord,
+} from './stage6-snapshot-mutators.js';
 import {
   buildDefaultMainBoard,
   ensureMultiBoardShape,
@@ -2958,9 +2963,11 @@ export class EICRExtractionSession {
         });
 
         if (!match) {
-          // NEW observation.
+          // NEW observation. Plan 00B §B2 — routed through the narrow
+          // legacy-observation atom (state-identical push + evaluation
+          // commit receipt).
           if (!obs.observation_id) obs.observation_id = randomUUID();
-          this.extractedObservations.push({
+          appendLegacyObservationRecord(this, {
             id: obs.observation_id,
             text,
             code: obs.code || null,
@@ -3578,11 +3585,23 @@ export class EICRExtractionSession {
           // mode (Stage 6 tool calls) so this branch is dormant, but
           // keeping it flag-threaded prevents split-brain if a future
           // session combines off-mode and flag-on.
-          applyReadingFlagAware(this.stateSnapshot, {
-            circuit,
-            field: canonicalField,
-            value: reading.value,
-          });
+          // Plan 00B §B2 — legacy-leg model write (off/shadow modes).
+          const legacyObserver = this.stateSnapshot?.[MUTATION_OBSERVER] ?? null;
+          if (legacyObserver) {
+            legacyObserver.setOriginFrame({
+              origin: 'model_direct',
+              meta: { leg: 'legacy', field: canonicalField },
+            });
+          }
+          try {
+            applyReadingFlagAware(this.stateSnapshot, {
+              circuit,
+              field: canonicalField,
+              value: reading.value,
+            });
+          } finally {
+            if (legacyObserver) legacyObserver.clearOriginFrame();
+          }
           // Track recency for snapshot windowing (circuit 0 excluded — always shown)
           if (circuit !== 0) {
             const idx = this.recentCircuitOrder.indexOf(circuit);
