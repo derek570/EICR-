@@ -112,3 +112,41 @@ A BACKEND/MODEL field-feedback bug **within the corpus's v1 coverage** is not "d
 ## Threat model (accident, not malice)
 
 One-maintainer repo: every PR author is Derek or a Claude session on his behalf. The failure class this stops is well-meaning-but-wrong code going green on mocks, including a confused session fabricating plausible-but-never-executed artifacts. Malicious-insider hardening (signed governance, trusted evidence, base-branch-controlled checks, OS-level `--network=none`, trusted-harness manifest) is DEFERRED to `field-replay-hardening-followups`, MANDATORY before any second maintainer gets write access. Accepted residual risk (dated): a PR editing `deploy.yml` itself to remove the corpus step would merge green — mitigated by PR review, the pre-push backstop, and the deploy-blocking lane.
+
+## Plan 00B — trusted semantic oracle (2026-08-04)
+
+The corpus now feeds a REAL-SERVER semantic oracle beside the recorded gate
+(which is unchanged and stays the deterministic backend/wire protection):
+
+- **Real-server lane** — `initSonnetStream` boots the actual WebSocket
+  handler with a test-only `evaluationContextFactory`; a per-entry teardown
+  ARBITER (explicit stop / disconnect expiry / both reconnect frames observe
+  ONE teardown) freezes evidence exactly once, quiescence-gated
+  (`non_quiescent_at_stop` fails closed). `src/extraction/plan00-lifecycle-hooks.js`.
+- **Semantic capture** — certificate mutations are captured SOLELY at the
+  canonical atoms in `stage6-snapshot-mutators.js` (commit receipt per REAL
+  state change, producer-declared origin frames, derived-parent provenance,
+  journal WRITE_SEQUENCE as an overlay only). The committed classification
+  manifest + source scan (`scripts/model-ab/lib/mutation-classification.mjs`,
+  `plan00-mutation-source-scan.test.js`) fails on any unclassified direct
+  write. `add_board`/`select_board`/distribution-mark/postcode-locality were
+  extracted into atoms as a behaviour-preserving production refactor.
+- **Ask/audibility/playback ledgers** — `plan00-audibility-ledgers.js`:
+  produced→emitted→answered ask lifecycle on the normalized `liveAskKey`;
+  operation-bound `delivery_attempt` rows (identity = extractionTurnId +
+  effective slot + ordinal — transport aliases never); `playback_start` only
+  from an authenticated ACK resolving uniquely to one delivered operation;
+  fast-TTS provisional binding behind the route's new session-owner check;
+  cross-process outbox recovery flags `delivery_history_ambiguous`.
+- **Expectations** — every fixture has a frozen `UNREVIEWED-DRAFT`
+  projection (operations/asks/audible only; no model rounds, no tool ids) in
+  exactly ONE executable lane (`vendor_live_expectations` — all nine — or
+  the `deterministic_egress_expectations` named-case inventory). Combined
+  manifest: `scripts/model-ab/plan00-expectation-manifest.json` with both
+  lane hashes, the combined anchor and the enumerated
+  `semantic_oracle_digest`; the manifest test suite is the merge-blocking
+  drift check. Attestation (`expectations_attested`) is owned SOLELY by
+  Plan 00C — `run-semantic-lane.mjs` refuses live vendor sampling without
+  that record (`--mode=mock` proves plumbing only). Named non-safety strata
+  gaps (multi-board routing, direct observation create/delete) are recorded
+  in the manifest for Derek's 00C decision.

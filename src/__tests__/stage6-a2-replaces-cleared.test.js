@@ -897,7 +897,7 @@ describe('A2 — wire contract (shared cross-client fixture)', () => {
     expect(batchStart).toBeGreaterThan(-1);
     expect(syncStart).toBeGreaterThan(-1);
     expect(src.slice(batchStart, batchStart + 4_000)).toMatch(
-      /await sendResultFrameLedger\(\s*currentWs,\s*session\.stateSnapshot,\s*result,\s*session\s*\)/s
+      /await sendResultFrameLedger\(\s*currentWs,\s*session\.stateSnapshot,\s*result,\s*session,\s*entryRef\s*\)/s
     );
     expect(src.slice(syncStart, syncStart + 1_000)).toMatch(/await sendResultFrameLedger\(/);
   });
