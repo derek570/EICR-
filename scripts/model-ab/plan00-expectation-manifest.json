@@ -479,7 +479,7 @@
     ]
   },
   "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
-  "semantic_oracle_digest": "ccb5492b6e6b06d5101dcc89cd04de2b156747bf651bb2b84853bbfa19a40f35",
+  "semantic_oracle_digest": "cba69cd8c4a954884fab98986b41a9355b1c33362609107601eb9b64f7ad3692",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -547,7 +547,7 @@
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
-      "sha256": "2f1ce816adc619b91017eaef43e35edc044e3da0f869789a7b228d5294b9c941"
+      "sha256": "ccb1f9e7e094ad2a029d4cb6731e866a5b0307095289bddc15fe6612197cc0c0"
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",

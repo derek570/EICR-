@@ -618,3 +618,31 @@ describe('Tier-2 (b4) — Codex r4 finding 2: mirror regions fail CLOSED on a co
     roles.mutationObserver.exitTurnScope();
   });
 });
+
+describe('Tier-2 (b5) — mini-review r4: the ANSWER-region scope-conflict branch', () => {
+  test('an open scope at ask_user_answered mirror recovery latches INVALID', async () => {
+    const { factory, roles } = makeFullContextFactory('sess-am-conc2');
+    const wss = initSonnetStream(null, getKey, verifyToken, {
+      evaluationContextFactory: factory,
+    });
+    const ws = connect(wss);
+    await sendFrame(ws, { type: 'session_start', sessionId: 'sess-am-conc2', jobState: {} });
+    const entry = activeSessions.get('sess-am-conc2');
+    entry.addressMirrorController = {
+      resolveRecoveredAnswer: async () => ({ handled: true, outcome: 'duplicate', changed: [] }),
+    };
+    roles.mutationObserver.enterTurnScope('utt-other-turn');
+    await sendFrame(ws, {
+      type: 'ask_user_answered',
+      sessionId: 'sess-am-conc2',
+      tool_call_id: 'mir-conc-ask-1',
+      user_text: 'yes',
+      purpose: 'address_mirror',
+      consumed_utterance_id: 'utt-conc-1',
+    });
+    expect(roles.mutationObserver.invalid).not.toBeNull();
+    expect(roles.mutationObserver.invalid.reason).toBe('mirror_scope_conflict');
+    expect(roles.mutationObserver.invalid.detail.region).toBe('address_mirror_answer');
+    roles.mutationObserver.exitTurnScope();
+  });
+});

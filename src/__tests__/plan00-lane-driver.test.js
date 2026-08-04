@@ -1118,3 +1118,47 @@ describe('Codex r4 hardening — answered terminals, bounded pump', () => {
     }
   }, 60000);
 });
+
+describe('Codex r4b — monotonic ask assignment across turns', () => {
+  test('a [timeout, answered] entry order cannot swap across a declared-answer and answerless turn', () => {
+    const entries = [
+      {
+        key: '{}',
+        state: 'timeout',
+        runtime_id: 'toolu_1',
+        meta: { family: 'dispatcher' },
+        history: ['produced', 'emitted', 'timeout'],
+      },
+      {
+        key: '{}',
+        state: 'answered',
+        runtime_id: 'toolu_2',
+        meta: { family: 'dispatcher' },
+        history: ['produced', 'emitted', 'answered'],
+      },
+    ];
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [{ kind: 'ask_user', count: 1, match: null }],
+            ask_answers: [{ answer_text: 'Circuit 4.', answered: true, channel: 'direct' }],
+          },
+          {
+            operations: [],
+            audible_outputs: [{ kind: 'ask_user', count: 1, match: null }],
+            ask_answers: [],
+          },
+        ],
+      },
+      frozenWith(baseEvidence({ ask_entries: entries }))
+    );
+    // Turn 1's assigned entry is the TIMEOUT — the answered entry belongs
+    // to turn 2 and can never be swapped backwards.
+    expect(v.verdict).toBe('FAIL');
+    expect(v.mismatches.some((m) => m.class === 'ask_not_answered')).toBe(true);
+  });
+});

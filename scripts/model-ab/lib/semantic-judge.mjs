@@ -275,16 +275,27 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
         // declared answers accept any genuinely emitted ask (fixtures may
         // legitimately let an ask time out).
         const requireAnswered = (turns[t].ask_answers ?? []).length > 0;
+        // Mini-review r4 finding 1 — MONOTONIC assignment: each expectation
+        // consumes the NEXT unconsumed entry (never skips), then validates
+        // the ASSIGNED entry's terminal. Skipping let a later turn's
+        // answered entry be swapped into an earlier declared-answer turn
+        // while the earlier timeout drifted to the answerless turn.
         let taken = 0;
         for (let i = 0; i < emittedAsks.length && taken < want; i += 1) {
           if (consumedAsks.has(i)) continue;
-          if (requireAnswered && emittedAsks[i].state !== 'answered') continue;
           consumedAsks.add(i);
           taken += 1;
+          if (requireAnswered && emittedAsks[i].state !== 'answered') {
+            mismatches.push({
+              class: 'ask_not_answered',
+              expected: { kind: 'ask_user', answered_required: true },
+              actual: { state: emittedAsks[i].state },
+            });
+          }
         }
         if (taken < want) {
           mismatches.push({
-            class: requireAnswered ? 'ask_not_answered' : 'ask_missing',
+            class: 'ask_missing',
             expected: { kind: 'ask_user', count: want, answered_required: requireAnswered },
             actual: taken,
           });
