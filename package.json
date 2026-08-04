@@ -25,7 +25,8 @@
     "pwa-replay:sweep": "PWA_SWEEP=1 npm run --workspace=web test -- tests/harness/field-sweep.lane.test.ts",
     "replay:field-corpus": "node scripts/voice-latency-bench/transcript-replay-direct.mjs --model-lane=recorded",
     "replay:field-corpus:evidence": "node scripts/voice-latency-bench/transcript-replay-direct.mjs --model-lane=recorded --evidence-mode",
-    "replay:field-corpus:prepush": "node scripts/field-replay/prepush-gate.mjs"
+    "replay:field-corpus:prepush": "node scripts/field-replay/prepush-gate.mjs",
+    "verify:plan00-provenance": "node scripts/plan00-bundle-provenance.mjs --verify-committed"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.74.0",

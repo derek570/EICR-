@@ -1,71 +1,43 @@
 # Voice latency and conversational-mode plan batch
 
-Status: **DRAFT — not RP-reviewed and not approved for execution; Plan 01 core is live, retention supplement remains draft**
-Prepared: 2026-07-31
-Canonical backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
-Canonical iOS repo: `/Users/derekbeckley/Developer/EICR_Automation/CertMateUnified`
+Status: **RUNTIME STATUS EXTERNAL — run the committed Plan 00 status command**
+Prepared: 2026-07-31; Plan 00 bundle refreshed 2026-08-03
 
-This directory is a set of separate RP inputs. It deliberately does not combine the experiments into one implementation wave: each lever needs its own evidence, rollback and reviewer decision. No plan reintroduces the removed round-one fast exit. Luna remains authoritative through the complete tool loop, including its opportunity to self-correct, ask, and answer naturally. The currently live, parked-audio form of Loaded Barrel is assessed separately rather than confused with that deleted fast exit.
+The tracked files in this directory are planning references, not runtime state. The [Plan 00 entry point](plan-00-gpt56-port-parity.md) contains the committed source-integrity and read-only ECS status command. Never copy a live HOLD/DONE state into this index.
 
-## Port audit conclusion
+## Current shipped baseline
 
-The GPT-5.6 Luna migration is operationally live and its main mechanics are correct:
+- The GPT-5.6 provider resolver, session-owned clients and whole-loop provider fence shipped in `a45996a6`.
+- Ordinary Stage-6 turns run GPT-5.6 Luna Fast. Observation-shaped turns run GPT-5.6 Terra Standard with low reasoning through the live router shipped in PR #147 (`60fd0f9d`).
+- Plan 01's core explicit prompt cache shipped in PR #150 (`94f56eea`). Its retention evaluation and any 25-minute Terra re-warm remain draft supplement work after Plan 00.
+- The conversational two-round loop remains authoritative. Loaded Barrel, eager endpointing, Deepgram/ElevenLabs tuning and cache keep-warm policy remain outside Plan 00.
 
-- source and live ECS both select `SONNET_EXTRACT_MODEL=gpt-5.6-luna`;
-- source and live ECS both select `OPENAI_EXTRACT_SERVICE_TIER=fast`;
-- the Responses adapter retains encrypted reasoning items across rounds, streams tool calls to Loaded Barrel, maps usage, and records the provider-reported model/tier;
-- focused adapter/tool-loop/routing tests pass;
-- the recorded nine-utterance A/B scored 8/9 for both Haiku and Luna, although they did not miss the same case.
+## Reviewed Plan 00 bundle and dependency order
 
-It is not yet parity-complete. Plan 00 owns three findings:
+Plan 00 was RP-converged as three explicit, dependency-locked executions. Repository copies are reference-only and carry adjacent `executable:false` EP policies:
 
-1. `flattenSystem()` concatenates Anthropic prompt blocks with no delimiter, so the stable snapshot and volatile tail can merge tokens on Luna.
-2. provider choice is latched from the default model, while observation-tier and round-one overrides change only the model string. The currently dark observation flag or a future cross-provider round-one override could therefore send a Claude model name to the OpenAI adapter.
-3. Luna missed the captured `IR L to L 100` case that Haiku extracted. The corpus is too small to call this a general quality regression, but the miss needs a pinned regression and paced rerun before parity is signed off.
-
-The first two defects are latent or prompt-shape defects, not evidence that the current production session used Haiku. Current production flags keep both dormant cross-provider routes off.
-
-## Plans and order
-
-| Order | Plan | Purpose | Dependencies |
+| Order | Reviewed reference | Purpose | Machine dependency |
 |---|---|---|---|
-| 00 | [GPT-5.6 port parity](plan-00-gpt56-port-parity.md) | Correct prompt/provider parity and close the known IR miss | None; prerequisite for Plan 01 and any tier routing |
-| 01 | [Explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Core explicit cache is live; refine 24-hour retention before considering any 25-minute Terra re-warm | Plan 00 |
-| 02 | [iOS incremental TTS playback](plan-02-ios-incremental-tts-streaming.md) | Play ElevenLabs PCM as chunks arrive instead of awaiting the whole response | Plan 00; enables the full benefit of Plan 03 |
-| 03 | [Persistent ElevenLabs session and tuning](plan-03-elevenlabs-persistent-session.md) | Reuse the multi-context socket and test safe synthesis settings | Plan 00; production rollout after Plan 02 |
-| 04 | [Deepgram Flux Eager EOT](plan-04-deepgram-flux-eager-eot.md) | Measure and cautiously speculate before authoritative EndOfTurn | Plan 00; independent of Plans 01–03 |
-| 05 | [Safe `answer_user` pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS with the remaining Luna loop without early playback | Plans 00 and 02; Plan 03 recommended |
-| 06 | [General conversational lane](plan-06-general-conversational-lane.md) | Permit natural general conversation while isolating certificate mutation | Plan 00; Plan 05 recommended for latency |
-| 07 | [Loaded Barrel value audit](plan-07-loaded-barrel-value-audit.md) | Playback evidence chain shipped; measure the live parked-audio saving and retain, narrow or retire it | Phase 1 complete; Plan 00 for remaining code changes; measure before Plans 02–03 alter TTS |
+| 00A | [Provider/tool/cost parity](plan-00-gpt56-port-parity/PLAN-00A-final.md) | Audit shipped provider/cache routing; close Responses tool-result and truthful per-round accounting gaps | None; explicit `--no-chain` only |
+| 00B | [Trusted semantic oracle](plan-00-gpt56-port-parity/PLAN-00B-final.md) | Install the production-composed semantic oracle and dormant lifecycle/audibility hooks | Genuine merged/deployed 00A success + provenance artifact |
+| 00C | [Three-day evidence gate](plan-00-gpt56-port-parity/PLAN-00C-final.md) | Ship Stage-A durable evidence machinery; Derek then performs the three field days | Genuine merged/deployed 00B success + expectation artifact |
 
-Recommended execution sequence is `00 → 07 → 01 → 02 → 03 → 04 → 05 → 06`. Plan 07 should capture its baseline before Plans 02–03 change the TTS waterfall. Plan 04 can be refined in parallel with Plans 01–03, but its mutation-capable phase must wait for its own shadow-data gate.
+The [umbrella reference](plan-00-gpt56-port-parity/PLAN-00-final.md) is permanently non-executable. The only valid sequence is `00A → 00B → 00C`; no child chains automatically.
 
-## Future RP commands
+## Remaining latency plans
 
-Run from the canonical backend repository after usage credit is available.
-
-Refine the complete batch without handing it to EP:
-
-```bash
-/rp --batch /Users/derekbeckley/Developer/EICR_Automation/.planning/voice-latency-conversational-2026-07-31/plan-*.md --no-ship
-```
-
-Refine one plan at a time (recommended for the cross-repo iOS plans):
-
-```bash
-/rp /Users/derekbeckley/Developer/EICR_Automation/.planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity.md --no-ship
-```
-
-After every plan is converged and the chosen dependencies have shipped, omit `--no-ship` only for the specific plan intended to continue into EP. Do not batch-execute all levers; preserve separate measurements and rollback attribution.
+| Plan | Purpose | Dependency boundary |
+|---|---|---|
+| [01 — explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Core cache is live; evaluate retention before any 25-minute Terra re-warm | Supplement waits for Plan 00C live DONE |
+| [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | Play ElevenLabs PCM while chunks arrive | Behaviour-changing work waits for Plan 00C live DONE |
+| [03 — persistent ElevenLabs session](plan-03-elevenlabs-persistent-session.md) | Reuse the TTS transport and test synthesis tuning | After Plan 02 and Plan 00C live DONE |
+| [04 — Deepgram Flux eager EOT](plan-04-deepgram-flux-eager-eot.md) | Measure turn-final speculation without sending half utterances | Mutation-capable phase waits for its own gate and Plan 00C live DONE |
+| [05 — answer-user pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS without early playback | Plans 00C and 02; Plan 03 recommended |
+| [06 — conversational lane](plan-06-general-conversational-lane.md) | Preserve natural conversation while isolating certificate mutation | Plan 00C; Plan 05 recommended |
+| [07 — Loaded Barrel audit](plan-07-loaded-barrel-value-audit.md) | Measure parked speculative audio before any reactivation decision | Evidence only until Plan 00C live DONE |
 
 ## Shared success metric
 
-The target is mouth-stop to first audible confirmation/answer. Continue reporting the existing authoritative Flux EndOfTurn metric, but add a device-local speech-stop estimate so turn-detection savings are not hidden. Report p50, p75, p95 and sample count, split by:
+The target is mouth-stop to first audible confirmation/answer without sacrificing arbitrary natural-language turns. Report p50/p75/p95 and sample count by reading versus question, single versus multi-round, network, cache/TTS warmth and experiment cohort.
 
-- reading confirmation versus question/answer;
-- single-round versus multi-round Luna turns;
-- Wi-Fi versus cellular;
-- warm versus cold prompt/TTS connection;
-- legacy versus experiment cohort.
-
-No plan may trade away these audio-first invariants: every applied dictated reading is spoken exactly once; cancelled/speculative work is never spoken or written; barge-in remains safe; and the complete Luna loop remains authoritative.
+No plan may trade away the audio-first invariants: every applied dictated reading is spoken exactly once; cancelled/speculative work is never spoken or written; barge-in remains safe; and the complete conversational model loop stays authoritative until a separately reviewed evidence gate proves an alternative.

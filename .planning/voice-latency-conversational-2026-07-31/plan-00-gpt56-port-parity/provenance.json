@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "generator": "scripts/plan00-bundle-provenance.mjs",
+  "reference_banner": "> **REFERENCE COPY — NOT EXECUTABLE.** Execute only the canonical handoff final recorded in `provenance.json`; every tracked copy has an adjacent fail-closed EP policy.",
+  "ordered_path_substitutions": [
+    {
+      "id": "umbrella_plan00a_execution",
+      "applies_to": [
+        "plan00_umbrella"
+      ],
+      "from": "/ep --plan=<00A/PLAN-final.md> --no-chain",
+      "to": "[REFERENCE COPY — Plan 00A execution uses its canonical handoff final only]"
+    },
+    {
+      "id": "umbrella_plan00b_execution",
+      "applies_to": [
+        "plan00_umbrella"
+      ],
+      "from": "/ep --plan=<00B/PLAN-final.md> --no-chain",
+      "to": "[REFERENCE COPY — Plan 00B execution uses its canonical handoff final only]"
+    },
+    {
+      "id": "umbrella_plan00c_execution",
+      "applies_to": [
+        "plan00_umbrella"
+      ],
+      "from": "/ep --plan=<00C/PLAN-final.md> --no-chain",
+      "to": "[REFERENCE COPY — Plan 00C execution uses its canonical handoff final only]"
+    },
+    {
+      "id": "plan00a_canonical_execution",
+      "applies_to": [
+        "plan00a_provider_tool_cost"
+      ],
+      "from": "/ep --plan=/Users/derekbeckley/.claude/handoffs/EICR_Automation--00a-provider-tool-cost-parity-2026-08-03/PLAN-final.md --no-chain",
+      "to": "[REFERENCE COPY — Plan 00A execution uses its canonical handoff final only]"
+    },
+    {
+      "id": "plan00b_canonical_execution",
+      "applies_to": [
+        "plan00b_trusted_semantic_oracle"
+      ],
+      "from": "/ep --plan=/Users/derekbeckley/.claude/handoffs/EICR_Automation--00b-trusted-semantic-oracle-2026-08-03/PLAN-final.md --no-chain",
+      "to": "[REFERENCE COPY — Plan 00B execution uses its canonical handoff final only]"
+    },
+    {
+      "id": "plan00c_canonical_execution",
+      "applies_to": [
+        "plan00c_three_day_evidence"
+      ],
+      "from": "/ep --plan=/Users/derekbeckley/.claude/handoffs/EICR_Automation--00c-three-day-evidence-gate-2026-08-03/PLAN-final.md --no-chain",
+      "to": "[REFERENCE COPY — Plan 00C execution uses its canonical handoff final only]"
+    },
+    {
+      "id": "plan00_umbrella_source_path",
+      "applies_to": [
+        "plan00_umbrella",
+        "plan00a_provider_tool_cost",
+        "plan00b_trusted_semantic_oracle",
+        "plan00c_three_day_evidence"
+      ],
+      "from": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00-gpt56-port-parity-2026-08-03/PLAN-final.md",
+      "to": "./PLAN-00-final.md"
+    },
+    {
+      "id": "plan00a_provider_tool_cost_source_path",
+      "applies_to": [
+        "plan00_umbrella",
+        "plan00a_provider_tool_cost",
+        "plan00b_trusted_semantic_oracle",
+        "plan00c_three_day_evidence"
+      ],
+      "from": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00a-provider-tool-cost-parity-2026-08-03/PLAN-final.md",
+      "to": "./PLAN-00A-final.md"
+    },
+    {
+      "id": "plan00b_trusted_semantic_oracle_source_path",
+      "applies_to": [
+        "plan00_umbrella",
+        "plan00a_provider_tool_cost",
+        "plan00b_trusted_semantic_oracle",
+        "plan00c_three_day_evidence"
+      ],
+      "from": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00b-trusted-semantic-oracle-2026-08-03/PLAN-final.md",
+      "to": "./PLAN-00B-final.md"
+    },
+    {
+      "id": "plan00c_three_day_evidence_source_path",
+      "applies_to": [
+        "plan00_umbrella",
+        "plan00a_provider_tool_cost",
+        "plan00b_trusted_semantic_oracle",
+        "plan00c_three_day_evidence"
+      ],
+      "from": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00c-three-day-evidence-gate-2026-08-03/PLAN-final.md",
+      "to": "./PLAN-00C-final.md"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "plan00_umbrella",
+      "label": "Plan 00 umbrella",
+      "source_identifier": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00-gpt56-port-parity-2026-08-03/PLAN-final.md",
+      "source_sha256": "e965e7b4faee88754b774b78b508d112df7c2f78aa50acc2a87daff75ac73876",
+      "committed_markdown_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00-final.md",
+      "committed_markdown_sha256": "adf9778dc19e564095c7c59f0badbc1b5cf769f160aa2c739710f9c402230515",
+      "committed_policy_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00-final.md.ep-policy.json",
+      "committed_policy_sha256": "9e2a6ccd24797d9b1c49b1730c0f7ff5238c57119507c75fc9fa1bf3ddbba260"
+    },
+    {
+      "id": "plan00a_provider_tool_cost",
+      "label": "Plan 00A provider/tool/cost parity",
+      "source_identifier": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00a-provider-tool-cost-parity-2026-08-03/PLAN-final.md",
+      "source_sha256": "67fc03f1dcd0d1df0ff66468665a4ac17c19ac2bc7556a466c86f184791e2b4b",
+      "committed_markdown_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00A-final.md",
+      "committed_markdown_sha256": "907d9ca9a1d3d5214e190acadee7b3d5540c9394938be6f775498e124bd5c618",
+      "committed_policy_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00A-final.md.ep-policy.json",
+      "committed_policy_sha256": "9e2a6ccd24797d9b1c49b1730c0f7ff5238c57119507c75fc9fa1bf3ddbba260"
+    },
+    {
+      "id": "plan00b_trusted_semantic_oracle",
+      "label": "Plan 00B trusted semantic oracle",
+      "source_identifier": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00b-trusted-semantic-oracle-2026-08-03/PLAN-final.md",
+      "source_sha256": "57e5c9c2d32edd40a97cd84e0f3101fa58cbcdb126d5a140c58302d41ef9ab39",
+      "committed_markdown_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00B-final.md",
+      "committed_markdown_sha256": "0dd0bf2d22d37fdc8c25003d5a2502db20ca5ff515328c827e1aad87e440033c",
+      "committed_policy_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00B-final.md.ep-policy.json",
+      "committed_policy_sha256": "9e2a6ccd24797d9b1c49b1730c0f7ff5238c57119507c75fc9fa1bf3ddbba260"
+    },
+    {
+      "id": "plan00c_three_day_evidence",
+      "label": "Plan 00C three-day evidence gate",
+      "source_identifier": "/Users/derekbeckley/.claude/handoffs/EICR_Automation--00c-three-day-evidence-gate-2026-08-03/PLAN-final.md",
+      "source_sha256": "79c7fdec8d6ddc2fe6ac63a3117eca77abe25d999bc92cd52eb5281188d3a58a",
+      "committed_markdown_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00C-final.md",
+      "committed_markdown_sha256": "1866598d7a8843fe0a4607d20b8a066c240eced2187e6fad4a6d6fee828b5514",
+      "committed_policy_path": ".planning/voice-latency-conversational-2026-07-31/plan-00-gpt56-port-parity/PLAN-00C-final.md.ep-policy.json",
+      "committed_policy_sha256": "9e2a6ccd24797d9b1c49b1730c0f7ff5238c57119507c75fc9fa1bf3ddbba260"
+    }
+  ]
+}

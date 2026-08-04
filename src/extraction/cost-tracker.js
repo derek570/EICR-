@@ -135,6 +135,21 @@ export class CostTracker {
       outputTokens: 0,
     };
 
+    // Plan 00A accounting authority. Public inspector turns are deliberately
+    // separate from billable loop invocations and completed SDK rounds.
+    // These values are server-only session state; the existing cost_update
+    // wire shape remains unchanged.
+    this.loopInvocations = 0;
+    this.completedModelRounds = 0;
+    this.usageRevision = 0;
+    this.inFlightBillableInvocationCount = 0;
+    this._inspectorExtractionTurns = new Set();
+    this._billableInvocationStates = new Map();
+    this._ingestedBillableInvocations = new Set();
+    this.roundUsageEvidence = [];
+    this.usageValidationErrors = [];
+    this.unattributedProviderUsage = [];
+
     // Per-model token accounting. Buckets are created lazily on first
     // use. Cost is computed by summing each bucket × its model's rates,
     // so a mid-session model switch (e.g. extraction on Haiku +
@@ -282,22 +297,94 @@ export class CostTracker {
     return b;
   }
 
+  _accumulateModelUsage(usage, modelId, serviceTier) {
+    const b = this._bucketFor(this._modelFamily(modelId, serviceTier));
+    b.cacheReadTokens += usage.cache_read_input_tokens || 0;
+    b.cacheWriteTokens += usage.cache_creation_input_tokens || 0;
+    b.inputTokens += usage.input_tokens || 0;
+    b.outputTokens += usage.output_tokens || 0;
+    this.sonnet.cacheReadTokens += usage.cache_read_input_tokens || 0;
+    this.sonnet.cacheWriteTokens += usage.cache_creation_input_tokens || 0;
+    this.sonnet.inputTokens += usage.input_tokens || 0;
+    this.sonnet.outputTokens += usage.output_tokens || 0;
+  }
+
   // Sonnet/Haiku/Opus usage (from Anthropic API response.usage).
   // `modelId` should be the actual model used (e.g. response.model);
   // when omitted, falls back to the env-configured extraction model.
   addSonnetUsage(usage, modelId, serviceTier) {
     const b = this._bucketFor(this._modelFamily(modelId, serviceTier));
     b.turns++;
-    b.cacheReadTokens += usage.cache_read_input_tokens || 0;
-    b.cacheWriteTokens += usage.cache_creation_input_tokens || 0;
-    b.inputTokens += usage.input_tokens || 0;
-    b.outputTokens += usage.output_tokens || 0;
-    // Cross-model aggregate for back-compat with toCostUpdate() consumers.
     this.sonnet.turns++;
-    this.sonnet.cacheReadTokens += usage.cache_read_input_tokens || 0;
-    this.sonnet.cacheWriteTokens += usage.cache_creation_input_tokens || 0;
-    this.sonnet.inputTokens += usage.input_tokens || 0;
-    this.sonnet.outputTokens += usage.output_tokens || 0;
+    this._accumulateModelUsage(usage, modelId, serviceTier);
+  }
+
+  /** Record one accepted inspector extraction turn, idempotently across legs/generations. */
+  recordInspectorExtractionTurn(sessionId, extractionTurnId) {
+    if (!sessionId || !extractionTurnId) return false;
+    const key = `${sessionId}:${extractionTurnId}`;
+    if (this._inspectorExtractionTurns.has(key)) return false;
+    this._inspectorExtractionTurns.add(key);
+    this.sonnet.turns += 1;
+    this.usageRevision += 1;
+    return true;
+  }
+
+  /** Begin one accounting scope immediately before its first SDK dispatch. */
+  beginBillableInvocation(loopInvocationId) {
+    if (!loopInvocationId || this._billableInvocationStates.has(loopInvocationId)) return false;
+    this._billableInvocationStates.set(loopInvocationId, 'active');
+    this.inFlightBillableInvocationCount += 1;
+    this.usageRevision += 1;
+    return true;
+  }
+
+  /**
+   * Ingest completed per-round evidence exactly once. A transport failure
+   * before any response supplies no rows and therefore owns no billable
+   * invocation/round counters.
+   */
+  ingestBillableUsage(loopInvocationId, roundUsage, kind = 'inspector_extraction') {
+    if (!loopInvocationId || this._ingestedBillableInvocations.has(loopInvocationId)) return false;
+    const rows = Array.isArray(roundUsage) ? roundUsage : [];
+    if (rows.length === 0) return false;
+
+    this._ingestedBillableInvocations.add(loopInvocationId);
+    this.loopInvocations += 1;
+    this.completedModelRounds += rows.length;
+    for (const row of rows) {
+      const usage = {
+        input_tokens: row.fresh_input_tokens || 0,
+        cache_read_input_tokens: row.cache_read_input_tokens || 0,
+        cache_creation_input_tokens: row.cache_write_input_tokens || 0,
+        output_tokens: row.output_tokens || 0,
+      };
+      this._accumulateModelUsage(usage, row.billing_model, row.billing_tier);
+      const evidence = {
+        ...row,
+        loop_invocation_id: loopInvocationId,
+        kind,
+      };
+      this.roundUsageEvidence.push(evidence);
+      if (row.attribution_status === 'validation_error') {
+        this.usageValidationErrors.push(evidence);
+      } else if (row.attribution_status === 'unattributed_provider_usage') {
+        this.unattributedProviderUsage.push(evidence);
+      }
+    }
+    this.usageRevision += 1;
+    return true;
+  }
+
+  /** End an accounting scope after caller-side usage ingestion. */
+  endBillableInvocation(loopInvocationId) {
+    if (!loopInvocationId || this._billableInvocationStates.get(loopInvocationId) !== 'active') {
+      return false;
+    }
+    this._billableInvocationStates.set(loopInvocationId, 'ended');
+    this.inFlightBillableInvocationCount -= 1;
+    this.usageRevision += 1;
+    return true;
   }
 
   addCompactionUsage(usage, modelId, serviceTier) {
@@ -595,6 +682,32 @@ export class CostTracker {
     const family = this._modelFamily(modelId, serviceTier);
     const rates = this.MODEL_RATES[family] || this.SONNET_RATES;
     return { family, ...this._economicsForUsage(usage || {}, rates) };
+  }
+
+  /** Sum economics from the same per-round attribution rows used for billing. */
+  estimateRoundUsageEconomics(roundUsage) {
+    const totals = {
+      actualCost: 0,
+      noCacheCost: 0,
+      netSavings: 0,
+    };
+    for (const row of Array.isArray(roundUsage) ? roundUsage : []) {
+      const usage = {
+        input_tokens: row.fresh_input_tokens || 0,
+        cache_read_input_tokens: row.cache_read_input_tokens || 0,
+        cache_creation_input_tokens: row.cache_write_input_tokens || 0,
+        output_tokens: row.output_tokens || 0,
+      };
+      const economics = this.estimateModelUsageEconomics(
+        usage,
+        row.billing_model,
+        row.billing_tier
+      );
+      totals.actualCost += economics.actualCost;
+      totals.noCacheCost += economics.noCacheCost;
+      totals.netSavings += economics.netSavings;
+    }
+    return totals;
   }
 
   /**

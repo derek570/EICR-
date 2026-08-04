@@ -4,6 +4,10 @@
 
 import { jest } from '@jest/globals';
 import { CostTracker } from '../extraction/cost-tracker.js';
+import {
+  assertUsageAttributionValid,
+  attributeRoundUsage,
+} from '../extraction/round-usage-attribution.js';
 
 describe('CostTracker', () => {
   let tracker;
@@ -589,6 +593,211 @@ describe('CostTracker', () => {
       expect(summary.extraction.turns).toBe(1);
       expect(summary.extraction.compactions).toBe(1);
     });
+  });
+});
+
+describe('CostTracker — Plan 00A billable invocation authority', () => {
+  const row = (overrides = {}) =>
+    attributeRoundUsage({
+      provider: 'openai',
+      requestedModel: 'gpt-5.6-luna',
+      requestedTier: 'fast',
+      responseModel: 'gpt-5.6-luna-2026-07-30',
+      responseTier: 'priority',
+      usage: {
+        input_tokens: 10,
+        cache_read_input_tokens: 20,
+        cache_creation_input_tokens: 30,
+        output_tokens: 40,
+      },
+      roundIdx: 0,
+      ...overrides,
+    });
+
+  test('live/shadow/legacy siblings and two generations share one public inspector turn', () => {
+    const tracker = new CostTracker();
+    expect(tracker.recordInspectorExtractionTurn('s1', 'turn-opaque')).toBe(true);
+    expect(tracker.recordInspectorExtractionTurn('s1', 'turn-opaque')).toBe(false);
+
+    for (const [id, kind] of [
+      ['s1:turn-opaque:generation-1', 'inspector_live'],
+      ['s1:turn-opaque:generation-2', 'inspector_live'],
+      ['shadow-opaque', 'inspector_shadow'],
+      ['legacy-opaque', 'inspector_legacy'],
+    ]) {
+      expect(tracker.beginBillableInvocation(id)).toBe(true);
+      expect(tracker.ingestBillableUsage(id, [row()], kind)).toBe(true);
+      expect(tracker.endBillableInvocation(id)).toBe(true);
+    }
+
+    expect(tracker.sonnet.turns).toBe(1);
+    expect(tracker.loopInvocations).toBe(4);
+    expect(tracker.completedModelRounds).toBe(4);
+    expect(tracker.inFlightBillableInvocationCount).toBe(0);
+  });
+
+  test('duplicate normal/finally ingestion is idempotent', () => {
+    const tracker = new CostTracker();
+    tracker.beginBillableInvocation('loop-1');
+    expect(tracker.ingestBillableUsage('loop-1', [row()], 'inspector_live')).toBe(true);
+    const cost = tracker.sonnetCost;
+    expect(tracker.ingestBillableUsage('loop-1', [row()], 'inspector_live')).toBe(false);
+    expect(tracker.endBillableInvocation('loop-1')).toBe(true);
+    expect(tracker.endBillableInvocation('loop-1')).toBe(false);
+    expect(tracker.loopInvocations).toBe(1);
+    expect(tracker.completedModelRounds).toBe(1);
+    expect(tracker.sonnetCost).toBe(cost);
+  });
+
+  test('two-round and concurrent scopes transition 0→1→2→1→0 with monotonic revisions', () => {
+    const tracker = new CostTracker();
+    const revisions = [tracker.usageRevision];
+    tracker.beginBillableInvocation('a');
+    revisions.push(tracker.usageRevision);
+    expect(tracker.inFlightBillableInvocationCount).toBe(1);
+    tracker.beginBillableInvocation('b');
+    revisions.push(tracker.usageRevision);
+    expect(tracker.inFlightBillableInvocationCount).toBe(2);
+    tracker.ingestBillableUsage('a', [row(), row({ roundIdx: 1 })], 'inspector_live');
+    revisions.push(tracker.usageRevision);
+    tracker.endBillableInvocation('a');
+    revisions.push(tracker.usageRevision);
+    expect(tracker.inFlightBillableInvocationCount).toBe(1);
+    tracker.ingestBillableUsage('b', [row()], 'synthetic_non_utterance');
+    tracker.endBillableInvocation('b');
+    revisions.push(tracker.usageRevision);
+
+    expect(tracker.inFlightBillableInvocationCount).toBe(0);
+    expect(tracker.loopInvocations).toBe(2);
+    expect(tracker.completedModelRounds).toBe(3);
+    expect(
+      revisions.every((revision, index) => index === 0 || revision > revisions[index - 1])
+    ).toBe(true);
+    expect(tracker.roundUsageEvidence.at(-1).kind).toBe('synthetic_non_utterance');
+  });
+
+  test('pre-response transport failure owns a scope but no loop, round, tokens or turn', () => {
+    const tracker = new CostTracker();
+    tracker.beginBillableInvocation('transport-failure');
+    expect(tracker.ingestBillableUsage('transport-failure', [], 'inspector_live')).toBe(false);
+    tracker.endBillableInvocation('transport-failure');
+    expect(tracker.sonnet.turns).toBe(0);
+    expect(tracker.loopInvocations).toBe(0);
+    expect(tracker.completedModelRounds).toBe(0);
+    expect(tracker.sonnetCost).toBe(0);
+    expect(tracker.inFlightBillableInvocationCount).toBe(0);
+  });
+
+  test('Standard omission, Fast/priority and versioned aliases preserve explicit provenance', () => {
+    const standard = row({
+      requestedModel: 'gpt-5.6-terra',
+      requestedTier: null,
+      responseModel: null,
+      responseTier: null,
+    });
+    const fast = row();
+    expect(standard).toEqual(
+      expect.objectContaining({
+        billing_model: 'gpt-5.6-terra',
+        billing_tier: 'standard',
+        model_provenance: 'request_implied_model',
+        tier_provenance: 'request_implied_standard',
+        attribution_status: 'attributed',
+      })
+    );
+    expect(fast).toEqual(
+      expect.objectContaining({
+        billing_model: 'gpt-5.6-luna-2026-07-30',
+        billing_tier: 'priority',
+        model_provenance: 'returned',
+        tier_provenance: 'returned',
+        attribution_status: 'attributed',
+      })
+    );
+  });
+
+  test('same-provider service-tier contradiction is verdict-fatal but bills returned transport tier', () => {
+    const evidence = row({ requestedTier: 'standard', responseTier: 'priority' });
+    const tracker = new CostTracker();
+    tracker.beginBillableInvocation('tier-contradiction');
+    tracker.ingestBillableUsage('tier-contradiction', [evidence], 'inspector_live');
+    tracker.endBillableInvocation('tier-contradiction');
+
+    expect(evidence).toEqual(
+      expect.objectContaining({
+        provider: 'openai',
+        billing_tier: 'priority',
+        attribution_status: 'validation_error',
+        validation_error: 'response_tier_mismatch',
+      })
+    );
+    expect(tracker.modelUsage.has('luna_fast')).toBe(true);
+    expect(() => assertUsageAttributionValid([evidence])).toThrow(
+      expect.objectContaining({ code: 'USAGE_ATTRIBUTION_VERDICT_FAILED' })
+    );
+  });
+
+  test('an exact requested==response echo outside the known families stays attributed', () => {
+    // A provider echoing the request byte-for-byte is definitionally not a
+    // metadata contradiction, even for model ids the family tables don't
+    // enumerate (legacy dated ids, future family pins). Without the
+    // short-circuit every round of a self-consistent rollback/trial config
+    // would be a permanent false validation_error — and verdict-fatal for
+    // the evaluation lane that consumes attribution_status.
+    const anthropicEcho = attributeRoundUsage({
+      provider: 'anthropic',
+      requestedModel: 'claude-3-5-haiku-20241022',
+      requestedTier: null,
+      responseModel: 'claude-3-5-haiku-20241022',
+      responseTier: null,
+      usage: { input_tokens: 5, output_tokens: 3 },
+      roundIdx: 0,
+    });
+    expect(anthropicEcho).toEqual(
+      expect.objectContaining({
+        billing_model: 'claude-3-5-haiku-20241022',
+        model_provenance: 'returned',
+        attribution_status: 'attributed',
+        validation_error: null,
+      })
+    );
+    expect(() => assertUsageAttributionValid([anthropicEcho])).not.toThrow();
+
+    const openaiEcho = row({ requestedModel: 'gpt-5.7-nova', responseModel: 'gpt-5.7-nova' });
+    expect(openaiEcho.model_provenance).toBe('returned');
+    expect(openaiEcho.attribution_status).toBe('attributed');
+
+    // Genuinely differing strings outside the known families keep the
+    // fail-closed contradiction verdict.
+    const nonEcho = row({
+      requestedModel: 'gpt-5.7-nova',
+      responseModel: 'gpt-5.7-nova-2027-01-01',
+    });
+    expect(nonEcho.attribution_status).toBe('validation_error');
+    expect(nonEcho.validation_error).toBe('response_model_family_mismatch');
+  });
+
+  test.each([
+    ['same-family contradiction', 'gpt-5.6-terra', 'validation_error'],
+    ['cross-provider metadata', 'claude-sonnet-4-6', 'unattributed_provider_usage'],
+    ['unknown metadata', 'mystery-provider-model', 'unattributed_provider_usage'],
+  ])('%s bills on requested OpenAI transport without aborting', (_name, responseModel, status) => {
+    const tracker = new CostTracker();
+    const evidence = row({ responseModel });
+    tracker.beginBillableInvocation('contradiction');
+    tracker.ingestBillableUsage('contradiction', [evidence], 'inspector_live');
+    tracker.endBillableInvocation('contradiction');
+
+    expect(evidence.attribution_status).toBe(status);
+    expect(evidence.provider).toBe('openai');
+    expect(evidence.billing_model).toBe('gpt-5.6-luna');
+    expect(tracker.modelUsage.has('luna_fast')).toBe(true);
+    expect(tracker.modelUsage.has('sonnet')).toBe(false);
+    expect(tracker.completedModelRounds).toBe(1);
+    expect(tracker.inFlightBillableInvocationCount).toBe(0);
+    expect(() => assertUsageAttributionValid([evidence])).toThrow(
+      expect.objectContaining({ code: 'USAGE_ATTRIBUTION_VERDICT_FAILED' })
+    );
   });
 });
 

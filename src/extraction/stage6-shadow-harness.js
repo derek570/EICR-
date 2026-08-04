@@ -65,6 +65,7 @@
  */
 
 import logger from '../logger.js';
+import { randomUUID } from 'node:crypto';
 import {
   buildPostcodeLookupNote,
   lookupResolvedPostcodeHint,
@@ -1585,10 +1586,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const signal = options.signal ?? null;
     let cancelled = false;
     let toolLoopOut;
+    const loopInvocationId = `${session.sessionId}:${options.extractionTurnId}:${generationId ?? randomUUID()}`;
+    let accountingStarted = false;
+    let failedBillableUsage = null;
+    let billableRoundUsage = [];
     try {
       // Do not enter the tool loop on a generation cancelled during the
       // pre-loop postcode await (guards the snapshot from post-abort mutation).
       throwIfStage6Cancelled(signal);
+      accountingStarted = session.costTracker?.beginBillableInvocation?.(loopInvocationId) === true;
       toolLoopOut = await runToolLoop({
         client: selectedTarget.client,
         // Observation-tier routing (C1) — SHADOW_MODEL under flag-off /
@@ -1611,6 +1617,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         tools: buildSessionTools(liveAgenticAnswersEnabled),
         dispatcher,
         ctx: { sessionId: session.sessionId, turnId },
+        billingIdentity: loopInvocationId,
         logger: log,
         sortRecords,
         // F7 Item 3 — thread the abort signal into the loop.
@@ -1639,6 +1646,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         onToolUseStreamed: speculator?.onToolUseStreamed,
       });
     } catch (err) {
+      failedBillableUsage = err?.billableUsage ?? null;
       askGateForTurn?.destroy();
       // F7 Item 3 — a FATAL control-flow error (watchdog ceiling cancellation /
       // ask-registration hook) does NOT early-return an empty extraction: it
@@ -1685,6 +1693,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // stage6_live_error row above.
         cancelled = true;
         // fall through to the finalization below
+      }
+    } finally {
+      billableRoundUsage = toolLoopOut?.round_usage ?? failedBillableUsage?.round_usage ?? [];
+      session.costTracker?.ingestBillableUsage?.(
+        loopInvocationId,
+        billableRoundUsage,
+        'inspector_live'
+      );
+      if (accountingStarted) {
+        session.costTracker?.endBillableInvocation?.(loopInvocationId);
       }
     }
 
@@ -4024,49 +4042,25 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // (extractFromUtterance does this internally).
     session.turnCount = turnNum;
 
-    // Cost tracking — wire the multi-round tool loop's summed usage into
-    // the session's CostTracker so cost_summary.json populates the same
-    // sonnet.{turns, cacheReads, cacheWrites, input, output, cost} fields
-    // the optimiser's analyze-session.js reads at scripts/analyze-session.js
-    // (line 322, ~costSummary.sonnet). Pre-fix this was a black hole: the
-    // legacy off-mode `extract()` path called costTracker.addSonnetUsage()
-    // at eicr-extraction-session.js:1614, but the Stage 6 live path never
-    // reached that code, so the tool-loop's API calls were billed by
-    // Anthropic but invisible to dashboards (toSessionSummary returned
-    // sonnet.turns=0 / cost=0 even after 8+ extraction rounds). The
-    // 47 Ashcroft Road session 2D391936 was the smoking-gun example.
-    // One call per loop run preserves "turns === utterances" semantics
-    // (matches legacy off-mode call site) — toolLoopOut.rounds is on the
-    // return value if a future dashboard needs per-API-call granularity.
-    // Defensive: skip if costTracker isn't on the session (test harnesses
-    // sometimes pass partial sessions); skip if usage is all zeros (mock
-    // streams without usage events) so test assertions on turn counts
-    // stay stable when fixtures don't carry usage.
-    // F7 Item 3 — null-safe on cancellation (toolLoopOut undefined → no usage
-    // to bill; the `?.` short-circuits the whole condition).
+    // Caller-side ingestion above is the sole production billing authority.
+    // Derive per-turn telemetry from those exact rows so mixed models/tiers,
+    // attached failure usage and the session ledger cannot disagree. Narrow
+    // partial test sessions without the Plan 00A authority simply omit cost
+    // telemetry; they must not reactivate the superseded aggregate mutation.
     let turnCostEconomics = null;
-    if (
-      session.costTracker &&
-      typeof session.costTracker.addSonnetUsage === 'function' &&
-      toolLoopOut?.usage &&
-      (toolLoopOut.usage.input_tokens > 0 ||
-        toolLoopOut.usage.output_tokens > 0 ||
-        toolLoopOut.usage.cache_read_input_tokens > 0 ||
-        toolLoopOut.usage.cache_creation_input_tokens > 0)
-    ) {
-      if (typeof session.costTracker.estimateModelUsageEconomics === 'function') {
-        turnCostEconomics = session.costTracker.estimateModelUsageEconomics(
-          toolLoopOut.usage,
-          toolLoopOut.model,
-          toolLoopOut.service_tier
-        );
-      }
-      session.costTracker.addSonnetUsage(
-        toolLoopOut.usage,
-        toolLoopOut.model,
-        toolLoopOut.service_tier
-      );
+    if (typeof session.costTracker?.estimateRoundUsageEconomics === 'function') {
+      turnCostEconomics = session.costTracker.estimateRoundUsageEconomics(billableRoundUsage);
     }
+    const billableUsageTotals = billableRoundUsage.reduce(
+      (totals, row) => {
+        totals.freshInput += row?.fresh_input_tokens ?? 0;
+        totals.output += row?.output_tokens ?? 0;
+        totals.cacheRead += row?.cache_read_input_tokens ?? 0;
+        totals.cacheWrite += row?.cache_write_input_tokens ?? 0;
+        return totals;
+      },
+      { freshInput: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    );
 
     // Mirror the legacy `this.extractedReadingsCount += result.extracted_readings.length`
     // at eicr-extraction-session.js:1474. Feeds cost_summary.extraction.readingsExtracted
@@ -4087,19 +4081,20 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       rounds: toolLoopOut?.rounds ?? 0,
       aborted: cancelled || (toolLoopOut?.aborted ?? false),
       abort_reason: toolLoopOut?.aborted && toolLoopOut?.rounds >= 8 ? 'loop_cap' : null,
-      model: toolLoopOut?.model ?? null,
-      service_tier: toolLoopOut?.service_tier ?? null,
+      model: billableRoundUsage.at(-1)?.billing_model ?? null,
+      service_tier: billableRoundUsage.at(-1)?.billing_tier ?? null,
+      provider: billableRoundUsage.at(-1)?.provider ?? null,
       readings: result.extracted_readings.length,
       observations: result.observations.length,
       // Token usage logged here for per-turn CloudWatch visibility (mirrors
       // the legacy off-mode "Turn cost" log at eicr-extraction-session.js:1618).
       // Cumulative session totals live on session.costTracker and ride out
       // via cost_summary.json at session end.
-      usage_input: toolLoopOut?.usage?.input_tokens ?? 0,
-      usage_output: toolLoopOut?.usage?.output_tokens ?? 0,
-      usage_cache_read: toolLoopOut?.usage?.cache_read_input_tokens ?? 0,
-      usage_cache_write: toolLoopOut?.usage?.cache_creation_input_tokens ?? 0,
-      prompt_cache_rounds: toolLoopOut?.round_usage ?? [],
+      usage_input: billableUsageTotals.freshInput,
+      usage_output: billableUsageTotals.output,
+      usage_cache_read: billableUsageTotals.cacheRead,
+      usage_cache_write: billableUsageTotals.cacheWrite,
+      prompt_cache_rounds: billableRoundUsage,
       turn_cost_usd: turnCostEconomics?.actualCost ?? null,
       no_cache_cost_usd: turnCostEconomics?.noCacheCost ?? null,
       cache_net_savings_usd: turnCostEconomics?.netSavings ?? null,
@@ -4308,6 +4303,14 @@ export function buildShadowSessionForDispatcher(session, preLegacySnapshot, preL
  *   across all modes.
  */
 export async function runShadowHarness(session, transcriptText, regexResults, options = {}) {
+  const extractionTurnId =
+    typeof options.extractionTurnId === 'string' && options.extractionTurnId.length > 0
+      ? options.extractionTurnId
+      : typeof options.utteranceId === 'string' && options.utteranceId.length > 0
+        ? options.utteranceId
+        : randomUUID();
+  options = { ...options, extractionTurnId };
+  session.costTracker?.recordInspectorExtractionTurn?.(session.sessionId, extractionTurnId);
   const log = options.logger ?? logger;
   const mode = session.toolCallsMode ?? 'off';
 
@@ -4586,6 +4589,10 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // Step 4: drive the real tool loop. Any thrown error is CAUGHT so shadow
   // failure NEVER breaks production — legacy return value is authoritative.
   let toolLoopOut;
+  const shadowLoopInvocationId = `shadow-${randomUUID()}`;
+  let shadowAccountingStarted = false;
+  let shadowFailureUsage = null;
+  let shadowRoundUsage = [];
   try {
     // Plan 04-11 r5-#1 — delegate to session.buildSystemBlocks() so the
     // harness mirrors EXACTLY what the real (non-shadow) path would ship:
@@ -4609,6 +4616,8 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     const systemBlocks = preLegacySystemBlocks;
     const shadowTarget = resolveSessionExtractionTarget(session, SHADOW_MODEL);
 
+    shadowAccountingStarted =
+      session.costTracker?.beginBillableInvocation?.(shadowLoopInvocationId) === true;
     toolLoopOut = await runToolLoop({
       client: shadowTarget.client,
       model: shadowTarget.model,
@@ -4619,6 +4628,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       tools: buildSessionTools(shadowAgenticAnswersEnabled),
       dispatcher,
       ctx: { sessionId: session.sessionId, turnId },
+      billingIdentity: shadowLoopInvocationId,
       logger: log,
       // Phase 3 Plan 03-07: pass sortRecords when ask composition is active.
       // Undefined falls back to runToolLoop's identity default (Phase 2
@@ -4657,6 +4667,7 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
       }
     }
   } catch (err) {
+    shadowFailureUsage = err?.billableUsage ?? null;
     // F7 Item 3 — defence-in-depth: cancellation is live-mode only (shadow
     // threads no signal), but if a fatal control-flow error ever reaches the
     // shadow-mode catch, rethrow it unchanged rather than silently returning
@@ -4680,6 +4691,16 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
     // is a no-op.
     askGateForTurn?.destroy();
     return legacy;
+  } finally {
+    shadowRoundUsage = toolLoopOut?.round_usage ?? shadowFailureUsage?.round_usage ?? [];
+    session.costTracker?.ingestBillableUsage?.(
+      shadowLoopInvocationId,
+      shadowRoundUsage,
+      'inspector_shadow'
+    );
+    if (shadowAccountingStarted) {
+      session.costTracker?.endBillableInvocation?.(shadowLoopInvocationId);
+    }
   }
 
   // Plan 05-01 — release per-turn gate timers on the success path BEFORE
@@ -4689,27 +4710,6 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // Cost tracking — shadow mode makes a real billable Anthropic call in
   // parallel to legacy extract(). Legacy already tracks itself at
   // eicr-extraction-session.js:1614; without this wiring the shadow leg
-  // is invisible to dashboards even though it shows up on the Anthropic
-  // bill. Same shape + defensive guards as runLiveMode (above). We do
-  // NOT bump session.extractedReadingsCount here — shadow's readings
-  // never reach iOS (Step 8 returns legacy), so they don't count toward
-  // user-visible extraction throughput.
-  if (
-    session.costTracker &&
-    typeof session.costTracker.addSonnetUsage === 'function' &&
-    toolLoopOut.usage &&
-    (toolLoopOut.usage.input_tokens > 0 ||
-      toolLoopOut.usage.output_tokens > 0 ||
-      toolLoopOut.usage.cache_read_input_tokens > 0 ||
-      toolLoopOut.usage.cache_creation_input_tokens > 0)
-  ) {
-    session.costTracker.addSonnetUsage(
-      toolLoopOut.usage,
-      toolLoopOut.model,
-      toolLoopOut.service_tier
-    );
-  }
-
   // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).
   // confirmationsEnabled: shadow mode prefers legacy.confirmations when
   // present (Sonnet prose-JSON emitted them) but still synthesises from

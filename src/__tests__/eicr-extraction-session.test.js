@@ -20,6 +20,7 @@ jest.unstable_mockModule('../postcode_lookup.js', () => ({
 
 const { EICRExtractionSession, EICR_SYSTEM_PROMPT } =
   await import('../extraction/eicr-extraction-session.js');
+const { runShadowHarness } = await import('../extraction/stage6-shadow-harness.js');
 
 // Builds a tool_use content array matching what Anthropic returns when
 // tool_choice forces record_extraction. Accepts an object (preferred) or a
@@ -414,6 +415,33 @@ describe('EICRExtractionSession', () => {
       expect(mockCreate).toHaveBeenCalledTimes(1);
       expect(result.extracted_readings).toHaveLength(1);
       expect(session.utteranceBuffer).toHaveLength(0);
+    });
+
+    test('off-mode batching preserves ingress identities without inventing a legacy turn', async () => {
+      mockCreate.mockResolvedValue({
+        content: toolUseContent({ extracted_readings: [] }),
+        usage: { input_tokens: 10, output_tokens: 5 },
+        stop_reason: 'tool_use',
+      });
+
+      session.start(null);
+      session.toolCallsMode = 'off';
+      await runShadowHarness(session, 'first accepted utterance', [], {
+        extractionTurnId: 'turn-one',
+      });
+      await runShadowHarness(session, 'second accepted utterance', [], {
+        extractionTurnId: 'turn-two',
+      });
+
+      expect(mockCreate).toHaveBeenCalledTimes(1);
+      expect(session.costTracker.sonnet.turns).toBe(2);
+      expect(session.costTracker.loopInvocations).toBe(1);
+      expect(session.costTracker.completedModelRounds).toBe(1);
+      expect(session.costTracker.roundUsageEvidence[0]).toEqual(
+        expect.objectContaining({
+          kind: 'inspector_legacy',
+        })
+      );
     });
 
     test('should combine transcript texts with separator', async () => {

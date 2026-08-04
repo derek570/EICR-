@@ -435,7 +435,12 @@ function resolveServiceTier(raw = process.env.OPENAI_EXTRACT_SERVICE_TIER) {
   throw new Error(`Unsupported OPENAI_EXTRACT_SERVICE_TIER: ${raw}`);
 }
 
-/** Preserve the provider's actual model + service tier for cost accounting. */
+/**
+ * Preserve raw provider metadata separately from the Anthropic-compatible
+ * fallback fields. OpenAI may omit Standard's tier, and a partial response
+ * may omit its model; billing attribution must be able to distinguish those
+ * provider facts from adapter compatibility defaults.
+ */
 function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier, promptCache) {
   const message = {
     content: buildAnthropicContent(finalResp),
@@ -444,6 +449,10 @@ function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier, promp
     role: 'assistant',
     model: finalResp?.model || fallbackModel,
     service_tier: finalResp?.service_tier || fallbackServiceTier,
+    response_model: finalResp?.model ?? null,
+    response_service_tier: finalResp?.service_tier ?? null,
+    requested_model: fallbackModel,
+    requested_service_tier: fallbackServiceTier ?? null,
   };
   if (promptCache) message.prompt_cache = promptCache;
   return message;

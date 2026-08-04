@@ -51,6 +51,7 @@ import {
   throwIfStage6Cancelled,
 } from './stage6-control-flow-errors.js';
 import { ProviderResolutionError, assertSameProvider, providerForModel } from './model-provider.js';
+import { attributeRoundUsage } from './round-usage-attribution.js';
 
 // ---------------------------------------------------------------------------
 // Loaded Barrel Phase 2.C — perTurnWrites snapshot/diff helpers (plan v10 §C)
@@ -252,11 +253,10 @@ function assistantToolUseIds(assistantMsg) {
  *
  * The `usage` field is the summed token usage across every round's
  * `stream.finalMessage().usage`. The shape mirrors Anthropic's
- * `Message.usage` exactly so the caller can pass it straight to
- * `costTracker.addSonnetUsage(toolLoopOut.usage)`. Defensive — any
- * missing field on a per-round usage object contributes 0 to the sum
- * (covers SDK shape drift and the cap-hit branch where the final round
- * may not surface usage from a partial stream).
+ * `Message.usage` exactly for compatibility telemetry. Billing consumes
+ * `round_usage` instead: each row retains its transport/request/response
+ * identity and can survive a later propagated failure. Defensive — any
+ * missing field on a per-round usage object contributes 0 to the sum.
  */
 export async function runToolLoop({
   client,
@@ -269,6 +269,7 @@ export async function runToolLoop({
   tools,
   dispatcher,
   ctx,
+  billingIdentity,
   logger,
   maxRounds = LOOP_CAP,
   /**
@@ -387,25 +388,19 @@ export async function runToolLoop({
   // Phase 0: convenience timing for emitTurnCoreSummary (sonnet_round1_ms /
   // sonnet_round2_ms). Bundler/dispatch timings come from elsewhere.
   const allCalls = [];
-  // Per-round usage accumulator. Summed from each round's
-  // stream.finalMessage().usage (Anthropic Message.usage shape). Returned
-  // verbatim so callers can pipe it into CostTracker.addSonnetUsage. We
-  // intentionally do NOT bill per-round here — the call is one billable
-  // utterance from the session's perspective, and CostTracker.turns ===
-  // utterances is the contract every dashboard relies on (matches the
-  // legacy off-mode call site at eicr-extraction-session.js:1614 which
-  // also calls addSonnetUsage exactly once per extract()). The round
-  // count is preserved on the return value (rounds: number) for
-  // diagnostics that want per-round granularity.
+  // Compatibility aggregate summed from every final Message.usage. It remains
+  // useful to existing latency/debug consumers, but is not billing authority:
+  // callers ingest `round_usage` exactly once via CostTracker, while accepted
+  // inspector turns are counted separately at the authoritative ingress.
   const usage = {
     input_tokens: 0,
     output_tokens: 0,
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   };
-  // Per-API-round cache evidence. Aggregate usage remains the billing source;
-  // this additive array proves which round wrote/read the prefix and which
-  // explicit breakpoint/key version produced that result.
+  // Per-API-round cache and billing evidence. This array proves which round
+  // wrote/read the prefix and which explicit breakpoint/key version produced
+  // that result.
   const roundUsage = [];
   // OpenAI Responses reports the tier it actually served (`priority` for a
   // Fast request today). Retain it so CostTracker can bill each 5.6 family at
@@ -432,11 +427,27 @@ export async function runToolLoop({
     }
   }
 
+  const attachBillableUsage = (error) => {
+    error.billableUsage = {
+      billing_identity: billingIdentity ?? null,
+      round_usage: roundUsage,
+      usage,
+      completed_model_rounds: roundUsage.length,
+      base_model: model,
+      provider: provider || 'anthropic',
+    };
+    return error;
+  };
+
   while (rounds < maxRounds) {
     rounds += 1;
 
     // F7 Item 3 — do not enter a new Anthropic round on a cancelled generation.
-    throwIfStage6Cancelled(signal);
+    try {
+      throwIfStage6Cancelled(signal);
+    } catch (error) {
+      throw attachBillableUsage(error);
+    }
 
     // Per-round stream. The SDK helper returns both an async-iterable AND a
     // .finalMessage() promise — we consume both for different purposes:
@@ -493,7 +504,7 @@ export async function runToolLoop({
     // in-flight stream when the watchdog ceiling fires. Passed as the SDK's
     // request-options bag (2nd arg); undefined-safe for callers/tests that pass
     // no signal.
-    const stream = client.messages.stream(streamArgs, signal ? { signal } : undefined);
+    let stream;
 
     // Loaded Barrel Phase 2.D (2026-05-25) — pipe each finalised
     // tool_use record into the speculator's streamed hook the moment
@@ -536,6 +547,7 @@ export async function runToolLoop({
     let stop_reason;
     let assistantMsg;
     try {
+      stream = client.messages.stream(streamArgs, signal ? { signal } : undefined);
       for await (const ev of stream) {
         asm.handle(ev);
       }
@@ -545,9 +557,11 @@ export async function runToolLoop({
       assistantMsg = await stream.finalMessage();
     } catch (err) {
       if (signal?.aborted) {
-        throw new ExtractionCancelledError('extraction cancelled during stream', { cause: err });
+        throw attachBillableUsage(
+          new ExtractionCancelledError('extraction cancelled during stream', { cause: err })
+        );
       }
-      throw err;
+      throw attachBillableUsage(err);
     }
     stopReason = stop_reason;
     // Phase 0 — round-level stream complete time (post-finalize).
@@ -585,16 +599,31 @@ export async function runToolLoop({
       usage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
       usage.cache_read_input_tokens += u.cache_read_input_tokens || 0;
     }
-    roundUsage.push({
-      round_idx: rounds - 1,
-      input_tokens: u?.input_tokens || 0,
-      output_tokens: u?.output_tokens || 0,
-      cache_creation_input_tokens: u?.cache_creation_input_tokens || 0,
-      cache_read_input_tokens: u?.cache_read_input_tokens || 0,
-      prompt_cache_mode: assistantMsg.prompt_cache?.mode ?? null,
-      prompt_cache_breakpoint_enabled: assistantMsg.prompt_cache?.breakpoint_enabled ?? false,
-      prompt_cache_key_id: assistantMsg.prompt_cache?.key_id ?? null,
-    });
+    roundUsage.push(
+      attributeRoundUsage({
+        provider: provider || 'anthropic',
+        requestedModel: effectiveModel,
+        requestedTier:
+          provider === 'openai'
+            ? (assistantMsg.requested_service_tier ??
+              openAIServiceTier ??
+              process.env.OPENAI_EXTRACT_SERVICE_TIER ??
+              'standard')
+            : null,
+        responseModel:
+          provider === 'openai'
+            ? (assistantMsg.response_model ?? null)
+            : (assistantMsg.model ?? null),
+        responseTier: provider === 'openai' ? (assistantMsg.response_service_tier ?? null) : null,
+        usage: u,
+        roundIdx: rounds - 1,
+        promptCache: {
+          mode: assistantMsg.prompt_cache?.mode ?? null,
+          breakpoint_enabled: assistantMsg.prompt_cache?.breakpoint_enabled ?? false,
+          key_id: assistantMsg.prompt_cache?.key_id ?? null,
+        },
+      })
+    );
     if (assistantMsg.service_tier) {
       if (serviceTier && serviceTier !== assistantMsg.service_tier) {
         logger?.warn?.('stage6.mixed_service_tier', {
@@ -612,14 +641,16 @@ export async function runToolLoop({
     if (stop_reason !== 'tool_use') {
       terminalReason = terminalReason ?? 'end_turn';
       // Phase 0 telemetry: record per-round timing (dispatch_complete = stream_complete on no-dispatch).
-      roundTimings.push({
+      const timing = {
         round_idx: rounds - 1,
         started_ns: roundStartedNs.toString(),
         stream_complete_ns: roundStreamCompleteNs.toString(),
         dispatch_complete_ns: roundStreamCompleteNs.toString(),
         stream_ms: Number((roundStreamCompleteNs - roundStartedNs) / 1000000n),
         dispatch_ms: 0,
-      });
+      };
+      roundTimings.push(timing);
+      roundUsage.at(-1).timing = timing;
       toolCallCountPerRound.push(0);
       toolErrorCountPerRound.push(0);
       break;
@@ -829,7 +860,11 @@ export async function runToolLoop({
         snapshotBefore = captureSnapshot(snapshotPtw);
       }
       // F7 Item 3 — do not dispatch on a cancelled generation.
-      throwIfStage6Cancelled(signal);
+      try {
+        throwIfStage6Cancelled(signal);
+      } catch (error) {
+        throw attachBillableUsage(error);
+      }
       try {
         const res = await dispatcher(
           { tool_call_id: rec.tool_call_id, name: rec.name, input: rec.input },
@@ -924,7 +959,7 @@ export async function runToolLoop({
         // dispatcher_error tool_result and swallowed: rethrow it unchanged so
         // the shadow-harness cancellation-finalization path can run. Test the
         // discriminator BEFORE the generic recovery below.
-        if (isStage6FatalControlFlowError(err)) throw err;
+        if (isStage6FatalControlFlowError(err)) throw attachBillableUsage(err);
         const duration_ms = Date.now() - started;
         logger?.error?.('stage6.tool_call', {
           sessionId: ctx?.sessionId,
@@ -1003,14 +1038,16 @@ export async function runToolLoop({
     const roundDispatchCompleteNs = process.hrtime.bigint();
     const roundIdx = rounds - 1;
     const toolErrorCount = toolResults.filter((tr) => tr.is_error === true).length;
-    roundTimings.push({
+    const timing = {
       round_idx: roundIdx,
       started_ns: roundStartedNs.toString(),
       stream_complete_ns: roundStreamCompleteNs.toString(),
       dispatch_complete_ns: roundDispatchCompleteNs.toString(),
       stream_ms: Number((roundStreamCompleteNs - roundStartedNs) / 1000000n),
       dispatch_ms: Number((roundDispatchCompleteNs - roundStreamCompleteNs) / 1000000n),
-    });
+    };
+    roundTimings.push(timing);
+    roundUsage.at(-1).timing = timing;
     toolCallCountPerRound.push(records.length);
     toolErrorCountPerRound.push(toolErrorCount);
   }
@@ -1052,11 +1089,9 @@ export async function runToolLoop({
     aborted,
     messages_final: messages,
     usage,
-    // The base model the loop ran on. Surfaced so callers can pipe it
-    // into costTracker.addSonnetUsage(usage, model) for per-model
-    // pricing. Cross-provider round-one overrides fail before dispatch; a
-    // same-provider override is still billed at the base model's rate because
-    // this legacy accumulator has one model bucket per loop.
+    // Compatibility summary fields. Per-round billing authority lives in
+    // round_usage below; callers must not use this aggregate identity for a
+    // mixed-model loop.
     model,
     provider: provider || undefined,
     service_tier:
@@ -1070,5 +1105,6 @@ export async function runToolLoop({
     tool_error_count_per_round: toolErrorCountPerRound,
     round_timings: roundTimings,
     round_usage: roundUsage,
+    billing_identity: billingIdentity ?? null,
   };
 }

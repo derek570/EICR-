@@ -10,6 +10,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { createOpenAIToolUseAdapter } from './openai-tooluse-adapter.js';
 import { createOpenAIResponsesAdapter } from './openai-responses-adapter.js';
 import { ProviderResolutionError, providerForModel } from './model-provider.js';
+import { attributeRoundUsage } from './round-usage-attribution.js';
 import { CostTracker } from './cost-tracker.js';
 import { markOpenAIStableSystemPrefix } from './system-prompt-renderer.js';
 import { applyReadingFlagAware, clearReadingFlagAware } from './stage6-snapshot-mutators.js';
@@ -2114,6 +2115,8 @@ export class EICRExtractionSession {
    */
   async _sendCacheKeepalive() {
     if (!this.isActive) return;
+    const nonInspectorInvocationId = `keepalive-${randomUUID()}`;
+    let accountingStarted = false;
     try {
       // Stage 6 Phase 4: mode-gated — off keeps the legacy messages-array
       // snapshot injection (byte-identical to today); shadow/live let the
@@ -2141,6 +2144,7 @@ export class EICRExtractionSession {
       messages.push({ role: 'user', content: [{ type: 'text', text: '[keepalive]' }] });
 
       const keepaliveTarget = this.resolveExtractionTarget(this.defaultExtractionModel);
+      accountingStarted = this.costTracker.beginBillableInvocation(nonInspectorInvocationId);
       const response = await keepaliveTarget.client.messages.create({
         // SONNET_EXTRACT_MODEL must match the other call sites in this
         // file AND stage6-shadow-harness.js SHADOW_MODEL — Anthropic
@@ -2151,12 +2155,18 @@ export class EICRExtractionSession {
         system: this.buildSystemBlocks(),
         messages,
       });
-      this.costTracker.addSonnetUsage(response.usage, response.model, response.service_tier);
+      this.costTracker.ingestBillableUsage(
+        nonInspectorInvocationId,
+        [this._attributeDirectResponseUsage(response, keepaliveTarget, 0)],
+        'cache_keepalive'
+      );
       logger.info(
         `Session ${this.sessionId} Cache keepalive sent (mode=${this.toolCallsMode}, systemBlocks=${this.buildSystemBlocks().length})`
       );
     } catch (error) {
       logger.warn(`Session ${this.sessionId} Cache keepalive failed: ${error.message}`);
+    } finally {
+      if (accountingStarted) this.costTracker.endBillableInvocation(nonInspectorInvocationId);
     }
     // Schedule next keepalive
     this._resetCacheKeepalive();
@@ -2174,6 +2184,32 @@ export class EICRExtractionSession {
       clearTimeout(this.cacheKeepaliveHandle);
       this.cacheKeepaliveHandle = null;
     }
+  }
+
+  _attributeDirectResponseUsage(response, target, roundIdx = 0, requestedTier = undefined) {
+    const accounting = response?._certmateAccounting || {};
+    const model =
+      accounting.requestedModel || target?.model || response?.model || this.defaultExtractionModel;
+    const provider = accounting.provider || target?.provider || providerForModel(model);
+    const tier =
+      requestedTier ??
+      accounting.requestedTier ??
+      (provider === 'openai'
+        ? target.model === this.defaultExtractionModel
+          ? (process.env.OPENAI_EXTRACT_SERVICE_TIER || 'standard').trim()
+          : 'standard'
+        : null);
+    return attributeRoundUsage({
+      provider,
+      requestedModel: model,
+      requestedTier: tier,
+      responseModel:
+        provider === 'openai' ? (response?.response_model ?? null) : (response?.model ?? null),
+      responseTier: provider === 'openai' ? (response?.response_service_tier ?? null) : null,
+      usage: response?.usage,
+      roundIdx,
+      promptCache: response?.prompt_cache ?? null,
+    });
   }
 
   updateJobState(jobState) {
@@ -2584,6 +2620,18 @@ export class EICRExtractionSession {
       }
       return null;
     })();
+    // Plan 00A review closure — the harness already recorded each accepted
+    // inspector turn before selecting live/shadow/legacy. Preserve the newest
+    // buffered turn's identity when the legacy leg collapses a batch into one
+    // model call; otherwise _extractSingle mints a third identity and public
+    // `sonnet.turns` counts the legacy sibling as another inspector utterance.
+    const lastBufferedExtractionTurnId = (() => {
+      for (let i = batch.length - 1; i >= 0; i--) {
+        const id = batch[i]?.options?.extractionTurnId;
+        if (typeof id === 'string' && id) return id;
+      }
+      return null;
+    })();
     // A batch's real result answers the newest buffered utterance. Earlier
     // items already closed their own processing slots via their placeholders;
     // the newest item did not receive a placeholder because it fired the batch.
@@ -2591,6 +2639,7 @@ export class EICRExtractionSession {
     const combinedOptions = {
       confirmationsEnabled: batch.some((b) => b.options?.confirmationsEnabled),
       utteranceId: lastBufferedUtteranceId,
+      extractionTurnId: lastBufferedExtractionTurnId,
       turnId: lastBufferedTurnId,
       postcodeHintState: combinePostcodeHintStates(
         batch.map((item) => ({ postcodeHintState: item.options?.postcodeHintState }))
@@ -2634,6 +2683,12 @@ export class EICRExtractionSession {
   }
 
   async _extractSingle(transcriptText, regexResults = [], options = {}) {
+    const extractionTurnId =
+      typeof options.extractionTurnId === 'string' && options.extractionTurnId.length > 0
+        ? options.extractionTurnId
+        : randomUUID();
+    options = { ...options, extractionTurnId };
+    this.costTracker.recordInspectorExtractionTurn(this.sessionId, extractionTurnId);
     // Build the windowed message history first (may reset circuitScheduleIncluded flag)
     const windowMessages = this.buildMessageWindow();
 
@@ -2700,10 +2755,30 @@ export class EICRExtractionSession {
     // Add mid-conversation breakpoints if >20 blocks
     this.addMidConversationBreakpoints(messages);
 
-    const response = await this.callWithRetry(messages, 3, null, 1280, {
-      tools: [EXTRACTION_TOOL],
-      toolChoice: { type: 'tool', name: EXTRACTION_TOOL.name },
-    });
+    const loopInvocationId = `legacy-${randomUUID()}`;
+    const accountingStarted = this.costTracker.beginBillableInvocation(loopInvocationId);
+    let response;
+    let legacyRoundUsage = [];
+    try {
+      response = await this.callWithRetry(messages, 3, null, 1280, {
+        tools: [EXTRACTION_TOOL],
+        toolChoice: { type: 'tool', name: EXTRACTION_TOOL.name },
+      });
+      legacyRoundUsage = [
+        this._attributeDirectResponseUsage(
+          response,
+          {
+            provider: response._certmateAccounting?.provider,
+            model: response._certmateAccounting?.requestedModel,
+          },
+          0,
+          response._certmateAccounting?.requestedTier
+        ),
+      ];
+      this.costTracker.ingestBillableUsage(loopInvocationId, legacyRoundUsage, 'inspector_legacy');
+    } finally {
+      if (accountingStarted) this.costTracker.endBillableInvocation(loopInvocationId);
+    }
 
     // Reset cache keepalive timer — real API call just refreshed the cache
     this._resetCacheKeepalive();
@@ -2998,12 +3073,7 @@ export class EICRExtractionSession {
     // Track token costs (model id from response so per-model rates apply
     // correctly when the tiered router escalated this turn to a different
     // model than the default).
-    const turnEconomics = this.costTracker.estimateModelUsageEconomics(
-      response.usage,
-      response.model,
-      response.service_tier
-    );
-    this.costTracker.addSonnetUsage(response.usage, response.model, response.service_tier);
+    const turnEconomics = this.costTracker.estimateRoundUsageEconomics(legacyRoundUsage);
 
     // Log per-turn cost for debugging
     const usage = response.usage;
@@ -3039,7 +3109,10 @@ export class EICRExtractionSession {
     if (typeof options?.turnId === 'string' && options.turnId.length > 0) {
       result.turn_id = options.turnId;
     } else if (typeof result.turn_id !== 'string' || result.turn_id.length === 0) {
-      result.turn_id = `legacy-${randomUUID()}`;
+      result.turn_id =
+        typeof options?.extractionTurnId === 'string' && options.extractionTurnId.length > 0
+          ? options.extractionTurnId
+          : `legacy-${randomUUID()}`;
     }
 
     return result;
@@ -3131,7 +3204,28 @@ export class EICRExtractionSession {
     let lastError;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        return await target.client.messages.create(requestParams, { timeout: 30000 });
+        const response = await target.client.messages.create(requestParams, { timeout: 30000 });
+        Object.defineProperty(response, '_certmateAccounting', {
+          value: {
+            provider: target.provider,
+            requestedModel: target.model,
+            requestedTier:
+              target.provider === 'openai'
+                ? // The adapter's own report wins: the Chat-Completions
+                  // comparison adapter never sends a tier and truthfully
+                  // reports 'standard', so the env Fast default must not be
+                  // attributed to a request that never carried it.
+                  (response?.requested_service_tier ??
+                  requestParams.service_tier ??
+                  (model === defaultModel
+                    ? (process.env.OPENAI_EXTRACT_SERVICE_TIER || 'standard').trim()
+                    : 'standard'))
+                : null,
+          },
+          enumerable: false,
+          configurable: true,
+        });
+        return response;
       } catch (error) {
         lastError = error;
         if (error.status === 429 || error.status >= 500) {
@@ -4437,10 +4531,32 @@ export class EICRExtractionSession {
 
     this.addMidConversationBreakpoints(messages);
 
-    const response = await this.callWithRetry(messages, 2, null, 512, {
-      tools: [EXTRACTION_TOOL],
-      toolChoice: { type: 'tool', name: EXTRACTION_TOOL.name },
-    });
+    const nonInspectorInvocationId = `orphan-review-${randomUUID()}`;
+    const accountingStarted = this.costTracker.beginBillableInvocation(nonInspectorInvocationId);
+    let response;
+    try {
+      response = await this.callWithRetry(messages, 2, null, 512, {
+        tools: [EXTRACTION_TOOL],
+        toolChoice: { type: 'tool', name: EXTRACTION_TOOL.name },
+      });
+      this.costTracker.ingestBillableUsage(
+        nonInspectorInvocationId,
+        [
+          this._attributeDirectResponseUsage(
+            response,
+            {
+              provider: response._certmateAccounting?.provider,
+              model: response._certmateAccounting?.requestedModel,
+            },
+            0,
+            response._certmateAccounting?.requestedTier
+          ),
+        ],
+        'orphan_review'
+      );
+    } finally {
+      if (accountingStarted) this.costTracker.endBillableInvocation(nonInspectorInvocationId);
+    }
 
     const toolUseBlock = response.content.find((b) => b.type === 'tool_use');
     if (!toolUseBlock || !toolUseBlock.input || typeof toolUseBlock.input !== 'object') {
@@ -4451,8 +4567,6 @@ export class EICRExtractionSession {
     // Do NOT push review exchange to conversationHistory — it's a meta-instruction,
     // not part of the extraction dialogue.
     // Do NOT increment turnCount — this is not an extraction turn.
-    this.costTracker.addSonnetUsage(response.usage, response.model, response.service_tier);
-
     return result;
   }
 

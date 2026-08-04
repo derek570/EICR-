@@ -400,6 +400,9 @@ describe('openai-responses-adapter — request/response translation', () => {
     const message = _internals.toAnthropicMessage(ROUND1_FINAL, 'gpt-5.6-luna');
     expect(message.model).toBe('gpt-5.6-luna-2026-07-15');
     expect(message.service_tier).toBe('priority');
+    expect(message.response_model).toBe('gpt-5.6-luna-2026-07-15');
+    expect(message.response_service_tier).toBe('priority');
+    expect(message.requested_model).toBe('gpt-5.6-luna');
   });
 
   test('Fast mode is explicit, Standard omits service_tier, and typos fail closed', () => {
@@ -471,6 +474,8 @@ describe('openai-responses-adapter — request/response translation', () => {
       );
       expect(openai.responses.stream.mock.calls[0][0]).not.toHaveProperty('service_tier');
       expect(message.service_tier).toBe('standard');
+      expect(message.response_service_tier).toBeNull();
+      expect(message.requested_service_tier).toBe('standard');
     } finally {
       if (previousTier === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
       else process.env.OPENAI_EXTRACT_SERVICE_TIER = previousTier;
@@ -569,6 +574,33 @@ describe('openai-responses-adapter — translateStreamingEvents (real event tran
 });
 
 describe('openai-responses-adapter — drives the REAL runToolLoop across two rounds', () => {
+  test('global Luna Fast policy is preserved as requested-tier billing evidence', async () => {
+    const previous = process.env.OPENAI_EXTRACT_SERVICE_TIER;
+    process.env.OPENAI_EXTRACT_SERVICE_TIER = 'fast';
+    try {
+      const { client } = buildTestAdapter([{ events: ROUND2_STREAM_EVENTS, final: ROUND2_FINAL }]);
+      const out = await runToolLoop({
+        client,
+        model: 'gpt-5.6-luna',
+        provider: 'openai',
+        system: 'SYS',
+        messages: [{ role: 'user', content: 'done' }],
+        tools: [],
+      });
+
+      expect(out.round_usage[0]).toEqual(
+        expect.objectContaining({
+          requested_tier: 'fast',
+          response_tier: 'priority',
+          billing_tier: 'priority',
+        })
+      );
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_EXTRACT_SERVICE_TIER;
+      else process.env.OPENAI_EXTRACT_SERVICE_TIER = previous;
+    }
+  });
+
   test('round 1 dispatches record_reading (reasoning present, tool_use surfaced); round 2 ends cleanly', async () => {
     const { client, streamFn } = buildTestAdapter([
       { events: ROUND1_STREAM_EVENTS, final: ROUND1_FINAL },
@@ -587,6 +619,8 @@ describe('openai-responses-adapter — drives the REAL runToolLoop across two ro
     const out = await runToolLoop({
       client,
       model: 'gpt-5.6-luna',
+      provider: 'openai',
+      openAIServiceTier: 'fast',
       system: 'SYS',
       messages: [{ role: 'user', content: 'Zs on circuit 4 is 0.63' }],
       tools: [
@@ -619,8 +653,23 @@ describe('openai-responses-adapter — drives the REAL runToolLoop across two ro
     expect(out.usage.cache_read_input_tokens).toBe(2047); // only round 2 had a cache hit
     expect(out.usage.cache_creation_input_tokens).toBe(2077); // 2062 + 15
     expect(out.round_usage).toEqual([
-      expect.objectContaining({ round_idx: 0, cache_creation_input_tokens: 2062 }),
-      expect.objectContaining({ round_idx: 1, cache_read_input_tokens: 2047 }),
+      expect.objectContaining({
+        round_idx: 0,
+        provider: 'openai',
+        requested_model: 'gpt-5.6-luna',
+        response_model: 'gpt-5.6-luna-2026-07-15',
+        billing_model: 'gpt-5.6-luna-2026-07-15',
+        response_tier: 'priority',
+        billing_tier: 'priority',
+        model_provenance: 'returned',
+        tier_provenance: 'returned',
+        cache_creation_input_tokens: 2062,
+      }),
+      expect.objectContaining({
+        round_idx: 1,
+        provider: 'openai',
+        cache_read_input_tokens: 2047,
+      }),
     ]);
 
     // Round 2's request must carry the reasoning item echoed back BEFORE the

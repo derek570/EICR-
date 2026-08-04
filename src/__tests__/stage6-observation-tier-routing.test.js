@@ -414,20 +414,24 @@ describe('observation-tier routing — multi-round + override lock + cost', () =
     expect(obsSession.client._calls[0].model).toBe(OBS_MODEL);
   });
 
-  test('the cost tracker receives the SELECTED model (observation tier)', async () => {
+  test('per-round billing evidence receives the SELECTED observation model', async () => {
     process.env.OBSERVATION_TIER_ROUTING = 'true';
     process.env.OBSERVATION_EXTRACT_MODEL = OBS_MODEL;
     const logger = makeLogger();
     const session = makeLiveSession([endTurnRound()]);
-    const addSpy = jest.spyOn(session.costTracker, 'addSonnetUsage');
-
     await runShadowHarness(session, OBS_TRANSCRIPT, [], {
       logger,
       rawInspectorTranscript: OBS_TRANSCRIPT,
     });
 
-    expect(addSpy).toHaveBeenCalledTimes(1);
-    expect(addSpy).toHaveBeenCalledWith(expect.any(Object), OBS_MODEL, undefined);
+    expect(session.costTracker.roundUsageEvidence).toHaveLength(1);
+    expect(session.costTracker.roundUsageEvidence[0]).toEqual(
+      expect.objectContaining({
+        provider: 'anthropic',
+        requested_model: OBS_MODEL,
+        billing_model: OBS_MODEL,
+      })
+    );
   });
 });
 

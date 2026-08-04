@@ -1462,6 +1462,75 @@ function recordingClient(streamResponses) {
 }
 
 describe('stage6-tool-loop — F7 Item 3 cancellation signal', () => {
+  test('a later-round transport failure carries prior billed response evidence and identity', async () => {
+    const firstRound = toolUseRound([
+      { id: 'toolu_1', name: 'record_reading', input: { field: 'x' } },
+    ]);
+    firstRound[0].message.usage = {
+      input_tokens: 100,
+      cache_creation_input_tokens: 20,
+      cache_read_input_tokens: 30,
+      output_tokens: 0,
+    };
+    firstRound.find((event) => event.type === 'message_delta').usage = { output_tokens: 10 };
+    let callCount = 0;
+    const client = {
+      messages: {
+        stream() {
+          callCount += 1;
+          if (callCount === 1) return mockStream(firstRound);
+          return {
+            [Symbol.asyncIterator]() {
+              return {
+                next: async () => {
+                  throw new Error('round-two transport failure');
+                },
+              };
+            },
+            async finalMessage() {
+              throw new Error('unreachable');
+            },
+          };
+        },
+      },
+    };
+
+    let caught;
+    try {
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        provider: 'anthropic',
+        billingIdentity: 'bill-loop-1',
+        system: 's',
+        messages: [{ role: 'user', content: 'go' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher: jest.fn(NOOP_DISPATCHER),
+        ctx: baseCtx(),
+        logger: makeLogger(),
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught.message).toBe('round-two transport failure');
+    expect(caught.billableUsage).toEqual(
+      expect.objectContaining({
+        billing_identity: 'bill-loop-1',
+        completed_model_rounds: 1,
+        round_usage: [
+          expect.objectContaining({
+            round_idx: 0,
+            fresh_input_tokens: 100,
+            cache_read_input_tokens: 30,
+            cache_write_input_tokens: 20,
+            output_tokens: 10,
+          }),
+        ],
+      })
+    );
+  });
+
   test('the exact signal is passed to EVERY client.messages.stream call', async () => {
     const client = recordingClient([
       toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]),

@@ -4,31 +4,21 @@
  * that reads it at scripts/analyze-session.js) populate the
  * sonnet.{turns, cacheReads, cacheWrites, input, output, cost} fields.
  *
- * WHY: pre-fix, the legacy off-mode `extract()` path called
- * costTracker.addSonnetUsage at eicr-extraction-session.js:1614, but the
- * Stage 6 multi-round tool loop never reached that code, so its API calls
- * were billed by Anthropic but invisible to dashboards (sonnet.turns=0,
- * cost=0). Field session 2D391936 (47 Ashcroft Road, 2026-04-28) showed
- * 8 server_extraction_received events landing on a $0-Sonnet cost summary.
- *
  * SCOPE:
- *   1. runToolLoop sums per-round usage from `assistantMsg.usage` into a
- *      Message.usage-shaped object on the return value.
+ *   1. runToolLoop retains per-round provider/model/tier provenance and
+ *      also sums a compatibility Message.usage-shaped aggregate.
  *   2. runToolLoop is defensive against missing usage fields and missing
  *      usage objects entirely (mock streams without usage events).
- *   3. runShadowHarness in `live` mode calls
- *      session.costTracker.addSonnetUsage(toolLoopOut.usage) once per loop
- *      run, and bumps session.extractedReadingsCount.
- *   4. runShadowHarness in `shadow` mode also calls addSonnetUsage (the
- *      shadow leg makes a real billable Anthropic call in parallel to
- *      legacy) but does NOT bump extractedReadingsCount (shadow readings
- *      never reach iOS — comparator returns legacy).
+ *   3. runShadowHarness brackets one billable scope around the whole live
+ *      loop and ingests those rows exactly once before final decrement.
+ *   4. Public inspector-turn identity remains separate from completed
+ *      model rounds, including zero-token completed responses.
  */
 
 import { jest } from '@jest/globals';
 
 import { runToolLoop, NOOP_DISPATCHER } from '../extraction/stage6-tool-loop.js';
-import { mockClient, mockStream } from './helpers/mockStream.js';
+import { mockClient } from './helpers/mockStream.js';
 import { TOOL_SCHEMAS } from '../extraction/stage6-tool-schemas.js';
 import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
 import { CostTracker } from '../extraction/cost-tracker.js';
@@ -272,6 +262,97 @@ describe('runToolLoop — token usage accumulation', () => {
     expect(Number.isFinite(result.usage.input_tokens)).toBe(true);
     expect(Number.isFinite(result.usage.output_tokens)).toBe(true);
   });
+
+  test('two-round accounting scope stays 0→1→1→0 until caller ingestion completes', async () => {
+    const tracker = new CostTracker();
+    const delegate = mockClient([
+      toolUseRoundWithUsage([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }], {
+        input_tokens: 100,
+        output_tokens: 10,
+      }),
+      endTurnRoundWithUsage('done', { input_tokens: 120, output_tokens: 5 }),
+    ]);
+    const counts = [tracker.inFlightBillableInvocationCount];
+    const client = {
+      messages: {
+        stream(...args) {
+          counts.push(tracker.inFlightBillableInvocationCount);
+          return delegate.messages.stream(...args);
+        },
+      },
+    };
+    tracker.beginBillableInvocation('two-round');
+    const result = await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      billingIdentity: 'two-round',
+      system: 'sys',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+    counts.push(tracker.inFlightBillableInvocationCount);
+    tracker.ingestBillableUsage('two-round', result.round_usage, 'inspector_live');
+    counts.push(tracker.inFlightBillableInvocationCount);
+    tracker.endBillableInvocation('two-round');
+    counts.push(tracker.inFlightBillableInvocationCount);
+
+    expect(counts).toEqual([0, 1, 1, 1, 1, 0]);
+    expect(tracker.completedModelRounds).toBe(2);
+  });
+
+  test('later-round cancellation keeps scope live until attached billed usage is ingested', async () => {
+    const tracker = new CostTracker();
+    const controller = new AbortController();
+    const client = mockClient([
+      toolUseRoundWithUsage([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }], {
+        input_tokens: 100,
+        output_tokens: 10,
+      }),
+    ]);
+    const counts = [tracker.inFlightBillableInvocationCount];
+    tracker.beginBillableInvocation('cancelled-loop');
+    counts.push(tracker.inFlightBillableInvocationCount);
+
+    let failure;
+    try {
+      await runToolLoop({
+        client,
+        model: 'claude-sonnet-4-6',
+        provider: 'anthropic',
+        billingIdentity: 'cancelled-loop',
+        system: 'sys',
+        messages: [{ role: 'user', content: 'go' }],
+        tools: TOOL_SCHEMAS,
+        dispatcher: async (call) => {
+          controller.abort();
+          return NOOP_DISPATCHER(call);
+        },
+        ctx: baseCtx(),
+        logger: makeLogger(),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    counts.push(tracker.inFlightBillableInvocationCount);
+    tracker.ingestBillableUsage(
+      'cancelled-loop',
+      failure.billableUsage.round_usage,
+      'inspector_live'
+    );
+    counts.push(tracker.inFlightBillableInvocationCount);
+    tracker.endBillableInvocation('cancelled-loop');
+    counts.push(tracker.inFlightBillableInvocationCount);
+
+    expect(failure.name).toBe('ExtractionCancelledError');
+    expect(failure.billableUsage.completed_model_rounds).toBe(1);
+    expect(counts).toEqual([0, 1, 1, 1, 0]);
+    expect(tracker.completedModelRounds).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -311,39 +392,33 @@ function makeLiveSession() {
 }
 
 describe('runShadowHarness live mode — costTracker wiring', () => {
-  test('addSonnetUsage called once with summed token usage', async () => {
+  test('records one inspector turn, one loop and one attributed model round', async () => {
     const session = makeLiveSession();
-    const addSpy = jest.spyOn(session.costTracker, 'addSonnetUsage');
 
     await runShadowHarness(session, 'hello', [], { logger: makeLogger() });
 
-    expect(addSpy).toHaveBeenCalledTimes(1);
-    // Second arg is the model id (response.model → toolLoopOut.model),
-    // threaded through so per-model rates apply in the cost tracker.
-    expect(addSpy).toHaveBeenCalledWith(
-      {
-        input_tokens: 2000,
-        output_tokens: 120,
-        cache_creation_input_tokens: 500,
-        cache_read_input_tokens: 0,
-      },
-      expect.stringMatching(/^claude-/),
-      undefined
-    );
-
-    // Confirm the cost tracker actually accepted the usage and flipped its
-    // counters — this is what cost_summary.json reads via toSessionSummary.
     expect(session.costTracker.sonnet.turns).toBe(1);
+    expect(session.costTracker.loopInvocations).toBe(1);
+    expect(session.costTracker.completedModelRounds).toBe(1);
+    expect(session.costTracker.inFlightBillableInvocationCount).toBe(0);
+    expect(session.costTracker.roundUsageEvidence).toHaveLength(1);
+    expect(session.costTracker.roundUsageEvidence[0]).toEqual(
+      expect.objectContaining({
+        kind: 'inspector_live',
+        provider: 'anthropic',
+        billing_model: expect.stringMatching(/^claude-/),
+        fresh_input_tokens: 2000,
+        cache_write_input_tokens: 500,
+        output_tokens: 120,
+      })
+    );
     expect(session.costTracker.sonnet.inputTokens).toBe(2000);
     expect(session.costTracker.sonnet.outputTokens).toBe(120);
     expect(session.costTracker.sonnet.cacheWriteTokens).toBe(500);
     expect(session.costTracker.sonnetCost).toBeGreaterThan(0);
   });
 
-  test('zero-usage extraction → addSonnetUsage NOT called (test-stability guard)', async () => {
-    // Mock streams without usage events would otherwise increment turns
-    // with all-zero deltas, polluting test fixtures that assert exact
-    // turn counts. The wiring's all-zero short-circuit prevents that.
+  test('zero-token completed response still records the accepted turn/loop/round', async () => {
     const session = makeLiveSession();
     session.client = mockClient([
       // no usage — shape matches the old endTurnRound helper from
@@ -358,11 +433,12 @@ describe('runShadowHarness live mode — costTracker wiring', () => {
         { type: 'message_stop' },
       ],
     ]);
-    const addSpy = jest.spyOn(session.costTracker, 'addSonnetUsage');
-
     await runShadowHarness(session, 'hello', [], { logger: makeLogger() });
 
-    expect(addSpy).not.toHaveBeenCalled();
-    expect(session.costTracker.sonnet.turns).toBe(0);
+    expect(session.costTracker.sonnet.turns).toBe(1);
+    expect(session.costTracker.loopInvocations).toBe(1);
+    expect(session.costTracker.completedModelRounds).toBe(1);
+    expect(session.costTracker.sonnetCost).toBe(0);
+    expect(session.costTracker.inFlightBillableInvocationCount).toBe(0);
   });
 });
