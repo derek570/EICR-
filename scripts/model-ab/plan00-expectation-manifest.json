@@ -479,7 +479,7 @@
     ]
   },
   "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
-  "semantic_oracle_digest": "351085c8d6e8a1db1766ab800bab53aa4fa41edd281945eb28e5a8468ca84a1b",
+  "semantic_oracle_digest": "290e9713a280d48836a89822220eaf36b60d1dd3d96de3a266dd5036cea7d6ce",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -635,7 +635,7 @@
     },
     {
       "path": "src/extraction/plan00-evidence-projection.js",
-      "sha256": "e5fa3f1346089a0295f24dddd201674b9f70b4fa68070ed8c41224417c42f33f"
+      "sha256": "e4629d472cc1893f957d14db67f0935e64f600fa7380b47d559ae8f2a4b819d0"
     }
   ],
   "strata_named_gaps": [
