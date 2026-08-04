@@ -1587,7 +1587,7 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result) {
                 boardId: c.board_id ?? null,
               },
             ],
-            { kind: 'confirmation', transport: 'ws_extraction' }
+            { kind: 'confirmation', transport: 'ws_extraction', text: c.text ?? null }
           );
         } else if (c) {
           evalCtx.recordNonMutatingAudible({

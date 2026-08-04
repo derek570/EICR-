@@ -1,0 +1,450 @@
+/**
+ * Plan 00B-2 C4 — the real-server lane driver + frozen-evidence judge
+ * adapter + offline playback-ack route.
+ *
+ * The headline acceptance is COMMITTED here: all nine vendor-lane fixtures
+ * judge PASS end-to-end through the REAL initSonnetStream ingress in mock
+ * mode (any INVALID_HOLD is a composition bug to fix, not to waive).
+ *
+ * The judge-adapter negatives prove each failure class FAILS the sample:
+ * missing ask, wrong field/circuit confirmation, missing playback proof,
+ * extra audible output, unfinished producer, non-text matcher mismatch —
+ * plus the field_cleared narrow rule (real fixture) and the
+ * start-latch-cannot-satisfy pin.
+ */
+
+import { jest, describe, test, expect } from '@jest/globals';
+import path from 'node:path';
+import express from 'express';
+import request from 'supertest';
+
+const repoRoot = path.resolve(new URL('../..', import.meta.url).pathname);
+
+const { judgeFrozenEvidence, composeCaptureInvalid } =
+  await import('../../scripts/model-ab/lib/semantic-judge.mjs');
+const { createPlaybackAckRouter } = await import('../routes/voice-latency-playback-ack.js');
+const { normaliseEvaluationContext, attachEvaluationContext, EVALUATION_CONTEXT } =
+  await import('../extraction/plan00-lifecycle-hooks.js');
+const { createDeliveryLedger, operationIdentityKey } =
+  await import('../extraction/plan00-audibility-ledgers.js');
+
+function baseEvidence(overrides = {}) {
+  return {
+    receipts: [],
+    mutation_invalid: null,
+    ask_entries: [],
+    ask_invalid: null,
+    deliveries: [],
+    playbacks: [],
+    provisionals: [],
+    delivery_invalid: null,
+    ambiguous_op_keys: [],
+    non_mutating_audible: [],
+    delivery_prepared_outstanding: 0,
+    producer_counts: {},
+    producer_invalid: null,
+    sub_records: [],
+    ...overrides,
+  };
+}
+
+function frozenWith(evidence, overrides = {}) {
+  return {
+    latch_key: 'completion',
+    eligible: true,
+    reason: null,
+    boundary: 'session_stopped',
+    sessionId: 's',
+    counts: {},
+    revisions: {},
+    candidate: null,
+    publishPromise: null,
+    evidence,
+    ...overrides,
+  };
+}
+
+function expectationWith(turn) {
+  return { schema_version: 1, corpus_id: 'frc_test', turns: [turn] };
+}
+
+const OP_KEY = operationIdentityKey({
+  extractionTurnId: 't1',
+  field: 'measured_zs_ohm',
+  circuit: 4,
+  boardId: null,
+});
+
+function deliveredRow({ text = 'Circuit 4, Zs 0.63', opKey = OP_KEY } = {}) {
+  return {
+    op_key: opKey,
+    op_keys: [opKey],
+    kind: 'confirmation',
+    transport: 'ws_extraction',
+    text,
+    at_seq: 1,
+  };
+}
+
+describe('judge adapter negatives — each class FAILS the sample', () => {
+  const readingReceipt = {
+    kind: 'reading',
+    field: 'measured_zs_ohm',
+    circuit: 4,
+    board_id: null,
+    value: '0.63',
+    parent_operation_id: null,
+  };
+  const readingOp = {
+    ordinal: 1,
+    kind: 'reading',
+    field: 'measured_zs_ohm',
+    circuit: 4,
+    board_id: null,
+    value: '0.63',
+    state_transition: null,
+    audibility: 'exactly_once',
+  };
+  const confirmationAudible = {
+    kind: 'reading_confirmation',
+    count: 1,
+    match: { field: 'measured_zs_ohm', circuit: 4 },
+  };
+
+  test('fully-satisfied sample PASSES (op + delivery + exactly one playback)', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [readingOp], audible_outputs: [confirmationAudible] }),
+      frozenWith(
+        baseEvidence({
+          receipts: [readingReceipt],
+          deliveries: [deliveredRow()],
+          playbacks: [{ op_key: OP_KEY, ack_body_hash: 'h1' }],
+        })
+      )
+    );
+    expect(v.verdict).toBe('PASS');
+  });
+
+  test('a missing ask FAILS', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({
+        operations: [],
+        audible_outputs: [{ kind: 'ask_user', count: 1, match: null }],
+      }),
+      frozenWith(baseEvidence())
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('ask_missing');
+  });
+
+  test('a wrong field/circuit confirmation FAILS (non-text matcher mismatch)', () => {
+    const wrongKey = operationIdentityKey({
+      extractionTurnId: 't1',
+      field: 'r1_r2_ohm',
+      circuit: 7,
+      boardId: null,
+    });
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [confirmationAudible] }),
+      frozenWith(
+        baseEvidence({
+          deliveries: [deliveredRow({ opKey: wrongKey })],
+          playbacks: [{ op_key: wrongKey, ack_body_hash: 'h1' }],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('audibility_count_mismatch');
+  });
+
+  test('missing playback proof FAILS the audibility-mandatory expectation', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [readingOp], audible_outputs: [confirmationAudible] }),
+      frozenWith(
+        baseEvidence({
+          receipts: [readingReceipt],
+          deliveries: [deliveredRow()],
+          playbacks: [], // delivered but never played
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.mismatches.some((m) => m.class === 'playback_proof_missing')).toBe(true);
+  });
+
+  test('an extra audible output (undeclared dispatcher ask) FAILS', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [] }),
+      frozenWith(
+        baseEvidence({
+          ask_entries: [
+            {
+              key: '{}',
+              state: 'answered',
+              runtime_id: 'toolu_x',
+              meta: { family: 'dispatcher' },
+              history: [],
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('undeclared_ask');
+  });
+
+  test('a Tier-2 dialogue-script ask never counts against the corpus gate', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [] }),
+      frozenWith(
+        baseEvidence({
+          ask_entries: [
+            {
+              key: '{}',
+              state: 'emitted',
+              runtime_id: 'srv-irs-x',
+              meta: { family: 'dialogue_script' },
+              history: [],
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('PASS');
+  });
+
+  test('an unfinished producer is INVALID_HOLD, never pass/fail', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [] }),
+      frozenWith(baseEvidence({ producer_counts: { fast_tts: 1 } }))
+    );
+    expect(v.verdict).toBe('INVALID_HOLD');
+    expect(v.reason).toBe('unfinished_producer:fast_tts');
+  });
+
+  test('an undeclared extra mutation FAILS', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [] }),
+      frozenWith(baseEvidence({ receipts: [readingReceipt] }))
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('extra_mutation');
+  });
+
+  test('an ineligible freeze is INVALID_HOLD; the START latch can never satisfy the verdict', () => {
+    expect(
+      judgeFrozenEvidence(expectationWith({ operations: [], audible_outputs: [] }), null).verdict
+    ).toBe('INVALID_HOLD');
+    const ineligible = frozenWith(baseEvidence(), {
+      eligible: false,
+      reason: 'non_quiescent_at_stop',
+    });
+    expect(
+      judgeFrozenEvidence(expectationWith({ operations: [], audible_outputs: [] }), ineligible)
+        .verdict
+    ).toBe('INVALID_HOLD');
+    // A start-shaped latch carries NO judged evidence by design.
+    const startLatch = frozenWith(null, { latch_key: 'start', evidence: null });
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [] }),
+      startLatch
+    );
+    expect(v.verdict).toBe('INVALID_HOLD');
+    expect(v.reason).toBe('no_frozen_evidence');
+  });
+
+  test('unconsumed fast-TTS provisionals are INVALID_HOLD', () => {
+    expect(
+      composeCaptureInvalid(
+        frozenWith(
+          baseEvidence({ provisionals: [{ correlation_id: 'c1', resolved_op_key: null }] })
+        )
+      ).reason
+    ).toBe('fast_provisional_unconsumed');
+  });
+});
+
+describe('field_cleared narrow rule (the clear-Ze fixture is judgeable)', () => {
+  const clearKey = operationIdentityKey({
+    extractionTurnId: 't1',
+    field: 'field_cleared',
+    circuit: null,
+    boardId: null,
+  });
+  const clearedAudible = {
+    kind: 'reading_confirmation',
+    count: 1,
+    match: { field: 'field_cleared', circuit: null, text_exact: 'Ze cleared' },
+  };
+  const clearReceipt = {
+    kind: 'board_clear',
+    field: 'ze',
+    circuit: null,
+    board_id: null,
+    value: null,
+    parent_operation_id: null,
+  };
+  const evidence = (receipts) =>
+    baseEvidence({
+      receipts,
+      deliveries: [deliveredRow({ text: 'Ze cleared', opKey: clearKey })],
+      playbacks: [{ op_key: clearKey, ack_body_hash: 'h1' }],
+    });
+
+  test('exactly ONE authoritative clear receipt is consumed — PASS', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [clearedAudible] }),
+      frozenWith(evidence([clearReceipt]))
+    );
+    expect(v.verdict).toBe('PASS');
+  });
+
+  test('zero clear receipts FAIL (spoken but not cleared)', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [clearedAudible] }),
+      frozenWith(evidence([]))
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('field_cleared_receipt_mismatch');
+  });
+
+  test('a SECOND hidden clear receipt FAILS (one consumed, one extra)', () => {
+    const v = judgeFrozenEvidence(
+      expectationWith({ operations: [], audible_outputs: [clearedAudible] }),
+      frozenWith(evidence([clearReceipt, { ...clearReceipt, field: 'pfc' }]))
+    );
+    expect(v.verdict).toBe('FAIL');
+    expect(v.reason).toBe('field_cleared_receipt_mismatch');
+  });
+});
+
+describe('offline playback-ack route (exported factory, zero database)', () => {
+  const DRIVER_TOKEN = 'test-offline-token';
+  function makeApp({ entry }) {
+    const app = express();
+    app.use(express.json());
+    const recordPlaybackAck = jest.fn();
+    const recordOutcome = jest.fn();
+    app.use(
+      '/api',
+      createPlaybackAckRouter({
+        requireAuth: (req, res, next) => {
+          if (req.headers.authorization !== `Bearer ${DRIVER_TOKEN}`) {
+            return res.status(401).json({ error: 'unauthorized' });
+          }
+          req.user = { id: 'owner-user' };
+          return next();
+        },
+        getActiveSessionEntry: () => entry,
+        recordPlaybackAck,
+        recordOutcome,
+      })
+    );
+    return { app, recordPlaybackAck };
+  }
+
+  function makeEvalEntry() {
+    const entry = { userId: 'owner-user', session: {} };
+    const ctx = normaliseEvaluationContext(
+      { deliveryLedger: createDeliveryLedger() },
+      { sessionId: 's-route' }
+    );
+    attachEvaluationContext(entry, ctx);
+    return { entry, ctx };
+  }
+
+  const body = (slot) => ({
+    sessionId: 's-route',
+    turnId: 't-route',
+    source: 'bundler',
+    at_ms: Date.now(),
+    ...(slot ? { slot } : {}),
+  });
+
+  test('same-owner success reaches the evaluation delivery ledger with zero DB access', async () => {
+    const { entry, ctx } = makeEvalEntry();
+    ctx.recordDelivery(
+      [{ extractionTurnId: 't1', field: 'measured_zs_ohm', circuit: 4, boardId: null }],
+      { kind: 'confirmation', transport: 'ws_extraction', text: 'Circuit 4, Zs 0.63' }
+    );
+    const { app } = makeApp({ entry });
+    const res = await request(app)
+      .post('/api/voice-latency/playback-ack')
+      .set('Authorization', `Bearer ${DRIVER_TOKEN}`)
+      .send(body({ field: 'measured_zs_ohm', circuit: 4, boardId: null }));
+    expect(res.status).toBe(204);
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(1);
+  });
+
+  test('wrong-owner is the indistinguishable 404; entry-absent keeps telemetry-only 204', async () => {
+    const { entry } = makeEvalEntry();
+    entry.userId = 'someone-else';
+    const { app } = makeApp({ entry });
+    const res = await request(app)
+      .post('/api/voice-latency/playback-ack')
+      .set('Authorization', `Bearer ${DRIVER_TOKEN}`)
+      .send(body());
+    expect(res.status).toBe(404);
+    expect(res.text).toBe('');
+    const absent = makeApp({ entry: undefined });
+    const res2 = await request(absent.app)
+      .post('/api/voice-latency/playback-ack')
+      .set('Authorization', `Bearer ${DRIVER_TOKEN}`)
+      .send(body());
+    expect(res2.status).toBe(204);
+    expect(absent.recordPlaybackAck).toHaveBeenCalledTimes(1);
+  });
+
+  test('malformed token is 401', async () => {
+    const { entry } = makeEvalEntry();
+    const { app } = makeApp({ entry });
+    const res = await request(app)
+      .post('/api/voice-latency/playback-ack')
+      .set('Authorization', 'Bearer wrong')
+      .send(body());
+    expect(res.status).toBe(401);
+  });
+
+  test('wrong-slot / duplicate / omitted-slot-ambiguous acks never invent playback rows', async () => {
+    const { entry, ctx } = makeEvalEntry();
+    ctx.recordDelivery(
+      [{ extractionTurnId: 't1', field: 'measured_zs_ohm', circuit: 4, boardId: null }],
+      { kind: 'confirmation', transport: 'ws_extraction', text: 'A' }
+    );
+    ctx.recordDelivery(
+      [{ extractionTurnId: 't1', field: 'r1_r2_ohm', circuit: 7, boardId: null }],
+      { kind: 'confirmation', transport: 'ws_extraction', text: 'B' }
+    );
+    const { app } = makeApp({ entry });
+    const post = (b) =>
+      request(app)
+        .post('/api/voice-latency/playback-ack')
+        .set('Authorization', `Bearer ${DRIVER_TOKEN}`)
+        .send(b);
+    // Wrong slot: no matching delivery — telemetry only.
+    await post(body({ field: 'ze', circuit: 9, boardId: null }));
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(0);
+    // Omitted slot with TWO delivered units: ambiguous — telemetry only.
+    await post(body());
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(0);
+    // Matching slot: one start; a byte-identical duplicate stays ONE.
+    const good = body({ field: 'measured_zs_ohm', circuit: 4, boardId: null });
+    await post(good);
+    await post(good);
+    expect(ctx.deliveryLedger.playbacks).toHaveLength(1);
+    // No playback row can arise from a ws.send alone — the ledger gained
+    // rows only through the route above.
+    expect(ctx.deliveryLedger.playbacks[0].op_key).toContain('measured_zs_ohm');
+  });
+});
+
+describe('mock-mode acceptance — 9/9 through the REAL server', () => {
+  test('runVendorLaneMock judges every vendor-lane fixture PASS', async () => {
+    const { runVendorLaneMock } = await import('../../scripts/model-ab/lib/lane-driver.mjs');
+    const { results, allPass } = await runVendorLaneMock({ repoRoot });
+    const summary = results.map((r) => `${r.corpus_id}:${r.verdict}`).join(' ');
+    expect(results).toHaveLength(9);
+    expect(allPass).toBe(true);
+    expect(summary).not.toContain('INVALID_HOLD');
+  }, 120000);
+});

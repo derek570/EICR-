@@ -35,7 +35,6 @@ import {
   computeSemanticOracleDigest,
   VENDOR_LIVE_FIXTURE_IDS,
 } from './lib/expectation-projection.mjs';
-import { judgeSample } from './lib/semantic-judge.mjs';
 
 function parseArgs(argv) {
   const args = { mode: 'mock', interTurnMs: 10000, attestationRecord: null, model: null };
@@ -89,51 +88,43 @@ async function main() {
   console.log(`fixtures in vendor lane: ${VENDOR_LIVE_FIXTURE_IDS.length}`);
 
   if (args.mode === 'mock') {
-    // Implementation proof: the judge consumes each frozen projection and a
-    // synthetic evidence set derived FROM the projection itself; this proves
-    // the projection→judge plumbing end-to-end without any model output and
-    // is deliberately NEVER reported as vendor evidence.
-    let pass = 0;
-    for (const fixture of manifests.vendorLive.fixtures) {
-      const receipts = [];
-      const audibleTexts = [];
-      for (const turn of fixture.turns) {
-        for (const op of turn.operations) {
-          receipts.push({
-            kind: op.kind ?? 'reading',
-            field: op.field,
-            circuit: op.circuit,
-            board_id: op.board_id,
-            value: op.value,
-            parent_operation_id: null,
-          });
-        }
-        for (const out of turn.audible_outputs) {
-          if (out.match?.text_exact) {
-            for (let i = 0; i < (out.count ?? 1); i += 1) audibleTexts.push(out.match.text_exact);
-          }
-        }
-      }
-      const verdict = judgeSample(fixture, { receipts, audibleTexts, captureInvalid: null });
-      if (verdict.verdict === 'PASS') pass += 1;
-      console.log(`mock ${fixture.corpus_id}: ${verdict.verdict}${verdict.reason ? ` (${verdict.reason})` : ''}`);
+    // Plan 00B-2 C4 — the REAL-SERVER mock lane: every vendor fixture is
+    // driven through the actual initSonnetStream WS ingress with the strict
+    // per-turn scripted client, judged from the C3 completion latch's
+    // frozen evidence. Implementation proof only — never vendor evidence.
+    // (The former synthetic self-judging mock — the projection judging its
+    // own semantics — is DELETED: it proved plumbing, not composition.)
+    const { runVendorLaneMock } = await import('./lib/lane-driver.mjs');
+    const { results, allPass } = await runVendorLaneMock({
+      repoRoot,
+      log: (line) => console.error(line),
+    });
+    for (const r of results) {
+      console.log(`mock ${r.corpus_id}: ${r.verdict}${r.reason ? ` (${r.reason})` : ''}`);
     }
-    console.log(`mock lane: ${pass}/${manifests.vendorLive.fixtures.length} projections judge PASS against their own semantics`);
-    if (pass !== manifests.vendorLive.fixtures.length) process.exitCode = 1;
+    const pass = results.filter((r) => r.verdict === 'PASS').length;
+    console.log(
+      `mock lane: ${pass}/${results.length} fixtures judge PASS end-to-end through the real server`
+    );
+    // Any INVALID_HOLD is a composition bug to fix, not to waive.
+    if (!allPass) process.exitCode = 1;
     return;
   }
 
-  // --mode=live: the attested vendor lane. The composition (real
-  // initSonnetStream + evaluation context + per-fixture session + paced
-  // inspector turns + judge) is exercised by the Plan 00C cohort runner
-  // once attestation exists; the env isolation contract is enforced here.
+  // --mode=live: the attested vendor lane. Keeps the attestation refusal
+  // (above) and the lane-isolation assertions, then delegates to the SAME
+  // driver composition (bootLaneDriver/driveFixture in lib/lane-driver.mjs)
+  // with real clients — execution beyond this gate's smoke remains Plan
+  // 00C's (its cohort runner invokes the driver under an attested record).
   const problems = assertLaneIsolationEnv();
   if (problems.length > 0) {
     console.error(`REFUSED: lane isolation violated — ${problems.join('; ')}`);
     process.exitCode = 2;
     return;
   }
-  console.error('live lane: attestation record accepted; cohort execution is owned by Plan 00C.');
+  console.error(
+    'live lane: attestation record accepted; cohort execution (the same lane driver with real clients) is owned by Plan 00C.'
+  );
 }
 
 const isDirect = process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop());

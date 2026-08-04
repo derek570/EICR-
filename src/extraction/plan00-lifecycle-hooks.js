@@ -726,12 +726,16 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   };
 
   // ── delivery / playback / non-mutating audible ──
-  ctx.recordDelivery = (opIdentities, { kind, transport = null, claimLineage = null } = {}) => {
+  ctx.recordDelivery = (
+    opIdentities,
+    { kind, transport = null, claimLineage = null, text = null } = {}
+  ) => {
     if (!ctx.deliveryLedger) return;
     ctx.deliveryLedger.recordDeliveryAttempt(opIdentities, {
       kind,
       transport,
       claimLineage,
+      text,
     });
     const keys = (Array.isArray(opIdentities) ? opIdentities : [opIdentities]).map((op) =>
       operationIdentityKey(op)
@@ -764,7 +768,36 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   };
 
   ctx.resolvePlaybackFromSlot = ({ slot, ackBody, source = null }) => {
-    if (!ctx.deliveryLedger || !slot || typeof slot.field !== 'string') return null;
+    if (!ctx.deliveryLedger) return null;
+    if (!slot || typeof slot.field !== 'string') {
+      // A slot-less ACK (production iOS omits the slot for board-scope
+      // confirmations, whose circuit has no 0-99 integer form) can still
+      // resolve to EXACTLY ONE delivered audibility unit: when the ledger
+      // holds precisely one delivery row, the resolution is unambiguous;
+      // anything else stays telemetry.
+      if (ctx.deliveryLedger.deliveries.length !== 1) return null;
+      const only = ctx.deliveryLedger.deliveries[0];
+      const key = (only.op_keys ?? [only.op_key])[0];
+      let id;
+      try {
+        id = JSON.parse(key);
+      } catch {
+        return null;
+      }
+      return ctx.recordPlayback(
+        ackBody,
+        [
+          {
+            extractionTurnId: id.turn ?? null,
+            field: id.field,
+            circuit: id.circuit ?? null,
+            boardId: id.board_id ?? null,
+            ordinal: id.ordinal ?? 0,
+          },
+        ],
+        { source }
+      );
+    }
     const seen = new Set();
     const matches = [];
     for (const d of ctx.deliveryLedger.deliveries) {

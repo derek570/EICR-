@@ -330,7 +330,10 @@ export function createDeliveryLedger() {
      * multi-operation audibility unit: `op_key` stays the first identity
      * (back-compat), `op_keys` carries the ordered full set.
      */
-    recordDeliveryAttempt(opIdentity, { kind, transport = null, claimLineage = null } = {}) {
+    recordDeliveryAttempt(
+      opIdentity,
+      { kind, transport = null, claimLineage = null, text = null } = {}
+    ) {
       seq += 1;
       const identities = Array.isArray(opIdentity) ? opIdentity : [opIdentity];
       const opKeys = identities.map((op) => operationIdentityKey(op));
@@ -341,6 +344,10 @@ export function createDeliveryLedger() {
           kind: kind ?? 'confirmation',
           transport,
           claim_lineage: claimLineage,
+          // Plan 00B-2 C4 — the SPOKEN text of the delivery (evaluation-only
+          // judging surface for text_exact matchers; null for producers that
+          // carry no prose).
+          text,
           at_seq: seq,
         })
       );
