@@ -3227,10 +3227,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       // work (that is WHY it expired), so this typically freezes
       // evidence-ineligible as `non_quiescent_at_stop` — deliberately, and
       // without touching the existing expiry behaviour above.
-      freezeEvidenceCompletion(entry, {
-        sessionId: currentSessionId,
-        boundary: 'session_terminated',
-      });
+      if (entry[LIFECYCLE_LEDGER]) {
+        freezeEvidenceCompletion(entry, {
+          sessionId: currentSessionId,
+          boundary: 'session_terminated',
+        });
+      }
       activeSessions.delete(currentSessionId);
     }
   });
@@ -6627,7 +6629,29 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     entry.isStopping = true;
     entry.teardownReason = reason;
     entry.teardownPromise = (async () => {
-      await work();
+      try {
+        await work();
+      } catch (err) {
+        // A failed teardown body must still reach a TERMINAL state: the
+        // entry leaves the registry (best-effort session/timer cleanup
+        // included) so an awaiting reconnect can only ever follow the
+        // entry-missing/fresh-session path — never rebind a dying entry.
+        logger.error('Session teardown body failed — forcing terminal cleanup', {
+          sessionId,
+          reason,
+          error: err?.message ?? String(err),
+        });
+        try {
+          if (entry.disconnectTimer) {
+            clearTimeout(entry.disconnectTimer);
+            entry.disconnectTimer = null;
+          }
+          entry.session?.stop?.();
+        } catch (_cleanupErr) {
+          // best-effort only
+        }
+        activeSessions.delete(sessionId);
+      }
     })();
     return entry.teardownPromise;
   }
@@ -6778,7 +6802,9 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     // quiescence (all in-flight counts zero, revisions stable) and anything
     // else freezes evidence-ineligible as `non_quiescent_at_stop` without
     // delaying or changing session_ack/stop behaviour.
-    freezeEvidenceCompletion(entry, { sessionId, boundary: 'session_stopped' });
+    if (entry[LIFECYCLE_LEDGER]) {
+      freezeEvidenceCompletion(entry, { sessionId, boundary: 'session_stopped' });
+    }
 
     activeSessions.delete(sessionId);
     logger.info('Session stopped', { sessionId });

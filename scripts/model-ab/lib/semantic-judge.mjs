@@ -27,22 +27,28 @@ const norm = (v) => (v == null ? null : String(v));
  * explicit clear followed by the write, provided final semantics and order
  * expectations hold.
  */
-function matchOperation(expected, receipts, cursorRef, { boardWildcard = false } = {}) {
+function matchOperation(expected, receipts, consumed, { boardWildcard = false } = {}) {
   const matchesSlot = (r) =>
     r.field === expected.field &&
     (r.circuit ?? null) === (expected.circuit ?? null) &&
-    (boardWildcard || expected.board_id == null || r.board_id == null || r.board_id === expected.board_id);
+    (boardWildcard ||
+      expected.board_id == null ||
+      r.board_id == null ||
+      r.board_id === expected.board_id);
 
-  for (let i = cursorRef.value; i < receipts.length; i += 1) {
+  for (let i = 0; i < receipts.length; i += 1) {
+    if (consumed.has(i)) continue;
     const r = receipts[i];
     if (!matchesSlot(r)) continue;
     if (expected.state_transition === 'clear_then_write') {
       if (r.kind === 'clear') {
         // explicit clear — the write must follow on the same slot.
         for (let j = i + 1; j < receipts.length; j += 1) {
+          if (consumed.has(j)) continue;
           const w = receipts[j];
           if (matchesSlot(w) && w.kind === 'reading' && norm(w.value) === norm(expected.value)) {
-            cursorRef.value = j + 1;
+            consumed.add(i);
+            consumed.add(j);
             return { matched: true, via: 'clear_then_write' };
           }
         }
@@ -50,7 +56,7 @@ function matchOperation(expected, receipts, cursorRef, { boardWildcard = false }
       }
       if (r.kind === 'reading' && norm(r.value) === norm(expected.value)) {
         // plain overwrite — valid per the pinned-IR rule.
-        cursorRef.value = i + 1;
+        consumed.add(i);
         return { matched: true, via: 'plain_overwrite' };
       }
       if (r.kind === 'reading') return { matched: false, reason: 'wrong_value', actual: r.value };
@@ -61,7 +67,7 @@ function matchOperation(expected, receipts, cursorRef, { boardWildcard = false }
     if (expected.value != null && norm(r.value) !== norm(expected.value)) {
       return { matched: false, reason: 'wrong_value', actual: r.value };
     }
-    cursorRef.value = i + 1;
+    consumed.add(i);
     return { matched: true, via: r.kind };
   }
   return { matched: false, reason: 'operation_missing' };
@@ -89,18 +95,18 @@ export function judgeSample(expectation, evidence, opts = {}) {
   }
   const mismatches = [];
   const receipts = evidence.receipts ?? [];
-  // Mutation receipts the expectations may legitimately ignore: nothing —
-  // every semantic mutation must be expected or explicitly allowlisted.
-  const cursor = { value: 0 };
-  const matchedReceiptCount = { count: 0 };
+  // Every receipt an expectation legitimately consumes is tracked by INDEX,
+  // so an undeclared extra mutation ANYWHERE in the stream — before, between
+  // or after expected operations — fails (§B2: undeclared/extra/wrong-target
+  // mutations fail). Derived receipts with valid parent provenance ride
+  // their parent's expectation.
+  const consumed = new Set();
 
   for (const turn of expectation.turns ?? []) {
     for (const op of turn.operations ?? []) {
-      const res = matchOperation(op, receipts, cursor, opts);
+      const res = matchOperation(op, receipts, consumed, opts);
       if (!res.matched) {
         mismatches.push({ class: res.reason, expected: op, actual: res.actual ?? null });
-      } else {
-        matchedReceiptCount.count += res.via === 'clear_then_write' ? 2 : 1;
       }
     }
     for (const audible of turn.audible_outputs ?? []) {
@@ -117,33 +123,17 @@ export function judgeSample(expectation, evidence, opts = {}) {
     }
   }
 
-  // Undeclared EXTRA semantic mutations fail (§B2: undeclared/extra/
-  // wrong-target mutations fail) — derived receipts with valid parent
-  // provenance ride their parent expectation.
-  const unmatched = receipts.filter(
-    (r, i) => i >= 0 && !r.parent_operation_id && r.kind !== 'select_board'
-  );
-  const expectedOpCount = (expectation.turns ?? []).reduce(
-    (n, t) => n + (t.operations ?? []).length,
-    0
-  );
-  // Count semantic top-level receipts (clears participating in
-  // clear_then_write are part of their expectation).
-  if (mismatches.length === 0 && expectedOpCount > 0) {
-    const topLevel = unmatched.length;
-    const allowed = receipts.length; // matched span
-    if (topLevel > 0 && cursor.value < receipts.length) {
-      for (let i = cursor.value; i < receipts.length; i += 1) {
-        const r = receipts[i];
-        if (!r.parent_operation_id) {
-          mismatches.push({
-            class: 'extra_mutation',
-            actual: { kind: r.kind, field: r.field, circuit: r.circuit, value: r.value },
-          });
-        }
-      }
-    }
-    void allowed;
+  for (let i = 0; i < receipts.length; i += 1) {
+    if (consumed.has(i)) continue;
+    const r = receipts[i];
+    // Derived receipts ride their parent; select_board is board navigation
+    // that expectations do not declare (the semantic write it enables is
+    // what gets judged).
+    if (r.parent_operation_id || r.kind === 'select_board') continue;
+    mismatches.push({
+      class: 'extra_mutation',
+      actual: { kind: r.kind, field: r.field, circuit: r.circuit, value: r.value },
+    });
   }
 
   return {

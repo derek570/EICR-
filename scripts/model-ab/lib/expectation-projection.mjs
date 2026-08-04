@@ -170,7 +170,14 @@ export const STRATA_NAMED_GAPS = Object.freeze([
 ]);
 
 export function loadFixture(repoRoot, corpusId) {
-  const p = path.join(repoRoot, 'tests', 'fixtures', 'field-replay-corpus', corpusId, 'fixture.yaml');
+  const p = path.join(
+    repoRoot,
+    'tests',
+    'fixtures',
+    'field-replay-corpus',
+    corpusId,
+    'fixture.yaml'
+  );
   return yaml.load(fs.readFileSync(p, 'utf8'));
 }
 
@@ -231,8 +238,20 @@ export const SEMANTIC_ORACLE_INPUTS = Object.freeze([
   'src/extraction/plan00-lifecycle-hooks.js',
   'src/extraction/sonnet-stream.js',
   'src/extraction/stage6-dispatchers.js',
+  // Every producer file carrying an origin frame or provenance seam —
+  // a change to any of these is a semantic-oracle input change and must
+  // fail 00C's digest recomputation closed (Codex r1 finding 9).
+  'src/extraction/eicr-extraction-session.js',
+  'src/extraction/stage6-shadow-harness.js',
+  'src/extraction/postcode-snapshot-applier.js',
+  'src/extraction/dialogue-engine/engine.js',
+  'src/extraction/dialogue-engine/helpers/snapshot-write.js',
+  'src/extraction/dialogue-engine/helpers/derivations.js',
+  'src/routes/voice-latency-fast-tts.js',
+  'src/routes/voice-latency-playback-ack.js',
   'scripts/model-ab/lib/mutation-classification.mjs',
   'scripts/model-ab/lib/expectation-projection.mjs',
+  'scripts/model-ab/lib/semantic-judge.mjs',
   'scripts/field-replay/lib/fixture-schema.mjs',
   'scripts/model-ab/run-semantic-lane.mjs',
 ]);

@@ -74,7 +74,11 @@ export function registerEvidenceObserver(entry, observer) {
     configurable: true,
   });
   if (typeof observer.onRegistered === 'function') {
-    observer.onRegistered({ at: 'entry_creation' });
+    try {
+      observer.onRegistered({ at: 'entry_creation' });
+    } catch (_err) {
+      // Observer failures are evidence problems, never production problems.
+    }
   }
   return entry[LIFECYCLE_LEDGER];
 }
@@ -105,7 +109,15 @@ export function recordLifecycleEvent(entry, kind, detail) {
   ledger.subRecords.push(row);
   const observer = entry[EVIDENCE_OBSERVER];
   if (observer && typeof observer.onLifecycleEvent === 'function') {
-    observer.onLifecycleEvent(row);
+    try {
+      observer.onLifecycleEvent(row);
+    } catch (_err) {
+      // Behaviour isolation: a throwing observer callback must never reach
+      // the production send path (it fires AFTER a successful ws.send and
+      // could otherwise abort frame-ledger completion). The sub-record and
+      // revision above are already latched; the observer's own failure is
+      // its own evidence problem.
+    }
   }
 }
 
@@ -199,7 +211,11 @@ export function freezeEvidenceCompletion(entry, { sessionId, boundary }) {
       candidate: null,
       publishPromise: null,
     });
-    if (typeof observer.onEvidenceFrozen === 'function') observer.onEvidenceFrozen(ledger.frozen);
+    try {
+      if (typeof observer.onEvidenceFrozen === 'function') observer.onEvidenceFrozen(ledger.frozen);
+    } catch (_err) {
+      // isolated
+    }
     return ledger.frozen;
   }
 
@@ -216,7 +232,30 @@ export function freezeEvidenceCompletion(entry, { sessionId, boundary }) {
     // Pure, synchronous, exactly once. The builder returns the latched
     // {timestamp, canonical bytes, content hash/key, checksum} shape the
     // 00C consumer will publish; we latch whatever it returns verbatim.
-    candidate = observer.buildCandidate(snapshot);
+    // A THROWING builder freezes evidence-INELIGIBLE instead of aborting
+    // production teardown (behaviour isolation).
+    try {
+      candidate = observer.buildCandidate(snapshot);
+    } catch (err) {
+      ledger.frozen = Object.freeze({
+        eligible: false,
+        reason: 'candidate_builder_threw',
+        boundary,
+        sessionId,
+        counts,
+        revisions: revisionsAfter,
+        candidate: null,
+        publishPromise: null,
+        error: err?.message ?? String(err),
+      });
+      try {
+        if (typeof observer.onEvidenceFrozen === 'function')
+          observer.onEvidenceFrozen(ledger.frozen);
+      } catch (_err) {
+        // isolated
+      }
+      return ledger.frozen;
+    }
   }
   let publishPromise = null;
   if (typeof observer.publish === 'function') {
@@ -235,7 +274,11 @@ export function freezeEvidenceCompletion(entry, { sessionId, boundary }) {
     candidate,
     publishPromise,
   });
-  if (typeof observer.onEvidenceFrozen === 'function') observer.onEvidenceFrozen(ledger.frozen);
+  try {
+    if (typeof observer.onEvidenceFrozen === 'function') observer.onEvidenceFrozen(ledger.frozen);
+  } catch (_err) {
+    // isolated
+  }
   return ledger.frozen;
 }
 

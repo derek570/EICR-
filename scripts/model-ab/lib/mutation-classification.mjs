@@ -24,12 +24,23 @@
  * The scan test (src/__tests__/plan00-mutation-source-scan.test.js) greps
  * the covered files with MUTATION_WRITE_PATTERNS and requires every hit to
  * match exactly one manifest row, and every manifest row to still hit.
+ *
+ * KNOWN LIMITATION (dated 2026-08-04): the scan is line-regex based, so a
+ * write through an ALIASED bucket variable (const b = snapshot.circuits[n];
+ * b.field = v) is invisible to it — those are covered by the atom layer's
+ * own receipts plus review discipline; a future AST-based scan is the
+ * upgrade path (follow-up logged).
  */
 
 /** Line-level regexes that identify a covered certificate-state write. */
 export const MUTATION_WRITE_PATTERNS = [
   // assignment into the circuits map (flat or composite key)
   String.raw`(?:snapshot|stateSnapshot)\.circuits\[[^\]]*\]\s*=[^=]`,
+  // nested field assignment on a circuits bucket (Codex r1 finding 11)
+  String.raw`(?:snapshot|stateSnapshot)\.circuits\[[^\]]*\]\[[^\]]*\]\s*=[^=]`,
+  String.raw`(?:snapshot|stateSnapshot)\.circuits\[[^\]]*\]\.[A-Za-z_$][\w$]*\s*=[^=]`,
+  // delete of a circuits bucket or bucket field
+  String.raw`delete\s+(?:snapshot|stateSnapshot)\.circuits\[`,
   // board registry append
   String.raw`(?:snapshot|stateSnapshot)\.boards\.push`,
   // current-board flip

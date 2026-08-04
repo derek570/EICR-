@@ -465,11 +465,11 @@
     ]
   },
   "combined_sha256": "0e68195961962f7b0ca8e39896f77caf2eabc4e7c2f2a5d0e337efed0bcebf38",
-  "semantic_oracle_digest": "115f2dd4cb302a424553d700a278dde1dccc22ef23f1c9f622a832fd64a6650b",
+  "semantic_oracle_digest": "48b06f144705ecaf47d474b9abc3d98907e035e92274c3ea289e67fd08045626",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
-      "sha256": "474ff9429ad341d0074c5c04a9ab36b7f5e25d490c7540c2486213fb475fd32e"
+      "sha256": "2b8afa8f75e3a187674bef32ce128cd0d9bfa65059a5ef79941dad782f5e107c"
     },
     {
       "path": "src/extraction/plan00-semantic-capture.js",
@@ -481,23 +481,59 @@
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "3aef025e886cd60e74c2b892f5c13eff7275b061b523a84b0a58dc00dd599c52"
+      "sha256": "7bbc969e1fc4a92a7a8563a656fd5f2219c4b1a253368bc38ab608cddeff5f19"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "ed4a5f556b3b5987942e2336951853462580d0b3f445c1fe2a99c434df6d6e05"
+      "sha256": "48571c23b0e13713201cad8ab9de656717adf169fcfda4d7b6622e7552f16158"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
       "sha256": "566df7c59afdbf275e6847ec19090d42820813fcc47029ab1043c420726b81ea"
     },
     {
+      "path": "src/extraction/eicr-extraction-session.js",
+      "sha256": "912b0a42da3e4cb643265d61ea6ac966a8674aecae9ab6514765ec8e6552dc4c"
+    },
+    {
+      "path": "src/extraction/stage6-shadow-harness.js",
+      "sha256": "e4ebfe16c4c6b6fa8fdcf6ad347423d86cfdca6e592725a60cb5d2a512cd1623"
+    },
+    {
+      "path": "src/extraction/postcode-snapshot-applier.js",
+      "sha256": "7f6fb33e146ecd61df921c75d82429d9ab1ae9a6967981fdcf8b25ef7f1a1e60"
+    },
+    {
+      "path": "src/extraction/dialogue-engine/engine.js",
+      "sha256": "139f86f4b79f0d4c3a1df152b1a6eebe8a73bbd80cf27e1633fb639d4b377dad"
+    },
+    {
+      "path": "src/extraction/dialogue-engine/helpers/snapshot-write.js",
+      "sha256": "423a4c4fad918cdddac4bd2c6538f0ef847ddc8aa58563dc09fd1df1169040b6"
+    },
+    {
+      "path": "src/extraction/dialogue-engine/helpers/derivations.js",
+      "sha256": "5398d3c754c4aca8eb1d49e37a5d38bcd8e842fa38d4ef705c4a57d6210699f9"
+    },
+    {
+      "path": "src/routes/voice-latency-fast-tts.js",
+      "sha256": "a460ea8758d0b2642e1d28adbe9c120d0a20b44b68cdadffaa4d29d3bda5e8d9"
+    },
+    {
+      "path": "src/routes/voice-latency-playback-ack.js",
+      "sha256": "94790c75116190740fecd2114d625c519f82160a7d3a30c16c841a6c3d00fd47"
+    },
+    {
       "path": "scripts/model-ab/lib/mutation-classification.mjs",
-      "sha256": "d21ba2b4a2fe5148682f34113d53489b1fe8991eb548c2f01df8f486704f4764"
+      "sha256": "fce9671dc5e9d4e9f9ccb93b77f2d080e37e292830ebc8ba46eb6ff50d8d3d05"
     },
     {
       "path": "scripts/model-ab/lib/expectation-projection.mjs",
-      "sha256": "e444656f31d2f665ddc9cf4dd07a63da9d21c7df00c7747eae76cd87d5c1e709"
+      "sha256": "a419b020fb1132f2e4b8dcfd809a66ccbf413923d5280b44f605694f49b6099d"
+    },
+    {
+      "path": "scripts/model-ab/lib/semantic-judge.mjs",
+      "sha256": "78815f9998fc7f59aade3c8b49d9341692ca73aa6ad18954d7aeaaabdd9cadf6"
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
