@@ -14,6 +14,11 @@
   },
   "ineligible_conditions": [
     {
+      "condition": "ask_invalid",
+      "reason": "emitted_without_binding",
+      "count": null
+    },
+    {
       "condition": "delivery_invalid",
       "reason": "fast_provisional_unconsumed",
       "count": null
@@ -127,5 +132,6 @@
       "terminal_attempted": null,
       "runtime_id": "ghost_1"
     }
-  ]
+  ],
+  "rejection_regime_contradictions": []
 }

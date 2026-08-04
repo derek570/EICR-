@@ -32,6 +32,7 @@ import {
   ASK_QUIESCENCE_FAMILIES,
   SEMANTIC_FAMILIES,
   NON_QUIESCENT_TERMINALS,
+  REJECTION_REASONS,
 } from './plan00-evidence-registry.js';
 
 const PROJECTION_NAME = 'evidence_projection_v1';
@@ -87,6 +88,99 @@ function collectCountContradictions(counts, askFamilies) {
       derived: expectedAggregate,
     });
   }
+  // Cycle-2 (R2-3) — revision_instability is a CLOSED 0|1 outcome; a
+  // missing/out-of-domain value must never read as "stable".
+  const revInstability = counts.revision_instability;
+  if (revInstability !== 0 && revInstability !== 1) {
+    contradictions.push({
+      family: 'aggregate_revision_instability',
+      counted: revInstability ?? null,
+      derived: null,
+    });
+  }
+  return contradictions;
+}
+
+/**
+ * Cycle-2 (R2-2) — the executable REJECTION_REASONS regime table COMPOSES
+ * into eligibility: a structural rejection row must be accompanied by its
+ * owning ledger's freeze-time invalid row; a transition rejection must
+ * reference an ask that exists in the stream; a pre_admission or
+ * unregistered reason can never legitimately appear as a row. Sub-records-
+ * only (the frozen ledgers cannot enumerate rejections) — stripped from
+ * the comparable subset.
+ */
+function collectRegimeContradictions({
+  askRejections,
+  rejectedDeliveries,
+  rejectedPlaybacks,
+  ineligibleConditions,
+  knownAskRuntimeIds,
+}) {
+  const contradictions = [];
+  const hasCondition = (condition) => ineligibleConditions.some((c) => c.condition === condition);
+  const reasonSpec = (reason) =>
+    Object.prototype.hasOwnProperty.call(REJECTION_REASONS, reason)
+      ? REJECTION_REASONS[reason]
+      : null;
+
+  for (const rej of askRejections) {
+    const spec = reasonSpec(rej.reason);
+    if (!spec || spec.regime === 'pre_admission') {
+      contradictions.push({
+        class: 'illegal_reason_row',
+        kind: 'ask_transition_rejected',
+        seq: rej.seq,
+        reason: rej.reason ?? null,
+      });
+      continue;
+    }
+    if (spec.regime === 'structural_latch' && !hasCondition('ask_invalid')) {
+      contradictions.push({
+        class: 'structural_rejection_without_latch',
+        kind: 'ask_transition_rejected',
+        seq: rej.seq,
+        reason: rej.reason,
+      });
+    }
+    if (
+      spec.regime === 'transition_rejection' &&
+      rej.runtime_id != null &&
+      !knownAskRuntimeIds.has(rej.runtime_id)
+    ) {
+      contradictions.push({
+        class: 'orphan_transition_rejection',
+        kind: 'ask_transition_rejected',
+        seq: rej.seq,
+        reason: rej.reason,
+      });
+    }
+  }
+  for (const [kind, list] of [
+    ['delivery_rejected', rejectedDeliveries],
+    ['playback_rejected', rejectedPlaybacks],
+  ]) {
+    for (const rej of list) {
+      const spec = reasonSpec(rej.reason);
+      if (!spec || spec.regime === 'pre_admission') {
+        contradictions.push({
+          class: 'illegal_reason_row',
+          kind,
+          seq: rej.seq,
+          reason: rej.reason ?? null,
+        });
+        continue;
+      }
+      if (!hasCondition('delivery_invalid')) {
+        contradictions.push({
+          class: 'structural_rejection_without_latch',
+          kind,
+          seq: rej.seq,
+          reason: rej.reason,
+        });
+      }
+    }
+  }
   return contradictions;
 }
 
@@ -109,6 +203,9 @@ export function buildEvidenceProjectionV1(snapshot) {
   // key `${family}::${runtime_id}` -> 'open' | 'closed' | 'open_at_stop'
   const askStates = new Map();
   const askKey = (family, runtimeId) => `${family}::${runtimeId}`;
+  // Cycle-2 (R2-2) — every runtime id that EXISTS in the stream (any
+  // accepted lifecycle row naming it), for orphan-rejection detection.
+  const knownAskRuntimeIds = new Set();
 
   const deliveries = groupByFamily(SEMANTIC_FAMILIES);
   const playbacks = groupByFamily(SEMANTIC_FAMILIES);
@@ -128,6 +225,7 @@ export function buildEvidenceProjectionV1(snapshot) {
       case 'ask_lifecycle': {
         const family = ASK_QUIESCENCE_FAMILIES.includes(row.family) ? row.family : null;
         if (!family) break;
+        if (row.runtime_id != null) knownAskRuntimeIds.add(row.runtime_id);
         const fam = askFamilies[family];
         switch (row.stage) {
           case 'produced':
@@ -291,13 +389,25 @@ export function buildEvidenceProjectionV1(snapshot) {
   // zero (or vice versa) is a contract contradiction, and a fold must HOLD
   // on it rather than trust either side.
   const countContradictions = collectCountContradictions(counts, askFamilies);
+  const allAskRejections = [
+    ...Object.values(askFamilies).flatMap((fam) => fam.rejected),
+    ...unscopedRejectedAsks,
+  ];
+  const regimeContradictions = collectRegimeContradictions({
+    askRejections: allAskRejections,
+    rejectedDeliveries,
+    rejectedPlaybacks,
+    ineligibleConditions,
+    knownAskRuntimeIds,
+  });
 
   const eligible =
     quiescence.non_quiescent_at_stop === 0 &&
     quiescence.revision_instability === 0 &&
     ineligibleConditions.length === 0 &&
     unknownProducers.length === 0 &&
-    countContradictions.length === 0;
+    countContradictions.length === 0 &&
+    regimeContradictions.length === 0;
 
   const askComplete = (family) => {
     const fam = askFamilies[family];
@@ -318,6 +428,7 @@ export function buildEvidenceProjectionV1(snapshot) {
     ineligible_conditions: ineligibleConditions,
     unknown_producers: unknownProducers,
     count_contradictions: countContradictions,
+    rejection_regime_contradictions: regimeContradictions,
     eligible_for_family_credit: eligible,
     ask_families: askFamilies,
     unscoped_rejected_asks: unscopedRejectedAsks,
@@ -512,6 +623,7 @@ export function comparableSubset(projection) {
     rejected_playbacks: _rp,
     idempotent_playbacks: _ip,
     unscoped_rejected_asks: _ura,
+    rejection_regime_contradictions: _rrc,
     round_usage: _ru,
     ...rest
   } = projection;

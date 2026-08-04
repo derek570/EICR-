@@ -27,7 +27,9 @@
   "quiescence_count_keys": {
     "open_asks_dispatcher": "open (produced|emitted) askLedger entries whose registry quiescence_family is dispatcher, plus entries terminal-resolved with a stop-boundary terminal",
     "open_asks_dialogue_script": "same rule for dialogue_script",
-    "open_asks_address_mirror": "same rule for address_mirror"
+    "open_asks_address_mirror": "same rule for address_mirror",
+    "revision_instability": "closed 0|1 integer outcome — a missing or out-of-domain value is a count contradiction (fail-closed)",
+    "non_quiescent_at_stop": "closed 0|1 integer outcome, and it must EQUAL what the in-flight counts imply (aggregate reconciliation)"
   },
   "ask_terminals": {
     "pre_stop_examples": [
@@ -158,7 +160,47 @@
         "reason": "string|null, join_expired stage only",
         "replaces_runtime_id": "string|null, produced stage only — the predecessor runtime id when this ask REPLACES a broker predecessor (carries the lineage for link-only replacements of already-terminal predecessors)"
       },
-      "rule": "Appended ONLY when the owning askLedger ACCEPTED the transition (the row is derived from the ledger verdict — one derivation, never a parallel append)."
+      "rule": "Appended ONLY when the owning askLedger ACCEPTED the transition (the row is derived from the ledger verdict — one derivation, never a parallel append).",
+      "field_spec": {
+        "required": {
+          "family": "family",
+          "stage": "string"
+        },
+        "optional": {
+          "runtime_id": "string|null",
+          "live_ask_key": "string",
+          "terminal": "string",
+          "successor_runtime_id": "string",
+          "expired": "number",
+          "reason": "string|null",
+          "replaces_runtime_id": "string"
+        },
+        "stage_fields": {
+          "produced": [
+            "runtime_id",
+            "live_ask_key",
+            "replaces_runtime_id"
+          ],
+          "emitted": [
+            "runtime_id"
+          ],
+          "reissued_attempt": [
+            "runtime_id"
+          ],
+          "resolved": [
+            "runtime_id",
+            "terminal"
+          ],
+          "replaced": [
+            "runtime_id",
+            "successor_runtime_id"
+          ],
+          "join_expired": [
+            "expired",
+            "reason"
+          ]
+        }
+      }
     },
     "ask_transition_rejected": {
       "class": "rejected_audit",
@@ -170,7 +212,18 @@
         "terminal_attempted": "string|null, resolved attempts only",
         "reason": "rejection_reasons member"
       },
-      "rule": "Every REJECTED ask-ledger transition attempt appends exactly one of these (mutually exclusive with the accepted row). Projects zero lifecycle credit. Distinct discriminator so a sub-records-only fold can never mistake it for credit."
+      "rule": "Every REJECTED ask-ledger transition attempt appends exactly one of these (mutually exclusive with the accepted row). Projects zero lifecycle credit. Distinct discriminator so a sub-records-only fold can never mistake it for credit.",
+      "field_spec": {
+        "required": {
+          "stage_attempted": "string",
+          "reason": "rejection_reason"
+        },
+        "optional": {
+          "family": "family|null",
+          "runtime_id": "string|null",
+          "terminal_attempted": "string|null"
+        }
+      }
     },
     "delivery_evidence": {
       "class": "accepted_transition",
@@ -189,7 +242,25 @@
         "correlation_id": "string|null, fast_tts_promotion only",
         "delivery_claim_token": "string|null — the PERSISTED outbox delivery-claim token (process lineage) on address-mirror rows; claim_lineage stays the logical `kind:token` ACK alias"
       },
-      "rule": "The legacy overloaded `family` key (which carried the TRANSPORT) is retired; semantic_family and transport are separate fields. No spoken text on the row. EXCEPTION: a delivery_kind=delivery_history_ambiguous row is an UNCREDITABLE recovery marker (discriminated by delivery_kind, never projected as delivery credit) and carries delivery_ref:null/at_seq:null — it marks operations, not a send."
+      "rule": "The legacy overloaded `family` key (which carried the TRANSPORT) is retired; semantic_family and transport are separate fields. No spoken text on the row. EXCEPTION: a delivery_kind=delivery_history_ambiguous row is an UNCREDITABLE recovery marker (discriminated by delivery_kind, never projected as delivery credit) and carries delivery_ref:null/at_seq:null — it marks operations, not a send.",
+      "field_spec": {
+        "required": {
+          "producer_id": "producer_id",
+          "semantic_family": "semantic_family",
+          "transport": "transport",
+          "delivery_kind": "string",
+          "op_keys": "array<string>",
+          "delivery_ref": "string|null",
+          "at_seq": "number|null",
+          "claim_lineage": "string|null",
+          "wire_turn_id": "string|null",
+          "dedupe_token": "string|null",
+          "correlation_id": "string|null"
+        },
+        "optional": {
+          "delivery_claim_token": "string|null"
+        }
+      }
     },
     "delivery_rejected": {
       "class": "rejected_audit",
@@ -201,7 +272,18 @@
         "circuit": "number|null",
         "claim_lineage": "string|null"
       },
-      "rule": "An attempted operation-backed delivery whose receipt binding failed. Visible-but-uncreditable; always paired with the delivery_invalid structural latch."
+      "rule": "An attempted operation-backed delivery whose receipt binding failed. Visible-but-uncreditable; always paired with the delivery_invalid structural latch.",
+      "field_spec": {
+        "required": {
+          "producer_id": "producer_id",
+          "reason": "rejection_reason"
+        },
+        "optional": {
+          "field": "string|null",
+          "circuit": "number|null",
+          "claim_lineage": "string|null"
+        }
+      }
     },
     "playback_evidence": {
       "class": "accepted_transition",
@@ -215,7 +297,20 @@
         "ack_body_hash": "sha256 hex of the canonical ACK body",
         "correlation_id": "string|null, fast staged-ack consumption only"
       },
-      "rule": "One row per AUTHORITATIVE playback start (the delivery ledger accepted the ACK as a new playback_start row)."
+      "rule": "One row per AUTHORITATIVE playback start (the delivery ledger accepted the ACK as a new playback_start row).",
+      "field_spec": {
+        "required": {
+          "producer_id": "producer_id",
+          "semantic_family": "semantic_family",
+          "transport": "transport",
+          "op_key": "string",
+          "source": "string|null",
+          "ack_body_hash": "hex64"
+        },
+        "optional": {
+          "correlation_id": "string|null"
+        }
+      }
     },
     "playback_idempotent": {
       "class": "idempotent_audit",
@@ -227,7 +322,17 @@
         "op_key": "canonical operation identity key of the EXISTING authoritative playback",
         "ack_body_hash": "sha256 hex — byte-identical to the existing authoritative row's hash"
       },
-      "rule": "A byte-identical ACK retransmission: accepted-IDEMPOTENT verdict, keyed to the existing authoritative event, projects NO additional credit and never affects eligibility."
+      "rule": "A byte-identical ACK retransmission: accepted-IDEMPOTENT verdict, keyed to the existing authoritative event, projects NO additional credit and never affects eligibility.",
+      "field_spec": {
+        "required": {
+          "producer_id": "producer_id",
+          "semantic_family": "semantic_family",
+          "transport": "transport",
+          "op_key": "string",
+          "ack_body_hash": "hex64"
+        },
+        "optional": {}
+      }
     },
     "playback_rejected": {
       "class": "rejected_audit",
@@ -237,7 +342,16 @@
         "reason": "rejection_reasons member",
         "matches": "number|null"
       },
-      "rule": "An integrity-rejected ACK that reached the ledger admission layer (post pre-admission). Pre-admission unmatched/wrong/stale/zero-or-ambiguous slot resolutions are NOT transition attempts: they stay telemetry and append NO row."
+      "rule": "An integrity-rejected ACK that reached the ledger admission layer (post pre-admission). Pre-admission unmatched/wrong/stale/zero-or-ambiguous slot resolutions are NOT transition attempts: they stay telemetry and append NO row.",
+      "field_spec": {
+        "required": {
+          "producer_id": "producer_id",
+          "reason": "rejection_reason"
+        },
+        "optional": {
+          "matches": "number|null"
+        }
+      }
     },
     "round_usage": {
       "class": "non_producer",
@@ -268,6 +382,9 @@
           "loop_invocation_id"
         ],
         "api_transport": "anthropic_messages | chat_completions | responses | null — WHICH API served the round (adapter-stamped actual transport, never configuration)"
+      },
+      "field_spec": {
+        "allowlist_is_spec": true
       }
     },
     "non_mutating_audible": {
@@ -276,6 +393,13 @@
       "fields": {
         "channel": "string|null",
         "audible_kind": "string|null"
+      },
+      "field_spec": {
+        "required": {
+          "channel": "string|null",
+          "audible_kind": "string|null"
+        },
+        "optional": {}
       }
     },
     "freeze_invalid": {
@@ -286,7 +410,15 @@
         "reason": "string|null (the latch reason; null for delivery_prepared_outstanding)",
         "count": "number|null (delivery_prepared_outstanding only)"
       },
-      "rule": "Canonical freeze-time rows, appended inside freezeEvidenceCompletion AFTER ctx.settleFastTts() and the direct assertNoUnconsumedProvisionals() fold, BEFORE the revisionsBefore read. CONDITION-GATED: appended only when the condition holds, never a zero/null placeholder. Any freeze_invalid row renders the session INELIGIBLE for 00C family credit (fold HOLD/INVALID). Unconsumed fast-TTS provisionals reach this class by folding into the delivery_invalid latch (reason fast_provisional_unconsumed) via the EXISTING non-throwing assertNoUnconsumedProvisionals — never a parallel derivation."
+      "rule": "Canonical freeze-time rows, appended inside freezeEvidenceCompletion AFTER ctx.settleFastTts() and the direct assertNoUnconsumedProvisionals() fold, BEFORE the revisionsBefore read. CONDITION-GATED: appended only when the condition holds, never a zero/null placeholder. Any freeze_invalid row renders the session INELIGIBLE for 00C family credit (fold HOLD/INVALID). Unconsumed fast-TTS provisionals reach this class by folding into the delivery_invalid latch (reason fast_provisional_unconsumed) via the EXISTING non-throwing assertNoUnconsumedProvisionals — never a parallel derivation.",
+      "field_spec": {
+        "required": {
+          "condition": "freeze_condition",
+          "reason": "string|null",
+          "count": "number|null"
+        },
+        "optional": {}
+      }
     },
     "producer_unknown": {
       "class": "invalid_audit",
@@ -295,13 +427,23 @@
         "event_class": "ask | delivery | playback",
         "producer_id_raw": "the unknown id as supplied"
       },
-      "rule": "Appended when a record* API receives a producer id absent from producer_registry; the owning ledger is marked invalid. Any producer_unknown row renders the session INELIGIBLE."
+      "rule": "Appended when a record* API receives a producer id absent from producer_registry; the owning ledger is marked invalid. Any producer_unknown row renders the session INELIGIBLE.",
+      "field_spec": {
+        "required": {
+          "event_class": "event_class",
+          "producer_id_raw": "string|null"
+        },
+        "optional": {}
+      }
     },
     "successful_frame": {
       "class": "non_producer",
       "credit_bearing": false,
       "fields": {
         "note": "production-shaped frame descriptor; not consumed by evidence_projection_v1"
+      },
+      "field_spec": {
+        "unvalidated_fields": true
       }
     },
     "confirmation_delivery": {
@@ -309,6 +451,9 @@
       "credit_bearing": false,
       "fields": {
         "note": "production-shaped delivery descriptor; not consumed by evidence_projection_v1"
+      },
+      "field_spec": {
+        "unvalidated_fields": true
       }
     }
   },
@@ -495,5 +640,26 @@
       "playback_ack_proof": "at least one playback_evidence row with semantic_family address_mirror (the address_mirror_delivery_ack producer)"
     },
     "zero_credit_rule": "Rejected/idempotent/unknown/freeze rows grant zero produced/emitted/resolved/delivery/playback family credit; any session_ineligibility_row_class row makes the whole session's family evidence INELIGIBLE (fold HOLD/INVALID)."
+  },
+  "field_spec_type_grammar": [
+    "string",
+    "string|null",
+    "number",
+    "number|null",
+    "boolean",
+    "hex64",
+    "array<string>",
+    "family",
+    "family|null",
+    "semantic_family",
+    "transport",
+    "producer_id",
+    "rejection_reason",
+    "freeze_condition",
+    "event_class",
+    "json"
+  ],
+  "rejection_regime_composition": {
+    "rule": "Cycle-2 (R2-2): the regime table COMPOSES into projection eligibility. A structural ask rejection row requires a freeze_invalid row with condition ask_invalid; a structural delivery/playback rejection row requires condition delivery_invalid; a transition-rejection row must reference an ask that EXISTS in the stream (an orphan rejection is a contradiction; a later accepted resolution legitimately closes it); a row carrying a pre_admission or unregistered reason is itself a contradiction. Any rejection_regime_contradiction renders the session INELIGIBLE (fold HOLD/INVALID)."
   }
 }

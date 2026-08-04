@@ -479,7 +479,7 @@
     ]
   },
   "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
-  "semantic_oracle_digest": "6dfb877064a6880bd7e7ce81bb6e643069307f50300d245e1594c58e8faaa254",
+  "semantic_oracle_digest": "03c6915a92fdb2b04a016e217704911be3e18e138c339a03aeeab38fbdd657af",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -607,7 +607,7 @@
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json",
-      "sha256": "c1d8a51b3f687730aa981e171667ef931c941e50458f1ccbc691185e1c46fb78"
+      "sha256": "7db5cad6da198c9169e37f5c0dece2a63cc33ae98b144dd45976a99a558009e9"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-v1.json",
@@ -615,15 +615,15 @@
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-v1.json",
-      "sha256": "cd31a6f0e1ce1628c96a91f41166c6378743495ac45f20b511eb37c721e82c09"
+      "sha256": "1291e7ed9c932eee710edfb22d2a2ceaf57ae1531fd7da369c4a5ac2ff28655c"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json",
-      "sha256": "391a70bc0f6cdd2132d0f29d874c35b1e8eaebb34850f2396e55e7bde5c41087"
+      "sha256": "1eb4f188d9913962018e2bf7e9183ea78995f15d55cc9e820268f7bac7215d02"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json",
-      "sha256": "24cdc25d0c75b9720b38348e5cef78713ffa1b3dd818f1640d991c0abbaf98ee"
+      "sha256": "494012364f03e3e11ccde3cd498cdb23b04bce60ea2404a2f99ae79c84dd0ac7"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/ack-sequences-v1.json",
@@ -635,7 +635,7 @@
     },
     {
       "path": "src/extraction/plan00-evidence-projection.js",
-      "sha256": "cbbfb8f84ba62760db182730cdc29cebada065bd713cb95ca5a75525d7f81186"
+      "sha256": "1e585a296870fe25c1f314eec9eb9ec1a20d65e4deffc7099998e2a8dcbb5aaf"
     }
   ],
   "strata_named_gaps": [

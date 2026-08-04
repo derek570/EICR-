@@ -236,61 +236,219 @@ describe('contract schema drift (C0 anti-shaping)', () => {
 
 // ── 2. Fixture rows validate against the schema ────────────────────────────
 
-describe('fixture validation against schema-v1 (C0)', () => {
-  const validateSnapshot = (snap) => {
-    const body = stripComment(snap);
-    expect(Object.keys(body).sort()).toEqual([...schema.snapshot_keys].sort());
-    for (const row of body.sub_records) {
-      const kindSpec = schema.row_kinds[row.kind];
-      expect(kindSpec).toBeDefined();
-      // no spoken text on ANY sub-record (00C manifest PII rule)
-      expect(Object.prototype.hasOwnProperty.call(row, 'text')).toBe(false);
-      if (row.producer_id != null) {
-        const producer = PRODUCER_REGISTRY[row.producer_id];
-        expect(producer).toBeDefined();
-        if (row.semantic_family != null) {
-          expect(row.semantic_family).toBe(producer.semantic_family);
-        }
-        if (row.transport != null && row.kind !== 'delivery_rejected') {
-          expect(row.transport).toBe(producer.transport);
-        }
-      }
-      if (row.kind === 'ask_lifecycle') {
-        expect(ASK_QUIESCENCE_FAMILIES).toContain(row.family);
-      }
-      if (row.kind === 'ask_transition_rejected' && row.family !== null) {
-        // schema: family is nullable on rejected rows (unresolvable binding)
-        expect(ASK_QUIESCENCE_FAMILIES).toContain(row.family);
-      }
-      if (
-        row.kind === 'ask_transition_rejected' ||
-        row.kind === 'delivery_rejected' ||
-        row.kind === 'playback_rejected'
-      ) {
-        expect(Object.keys(schema.rejection_reasons)).toContain(row.reason);
-      }
-      if (row.kind === 'freeze_invalid') {
-        expect([
-          'ask_invalid',
-          'delivery_invalid',
-          'producer_invalid',
-          'mutation_invalid',
-          'delivery_prepared_outstanding',
-        ]).toContain(row.condition);
-      }
-      if (row.kind === 'round_usage') {
-        const allow = new Set([
-          ...schema.row_kinds.round_usage.fields.allowlist,
-          'kind',
-          'revision',
-        ]);
-        for (const key of Object.keys(row)) expect(allow.has(key)).toBe(true);
+// ── The schema-driven row validator (Cycle-2 R2-1 — the contract is
+// EXECUTABLE, not descriptive): every row of every snapshot AND of real
+// hook output must satisfy its kind's machine-readable field_spec — no
+// missing required field, no unknown extra field, no mistyped value, no
+// stage-incompatible field, no producer/family disagreement.
+function typeOk(type, value) {
+  switch (type) {
+    case 'string':
+      return typeof value === 'string';
+    case 'string|null':
+      return value === null || typeof value === 'string';
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'number|null':
+      return value === null || (typeof value === 'number' && Number.isFinite(value));
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'hex64':
+      return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+    case 'array<string>':
+      return Array.isArray(value) && value.every((v) => typeof v === 'string');
+    case 'family':
+      return ASK_QUIESCENCE_FAMILIES.includes(value);
+    case 'family|null':
+      return value === null || ASK_QUIESCENCE_FAMILIES.includes(value);
+    case 'semantic_family':
+      return SEMANTIC_FAMILIES.includes(value);
+    case 'transport':
+      return EVIDENCE_TRANSPORTS.includes(value);
+    case 'producer_id':
+      return Object.prototype.hasOwnProperty.call(PRODUCER_REGISTRY, value);
+    case 'rejection_reason':
+      return Object.prototype.hasOwnProperty.call(schema.rejection_reasons, value);
+    case 'freeze_condition':
+      return [
+        'ask_invalid',
+        'delivery_invalid',
+        'producer_invalid',
+        'mutation_invalid',
+        'delivery_prepared_outstanding',
+      ].includes(value);
+    case 'event_class':
+      return ['ask', 'delivery', 'playback'].includes(value);
+    case 'json':
+      return true;
+    default:
+      throw new Error(`unknown field_spec type: ${type}`);
+  }
+}
+
+function validateRow(row) {
+  const kindSpec = schema.row_kinds[row.kind];
+  expect(kindSpec).toBeDefined();
+  // no spoken text on ANY sub-record (00C manifest PII rule)
+  expect(Object.prototype.hasOwnProperty.call(row, 'text')).toBe(false);
+  const spec = kindSpec.field_spec;
+  expect(spec).toBeDefined();
+  if (spec.unvalidated_fields) return; // production-shaped rows
+  const fields = Object.keys(row).filter((k) => k !== 'kind' && k !== 'revision');
+  if (spec.allowlist_is_spec) {
+    const allow = new Set(kindSpec.fields.allowlist);
+    for (const key of fields) {
+      if (!allow.has(key)) throw new Error(`${row.kind}: unknown field ${key}`);
+    }
+    return;
+  }
+  const required = spec.required ?? {};
+  const optional = spec.optional ?? {};
+  for (const [name, type] of Object.entries(required)) {
+    if (!Object.prototype.hasOwnProperty.call(row, name)) {
+      throw new Error(`${row.kind}: missing required field ${name}`);
+    }
+    if (!typeOk(type, row[name])) {
+      throw new Error(`${row.kind}.${name}: type ${type} violated by ${JSON.stringify(row[name])}`);
+    }
+  }
+  for (const key of fields) {
+    if (Object.prototype.hasOwnProperty.call(required, key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(optional, key)) {
+      throw new Error(`${row.kind}: unknown extra field ${key}`);
+    }
+    if (!typeOk(optional[key], row[key])) {
+      throw new Error(
+        `${row.kind}.${key}: type ${optional[key]} violated by ${JSON.stringify(row[key])}`
+      );
+    }
+  }
+  // stage-compatibility (ask_lifecycle only)
+  if (spec.stage_fields) {
+    const allowed = new Set([...(spec.stage_fields[row.stage] ?? []), ...Object.keys(required)]);
+    for (const key of fields) {
+      if (Object.prototype.hasOwnProperty.call(required, key)) continue;
+      if (!allowed.has(key)) {
+        throw new Error(`${row.kind}: field ${key} incompatible with stage ${row.stage}`);
       }
     }
-  };
+  }
+  // producer/family agreement
+  if (row.producer_id != null && row.semantic_family != null) {
+    expect(row.semantic_family).toBe(PRODUCER_REGISTRY[row.producer_id].semantic_family);
+  }
+  if (row.producer_id != null && row.transport != null && row.kind !== 'delivery_rejected') {
+    expect(row.transport).toBe(PRODUCER_REGISTRY[row.producer_id].transport);
+  }
+}
 
+function validateSnapshot(snap) {
+  const body = stripComment(snap);
+  expect(Object.keys(body).sort()).toEqual([...schema.snapshot_keys].sort());
+  for (const row of body.sub_records) validateRow(row);
+}
+
+describe('fixture validation against schema-v1 (C0)', () => {
   test('fixture A (eligible) validates', () => validateSnapshot(snapshotA));
   test('fixture B (ineligible) validates', () => validateSnapshot(snapshotB));
+
+  test('the validator genuinely rejects: missing required, unknown extra, mistyped, stage-incompatible', () => {
+    expect(() =>
+      validateRow({ kind: 'playback_evidence', revision: 1, producer_id: 'playback_ack_slot' })
+    ).toThrow(/missing required/);
+    expect(() =>
+      validateRow({
+        kind: 'freeze_invalid',
+        revision: 1,
+        condition: 'ask_invalid',
+        reason: null,
+        count: null,
+        extra: 1,
+      })
+    ).toThrow(/unknown extra/);
+    expect(() =>
+      validateRow({
+        kind: 'delivery_rejected',
+        revision: 1,
+        producer_id: 'dialogue_confirmation',
+        reason: 'not_a_reason',
+      })
+    ).toThrow(/type rejection_reason/);
+    expect(() =>
+      validateRow({
+        kind: 'ask_lifecycle',
+        revision: 1,
+        family: 'dispatcher',
+        stage: 'emitted',
+        runtime_id: 'x',
+        terminal: 'answered',
+      })
+    ).toThrow(/incompatible with stage/);
+  });
+
+  test('REAL hook output validates row-by-row against the schema (producer-adapter conformance)', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_validate' });
+    ctx.recordAskProduced({ producerId: 'dispatcher_ask', runtimeId: 'v1', liveAskKey: K('v') });
+    ctx.recordAskEmitted({ runtimeId: 'v1' });
+    ctx.recordAskResolved({
+      runtimeId: 'v1',
+      terminal: 'answered',
+      detail: { answer_frame_id: 'v1', transcript_resolved: true },
+    });
+    ctx.recordAskProduced({
+      producerId: 'dialogue_script_ask',
+      runtimeId: 'v2',
+      liveAskKey: K('v2'),
+    });
+    ctx.recordAskEmitted({ runtimeId: 'v2' });
+    ctx.recordAskResolved({
+      runtimeId: 'v2',
+      terminal: 'answered',
+      detail: { answer_frame_id: 'BAD', transcript_resolved: true },
+    }); // rejected row
+    const op = {
+      extractionTurnId: 'tv',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      ordinal: 0,
+    };
+    ctx.recordDelivery([op], { producerId: 'result_frame_confirmation', kind: 'confirmation' });
+    ctx.recordPlayback({ ok: 1 }, [op], { producerId: 'playback_ack_slot', source: 'ordinary' });
+    ctx.recordPlayback({ ok: 1 }, [op], { producerId: 'playback_ack_slot', source: 'ordinary' }); // idempotent
+    ctx.recordDeliveryRejected({
+      producerId: 'dialogue_confirmation',
+      reason: 'dialogue_delivery_binding_ambiguous',
+    });
+    ctx.recordDelivery([op], { producerId: 'nope', kind: 'confirmation' }); // producer_unknown
+    ctx.recordNonMutatingAudible({ channel: 'ws_vcr', kind: 'voice_command_response' });
+    ctx.roundUsageSink(
+      { provider: 'openai', api_transport: 'responses', round_idx: 0 },
+      { loopInvocationId: 'lv', billableKind: 'inspector_extraction' }
+    );
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_validate',
+      boundary: 'session_stopped',
+    });
+    for (const row of frozen.evidence.sub_records) validateRow(row);
+    // every row kind this session produced is covered by the sweep
+    const kinds = new Set(frozen.evidence.sub_records.map((r) => r.kind));
+    for (const expected of [
+      'ask_lifecycle',
+      'ask_transition_rejected',
+      'delivery_evidence',
+      'playback_evidence',
+      'playback_idempotent',
+      'delivery_rejected',
+      'producer_unknown',
+      'non_mutating_audible',
+      'round_usage',
+      'freeze_invalid',
+    ]) {
+      expect(kinds.has(expected)).toBe(true);
+    }
+  });
 });
 
 // ── 3. The two-sided committed artifact ────────────────────────────────────
@@ -1434,6 +1592,167 @@ describe('Codex r1 — executable rejection-regime table', () => {
     });
     expect(rowsOfKind(entry, 'delivery_rejected')).toHaveLength(0);
     expect(rowsOfKind(entry, 'producer_unknown')).toHaveLength(1);
+  });
+});
+
+// ── 5d. Cycle-2 pins — regime composition + closed count domain ────────────
+
+describe('Cycle-2 pins — rejection-regime composition (R2-2)', () => {
+  const baseCounts = {
+    open_asks_dispatcher: 0,
+    open_asks_dialogue_script: 0,
+    open_asks_address_mirror: 0,
+    non_quiescent_at_stop: 0,
+    revision_instability: 0,
+  };
+
+  test('a structural delivery rejection row WITHOUT its delivery_invalid freeze row is a contradiction', () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: { ...baseCounts },
+      revisions: { usage_revision: 0 },
+      sub_records: [
+        {
+          kind: 'delivery_rejected',
+          revision: 1,
+          producer_id: 'dialogue_confirmation',
+          reason: 'dialogue_delivery_binding_ambiguous',
+        },
+      ],
+    });
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'structural_rejection_without_latch',
+        kind: 'delivery_rejected',
+        seq: 0,
+        reason: 'dialogue_delivery_binding_ambiguous',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('a pre_admission reason can never legitimately appear as a row', () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: { ...baseCounts },
+      revisions: { usage_revision: 0 },
+      sub_records: [
+        {
+          kind: 'playback_rejected',
+          revision: 1,
+          producer_id: 'fast_tts_staged_ack',
+          reason: 'fast_ack_without_provisional',
+        },
+      ],
+    });
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'illegal_reason_row',
+        kind: 'playback_rejected',
+        seq: 0,
+        reason: 'fast_ack_without_provisional',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('an ORPHAN transition rejection (no such ask in the stream) is a contradiction', () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: { ...baseCounts },
+      revisions: { usage_revision: 0 },
+      sub_records: [
+        {
+          kind: 'ask_transition_rejected',
+          revision: 1,
+          family: 'dialogue_script',
+          stage_attempted: 'resolved',
+          runtime_id: 'ghost',
+          terminal_attempted: 'answered',
+          reason: 'answered_without_full_proof',
+        },
+      ],
+    });
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'orphan_transition_rejection',
+        kind: 'ask_transition_rejected',
+        seq: 0,
+        reason: 'answered_without_full_proof',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('a REAL rejected-then-retried session projects with ZERO regime contradictions', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_r2ok' });
+    ctx.recordAskProduced({
+      producerId: 'dialogue_script_ask',
+      runtimeId: 'srv_ok',
+      liveAskKey: K('ok'),
+    });
+    ctx.recordAskEmitted({ runtimeId: 'srv_ok' });
+    ctx.recordAskResolved({
+      runtimeId: 'srv_ok',
+      terminal: 'answered',
+      detail: { answer_frame_id: 'BAD', transcript_resolved: true },
+    });
+    ctx.recordAskResolved({
+      runtimeId: 'srv_ok',
+      terminal: 'answered',
+      detail: { answer_frame_id: 'srv_ok', transcript_resolved: true },
+    });
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_r2ok',
+      boundary: 'session_stopped',
+    });
+    const proj = buildEvidenceProjectionV1(frozen.candidate);
+    expect(proj.rejection_regime_contradictions).toEqual([]);
+    expect(proj.eligible_for_family_credit).toBe(true);
+  });
+});
+
+describe('Cycle-2 pins — closed count domain (R2-3)', () => {
+  test('a snapshot MISSING revision_instability is a contradiction, never silently stable', () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: {
+        open_asks_dispatcher: 0,
+        open_asks_dialogue_script: 0,
+        open_asks_address_mirror: 0,
+        non_quiescent_at_stop: 0,
+      },
+      revisions: { usage_revision: 0 },
+      sub_records: [],
+    });
+    expect(proj.count_contradictions).toEqual([
+      { family: 'aggregate_revision_instability', counted: null, derived: null },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('a MISSING open_asks_* key is a contradiction (fail-closed, never zero)', () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: {
+        open_asks_dispatcher: 0,
+        open_asks_dialogue_script: 0,
+        non_quiescent_at_stop: 0,
+        revision_instability: 0,
+      },
+      revisions: { usage_revision: 0 },
+      sub_records: [],
+    });
+    expect(proj.count_contradictions).toEqual([
+      { family: 'address_mirror', counted: null, derived: 0 },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
   });
 });
 

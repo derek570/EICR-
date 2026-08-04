@@ -38,7 +38,7 @@
     "delivery_rejected": 1,
     "playback_rejected": 1,
     "producer_unknown": 1,
-    "freeze_invalid": 2,
+    "freeze_invalid": 3,
     "usage_revision": 0
   },
   "sub_records": [
@@ -122,13 +122,20 @@
     {
       "kind": "freeze_invalid",
       "revision": 1,
+      "condition": "ask_invalid",
+      "reason": "emitted_without_binding",
+      "count": null
+    },
+    {
+      "kind": "freeze_invalid",
+      "revision": 2,
       "condition": "delivery_invalid",
       "reason": "fast_provisional_unconsumed",
       "count": null
     },
     {
       "kind": "freeze_invalid",
-      "revision": 2,
+      "revision": 3,
       "condition": "delivery_prepared_outstanding",
       "reason": null,
       "count": 1
