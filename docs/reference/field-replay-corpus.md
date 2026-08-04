@@ -199,3 +199,62 @@ CODEX-HELD structural findings 1/2/3/6/10 of the parent run):
   legs over the deterministic scenario matrix, and sweeps every frame,
   logger payload and storage body against the canonical frozen
   `EVALUATION_ONLY_SYMBOLS` list.
+
+### Plan 00B-3 — the oracle-evidence CONTRACT (2026-08-04)
+
+Two consecutive CODEX-HELD runs churned in one surface because the evidence
+contract was implicit — reviewers kept discovering it one leak at a time.
+00B-3 inverts the dynamic: the contract is an EXECUTABLE TEST authored
+first, and the implementation converges against it.
+
+- **Pre-authored schema** —
+  `tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json`,
+  committed BEFORE any implementation (the anti-shaping rule): the five-key
+  snapshot boundary, the closed ask-quiescence families
+  (dispatcher/dialogue_script/address_mirror) with the stop-boundary
+  ordering rule, the closed semantic-family + transport enums, ONE closed
+  producer registry backing both, the complete row-kind vocabulary
+  (accepted/rejected/idempotent/freeze/unknown classes), the closed
+  rejection-reason vocabulary with PER-REASON regime composition, and the
+  ternary-plus-pre-admission verdict taxonomy.
+- **Two-sided fixture + projector** — hand-authored snapshot/projection
+  pairs (eligible + ineligible) deep-equal `buildEvidenceProjectionV1`
+  (`src/extraction/plan00-evidence-projection.js`, five-key-snapshot-only);
+  the three-way agreement invariant (latched-snapshot reconstruction ↔
+  frozen-ledger projection ↔ fixture) is created and pinned in
+  `plan00-evidence-contract.test.js` (53 cases, RED-proven 32-failing
+  against the held tip before the fixes landed). 00C's Stage A reuses the
+  same artifact as its session-manifest builder acceptance.
+- **Acceptance-gated sub-records (C1)** — every ask-ledger transition
+  returns an explicit verdict and the row derives FROM it: accepted
+  `ask_lifecycle` OR rejected `ask_transition_rejected` (visible, zero
+  credit), exactly one per attempt. SANCTIONED ledger change:
+  `answered_without_full_proof` is a transition rejection (no invalid
+  latch; the ask stays open and counts non-quiescent). Byte-identical ACK
+  retransmissions append `playback_idempotent`; ledger-layer integrity
+  rejections append `playback_rejected`/`delivery_rejected` beside their
+  latch; pre-admission misses stay telemetry.
+- **Tier-2 quiescence (C2)** — per-family `open_asks_*` counts fold into
+  `readInFlightCounts`; an eligible freeze requires them all zero, and a
+  stop-boundary-terminal-resolved ask still counts open. The recorded
+  corpus keeps judging its declared turn WINDOW: `composeCaptureInvalid`
+  proceeds past quiescence ONLY when the sole non-quiescence is
+  `open_asks_*` (dialogue asks are outside the corpus observation
+  boundary; a stable open ask cannot mutate judged evidence) — 00C's
+  completion fold reads the counts directly and stays strict.
+- **Producer registry (C3)** — record* APIs take registry IDs only;
+  unknown ids append uncreditable `producer_unknown` rows and latch the
+  owning ledger; `semantic_family` + `transport` are separate fields on
+  delivery AND playback rows; `plan00-evidence-source-scan.test.js`
+  forbids raw family/transport-bearing appends outside the typed adapters.
+- **Projection completeness (C5)** — delivery rows carry
+  `delivery_ref`/`at_seq`/aliases, playback rows carry `ack_body_hash` +
+  `source`, `round_usage` rows carry the adapter-stamped `api_transport`
+  (anthropic_messages | chat_completions | responses), and condition-gated
+  `freeze_invalid` rows (invalid latches, `mutation_invalid`, nonzero
+  `delivery_prepared_outstanding`, the unconsumed fast-TTS provisional
+  folded via the existing `assertNoUnconsumedProvisionals`) land inside
+  the latched snapshot with stable revisions.
+- **Parity matrix (C4)** — standalone observation UPDATE + RECODE
+  scenario legs (rule_6_edit code_change + correction_lead_in frames)
+  join the four-quadrant byte-parity matrix.
