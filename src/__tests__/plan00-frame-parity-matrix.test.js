@@ -470,6 +470,50 @@ async function runScenarioMatrix({ withContextFactory, withSessionFactory }) {
   );
   await jest.advanceTimersByTimeAsync(1600); // the 1.5s question-gate flush
 
+  // Scenario: standalone observation UPDATE + RECODE frames (Plan 00B-3 C4 —
+  // cycle-5 finding 4). The RULE-6 classifier emits result.observationUpdates
+  // (a CODE-CHANGE recode carrying previous_code, and a correction-lead-in
+  // update); the frames ride the SAME buildResultFrameLedger egress on every
+  // leg, so evaluation-only interference with observation_update frames now
+  // breaks the byte-parity loop instead of leaving the 4/4 gate green.
+  legacyEntry.session.extractFromUtterance = jest.fn(async () => ({
+    extracted_readings: [],
+    observations: [],
+    observationUpdates: [
+      {
+        observation_id: 'obs-parity-1',
+        observation_text: 'Cracked socket front',
+        code: 'C3',
+        previous_code: 'C2',
+        regulation: '134.1.1',
+        rationale: 'code_change',
+        source: 'rule_6_edit',
+      },
+      {
+        observation_id: 'obs-parity-2',
+        observation_text: 'Actually cracked socket front near the hob',
+        code: 'C3',
+        previous_code: null,
+        regulation: null,
+        rationale: 'correction_lead_in',
+        source: 'rule_6_edit',
+      },
+    ],
+    questions_for_user: [],
+    turn_id: 'parity-turn-obs-upd',
+  }));
+  await b.emit(
+    'message',
+    frameBuffer({
+      type: 'transcript',
+      sessionId: sid,
+      text: 'The cracked socket front is a C3.',
+      is_final: true,
+      utterance_id: 'parity-utt-l1b',
+      confirmations_enabled: true,
+    })
+  );
+
   // Scenario: VCR-carrying turn (spoken_response + action).
   legacyEntry.session.extractFromUtterance = jest.fn(async () => ({
     extracted_readings: [],
@@ -600,6 +644,18 @@ describe('C5 — byte-level frame parity across the four legs', () => {
     expect(production.frames.b.some((f) => f.includes('"voice_command_response"'))).toBe(true);
     expect(production.frames.c.length).toBeGreaterThan(0);
     expect(production.frames.d.length).toBeGreaterThan(0);
+    // Plan 00B-3 C4 — the standalone observation UPDATE and RECODE
+    // scenarios genuinely produced rule_6_edit observation_update frames
+    // (a recode via code_change AND an update via correction_lead_in);
+    // evaluation-only interference with these frames would break the
+    // byte-parity loop below.
+    const obsUpdateFrames = production.frames.b.filter(
+      (f) => f.includes('"observation_update"') && f.includes('rule_6_edit')
+    );
+    expect(obsUpdateFrames.length).toBeGreaterThanOrEqual(2);
+    expect(obsUpdateFrames.some((f) => f.includes('code_change'))).toBe(true);
+    expect(obsUpdateFrames.some((f) => f.includes('correction_lead_in'))).toBe(true);
+    expect(obsUpdateFrames.some((f) => f.includes('"code":"C3"'))).toBe(true);
 
     // Discrimination (mini-review r1 finding 10): the scenarios must have
     // RUN as intended, not merely produced identical bytes.
