@@ -59,6 +59,7 @@ import {
   STOP_BOUNDARY_TERMINALS,
   NON_QUIESCENT_TERMINALS,
   REJECTION_REASONS,
+  LIFECYCLE_TRANSITIONS,
 } from '../extraction/plan00-evidence-registry.js';
 import {
   buildEvidenceProjectionV1,
@@ -2056,6 +2057,69 @@ describe('Cycle-4 pins — sequence-positional transition-rejection binding (R4-
     expect(proj.rejection_regime_contradictions).toEqual([]);
     expect(proj.eligible_for_family_credit).toBe(true);
   });
+});
+
+describe('Cycle-7 pins — the lifecycle grammar is EXECUTABLE (R7-1)', () => {
+  test('the registry transition table byte-agrees with the schema grammar', () => {
+    const schemaTable = schema.lifecycle_transition_grammar.transitions;
+    expect(Object.keys(LIFECYCLE_TRANSITIONS).sort()).toEqual(Object.keys(schemaTable).sort());
+    for (const [state, stages] of Object.entries(schemaTable)) {
+      expect([...LIFECYCLE_TRANSITIONS[state]]).toEqual(stages);
+    }
+  });
+
+  const PREFIX_FOR_CLASS = {
+    absent: [],
+    produced: ['produced'],
+    emitted: ['produced', 'emitted'],
+    terminal: ['produced', 'emitted', 'resolved'],
+  };
+  const rowFor = (stage, revision) => {
+    const base = { kind: 'ask_lifecycle', revision, family: 'dialogue_script', runtime_id: 'g' };
+    if (stage === 'produced') return { ...base, stage, live_ask_key: 'k' };
+    if (stage === 'resolved') return { ...base, stage, terminal: 'answered' };
+    if (stage === 'replaced') return { ...base, stage, successor_runtime_id: 'succ' };
+    return { ...base, stage };
+  };
+  const cases = [];
+  for (const priorClass of Object.keys(LIFECYCLE_TRANSITIONS)) {
+    for (const stage of ['produced', 'emitted', 'reissued_attempt', 'resolved', 'replaced']) {
+      cases.push([priorClass, stage, LIFECYCLE_TRANSITIONS[priorClass].includes(stage)]);
+    }
+  }
+
+  test.each(cases)(
+    'prior=%s stage=%s -> allowed=%s (full matrix from the ONE exported table)',
+    (priorClass, stage, allowed) => {
+      const rows = [
+        ...PREFIX_FOR_CLASS[priorClass].map((st, i) => rowFor(st, i + 1)),
+        rowFor(stage, PREFIX_FOR_CLASS[priorClass].length + 1),
+      ];
+      const openAfter =
+        (priorClass === 'terminal' && !allowed) || (priorClass === 'absent' && !allowed) ? 0 : null; // only assert state preservation where it is unambiguous
+      const proj = buildEvidenceProjectionV1({
+        sessionId: 's',
+        boundary: 'session_stopped',
+        counts: {
+          open_asks_dispatcher: 0,
+          open_asks_dialogue_script: 0,
+          open_asks_address_mirror: 0,
+          non_quiescent_at_stop: 0,
+          revision_instability: 0,
+        },
+        revisions: { usage_revision: 0 },
+        sub_records: rows,
+      });
+      const violations = proj.lifecycle_state_contradictions.filter(
+        (c) => c.seq === rows.length - 1
+      );
+      expect(violations.length === 0).toBe(allowed);
+      if (openAfter !== null) {
+        // an invalid row must not mutate the tracked state
+        expect(proj.ask_families.dialogue_script.open).toBe(openAfter);
+      }
+    }
+  );
 });
 
 describe('Cycle-5 pin — terminal lifecycle states can never reopen (R5-1)', () => {

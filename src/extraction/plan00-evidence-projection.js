@@ -33,6 +33,7 @@ import {
   SEMANTIC_FAMILIES,
   NON_QUIESCENT_TERMINALS,
   REJECTION_REASONS,
+  LIFECYCLE_TRANSITIONS,
 } from './plan00-evidence-registry.js';
 
 const PROJECTION_NAME = 'evidence_projection_v1';
@@ -287,55 +288,52 @@ export function buildEvidenceProjectionV1(snapshot) {
         const fam = askFamilies[family];
         const stateKey = row.runtime_id != null ? askKey(family, row.runtime_id) : null;
         const prior = stateKey != null ? (askStates.get(stateKey) ?? null) : null;
+        // Cycle-7 (R7-1) — ONE executable grammar (the registry table,
+        // byte-compared with the schema) decides validity; the switch below
+        // only applies the per-stage counting and state effects.
+        const priorClass =
+          prior == null
+            ? 'absent'
+            : prior === 'closed' || prior === 'open_at_stop'
+              ? 'terminal'
+              : prior;
+        const stageAllowed =
+          stateKey == null ||
+          row.stage === 'join_expired' ||
+          (LIFECYCLE_TRANSITIONS[priorClass] ?? []).includes(row.stage);
+        if (stateKey != null && row.stage !== 'join_expired' && !stageAllowed) {
+          invalidTransition(seq, family, row.runtime_id, row.stage, prior);
+        }
         switch (row.stage) {
           case 'produced':
             fam.produced += 1;
-            if (stateKey != null) {
-              if (prior != null) invalidTransition(seq, family, row.runtime_id, 'produced', prior);
-              else askStates.set(stateKey, 'produced');
-            }
+            if (stateKey != null && stageAllowed) askStates.set(stateKey, 'produced');
             break;
           case 'emitted':
             fam.emitted += 1;
-            if (stateKey != null) {
-              if (prior !== 'produced')
-                invalidTransition(seq, family, row.runtime_id, 'emitted', prior);
-              else askStates.set(stateKey, 'emitted');
-            }
+            if (stateKey != null && stageAllowed) askStates.set(stateKey, 'emitted');
             break;
           case 'reissued_attempt':
             fam.reissued_attempts += 1;
-            if (stateKey != null && prior !== 'emitted') {
-              invalidTransition(seq, family, row.runtime_id, 'reissued_attempt', prior);
-            }
+            // state-preserving while emitted
             break;
           case 'resolved': {
             const terminal = row.terminal ?? 'unknown_terminal';
             fam.resolved_terminals[terminal] = (fam.resolved_terminals[terminal] ?? 0) + 1;
-            if (stateKey != null) {
-              if (prior !== 'emitted') {
-                invalidTransition(seq, family, row.runtime_id, 'resolved', prior);
-              } else {
-                // Stop-boundary terminals close the ledger entry but remain
-                // non-quiescent for the freeze they race with (schema-v1
-                // ask_terminals rule).
-                askStates.set(
-                  stateKey,
-                  NON_QUIESCENT_TERMINALS.includes(terminal) ? 'open_at_stop' : 'closed'
-                );
-              }
+            if (stateKey != null && stageAllowed) {
+              // Stop-boundary terminals close the ledger entry but remain
+              // non-quiescent for the freeze they race with (schema-v1
+              // ask_terminals rule).
+              askStates.set(
+                stateKey,
+                NON_QUIESCENT_TERMINALS.includes(terminal) ? 'open_at_stop' : 'closed'
+              );
             }
             break;
           }
           case 'replaced':
             fam.replaced += 1;
-            if (stateKey != null) {
-              if (prior !== 'produced' && prior !== 'emitted') {
-                invalidTransition(seq, family, row.runtime_id, 'replaced', prior);
-              } else {
-                askStates.set(stateKey, 'closed');
-              }
-            }
+            if (stateKey != null && stageAllowed) askStates.set(stateKey, 'closed');
             break;
           case 'join_expired':
             fam.join_expired += 1;

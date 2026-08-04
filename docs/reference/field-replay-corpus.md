@@ -258,3 +258,20 @@ first, and the implementation converges against it.
 - **Parity matrix (C4)** — standalone observation UPDATE + RECODE
   scenario legs (rule_6_edit code_change + correction_lead_in frames)
   join the four-quadrant byte-parity matrix.
+- **Diff-review hardening (cycles 1–7)** — the contract gained: the
+  executable REJECTION_REASONS regime table (per-reason latch/row/stage
+  composition folded into eligibility as
+  `rejection_regime_contradictions`), the closed
+  `lifecycle_transition_grammar` (ONE exported table the projector
+  consumes; terminals never reopen; violations are
+  `invalid_lifecycle_transition` entries in
+  `lifecycle_state_contradictions`, full prior-state × stage matrix
+  pinned), fail-closed count reconciliation (`count_contradictions`
+  incl. missing-key and aggregate checks), sequence-positional
+  transition-rejection binding, machine-readable per-kind `field_spec`
+  validation over fixtures AND real hook output, the stop-boundary
+  open-ask latch, the per-send-loop mirror replay identity, and a THIRD
+  shared fixture pair
+  (`snapshot/projection-lifecycle-contradiction-v1.json`) plus the
+  `ack-sequences-v1.json` action fixture — all reused by 00C Stage A,
+  whose fold must HOLD on any contradiction class.

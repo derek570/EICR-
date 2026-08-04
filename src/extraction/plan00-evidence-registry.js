@@ -78,6 +78,21 @@ export const NON_QUIESCENT_TERMINALS = Object.freeze([
 ]);
 
 /**
+ * Cycle-7 (R7-1) — the EXECUTABLE lifecycle transition grammar, byte-compared
+ * against schema-v1.json's `lifecycle_transition_grammar.transitions` and
+ * CONSUMED by the evidence projector (one table, never two derivations).
+ * Prior-state classes: absent | produced | emitted | terminal (closed or
+ * open_at_stop — terminals never reopen). join_expired rows carry no runtime
+ * and live outside the grammar.
+ */
+export const LIFECYCLE_TRANSITIONS = Object.freeze({
+  absent: Object.freeze(['produced']),
+  produced: Object.freeze(['emitted', 'replaced']),
+  emitted: Object.freeze(['reissued_attempt', 'resolved', 'replaced']),
+  terminal: Object.freeze([]),
+});
+
+/**
  * Codex r1 (A-4) — the EXECUTABLE per-reason rejection-regime table,
  * byte-compared against schema-v1.json's `rejection_reasons` by the
  * contract test. `structural_latch` reasons latch the owning ledger invalid
