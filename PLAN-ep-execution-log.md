@@ -1,175 +1,126 @@
-# Plan 00A EP execution log
+# Plan 00B EP execution log
 
-- Session: `20260803T213725Z-ep`
-- Executor: Codex `gpt-5.6-sol` / `xhigh` (explicit invocation override; adaptive worker marker present)
-- Target: `/Users/derekbeckley/.claude/handoffs/EICR_Automation--00a-provider-tool-cost-parity-2026-08-03/PLAN-final.md`
+- Session: `20260804T070017Z-ep`
+- Executor: Claude (Fable 5) — in-session `/ep` run (user-invoked, `--no-chain`)
+- Target: `/Users/derekbeckley/.claude/handoffs/EICR_Automation--00b-trusted-semantic-oracle-2026-08-03/PLAN-final.md`
 - Repository: `/Users/derekbeckley/Developer/EICR_Automation`
-- Worktree: `/Users/derekbeckley/Developer/EICR_Automation-ep-20260803T213725Z-ep`
-- Branch: `ep/plan-20260803T213725Z-ep`
-- Base: `origin/main` at `af530a7a3c93c60a46bb2a58b4e67e8c2debc19d`
-- Invocation: explicit plan, `--no-chain`, `--adaptive-ep-worker`
+- Worktree: `/Users/derekbeckley/Developer/EICR_Automation-ep-20260804T070017Z-ep`
+- Branch: `ep/plan-20260804T070017Z-ep`
+- Base: `origin/main` at `9ea3bbaa` (Plan 00A merged + deployed, task-def 376)
 - Startup reaper: `ep-reap: reaped=0 held=0 working=0 pattern=^ep-`
+- Pre-claim policy: PASSED — 00A `.ep-success.json` present (merge `9ea3bbaa` is ancestor of origin/main; deploy job success, task-def 375→376; `plan00_tracked_bundle_provenance` sha256 `537a0d51…` verified from origin/main). The success record was written post-hold by the 2026-08-04 independent review rerun that merged PR #153.
 
-[PLAN-SIZE] This plan couples four distinct groups in the Stage-6 provider boundary (tracked bundle materialisation, provider/prompt routing, billable accounting and Responses tool results). Review effort is expected to scale with those interactions.
+[PLAN-SIZE] This plan bundles six feature groups (B1 lifecycle refactor + hooks, B2 mutation atoms + capture, B3 ask/audibility/playback ledgers, B4 expectation projections, B5 model lanes, B6 partition + manifest) all touching the Stage-6 lifecycle subsystem. Review effort scales with those interactions; expect a long Codex convergence.
 
-## Step A-pre — provider-credit preflight
+## Step 0 — revalidate reference facts
 
 - Status: applied
-- Decision: provider credit passed before any repository mutation, as required by the plan's first executable gate.
-- Files: none
+- Decision: rule 1 (verbatim). All four plan reference facts CONFIRMED against the worktree at 9ea3bbaa via a thorough line-anchored survey:
+  - `scripts/model-ab` hand-builds a reduced session (`run-lane.mjs:171-188`) and treats cross-provider agreement as correctness (`compare.mjs:131-134,192`). No semantic oracle exists.
+  - Corpus has 9 fixtures; `frc_4687948e…` carries the pinned IR utterance ("Downstairs Socket, circuit 3, IR L to L 100.", fixture.yaml:105) with expected op `op_ir_ctw` (clear_then_write, audibility exactly_once).
+  - `initSonnetStream` (sonnet-stream.js:1752) already supports real-handler tests: ~14 suites drive the REAL wss + handlers via `wss.emit('connection', fakeWs, req, userId)` (resume/disconnect-cleanup/ask-routing suites named). Nuance: "real handler, stub socket" — `httpServer` arg unused (`noServer: true`).
+  - `recordReadingWrite`/`recordBoardReadingWrite` (stage6-per-turn-writes.js:457/473) are journal/staging only — never touch `session.stateSnapshot`. `stage6-snapshot-mutators.js` owns the atoms; the known bypass surface is `stage6-dispatchers-board.js` `add_board` (`snapshot.boards.push` :896, `currentBoardId` flip :897, inline `is_distribution_circuit` :937) and `select_board` (:1039) — exactly B2's refactor target.
+- Also mapped for later steps: ASK_STARTED_OBSERVER (wire-emit.js:290, fired by safeSend :296-325), address-mirror direct question sends bypassing ask_user_started (sonnet-stream.js:322-330, :3458, :3542, :4304), fast-TTS route with NO existing owner check (voice-latency-fast-tts.js:134), playback-ack REST route (voice-latency-playback-ack.js:145), address-mirror claim tokens (address-mirror-controller.js:449-471), the ACTIVE_ENTRY_CLASSIFICATION manifest+scan pattern (scripts/field-replay/lib/session-builder.mjs:30-84 + session-builder.test.js), extractionTurnId mint (stage6-shadow-harness.js:4306-4313), cost-tracker scope API (cost-tracker.js:334-386).
+- Files: none (read-only)
 - Commit: none
-- Notes:
-  - The clean EP worktree was created from the plan's exact reference `af530a7a3c93c60a46bb2a58b4e67e8c2debc19d`.
-  - The first two SDK-based attempts failed locally before provider dispatch because a fresh worktree has no `node_modules/openai`; no provider conclusion was drawn from them.
-  - The first raw HTTP attempt reached OpenAI but used `max_output_tokens:8`, below the provider minimum of 16; it was retried once unchanged per the EP command-failure rule and then corrected.
-  - Corrected minimal Responses call passed: requested/returned `gpt-5.6-luna`, requested/returned `priority`, 10 input tokens, 5 output tokens, response `resp_0b34639f851df151006a710ab863b08192a2056ac95f58902d`.
-  - No provider-credit wait was required.
+- Notes: teardown ordering baseline (handleSessionStop :6501-6632) and the 5-minute disconnect timer (:3117, stale "30s" comments at :3112/:3269) recorded as the B1 substrate.
 
-## Step A0 — deterministic tracked bundle materialisation
+## Step B1 — real-server lifecycle lane + teardown arbiter + dormant hooks
 
 - Status: applied
-- Decision: executing verbatim after the A-pre PASS.
-- Files: `.planning/voice-latency-conversational-2026-07-31/{INDEX.md,plan-00-gpt56-port-parity.md,plan-00-gpt56-port-parity/*}`, `scripts/plan00-bundle-provenance.mjs`, `src/__tests__/plan00-bundle-provenance.test.js`, `package.json`, `AGENTS.md`, `docs/reference/changelog.md`
-- Commit: `67fe52d3` — `chore(plans): materialise the reviewed Plan 00 bundle`
+- Decision: rule 1 (verbatim), one [ASSUMED]: the plan's "attach evaluation context at creation before start/rehydration" is implemented immediately after `activeSessions.set` — `session.start(jobState)` runs earlier in `handleSessionStart` by pre-existing order (input-state seeding, §B2-classified `input_state_seed`), and there is no entry to attach to before the set; every observable message/outbox/timer invocation happens after the attach point.
+- Files: `src/extraction/plan00-lifecycle-hooks.js` (new), `src/extraction/sonnet-stream.js`, `src/__tests__/plan00-lifecycle-hooks.test.js` (new)
+- Commit: `feat(extraction): Plan 00B B1 — teardown arbiter + dormant evaluation lifecycle hooks`
 - Notes:
-  - Four canonical sources were SHA-256 hashed and rendered as reference-only repository derivatives.
-  - Every tracked final has an adjacent exact `{schema_version:1, executable:false}` policy.
-  - `provenance.json` records source/output/policy hashes and all ten ordered substitutions; the verifier reconstructs canonical source hashes even when machine-local handoffs are absent.
-  - All Markdown links resolve within the checkout; no derivative retains an executable EP command or machine-local path.
-  - Focused gate: 5/5 provenance tests passed on Node 20.20.2; canonical and committed verifier modes both passed.
+  - Dormant hooks module: non-enumerable Symbol observer/ledger, monotonic revisions, immutable sub-records, quiescence-gated exactly-once freeze (`non_quiescent_at_stop` fail-closed), latched candidate + publish promise. Zero-allocation dormant path (ledger-Symbol guard at the frame emitter).
+  - Teardown arbiter: first caller of explicit-stop/disconnect-timeout installs ONE promise owning the ordered teardown; duplicate callers await. Both reconnect message types (session_start reconnect, session_resume rehydrate — made async, single call site awaited) observe `isStopping`/`teardownPromise`, await, re-read, and follow the fresh/miss path. This also fixes a REAL pre-existing race: stop frame + timer expiry could run two concurrent teardown bodies.
+  - Successful-frame evidence wired at the ONE shared emitter (`sendResultFrameLedger`, 5th `entry` param threaded through all six call sites).
+  - Verification: 17 new tests green; all 14 sonnet-stream suites green (294/294); byte-for-byte production-vs-evaluation frame parity pinned.
 
-## Step A1 — prompt rendering and atomic provider routing audit
+## Step B2a — mutation-commit capture at snapshot atoms + canonical board-op atoms (committed)
+
+- Status: applied (B2 partially complete — see remaining sub-steps below)
+- Decision: rule 1. New `plan00-semantic-capture.js` (MUTATION_OBSERVER Symbol, attach/emit/origin-frame helpers, createMutationObserver with op ids, seq ordering, SEMANTIC_ORIGINS enum, derived-provenance validation, joinJournalOverlay with nonMutatingSources exemption for address-mirror cloning, INVALID/HOLD latch). Every atom in stage6-snapshot-mutators.js emits exactly one receipt per REAL state change. New canonical atoms appendBoardToSnapshot / setCurrentBoardInSnapshot / markDistributionCircuitInSnapshot; stage6-dispatchers-board.js routed through them (add_board :896-897 append+flip, inline auto-mark :937-938, select_board :1039, dispatchMarkDistributionCircuit :1142-1143). 27 board/mutator/dispatch suites green unchanged (682/682) — behaviour-preservation proof.
+- Files: `src/extraction/plan00-semantic-capture.js` (new), `src/extraction/stage6-snapshot-mutators.js`, `src/extraction/stage6-dispatchers-board.js`
+- Commit: `feat(extraction): Plan 00B B2a — mutation-commit capture at the snapshot atoms + canonical board-op atoms`
+- REMAINING for B2 (planned next): (i) origin frames at producer boundaries — central tool-dispatch seam (model_direct; calculate_* → calculator), ask auto-resolve write sites, dialogue engine direct/derived, deterministic mirror derivations; (ii) committed production-source parity manifest + scan test (classes semantic_mutation / input_state_seed / forbidden_direct_mutation, following the ACTIVE_ENTRY_CLASSIFICATION pattern in scripts/field-replay/lib/session-builder.mjs:30-84 + its scan test) incl. an unclassified-direct-write RED fixture; (iii) capture RED matrix tests (expected+extra write, wrong board/circuit, write→clear ordering, journal-overlay unmatched → INVALID/HOLD, address-mirror clone zero commits, forced capture failure per atom class); (iv) provenance RED cases (valid-parent, wrong-trigger, wrong-source, missing-parent).
+- Notes: B2 receipts deliberately gate on REAL change (same-value write / no-op clear / idempotent rename / same-board select emit nothing) per "only after a real state change". Board-clear FlagAware emits once per semantic invocation (global + main-target branches emit inline; non-main branch delegates to the instrumented clearBoardReadingMultiBoard).
+
+## Step B2 (complete) — B2b: origin frames + source-scan manifest + RED matrix
 
 - Status: applied
-- Decision: executing against the already-shipped resolver/cache/Terra implementation; duplicate implementation is prohibited.
-- Files: `src/__tests__/model-provider-routing.test.js`, `docs/reference/architecture.md`, `docs/reference/changelog.md`, `AGENTS.md`
-- Commit: `eb5b1c85` — `test(extraction): lock Plan 00A provider and prompt invariants`
-- Notes:
-  - Source/live revalidation matched the plan reference exactly: task definition 375 runs Luna Fast with explicit cache, Terra Standard/low with observation routing enabled, and an empty round-one override; source and live task-definition environment values agree.
-  - No runtime A1 fix was needed. The shipped resolver, system renderer, explicit developer breakpoint and observation route already satisfy the audited contract.
-  - Real `buildSystemBlocks()` coverage now pins base → stable prefix → volatile tail for both agentic-answer variants, exact `\n\n` joining, absence of cache metadata from rendered Anthropic text, stable-prefix exclusion of volatile headings and the OpenAI breakpoint before the volatile tail.
-  - Routing coverage now pins one-client Luna/Terra reuse across turns, same-provider Luna→Terra round one, both cross-provider override directions failing before SDK dispatch, legacy Anthropic observation routing, unknown/missing-provider failures and the production selection-site inventory.
-  - The existing four-minute keepalive and 15-minute paused-session budget are source-contract guarded; no 25-minute retention/re-warm or compaction work was introduced.
-  - Focused gate: 13/13 provider-routing tests passed on Node 20.20.2.
+- Decision: rule 1, with one [ASSUMED]: the orphan-net recovered write is framed 'model_direct' with meta via:'orphan_recovery' — the closed six-origin enum has no orphan class, and the recovery completes the model turn's inspector utterance (it pushes into result.extracted_readings). Distinguishable in expectations via the meta marker.
+- Files: stage6-dispatchers.js (model_direct/calculator at createWriteDispatcher; ask_auto_resolve at createAutoResolveWriteHook), dialogue-engine (snapshot-write.js direct, derivations.js sets/mirror derived w/ parent_slot, engine.js resume-drained + bulk), stage6-shadow-harness.js (orphan), eicr-extraction-session.js (legacy leg + appendLegacyObservationRecord routing), postcode-snapshot-applier.js (atom-routed silent_deterministic locality writes), stage6-snapshot-mutators.js (appendLegacyObservationRecord), scripts/model-ab/lib/mutation-classification.mjs (new), plan00-mutation-source-scan.test.js (new, 7 tests), plan00-semantic-capture.test.js (new, 22 tests)
+- Commit: `feat(extraction): Plan 00B B2b — origin frames at every producer boundary + mutation source-scan manifest`
+- Notes: post-refactor covered-write surface is exactly 4 files (atoms=semantic_mutation; multi-board-shape + postcode bucket-ensure + session hydration=input_state_seed; zero forbidden). Parent provenance resolves slot-named triggers to receipts; INVALID/HOLD latch covers commit-without-origin, unresolved/missing derived parents, unmatched journal overlay, thrown capture. 1712-test regression sweep green.
 
-## Step A2 — truthful per-round usage, cost and counters
+## Step B3 — ask + audibility + playback ledgers
 
-- Status: applied
-- Decision: implement the residual gap; the aggregate one-model-per-loop ledger cannot truthfully represent same-provider mixed rounds or non-inspector accounting scopes.
-- Files: `src/extraction/{round-usage-attribution,cost-tracker,eicr-extraction-session,openai-responses-adapter,stage6-shadow-harness,stage6-tool-loop}.js`, six focused test files, `docs/reference/{architecture,deployment,changelog}.md`, `AGENTS.md`
-- Commit: `75c1da48` — `fix(extraction): make per-round usage attribution truthful`
-- Notes:
-  - The Responses adapter now retains raw nullable provider model/tier beside its compatibility fallbacks. Every completed loop row records SDK transport, requested identity, raw response identity, conservative billing identity, separate provenance, four token buckets and the existing correlated timing/cache evidence.
-  - Standard omission and Fast→`priority` are valid. Same-provider family/tier contradictions enter `validation_error`; cross-provider-looking/unknown model ids enter `unattributed_provider_usage`. Live output proceeds unchanged and bills under the transport provider, while the evaluation assertion is verdict-fatal.
-  - One stable `extractionTurnId` is minted before mode choice and dedupes the public turn across live/shadow/legacy and replacement generations. Billable scopes now separately own loop/round counters and tokens, with monotonic `usageRevision` and `inFlightBillableInvocationCount` held through caller-side success or attached-failure ingestion.
-  - Live, shadow and legacy model calls, each real four-minute keepalive firing and each orphan review use exact-once scoped ingestion; pre-response failures own no loop/round/tokens, and zero-token completed responses still own a completed round.
-  - The existing `cost_update` wire shape and cache telemetry aliases remain unchanged. Live per-turn economics now derive from the same attributed rows used for session billing; no transcript, prompt or tool payload enters usage evidence.
-  - OpenAI short-context and Anthropic Haiku 4.5/Sonnet 4.6 pricing were reverified against official provider pages on 2026-08-03; the already-correct applicable rate objects did not need a value change.
-  - Focused gate: 7/7 suites and 156/156 tests passed on Node 20.20.2. Additional affected harness gate: 3/3 suites and 25/25 tests passed. ESLint/prettier pre-commit gate passed.
+- Status: applied (with one scoping decision logged below)
+- Decision: rule 1 for the ledgers + fast-TTS owner check; rule 2 [ASSUMED] for identity persistence: the durable operation identity derives from the live extractionTurnId + EFFECTIVE_CIRCUIT_SLOT markers already present in-process, and CROSS-PROCESS recovery is handled by the plan's own conservative rule (delivery_history_ambiguous:true, never reconstructed) rather than adding new identity columns to the address-mirror outbox DB rows. Same-process retries are fully observed by the ledger (every attempt retained), which is exactly the boundary the plan draws ("Same-process retry remains unambiguous only while the observer retains every attempt").
+- Files: `src/extraction/plan00-audibility-ledgers.js` (new), `src/routes/voice-latency-fast-tts.js` (owner check — production hardening), `src/__tests__/plan00-audibility-ledgers.test.js` (new, 22), fast-tts route/clamp tests updated (+ cross-user RED)
+- Commit: `feat(extraction): Plan 00B B3 — ask/delivery/playback evidence ledgers + fast-TTS owner check`
+- Notes: ASK_STARTED_OBSERVER composition + per-frame delivery evidence are consumed evaluation-side — the harness owns its fake ws (sees every send byte) and B1's successful-frame callback fires from the ONE shared frame emitter, so no further production seams were needed for delivery evidence. srv-* answered-proof (frame id + paired transcript) is encoded in the ledger's full-proof rule.
 
-## Step A3 — Responses tool-result parity
+## Steps B4 + B5 + B6 — projections, judge, lane runner, partition, combined manifest
 
 - Status: applied
-- Decision: drive production dispatcher bodies through the real Responses continuation seam; do not invent an OpenAI-only error wrapper.
-- Files: `src/__tests__/openai-tool-result-parity.test.js`, `docs/reference/{architecture,deployment,changelog}.md`, `AGENTS.md`
-- Commit: `82fd0111` — `test(extraction): prove Responses tool-result parity`
-- Notes:
-  - The shipped runtime already carried production dispatcher `content` byte-for-byte into the next Responses request's `function_call_output.output`, under the exact provider call id, and correctly omitted Anthropic's `is_error` field. No runtime change or retry wrapper was needed.
-  - A real-adapter/real-dispatcher matrix now covers successful write and answered ask bodies; no-op, capability skip and `answered:false`; `did_you_mean` and `invalid_value` followed by a corrected production write; the exact repeated address-mirror `already_asked` body with zero wire ask; answered mirror outcome/changed fields/source replay count; invalid streamed JSON with its real call id; thrown dispatcher error; and internal missing-record padding.
-  - Loop cap, post-response cancellation and pre-result transport failure prove no result for the server-terminal call id reaches a Responses request. The pre-existing orphan-delta and pre-aborted-signal tests retain the same no-synthetic-result invariant.
-  - Focused gate: 3/3 suites and 64/64 tests passed; the dedicated parity suite is 15/15. ESLint/prettier pre-commit gate passed.
-  - Paced post-implementation live Responses probes passed without a credit wait: OpenAI `gpt-5.6-luna` Fast returned `gpt-5.6-luna` / `priority` and `attributed` on every round. Success called one tool then ended in two rounds; correction consumed `did_you_mean`, called the corrected tool, then ended in three rounds; direct end-turn used one round and zero tools.
+- Decision: rule 1, with two [ASSUMED] notes: (1) the deterministic-egress lane is inventoried as NAMED CASES bound by hash to the committed covering test file (plan3-observation-recode-emitter.test.js) — the four §B6 egress behaviours are already deterministically pinned there; no corpus fixture exists for them and fabricating one is prohibited. (2) Two §B6 strata (multi_board_routing, direct_observation_create_delete) have no real-provenance fixture — recorded as dated non-safety named gaps for 00C's Derek decision, per the plan's own rule.
+- Files: scripts/model-ab/lib/expectation-projection.mjs (new), scripts/model-ab/lib/semantic-judge.mjs (new), scripts/model-ab/run-semantic-lane.mjs (new), scripts/model-ab/plan00-expectation-manifest.json (PUBLISHED — the .ep-policy success artifact), src/__tests__/plan00-expectation-manifest.test.js (new, 16)
+- Commit: `feat(model-ab): Plan 00B B4-B6 — expectation projections, semantic judge, lane runner, partition + combined manifest`
+- Notes: combined anchor + semantic_oracle_digest recomputation is the merge-blocking source check; live vendor sampling is structurally refused without 00C's attestation record; mock lane 9/9 proves projection→judge plumbing.
 
-## Verification and delivery
+## Codex diff review
 
-- Status: held after implementation and all executable test gates passed.
-- Delivery rule: the mandatory independent Claude review did not produce schema-valid output after its single permitted retry, so this run must open a draft PR and must not merge or deploy.
+- Cycle 1 (wire/contract lens, gpt-5.6-sol high, read-only): 11 BLOCKERs, 0 IMPORTANT, 0 NIT. The planned three-lens parallel cycle was cut short — the first lens already went broad and its structural findings made further discovery lanes moot.
+- SIX findings fixed in-scope (commit `fix(ep): address Codex review — …`, full backend suite re-gated green 311 suites / 7708 passed):
+  - (4) dormant zero-allocation guards at every atom emit + both freeze call sites;
+  - (5) observer callback behaviour isolation (throwing builder ⇒ `candidate_builder_threw` ineligible freeze; post-send callback can never abort the frame ledger);
+  - (7) teardown-body failure now reaches a TERMINAL state (log + timer/session cleanup + entry delete — reconnect can never rebind a dying entry);
+  - (8) judge consumed-index rewrite (extra mutations anywhere in the stream fail);
+  - (9) semantic_oracle_digest expanded to all 19 producer/adapter/route inputs, manifest regenerated;
+  - (11) scan patterns extended (nested field writes, deletes) + dated aliased-write limitation.
+- FIVE findings are UNRESOLVED-STRUCTURAL — each is a genuine multi-hour remainder of the plan's full executable composition, not a patch:
+  - (1) run-semantic-lane.mjs does not yet BOOT the real server and drive fixture frames end-to-end (mock mode proves projection→judge plumbing only; the production-composed per-fixture driver — real initSonnetStream + scripted SDK client + captured evidence → judge — is unbuilt);
+  - (2) the evaluation-context factory registers only the lifecycle observer; full composition (mutation observers attached to session+snapshot at entry creation before start/rehydration, plus ask/delivery/playback ledgers) is not wired into handleSessionStart;
+  - (3) the B3 ledgers are tested standalone but not composed through the production seams (ASK_STARTED_OBSERVER composition, address-mirror question seams, playback-ack route, per-send delivery rows);
+  - (6) the quiescence check derives counts from entry state but lacks the per-entry producer start/completion counters for frames/outbox/confirmations, and pendingRefinements is cleared before the freeze on the stop path;
+  - (10) frame parity is pinned for start/stop only, JSON-normalised — the full byte-level parity matrix across extraction/asks/recovery/reconnect/observation frames is unbuilt.
+- Verdict: **CODEX-HELD — 5 unresolved (structural remainder of B1/B3/B5 composition)**. Convergence rule applied: these are not patchable within the review loop; continuing cycles would burn the cap without converging. No merge, no deploy, draft PR only. Plan 00C remains policy-locked (its pre-claim requires 00B's genuine shipped record, which is correctly absent).
 
-## Claude diff review — cycle 1
+## Completed 2026-08-04T09:05:00Z
 
-- Immutable review patch: `PLAN-ep-diff-r1.patch`, SHA-256 `3509242064afacc4d1d26ef1bb19ac571f5804b4a7884aef30d4c324dcf91683`.
-- Reviewer readiness: Opus/xhigh readiness probe passed.
-- Three fresh read-only `certmate-plan-reviewer` lanes ran concurrently: wire/contract, failure/accounting and adversarial/edge.
-- All three first attempts returned substantive findings embedded in prose/fenced JSON, but failed the required JSON-schema parse. Each lane received exactly one hard-failure retry with an explicit exact-output instruction.
-- All three retries again failed schema validation through preamble text, wrong `intent_evidence` shape and/or undeclared fields. No failed lane was substituted and no further retry was made.
-- Formal verdict: `CLAUDE-UNAVAILABLE`. Independent sign-off is absent; merge/deploy is forbidden.
-
-The invalid-but-substantive first-attempt output was retained only as diagnostic evidence. Deduped findings were 0 BLOCKER, 1 IMPORTANT and 3 unique NITs:
-
-1. **IMPORTANT — batched turns lost their public turn identity.** `_processUtteranceBatch()` did not forward `extractionTurnId`, so legacy/off-mode `_extractSingle()` minted another id and over-counted `sonnet.turns`. Fixed in `1de46849`; the off-mode harness now proves two accepted turns, one billable invocation and one completed round.
-2. **NIT — failed/cancelled turn summary omitted billed usage.** The live log row read missing `toolLoopOut` fields even when the attached failure carried attributed usage used by the cost and prompt rows. Fixed in `65055063`; cancellation coverage now attaches billed usage and asserts the summary totals.
-3. **NIT — stale aggregate-authority comments.** `stage6-tool-loop.js` still described `addSonnetUsage()` as the aggregate billing authority after per-round rows became canonical. Fixed in `62c9cc07`.
-4. **NIT — per-model `bucket.turns` remains inert.** Reviewers found no current consumer and recommended no behavioural change; the authoritative public/billable counters are separately tested and documented.
-
-Other retry-only notes were inspected and required no Plan 00A change: evidence retention is deliberate for planned 00B's dormant observer, and nullable Anthropic response-tier provenance is conservative by design. The live-probe evidence requested by one lane is recorded in Step A3 above.
-
-## Completed 2026-08-03T23:08:29Z
-
-**Outcome: CLAUDE-UNAVAILABLE — review schema invalid**
-
-All Plan 00A implementation steps and executable gates passed. The independent three-lane Claude gate is unavailable because every lane failed the mandatory output schema on both its initial attempt and sole permitted retry. This is a terminal draft-only hold: no PR merge, GitHub deploy, ECS mutation or TestFlight action is authorised, and no `.ep-success.json` may be emitted.
+**Outcome: CODEX-HELD — 5 unresolved (structural remainder of B1/B3/B5 composition)**
 
 ### Commits made
-
-- `67fe52d3` — `chore(plans): materialise the reviewed Plan 00 bundle`
-- `eb5b1c85` — `test(extraction): lock Plan 00A provider and prompt invariants`
-- `75c1da48` — `fix(extraction): make per-round usage attribution truthful`
-- `82fd0111` — `test(extraction): prove Responses tool-result parity`
-- `1de46849` — `fix(extraction): preserve batched inspector turn identity`
-- `65055063` — `fix(extraction): align failed-turn token telemetry`
-- `62c9cc07` — `docs(extraction): describe the per-round billing authority`
-
-### Files touched
-
-- Tracked Plan 00 bundle and provenance verifier under `.planning/voice-latency-conversational-2026-07-31/`, `scripts/` and `package.json`.
-- Provider routing, usage attribution, CostTracker and Responses loop code under `src/extraction/`.
-- Focused backend regression coverage under `src/__tests__/`.
-- Contract and changelog updates in `AGENTS.md` and `docs/reference/{architecture,deployment,changelog}.md`.
-- This mirrored execution log is the final branch commit.
+- `98758c58` feat(extraction): Plan 00B B1 — teardown arbiter + dormant evaluation lifecycle hooks
+- `21bea13b` feat(extraction): Plan 00B B2a — mutation-commit capture at the snapshot atoms + canonical board-op atoms
+- `aed96937` feat(extraction): Plan 00B B2b — origin frames at every producer boundary + mutation source-scan manifest
+- `58117783` feat(extraction): Plan 00B B3 — ask/delivery/playback evidence ledgers + fast-TTS owner check
+- `cbd4d222` feat(model-ab): Plan 00B B4-B6 — expectation projections, semantic judge, lane runner, partition + combined manifest
+- `1d99c116` docs(extraction): corpus/architecture doc updates + A2 egress pin follows the 5-arg emitter
+- `961b241a` fix(ep): address Codex review — six in-scope defect fixes
+- (final) chore(ep): execution log mirror
 
 ### Plan deviations
-
-None. The three reviewer-driven fixes close defects within Plan 00A's stated accounting/telemetry scope.
+None shipped (nothing shipped). Two [ASSUMED] interpretations logged inline (B1 attach-point after activeSessions.set; B2 orphan-recovery origin classed model_direct via:'orphan_recovery'); one B3 scoping decision (no new outbox DB identity columns — cross-process recovery relies on the plan's own delivery_history_ambiguous conservative rule).
 
 ### Assumed decisions
-
-None.
+See [ASSUMED] entries in steps B1, B2, B4-B6.
 
 ### Skipped / blocked / failed steps
+- Codex ship gate: CODEX-HELD (findings 1, 2, 3, 6, 10 unresolved — the full executable composition of the real-server lane, complete evaluation-context wiring, B3 seam composition, complete quiescence counters, and the byte-level parity matrix). Draft PR only; no merge, no deploy, no success artifact.
+- Plan 00C: NOT RUN — its pre-claim policy requires 00B's genuine shipped/deployed record, which correctly does not exist.
 
-- Independent review sign-off: blocked by schema-invalid Claude output after the one allowed retry for each of all three required lanes.
-- Merge and deployment: intentionally skipped by the fail-closed EP rule because independent sign-off is unavailable. Review the draft PR and rerun a fresh independent gate before marking ready.
+### Stashes left behind
+None.
 
 ### Tests run + result
-
-- A0 provenance: 5/5 focused tests passed; committed verifier passed for all 4 canonical reference copies.
-- A1 provider routing: 13/13 passed.
-- A2 focused implementation: 7 suites, 156/156 passed; affected harness: 3 suites, 25/25 passed.
-- A3 provider parity: 3 suites, 64/64 passed, including 15/15 dedicated parity cases.
-- Reviewer-fix focused reruns: 143/143, then 88/88 passed.
-- Backend full suite after all fixes: 306/306 suites passed, 7620 passed and 19 skipped (`--forceExit --silent`, exit 0). A preceding plain-Jest run printed the same green result but remained alive because of pre-existing TTL timers; only that owned process was stopped after the result was recorded.
-- Web full suite on Node 20.20.2 after all fixes: 149 files passed, 1 skipped; 1635 tests passed, 1 skipped.
-- Field-replay strict corpus after all fixes: 9/9 passed, 0 unsupported, 0 failed.
-- Three paced live Responses probes passed: success tool→end (2 rounds), `did_you_mean`→corrected tool→end (3 rounds), and direct end-turn (1 round), all with requested `gpt-5.6-luna` Fast, returned `priority`, and complete per-round attribution.
-- Source/live ECS task-definition audit passed at revision 375. No live mutation was performed.
-- Pre-commit ESLint/prettier gates passed for every implementation/fix commit.
+- Full backend: 311 suites passed / 1 skipped; 7708 passed / 19 skipped (twice — pre- and post-fix).
+- Recorded field corpus: 9/9. Web suite: green (exit 0).
+- New plan00 suites: lifecycle-hooks 17, semantic-capture 22, mutation source scan 7, audibility ledgers 22, expectation manifest 16; mock semantic lane 9/9.
 
 ### Follow-ups noticed
-
-None. The independent-review infrastructure failure is fully captured by this terminal outcome and its retained lane artifacts; it is not a latent CertMate product task.
-
-## Independent review rerun — 2026-08-04 (post-hold, pre-merge)
-
-The CLAUDE-UNAVAILABLE hold was resolved the next morning by rerunning the independent gate as three fresh read-only Claude review lanes (wire/contract, accounting/failure, adversarial/edge) over the full final branch diff (`af530a7a..62c9cc07`), each verifying claims directly in a checkout of the branch head. All three lanes returned substantive prose reports.
-
-**Verdict: zero BLOCKERs across all three lanes; PR authorised to merge after closing the two IMPORTANTs below.**
-
-1. **IMPORTANT (all three lanes converged, independently):** `classifyReturnedModel` stamped `validation_error: response_model_family_mismatch` on an exact requested==response model echo whenever the id fell outside the enumerated family tables (legacy dated ids, future family pins) — a permanent false contradiction on a self-consistent rollback/trial config, verdict-fatal for the evaluation lane consuming `attribution_status`. Fixed: exact trimmed-lowercase echo short-circuits to `returned`/`attributed` before the family comparison; genuinely differing unknown-family strings keep the fail-closed verdict. Pinned in `cost-tracker.test.js`.
-2. **IMPORTANT (accounting lane):** the Chat-Completions comparison adapter drops `streamArgs.service_tier` (requests are served at OpenAI Standard) but reported no request metadata, so attribution inherited the loop-level Fast env default under `OPENAI_EXTRACT_API=chat_completions` — 2× mis-billing plus a false `fast_response_tier_missing` on every comparison-lane round. Fixed: the adapter truthfully reports `requested_service_tier:'standard'` plus raw response model/tier; the legacy `_certmateAccounting` stamp prefers the adapter's report. Request behaviour deliberately unchanged. Pinned in `openai-tooluse-adapter.test.js`.
-3. **NIT (wire lane), fixed as docs-only:** the deployment runbook's verify bullet demanded `stage6_live_extraction.model === 'gpt-5.6-luna'`, but the field reports the RETURNED billing model, which may be version-stamped — reworded to accept `gpt-5.6-luna-*` and point at `prompt_cache_rounds[].requested_model` for the pin.
-
-The two probe findings retained from the failed lanes' diagnostic output were re-verified: the batched `extractionTurnId` BLOCKER was already closed by `1de46849` (fix confirmed to cover all three flush paths), and the Terra observation-tier risk is a non-defect (the observation loop threads its own `'standard'` tier and the Responses adapter always reports a non-null requested tier, so the env-Fast fallback never engages — pinned by `request_implied_standard` coverage).
-
-Remaining NITs recorded as follow-ups in the changelog row (billing-tier `default` spelling; provenance canonical-mode automation; `attachBillableUsage` primitive-throw guard; guarded `finally` accounting; token-field coercion; non-inspector contradiction warn row; dead per-family `bucket.turns`).
-
-Verification after fixes: focused suites 125/125 (cost-tracker, tooluse/responses adapters, tool-result parity, provider routing); full backend suite 306/306 suites, 7623 passed / 19 skipped on Node 20.
+[FOLLOWUP] Complete the Plan 00B executable composition (Codex findings 1/2/3/6/10) — run-semantic-lane must boot initSonnetStream and drive fixture frames end-to-end with a scripted SDK client; the evaluationContextFactory must compose mutation observers + ask/delivery/playback ledgers at entry creation; quiescence needs producer start/completion counters; frame parity needs the byte-level matrix. Smallest next action: re-plan as a focused 00B-successor (rp) covering ONLY the composition seam, then re-EP.
+[FOLLOWUP] AST-based mutation source scan — the line-regex scan cannot see aliased-bucket writes (documented dated limitation in scripts/model-ab/lib/mutation-classification.mjs). Smallest next action: espree/acorn walk over covered files classifying member-assignment targets.
+[FOLLOWUP] ccu-cv-pitch.test.js unseeded white-noise flake (carried over from the 00A run's CI; predates this wave). Seed the RNG or use a statistically robust bound.
