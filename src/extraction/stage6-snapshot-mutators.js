@@ -31,6 +31,11 @@
 
 import { randomUUID } from 'node:crypto';
 import { getMainBoardId } from './stage6-multi-board-shape.js';
+// Plan 00B §B2 — authoritative mutation capture. Every atom below emits
+// exactly ONE immutable commit receipt per REAL state change via
+// emitMutationCommit. Dormant single-Symbol-lookup no-op in production
+// (no observer attached); only the evaluation harness attaches one.
+import { emitMutationCommit, MUTATION_OBSERVER } from './plan00-semantic-capture.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 import { copyAfddPremisesRequirement } from './regulation-lookup.js';
 
@@ -44,7 +49,20 @@ import { copyAfddPremisesRequirement } from './regulation-lookup.js';
  */
 export function applyReadingToSnapshot(snapshot, { circuit, field, value }) {
   if (!snapshot.circuits[circuit]) snapshot.circuits[circuit] = {};
+  const previous = snapshot.circuits[circuit][field];
   snapshot.circuits[circuit][field] = value;
+  if (previous !== value) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'reading',
+        field,
+        circuit,
+        board_id: getMainBoardId(snapshot),
+        value,
+        previous_value: previous == null ? null : String(previous),
+      });
+    }
+  }
 }
 
 /**
@@ -73,7 +91,21 @@ export function applyReadingToSnapshot(snapshot, { circuit, field, value }) {
  */
 export function applyBoardReadingToSnapshot(snapshot, { field, value }) {
   if (!snapshot.circuits[0]) snapshot.circuits[0] = {};
+  const previous = snapshot.circuits[0][field];
   snapshot.circuits[0][field] = value;
+  if (previous !== value) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'board_reading',
+        field,
+        circuit: null,
+        board_id: getMainBoardId(snapshot),
+        value,
+        previous_value: previous == null ? null : String(previous),
+        detail: { storage: 'circuits0' },
+      });
+    }
+  }
 }
 
 /**
@@ -93,6 +125,16 @@ export function clearReadingInSnapshot(snapshot, { circuit, field }) {
   // bucket held a number/boolean.
   const previousValue = bucket[field];
   delete bucket[field];
+  if (snapshot[MUTATION_OBSERVER]) {
+    emitMutationCommit(snapshot, {
+      kind: 'clear',
+      field,
+      circuit,
+      board_id: getMainBoardId(snapshot),
+      value: null,
+      previous_value: previousValue == null ? null : String(previousValue),
+    });
+  }
   return {
     cleared: true,
     previousValue: previousValue == null ? null : String(previousValue),
@@ -117,6 +159,7 @@ export function upsertCircuitMeta(
   snapshot,
   { circuit_ref, designation, phase, rating_amps, cable_csa_mm2 }
 ) {
+  const created = !snapshot.circuits[circuit_ref];
   if (!snapshot.circuits[circuit_ref]) snapshot.circuits[circuit_ref] = {};
   const target = snapshot.circuits[circuit_ref];
   // Canonical snapshot key is `circuit_designation` (matches field_schema.json,
@@ -125,10 +168,28 @@ export function upsertCircuitMeta(
   // tool-loop-created circuits invisible to the canonical-key resolver
   // (Sonnet ambiguous_circuit lookup) — prod session 286D500D-2026-05-24
   // looped "Which circuit is the upstairs lighting?" because of it.
-  if (designation != null) target.circuit_designation = designation;
-  if (phase != null) target.phase = phase;
-  if (rating_amps != null) target.rating_amps = rating_amps;
-  if (cable_csa_mm2 != null) target.cable_csa_mm2 = cable_csa_mm2;
+  const changedFields = [];
+  const setMeta = (key, next) => {
+    if (next == null) return;
+    if (target[key] !== next) changedFields.push(key);
+    target[key] = next;
+  };
+  setMeta('circuit_designation', designation);
+  setMeta('phase', phase);
+  setMeta('rating_amps', rating_amps);
+  setMeta('cable_csa_mm2', cable_csa_mm2);
+  if (created || changedFields.length > 0) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'circuit_upsert',
+        field: null,
+        circuit: circuit_ref,
+        board_id: getMainBoardId(snapshot),
+        value: null,
+        detail: { created, changed_fields: changedFields },
+      });
+    }
+  }
 }
 
 /**
@@ -160,6 +221,16 @@ export function renameCircuit(snapshot, { from_ref, circuit_ref }) {
   }
   snapshot.circuits[circuit_ref] = snapshot.circuits[from_ref];
   delete snapshot.circuits[from_ref];
+  if (snapshot[MUTATION_OBSERVER]) {
+    emitMutationCommit(snapshot, {
+      kind: 'circuit_rename',
+      field: null,
+      circuit: circuit_ref,
+      board_id: getMainBoardId(snapshot),
+      value: null,
+      detail: { from_ref, to_ref: circuit_ref },
+    });
+  }
   return { ok: true };
 }
 
@@ -187,6 +258,15 @@ export function deleteCircuit(snapshot, { circuit_ref }) {
     return { ok: true, deleted: false };
   }
   delete snapshot.circuits[circuit_ref];
+  if (snapshot[MUTATION_OBSERVER]) {
+    emitMutationCommit(snapshot, {
+      kind: 'circuit_delete',
+      field: null,
+      circuit: circuit_ref,
+      board_id: getMainBoardId(snapshot),
+      value: null,
+    });
+  }
   return { ok: true, deleted: true };
 }
 
@@ -252,7 +332,20 @@ export function applyReadingMultiBoard(snapshot, { circuit, field, value, boardI
   if (!snapshot.circuits[key]) {
     snapshot.circuits[key] = { circuit, board_id: id };
   }
+  const previous = snapshot.circuits[key][field];
   snapshot.circuits[key][field] = value;
+  if (previous !== value) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'reading',
+        field,
+        circuit,
+        board_id: id,
+        value,
+        previous_value: previous == null ? null : String(previous),
+      });
+    }
+  }
 }
 
 /**
@@ -273,6 +366,16 @@ export function clearReadingMultiBoard(snapshot, { circuit, field, boardId }) {
   // sibling clearReadingInSnapshot above for the wire-shape rationale).
   const previousValue = bucket[field];
   delete bucket[field];
+  if (snapshot[MUTATION_OBSERVER]) {
+    emitMutationCommit(snapshot, {
+      kind: 'clear',
+      field,
+      circuit,
+      board_id: id,
+      value: null,
+      previous_value: previousValue == null ? null : String(previousValue),
+    });
+  }
   return {
     cleared: true,
     previousValue: previousValue == null ? null : String(previousValue),
@@ -295,15 +398,34 @@ export function upsertCircuitMetaMultiBoard(
 ) {
   const id = resolveBoardId(snapshot, boardId);
   const key = compositeKey(id, circuit_ref);
+  const created = !snapshot.circuits[key];
   if (!snapshot.circuits[key]) {
     snapshot.circuits[key] = { circuit: circuit_ref, board_id: id };
   }
   const target = snapshot.circuits[key];
   // Canonical key — see upsertCircuitMeta comment.
-  if (designation != null) target.circuit_designation = designation;
-  if (phase != null) target.phase = phase;
-  if (rating_amps != null) target.rating_amps = rating_amps;
-  if (cable_csa_mm2 != null) target.cable_csa_mm2 = cable_csa_mm2;
+  const changedFields = [];
+  const setMeta = (metaKey, next) => {
+    if (next == null) return;
+    if (target[metaKey] !== next) changedFields.push(metaKey);
+    target[metaKey] = next;
+  };
+  setMeta('circuit_designation', designation);
+  setMeta('phase', phase);
+  setMeta('rating_amps', rating_amps);
+  setMeta('cable_csa_mm2', cable_csa_mm2);
+  if (created || changedFields.length > 0) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'circuit_upsert',
+        field: null,
+        circuit: circuit_ref,
+        board_id: id,
+        value: null,
+        detail: { created, changed_fields: changedFields },
+      });
+    }
+  }
 }
 
 /**
@@ -335,6 +457,16 @@ export function renameCircuitMultiBoard(snapshot, { from_ref, circuit_ref, board
   bucket.circuit = circuit_ref;
   snapshot.circuits[toKey] = bucket;
   delete snapshot.circuits[fromKey];
+  if (snapshot[MUTATION_OBSERVER]) {
+    emitMutationCommit(snapshot, {
+      kind: 'circuit_rename',
+      field: null,
+      circuit: circuit_ref,
+      board_id: id,
+      value: null,
+      detail: { from_ref, to_ref: circuit_ref },
+    });
+  }
   return { ok: true };
 }
 
@@ -354,6 +486,15 @@ export function deleteCircuitMultiBoard(snapshot, { circuit_ref, boardId }) {
     return { ok: true, deleted: false };
   }
   delete snapshot.circuits[key];
+  if (snapshot[MUTATION_OBSERVER]) {
+    emitMutationCommit(snapshot, {
+      kind: 'circuit_delete',
+      field: null,
+      circuit: circuit_ref,
+      board_id: id,
+      value: null,
+    });
+  }
   return { ok: true, deleted: true };
 }
 
@@ -401,7 +542,21 @@ export function applyBoardReadingMultiBoard(snapshot, { field, value, boardId })
     };
     snapshot.boards.push(board);
   }
+  const previous = board[field];
   board[field] = value;
+  if (previous !== value) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'board_reading',
+        field,
+        circuit: null,
+        board_id: id,
+        value,
+        previous_value: previous == null ? null : String(previous),
+        detail: { storage: 'boards' },
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -558,7 +713,21 @@ function clearAliasesFromRecord(record, aliasSet) {
  * @returns {{cleared: boolean, previousValue: string|null}}
  */
 export function clearBoardReadingInSnapshot(snapshot, { field }) {
-  return clearAliasesFromRecord(snapshot?.circuits?.[0], boardFieldAliasSet(field));
+  const res = clearAliasesFromRecord(snapshot?.circuits?.[0], boardFieldAliasSet(field));
+  if (res.cleared) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'board_clear',
+        field,
+        circuit: null,
+        board_id: getMainBoardId(snapshot),
+        value: null,
+        previous_value: res.previousValue,
+        detail: { storage: 'circuits0' },
+      });
+    }
+  }
+  return res;
 }
 
 /**
@@ -574,7 +743,21 @@ export function clearBoardReadingMultiBoard(snapshot, { field, boardId }) {
   const board = Array.isArray(snapshot?.boards)
     ? snapshot.boards.find((b) => b && b.id === id)
     : undefined;
-  return clearAliasesFromRecord(board, boardFieldAliasSet(field));
+  const res = clearAliasesFromRecord(board, boardFieldAliasSet(field));
+  if (res.cleared) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'board_clear',
+        field,
+        circuit: null,
+        board_id: id,
+        value: null,
+        previous_value: res.previousValue,
+        detail: { storage: 'boards' },
+      });
+    }
+  }
+  return res;
 }
 
 /**
@@ -621,6 +804,19 @@ export function clearBoardReadingFlagAware(snapshot, args) {
         fold(clearAliasesFromRecord(board, aliasSet));
       }
     }
+    if (cleared) {
+      if (snapshot[MUTATION_OBSERVER]) {
+        emitMutationCommit(snapshot, {
+          kind: 'board_clear',
+          field,
+          circuit: null,
+          board_id: null,
+          value: null,
+          previous_value: previousValue,
+          detail: { scope: 'global' },
+        });
+      }
+    }
     return { cleared, previousValue };
   }
   // Board-scoped: mirror the write path's target resolution.
@@ -631,10 +827,24 @@ export function clearBoardReadingFlagAware(snapshot, args) {
       ? snapshot.boards.find((b) => b && b.id === mainId)
       : undefined;
     const boardRes = clearAliasesFromRecord(mainBoard, aliasSet);
-    return {
+    const merged = {
       cleared: legacy.cleared || boardRes.cleared,
       previousValue: legacy.previousValue ?? boardRes.previousValue,
     };
+    if (merged.cleared) {
+      if (snapshot[MUTATION_OBSERVER]) {
+        emitMutationCommit(snapshot, {
+          kind: 'board_clear',
+          field,
+          circuit: null,
+          board_id: mainId,
+          value: null,
+          previous_value: merged.previousValue,
+          detail: { scope: 'board' },
+        });
+      }
+    }
+    return merged;
   }
   return clearBoardReadingMultiBoard(snapshot, { field, boardId });
 }
@@ -689,6 +899,16 @@ export function appendObservation(session, input) {
   };
   copyAfddPremisesRequirement(input, stored);
   session.extractedObservations.push(stored);
+  if (session[MUTATION_OBSERVER]) {
+    emitMutationCommit(session, {
+      kind: 'observation_create',
+      field: null,
+      circuit: stored.circuit ?? null,
+      board_id: null,
+      value: null,
+      detail: { observation_id: id, code: stored.code ?? null },
+    });
+  }
   return { id, observation: stored };
 }
 
@@ -708,5 +928,134 @@ export function deleteObservation(session, { observation_id }) {
   const idx = arr.findIndex((o) => o.id === observation_id);
   if (idx === -1) return { ok: false, error: { code: 'not_found' } };
   const [removed] = arr.splice(idx, 1);
+  if (session[MUTATION_OBSERVER]) {
+    emitMutationCommit(session, {
+      kind: 'observation_delete',
+      field: null,
+      circuit: removed?.circuit ?? null,
+      board_id: null,
+      value: null,
+      detail: { observation_id },
+    });
+  }
   return { ok: true, removed };
+}
+
+// ---------------------------------------------------------------------------
+// Plan 00B §B2 — canonical BOARD-OPERATION atoms. Extracted from
+// stage6-dispatchers-board.js's inline direct writes (add_board's
+// boards.push + currentBoardId flip, the inline distribution-circuit mark,
+// select_board's currentBoardId flip) as a deliberate behaviour-preserving
+// PRODUCTION refactor: the semantic oracle captures certificate mutations
+// solely at declared atoms, and these were the semantic direct writes that
+// bypassed the atom layer. Before/after board-state + boardOps identity is
+// pinned by the existing board-dispatcher regression suite.
+// ---------------------------------------------------------------------------
+
+/**
+ * Append a fully-validated board record and make it the current board —
+ * add_board's snapshot mutation, verbatim. The dispatcher keeps ownership of
+ * every validation and of the wire boardOps push; this atom owns only the
+ * two snapshot writes (append + currentBoardId flip) and their single
+ * commit receipt.
+ */
+export function appendBoardToSnapshot(snapshot, board) {
+  if (!Array.isArray(snapshot.boards)) snapshot.boards = [];
+  const previousCurrent = snapshot.currentBoardId ?? null;
+  snapshot.boards.push(board);
+  snapshot.currentBoardId = board.id;
+  if (snapshot[MUTATION_OBSERVER]) {
+    emitMutationCommit(snapshot, {
+      kind: 'board_add',
+      field: null,
+      circuit: null,
+      board_id: board.id,
+      value: null,
+      detail: {
+        designation: board.designation ?? null,
+        board_type: board.board_type ?? null,
+        parent_board_id: board.parent_board_id ?? null,
+        previous_current_board_id: previousCurrent,
+      },
+    });
+  }
+  return { appended: true, previousCurrentBoardId: previousCurrent };
+}
+
+/**
+ * Flip snapshot.currentBoardId — select_board's snapshot mutation, verbatim
+ * (the assignment always happens, matching the pre-refactor behaviour; the
+ * commit receipt only exists when the selection actually CHANGED the
+ * current board — a same-board select is not a state change).
+ */
+export function setCurrentBoardInSnapshot(snapshot, boardId) {
+  const previous = snapshot.currentBoardId ?? null;
+  snapshot.currentBoardId = boardId;
+  if (previous !== boardId) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'select_board',
+        field: null,
+        circuit: null,
+        board_id: boardId,
+        value: null,
+        detail: { previous_board_id: previous },
+      });
+    }
+  }
+  return { changed: previous !== boardId, previousBoardId: previous };
+}
+
+/**
+ * Mark an EXISTING circuit bucket as a distribution circuit feeding
+ * `feedsBoardId` — the shared snapshot mutation behind
+ * mark_distribution_circuit AND add_board's inline auto-mark. The caller
+ * resolves + validates the bucket; this atom owns the two field writes and
+ * their single real-change-gated commit receipt.
+ */
+export function markDistributionCircuitInSnapshot(
+  snapshot,
+  bucket,
+  { circuitRef, sourceBoardId, feedsBoardId }
+) {
+  const changed =
+    bucket.is_distribution_circuit !== 'yes' || bucket.feeds_board_id !== feedsBoardId;
+  bucket.is_distribution_circuit = 'yes';
+  bucket.feeds_board_id = feedsBoardId;
+  if (changed) {
+    if (snapshot[MUTATION_OBSERVER]) {
+      emitMutationCommit(snapshot, {
+        kind: 'mark_distribution_circuit',
+        field: null,
+        circuit: circuitRef ?? null,
+        board_id: sourceBoardId ?? null,
+        value: null,
+        detail: { feeds_board_id: feedsBoardId },
+      });
+    }
+  }
+  return { changed };
+}
+
+/**
+ * Plan 00B §B2 — narrowly-named canonical atom for the LEGACY observation
+ * apply path (off/shadow modes). The legacy leg reuses the model-provided
+ * observation_id and its own record shape, which appendObservation (atom id
+ * ownership) cannot reproduce state-identically — so the direct push moves
+ * here verbatim instead. Live-mode observations keep using appendObservation.
+ */
+export function appendLegacyObservationRecord(session, record) {
+  if (!Array.isArray(session.extractedObservations)) session.extractedObservations = [];
+  session.extractedObservations.push(record);
+  if (session[MUTATION_OBSERVER]) {
+    emitMutationCommit(session, {
+      kind: 'observation_create',
+      field: null,
+      circuit: record?.circuit ?? null,
+      board_id: null,
+      value: null,
+      detail: { observation_id: record?.id ?? null, code: record?.code ?? null, leg: 'legacy' },
+    });
+  }
+  return record;
 }

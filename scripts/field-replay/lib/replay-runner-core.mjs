@@ -100,8 +100,20 @@ function setByPointer(obj, pointer, value) {
  * `branches` the conditional continuations; `turnState` exposes the
  * observed ask state for branch selection. Violations latch into
  * `violations` (reported OUT-OF-BAND, never as throws alone).
+ *
+ * Plan 00B-2 C4 — EXPORTED for the semantic-oracle lane driver
+ * (scripts/model-ab/lib/lane-driver.mjs): the driver creates one strict
+ * client PER TURN over that turn's model_rounds (matching this runner's own
+ * per-turn semantics) and swaps it into the session before each transcript.
  */
-function makeTurnClient({ baseRounds, branches, turnState, violations, corpusId, turnIndex }) {
+export function makeTurnClient({
+  baseRounds,
+  branches,
+  turnState,
+  violations,
+  corpusId,
+  turnIndex,
+}) {
   // Keep the response-array reference — a selected branch APPENDS its
   // rounds before stream() reads the next slot (plan: reuse mockClient
   // as-is; here the same consumption contract with branch support).

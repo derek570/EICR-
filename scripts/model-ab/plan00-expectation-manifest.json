@@ -1,0 +1,665 @@
+{
+  "schema_version": 1,
+  "status": "UNREVIEWED-DRAFT",
+  "generated_by": "scripts/model-ab/run-semantic-lane.mjs (Plan 00B B6)",
+  "vendor_live_expectations": {
+    "sha256": "09fa4d187707a5b4617bad79b83a3f9263f6a9ebe0b116c9687e1986456ccdf9",
+    "fixture_ids": [
+      "frc_342b5176bba77d4e9a031c6541d60e63",
+      "frc_4687948efcd06a3cd9dce203a3aa4ffe",
+      "frc_51be8bece8e63330a2f0daf78220af92",
+      "frc_85ace7677d0e1c4a7b2f3609e5d1a8c4",
+      "frc_9aa68a437135b079a615109b10fcc63a",
+      "frc_a5f8cfebcb5cd7749412d09d984ebf09",
+      "frc_b6ec5356f67d8655db214b4f16ae8d83",
+      "frc_c55c996fa1014e088455af77216220d1",
+      "frc_e94d9854ba728621ade73126161023da"
+    ],
+    "fixtures": [
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_342b5176bba77d4e9a031c6541d60e63",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": [
+            {
+              "number": 4,
+              "designation": "Upstairs Sockets"
+            }
+          ]
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "R1 plus R2 for upstairs sockets is 0.32.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [],
+            "operations": [
+              {
+                "ordinal": 1,
+                "kind": "reading",
+                "field": "r1_r2_ohm",
+                "circuit": 4,
+                "board_id": null,
+                "value": "0.32",
+                "state_transition": null,
+                "audibility": "exactly_once"
+              }
+            ],
+            "audible_outputs": [
+              {
+                "kind": "reading_confirmation",
+                "count": 1,
+                "match": {
+                  "field": "r1_r2_ohm",
+                  "circuit": 4
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_4687948efcd06a3cd9dce203a3aa4ffe",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": [
+            {
+              "number": 3,
+              "designation": "Downstairs Socket",
+              "ir_live_live_mohm": "LIM"
+            }
+          ]
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "Downstairs Socket, circuit 3, IR L to L 100.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [],
+            "operations": [
+              {
+                "ordinal": 1,
+                "kind": "reading",
+                "field": "ir_live_live_mohm",
+                "circuit": 3,
+                "board_id": "main",
+                "value": "100",
+                "state_transition": "clear_then_write",
+                "audibility": "exactly_once"
+              }
+            ],
+            "audible_outputs": []
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_51be8bece8e63330a2f0daf78220af92",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": []
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "Main earth is 16 now.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [],
+            "operations": [
+              {
+                "ordinal": 1,
+                "kind": "board_reading",
+                "field": "earth_loop_impedance_ze",
+                "circuit": null,
+                "board_id": null,
+                "value": "1.6",
+                "state_transition": null,
+                "audibility": "exactly_once"
+              }
+            ],
+            "audible_outputs": [
+              {
+                "kind": "reading_confirmation",
+                "count": 1,
+                "match": {
+                  "text_exact": "Ze recorded as 1.6 — I corrected 16 to 1.6"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_85ace7677d0e1c4a7b2f3609e5d1a8c4",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": [
+            {
+              "number": 3,
+              "designation": "Upstairs Sockets"
+            }
+          ]
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "The Zs for circuit three.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [
+              {
+                "answer_text": "No. Don't worry.",
+                "answered": true,
+                "channel": "pending_registry"
+              }
+            ],
+            "operations": [],
+            "audible_outputs": [
+              {
+                "kind": "ask_user",
+                "count": 1,
+                "match": null
+              },
+              {
+                "kind": "field_null_fallback",
+                "count": 1,
+                "match": {
+                  "text_exact": "No problem, moving on."
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_9aa68a437135b079a615109b10fcc63a",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": [
+            {
+              "number": 1,
+              "designation": "Cooker"
+            },
+            {
+              "number": 4,
+              "designation": "Upstairs Sockets",
+              "r1R2Ohm": "0.86"
+            }
+          ]
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "Calculate Zs for circuit 4.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [],
+            "operations": [
+              {
+                "ordinal": 1,
+                "kind": "reading",
+                "field": "measured_zs_ohm",
+                "circuit": 4,
+                "board_id": null,
+                "value": "1.21",
+                "state_transition": null,
+                "audibility": "exactly_once"
+              }
+            ],
+            "audible_outputs": [
+              {
+                "kind": "reading_confirmation",
+                "count": 1,
+                "match": {
+                  "field": "measured_zs_ohm",
+                  "circuit": 4
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_a5f8cfebcb5cd7749412d09d984ebf09",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": [
+            {
+              "number": 1,
+              "designation": "Cooker"
+            },
+            {
+              "number": 4,
+              "designation": "Upstairs Sockets",
+              "r1R2Ohm": "0.86"
+            }
+          ]
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "Calculate Zs for circuit 4.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [],
+            "operations": [
+              {
+                "ordinal": 1,
+                "kind": "reading",
+                "field": "measured_zs_ohm",
+                "circuit": 4,
+                "board_id": null,
+                "value": "1.21",
+                "state_transition": null,
+                "audibility": "derived_exempt"
+              }
+            ],
+            "audible_outputs": []
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_b6ec5356f67d8655db214b4f16ae8d83",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": [
+            {
+              "number": 1,
+              "designation": "Cooker"
+            },
+            {
+              "number": 4,
+              "designation": "Upstairs Sockets"
+            }
+          ]
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "Zs for circuit 4.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [],
+            "operations": [],
+            "audible_outputs": [
+              {
+                "kind": "field_null_fallback",
+                "count": 1,
+                "match": null,
+                "implied": "audibility_net"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_c55c996fa1014e088455af77216220d1",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": [
+            {
+              "number": 1,
+              "designation": "Cooker"
+            },
+            {
+              "number": 2,
+              "designation": "Upstairs Night"
+            }
+          ]
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "Chuck it too is upstairs lights.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [],
+            "operations": [],
+            "audible_outputs": [
+              {
+                "kind": "field_null_fallback",
+                "count": 1,
+                "match": null,
+                "implied": "audibility_net"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "schema_version": 1,
+        "status": "UNREVIEWED-DRAFT",
+        "corpus_id": "frc_e94d9854ba728621ade73126161023da",
+        "certificate_type": "eicr",
+        "seeded_state": {
+          "boards": [
+            {
+              "id": "main",
+              "board_type": "main"
+            }
+          ],
+          "circuits": []
+        },
+        "turns": [
+          {
+            "turn_index": 1,
+            "transcript": "Delete Ze.",
+            "confirmations_enabled": {
+              "value": true,
+              "provenance": "recorded_full"
+            },
+            "ask_answers": [],
+            "operations": [],
+            "audible_outputs": [
+              {
+                "kind": "reading_confirmation",
+                "count": 1,
+                "match": {
+                  "field": "field_cleared",
+                  "circuit": null,
+                  "text_exact": "Ze cleared"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "deterministic_egress_expectations": {
+    "sha256": "4a9d8a8e9d5c5a386e209e18dc5bc063b8edf545808f6c963ddd1a5c01b618f5",
+    "gated_by": "plan00c_stage_a_deployed_oracle_fingerprint",
+    "cases": [
+      {
+        "case_id": "egress_neutral_update_silent",
+        "description": "async neutral update emits one silent observation_update (no recode line)",
+        "covered_by": "src/__tests__/plan3-observation-recode-emitter.test.js",
+        "covered_by_sha256": "cac5589c06762e8c514bde9a0a1327398c02e94b2ccb048a5292f1f2c274ce2c"
+      },
+      {
+        "case_id": "egress_code_change_recode_once",
+        "description": "code change emits observation_update then exactly one recode confirmation",
+        "covered_by": "src/__tests__/plan3-observation-recode-emitter.test.js",
+        "covered_by_sha256": "cac5589c06762e8c514bde9a0a1327398c02e94b2ccb048a5292f1f2c274ce2c"
+      },
+      {
+        "case_id": "egress_disconnect_resume_no_duplicate",
+        "description": "failure/disconnect after update and before recode resumes with no duplicate update and one recode (suffix replay)",
+        "covered_by": "src/__tests__/plan3-observation-recode-emitter.test.js",
+        "covered_by_sha256": "cac5589c06762e8c514bde9a0a1327398c02e94b2ccb048a5292f1f2c274ce2c"
+      },
+      {
+        "case_id": "egress_rule6_frame_ledger_ordering",
+        "description": "Rule-6/frame-ledger ordering across extraction, update, recode, field corrections and VCR with stable dedupe",
+        "covered_by": "src/__tests__/plan3-observation-recode-emitter.test.js",
+        "covered_by_sha256": "cac5589c06762e8c514bde9a0a1327398c02e94b2ccb048a5292f1f2c274ce2c"
+      }
+    ]
+  },
+  "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
+  "semantic_oracle_digest": "b4679079640e9d68533d4385d649fbfa59c3dbdf3f6ac0408681b606ff386bdd",
+  "semantic_oracle_inputs": [
+    {
+      "path": "src/extraction/stage6-snapshot-mutators.js",
+      "sha256": "2b8afa8f75e3a187674bef32ce128cd0d9bfa65059a5ef79941dad782f5e107c"
+    },
+    {
+      "path": "src/extraction/plan00-semantic-capture.js",
+      "sha256": "17c87af89911a4f494193c17811d4f266785f2b425644fd6460771f0cfdcf1cd"
+    },
+    {
+      "path": "src/extraction/plan00-audibility-ledgers.js",
+      "sha256": "f1b0c3542faa6e9d33f5fed8f151b6e7d540fa62b71c2b6398af80b2ecb0d825"
+    },
+    {
+      "path": "src/extraction/plan00-lifecycle-hooks.js",
+      "sha256": "2dc99cb997e2eb4c016f5a0993c49e2389bab896a9f783ad567c5055b3990be5"
+    },
+    {
+      "path": "src/extraction/sonnet-stream.js",
+      "sha256": "21ac6e8068e7088dcc1e73e1abe53d816493878cd1867c5735ecdce853868e30"
+    },
+    {
+      "path": "src/extraction/stage6-dispatchers.js",
+      "sha256": "566df7c59afdbf275e6847ec19090d42820813fcc47029ab1043c420726b81ea"
+    },
+    {
+      "path": "src/extraction/eicr-extraction-session.js",
+      "sha256": "115e61b0b600e091c03d5baab314cdf10a62eff2ee44abc894753b602637a33e"
+    },
+    {
+      "path": "src/extraction/stage6-shadow-harness.js",
+      "sha256": "895e1ed9e989d9fe02aa30c4ba008d7b541393336d00fdd5d4e342097ce221d8"
+    },
+    {
+      "path": "src/extraction/postcode-snapshot-applier.js",
+      "sha256": "7f6fb33e146ecd61df921c75d82429d9ab1ae9a6967981fdcf8b25ef7f1a1e60"
+    },
+    {
+      "path": "src/extraction/dialogue-engine/engine.js",
+      "sha256": "2212c3edd991d8141ef3662adb8abe683f962f47e154009ccc894258e5451a3c"
+    },
+    {
+      "path": "src/extraction/dialogue-engine/helpers/snapshot-write.js",
+      "sha256": "423a4c4fad918cdddac4bd2c6538f0ef847ddc8aa58563dc09fd1df1169040b6"
+    },
+    {
+      "path": "src/extraction/dialogue-engine/helpers/derivations.js",
+      "sha256": "5398d3c754c4aca8eb1d49e37a5d38bcd8e842fa38d4ef705c4a57d6210699f9"
+    },
+    {
+      "path": "src/routes/voice-latency-fast-tts.js",
+      "sha256": "7d006e8c2bab3f97f0726358b959f861b83a636b3181555886f5387b074c8d09"
+    },
+    {
+      "path": "src/routes/voice-latency-playback-ack.js",
+      "sha256": "216b7be4cb9095abd324dfc5c8a09be37db684ca7c5b5996f9f8b6cc2140cf4c"
+    },
+    {
+      "path": "scripts/model-ab/lib/mutation-classification.mjs",
+      "sha256": "fce9671dc5e9d4e9f9ccb93b77f2d080e37e292830ebc8ba46eb6ff50d8d3d05"
+    },
+    {
+      "path": "scripts/model-ab/lib/expectation-projection.mjs",
+      "sha256": "36e5c17c507f9660b6c1496d5295ea3e13f007c4032f7e6bd28720b2a75329f3"
+    },
+    {
+      "path": "scripts/model-ab/lib/semantic-judge.mjs",
+      "sha256": "eb7ed52cf0dd395537d431b2f110a199d71fcae1df84d75f8dbd6c6e1d80efb7"
+    },
+    {
+      "path": "scripts/field-replay/lib/fixture-schema.mjs",
+      "sha256": "88d35286f642b4874ededf8f662f6b61573ca7dbaa4103af6b1ff62d20047cd6"
+    },
+    {
+      "path": "scripts/model-ab/run-semantic-lane.mjs",
+      "sha256": "dc7cee9b24fa4621718f78155f03488f2810eb84527c5884a782e8212030ef8e"
+    },
+    {
+      "path": "scripts/model-ab/lib/lane-driver.mjs",
+      "sha256": "aba2c6db806fccca928e59cb078f1d78d20d67eabeb9c47577808d1a8e880ffd"
+    },
+    {
+      "path": "scripts/field-replay/lib/replay-runner-core.mjs",
+      "sha256": "33e1533f53d183dac9510338f72250ce1be6be7ff7bebe73279ba488175dffe4"
+    },
+    {
+      "path": "scripts/field-replay/lib/replay-clock.mjs",
+      "sha256": "8d87aaa76572cfbad2a8d86cd8f1347801f298e61a56002843372203d3cad2dc"
+    },
+    {
+      "path": "scripts/field-replay/lib/network-guard.mjs",
+      "sha256": "957da81b4d88303421e9eae1e7878a47540d6aaf7c12d293eee2b540c400def5"
+    },
+    {
+      "path": "src/extraction/dialogue-engine/helpers/wire-emit.js",
+      "sha256": "4315d2a63c7f891135649fd4532890cb8bcbe65815cf0973c577b0bce706b6c5"
+    },
+    {
+      "path": "src/extraction/stage6-dispatcher-ask.js",
+      "sha256": "cd9149f348f8f10766435ea79d1cd6f24dd7330e1283816d3c06b6bf67d09132"
+    },
+    {
+      "path": "src/extraction/address-mirror-controller.js",
+      "sha256": "7a2824d2e75691ac6dd6ab766baac4da5cf03ae4de92d43b3b64694db84b68ec"
+    },
+    {
+      "path": "src/extraction/cost-tracker.js",
+      "sha256": "93d55c2487ceeb9e1a8a9ce5b6704fc92799927d742e33d901052f3762e25f50"
+    },
+    {
+      "path": "src/extraction/round-usage-attribution.js",
+      "sha256": "7436b387a450432cf36573f06e1a7e3a71f999a6cc34433bc5de93bbb621e45c"
+    },
+    {
+      "path": "src/extraction/stage6-tool-loop.js",
+      "sha256": "ff9b6395f54427d5a3dfe23b0d12f34d7781523c1c4ec06deb921646e194f9ca"
+    },
+    {
+      "path": "src/extraction/openai-tooluse-adapter.js",
+      "sha256": "e639077b65d81503f89969be3308a8693f7b0b8e103dbd81dc302ac8169ed656"
+    },
+    {
+      "path": "src/extraction/openai-responses-adapter.js",
+      "sha256": "77fcc105da66225152ef8b5adff568e5edbe8043ca8f03e75d8f53de7a952319"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json",
+      "sha256": "b6a5321571b1f2892a48c3aa47bd1e8cde443eca7352d838f905050c1117039d"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-v1.json",
+      "sha256": "4db43f39ab60007ebd0350a0fe3f3b93b357c71c035bc564262381324be18b4d"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-v1.json",
+      "sha256": "290bf76626825e75f435c7ceff1a1c3d0dd956fbda2c3afa68648437cbe6b704"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-ineligible-v1.json",
+      "sha256": "1eb4f188d9913962018e2bf7e9183ea78995f15d55cc9e820268f7bac7215d02"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-ineligible-v1.json",
+      "sha256": "e4b85dbcf746b7f388514cc325d0e07bf9b27c9e66fb89388be9706818a318d2"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/ack-sequences-v1.json",
+      "sha256": "f4ba274c1b13386fce7d45075a1b2fd39207a571cc2373c77f15df89de07c543"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-lifecycle-contradiction-v1.json",
+      "sha256": "730361e92802c601f154dc9e564ec2178ea80af79abaaba5967b1bb7f12b7149"
+    },
+    {
+      "path": "tests/fixtures/test-contracts/plan00-evidence-contract/projection-lifecycle-contradiction-v1.json",
+      "sha256": "30c6a39376595156b6bad778326b2e676c97009398f91370e11fac74a3dbf0ed"
+    },
+    {
+      "path": "src/extraction/plan00-evidence-registry.js",
+      "sha256": "57ae64d5a8a7aefeacd36f51a2bc6b8e1044ab7ac68b3fa7fb4015cb18c8f0df"
+    },
+    {
+      "path": "src/extraction/plan00-evidence-projection.js",
+      "sha256": "60ec8155b95df4d2f5df20904d408f3d5186dba435fae0196e8d9efd1a563624"
+    }
+  ],
+  "strata_named_gaps": [
+    {
+      "stratum": "multi_board_routing",
+      "reason": "No frozen field-corpus fixture carries a multi-board voice routing turn with real provenance (the A2-multiboard work is pinned by unit/integration suites, not a captured session). Recording one is a Plan 00C Derek decision; fabricating one is prohibited.",
+      "safety_critical": false,
+      "dated": "2026-08-04"
+    },
+    {
+      "stratum": "direct_observation_create_delete",
+      "reason": "No frozen fixture captures a live observation create/delete turn with real provenance. Deterministic dispatcher coverage exists (stage6-dispatchers-observation.test.js) but §B6 vendor-lane provenance requires a captured session — named gap for Plan 00C.",
+      "safety_critical": false,
+      "dated": "2026-08-04"
+    }
+  ],
+  "vendor_live_sha256": "09fa4d187707a5b4617bad79b83a3f9263f6a9ebe0b116c9687e1986456ccdf9",
+  "deterministic_egress_sha256": "4a9d8a8e9d5c5a386e209e18dc5bc063b8edf545808f6c963ddd1a5c01b618f5"
+}

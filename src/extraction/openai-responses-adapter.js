@@ -453,6 +453,8 @@ function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier, promp
     response_service_tier: finalResp?.service_tier ?? null,
     requested_model: fallbackModel,
     requested_service_tier: fallbackServiceTier ?? null,
+    // Plan 00B-3 C5 — the ACTUAL API transport that served this round.
+    api_transport: 'responses',
   };
   if (promptCache) message.prompt_cache = promptCache;
   return message;
@@ -511,6 +513,12 @@ function createStream(openai, streamArgs, options) {
     // billed separately — see mapUsage docstring).
     max_output_tokens: Math.max((max_tokens || 4096) * 4, 8192),
     reasoning: {
+      // Plan 00B-2 C3 — the tool-loop dispatch resolver
+      // (stage6-shadow-harness resolveOpenAIReasoningEffort) is
+      // authoritative and always threads streamArgs.reasoning_effort for
+      // live OpenAI turns; the env fallback here is RETAINED for callers
+      // that thread nothing (the create() cache-keepalive path) and yields
+      // the same string when the env is unset.
       effort: String(
         reasoningEffortOverride ?? process.env.OPENAI_EXTRACT_REASONING_EFFORT ?? 'low'
       ).trim(),

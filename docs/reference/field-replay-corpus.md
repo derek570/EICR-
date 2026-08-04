@@ -112,3 +112,166 @@ A BACKEND/MODEL field-feedback bug **within the corpus's v1 coverage** is not "d
 ## Threat model (accident, not malice)
 
 One-maintainer repo: every PR author is Derek or a Claude session on his behalf. The failure class this stops is well-meaning-but-wrong code going green on mocks, including a confused session fabricating plausible-but-never-executed artifacts. Malicious-insider hardening (signed governance, trusted evidence, base-branch-controlled checks, OS-level `--network=none`, trusted-harness manifest) is DEFERRED to `field-replay-hardening-followups`, MANDATORY before any second maintainer gets write access. Accepted residual risk (dated): a PR editing `deploy.yml` itself to remove the corpus step would merge green — mitigated by PR review, the pre-push backstop, and the deploy-blocking lane.
+
+## Plan 00B — trusted semantic oracle (2026-08-04)
+
+The corpus now feeds a REAL-SERVER semantic oracle beside the recorded gate
+(which is unchanged and stays the deterministic backend/wire protection):
+
+- **Real-server lane** — `initSonnetStream` boots the actual WebSocket
+  handler with a test-only `evaluationContextFactory`; a per-entry teardown
+  ARBITER (explicit stop / disconnect expiry / both reconnect frames observe
+  ONE teardown) freezes evidence exactly once, quiescence-gated
+  (`non_quiescent_at_stop` fails closed). `src/extraction/plan00-lifecycle-hooks.js`.
+- **Semantic capture** — certificate mutations are captured SOLELY at the
+  canonical atoms in `stage6-snapshot-mutators.js` (commit receipt per REAL
+  state change, producer-declared origin frames, derived-parent provenance,
+  journal WRITE_SEQUENCE as an overlay only). The committed classification
+  manifest + source scan (`scripts/model-ab/lib/mutation-classification.mjs`,
+  `plan00-mutation-source-scan.test.js`) fails on any unclassified direct
+  write. `add_board`/`select_board`/distribution-mark/postcode-locality were
+  extracted into atoms as a behaviour-preserving production refactor.
+- **Ask/audibility/playback ledgers** — `plan00-audibility-ledgers.js`:
+  produced→emitted→answered ask lifecycle on the normalized `liveAskKey`;
+  operation-bound `delivery_attempt` rows (identity = extractionTurnId +
+  effective slot + ordinal — transport aliases never); `playback_start` only
+  from an authenticated ACK resolving uniquely to one delivered operation;
+  fast-TTS provisional binding behind the route's new session-owner check;
+  cross-process outbox recovery flags `delivery_history_ambiguous`.
+- **Expectations** — every fixture has a frozen `UNREVIEWED-DRAFT`
+  projection (operations/asks/audible only; no model rounds, no tool ids) in
+  exactly ONE executable lane (`vendor_live_expectations` — all nine — or
+  the `deterministic_egress_expectations` named-case inventory). Combined
+  manifest: `scripts/model-ab/plan00-expectation-manifest.json` with both
+  lane hashes, the combined anchor and the enumerated
+  `semantic_oracle_digest`; the manifest test suite is the merge-blocking
+  drift check. Attestation (`expectations_attested`) is owned SOLELY by
+  Plan 00C — `run-semantic-lane.mjs` refuses live vendor sampling without
+  that record (`--mode=mock` proves plumbing only). Named non-safety strata
+  gaps (multi-board routing, direct observation create/delete) are recorded
+  in the manifest for Derek's 00C decision.
+
+### Plan 00B-2 — executable composition (2026-08-04)
+
+The 00B modules became a production-composed, EXECUTABLE whole (the five
+CODEX-HELD structural findings 1/2/3/6/10 of the parent run):
+
+- **Composition seam** — `evaluationContextFactory({sessionId, userId})`
+  runs ONCE per fresh entry at session CREATION (before `session.start`);
+  the result is normalised into one server-owned evaluation context
+  ({observer, mutationObserver, askLedger, deliveryLedger} all optional; a
+  bare observer stays valid), the mutation observer attaches to session AND
+  snapshot, and ONLY the normalised context is stashed non-enumerably on
+  the ENTRY via the `EVALUATION_CONTEXT` Symbol. Reconnect/resume preserve
+  the same instance; every production seam resolves it from the active
+  entry.
+- **Seam wiring (two-tier evidence)** — Tier 1 (dispatcher asks, result-
+  frame delivery, playback ACKs, fast-TTS) carries the full semantic
+  contract and is proven by the mock-lane gate; Tier 2 (dialogue-script +
+  address-mirror) is wired to the SAME ledgers but proven by focused
+  real-ingress integration tests (`plan00-tier2-seams.test.js`) — the
+  corpus records a `dialogue_answer_ingress` exclusion by design, and the
+  family evidence obligation is recorded INTO Plan 00C's canonical plan
+  (completion-manifest family fields + the `dialogue_hearing_attestation`
+  post-completion event).
+- **Producer-aware quiescence** — `beginProducer(entry, kind)` single-use
+  handles over the eight canonical async producer kinds fold into
+  `readInFlightCounts`; boundary-keyed `start`/`completion` latches
+  (single-flight per key) replace the single freeze latch; an INELIGIBLE
+  completion still builds/publishes 00C's durable audit candidate, with the
+  quiescence outcome inside `counts`; the judged evidence is the
+  deep-frozen `frozen.evidence` sibling latched at the chokepoint (live
+  ledgers stay diagnostics-only). `round_usage` lifecycle sub-records (one
+  per accepted `ingestBillableUsage` round row, hand-built allowlist) plus
+  the transport×turn reasoning-effort resolver give 00C its executed
+  cost/effort evidence.
+- **Real-server mock lane** — `scripts/model-ab/lib/lane-driver.mjs` boots
+  the REAL `initSonnetStream`, drives each fixture through the captured WS
+  listener (exact ingress mapping, non-awaited transcript promise, bounded
+  deterministic answer pump under the field-replay replay clock, strict
+  per-turn scripted client via the exported `makeTurnClient`), POSTs
+  production playback-ACK bodies through the REAL exported route factory
+  offline, and judges ONLY the retained entry's completion-latch
+  `frozen.evidence` (`judgeFrozenEvidence`). Acceptance: **9/9 fixtures
+  PASS end-to-end**, committed as `plan00-lane-driver.test.js`.
+- **Byte parity + leak sweep** — `plan00-frame-parity-matrix.test.js` pins
+  EXACT `ws.send` sequences across production/evaluation/both single-factory
+  legs over the deterministic scenario matrix, and sweeps every frame,
+  logger payload and storage body against the canonical frozen
+  `EVALUATION_ONLY_SYMBOLS` list.
+
+### Plan 00B-3 — the oracle-evidence CONTRACT (2026-08-04)
+
+Two consecutive CODEX-HELD runs churned in one surface because the evidence
+contract was implicit — reviewers kept discovering it one leak at a time.
+00B-3 inverts the dynamic: the contract is an EXECUTABLE TEST authored
+first, and the implementation converges against it.
+
+- **Pre-authored schema** —
+  `tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json`,
+  committed BEFORE any implementation (the anti-shaping rule): the five-key
+  snapshot boundary, the closed ask-quiescence families
+  (dispatcher/dialogue_script/address_mirror) with the stop-boundary
+  ordering rule, the closed semantic-family + transport enums, ONE closed
+  producer registry backing both, the complete row-kind vocabulary
+  (accepted/rejected/idempotent/freeze/unknown classes), the closed
+  rejection-reason vocabulary with PER-REASON regime composition, and the
+  ternary-plus-pre-admission verdict taxonomy.
+- **Two-sided fixture + projector** — hand-authored snapshot/projection
+  pairs (eligible + ineligible) deep-equal `buildEvidenceProjectionV1`
+  (`src/extraction/plan00-evidence-projection.js`, five-key-snapshot-only);
+  the three-way agreement invariant (latched-snapshot reconstruction ↔
+  frozen-ledger projection ↔ fixture) is created and pinned in
+  `plan00-evidence-contract.test.js` (53 cases, RED-proven 32-failing
+  against the held tip before the fixes landed). 00C's Stage A reuses the
+  same artifact as its session-manifest builder acceptance.
+- **Acceptance-gated sub-records (C1)** — every ask-ledger transition
+  returns an explicit verdict and the row derives FROM it: accepted
+  `ask_lifecycle` OR rejected `ask_transition_rejected` (visible, zero
+  credit), exactly one per attempt. SANCTIONED ledger change:
+  `answered_without_full_proof` is a transition rejection (no invalid
+  latch; the ask stays open and counts non-quiescent). Byte-identical ACK
+  retransmissions append `playback_idempotent`; ledger-layer integrity
+  rejections append `playback_rejected`/`delivery_rejected` beside their
+  latch; pre-admission misses stay telemetry.
+- **Tier-2 quiescence (C2)** — per-family `open_asks_*` counts fold into
+  `readInFlightCounts`; an eligible freeze requires them all zero, and a
+  stop-boundary-terminal-resolved ask still counts open. The recorded
+  corpus keeps judging its declared turn WINDOW: `composeCaptureInvalid`
+  proceeds past quiescence ONLY when the sole non-quiescence is
+  `open_asks_*` (dialogue asks are outside the corpus observation
+  boundary; a stable open ask cannot mutate judged evidence) — 00C's
+  completion fold reads the counts directly and stays strict.
+- **Producer registry (C3)** — record* APIs take registry IDs only;
+  unknown ids append uncreditable `producer_unknown` rows and latch the
+  owning ledger; `semantic_family` + `transport` are separate fields on
+  delivery AND playback rows; `plan00-evidence-source-scan.test.js`
+  forbids raw family/transport-bearing appends outside the typed adapters.
+- **Projection completeness (C5)** — delivery rows carry
+  `delivery_ref`/`at_seq`/aliases, playback rows carry `ack_body_hash` +
+  `source`, `round_usage` rows carry the adapter-stamped `api_transport`
+  (anthropic_messages | chat_completions | responses), and condition-gated
+  `freeze_invalid` rows (invalid latches, `mutation_invalid`, nonzero
+  `delivery_prepared_outstanding`, the unconsumed fast-TTS provisional
+  folded via the existing `assertNoUnconsumedProvisionals`) land inside
+  the latched snapshot with stable revisions.
+- **Parity matrix (C4)** — standalone observation UPDATE + RECODE
+  scenario legs (rule_6_edit code_change + correction_lead_in frames)
+  join the four-quadrant byte-parity matrix.
+- **Diff-review hardening (cycles 1–7)** — the contract gained: the
+  executable REJECTION_REASONS regime table (per-reason latch/row/stage
+  composition folded into eligibility as
+  `rejection_regime_contradictions`), the closed
+  `lifecycle_transition_grammar` (ONE exported table the projector
+  consumes; terminals never reopen; violations are
+  `invalid_lifecycle_transition` entries in
+  `lifecycle_state_contradictions`, full prior-state × stage matrix
+  pinned), fail-closed count reconciliation (`count_contradictions`
+  incl. missing-key and aggregate checks), sequence-positional
+  transition-rejection binding, machine-readable per-kind `field_spec`
+  validation over fixtures AND real hook output, the stop-boundary
+  open-ask latch, the per-send-loop mirror replay identity, and a THIRD
+  shared fixture pair
+  (`snapshot/projection-lifecycle-contradiction-v1.json`) plus the
+  `ack-sequences-v1.json` action fixture — all reused by 00C Stage A,
+  whose fold must HOLD on any contradiction class.

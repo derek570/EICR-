@@ -69,6 +69,9 @@ function seedSession({ sessionId = 'SESS', earthing = 'TN-C-S' } = {}) {
   // supply has to be present exactly as the real seeder writes it.
   const stateSnapshot = { boards: [], circuits: { 0: { earthing_arrangement: earthing }, 4: {} } };
   activeSessions.set(sessionId, {
+    // Plan 00B §B3 — the route now proves session ownership; entries carry
+    // their owner exactly as production entries do.
+    userId: 'test-user',
     session: { sessionId, stateSnapshot, loadedBarrelSpeculator: null },
     voiceLatency: { flags: { regexFastTts: true }, capabilities: { hasRegexFastV2: true } },
     pendingFastTtsSlots: new Map(),

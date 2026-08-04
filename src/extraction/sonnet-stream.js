@@ -49,6 +49,29 @@ import {
   parseDirectAddressMirrorCommand,
 } from './address-mirror-controller.js';
 import { createAddressMirrorIngressArbiter } from './address-mirror-ingress-arbiter.js';
+// Plan 00B §B1 — dormant evaluation lifecycle hooks. Every call below is a
+// single optional property lookup when no evidence observer is registered
+// (production traffic never registers one); only the evaluation server
+// option (`initOptions.evaluationContextFactory`) activates them.
+import {
+  freezeEvidenceCompletion,
+  freezeEvidenceStart,
+  normaliseEvaluationContext,
+  attachEvaluationContext,
+  notifySuccessfulFrame,
+  notifyConfirmationDelivery,
+  beginProducer,
+  LIFECYCLE_LEDGER,
+  EVALUATION_CONTEXT,
+  PLAN00_ROUND_USAGE_SINK,
+} from './plan00-lifecycle-hooks.js';
+import { attachMutationObserver, getMutationObserver } from './plan00-semantic-capture.js';
+import {
+  PLAN00_ASK_EMIT_OBSERVER,
+  PLAN00_DELIVERY_EMIT_OBSERVER,
+  PLAN00_FRAME_BINDING_REGISTRY,
+  buildLiveAskKey,
+} from './plan00-audibility-ledgers.js';
 import {
   createPerTurnWrites,
   encodeBoardReadingKey,
@@ -319,8 +342,31 @@ function attachAddressMirrorAskClear(result, clearAskId) {
   return result;
 }
 
-function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null) {
+function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry = null) {
   if (typeof followup?.question !== 'string' || ws?.readyState !== ws?.OPEN) return false;
+  // Plan 00B-2 C2.1 — the address-mirror direct question is BOUND (runtime
+  // id → full liveAskKey) pre-send; the emitted record lands only after the
+  // successful send below. Dormant single-Symbol lookup.
+  const evalCtx = entry?.[EVALUATION_CONTEXT] ?? null;
+  const questionId = followup.questionId ?? null;
+  if (evalCtx && questionId && !evalCtx.askRuntimeBindings.has(questionId)) {
+    evalCtx.recordAskProduced({
+      producerId: 'address_mirror_ask',
+      runtimeId: questionId,
+      liveAskKey: buildLiveAskKey({
+        origin: 'address_mirror',
+        purpose: 'address_mirror',
+        reason: followup.outcome ?? null,
+        contextField: null,
+        boardId: null,
+        circuits: [],
+        expectedAnswerShape: followup.outcome === 'conflict' ? 'yes_no' : 'free_text',
+        observationClarificationKind: null,
+        pendingWrite: null,
+        chainRole: null,
+      }),
+    });
+  }
   ws.send(
     JSON.stringify({
       type: 'question',
@@ -333,6 +379,11 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null) {
       utterance_id: typeof utteranceId === 'string' ? utteranceId : null,
     })
   );
+  // Post-successful-send seam: same-id re-sends (reconnect replay) append a
+  // reissued attempt to the same open entry — never a second produced row.
+  if (evalCtx && questionId) {
+    evalCtx.recordAskEmitted({ runtimeId: questionId });
+  }
   return true;
 }
 
@@ -842,6 +893,18 @@ async function refineObservationsAsync(entry, sessionId, observations, turnId = 
   const toRefine = observations.filter(needsRefinement);
   if (toRefine.length === 0) return;
 
+  // Plan 00B-2 C3 — refinement producer boundary: from refinement dispatch
+  // to its match/unmatched terminal for THIS async body (the owed-until-
+  // client-matched tail is separately counted by refinements_in_flight).
+  const producer = beginProducer(entry, 'refinement');
+  try {
+    await refineObservationsAsyncBody(entry, sessionId, toRefine, turnId);
+  } finally {
+    producer.complete();
+  }
+}
+
+async function refineObservationsAsyncBody(entry, sessionId, toRefine, turnId) {
   const openai = await getOpenAIClient();
   if (!openai) return;
 
@@ -1399,7 +1462,7 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
  * retries (board_ops / observationUpdates / field_corrections are immutable
  * once bundled).
  */
-async function sendResultFrameLedger(ws, snapshot, result, session = {}) {
+async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry = null) {
   const frames = buildResultFrameLedger(snapshot, result, session);
   const stored = result[EXTRACTION_EMISSION_CURSOR];
   let start = Number.isInteger(stored) && stored >= 0 ? stored : 0;
@@ -1412,28 +1475,99 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}) {
       writable: true,
     });
   };
-  for (let i = start; i < frames.length; i += 1) {
-    if (!ws || ws.readyState !== ws.OPEN) {
-      persistCursor(i);
-      return { ok: false, cursor: i, frameKind: frames[i].kind, error: null };
+  // Plan 00B-2 C2.5 — replay-stable frame binding registry: binding ids
+  // live NON-ENUMERABLY on the RAW RESULT at first bundle-to-frames, keyed
+  // by stable frame index + kind; a resume rebuild copies the same id.
+  // Retained until the result's durable terminal (the cursor delete below
+  // deliberately leaves the registry in place — the ids must survive a
+  // later replay of the same result object). Evaluation-only: nothing is
+  // stamped without a context.
+  const evalCtx = entry?.[EVALUATION_CONTEXT] ?? null;
+  let bindingRegistry = null;
+  if (evalCtx) {
+    bindingRegistry = result[PLAN00_FRAME_BINDING_REGISTRY];
+    if (!bindingRegistry) {
+      bindingRegistry = new Map();
+      // An evaluation-only RESULT identity minted once at first bundling —
+      // binding ids derive from it so two different results can never share
+      // an id (e.g. both minting `0:extraction`); replays of the SAME
+      // result object reuse the registry and therefore the same ids.
+      bindingRegistry.resultSerial = evalCtx.frameBindingSerial =
+        (evalCtx.frameBindingSerial ?? 0) + 1;
+      Object.defineProperty(result, PLAN00_FRAME_BINDING_REGISTRY, {
+        value: bindingRegistry,
+        enumerable: false,
+        configurable: true,
+      });
     }
-    try {
-      if (ws.send.length >= 2) {
-        await new Promise((resolve, reject) => {
-          ws.send(frames[i].json, (error) => {
-            if (error) reject(error);
-            else resolve();
-          });
-        });
-      } else {
-        // Focused unit-test sockets use synchronous one-argument stubs. The
-        // production `ws` implementation exposes the callback form above.
-        ws.send(frames[i].json);
+  }
+  // Plan 00B-2 C3 — frame_send producer boundary, INSIDE the ledger (never
+  // at its call sites: the A2 wire-contract suite regex-pins the 5-arg call
+  // sites). Dormant no-op handle without a lifecycle ledger.
+  const frameSendProducer = beginProducer(entry, 'frame_send');
+  // Plan 00B-3 (Codex r1 mini-review M-1) — ONE evidence send-generation per
+  // frame-send loop invocation: every terminal-bearing frame of THIS send
+  // shares it, and ANY replay (same object reconnect flush OR a result
+  // reconstructed from the durable outbox) is a NEW loop invocation and so a
+  // new generation. Frame-binding `attempts` was NOT a sound identity — a
+  // reconstructed result restarts its counters at 1. Evaluation-only.
+  const evidenceSendGeneration = evalCtx
+    ? (evalCtx.mirrorSendGeneration = (evalCtx.mirrorSendGeneration ?? 0) + 1)
+    : null;
+  try {
+    for (let i = start; i < frames.length; i += 1) {
+      if (!ws || ws.readyState !== ws.OPEN) {
+        persistCursor(i);
+        return { ok: false, cursor: i, frameKind: frames[i].kind, error: null };
       }
-    } catch (err) {
-      persistCursor(i);
-      return { ok: false, cursor: i, frameKind: frames[i].kind, error: err };
+      try {
+        if (ws.send.length >= 2) {
+          await new Promise((resolve, reject) => {
+            ws.send(frames[i].json, (error) => {
+              if (error) reject(error);
+              else resolve();
+            });
+          });
+        } else {
+          // Focused unit-test sockets use synchronous one-argument stubs. The
+          // production `ws` implementation exposes the callback form above.
+          ws.send(frames[i].json);
+        }
+      } catch (err) {
+        persistCursor(i);
+        return { ok: false, cursor: i, frameKind: frames[i].kind, error: err };
+      }
+      // Plan 00B §B1 — successful-frame evidence callback. The ledger-Symbol
+      // guard keeps the dormant path to ONE property lookup with ZERO
+      // allocation (the detail object is only built when an evaluation
+      // observer registered a ledger); fires only AFTER the frame sent.
+      if (entry?.[LIFECYCLE_LEDGER]) {
+        const bindingKey = `${i}:${frames[i].kind}`;
+        let binding = null;
+        if (bindingRegistry) {
+          binding = bindingRegistry.get(bindingKey);
+          if (!binding) {
+            binding = {
+              bindingId: `fb-${bindingRegistry.resultSerial}-${bindingKey}`,
+              attempts: 0,
+            };
+            bindingRegistry.set(bindingKey, binding);
+          }
+          binding.attempts += 1;
+        }
+        notifySuccessfulFrame(entry, {
+          frame_kind: frames[i].kind,
+          frame_index: i,
+          frame_count: frames.length,
+          ...(binding ? { binding_id: binding.bindingId, attempt_ordinal: binding.attempts } : {}),
+        });
+        if (evalCtx) {
+          recordFrameDeliveryEvidence(evalCtx, frames[i].kind, result, evidenceSendGeneration);
+        }
+      }
     }
+  } finally {
+    frameSendProducer.complete();
   }
   // Completed — clear the cursor so a later (unrelated) requeue of the same
   // object starts fresh, and so tests can assert it never leaks.
@@ -1442,6 +1576,220 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}) {
     ok: true,
     vcrSent: frames.some((frame) => frame.kind === 'voice_command_response'),
   };
+}
+
+/**
+ * Plan 00B-2 C2.5 — Tier-1 delivery evidence at the result-frame egress.
+ * Classification: an OPERATION-BACKED read-back (non-null field) binds to
+ * its canonical slot identity (turn scope from the mutation observer's open
+ * turn); NON-MUTATING speech (field-null confirmations, VCR
+ * spoken_response) is captured as emitted audible evidence and judged
+ * directly — it NEVER enters the deliveryLedger. The address-mirror
+ * collapsed terminal is ONE multi-operation audibility unit keyed by its
+ * delivery claim lineage (the `address_mirror_delivery_ack` correlates by
+ * token, per the parent B3 scoping decision — identity is never derived
+ * from a result envelope).
+ */
+function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptOrdinal = null) {
+  try {
+    const mirrorDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
+    // A frame can be sent AFTER the harness turn scope has closed (buffered
+    // reconnect replay, or simply post-dispatch egress), so identities are
+    // NEVER derived from the observer's open-turn state at send time
+    // (mini-review r1 finding 5 — that invented `{turn:null, ordinal:0}`
+    // keys). Every operation-backed unit binds through the canonical
+    // receipt resolver instead; `result.utterance_id` is the same value the
+    // harness minted as the receipts' extraction_turn_id (its explicit
+    // fallback), so a buffered older result binds to its OWN turn's
+    // receipts even when a newer same-slot write has since accumulated
+    // (mini-review r1 finding 4).
+    const resultTurnId =
+      typeof result?.utterance_id === 'string' && result.utterance_id.length > 0
+        ? result.utterance_id
+        : null;
+    const stageMirrorTerminal = (text) => {
+      const lineage = `${mirrorDelivery.kind}:${mirrorDelivery.token}`;
+      // One unit per claim lineage — the same result surfaces the terminal
+      // on both the extraction and VCR frames, and re-running the receipt
+      // resolver for the duplicate would falsely unmatch already-claimed
+      // receipts. Codex r1 (C-6): the hooks distinguish that dual-frame
+      // duplicate (same frame-binding attempt ordinal) from a REPLAY (a
+      // new attempt), which appends its own delivery-attempt row against
+      // the stored unit — never re-resolving receipts.
+      if (evalCtx.addressMirrorUnits?.has(lineage)) {
+        evalCtx.recordAddressMirrorTerminal?.({
+          claimLineage: lineage,
+          ops: null,
+          text,
+          claimToken: mirrorDelivery.claimToken ?? null,
+          attempt: attemptOrdinal,
+        });
+        return;
+      }
+      const circuitReadings = Array.isArray(result?.extracted_readings)
+        ? result.extracted_readings
+        : Array.isArray(result?.readings)
+          ? result.readings
+          : [];
+      // The mirror's own writes are BOARD-scope and ride the
+      // `extracted_board_readings` key (circuit readings stay in
+      // `readings`) — both fold into the one collapsed unit.
+      const boardReadings = Array.isArray(result?.extracted_board_readings)
+        ? result.extracted_board_readings
+        : [];
+      const withFields = [...circuitReadings, ...boardReadings].filter((r) => r && r.field != null);
+      const ops = [];
+      let unresolved = 0;
+      for (const r of withFields) {
+        const res = evalCtx.resolveDeliveryReceipt({
+          field: r.field,
+          circuit: r.circuit ?? null,
+          boardId: r.board_id ?? null,
+          value: r.value == null ? null : String(r.value),
+          turnId: resultTurnId,
+        });
+        if (res.identity) ops.push(res.identity);
+        else unresolved += 1;
+      }
+      if (unresolved > 0) {
+        // Operation-backed speech whose canonical binding cannot be
+        // established — fail closed (capture INVALID), never invent keys.
+        evalCtx.recordDeliveryRejected({
+          producerId: 'address_mirror_terminal',
+          reason: 'mirror_terminal_receipt_binding',
+          claimLineage: lineage,
+          detail: { lineage, unresolved, resolved: ops.length },
+        });
+        return;
+      }
+      evalCtx.recordAddressMirrorTerminal({
+        claimLineage: lineage,
+        ops,
+        text,
+        claimToken: mirrorDelivery.claimToken ?? null,
+        attempt: attemptOrdinal,
+      });
+    };
+    if (frameKind === 'extraction') {
+      // An address-mirror result can carry its sole collapsed terminal on
+      // the EXTRACTION frame (normaliseAddressMirrorAudibleTerminal folds
+      // the fragments) — detect the delivery symbol BEFORE ordinary
+      // confirmation handling so the multi-write unit is recorded and its
+      // fieldless terminal is never mis-classified as non-mutating speech.
+      if (mirrorDelivery && typeof mirrorDelivery.token === 'string') {
+        stageMirrorTerminal(
+          (Array.isArray(result?.confirmations) &&
+            result.confirmations.find((c) => c && c.field == null)?.text) ||
+            null
+        );
+        return;
+      }
+      for (const c of Array.isArray(result?.confirmations) ? result.confirmations : []) {
+        if (c && c.field != null) {
+          if (c.field === 'field_cleared') {
+            // The frozen v1 expectation schema has no clear-op shape; the
+            // judge's narrow field_cleared rule binds this confirmation to
+            // its authoritative clear receipt at verdict time — the
+            // delivery row keeps the descriptor identity.
+            evalCtx.recordDelivery(
+              [
+                {
+                  extractionTurnId: evalCtx.mutationObserver?.openTurnId ?? null,
+                  field: c.field,
+                  circuit: c.circuit ?? null,
+                  boardId: c.board_id ?? null,
+                },
+              ],
+              {
+                producerId: 'result_frame_confirmation',
+                kind: 'confirmation',
+                text: c.text ?? null,
+                wireTurnId: typeof result?.turn_id === 'string' ? result.turn_id : null,
+                dedupeToken: typeof c.dedupe_token === 'string' ? c.dedupe_token : null,
+              }
+            );
+            continue;
+          }
+          // Ordinary operation-backed read-back: bind to the CANONICAL
+          // unclaimed mutation receipt (the receipt's own turn identity +
+          // ordinal), never a synthesized partial key. A confirmation that
+          // resolves to zero or multiple receipts is operation-backed
+          // speech lacking its binding — INVALID.
+          const res = evalCtx.resolveDeliveryReceipt({
+            field: c.field,
+            circuit: c.circuit ?? null,
+            boardId: c.board_id ?? null,
+            turnId: resultTurnId,
+          });
+          if (!res.identity) {
+            evalCtx.recordDeliveryRejected({
+              producerId: 'result_frame_confirmation',
+              reason: `confirmation_delivery_binding_${res.unresolved}`,
+              field: c.field ?? null,
+              circuit: c.circuit ?? null,
+            });
+            continue;
+          }
+          evalCtx.recordDelivery([res.identity], {
+            producerId: 'result_frame_confirmation',
+            kind: 'confirmation',
+            text: c.text ?? null,
+            wireTurnId: typeof result?.turn_id === 'string' ? result.turn_id : null,
+          });
+        } else if (c) {
+          evalCtx.recordNonMutatingAudible({
+            channel: 'ws_extraction',
+            kind: 'field_null_confirmation',
+            text: c.text ?? null,
+          });
+        }
+      }
+      return;
+    }
+    if (frameKind === 'voice_command_response') {
+      if (mirrorDelivery && typeof mirrorDelivery.token === 'string') {
+        stageMirrorTerminal(result?.spoken_response ?? null);
+      } else if (result?.spoken_response) {
+        evalCtx.recordNonMutatingAudible({
+          channel: 'ws_vcr',
+          kind: 'voice_command_response',
+          text: result.spoken_response ?? null,
+        });
+      }
+      return;
+    }
+    if (frameKind === 'address_mirror_direct_question') {
+      // Reconnect/resume replay of the direct question is the ONE
+      // production same-id re-send — recordAskEmitted reissues when the id
+      // is already emitted, else records the first emission.
+      const followup = result?.[ADDRESS_MIRROR_DIRECT_FOLLOWUP];
+      const questionId = followup?.questionId ?? null;
+      if (questionId) {
+        if (!evalCtx.askRuntimeBindings.has(questionId)) {
+          evalCtx.recordAskProduced({
+            producerId: 'address_mirror_ask',
+            runtimeId: questionId,
+            liveAskKey: buildLiveAskKey({
+              origin: 'address_mirror',
+              purpose: 'address_mirror',
+              reason: followup?.outcome ?? null,
+              contextField: null,
+              boardId: null,
+              circuits: [],
+              expectedAnswerShape: followup?.outcome === 'conflict' ? 'yes_no' : 'free_text',
+              observationClarificationKind: null,
+              pendingWrite: null,
+              chainRole: null,
+            }),
+          });
+        }
+        evalCtx.recordAskEmitted({ runtimeId: questionId });
+      }
+    }
+  } catch (_err) {
+    // Evidence capture is behaviour-isolated; a capture failure is the
+    // evaluation run's own problem, never the production send path's.
+  }
 }
 
 function attachAddressMirrorDelivery(result, perTurnWrites) {
@@ -1749,8 +2097,28 @@ function validateAndCorrectFields(result, sessionId) {
   return result;
 }
 
-export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
+export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initOptions = {}) {
   const wss = new WebSocketServer({ noServer: true });
+
+  // Plan 00B §B1 + 00B-2 C1 — test/evaluation-only server option. When
+  // provided, each fresh activeSessions entry gets a FULL evaluation context
+  // (observer + mutation observer + ask/delivery ledgers, normalised once)
+  // composed at session creation, before start/rehydration and before any
+  // message traffic, so the semantic-oracle harness can observe the REAL
+  // lifecycle without threading new parameters through the connection
+  // closure. The sole production caller is src/server.js (src/index.js does
+  // not exist) and it never passes initOptions, so this branch never runs
+  // live.
+  const evaluationContextFactory =
+    typeof initOptions?.evaluationContextFactory === 'function'
+      ? initOptions.evaluationContextFactory
+      : null;
+  // Plan 00B-2 C4 — evaluation-only scripted-session factory (mock lane).
+  // EICRExtractionSession constructs its provider client synchronously during
+  // session start, so the mock lane substitutes construction itself; the
+  // default branch below (handleSessionStart) is the exact production path.
+  const sessionFactory =
+    typeof initOptions?.sessionFactory === 'function' ? initOptions.sessionFactory : null;
 
   // Phase 1.3 — single shared periodic flusher for the per-session
   // realtimeLogBuffer (one tick every FLUSH_INTERVAL_MS over the whole
@@ -2037,7 +2405,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                 sessionId: newSessionId,
                 ack,
                 activeEntryKey,
-              } = handleSessionResumeRehydrate(
+              } = await handleSessionResumeRehydrate(
                 ws,
                 userId,
                 msg.sessionId,
@@ -2082,7 +2450,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
                   sendAddressMirrorDirectQuestion(
                     ws,
                     await resumedEntry?.addressMirrorController?.currentDirectQuestion(),
-                    null
+                    null,
+                    resumedEntry
                   );
                 }
 
@@ -2304,17 +2673,36 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               });
               break;
             }
-            const marked = await entry.addressMirrorController.markDelivered({ kind, token });
-            if (marked) {
-              if (entry.addressMirrorOutboxRetryHandle) {
-                clearTimeout(entry.addressMirrorOutboxRetryHandle);
-                entry.addressMirrorOutboxRetryHandle = null;
+            // Plan 00B-2 C3 — address_mirror_ack producer boundary (token
+            // validation passed → markDelivered → retry-clear → outbox
+            // replay; the nested outbox_replay producer intentionally
+            // overlaps this one — documented nesting).
+            const ackProducer = beginProducer(entry, 'address_mirror_ack');
+            try {
+              const marked = await entry.addressMirrorController.markDelivered({ kind, token });
+              if (marked) {
+                if (entry.addressMirrorOutboxRetryHandle) {
+                  clearTimeout(entry.addressMirrorOutboxRetryHandle);
+                  entry.addressMirrorOutboxRetryHandle = null;
+                }
+                // Plan 00B-2 C2.6 — evaluation-only forwarding hook AFTER
+                // the controller accepted the owner/job token: the token +
+                // claim lineage correlate to exactly one address-mirror
+                // audibility unit; duplicate/stale/wrong-token acks stay
+                // non-authoritative (recordAddressMirrorAck resolves no
+                // unit and records nothing).
+                entry[EVALUATION_CONTEXT]?.recordAddressMirrorAck?.({
+                  claimLineage: `${kind}:${token}`,
+                  ackBody: { type: 'address_mirror_delivery_ack', kind, token },
+                });
+                logger.info('stage6.address_mirror_delivery_acknowledged', {
+                  sessionId: currentSessionId,
+                  kind,
+                });
+                await replayAddressMirrorOutbox(ws, entry, currentSessionId);
               }
-              logger.info('stage6.address_mirror_delivery_acknowledged', {
-                sessionId: currentSessionId,
-                kind,
-              });
-              await replayAddressMirrorOutbox(ws, entry, currentSessionId);
+            } finally {
+              ackProducer.complete();
             }
             break;
           }
@@ -2392,6 +2780,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             // visible in the same log file as the engine's subsequent
             // designation_match / circuit_resolved rows.
             if (msg.tool_call_id.startsWith('srv-')) {
+              // Plan 00B-2 C2.4 — the TWO-HALF, control-flow-preserving
+              // srv-* join: record ONLY the answer-frame half here (runtime
+              // id + consumed utterance id) and keep the immediate break;
+              // handleTranscript resolves the engine-consumption half only
+              // when the accepted transcript's utterance id exactly matches
+              // under the same runtime binding. Frame-only evidence never
+              // closes an ask.
+              {
+                const srvEntry = activeSessions.get(currentSessionId);
+                srvEntry?.[EVALUATION_CONTEXT]?.recordSrvAnswerFrame?.({
+                  runtimeId: msg.tool_call_id,
+                  consumedUtteranceId:
+                    typeof msg.consumed_utterance_id === 'string'
+                      ? msg.consumed_utterance_id
+                      : null,
+                });
+              }
               logger.info('stage6.ask_user_answered_routed_to_engine', {
                 sessionId: currentSessionId,
                 tool_call_id: msg.tool_call_id,
@@ -2441,88 +2846,150 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
               }
             }
             if (!hasLiveRegistryAsk && entry.addressMirrorController) {
-              const mirrorWrites = createPerTurnWrites();
-              // A grace-expired transcript may already have entered model
-              // extraction before its paired exact answer frame arrives. The
-              // seen/released marker prevents a SECOND model exposure; it must
-              // not block the durable controller, or a process-restarted
-              // one-shot intent is stranded forever behind the permanent job
-              // latch.
-              const recovered = await entry.addressMirrorController.resolveRecoveredAnswer({
-                context:
-                  msg.purpose === ADDRESS_MIRROR_PURPOSE
-                    ? { purpose: ADDRESS_MIRROR_PURPOSE }
-                    : null,
-                text: msg.user_text,
-                askId: msg.tool_call_id,
-                perTurnWrites: mirrorWrites,
-              });
-              if (
-                !recovered.handled &&
-                (recovered.reason === 'stale_address_mirror_ask_id' ||
-                  recovered.reason === 'stale_direct_question')
-              ) {
-                sendAddressMirrorAskClear(ws, msg.tool_call_id, currentSessionId);
-                if (directResponseUtteranceId) {
-                  entry.consumedAskUtterances.add(directResponseUtteranceId);
-                  entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
-                }
-                logger.info('stage6.address_mirror_stale_answer_cleared', {
-                  sessionId: currentSessionId,
-                  stale_tool_call_id: msg.tool_call_id,
-                  reason: recovered.reason,
+              // Plan 00B-2 C3 — address_mirror_answer producer boundary (the
+              // ask_user_answered controller transitions). A stop landing
+              // while this path is suspended freezes INELIGIBLE until it
+              // terminates.
+              const answerProducer = beginProducer(entry, 'address_mirror_answer');
+              // Plan 00B-2 C2 (Codex r2 finding 1) — the controller's
+              // stageBoardWrite mutates the observed snapshot through the
+              // REAL atoms, so under evaluation this region must carry a
+              // turn scope + a declared producer origin or every real mirror
+              // write latches `commit_without_origin_frame` and the terminal
+              // can never bind. Evaluation-only: the observer is absent in
+              // production and the bracket is a null lookup.
+              const answerMirrorMo = entry[EVALUATION_CONTEXT]?.mutationObserver ?? null;
+              let answerMirrorScopeOpened = false;
+              if (answerMirrorMo && answerMirrorMo.openTurnId != null) {
+                // Codex r4 finding 2 — an already-open scope here means a
+                // concurrent suspended turn: silently borrowing its id
+                // would credit this region's writes to the WRONG turn.
+                // Fail CLOSED (capture INVALID), never throw into
+                // production.
+                answerMirrorMo.markInvalid('mirror_scope_conflict', {
+                  open_turn_id: answerMirrorMo.openTurnId,
+                  region: 'address_mirror_answer',
                 });
-                break;
               }
-              if (recovered.handled && recovered.outcome === 'duplicate') {
-                if (directResponseUtteranceId) {
-                  entry.consumedAskUtterances.add(directResponseUtteranceId);
-                  entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+              if (answerMirrorMo && answerMirrorMo.openTurnId == null) {
+                try {
+                  answerMirrorMo.enterTurnScope(
+                    typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id
+                      ? msg.consumed_utterance_id
+                      : `mirror-answer-${msg.tool_call_id}`
+                  );
+                  answerMirrorScopeOpened = true;
+                  answerMirrorMo.setOriginFrame({ origin: 'ask_auto_resolve' });
+                } catch {
+                  // isolated — the observer has already latched INVALID
                 }
-                logger.info('stage6.address_mirror_duplicate_answer_consumed', {
-                  sessionId: currentSessionId,
-                  tool_call_id: msg.tool_call_id,
-                });
-                if (recovered.clearAskId) {
-                  sendAddressMirrorAskClear(ws, recovered.clearAskId, currentSessionId);
-                }
-                break;
               }
-              if (
-                recovered.handled &&
-                (recovered.outcome === 'yes' ||
-                  recovered.outcome === 'no' ||
-                  recovered.outcome === 'conflict')
-              ) {
-                const result = attachAddressMirrorDelivery(
-                  bundleToolCallsIntoResult(mirrorWrites, null, {
-                    confirmationsEnabled: true,
-                    turnId: `${currentSessionId}-address-mirror-${
-                      recovered.resolutionToken ?? 'recovery'
-                    }`,
-                    utteranceId: directResponseUtteranceId,
-                  }),
-                  mirrorWrites
-                );
-                attachAddressMirrorAskClear(result, recovered.clearAskId ?? msg.tool_call_id);
-                const sent = await sendResultFrameLedger(
-                  ws,
-                  entry.session.stateSnapshot,
-                  result,
-                  entry.session
-                );
-                if (!sent.ok) entry.pendingExtractions.push(result);
-                else await finalizeAddressMirrorResultDelivery(entry, result, currentSessionId);
-                if (directResponseUtteranceId) {
-                  entry.consumedAskUtterances.add(directResponseUtteranceId);
-                  entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
-                }
-                logger.info('stage6.address_mirror_answer_recovered', {
-                  sessionId: currentSessionId,
-                  tool_call_id: msg.tool_call_id,
-                  outcome: recovered.outcome,
+              try {
+                const mirrorWrites = createPerTurnWrites();
+                // A grace-expired transcript may already have entered model
+                // extraction before its paired exact answer frame arrives. The
+                // seen/released marker prevents a SECOND model exposure; it must
+                // not block the durable controller, or a process-restarted
+                // one-shot intent is stranded forever behind the permanent job
+                // latch.
+                const recovered = await entry.addressMirrorController.resolveRecoveredAnswer({
+                  context:
+                    msg.purpose === ADDRESS_MIRROR_PURPOSE
+                      ? { purpose: ADDRESS_MIRROR_PURPOSE }
+                      : null,
+                  text: msg.user_text,
+                  askId: msg.tool_call_id,
+                  perTurnWrites: mirrorWrites,
                 });
-                break;
+                if (
+                  !recovered.handled &&
+                  (recovered.reason === 'stale_address_mirror_ask_id' ||
+                    recovered.reason === 'stale_direct_question')
+                ) {
+                  sendAddressMirrorAskClear(ws, msg.tool_call_id, currentSessionId);
+                  if (directResponseUtteranceId) {
+                    entry.consumedAskUtterances.add(directResponseUtteranceId);
+                    entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                  }
+                  logger.info('stage6.address_mirror_stale_answer_cleared', {
+                    sessionId: currentSessionId,
+                    stale_tool_call_id: msg.tool_call_id,
+                    reason: recovered.reason,
+                  });
+                  break;
+                }
+                if (recovered.handled && recovered.outcome === 'duplicate') {
+                  if (directResponseUtteranceId) {
+                    entry.consumedAskUtterances.add(directResponseUtteranceId);
+                    entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                  }
+                  logger.info('stage6.address_mirror_duplicate_answer_consumed', {
+                    sessionId: currentSessionId,
+                    tool_call_id: msg.tool_call_id,
+                  });
+                  if (recovered.clearAskId) {
+                    sendAddressMirrorAskClear(ws, recovered.clearAskId, currentSessionId);
+                  }
+                  break;
+                }
+                if (
+                  recovered.handled &&
+                  (recovered.outcome === 'yes' ||
+                    recovered.outcome === 'no' ||
+                    recovered.outcome === 'conflict')
+                ) {
+                  const result = attachAddressMirrorDelivery(
+                    bundleToolCallsIntoResult(mirrorWrites, null, {
+                      confirmationsEnabled: true,
+                      turnId: `${currentSessionId}-address-mirror-${
+                        recovered.resolutionToken ?? 'recovery'
+                      }`,
+                      utteranceId: directResponseUtteranceId,
+                    }),
+                    mirrorWrites
+                  );
+                  attachAddressMirrorAskClear(result, recovered.clearAskId ?? msg.tool_call_id);
+                  const sent = await sendResultFrameLedger(
+                    ws,
+                    entry.session.stateSnapshot,
+                    result,
+                    entry.session,
+                    entry
+                  );
+                  if (!sent.ok) entry.pendingExtractions.push(result);
+                  else await finalizeAddressMirrorResultDelivery(entry, result, currentSessionId);
+                  if (directResponseUtteranceId) {
+                    entry.consumedAskUtterances.add(directResponseUtteranceId);
+                    entry.addressMirrorIngressArbiter?.consume(directResponseUtteranceId);
+                  }
+                  // Plan 00B-2 C2.4 — address-mirror asks close at the
+                  // controller transition that accepts the matching answer.
+                  entry[EVALUATION_CONTEXT]?.recordAskResolved?.({
+                    runtimeId: recovered.clearAskId ?? msg.tool_call_id,
+                    terminal: 'answered',
+                    detail: {
+                      answer_frame_id: recovered.clearAskId ?? msg.tool_call_id,
+                      transcript_resolved: true,
+                      outcome: recovered.outcome,
+                    },
+                  });
+                  logger.info('stage6.address_mirror_answer_recovered', {
+                    sessionId: currentSessionId,
+                    tool_call_id: msg.tool_call_id,
+                    outcome: recovered.outcome,
+                  });
+                  break;
+                }
+              } finally {
+                if (answerMirrorScopeOpened) {
+                  try {
+                    answerMirrorMo.clearOriginFrame();
+                    answerMirrorMo.exitTurnScope();
+                  } catch {
+                    // isolated
+                  }
+                }
+                answerProducer.complete();
               }
             }
 
@@ -3115,68 +3582,94 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // 5 minutes covers the vast majority of between-circuit pauses without leaking
         // memory from abandoned sessions.
         entry.disconnectTimer = setTimeout(() => {
-          logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
-          // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release any in-flight
-          // blocking ask_user Promises BEFORE the registry becomes unreachable
-          // via activeSessions.delete. A post-delete ask resolution would be
-          // a leak — the awaiting dispatcher would hang for the tool-loop's
-          // full timeout (20s per STA-03) even though the session is gone.
-          // rejectAll('session_terminated') wakes every pending ask with
-          // {answered:false, reason:'session_terminated', wait_duration_ms}
-          // so Sonnet can still terminate the turn gracefully.
-          entry.pendingAsks.rejectAll('session_terminated');
-          entry.addressMirrorIngressArbiter?.clear();
-          if (entry.addressMirrorOutboxRetryHandle) {
-            clearTimeout(entry.addressMirrorOutboxRetryHandle);
-            entry.addressMirrorOutboxRetryHandle = null;
-          }
-          // Plan 05-04 — cancel the rolling-window release timer + clear
-          // the askTurns array so the activeSessions entry is fully
-          // garbage-collectible after the .delete() below. Optional-
-          // chained because handleSessionStart's reconnect path may
-          // run BEFORE this timer fires (Open Question #2: reconnect
-          // PRESERVES restrained-mode state by not destroying it here).
-          entry.restrainedMode?.destroy();
-          // Plan 05-03 — release per-key ask counter on disconnect-delete.
-          // Idempotent (Map.clear on empty is a no-op); same lifecycle as
-          // restrainedMode above. Reconnect within the 30s grace window
-          // does NOT reach this path (handleSessionStart clears the
-          // disconnectTimer first), so the budget survives the reconnect
-          // and the 2-ask cap is preserved across hang-up + reconnect.
-          entry.askBudget?.destroy();
-          entry.questionGate.destroy();
-          // Stop the EICRExtractionSession so its cache-keepalive +
-          // pause-keepalive timers cancel and `isActive` flips to false.
-          // Without this, the keepalive `setTimeout` chain
-          // (eicr-extraction-session.js:1373) keeps firing every
-          // CACHE_KEEPALIVE_MS forever — the timer holds a closure-strong
-          // reference to `this`, so even after activeSessions.delete()
-          // drops the entry, GC can't reclaim the session. CloudWatch
-          // proof: sess_moxffh2j_82f8 (2026-05-08 21:28 UTC) showed
-          // cleanup at 21:34:06 followed by "Cache keepalive sent"
-          // logs at 21:36:12 / 21:40:13 / 21:44:15 — three orphaned
-          // refreshes after the session was supposedly torn down,
-          // each costing one Anthropic round-trip and pinning the
-          // session's full prompt + state-snapshot in memory until
-          // the process restarts. Optional-chained for safety —
-          // handleSessionStart's reconnect path destroys the entry
-          // before constructing a new session, but a future code
-          // path could still set entry.session=null at teardown.
-          entry.session?.stop?.();
-          // Phase 1.3 — final flush for any stragglers still buffered
-          // when the 5-min reconnect window expires. ws_close flushed at
-          // close time but a subsequent retry-on-error left the batch
-          // back in the buffer; this is the last chance to land it
-          // before activeSessions.delete drops the entry.
-          if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
-            flushRealtimeLogSession(currentSessionId, entry, {
-              reason: 'session_timeout',
-            }).catch(() => {});
-          }
-          activeSessions.delete(currentSessionId);
+          // Plan 00B §B1 — route the expiry through the per-entry teardown
+          // arbiter. If an explicit stop already owns teardown, this firing
+          // must NOT run a second body (pre-arbiter it would have).
+          if (entry.teardownPromise) return;
+          beginEntryTeardown(entry, currentSessionId, 'session_terminated', () =>
+            runDisconnectTimeoutTeardown(currentSessionId, entry)
+          );
         }, 300000);
       }
     });
+
+    // Plan 00B §B1 — the 5-minute disconnect-expiry teardown body, extracted
+    // verbatim from the setTimeout closure so the arbiter owns exactly one
+    // copy of it. Behaviour is byte-identical to the pre-arbiter inline body
+    // plus the dormant evidence freeze before the delete.
+    async function runDisconnectTimeoutTeardown(currentSessionId, entry) {
+      logger.info('Session timed out, cleaning up', { sessionId: currentSessionId });
+      // Stage 6 Phase 3 Plan 03-08 (Codex STG #3): release any in-flight
+      // blocking ask_user Promises BEFORE the registry becomes unreachable
+      // via activeSessions.delete. A post-delete ask resolution would be
+      // a leak — the awaiting dispatcher would hang for the tool-loop's
+      // full timeout (20s per STA-03) even though the session is gone.
+      // rejectAll('session_terminated') wakes every pending ask with
+      // {answered:false, reason:'session_terminated', wait_duration_ms}
+      // so Sonnet can still terminate the turn gracefully.
+      entry.pendingAsks.rejectAll('session_terminated');
+      entry.addressMirrorIngressArbiter?.clear();
+      if (entry.addressMirrorOutboxRetryHandle) {
+        clearTimeout(entry.addressMirrorOutboxRetryHandle);
+        entry.addressMirrorOutboxRetryHandle = null;
+      }
+      // Plan 05-04 — cancel the rolling-window release timer + clear
+      // the askTurns array so the activeSessions entry is fully
+      // garbage-collectible after the .delete() below. Optional-
+      // chained because handleSessionStart's reconnect path may
+      // run BEFORE this timer fires (Open Question #2: reconnect
+      // PRESERVES restrained-mode state by not destroying it here).
+      entry.restrainedMode?.destroy();
+      // Plan 05-03 — release per-key ask counter on disconnect-delete.
+      // Idempotent (Map.clear on empty is a no-op); same lifecycle as
+      // restrainedMode above. Reconnect within the 30s grace window
+      // does NOT reach this path (handleSessionStart clears the
+      // disconnectTimer first), so the budget survives the reconnect
+      // and the 2-ask cap is preserved across hang-up + reconnect.
+      entry.askBudget?.destroy();
+      entry.questionGate.destroy();
+      // Stop the EICRExtractionSession so its cache-keepalive +
+      // pause-keepalive timers cancel and `isActive` flips to false.
+      // Without this, the keepalive `setTimeout` chain
+      // (eicr-extraction-session.js:1373) keeps firing every
+      // CACHE_KEEPALIVE_MS forever — the timer holds a closure-strong
+      // reference to `this`, so even after activeSessions.delete()
+      // drops the entry, GC can't reclaim the session. CloudWatch
+      // proof: sess_moxffh2j_82f8 (2026-05-08 21:28 UTC) showed
+      // cleanup at 21:34:06 followed by "Cache keepalive sent"
+      // logs at 21:36:12 / 21:40:13 / 21:44:15 — three orphaned
+      // refreshes after the session was supposedly torn down,
+      // each costing one Anthropic round-trip and pinning the
+      // session's full prompt + state-snapshot in memory until
+      // the process restarts. Optional-chained for safety —
+      // handleSessionStart's reconnect path destroys the entry
+      // before constructing a new session, but a future code
+      // path could still set entry.session=null at teardown.
+      entry.session?.stop?.();
+      // Phase 1.3 — final flush for any stragglers still buffered
+      // when the 5-min reconnect window expires. ws_close flushed at
+      // close time but a subsequent retry-on-error left the batch
+      // back in the buffer; this is the last chance to land it
+      // before activeSessions.delete drops the entry.
+      if (entry.realtimeLogBuffer && entry.realtimeLogBuffer.length > 0) {
+        flushRealtimeLogSession(currentSessionId, entry, {
+          reason: 'session_timeout',
+        }).catch(() => {});
+      }
+      // Plan 00B §B1 — dormant evidence freeze before the entry is dropped.
+      // On the expiry path a session almost always still holds unfinished
+      // work (that is WHY it expired), so this typically freezes
+      // evidence-ineligible as `non_quiescent_at_stop` — deliberately, and
+      // without touching the existing expiry behaviour above.
+      if (entry[LIFECYCLE_LEDGER]) {
+        entry[EVALUATION_CONTEXT]?.expireSrvJoins?.('session_terminated');
+        freezeEvidenceCompletion(entry, {
+          sessionId: currentSessionId,
+          boundary: 'session_terminated',
+        });
+      }
+      activeSessions.delete(currentSessionId);
+    }
   });
 
   async function handleSessionStart(ws, userId, msg, getAnthropicKey) {
@@ -3265,6 +3758,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       // shape it cannot decode, defeating STI-06's degradation contract.
     }
     // off mode: protocolVersion ignored. No log noise — by-design no-op.
+
+    // Plan 00B §B1 — teardown-arbiter observation. A reconnect that lands
+    // while the entry is mid-teardown (explicit stop or disconnect-timeout
+    // body between its first await and activeSessions.delete) must NOT
+    // apply a mode change, clear a timer, rebind the socket or touch any
+    // other state on the dying entry. Await the one teardown promise,
+    // re-read activeSessions, and fall through to whichever path now
+    // applies — after a completed teardown that is the fresh-session path
+    // below, exactly as if the entry had never been found.
+    {
+      const stopping = activeSessions.get(sessionId);
+      if (stopping && (stopping.isStopping || stopping.teardownPromise)) {
+        try {
+          await (stopping.teardownPromise ?? Promise.resolve());
+        } catch (_e) {
+          // A teardown-body failure is its own log line; the reconnect
+          // still proceeds against the re-read registry state.
+        }
+      }
+    }
 
     // Reuse existing session if reconnecting (within 30s timeout or old ws still open)
     if (activeSessions.has(sessionId)) {
@@ -3490,7 +4003,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       sendAddressMirrorDirectQuestion(
         ws,
         await existing.addressMirrorController?.currentDirectQuestion(),
-        null
+        null,
+        existing
       );
 
       // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
@@ -3529,8 +4043,46 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     if (!apiKey) throw new Error('Anthropic API key not available');
 
     const certType = jobState?.certificateType || 'eicr';
-    const session = new EICRExtractionSession(apiKey, sessionId, certType);
+    // Plan 00B-2 C4 — evaluation-only session factory (mock lane). Used ONLY
+    // when explicitly supplied via initOptions; the default branch is the
+    // exact production construction (dormancy/parity test-pinned).
+    const session = sessionFactory
+      ? sessionFactory({ apiKey, sessionId, certificateType: certType })
+      : new EICRExtractionSession(apiKey, sessionId, certType);
     logger.info('Session using prompt', { sessionId, certType });
+    // Plan 00B-2 C1 — full evaluation-context composition, at creation and
+    // BEFORE session.start/rehydration (finding 2). The factory runs EXACTLY
+    // ONCE per fresh entry — the reconnect branch above and session_resume's
+    // rehydrate re-bind the EXISTING entry, observers persist, and
+    // re-attachment never runs (double-attach throws by design). The factory
+    // signature is ({sessionId, userId}) — the entry does not exist yet; the
+    // normalised context is stashed on the entry AFTER activeSessions.set.
+    let evaluationContext = null;
+    if (evaluationContextFactory) {
+      evaluationContext = normaliseEvaluationContext(
+        evaluationContextFactory({ sessionId, userId }),
+        { sessionId }
+      );
+      if (evaluationContext?.mutationObserver) {
+        // Same instance, BOTH targets — atoms receive the session or its
+        // snapshot depending on the seam, and the snapshot exists from the
+        // constructor's ensureMultiBoardShape. Constructor/job-state
+        // hydration stays input_state_seed (direct writes, no receipts), so
+        // attaching before start is safe.
+        attachMutationObserver(session, evaluationContext.mutationObserver);
+        attachMutationObserver(session.stateSnapshot, evaluationContext.mutationObserver);
+      }
+      if (evaluationContext && session.costTracker) {
+        // C3 — per-round usage sink, attached BEFORE session.start so every
+        // accepted ingestBillableUsage call is observable. Non-enumerable:
+        // cost summaries JSON.stringify the tracker.
+        Object.defineProperty(session.costTracker, PLAN00_ROUND_USAGE_SINK, {
+          value: (row, meta) => evaluationContext.roundUsageSink(row, meta),
+          enumerable: false,
+          configurable: true,
+        });
+      }
+    }
     const questionGate = new QuestionGate((questions) => {
       // Send gated questions to iOS
       let sent = false;
@@ -3549,6 +4101,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     // Set up batch flush callback — when the batch timeout fires asynchronously,
     // this delivers the extraction result to iOS the same way handleTranscript does.
     session.onBatchResult = async (result) => {
+      // Plan 00B-2 C3 — confirmation_drain producer boundary: the batch
+      // timeout delivers confirmations asynchronously outside any
+      // transcript handler, so an in-flight drain must hold freeze
+      // eligibility open. Dormant no-op handle without a ledger.
+      const confirmationDrainProducer = beginProducer(
+        activeSessions.get(sessionId),
+        'confirmation_drain'
+      );
       try {
         const entryRef = activeSessions.get(sessionId);
         await finalizeLegacyAddressMirrorDirect(entryRef, result);
@@ -3563,7 +4123,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
             currentWs,
             session.stateSnapshot,
             result,
-            session
+            session,
+            entryRef
           );
           if (!out.ok) {
             if (entryRef) entryRef.pendingExtractions.push(result);
@@ -3717,6 +4278,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         }
       } catch (err) {
         logger.error('Batch flush callback error', { sessionId, error: err.message });
+      } finally {
+        confirmationDrainProducer.complete();
       }
     };
 
@@ -3922,6 +4485,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     });
 
     const createdEntry = activeSessions.get(sessionId);
+    // Plan 00B-2 C1 — stash the normalised evaluation context on the ENTRY
+    // (one non-enumerable Symbol; never on the session), initialise the
+    // server-owned lifecycle ledger, and register observer callbacks only
+    // when the observer role was supplied. The factory itself already ran
+    // at session creation (before session.start) so the mutation observer
+    // saw every post-start commit; the entry-side stash happens here, before
+    // the address-mirror rehydrate and before any message traffic. The C3
+    // START candidate is invoked and published exactly once per fresh entry;
+    // reconnect/resume reuse the latch, never re-invoke.
+    if (evaluationContext) {
+      attachEvaluationContext(createdEntry, evaluationContext);
+      freezeEvidenceStart(createdEntry, { sessionId });
+    }
     createdEntry.addressMirrorIngressArbiter = createAddressMirrorIngressArbiter();
     createdEntry.addressMirrorController = createAddressMirrorController({
       userId,
@@ -4001,7 +4577,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     sendAddressMirrorDirectQuestion(
       ws,
       await createdEntry.addressMirrorController.currentDirectQuestion(),
-      null
+      null,
+      createdEntry
     );
 
     // Hotfix slice 2.3 — emit the initial `current_board_changed` AFTER the
@@ -4057,7 +4634,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
    * to the new socket, the same shape as `handleSessionStart`'s reconnection
    * branch does, so extraction callbacks target the live socket.
    */
-  function handleSessionResumeRehydrate(
+  async function handleSessionResumeRehydrate(
     ws,
     userId,
     requestedSessionId,
@@ -4112,7 +4689,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     }
 
     const { clientSessionId } = peeked;
-    const entry = activeSessions.get(clientSessionId);
+    let entry = activeSessions.get(clientSessionId);
+
+    // Plan 00B §B1 — teardown-arbiter observation (rehydrate flavour). An
+    // entry mid-teardown must never be rebound: await the one teardown
+    // promise, re-read the registry, and fall through to the existing
+    // entry-missing miss path (the teardown deletes the entry).
+    if (entry && (entry.isStopping || entry.teardownPromise)) {
+      try {
+        await (entry.teardownPromise ?? Promise.resolve());
+      } catch (_e) {
+        // teardown-body failures log themselves; resume follows the
+        // re-read registry state.
+      }
+      entry = activeSessions.get(clientSessionId);
+    }
 
     // TTL-valid store hit but the runtime entry is gone (e.g. the 5-min
     // disconnectTimer fired and cleaned up activeSessions, but the store
@@ -4376,7 +4967,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           ws,
           entry.session?.stateSnapshot,
           result,
-          entry.session
+          entry.session,
+          entry
         );
         if (!out.ok) {
           logger.error('Failed to flush buffered extraction', {
@@ -4481,40 +5073,65 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
 
   async function replayAddressMirrorOutbox(ws, entry, sessionId) {
     if (!entry?.addressMirrorController || ws?.readyState !== ws?.OPEN) return;
-    // The direct ledger is append-only, so more than one terminal operation
-    // can survive a process crash. Drain a bounded FIFO; each successful send
-    // marks exactly that operation delivered before asking the controller for
-    // the next one.
-    for (let i = 0; i < 16; i += 1) {
-      const writes = createPerTurnWrites();
-      const recovered = await entry.addressMirrorController.recoverUndelivered(writes);
-      if (!recovered?.handled || recovered.outcome === 'duplicate') {
-        if (recovered?.reason === 'delivery_claimed') {
-          scheduleAddressMirrorOutboxRetry(entry, sessionId);
+    // Plan 00B-2 C3 — outbox_replay producer boundary. Where the ACK branch
+    // triggers this replay, the nested producer intentionally overlaps
+    // `address_mirror_ack` (documented nesting — both counters held, both
+    // completed in their own finally).
+    const producer = beginProducer(entry, 'outbox_replay');
+    try {
+      // The direct ledger is append-only, so more than one terminal operation
+      // can survive a process crash. Drain a bounded FIFO; each successful send
+      // marks exactly that operation delivered before asking the controller for
+      // the next one.
+      for (let i = 0; i < 16; i += 1) {
+        const writes = createPerTurnWrites();
+        const recovered = await entry.addressMirrorController.recoverUndelivered(writes);
+        if (!recovered?.handled || recovered.outcome === 'duplicate') {
+          if (recovered?.reason === 'delivery_claimed') {
+            scheduleAddressMirrorOutboxRetry(entry, sessionId);
+          }
+          return;
         }
-        return;
+        const result = attachAddressMirrorDelivery(
+          bundleToolCallsIntoResult(writes, null, {
+            confirmationsEnabled: true,
+            turnId: `${sessionId}-address-mirror-outbox-${recovered.resolutionToken ?? i}`,
+            utteranceId: null,
+          }),
+          writes
+        );
+        attachAddressMirrorAskClear(result, recovered.clearAskId);
+        // Plan 00B-2 C2.6 — recovery provenance: a recovered delivery whose
+        // claim lineage this process holds NO prior-send evidence for is
+        // flagged BEFORE the send; the evidence layer records the replay
+        // normally but marks its operations delivery_history_ambiguous
+        // (exactly-once history is never reconstructed). Dormant lookup.
+        {
+          const replayEvalCtx = entry[EVALUATION_CONTEXT] ?? null;
+          const replayDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
+          if (replayEvalCtx && typeof replayDelivery?.token === 'string') {
+            const lineage = `${replayDelivery.kind}:${replayDelivery.token}`;
+            if (!replayEvalCtx.addressMirrorUnits?.has(lineage)) {
+              replayEvalCtx.noteAddressMirrorRecovery(lineage);
+            }
+          }
+        }
+        const sent = await sendResultFrameLedger(
+          ws,
+          entry.session?.stateSnapshot,
+          result,
+          entry.session,
+          entry
+        );
+        if (!sent.ok) {
+          entry.pendingExtractions.push(result);
+          return;
+        }
+        const delivered = await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
+        if (!delivered) return;
       }
-      const result = attachAddressMirrorDelivery(
-        bundleToolCallsIntoResult(writes, null, {
-          confirmationsEnabled: true,
-          turnId: `${sessionId}-address-mirror-outbox-${recovered.resolutionToken ?? i}`,
-          utteranceId: null,
-        }),
-        writes
-      );
-      attachAddressMirrorAskClear(result, recovered.clearAskId);
-      const sent = await sendResultFrameLedger(
-        ws,
-        entry.session?.stateSnapshot,
-        result,
-        entry.session
-      );
-      if (!sent.ok) {
-        entry.pendingExtractions.push(result);
-        return;
-      }
-      const delivered = await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
-      if (!delivered) return;
+    } finally {
+      producer.complete();
     }
   }
 
@@ -4665,24 +5282,33 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       typeof msg.utterance_id === 'string' &&
       msg.utterance_id &&
       parseAddressMirrorAnswer(canonicalTranscriptText) &&
-      entry.addressMirrorIngressArbiter &&
-      (await entry.addressMirrorController?.shouldHoldReplyTranscript())
+      entry.addressMirrorIngressArbiter
     ) {
-      const disposition = await entry.addressMirrorIngressArbiter.hold(msg.utterance_id);
-      if (disposition === 'consumed' || entry.isStopping) {
-        logger.info('stage6.address_mirror_reply_transcript_consumed', {
-          sessionId,
-          utterance_id: msg.utterance_id,
-          reason: disposition === 'consumed' ? 'paired_answer_frame' : 'session_stopping',
-        });
-        consumeDestructiveToken('address_mirror_reply_hold');
-        return;
+      // Plan 00B-2 C3 — address_mirror_ingress producer boundary, begun
+      // BEFORE the region's first await (shouldHoldReplyTranscript) so a
+      // stop landing while it is suspended freezes INELIGIBLE.
+      const ingressProducer = beginProducer(entry, 'address_mirror_ingress');
+      try {
+        if (await entry.addressMirrorController?.shouldHoldReplyTranscript()) {
+          const disposition = await entry.addressMirrorIngressArbiter.hold(msg.utterance_id);
+          if (disposition === 'consumed' || entry.isStopping) {
+            logger.info('stage6.address_mirror_reply_transcript_consumed', {
+              sessionId,
+              utterance_id: msg.utterance_id,
+              reason: disposition === 'consumed' ? 'paired_answer_frame' : 'session_stopping',
+            });
+            consumeDestructiveToken('address_mirror_reply_hold');
+            return;
+          }
+          logger.info('stage6.address_mirror_reply_hold_released', {
+            sessionId,
+            utterance_id: msg.utterance_id,
+          });
+          entry.addressMirrorController?.noteReplyHoldReleased();
+        }
+      } finally {
+        ingressProducer.complete();
       }
-      logger.info('stage6.address_mirror_reply_hold_released', {
-        sessionId,
-        utterance_id: msg.utterance_id,
-      });
-      entry.addressMirrorController?.noteReplyHoldReleased();
     }
 
     // Plan 03-10 Task 1 (STG BLOCK remediation) — utterance-consumption
@@ -4841,121 +5467,192 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         return;
       }
       if (!entry.addressMirrorReservations.has(reservationKey)) {
-        const mirrorWrites = createPerTurnWrites();
-        const context =
-          msg.in_response_to && typeof msg.in_response_to === 'object' ? msg.in_response_to : null;
-        const hasRecoveredAnswerAnchor =
-          context?.purpose === ADDRESS_MIRROR_PURPOSE ||
-          context?.type === ADDRESS_MIRROR_QUESTION_TYPE;
-        const hasDirectClarificationAnchor = context?.type === ADDRESS_MIRROR_DIRECT_QUESTION_TYPE;
-        const recoveredAskId =
-          typeof context?.tool_call_id === 'string' && context.tool_call_id.length > 0
-            ? context.tool_call_id
-            : null;
-        let mirrorOutcome = hasRecoveredAnswerAnchor
-          ? await entry.addressMirrorController.resolveRecoveredAnswer({
+        // Plan 00B-2 C3 — address_mirror_ingress producer boundary (main
+        // resolution region: recovered/direct resolution + controller
+        // mutation through result replay).
+        const mirrorIngressProducer = beginProducer(entry, 'address_mirror_ingress');
+        // Plan 00B-2 C2 (Codex r2 finding 1) — same bracket as the
+        // answer-recovery region: the controller mutates the observed
+        // snapshot through the real atoms, so evaluation needs a turn scope
+        // + declared origin here or real mirror writes can never produce
+        // valid receipts. The scope id matches the utterance id the staged
+        // result will carry, so the terminal binds turn-exactly.
+        const ingressMirrorMo = entry[EVALUATION_CONTEXT]?.mutationObserver ?? null;
+        let ingressMirrorScopeOpened = false;
+        if (ingressMirrorMo && ingressMirrorMo.openTurnId != null) {
+          // Codex r4 finding 2 — same fail-closed rule as the answer
+          // region: never borrow a concurrent suspended turn's scope.
+          ingressMirrorMo.markInvalid('mirror_scope_conflict', {
+            open_turn_id: ingressMirrorMo.openTurnId,
+            region: 'address_mirror_ingress',
+          });
+        }
+        if (ingressMirrorMo && ingressMirrorMo.openTurnId == null) {
+          try {
+            ingressMirrorMo.enterTurnScope(
+              typeof msg.utterance_id === 'string' && msg.utterance_id
+                ? msg.utterance_id
+                : `mirror-${reservationKey.slice(-12)}`
+            );
+            ingressMirrorScopeOpened = true;
+            ingressMirrorMo.setOriginFrame({ origin: 'ask_auto_resolve' });
+          } catch {
+            // isolated — the observer has already latched INVALID
+          }
+        }
+        try {
+          const mirrorWrites = createPerTurnWrites();
+          const context =
+            msg.in_response_to && typeof msg.in_response_to === 'object'
+              ? msg.in_response_to
+              : null;
+          const hasRecoveredAnswerAnchor =
+            context?.purpose === ADDRESS_MIRROR_PURPOSE ||
+            context?.type === ADDRESS_MIRROR_QUESTION_TYPE;
+          const hasDirectClarificationAnchor =
+            context?.type === ADDRESS_MIRROR_DIRECT_QUESTION_TYPE;
+          const recoveredAskId =
+            typeof context?.tool_call_id === 'string' && context.tool_call_id.length > 0
+              ? context.tool_call_id
+              : null;
+          let mirrorOutcome = hasRecoveredAnswerAnchor
+            ? await entry.addressMirrorController.resolveRecoveredAnswer({
+                context,
+                text: canonicalTranscriptText,
+                askId: recoveredAskId,
+                perTurnWrites: mirrorWrites,
+              })
+            : { handled: false };
+          if (!mirrorOutcome.handled && hasDirectClarificationAnchor) {
+            mirrorOutcome = await entry.addressMirrorController.resolveDirectClarification({
               context,
               text: canonicalTranscriptText,
-              askId: recoveredAskId,
               perTurnWrites: mirrorWrites,
-            })
-          : { handled: false };
-        if (!mirrorOutcome.handled && hasDirectClarificationAnchor) {
-          mirrorOutcome = await entry.addressMirrorController.resolveDirectClarification({
-            context,
-            text: canonicalTranscriptText,
-            perTurnWrites: mirrorWrites,
-          });
-        }
-        if (
-          !mirrorOutcome.handled &&
-          (mirrorOutcome.reason === 'stale_direct_question' ||
-            mirrorOutcome.reason === 'stale_address_mirror_ask_id')
-        ) {
-          sendAddressMirrorAskClear(ws, recoveredAskId, sessionId);
-          entry.addressMirrorReservations.add(reservationKey);
-          stampSeenTranscript();
-          consumeDestructiveToken(
-            mirrorOutcome.reason === 'stale_direct_question'
-              ? 'address_mirror_stale_direct_question'
-              : 'address_mirror_stale_recovered_question'
-          );
-          return;
-        }
-        const directCommand = parseDirectAddressMirrorCommand(canonicalTranscriptText);
-        if (!mirrorOutcome.handled && directCommand) {
-          mirrorOutcome = await entry.addressMirrorController.resolvePendingDirectCommand({
-            text: canonicalTranscriptText,
-            perTurnWrites: mirrorWrites,
-          });
-        }
-        if (!mirrorOutcome.handled && directCommand) {
-          mirrorOutcome = await entry.addressMirrorController.applyDirectCommand(
-            canonicalTranscriptText,
-            mirrorWrites,
-            occurrenceAnchor
-          );
-        }
+            });
+          }
+          if (
+            !mirrorOutcome.handled &&
+            (mirrorOutcome.reason === 'stale_direct_question' ||
+              mirrorOutcome.reason === 'stale_address_mirror_ask_id')
+          ) {
+            sendAddressMirrorAskClear(ws, recoveredAskId, sessionId);
+            entry.addressMirrorReservations.add(reservationKey);
+            stampSeenTranscript();
+            consumeDestructiveToken(
+              mirrorOutcome.reason === 'stale_direct_question'
+                ? 'address_mirror_stale_direct_question'
+                : 'address_mirror_stale_recovered_question'
+            );
+            return;
+          }
+          const directCommand = parseDirectAddressMirrorCommand(canonicalTranscriptText);
+          if (!mirrorOutcome.handled && directCommand) {
+            mirrorOutcome = await entry.addressMirrorController.resolvePendingDirectCommand({
+              text: canonicalTranscriptText,
+              perTurnWrites: mirrorWrites,
+            });
+          }
+          if (!mirrorOutcome.handled && directCommand) {
+            mirrorOutcome = await entry.addressMirrorController.applyDirectCommand(
+              canonicalTranscriptText,
+              mirrorWrites,
+              occurrenceAnchor
+            );
+          }
 
-        const terminalMirrorOutcome = new Set([
-          'yes',
-          'no',
-          'copied',
-          'duplicate',
-          'already_pending',
-        ]);
-        const isTerminalMirrorOutcome =
-          terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
-          (mirrorOutcome.outcome === 'conflict' &&
-            (mirrorOutcome.clearAskId || typeof mirrorOutcome.question !== 'string'));
-        if (mirrorOutcome.handled && isTerminalMirrorOutcome) {
-          entry.addressMirrorReservations.add(reservationKey);
-          while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
-            const oldest = entry.addressMirrorReservations.values().next().value;
-            entry.addressMirrorReservations.delete(oldest);
+          const terminalMirrorOutcome = new Set([
+            'yes',
+            'no',
+            'copied',
+            'duplicate',
+            'already_pending',
+          ]);
+          const isTerminalMirrorOutcome =
+            terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
+            (mirrorOutcome.outcome === 'conflict' &&
+              (mirrorOutcome.clearAskId || typeof mirrorOutcome.question !== 'string'));
+          if (mirrorOutcome.handled && isTerminalMirrorOutcome) {
+            entry.addressMirrorReservations.add(reservationKey);
+            while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
+              const oldest = entry.addressMirrorReservations.values().next().value;
+              entry.addressMirrorReservations.delete(oldest);
+            }
+            // Plan 00B-2 C2.4 — the controller transition accepted a matching
+            // answer to a live address-mirror ask: close that ask. Only when
+            // an ask anchor actually resolved (yes/no/conflict on an anchored
+            // question) — a direct command with no open ask closes nothing.
+            if (
+              (hasRecoveredAnswerAnchor || hasDirectClarificationAnchor) &&
+              (mirrorOutcome.clearAskId || recoveredAskId) &&
+              (mirrorOutcome.outcome === 'yes' ||
+                mirrorOutcome.outcome === 'no' ||
+                mirrorOutcome.outcome === 'conflict')
+            ) {
+              entry[EVALUATION_CONTEXT]?.recordAskResolved?.({
+                runtimeId: mirrorOutcome.clearAskId ?? recoveredAskId,
+                terminal: 'answered',
+                detail: {
+                  answer_frame_id: mirrorOutcome.clearAskId ?? recoveredAskId,
+                  transcript_resolved: true,
+                  outcome: mirrorOutcome.outcome,
+                },
+              });
+            }
+            const mirrorTurnId = `${sessionId}-address-mirror-${
+              mirrorOutcome.resolutionToken ??
+              (typeof msg.utterance_id === 'string' && msg.utterance_id
+                ? msg.utterance_id
+                : reservationKey.slice(-12))
+            }`;
+            const result = attachAddressMirrorDelivery(
+              bundleToolCallsIntoResult(mirrorWrites, null, {
+                confirmationsEnabled:
+                  msg.confirmations_enabled === true || (mirrorOutcome.replayedSource ?? 0) > 0,
+                turnId: mirrorTurnId,
+                utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              }),
+              mirrorWrites
+            );
+            attachAddressMirrorAskClear(result, mirrorOutcome.clearAskId);
+            const sent = await sendResultFrameLedger(
+              ws,
+              entry.session.stateSnapshot,
+              result,
+              entry.session,
+              entry
+            );
+            if (!sent.ok) entry.pendingExtractions.push(result);
+            else await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
+            stampSeenTranscript();
+            consumeDestructiveToken('address_mirror_controller');
+            return;
           }
-          const mirrorTurnId = `${sessionId}-address-mirror-${
-            mirrorOutcome.resolutionToken ??
-            (typeof msg.utterance_id === 'string' && msg.utterance_id
-              ? msg.utterance_id
-              : reservationKey.slice(-12))
-          }`;
-          const result = attachAddressMirrorDelivery(
-            bundleToolCallsIntoResult(mirrorWrites, null, {
-              confirmationsEnabled:
-                msg.confirmations_enabled === true || (mirrorOutcome.replayedSource ?? 0) > 0,
-              turnId: mirrorTurnId,
-              utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-            }),
-            mirrorWrites
-          );
-          attachAddressMirrorAskClear(result, mirrorOutcome.clearAskId);
-          const sent = await sendResultFrameLedger(
-            ws,
-            entry.session.stateSnapshot,
-            result,
-            entry.session
-          );
-          if (!sent.ok) entry.pendingExtractions.push(result);
-          else await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
-          stampSeenTranscript();
-          consumeDestructiveToken('address_mirror_controller');
-          return;
-        }
-        if (mirrorOutcome.handled && typeof mirrorOutcome.question === 'string') {
-          entry.addressMirrorReservations.add(reservationKey);
-          while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
-            const oldest = entry.addressMirrorReservations.values().next().value;
-            entry.addressMirrorReservations.delete(oldest);
+          if (mirrorOutcome.handled && typeof mirrorOutcome.question === 'string') {
+            entry.addressMirrorReservations.add(reservationKey);
+            while (entry.addressMirrorReservations.size > CONSUMED_UTTERANCE_CAP) {
+              const oldest = entry.addressMirrorReservations.values().next().value;
+              entry.addressMirrorReservations.delete(oldest);
+            }
+            sendAddressMirrorDirectQuestion(
+              ws,
+              mirrorOutcome,
+              typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              entry
+            );
+            stampSeenTranscript();
+            consumeDestructiveToken('address_mirror_controller_question');
+            return;
           }
-          sendAddressMirrorDirectQuestion(
-            ws,
-            mirrorOutcome,
-            typeof msg.utterance_id === 'string' ? msg.utterance_id : null
-          );
-          stampSeenTranscript();
-          consumeDestructiveToken('address_mirror_controller_question');
-          return;
+        } finally {
+          if (ingressMirrorScopeOpened) {
+            try {
+              ingressMirrorMo.clearOriginFrame();
+              ingressMirrorMo.exitTurnScope();
+            } catch {
+              // isolated
+            }
+          }
+          mirrorIngressProducer.complete();
         }
       }
     }
@@ -5470,119 +6167,167 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
       //                                             circuit answer; pass
       //                                             the (possibly cleaned)
       //                                             transcript on to Sonnet.
-      const ringScriptOutcome = processRingContinuityTurn({
-        ws,
-        session: entry.session,
-        sessionId,
-        transcriptText,
-        // P1 ring-script-hardening (Fix 4) — the UN-ANNOTATED reply. The
-        // in_response_to annotation above prepends the quoted TTS question
-        // onto transcriptText; the engine's confirmation branch must parse
-        // the un-annotated reply (otherwise extractNamedFieldValues reads
-        // R1/Rn/R2 out of the QUOTED "All correct?" question and
-        // detectPositive matches "correct" inside it even when the reply is
-        // "No."). transcriptText stays the model-bound fallthrough text.
-        // P6 — this is the CANONICAL (normalised) reply, NOT annotated:
-        // canonicalTranscriptText carries the Seam-A normalisation but never
-        // the bracketed TTS-question prefix, preserving the un-annotated
-        // contract while the script sees the same "Zs"/"100" text the model does.
-        rawReplyText: canonicalTranscriptText,
-        logger,
-        // PLAN-C P4d (row 1) — the creation-time response epoch for any
-        // ask_user_started this active-path turn emits is THIS transcript's
-        // utterance id, so the client chime watchdog disarms on the spoken ask.
-        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-        // id 93 — one consistent verdict for ALL THREE wrapper calls this
-        // turn (the token was consumed once, above; the engine skips entry
-        // for guarded schemas when true).
-        suppressDestructiveEntry,
-      });
-      if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
-        // Script handled the turn end-to-end. Return — the finally block
-        // at line ~3290 clears the watchdog, flips isExtracting, and
-        // drains pendingTranscripts against the LIVE entry.ws (handling
-        // the reconnect-mid-turn case the r19 MAJOR remediation fixed).
-        // No Sonnet call, no shadow harness, no question-gate pass on
-        // this turn. The script already emitted the wire events iOS
-        // needs (`extraction` + `ask_user_started`).
-        return;
-      }
-      if (ringScriptOutcome.handled && ringScriptOutcome.fallthrough) {
-        // Topic switch or unresolvable circuit-answer. Use the script's
-        // returned transcript (currently identical to input — kept in
-        // the contract so future cleanup doesn't churn callers) and
-        // continue to the normal Sonnet path.
-        if (typeof ringScriptOutcome.transcriptText === 'string') {
-          transcriptText = ringScriptOutcome.transcriptText;
+      // Plan 00B-2 C2.2 — Tier-2 evaluation bracket. Turns the dialogue
+      // engine consumes never reach runLiveMode, so the sibling per-turn
+      // observers are stamped HERE around the wrapper-call region (plain
+      // assign; identity-compare delete in the REGION-LOCAL finally below —
+      // never the handler's outer finally), and the mutation observer's
+      // turn scope for these turns uses the already-minted SERVER
+      // generationId (client utterance_id stays correlation metadata only).
+      const plan00Tier2Ctx = entry[EVALUATION_CONTEXT] ?? null;
+      let plan00Tier2TurnScopeEntered = false;
+      if (plan00Tier2Ctx && ws) {
+        ws[PLAN00_ASK_EMIT_OBSERVER] = plan00Tier2Ctx.askEmit;
+        ws[PLAN00_DELIVERY_EMIT_OBSERVER] = plan00Tier2Ctx.deliveryEmit;
+        if (plan00Tier2Ctx.mutationObserver) {
+          plan00Tier2Ctx.mutationObserver.enterTurnScope(generationId);
+          plan00Tier2TurnScopeEntered = true;
         }
       }
-
-      // Insulation resistance script — 2026-04-29. Same shape as the ring
-      // continuity script: server-driven micro-conversation that captures
-      // L-L and L-E readings (and the test voltage if not already set)
-      // deterministically when the inspector says "insulation resistance
-      // for circuit N". Sits AFTER the ring script call so the entry
-      // patterns are mutually exclusive — ring's "ring continuity" trigger
-      // beats IR's "insulation resistance" trigger when both somehow
-      // appear (they shouldn't), and IR's topic-switch list includes ring
-      // patterns so an inspector mid-ring can't accidentally re-enter IR.
-      // See `src/extraction/insulation-resistance-script.js` for design.
-      const irScriptOutcome = processInsulationResistanceTurn({
-        ws,
-        session: entry.session,
-        sessionId,
-        transcriptText,
-        // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
-        // for IR today (no confirmation block) but keeps the engine contract
-        // uniform across the three wrapper call sites. P6 — CANONICAL,
-        // un-annotated (see the ring-script call).
-        rawReplyText: canonicalTranscriptText,
-        logger,
-        // PLAN-C P4d (row 1) — see the ring-script call above.
-        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-        // id 93 — same verdict as the ring call: the arm/consume seam wraps
-        // all three wrappers, so the FIRST family call can never burn the
-        // token before the IR/PD families are evaluated.
-        suppressDestructiveEntry,
-      });
-      if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
-        return;
-      }
-      if (irScriptOutcome.handled && irScriptOutcome.fallthrough) {
-        if (typeof irScriptOutcome.transcriptText === 'string') {
-          transcriptText = irScriptOutcome.transcriptText;
+      try {
+        const ringScriptOutcome = processRingContinuityTurn({
+          ws,
+          session: entry.session,
+          sessionId,
+          transcriptText,
+          // P1 ring-script-hardening (Fix 4) — the UN-ANNOTATED reply. The
+          // in_response_to annotation above prepends the quoted TTS question
+          // onto transcriptText; the engine's confirmation branch must parse
+          // the un-annotated reply (otherwise extractNamedFieldValues reads
+          // R1/Rn/R2 out of the QUOTED "All correct?" question and
+          // detectPositive matches "correct" inside it even when the reply is
+          // "No."). transcriptText stays the model-bound fallthrough text.
+          // P6 — this is the CANONICAL (normalised) reply, NOT annotated:
+          // canonicalTranscriptText carries the Seam-A normalisation but never
+          // the bracketed TTS-question prefix, preserving the un-annotated
+          // contract while the script sees the same "Zs"/"100" text the model does.
+          rawReplyText: canonicalTranscriptText,
+          logger,
+          // PLAN-C P4d (row 1) — the creation-time response epoch for any
+          // ask_user_started this active-path turn emits is THIS transcript's
+          // utterance id, so the client chime watchdog disarms on the spoken ask.
+          responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          // id 93 — one consistent verdict for ALL THREE wrapper calls this
+          // turn (the token was consumed once, above; the engine skips entry
+          // for guarded schemas when true).
+          suppressDestructiveEntry,
+        });
+        if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
+          // Script handled the turn end-to-end. Return — the finally block
+          // at line ~3290 clears the watchdog, flips isExtracting, and
+          // drains pendingTranscripts against the LIVE entry.ws (handling
+          // the reconnect-mid-turn case the r19 MAJOR remediation fixed).
+          // No Sonnet call, no shadow harness, no question-gate pass on
+          // this turn. The script already emitted the wire events iOS
+          // needs (`extraction` + `ask_user_started`).
+          // Plan 00B-2 C2.4 — the engine CONSUMED this transcript: resolve
+          // the srv-* two-half join for any answer frame anchored on this
+          // utterance id.
+          plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
+            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
+          return;
         }
-      }
+        if (ringScriptOutcome.handled && ringScriptOutcome.fallthrough) {
+          // Topic switch or unresolvable circuit-answer. Use the script's
+          // returned transcript (currently identical to input — kept in
+          // the contract so future cleanup doesn't churn callers) and
+          // continue to the normal Sonnet path.
+          if (typeof ringScriptOutcome.transcriptText === 'string') {
+            transcriptText = ringScriptOutcome.transcriptText;
+          }
+        }
 
-      // Protective-device script (PR2) — RCBO / OCPD / RCD as a
-      // single dialogue family. Same wire-shape contract as ring +
-      // IR; entry triggers are mutually exclusive via topic-switch
-      // lists and `\bRCBO\b` / `\bRCD\b` word boundaries. RCBO is
-      // checked first so direct-RCBO entry wins over OCPD's broader
-      // trigger; OCPD and RCD pivot to RCBO via the BS-EN 61009
-      // derivation on their bs_en slots.
-      const pdScriptOutcome = processProtectiveDeviceTurn({
-        ws,
-        session: entry.session,
-        sessionId,
-        transcriptText,
-        // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
-        // for the protective-device family today (no confirmation block).
-        // P6 — CANONICAL, un-annotated (see the ring-script call).
-        rawReplyText: canonicalTranscriptText,
-        logger,
-        // PLAN-C P4d (row 1) — see the ring-script call above.
-        responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
-        // id 93 — same verdict as the ring/IR calls (RCD is the guarded
-        // schema in this three-schema registry).
-        suppressDestructiveEntry,
-      });
-      if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
-        return;
-      }
-      if (pdScriptOutcome.handled && pdScriptOutcome.fallthrough) {
-        if (typeof pdScriptOutcome.transcriptText === 'string') {
-          transcriptText = pdScriptOutcome.transcriptText;
+        // Insulation resistance script — 2026-04-29. Same shape as the ring
+        // continuity script: server-driven micro-conversation that captures
+        // L-L and L-E readings (and the test voltage if not already set)
+        // deterministically when the inspector says "insulation resistance
+        // for circuit N". Sits AFTER the ring script call so the entry
+        // patterns are mutually exclusive — ring's "ring continuity" trigger
+        // beats IR's "insulation resistance" trigger when both somehow
+        // appear (they shouldn't), and IR's topic-switch list includes ring
+        // patterns so an inspector mid-ring can't accidentally re-enter IR.
+        // See `src/extraction/insulation-resistance-script.js` for design.
+        const irScriptOutcome = processInsulationResistanceTurn({
+          ws,
+          session: entry.session,
+          sessionId,
+          transcriptText,
+          // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
+          // for IR today (no confirmation block) but keeps the engine contract
+          // uniform across the three wrapper call sites. P6 — CANONICAL,
+          // un-annotated (see the ring-script call).
+          rawReplyText: canonicalTranscriptText,
+          logger,
+          // PLAN-C P4d (row 1) — see the ring-script call above.
+          responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          // id 93 — same verdict as the ring call: the arm/consume seam wraps
+          // all three wrappers, so the FIRST family call can never burn the
+          // token before the IR/PD families are evaluated.
+          suppressDestructiveEntry,
+        });
+        if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
+          plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
+            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
+          return;
+        }
+        if (irScriptOutcome.handled && irScriptOutcome.fallthrough) {
+          if (typeof irScriptOutcome.transcriptText === 'string') {
+            transcriptText = irScriptOutcome.transcriptText;
+          }
+        }
+
+        // Protective-device script (PR2) — RCBO / OCPD / RCD as a
+        // single dialogue family. Same wire-shape contract as ring +
+        // IR; entry triggers are mutually exclusive via topic-switch
+        // lists and `\bRCBO\b` / `\bRCD\b` word boundaries. RCBO is
+        // checked first so direct-RCBO entry wins over OCPD's broader
+        // trigger; OCPD and RCD pivot to RCBO via the BS-EN 61009
+        // derivation on their bs_en slots.
+        const pdScriptOutcome = processProtectiveDeviceTurn({
+          ws,
+          session: entry.session,
+          sessionId,
+          transcriptText,
+          // P1 Fix 4 — un-annotated reply (see the ring-script call above). Inert
+          // for the protective-device family today (no confirmation block).
+          // P6 — CANONICAL, un-annotated (see the ring-script call).
+          rawReplyText: canonicalTranscriptText,
+          logger,
+          // PLAN-C P4d (row 1) — see the ring-script call above.
+          responseEpoch: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          // id 93 — same verdict as the ring/IR calls (RCD is the guarded
+          // schema in this three-schema registry).
+          suppressDestructiveEntry,
+        });
+        if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
+          plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
+            utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+          });
+          return;
+        }
+        if (pdScriptOutcome.handled && pdScriptOutcome.fallthrough) {
+          if (typeof pdScriptOutcome.transcriptText === 'string') {
+            transcriptText = pdScriptOutcome.transcriptText;
+          }
+        }
+      } finally {
+        // Plan 00B-2 C2.2 — REGION-LOCAL teardown: closes after the wrapper
+        // region on every exit (consumed returns included) and before
+        // runShadowHarness, so the harness turn scope never overlaps the
+        // engine turn scope and the stamped observers never leak past the
+        // dialogue region.
+        if (plan00Tier2Ctx && ws) {
+          if (ws[PLAN00_ASK_EMIT_OBSERVER] === plan00Tier2Ctx.askEmit) {
+            delete ws[PLAN00_ASK_EMIT_OBSERVER];
+          }
+          if (ws[PLAN00_DELIVERY_EMIT_OBSERVER] === plan00Tier2Ctx.deliveryEmit) {
+            delete ws[PLAN00_DELIVERY_EMIT_OBSERVER];
+          }
+        }
+        if (plan00Tier2TurnScopeEntered) {
+          plan00Tier2Ctx.mutationObserver.exitTurnScope();
         }
       }
 
@@ -6233,7 +6978,8 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
           ws,
           entry.session.stateSnapshot,
           result,
-          entry.session
+          entry.session,
+          entry
         );
         if (ledgerOut.ok) {
           await finalizeAddressMirrorResultDelivery(entry, result, sessionId);
@@ -6498,17 +7244,78 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
     await handleTranscript(ws, sessionId, { text: correctionText });
   }
 
+  // Plan 00B §B1 — per-entry teardown ARBITER. Exactly one teardown body may
+  // run for an entry, whichever of the four teardown-observing paths
+  // (explicit stop, disconnect-timeout expiry, session_start reconnect,
+  // session_resume rehydrate) reaches it first. The first caller
+  // SYNCHRONOUSLY marks the entry stopping and installs ONE promise that
+  // owns the whole ordered teardown (utterance-buffer flush, session.stop,
+  // evidence freeze, acknowledgement/delete ordering). Duplicate callers
+  // await that promise and never run teardown independently — pre-arbiter,
+  // a stop frame racing the 5-minute disconnect timer could run BOTH
+  // bodies concurrently (double session.stop, double rejectAll, and the
+  // stop path's session_ack racing the timer's activeSessions.delete).
+  function beginEntryTeardown(entry, sessionId, reason, work) {
+    if (entry.teardownPromise) return entry.teardownPromise;
+    // Synchronous, before any await: the very next event-loop tick must see
+    // both the flag (handleTranscript guard) and the promise (arbiter).
+    entry.isStopping = true;
+    entry.teardownReason = reason;
+    // Plan 00B-3 C2 (Codex r1 C-3) — latch the asks open AT the stop
+    // boundary SYNCHRONOUSLY, before the teardown body's awaited flushes:
+    // an ask that resolves during those awaits was still open when the
+    // stop began and must hold this session's completion freeze
+    // ineligible. Dormant single Symbol lookup.
+    entry[EVALUATION_CONTEXT]?.latchStopBoundary?.();
+    entry.teardownPromise = (async () => {
+      try {
+        await work();
+      } catch (err) {
+        // A failed teardown body must still reach a TERMINAL state: the
+        // entry leaves the registry (best-effort session/timer cleanup
+        // included) so an awaiting reconnect can only ever follow the
+        // entry-missing/fresh-session path — never rebind a dying entry.
+        logger.error('Session teardown body failed — forcing terminal cleanup', {
+          sessionId,
+          reason,
+          error: err?.message ?? String(err),
+        });
+        try {
+          if (entry.disconnectTimer) {
+            clearTimeout(entry.disconnectTimer);
+            entry.disconnectTimer = null;
+          }
+          entry.session?.stop?.();
+        } catch (_cleanupErr) {
+          // best-effort only
+        }
+        activeSessions.delete(sessionId);
+      }
+    })();
+    return entry.teardownPromise;
+  }
+
   async function handleSessionStop(ws, sessionId) {
     if (!sessionId || !activeSessions.has(sessionId)) return;
     const entry = activeSessions.get(sessionId);
 
-    // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — flip the isStopping
-    // flag BEFORE any rejectAll / flush / S3 awaits. Combined with the
-    // handleTranscript guard at its entry, this ensures any subsequent
-    // transcript arriving during teardown is silently dropped (no harness,
-    // no dispatcher, no register). Set synchronously so the very next
-    // event-loop tick sees it — before any `await` below yields.
-    entry.isStopping = true;
+    // §B1 arbiter — a teardown is already in flight (disconnect timer fired
+    // first, or a duplicate stop frame). Await it; never run independently.
+    if (entry.teardownPromise) {
+      await entry.teardownPromise;
+      return;
+    }
+    await beginEntryTeardown(entry, sessionId, 'session_stopped', () =>
+      runSessionStopTeardown(ws, sessionId, entry)
+    );
+  }
+
+  async function runSessionStopTeardown(ws, sessionId, entry) {
+    // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — the isStopping flag is
+    // flipped by beginEntryTeardown BEFORE any rejectAll / flush / S3 awaits.
+    // Combined with the handleTranscript guard at its entry, this ensures any
+    // subsequent transcript arriving during teardown is silently dropped (no
+    // harness, no dispatcher, no register).
     entry.addressMirrorIngressArbiter?.clear();
     if (entry.addressMirrorOutboxRetryHandle) {
       clearTimeout(entry.addressMirrorOutboxRetryHandle);
@@ -6550,7 +7357,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         });
       }
       summary.observation_refinement_unmatched = entry.pendingRefinements.size;
-      entry.pendingRefinements.clear();
+      // Plan 00B-2 C3 (finding 6) — on an EVALUATION session the clear
+      // moves below the evidence freeze at the bottom of this teardown, so
+      // owed refinements stay visible to the quiescence check (owed
+      // refinements ⇒ `non_quiescent_at_stop`) and no evidence is erased
+      // pre-check. A DORMANT session keeps the original clear position
+      // byte/timing-identically (production dormancy).
+      if (!entry[LIFECYCLE_LEDGER]) {
+        entry.pendingRefinements.clear();
+      }
     }
 
     // Attach job identity so cost can be traced back to the job
@@ -6625,6 +7440,23 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken) {
         // already logged inside flushRealtimeLogSession; swallow so the
         // session-stop teardown isn't blocked by a transient S3 hiccup.
       }
+    }
+
+    // Plan 00B §B1 — evidence completion freeze. Dormant no-op unless an
+    // evaluation observer was registered at entry creation. Placed after
+    // every existing flush/reject point and immediately before the entry
+    // leaves activeSessions, so an ELIGIBLE freeze proves genuine
+    // quiescence (all in-flight counts zero, revisions stable) and anything
+    // else freezes evidence-ineligible as `non_quiescent_at_stop` without
+    // delaying or changing session_ack/stop behaviour.
+    if (entry[LIFECYCLE_LEDGER]) {
+      entry[EVALUATION_CONTEXT]?.expireSrvJoins?.('session_stopped');
+      freezeEvidenceCompletion(entry, { sessionId, boundary: 'session_stopped' });
+    }
+    // Plan 00B-2 C3 (finding 6) — owed-refinement evidence was captured by
+    // the freeze above; only now may the map be cleared.
+    if (entry.pendingRefinements && entry.pendingRefinements.size > 0) {
+      entry.pendingRefinements.clear();
     }
 
     activeSessions.delete(sessionId);

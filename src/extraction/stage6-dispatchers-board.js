@@ -50,6 +50,9 @@
 import {
   applyBoardReadingFlagAware,
   clearBoardReadingFlagAware,
+  appendBoardToSnapshot,
+  setCurrentBoardInSnapshot,
+  markDistributionCircuitInSnapshot,
 } from './stage6-snapshot-mutators.js';
 import {
   encodeBoardReadingKey,
@@ -893,8 +896,11 @@ export async function dispatchAddBoard(call, ctx) {
 
   // 9) Mutate snapshot: append board, flip currentBoardId so subsequent
   //    record_reading / create_circuit calls land on the new board.
-  snapshot.boards.push(newBoard);
-  snapshot.currentBoardId = newId;
+  //    Plan 00B §B2 — routed through the canonical atom (behaviour-
+  //    preserving refactor; the atom owns the two snapshot writes and the
+  //    evaluation commit receipt, this dispatcher keeps every validation
+  //    and the wire boardOps push below).
+  appendBoardToSnapshot(snapshot, newBoard);
 
   // 10) Push the wire op for iOS (Phase 6.0 channel). Carry every payload
   //     field so the iOS receiver doesn't have to re-fetch state to learn
@@ -934,8 +940,13 @@ export async function dispatchAddBoard(call, ctx) {
   if (resolvedParentId && Number.isInteger(input.feed_circuit_ref)) {
     const parentBucket = getCircuitBucket(snapshot, input.feed_circuit_ref, resolvedParentId);
     if (parentBucket) {
-      parentBucket.is_distribution_circuit = 'yes';
-      parentBucket.feeds_board_id = newId;
+      // Plan 00B §B2 — the shared distribution-mark atom (same writes,
+      // plus the evaluation commit receipt).
+      markDistributionCircuitInSnapshot(snapshot, parentBucket, {
+        circuitRef: input.feed_circuit_ref,
+        sourceBoardId: resolvedParentId,
+        feedsBoardId: newId,
+      });
       perTurnWrites.boardOps.push({
         op: 'mark_distribution_circuit',
         circuit_ref: input.feed_circuit_ref,
@@ -1036,7 +1047,9 @@ export async function dispatchSelectBoard(call, ctx) {
   }
 
   // 3) Mutate currentBoardId; emit wire op.
-  snapshot.currentBoardId = target.id;
+  //    Plan 00B §B2 — routed through the canonical atom (assignment
+  //    behaviour byte-identical; receipt only on a REAL board change).
+  setCurrentBoardInSnapshot(snapshot, target.id);
   perTurnWrites.boardOps.push({ op: 'select_board', board_id: target.id });
 
   // 4) Log success.
@@ -1139,8 +1152,12 @@ export async function dispatchMarkDistributionCircuit(call, ctx) {
   }
 
   // 6) Mutate: mark as distribution circuit + record fed board.
-  bucket.is_distribution_circuit = 'yes';
-  bucket.feeds_board_id = targetBoard.id;
+  // Plan 00B §B2 — routed through the shared distribution-mark atom.
+  markDistributionCircuitInSnapshot(snapshot, bucket, {
+    circuitRef: input.circuit,
+    sourceBoardId: sourceBoardId,
+    feedsBoardId: targetBoard.id,
+  });
 
   // 7) Emit wire op. Carry source_board_id explicitly so iOS doesn't have
   //    to assume currentBoardId at receive time.

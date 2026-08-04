@@ -6,6 +6,14 @@
  */
 
 import { applyFieldNameCorrection } from '../../field-name-corrections.js';
+// Plan 00B-2 C2 — evaluation-only sibling observers, stamped per-turn beside
+// ASK_STARTED_OBSERVER by runLiveMode / handleTranscript's Tier-2 wrapper
+// region. Dormant single-Symbol lookups; production never stamps them.
+import {
+  PLAN00_ASK_EMIT_OBSERVER,
+  PLAN00_DELIVERY_EMIT_OBSERVER,
+  PLAN00_AUDIBILITY_DESCRIPTOR,
+} from '../../plan00-audibility-ledgers.js';
 
 /**
  * PLAN-C P4d (row 1) — the response-epoch stamping primitives for the
@@ -296,8 +304,87 @@ export const ASK_STARTED_OBSERVER = Symbol('f7.askStartedObserver');
 export function safeSend(ws, payload) {
   if (!ws || typeof ws.send !== 'function') return;
   try {
-    if (ws.readyState !== undefined && ws.readyState !== ws.OPEN) return;
-    ws.send(JSON.stringify(payload));
+    // Plan 00B-2 C2 — evaluation seams (all dormant Symbol lookups):
+    //   - the ASK admission rule is ASK-LEDGER-ONLY: an `ask_user_started`
+    //     frame with `expected_answer_shape !== 'none'` is an ask (produced
+    //     pre-send so a failed send leaves an open produced entry — the
+    //     silent-ask evidence; emitted only after the successful send);
+    //   - an `expected_answer_shape:'none'` frame is dialogue SPEECH: with
+    //     an audibility descriptor it takes the delivery prepare/commit/
+    //     abort path; without one it is non-mutating audible evidence.
+    const plan00AskObserver = ws[PLAN00_ASK_EMIT_OBSERVER];
+    const plan00DeliveryObserver = ws[PLAN00_DELIVERY_EMIT_OBSERVER];
+    const plan00IsAskFrame =
+      plan00AskObserver &&
+      payload &&
+      payload.type === 'ask_user_started' &&
+      payload.expected_answer_shape !== 'none';
+    const plan00Descriptor = plan00DeliveryObserver
+      ? payload?.[PLAN00_AUDIBILITY_DESCRIPTOR]
+      : null;
+    if (plan00IsAskFrame) {
+      try {
+        plan00AskObserver.produced?.(payload);
+      } catch {
+        // evaluation capture is behaviour-isolated
+      }
+    }
+    if (ws.readyState !== undefined && ws.readyState !== ws.OPEN) {
+      if (plan00DeliveryObserver && plan00Descriptor) {
+        try {
+          plan00DeliveryObserver.abort?.(payload, 'socket_not_open');
+        } catch {
+          // isolated
+        }
+      }
+      return;
+    }
+    if (plan00DeliveryObserver && plan00Descriptor) {
+      try {
+        plan00DeliveryObserver.prepare?.(payload, plan00Descriptor);
+      } catch {
+        // isolated
+      }
+    }
+    try {
+      ws.send(JSON.stringify(payload));
+    } catch (err) {
+      if (plan00DeliveryObserver && plan00Descriptor) {
+        try {
+          plan00DeliveryObserver.abort?.(payload, 'send_threw');
+        } catch {
+          // isolated
+        }
+      }
+      throw err; // re-enter the outer swallow, exactly as before
+    }
+    if (plan00DeliveryObserver && plan00Descriptor) {
+      try {
+        plan00DeliveryObserver.commit?.(payload, plan00Descriptor);
+      } catch {
+        // isolated
+      }
+    }
+    if (
+      plan00DeliveryObserver &&
+      !plan00Descriptor &&
+      payload &&
+      payload.type === 'ask_user_started' &&
+      payload.expected_answer_shape === 'none'
+    ) {
+      try {
+        plan00DeliveryObserver.nonMutating?.(payload);
+      } catch {
+        // isolated
+      }
+    }
+    if (plan00IsAskFrame) {
+      try {
+        plan00AskObserver.emitted?.(payload);
+      } catch {
+        // isolated
+      }
+    }
     // F7 Item 2 — report a SUCCESSFUL ask_user_started emission to the
     // per-turn audit observer (attached by runLiveMode). Runs only after
     // ws.send returns, so a swallowed/closed send never reports. Own

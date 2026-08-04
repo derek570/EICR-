@@ -127,6 +127,100 @@ import { resolveEffectiveBoardId } from './stage6-dispatchers-circuit.js';
 // label resolver. Pure and dependency-downstream-only; see its docstring for why
 // the lookup order is load-bearing.
 import { resolvePartialFailureFieldLabel } from './refusal-notices.js';
+// Plan 00B-2 C2 — evaluation-only ask-lifecycle seams. The dispatcher
+// resolves the context from the ACTIVE ENTRY (never a threaded parameter);
+// each helper is a dormant single-Symbol lookup + isolated try/catch.
+import { getActiveSessionEntry } from './active-sessions.js';
+import { EVALUATION_CONTEXT } from './plan00-lifecycle-hooks.js';
+import { buildLiveAskKey } from './plan00-audibility-ledgers.js';
+
+function plan00EvalContext(sessionId) {
+  return getActiveSessionEntry(sessionId)?.[EVALUATION_CONTEXT] ?? null;
+}
+
+/**
+ * Plan 00B-2 C2.1 — record the dispatcher ask binding + produced row at the
+ * registration seam (pre-wire, pre-lossy-projection). `replacesRuntimeId`
+ * links a broker re-ask (fresh id) to its predecessor: an OPEN predecessor
+ * terminal-resolves `reissued`; a resolved one only gains the link.
+ */
+function recordDispatcherAskProduced(
+  sessionId,
+  runtimeId,
+  input,
+  { chainRole = null, replacesRuntimeId = null } = {}
+) {
+  const ctx = plan00EvalContext(sessionId);
+  if (!ctx) return;
+  try {
+    ctx.recordAskProduced({
+      producerId: 'dispatcher_ask',
+      runtimeId,
+      // Codex r1 (C-7) — the successor's produced row carries the broker
+      // predecessor lineage (reconstructable for link-only replacements).
+      replacesRuntimeId,
+      liveAskKey: buildLiveAskKey({
+        origin: 'dispatcher',
+        purpose: input.purpose ?? null,
+        reason: input.reason ?? null,
+        contextField: input.context_field ?? null,
+        boardId: input.context_board_id ?? null,
+        circuits: input.context_circuit != null ? [input.context_circuit] : [],
+        expectedAnswerShape: input.expected_answer_shape ?? null,
+        observationClarificationKind: input.observation_clarification_kind ?? null,
+        pendingWrite: input.pending_write ?? null,
+        chainRole,
+      }),
+    });
+    if (replacesRuntimeId) {
+      ctx.recordAskReplacement({
+        predecessorRuntimeId: replacesRuntimeId,
+        successorRuntimeId: runtimeId,
+      });
+    }
+  } catch {
+    // evaluation capture is behaviour-isolated
+  }
+}
+
+/** Plan 00B-2 C2.2 — dispatcher send-success emission record. */
+function recordDispatcherAskEmitted(sessionId, runtimeId) {
+  const ctx = plan00EvalContext(sessionId);
+  if (!ctx) return;
+  try {
+    ctx.recordAskEmitted({ runtimeId });
+  } catch {
+    // isolated
+  }
+}
+
+/**
+ * Plan 00B-2 C2.4 — dispatcher-family terminal resolution. `answered` means
+ * a matching ask_user_answered frame resolved the exact live registry entry
+ * and the awaiting dispatcher consumed it (the family's full proof); every
+ * other outcome closes with its terminal class.
+ */
+function recordDispatcherAskResolved(sessionId, runtimeId, outcome) {
+  const ctx = plan00EvalContext(sessionId);
+  if (!ctx) return;
+  try {
+    if (outcome?.answered === true) {
+      ctx.recordAskResolved({
+        runtimeId,
+        terminal: 'answered',
+        detail: { answer_frame_id: runtimeId, transcript_resolved: true },
+      });
+    } else {
+      ctx.recordAskResolved({
+        runtimeId,
+        terminal: outcome?.reason ?? 'unknown_terminal',
+        detail: { reason: outcome?.reason ?? null },
+      });
+    }
+  } catch {
+    // isolated
+  }
+}
 
 const require = createRequire(import.meta.url);
 // Schema-driven enum validation for select-typed asks (Bug B from session
@@ -575,6 +669,12 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
           throw err;
         }
 
+        // Plan 00B-2 C2.1 — the ask dispatcher's registration seam is a
+        // binding-map producer: runtime id → full liveAskKey + semantic
+        // metadata, recorded at bind time (pre-wire, pre-lossy-projection).
+        // Dormant single-Symbol lookup on the active entry.
+        recordDispatcherAskProduced(sessionId, toolCallId, input);
+
         // F7 Item 3 — CONTROL hook, fired immediately after a successful
         // register and BEFORE any send. Its verdict decides whether this
         // generation still owns the registration.
@@ -681,6 +781,12 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
           } catch {
             // best-effort observer — never propagate
           }
+        }
+        // Plan 00B-2 C2.2 — dispatcher initial send records `emitted` at its
+        // send-success path (exactly-once ownership map: never via the
+        // dialogue-engine sibling observer).
+        if (emitted) {
+          recordDispatcherAskEmitted(sessionId, toolCallId);
         }
 
         // F7 Item 2 step 3b — no 45s dead-air on a known-dead send. A closed
@@ -830,6 +936,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         // best-effort observer — never propagate
       }
     }
+    // Plan 00B-2 C2.4 — dispatcher/pending-value asks close when a matching
+    // ask_user_answered frame resolves the exact live registry entry; every
+    // other outcome closes with its terminal class. Fired beside
+    // onAskAnswered (before the cancellation throw) for the same reason.
+    recordDispatcherAskResolved(sessionId, toolCallId, outcome);
 
     // F7 Item 3 — the awaited ask outcome just returned. If the watchdog
     // aborted this generation while we were blocked, STOP here — before
@@ -1758,6 +1869,12 @@ async function buildResolvedBody({
           ({ outcome: askOutcome } = await brokerRegisteredAsk({
             idPrefix: 'mdr',
             emissionSource: 'multi_description',
+            // Plan 00B-2 C2.3 — the mdr ask is the FIRST ask of its own
+            // multi-description flow (it arises from a WRITE attempt, not a
+            // prior ask), so there is genuinely no predecessor to link:
+            // explicit null, never an invented lineage. A future mdr
+            // re-ask round would thread the prior mdr id here.
+            replacesRuntimeId: null,
             pendingAsks,
             ws,
             logger,
@@ -2565,6 +2682,10 @@ async function brokerRegisteredAsk({
   onAskRegistered = null,
   signal = null,
   responseEpochRef = null,
+  // Plan 00B-2 C2.3 — the runtime id this broker re-ask REPLACES (a broker
+  // ask always mints a fresh id and is always the replacement case; null
+  // when the chain has no live predecessor).
+  replacesRuntimeId = null,
 }) {
   const safePrefix =
     typeof idPrefix === 'string' && /^[a-z][a-z0-9_-]*$/i.test(idPrefix) ? idPrefix : 'broker';
@@ -2599,6 +2720,21 @@ async function brokerRegisteredAsk({
       resolve({ answered: false, reason: 'broker_register_failed', error: err?.message });
       return;
     }
+    // Plan 00B-2 C2.1/C2.3 — broker registration seam: bind + produced, and
+    // link the predecessor (replacement case) when the chain supplied one.
+    recordDispatcherAskProduced(
+      sessionId,
+      brokerId,
+      {
+        purpose,
+        reason: 'missing_context',
+        context_field: contextField,
+        context_circuit: contextCircuit,
+        expected_answer_shape: expectedAnswerShape,
+        pending_write: pendingWrite,
+      },
+      { chainRole: 'broker_reask', replacesRuntimeId }
+    );
     // F7 Item 3 — CONTROL hook, fired immediately after a successful broker
     // registration and BEFORE the emit. Same fail-closed / stale-generation
     // contract as the initial dispatch.
@@ -2671,6 +2807,8 @@ async function brokerRegisteredAsk({
         // best-effort observer — never propagate
       }
     }
+    // Plan 00B-2 C2.2 — broker send-success emission record.
+    recordDispatcherAskEmitted(sessionId, brokerId);
     logger?.info?.(
       purpose === 'multi_description'
         ? 'stage6.multi_description_reask_sent'
@@ -2713,6 +2851,9 @@ async function brokerRegisteredAsk({
       // best-effort observer — never propagate
     }
   }
+  // Plan 00B-2 C2.4 — broker terminal resolution (same family contract as
+  // the initial dispatch).
+  recordDispatcherAskResolved(sessionId, brokerId, outcome);
   return { brokerId, outcome };
 }
 
@@ -2910,6 +3051,10 @@ async function runPendingValueChain(args) {
   let circuit = Number.isInteger(contextCircuit) ? contextCircuit : null;
   const asked = { field: 0, value: 0, circuit: 0 };
   const brokered = [];
+  // Plan 00B-2 C2.3 — replacement lineage: every pvr re-ask replaces its
+  // IMMEDIATE predecessor in the chain (the initial ask for the first
+  // broker; each broker's own id thereafter), never always the initial id.
+  let pvrPredecessorId = toolCallId;
 
   const terminalApology = () => {
     // Keep enough server-owned identity for the turn-final drain to retract
@@ -2973,6 +3118,7 @@ async function runPendingValueChain(args) {
           onAskRegistered,
           signal,
           responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
+          replacesRuntimeId: pvrPredecessorId, // Plan 00B-2 C2.3 — replaces the IMMEDIATE predecessor
           logger,
           sessionId,
           turnId,
@@ -2984,6 +3130,7 @@ async function runPendingValueChain(args) {
         });
         // F7 Item 3 — cancellation may have landed while the broker awaited.
         throwIfStage6Cancelled(signal);
+        pvrPredecessorId = pvrId; // C2.3 — the next re-ask replaces THIS broker
         brokered.push({ id: pvrId, shape: 'circuit_ref', answered: circOutcome.answered });
         if (!circOutcome.answered) {
           if (String(circOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
@@ -3056,6 +3203,7 @@ async function runPendingValueChain(args) {
         onAskRegistered,
         signal,
         responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
+        replacesRuntimeId: pvrPredecessorId, // Plan 00B-2 C2.3 — replaces the IMMEDIATE predecessor
         logger,
         sessionId,
         turnId,
@@ -3069,6 +3217,7 @@ async function runPendingValueChain(args) {
         pendingValue: { value, unit: valueUnit, sourceText: outcome.user_text, source: 'chain' },
       });
       throwIfStage6Cancelled(signal);
+      pvrPredecessorId = pvrId; // C2.3 — the next re-ask replaces THIS broker
       brokered.push({ id: pvrId, shape: 'field_name', answered: fieldOutcome.answered });
       if (!fieldOutcome.answered) {
         if (String(fieldOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
@@ -3096,6 +3245,7 @@ async function runPendingValueChain(args) {
         onAskRegistered,
         signal,
         responseEpochRef, // PLAN-C P4c — pvr answer advances the response epoch
+        replacesRuntimeId: pvrPredecessorId, // Plan 00B-2 C2.3 — replaces the IMMEDIATE predecessor
         logger,
         sessionId,
         turnId,
@@ -3106,6 +3256,7 @@ async function runPendingValueChain(args) {
         pendingValue: null,
       });
       throwIfStage6Cancelled(signal);
+      pvrPredecessorId = pvrId; // C2.3 — the next re-ask replaces THIS broker
       brokered.push({ id: pvrId, shape: 'value', answered: valueOutcome.answered });
       if (!valueOutcome.answered) {
         if (String(valueOutcome.reason ?? '').startsWith('broker_')) return terminalApology();

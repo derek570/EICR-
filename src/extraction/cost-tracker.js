@@ -1,6 +1,11 @@
 // cost-tracker.js
 // Tracks Deepgram and Sonnet costs per recording session
 
+// Plan 00B-2 C3 — evaluation-only per-round usage sink Symbol. Stamped
+// non-enumerably on a tracker instance by the evaluation composition only;
+// production never sets it, so the ingest-time lookup is a dormant no-op.
+import { PLAN00_ROUND_USAGE_SINK } from './plan00-lifecycle-hooks.js';
+
 export class CostTracker {
   constructor() {
     // Deepgram Nova-3 streaming rate
@@ -352,6 +357,11 @@ export class CostTracker {
     this._ingestedBillableInvocations.add(loopInvocationId);
     this.loopInvocations += 1;
     this.completedModelRounds += rows.length;
+    // Plan 00B-2 C3 — evaluation-only round_usage sink (one Symbol lookup;
+    // dormant in production). The call-level dedupe above is the
+    // exactly-once guard: an accepted call ingests its round rows
+    // atomically, one sub-record per row.
+    const plan00Sink = this[PLAN00_ROUND_USAGE_SINK];
     for (const row of rows) {
       const usage = {
         input_tokens: row.fresh_input_tokens || 0,
@@ -370,6 +380,13 @@ export class CostTracker {
         this.usageValidationErrors.push(evidence);
       } else if (row.attribution_status === 'unattributed_provider_usage') {
         this.unattributedProviderUsage.push(evidence);
+      }
+      if (plan00Sink) {
+        try {
+          plan00Sink(row, { loopInvocationId, billableKind: kind });
+        } catch (_err) {
+          // Evaluation-side failures never reach production accounting.
+        }
       }
     }
     this.usageRevision += 1;

@@ -617,6 +617,23 @@ export async function runToolLoop({
         responseTier: provider === 'openai' ? (assistantMsg.response_service_tier ?? null) : null,
         usage: u,
         roundIdx: rounds - 1,
+        // Plan 00B-2 C3 — the effective reasoning effort attributed per
+        // round. The live dispatch site (stage6-shadow-harness's
+        // resolveOpenAIReasoningEffort) always threads openAIReasoningEffort
+        // for OpenAI turns and its value equals the adapter's own request
+        // payload by construction (the same-value tests anchor at BOTH
+        // OpenAI adapters' request payloads, never only this streamArgs
+        // value). Callers that thread nothing attribute null.
+        reasoningEffort:
+          provider === 'openai' && openAIReasoningEffort !== undefined
+            ? openAIReasoningEffort
+            : null,
+        // Plan 00B-3 C5 — the ACTUAL API transport that served this round:
+        // the OpenAI adapters stamp api_transport on their finalMessage
+        // (chat_completions | responses); a bare Anthropic SDK message
+        // carries none, so the anthropic transport is attributed here.
+        apiTransport:
+          assistantMsg.api_transport ?? (provider === 'openai' ? null : 'anthropic_messages'),
         promptCache: {
           mode: assistantMsg.prompt_cache?.mode ?? null,
           breakpoint_enabled: assistantMsg.prompt_cache?.breakpoint_enabled ?? false,

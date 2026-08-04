@@ -8,6 +8,7 @@
  * optional — a schema with no associated timeout module just omits the
  * hook.
  */
+import { MUTATION_OBSERVER } from '../../plan00-semantic-capture.js';
 import { clampReadingForDispatch, resolveBoardAwareEarthing } from '../../impedance-clamp.js';
 import { canonicaliseNumericReadingField } from '../../value-enum-validator.js';
 import { applyReadingToSnapshot } from '../../stage6-snapshot-mutators.js';
@@ -63,11 +64,24 @@ export function applyWrite(session, schema, circuit_ref, field, value, now) {
   });
   const effective = clamped.value;
 
-  applyReadingToSnapshot(session.stateSnapshot, {
-    circuit: circuit_ref,
-    field,
-    value: effective,
-  });
+  // Plan 00B §B2 — producer-declared origin (dormant Symbol lookup when no
+  // evaluation observer is attached).
+  const mutationObserver = session.stateSnapshot?.[MUTATION_OBSERVER] ?? null;
+  if (mutationObserver) {
+    mutationObserver.setOriginFrame({
+      origin: 'dialogue_script_direct',
+      meta: { schema: schema?.name ?? null, field },
+    });
+  }
+  try {
+    applyReadingToSnapshot(session.stateSnapshot, {
+      circuit: circuit_ref,
+      field,
+      value: effective,
+    });
+  } finally {
+    if (mutationObserver) mutationObserver.clearOriginFrame();
+  }
   const state = session.dialogueScriptState;
   if (state && state.schemaName === schema.name) {
     state.values[field] = effective;

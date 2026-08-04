@@ -31,6 +31,10 @@
  */
 
 import { logToolCall } from './stage6-dispatcher-logger.js';
+// Plan 00B §B2 — producer-boundary origin frames for the evaluation
+// mutation observer. Dormant: one Symbol lookup per dispatch when no
+// observer is attached (production always).
+import { MUTATION_OBSERVER } from './plan00-semantic-capture.js';
 import {
   dispatchRecordReading,
   dispatchClearReading,
@@ -169,7 +173,31 @@ export function createWriteDispatcher(session, logger, turnId, perTurnWrites, ex
         is_error: true,
       };
     }
-    return fn(call, { ...safeExtra, session, logger, turnId, perTurnWrites, round });
+    // Plan 00B §B2 — declare the semantic origin at the ONE producer
+    // boundary every model-driven write flows through. calculate_* results
+    // are explicit-intent computed writes ('calculator'); everything else
+    // the model dispatches directly is 'model_direct'. The observer is the
+    // SAME instance attached to session and snapshot, so one frame covers
+    // reading/circuit/board atoms (snapshot) and observation atoms
+    // (session). Production path (no observer) is byte- and
+    // timing-identical: the bare `return fn(...)` below.
+    const mutationObserver =
+      session?.stateSnapshot?.[MUTATION_OBSERVER] ?? session?.[MUTATION_OBSERVER] ?? null;
+    if (!mutationObserver) {
+      return fn(call, { ...safeExtra, session, logger, turnId, perTurnWrites, round });
+    }
+    mutationObserver.setOriginFrame({
+      origin:
+        call.name === 'calculate_zs' || call.name === 'calculate_r1_plus_r2'
+          ? 'calculator'
+          : 'model_direct',
+      meta: { tool: call.name, tool_call_id: call.tool_call_id ?? null },
+    });
+    try {
+      return await fn(call, { ...safeExtra, session, logger, turnId, perTurnWrites, round });
+    } finally {
+      mutationObserver.clearOriginFrame();
+    }
   };
 }
 
@@ -340,22 +368,39 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
       name: write.tool,
       input: synthInput,
     };
-    const env = await fn(synthCall, {
-      ...safeExtra,
-      session,
-      logger,
-      turnId,
-      perTurnWrites,
-      round,
-      // PLAN-2B — an mdr-* answer may arrive after select_board moved the
-      // session cursor. This capability is derived inside the ask dispatcher,
-      // never from model input, and authorises only the synthetic
-      // record_reading / record_board_reading dispatcher call to retain its
-      // frozen census board.
-      allowFrozenAutoResolveBoardScope:
-        (write.tool === 'record_reading' || write.tool === 'record_board_reading') &&
-        callCtx.frozenBoardScope === true,
-    });
+    // Plan 00B §B2 — an auto-resolved answer write is its OWN semantic
+    // origin ('ask_auto_resolve'), declared at this producer boundary (the
+    // hook bypasses createWriteDispatcher's model_direct framing). Dormant
+    // single Symbol lookup in production.
+    const autoResolveObserver =
+      session?.stateSnapshot?.[MUTATION_OBSERVER] ?? session?.[MUTATION_OBSERVER] ?? null;
+    if (autoResolveObserver) {
+      autoResolveObserver.setOriginFrame({
+        origin: 'ask_auto_resolve',
+        meta: { tool: write.tool, ask_tool_call_id: askToolCallId, field: write.field ?? null },
+      });
+    }
+    let env;
+    try {
+      env = await fn(synthCall, {
+        ...safeExtra,
+        session,
+        logger,
+        turnId,
+        perTurnWrites,
+        round,
+        // PLAN-2B — an mdr-* answer may arrive after select_board moved the
+        // session cursor. This capability is derived inside the ask dispatcher,
+        // never from model input, and authorises only the synthetic
+        // record_reading / record_board_reading dispatcher call to retain its
+        // frozen census board.
+        allowFrozenAutoResolveBoardScope:
+          (write.tool === 'record_reading' || write.tool === 'record_board_reading') &&
+          callCtx.frozenBoardScope === true,
+      });
+    } finally {
+      if (autoResolveObserver) autoResolveObserver.clearOriginFrame();
+    }
     let body = null;
     try {
       body = JSON.parse(env.content);
