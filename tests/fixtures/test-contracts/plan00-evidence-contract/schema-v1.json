@@ -166,39 +166,49 @@
           "family": "family",
           "stage": "string"
         },
-        "optional": {
-          "runtime_id": "string|null",
-          "live_ask_key": "string",
-          "terminal": "string",
-          "successor_runtime_id": "string",
-          "expired": "number",
-          "reason": "string|null",
-          "replaces_runtime_id": "string"
-        },
-        "stage_fields": {
-          "produced": [
-            "runtime_id",
-            "live_ask_key",
-            "replaces_runtime_id"
-          ],
-          "emitted": [
-            "runtime_id"
-          ],
-          "reissued_attempt": [
-            "runtime_id"
-          ],
-          "resolved": [
-            "runtime_id",
-            "terminal"
-          ],
-          "replaced": [
-            "runtime_id",
-            "successor_runtime_id"
-          ],
-          "join_expired": [
-            "expired",
-            "reason"
-          ]
+        "stages": {
+          "produced": {
+            "required": {
+              "runtime_id": "string",
+              "live_ask_key": "string"
+            },
+            "optional": {
+              "replaces_runtime_id": "string"
+            }
+          },
+          "emitted": {
+            "required": {
+              "runtime_id": "string"
+            },
+            "optional": {}
+          },
+          "reissued_attempt": {
+            "required": {
+              "runtime_id": "string"
+            },
+            "optional": {}
+          },
+          "resolved": {
+            "required": {
+              "runtime_id": "string",
+              "terminal": "string"
+            },
+            "optional": {}
+          },
+          "replaced": {
+            "required": {
+              "runtime_id": "string",
+              "successor_runtime_id": "string"
+            },
+            "optional": {}
+          },
+          "join_expired": {
+            "required": {
+              "expired": "number",
+              "reason": "string|null"
+            },
+            "optional": {}
+          }
         }
       }
     },
@@ -260,7 +270,8 @@
         "optional": {
           "delivery_claim_token": "string|null"
         }
-      }
+      },
+      "producer_event_class": "delivery"
     },
     "delivery_rejected": {
       "class": "rejected_audit",
@@ -283,7 +294,8 @@
           "circuit": "number|null",
           "claim_lineage": "string|null"
         }
-      }
+      },
+      "producer_event_class": "delivery"
     },
     "playback_evidence": {
       "class": "accepted_transition",
@@ -310,7 +322,8 @@
         "optional": {
           "correlation_id": "string|null"
         }
-      }
+      },
+      "producer_event_class": "playback"
     },
     "playback_idempotent": {
       "class": "idempotent_audit",
@@ -332,7 +345,8 @@
           "ack_body_hash": "hex64"
         },
         "optional": {}
-      }
+      },
+      "producer_event_class": "playback"
     },
     "playback_rejected": {
       "class": "rejected_audit",
@@ -351,7 +365,8 @@
         "optional": {
           "matches": "number|null"
         }
-      }
+      },
+      "producer_event_class": "playback"
     },
     "round_usage": {
       "class": "non_producer",
@@ -384,7 +399,31 @@
         "api_transport": "anthropic_messages | chat_completions | responses | null — WHICH API served the round (adapter-stamped actual transport, never configuration)"
       },
       "field_spec": {
-        "allowlist_is_spec": true
+        "required": {
+          "provider": "string|null",
+          "api_transport": "string|null",
+          "requested_model": "string|null",
+          "requested_tier": "string|null",
+          "response_model": "string|null",
+          "response_tier": "string|null",
+          "billing_model": "string|null",
+          "billing_tier": "string|null",
+          "model_provenance": "string|null",
+          "tier_provenance": "string|null",
+          "attribution_status": "string|null",
+          "reasoning_effort": "string|null",
+          "prompt_cache_mode": "string|null",
+          "prompt_cache_breakpoint_enabled": "boolean|null",
+          "prompt_cache_key_id": "string|null",
+          "fresh_input_tokens": "number|null",
+          "cache_read_input_tokens": "number|null",
+          "cache_write_input_tokens": "number|null",
+          "output_tokens": "number|null",
+          "round_idx": "number|null",
+          "billable_kind": "string|null",
+          "loop_invocation_id": "string|null"
+        },
+        "optional": {}
       }
     },
     "non_mutating_audible": {
@@ -660,6 +699,6 @@
     "json"
   ],
   "rejection_regime_composition": {
-    "rule": "Cycle-2 (R2-2): the regime table COMPOSES into projection eligibility. A structural ask rejection row requires a freeze_invalid row with condition ask_invalid; a structural delivery/playback rejection row requires condition delivery_invalid; a transition-rejection row must reference an ask that EXISTS in the stream (an orphan rejection is a contradiction; a later accepted resolution legitimately closes it); a row carrying a pre_admission or unregistered reason is itself a contradiction. Any rejection_regime_contradiction renders the session INELIGIBLE (fold HOLD/INVALID)."
+    "rule": "Cycle-2 (R2-2): the regime table COMPOSES into projection eligibility. A structural ask rejection row requires a freeze_invalid row with condition ask_invalid; a structural delivery/playback rejection row requires condition delivery_invalid; a transition-rejection row must reference an ask that EXISTS in the stream (an orphan rejection is a contradiction; a later accepted resolution legitimately closes it); a row carrying a pre_admission or unregistered reason is itself a contradiction. Any rejection_regime_contradiction renders the session INELIGIBLE (fold HOLD/INVALID). Cycle-3 (R3-2): a transition-rejection row requires NON-NULL family AND runtime_id naming a genuinely EMITTED binding of that same family (family-qualified — a dialogue rejection can never borrow a dispatcher id); every rejected row's reason must declare THAT row's kind as its row_kind (a reason routed onto the wrong row kind is a contradiction)."
   }
 }

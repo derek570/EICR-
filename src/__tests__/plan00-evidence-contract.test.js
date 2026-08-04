@@ -253,6 +253,8 @@ function typeOk(type, value) {
       return value === null || (typeof value === 'number' && Number.isFinite(value));
     case 'boolean':
       return typeof value === 'boolean';
+    case 'boolean|null':
+      return value === null || typeof value === 'boolean';
     case 'hex64':
       return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
     case 'array<string>':
@@ -286,6 +288,28 @@ function typeOk(type, value) {
   }
 }
 
+function checkFieldTable(rowKind, row, fields, required, optional) {
+  for (const [name, type] of Object.entries(required)) {
+    if (!Object.prototype.hasOwnProperty.call(row, name)) {
+      throw new Error(`${rowKind}: missing required field ${name}`);
+    }
+    if (!typeOk(type, row[name])) {
+      throw new Error(`${rowKind}.${name}: type ${type} violated by ${JSON.stringify(row[name])}`);
+    }
+  }
+  for (const key of fields) {
+    if (Object.prototype.hasOwnProperty.call(required, key)) continue;
+    if (!Object.prototype.hasOwnProperty.call(optional, key)) {
+      throw new Error(`${rowKind}: unknown extra field ${key}`);
+    }
+    if (!typeOk(optional[key], row[key])) {
+      throw new Error(
+        `${rowKind}.${key}: type ${optional[key]} violated by ${JSON.stringify(row[key])}`
+      );
+    }
+  }
+}
+
 function validateRow(row) {
   const kindSpec = schema.row_kinds[row.kind];
   expect(kindSpec).toBeDefined();
@@ -295,43 +319,28 @@ function validateRow(row) {
   expect(spec).toBeDefined();
   if (spec.unvalidated_fields) return; // production-shaped rows
   const fields = Object.keys(row).filter((k) => k !== 'kind' && k !== 'revision');
-  if (spec.allowlist_is_spec) {
-    const allow = new Set(kindSpec.fields.allowlist);
-    for (const key of fields) {
-      if (!allow.has(key)) throw new Error(`${row.kind}: unknown field ${key}`);
-    }
+  // Cycle-3 (R3-1) — ask_lifecycle stages are a CLOSED discriminator, each
+  // with its own required/optional field table (an identity-less produced
+  // or resolved row is rejected, never validated).
+  if (spec.stages) {
+    checkFieldTable(row.kind, row, [], spec.required ?? {}, {});
+    const stageSpec = spec.stages[row.stage];
+    if (!stageSpec) throw new Error(`${row.kind}: unknown stage ${row.stage}`);
+    const stageFields = fields.filter((k) => !(k in (spec.required ?? {})));
+    checkFieldTable(
+      `${row.kind}[${row.stage}]`,
+      row,
+      stageFields,
+      stageSpec.required ?? {},
+      stageSpec.optional ?? {}
+    );
     return;
   }
-  const required = spec.required ?? {};
-  const optional = spec.optional ?? {};
-  for (const [name, type] of Object.entries(required)) {
-    if (!Object.prototype.hasOwnProperty.call(row, name)) {
-      throw new Error(`${row.kind}: missing required field ${name}`);
-    }
-    if (!typeOk(type, row[name])) {
-      throw new Error(`${row.kind}.${name}: type ${type} violated by ${JSON.stringify(row[name])}`);
-    }
-  }
-  for (const key of fields) {
-    if (Object.prototype.hasOwnProperty.call(required, key)) continue;
-    if (!Object.prototype.hasOwnProperty.call(optional, key)) {
-      throw new Error(`${row.kind}: unknown extra field ${key}`);
-    }
-    if (!typeOk(optional[key], row[key])) {
-      throw new Error(
-        `${row.kind}.${key}: type ${optional[key]} violated by ${JSON.stringify(row[key])}`
-      );
-    }
-  }
-  // stage-compatibility (ask_lifecycle only)
-  if (spec.stage_fields) {
-    const allowed = new Set([...(spec.stage_fields[row.stage] ?? []), ...Object.keys(required)]);
-    for (const key of fields) {
-      if (Object.prototype.hasOwnProperty.call(required, key)) continue;
-      if (!allowed.has(key)) {
-        throw new Error(`${row.kind}: field ${key} incompatible with stage ${row.stage}`);
-      }
-    }
+  checkFieldTable(row.kind, row, fields, spec.required ?? {}, spec.optional ?? {});
+  // Cycle-3 (R3-1) — producer ids are constrained by the row kind's event
+  // class (a playback producer can never mint a delivery row).
+  if (kindSpec.producer_event_class && row.producer_id != null) {
+    expect(PRODUCER_REGISTRY[row.producer_id].event_class).toBe(kindSpec.producer_event_class);
   }
   // producer/family agreement
   if (row.producer_id != null && row.semantic_family != null) {
@@ -383,7 +392,43 @@ describe('fixture validation against schema-v1 (C0)', () => {
         runtime_id: 'x',
         terminal: 'answered',
       })
-    ).toThrow(/incompatible with stage/);
+    ).toThrow(/unknown extra field terminal/); // stage-incompatible field
+    expect(() =>
+      validateRow({
+        kind: 'ask_lifecycle',
+        revision: 1,
+        family: 'dispatcher',
+        stage: 'produced',
+        live_ask_key: 'k',
+      })
+    ).toThrow(/missing required field runtime_id/); // identity-less produced row
+    expect(() =>
+      validateRow({
+        kind: 'ask_lifecycle',
+        revision: 1,
+        family: 'dispatcher',
+        stage: 'not_a_stage',
+        runtime_id: 'x',
+      })
+    ).toThrow(/unknown stage/);
+    expect(() =>
+      validateRow({
+        kind: 'delivery_evidence',
+        revision: 1,
+        producer_id: 'playback_ack_slot', // playback producer on a delivery row
+        semantic_family: 'ordinary_confirmation',
+        transport: 'http_playback_ack',
+        delivery_kind: 'confirmation',
+        op_keys: [],
+        delivery_ref: null,
+        at_seq: null,
+        claim_lineage: null,
+        wire_turn_id: null,
+        dedupe_token: null,
+        correlation_id: null,
+      })
+    ).toThrow(); // wrong event class
+    expect(() => validateRow({ kind: 'round_usage', revision: 1 })).toThrow(/missing required/);
   });
 
   test('REAL hook output validates row-by-row against the schema (producer-adapter conformance)', () => {
@@ -421,6 +466,13 @@ describe('fixture validation against schema-v1 (C0)', () => {
       producerId: 'dialogue_confirmation',
       reason: 'dialogue_delivery_binding_ambiguous',
     });
+    // Cycle-3 (R3-3) — a REAL integrity-rejected playback (no delivery for
+    // this op) so the conformance sweep covers playback_rejected too.
+    ctx.recordPlayback(
+      { ok: 3 },
+      [{ extractionTurnId: 'tv2', field: 'r1_r2_ohm', circuit: 7, boardId: null, ordinal: 0 }],
+      { producerId: 'playback_ack_slot', source: 'ordinary' }
+    );
     ctx.recordDelivery([op], { producerId: 'nope', kind: 'confirmation' }); // producer_unknown
     ctx.recordNonMutatingAudible({ channel: 'ws_vcr', kind: 'voice_command_response' });
     ctx.roundUsageSink(
@@ -432,15 +484,17 @@ describe('fixture validation against schema-v1 (C0)', () => {
       boundary: 'session_stopped',
     });
     for (const row of frozen.evidence.sub_records) validateRow(row);
-    // every row kind this session produced is covered by the sweep
+    // Cycle-3 (R3-3) — the real-output coverage set must include EVERY
+    // producer row kind (a future addition fails automatically), plus the
+    // non-producer kinds this scenario exercises.
     const kinds = new Set(frozen.evidence.sub_records.map((r) => r.kind));
+    for (const expected of PRODUCER_ROW_KINDS) {
+      expect({ kind: expected, covered: kinds.has(expected) }).toEqual({
+        kind: expected,
+        covered: true,
+      });
+    }
     for (const expected of [
-      'ask_lifecycle',
-      'ask_transition_rejected',
-      'delivery_evidence',
-      'playback_evidence',
-      'playback_idempotent',
-      'delivery_rejected',
       'producer_unknown',
       'non_mutating_audible',
       'round_usage',
@@ -1682,6 +1736,112 @@ describe('Cycle-2 pins — rejection-regime composition (R2-2)', () => {
         kind: 'ask_transition_rejected',
         seq: 0,
         reason: 'answered_without_full_proof',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('a transition rejection with NULL identity is an impossible row (contradiction)', () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: { ...baseCounts },
+      revisions: { usage_revision: 0 },
+      sub_records: [
+        {
+          kind: 'ask_transition_rejected',
+          revision: 1,
+          family: null,
+          stage_attempted: 'resolved',
+          runtime_id: null,
+          terminal_attempted: 'answered',
+          reason: 'answered_without_full_proof',
+        },
+      ],
+    });
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'orphan_transition_rejection',
+        kind: 'ask_transition_rejected',
+        seq: 0,
+        reason: 'answered_without_full_proof',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test("a transition rejection cannot BORROW another family's runtime id (family-qualified binding)", () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: { ...baseCounts, open_asks_dispatcher: 1, non_quiescent_at_stop: 1 },
+      revisions: { usage_revision: 0 },
+      sub_records: [
+        {
+          kind: 'ask_lifecycle',
+          revision: 1,
+          family: 'dispatcher',
+          stage: 'produced',
+          runtime_id: 'shared_id',
+          live_ask_key: 'k',
+        },
+        {
+          kind: 'ask_lifecycle',
+          revision: 2,
+          family: 'dispatcher',
+          stage: 'emitted',
+          runtime_id: 'shared_id',
+        },
+        {
+          kind: 'ask_transition_rejected',
+          revision: 1,
+          family: 'dialogue_script',
+          stage_attempted: 'resolved',
+          runtime_id: 'shared_id',
+          terminal_attempted: 'answered',
+          reason: 'answered_without_full_proof',
+        },
+      ],
+    });
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'orphan_transition_rejection',
+        kind: 'ask_transition_rejected',
+        seq: 2,
+        reason: 'answered_without_full_proof',
+      },
+    ]);
+    expect(proj.eligible_for_family_credit).toBe(false);
+  });
+
+  test('a reason routed onto the WRONG row kind is a contradiction', () => {
+    const proj = buildEvidenceProjectionV1({
+      sessionId: 's',
+      boundary: 'session_stopped',
+      counts: { ...baseCounts },
+      revisions: { usage_revision: 0 },
+      sub_records: [
+        {
+          kind: 'delivery_rejected',
+          revision: 1,
+          producer_id: 'dialogue_confirmation',
+          reason: 'playback_ack_unmatched',
+        },
+        {
+          kind: 'freeze_invalid',
+          revision: 1,
+          condition: 'delivery_invalid',
+          reason: 'playback_ack_unmatched',
+          count: null,
+        },
+      ],
+    });
+    expect(proj.rejection_regime_contradictions).toEqual([
+      {
+        class: 'reason_row_kind_mismatch',
+        kind: 'delivery_rejected',
+        seq: 0,
+        reason: 'playback_ack_unmatched',
       },
     ]);
     expect(proj.eligible_for_family_credit).toBe(false);

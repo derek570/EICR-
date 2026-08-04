@@ -479,7 +479,7 @@
     ]
   },
   "combined_sha256": "d0a90fbfaa1da5fd72d30d3c086ab0753fe2e4e12fb4d49b640874173096a191",
-  "semantic_oracle_digest": "03c6915a92fdb2b04a016e217704911be3e18e138c339a03aeeab38fbdd657af",
+  "semantic_oracle_digest": "57cb17b3d883b3196eb738c79103ac1ab8b6cd916bf6479d54a29a76d16676a4",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -607,7 +607,7 @@
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json",
-      "sha256": "7db5cad6da198c9169e37f5c0dece2a63cc33ae98b144dd45976a99a558009e9"
+      "sha256": "8c2f6bfe35e68fcf15895f75730e9dea72685cbbdcf52d91c2da51ec209e6949"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/snapshot-v1.json",
@@ -635,7 +635,7 @@
     },
     {
       "path": "src/extraction/plan00-evidence-projection.js",
-      "sha256": "1e585a296870fe25c1f314eec9eb9ec1a20d65e4deffc7099998e2a8dcbb5aaf"
+      "sha256": "ffbe841455a85a10f10a7e72954ac72fa0ff5f67cfdd31e2374a2ac29b278096"
     }
   ],
   "strata_named_gaps": [

@@ -115,7 +115,7 @@ function collectRegimeContradictions({
   rejectedDeliveries,
   rejectedPlaybacks,
   ineligibleConditions,
-  knownAskRuntimeIds,
+  emittedAskBindings,
 }) {
   const contradictions = [];
   const hasCondition = (condition) => ineligibleConditions.some((c) => c.condition === condition);
@@ -135,6 +135,17 @@ function collectRegimeContradictions({
       });
       continue;
     }
+    // Cycle-3 (R3-2) — a reason routed onto the wrong row kind contradicts
+    // its own declared regime.
+    if (spec.row_kind !== 'ask_transition_rejected' || spec.source_ledger !== 'ask') {
+      contradictions.push({
+        class: 'reason_row_kind_mismatch',
+        kind: 'ask_transition_rejected',
+        seq: rej.seq,
+        reason: rej.reason,
+      });
+      continue;
+    }
     if (spec.regime === 'structural_latch' && !hasCondition('ask_invalid')) {
       contradictions.push({
         class: 'structural_rejection_without_latch',
@@ -143,17 +154,23 @@ function collectRegimeContradictions({
         reason: rej.reason,
       });
     }
-    if (
-      spec.regime === 'transition_rejection' &&
-      rej.runtime_id != null &&
-      !knownAskRuntimeIds.has(rej.runtime_id)
-    ) {
-      contradictions.push({
-        class: 'orphan_transition_rejection',
-        kind: 'ask_transition_rejected',
-        seq: rej.seq,
-        reason: rej.reason,
-      });
+    if (spec.regime === 'transition_rejection') {
+      // Cycle-3 (R3-2) — the rejection must name a genuinely EMITTED
+      // binding of ITS OWN family: null identity and cross-family borrows
+      // are impossible rows, not benign gaps.
+      const family = rej.family ?? null;
+      const bound =
+        family != null &&
+        rej.runtime_id != null &&
+        emittedAskBindings.has(`${family}::${rej.runtime_id}`);
+      if (!bound) {
+        contradictions.push({
+          class: 'orphan_transition_rejection',
+          kind: 'ask_transition_rejected',
+          seq: rej.seq,
+          reason: rej.reason,
+        });
+      }
     }
   }
   for (const [kind, list] of [
@@ -168,6 +185,15 @@ function collectRegimeContradictions({
           kind,
           seq: rej.seq,
           reason: rej.reason ?? null,
+        });
+        continue;
+      }
+      if (spec.row_kind !== kind || spec.source_ledger !== 'delivery') {
+        contradictions.push({
+          class: 'reason_row_kind_mismatch',
+          kind,
+          seq: rej.seq,
+          reason: rej.reason,
         });
         continue;
       }
@@ -203,9 +229,10 @@ export function buildEvidenceProjectionV1(snapshot) {
   // key `${family}::${runtime_id}` -> 'open' | 'closed' | 'open_at_stop'
   const askStates = new Map();
   const askKey = (family, runtimeId) => `${family}::${runtimeId}`;
-  // Cycle-2 (R2-2) — every runtime id that EXISTS in the stream (any
-  // accepted lifecycle row naming it), for orphan-rejection detection.
-  const knownAskRuntimeIds = new Set();
+  // Cycle-2 (R2-2) + cycle-3 (R3-2) — FAMILY-QUALIFIED emitted bindings
+  // (`family::runtime_id` of accepted emitted rows): a transition rejection
+  // must name a genuinely emitted binding of ITS OWN family.
+  const emittedAskBindings = new Set();
 
   const deliveries = groupByFamily(SEMANTIC_FAMILIES);
   const playbacks = groupByFamily(SEMANTIC_FAMILIES);
@@ -225,7 +252,9 @@ export function buildEvidenceProjectionV1(snapshot) {
       case 'ask_lifecycle': {
         const family = ASK_QUIESCENCE_FAMILIES.includes(row.family) ? row.family : null;
         if (!family) break;
-        if (row.runtime_id != null) knownAskRuntimeIds.add(row.runtime_id);
+        if (row.stage === 'emitted' && row.runtime_id != null) {
+          emittedAskBindings.add(askKey(family, row.runtime_id));
+        }
         const fam = askFamilies[family];
         switch (row.stage) {
           case 'produced':
@@ -389,16 +418,22 @@ export function buildEvidenceProjectionV1(snapshot) {
   // zero (or vice versa) is a contract contradiction, and a fold must HOLD
   // on it rather than trust either side.
   const countContradictions = collectCountContradictions(counts, askFamilies);
+  // Scoped rejection records live inside their family bucket without a
+  // family key — reattach it for the regime composition (unscoped stay
+  // family:null, which the transition-rejection binding check treats as an
+  // impossible row).
   const allAskRejections = [
-    ...Object.values(askFamilies).flatMap((fam) => fam.rejected),
-    ...unscopedRejectedAsks,
+    ...Object.entries(askFamilies).flatMap(([family, fam]) =>
+      fam.rejected.map((r) => ({ ...r, family }))
+    ),
+    ...unscopedRejectedAsks.map((r) => ({ ...r, family: null })),
   ];
   const regimeContradictions = collectRegimeContradictions({
     askRejections: allAskRejections,
     rejectedDeliveries,
     rejectedPlaybacks,
     ineligibleConditions,
-    knownAskRuntimeIds,
+    emittedAskBindings,
   });
 
   const eligible =
