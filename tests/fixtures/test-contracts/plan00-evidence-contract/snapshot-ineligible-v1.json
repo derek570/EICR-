@@ -1,0 +1,129 @@
+{
+  "_comment": "Plan 00B-3 C0 — HAND-AUTHORED ineligible-session completion snapshot (fixture B). Covers the named fixture case (answered_without_full_proof: rejected audit row, NO invalid latch, entry stays open and counts non-quiescent), a stop-boundary-terminal dispatcher ask (open-at-stop rule), rejected delivery/playback audit rows, an unknown-producer row, and the condition-gated freeze_invalid rows (delivery_invalid via the fast_provisional_unconsumed fold + nonzero delivery_prepared_outstanding).",
+  "sessionId": "sess_fixture_b",
+  "boundary": "session_stopped",
+  "counts": {
+    "billable_invocations_in_flight": 0,
+    "extraction_in_flight": 0,
+    "queued_transcripts": 0,
+    "buffered_utterances": 0,
+    "pending_extraction_frames": 0,
+    "outbox_retry_armed": 0,
+    "refinements_in_flight": 0,
+    "pending_asks": 0,
+    "producer_frame_send": 0,
+    "producer_outbox_replay": 0,
+    "producer_refinement": 0,
+    "producer_confirmation_drain": 0,
+    "producer_fast_tts": 0,
+    "producer_address_mirror_ingress": 0,
+    "producer_address_mirror_answer": 0,
+    "producer_address_mirror_ack": 0,
+    "open_asks_dispatcher": 1,
+    "open_asks_dialogue_script": 1,
+    "open_asks_address_mirror": 0,
+    "non_quiescent_at_stop": 1,
+    "revision_instability": 0
+  },
+  "revisions": {
+    "successful_frame": 0,
+    "confirmation_delivery": 0,
+    "outbox_replay": 0,
+    "refinement": 0,
+    "extraction": 0,
+    "queued_transcript": 0,
+    "ask": 0,
+    "ask_lifecycle": 5,
+    "ask_transition_rejected": 1,
+    "delivery_rejected": 1,
+    "playback_rejected": 1,
+    "producer_unknown": 1,
+    "freeze_invalid": 2,
+    "usage_revision": 0
+  },
+  "sub_records": [
+    {
+      "kind": "ask_lifecycle",
+      "revision": 1,
+      "family": "dispatcher",
+      "stage": "produced",
+      "runtime_id": "toolu_stop_1",
+      "live_ask_key": "{\"origin\":\"dispatcher\",\"purpose\":\"clarify_reading\",\"reason\":\"missing_value\",\"context_field\":\"r1_r2_ohm\",\"board_id\":null,\"circuits\":[\"2\"],\"expected_answer_shape\":\"number\",\"observation_clarification_kind\":null,\"pending_write\":null,\"chain_role\":null}"
+    },
+    {
+      "kind": "ask_lifecycle",
+      "revision": 2,
+      "family": "dispatcher",
+      "stage": "emitted",
+      "runtime_id": "toolu_stop_1"
+    },
+    {
+      "kind": "ask_lifecycle",
+      "revision": 3,
+      "family": "dialogue_script",
+      "stage": "produced",
+      "runtime_id": "srv_rej_1",
+      "live_ask_key": "{\"origin\":\"dialogue_script\",\"purpose\":\"insulation_resistance\",\"reason\":null,\"context_field\":\"ir_live_live_mohm\",\"board_id\":null,\"circuits\":[\"3\"],\"expected_answer_shape\":\"number\",\"observation_clarification_kind\":null,\"pending_write\":null,\"chain_role\":null}"
+    },
+    {
+      "kind": "ask_lifecycle",
+      "revision": 4,
+      "family": "dialogue_script",
+      "stage": "emitted",
+      "runtime_id": "srv_rej_1"
+    },
+    {
+      "kind": "ask_transition_rejected",
+      "revision": 1,
+      "family": "dialogue_script",
+      "stage_attempted": "resolved",
+      "runtime_id": "srv_rej_1",
+      "terminal_attempted": "answered",
+      "reason": "answered_without_full_proof"
+    },
+    {
+      "kind": "delivery_rejected",
+      "revision": 1,
+      "producer_id": "dialogue_confirmation",
+      "reason": "dialogue_delivery_binding_ambiguous",
+      "field": "measured_zs_ohm",
+      "circuit": 2,
+      "claim_lineage": null
+    },
+    {
+      "kind": "playback_rejected",
+      "revision": 1,
+      "producer_id": "playback_ack_slot",
+      "reason": "playback_without_delivery_attempt",
+      "matches": 1
+    },
+    {
+      "kind": "producer_unknown",
+      "revision": 1,
+      "event_class": "delivery",
+      "producer_id_raw": "mystery_producer"
+    },
+    {
+      "kind": "ask_lifecycle",
+      "revision": 5,
+      "family": "dispatcher",
+      "stage": "resolved",
+      "runtime_id": "toolu_stop_1",
+      "terminal": "session_stopped"
+    },
+    {
+      "kind": "freeze_invalid",
+      "revision": 1,
+      "condition": "delivery_invalid",
+      "reason": "fast_provisional_unconsumed",
+      "count": null
+    },
+    {
+      "kind": "freeze_invalid",
+      "revision": 2,
+      "condition": "delivery_prepared_outstanding",
+      "reason": null,
+      "count": 1
+    }
+  ]
+}
