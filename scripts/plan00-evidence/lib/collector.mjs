@@ -13,6 +13,55 @@
 import { MANIFEST_PREFIX } from './constants.mjs';
 import { loadAuditedPrefix, sha256Hex } from './store.mjs';
 
+/** Closed START-manifest key set — completion/actual-execution keys must be
+ *  ABSENT (never null); their PRESENCE rejects (Codex cycle-1). */
+const START_ALLOWED_KEYS = new Set([
+  'schema_version',
+  'manifest_kind',
+  'session_id',
+  'boundary',
+  'started_at',
+  'deployment',
+]);
+const COMPLETION_FORBIDDEN_IN_START = [
+  'completed_at',
+  'status',
+  'evidence',
+  'round_usage',
+];
+
+function validateStartManifest(payload) {
+  const problems = [];
+  if (payload.schema_version !== 1) problems.push({ code: 'start_schema_version_unknown' });
+  for (const key of Object.keys(payload)) {
+    if (!START_ALLOWED_KEYS.has(key)) {
+      problems.push({ code: 'start_manifest_extra_key', field: key });
+    }
+  }
+  for (const key of COMPLETION_FORBIDDEN_IN_START) {
+    if (key in payload) problems.push({ code: 'start_manifest_completion_field_present', field: key });
+  }
+  if (typeof payload.started_at !== 'string') problems.push({ code: 'start_missing_started_at' });
+  return problems;
+}
+
+function validateCompletionManifest(payload) {
+  const problems = [];
+  if (payload.schema_version !== 1) problems.push({ code: 'completion_schema_version_unknown' });
+  if (typeof payload.completed_at !== 'string') problems.push({ code: 'completion_missing_completed_at' });
+  if (!payload.status || typeof payload.status !== 'object') {
+    problems.push({ code: 'completion_missing_status' });
+  }
+  const ev = payload.evidence;
+  if (!ev || typeof ev !== 'object' || ev.projection !== 'evidence_projection_v1') {
+    problems.push({ code: 'completion_evidence_projection_missing' });
+  } else {
+    if (ev.session_id !== payload.session_id) problems.push({ code: 'completion_evidence_session_mismatch' });
+    if (ev.boundary !== payload.boundary) problems.push({ code: 'completion_evidence_boundary_mismatch' });
+  }
+  return problems;
+}
+
 const KEY_RE = new RegExp(
   `^${MANIFEST_PREFIX}/([^/]+)/([^/]+)/(start|completion)-([0-9a-f]{64})\\.json$`
 );
@@ -29,6 +78,8 @@ export async function collectSessionManifests(store, { deploymentFingerprint, se
   let start = null;
   let completion = null;
   let completionPublishedAt = null;
+  let startContentHash = null;
+  let completionContentHash = null;
 
   for (const rec of records) {
     const m = rec.key.match(KEY_RE);
@@ -55,13 +106,17 @@ export async function collectSessionManifests(store, { deploymentFingerprint, se
         problems.push({ code: 'duplicate_start_manifest', key: rec.key });
         continue;
       }
+      problems.push(...validateStartManifest(payload).map((pb) => ({ ...pb, key: rec.key })));
       start = payload;
+      startContentHash = nameHash;
     } else {
       if (completion) {
         problems.push({ code: 'duplicate_completion_manifest', key: rec.key });
         continue;
       }
+      problems.push(...validateCompletionManifest(payload).map((pb) => ({ ...pb, key: rec.key })));
       completion = payload;
+      completionContentHash = nameHash;
       completionPublishedAt = rec.published_at;
     }
   }
@@ -90,5 +145,12 @@ export async function collectSessionManifests(store, { deploymentFingerprint, se
     }
   }
 
-  return { start, completion, published_at: completionPublishedAt, problems };
+  return {
+    start,
+    completion,
+    published_at: completionPublishedAt,
+    start_content_hash: startContentHash,
+    completion_content_hash: completionContentHash,
+    problems,
+  };
 }

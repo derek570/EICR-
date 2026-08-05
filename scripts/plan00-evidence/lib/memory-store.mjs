@@ -15,6 +15,8 @@
  *  - ListObjectVersions returns every version and delete marker.
  */
 
+import { createHash } from 'node:crypto';
+
 let versionCounter = 0;
 function nextVersionId() {
   versionCounter += 1;
@@ -75,6 +77,7 @@ export function createMemoryStore({ bucket = 'test-bucket', versioning = 'Enable
         bytes: Buffer.from(latest.bytes),
         versionId: latest.versionId,
         lastModified: latest.lastModified,
+        checksumSha256: createHash('sha256').update(latest.bytes).digest('base64'),
       };
     },
 
@@ -85,7 +88,12 @@ export function createMemoryStore({ bucket = 'test-bucket', versioning = 'Enable
         err.$metadata = { httpStatusCode: 404 };
         throw err;
       }
-      return { bytes: Buffer.from(v.bytes), versionId: v.versionId, lastModified: v.lastModified };
+      return {
+        bytes: Buffer.from(v.bytes),
+        versionId: v.versionId,
+        lastModified: v.lastModified,
+        checksumSha256: createHash('sha256').update(v.bytes).digest('base64'),
+      };
     },
 
     async listAllVersions({ prefix }) {

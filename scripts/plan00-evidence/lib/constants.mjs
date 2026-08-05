@@ -69,7 +69,12 @@ export const SAFETY_BLOCKING_CLASSES = Object.freeze([
 /** round_usage billable kinds that count as ACCEPTED inspector rounds for
  *  the Luna-Fast ordinary-reading gate (00B-2 §C2 counting rule). Keepalive
  *  and orphan-review rows are pinned NEGATIVES. */
-export const INSPECTOR_ROUND_BILLABLE_KINDS = Object.freeze(['inspector_extraction']);
+export const INSPECTOR_ROUND_BILLABLE_KINDS = Object.freeze([
+  // The live Stage-6 loop stamps 'inspector_live' (stage6-shadow-harness);
+  // 'inspector_extraction' is the CostTracker default for direct ingest.
+  'inspector_live',
+  'inspector_extraction',
+]);
 export const NON_INSPECTOR_BILLABLE_KINDS = Object.freeze([
   'cache_keepalive',
   'orphan_review',
@@ -77,10 +82,12 @@ export const NON_INSPECTOR_BILLABLE_KINDS = Object.freeze([
 ]);
 
 /** Expected live routes (Stage-B gates read ACTUAL executed evidence). */
-export const LUNA_MODEL = 'gpt-5.6-luna';
-export const TERRA_MODEL = 'gpt-5.6-terra';
-export const LUNA_TIER = 'fast';
-export const TERRA_TIER = 'standard';
+export const LUNA_MODEL_FAMILY = 'gpt-5.6-luna';
+export const TERRA_MODEL_FAMILY = 'gpt-5.6-terra';
+// Returned Fast `priority` is equivalent to requested Fast (Plan 00A
+// attribution); billing_tier carries the RAW returned label.
+export const FAST_TIERS = Object.freeze(['fast', 'priority']);
+export const STANDARD_TIERS = Object.freeze(['standard', 'default']);
 
 /** The gate day zone — calendar membership is Europe/London of the earliest
  *  valid S3 LastModified among byte-identical versions. */

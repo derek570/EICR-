@@ -98,11 +98,19 @@ node scripts/plan00-evidence/cli.mjs publish-stage-a --run-id <deploy-run-id> --
 # Interactive Derek-namespace commands (TTY-gated; automated runners cannot invoke):
 node scripts/plan00-evidence/cli.mjs attest-expectations
 node scripts/plan00-evidence/cli.mjs init-cohort            # -> HOLD_EVIDENCE 0/3
-node scripts/plan00-evidence/cli.mjs bind-session --session-id <sid> --deployment-fingerprint <fp>
+node scripts/plan00-evidence/cli.mjs bind-session --session-id <sid>   # fingerprint derives from stage_a_deployed
 node scripts/plan00-evidence/cli.mjs attest-daily --session-ids <sid> --confirmation-session <sid>   --confirmation-ref '<op_key>' --heard true --result pass
 node scripts/plan00-evidence/cli.mjs attest-dialogue-hearing --session-id <sid> --delivery-ref d:N   --heard true --result pass
 node scripts/plan00-evidence/cli.mjs decide-mismatch --mismatch-id <id> --decision approved|rejected
 node scripts/plan00-evidence/cli.mjs decide-corpus-gap --target <fixture> --decision approved|rejected
+
+# Evidence runners (machine namespace; reservation-guarded, exactly-one terminal).
+# NOTE: the enumerated 00B lane machinery does not yet surface provider
+# response ids, so live runs terminate INVALID (provider_ids_unavailable) and
+# stay replaceable under the same requirement key until a reviewed 00B
+# successor exposes them — fail closed, never fabricated.
+node scripts/plan00-evidence/cli.mjs run-ir --fixture <corpus-id>
+node scripts/plan00-evidence/cli.mjs run-corpus --lane haiku|luna
 
 # Status: version-audited fold + fresh live ECS drift check; regenerates the
 # handoff-local PLAN-00-EVIDENCE.{json,md} projections (never the tracked index):

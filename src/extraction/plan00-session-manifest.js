@@ -98,11 +98,12 @@ export const CONFIG_FINGERPRINT_ENV_ALLOWLIST = Object.freeze([
   'OBSERVATION_TIER_ROUTING',
   'EXTRACTION_PROVIDER',
   'OPENAI_EXTRACT_MODEL',
-  'OPENAI_SERVICE_TIER',
+  'OPENAI_EXTRACT_SERVICE_TIER',
+  'OPENAI_EXTRACT_PROMPT_CACHE',
+  'OPENAI_EXTRACT_REASONING_EFFORT',
   'OPENAI_OBSERVATION_MODEL',
   'OPENAI_OBSERVATION_SERVICE_TIER',
-  'OPENAI_PROMPT_CACHE_MODE',
-  'OPENAI_API_TRANSPORT',
+  'OPENAI_OBSERVATION_REASONING_EFFORT',
   'VOICE_LATENCY_LOADED_BARREL',
   'VOICE_AGENTIC_ANSWERS',
   'LIM_RANGED_WRITE_DISABLED',
@@ -172,7 +173,11 @@ export async function fetchEcsDeploymentIdentity({
   const uri = env.ECS_CONTAINER_METADATA_URI_V4;
   if (!uri) return { identity: null, reason: 'no_ecs_metadata_uri' };
   try {
-    const res = await fetchImpl(`${uri}/task`);
+    // Bounded: a hung metadata endpoint must never wedge boot-time
+    // resolution (sessions started before resolution are honestly INVALID).
+    const res = await fetchImpl(`${uri}/task`, {
+      signal: typeof AbortSignal?.timeout === 'function' ? AbortSignal.timeout(5000) : undefined,
+    });
     if (!res.ok) return { identity: null, reason: `metadata_http_${res.status}` };
     const task = await res.json();
     const taskArn = task?.TaskARN ?? null;
@@ -403,6 +408,12 @@ export function createManifestPublisher({
     if (back.content_hash !== candidate.content_hash) {
       return { ok: false, error: 'readback_content_mismatch', key: candidate.key };
     }
+    // Codex cycle-1: the checksum must be VERIFIED, not merely requested —
+    // both the 200 and the idempotent-412 receipt require the read-back
+    // ChecksumSHA256 to be present and byte-equal to the candidate's.
+    if (back.checksum_sha256_base64 !== candidate.checksum_sha256_base64) {
+      return { ok: false, error: 'readback_checksum_mismatch', key: candidate.key };
+    }
     if (back.last_modified == null) {
       return { ok: false, error: 'readback_last_modified_missing', key: candidate.key };
     }
@@ -412,7 +423,7 @@ export function createManifestPublisher({
       version_id: back.version_id,
       last_modified: back.last_modified,
       content_hash: candidate.content_hash,
-      checksum_sha256_base64: candidate.checksum_sha256_base64,
+      checksum_sha256_base64: back.checksum_sha256_base64,
       idempotent,
     };
   }
@@ -508,6 +519,13 @@ export function createManifestObserver({ deploymentRef, publisher, nowFn = () =>
           version_id: result.version_id,
           idempotent: result.idempotent === true,
         });
+      } else {
+        // A structured failure (bad VersionId, read-back mismatch, no
+        // bucket) must be VISIBLE, never a silently-ineligible session.
+        logger.warn('plan00-session-manifest: publish ineligible', {
+          key: result.key ?? null,
+          error: result.error ?? null,
+        });
       }
       return result;
     },
@@ -566,19 +584,66 @@ export function createProductionEvidenceContextFactory({
   }
 
   return function evaluationContextFactory({ sessionId }) {
+    const observer = createManifestObserver({ deploymentRef, publisher, nowFn });
     try {
       return {
-        observer: createManifestObserver({ deploymentRef, publisher, nowFn }),
-        mutationObserver: createMutationObserver({ sessionId }),
-        askLedger: createAskLedger(),
-        deliveryLedger: createDeliveryLedger(),
+        observer,
+        mutationObserver: guardEvidenceRole(createMutationObserver({ sessionId }), 'mutation'),
+        askLedger: guardEvidenceRole(createAskLedger(), 'ask'),
+        deliveryLedger: guardEvidenceRole(createDeliveryLedger(), 'delivery'),
       };
     } catch (err) {
-      logger.warn('plan00-session-manifest: context factory failed', {
+      // Evidence composition failed — the session still gets manifests
+      // (observer-only context; family evidence absent means the gates
+      // simply cannot pass), never a silent null and never a broken start.
+      logger.warn('plan00-session-manifest: role composition failed — observer-only', {
         sessionId,
         error: err?.message,
       });
-      return null;
+      return { observer, mutationObserver: null, askLedger: null, deliveryLedger: null };
     }
   };
+}
+
+/**
+ * Codex cycle-1 (fail-open-live) — a defensive no-throw boundary around an
+ * evidence role. 00B's mutation observer deliberately THROWS on evaluation
+ * contract violations (e.g. `enterTurnScope` while a scope is open — it
+ * latches `invalid` FIRST, then throws so the eval lanes fail loud). Two of
+ * its production call sites sit OUTSIDE their try/finally, so with the
+ * context now active on LIVE sessions such a throw could abort a live
+ * extraction turn. This wrapper preserves the evidence verdict (the invalid
+ * latch is already set before the throw) while guaranteeing nothing
+ * propagates into the inspector's turn. Getters/properties pass through
+ * untouched; only function calls are guarded.
+ */
+export function guardEvidenceRole(role, label) {
+  if (!role || typeof role !== 'object') return role;
+  return new Proxy(role, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== 'function') return value;
+      return function guarded(...args) {
+        try {
+          return value.apply(target, args);
+        } catch (err) {
+          try {
+            target.markInvalid?.('evidence_role_threw', {
+              role: label,
+              method: String(prop),
+              error: err?.message ?? null,
+            });
+          } catch {
+            /* the latch itself must never throw through */
+          }
+          logger.warn('plan00-session-manifest: evidence role threw (isolated)', {
+            role: label,
+            method: String(prop),
+            error: err?.message,
+          });
+          return undefined;
+        }
+      };
+    },
+  });
 }

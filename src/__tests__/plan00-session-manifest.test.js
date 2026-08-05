@@ -527,7 +527,9 @@ describe('ECS deployment identity', () => {
     const c = computeConfigFingerprint({ STAGE6_TOOL_CALLS_MODE: 'shadow' });
     expect(a).toBe(b);
     expect(a).not.toBe(c);
-    expect(CONFIG_FINGERPRINT_ENV_ALLOWLIST).toContain('OPENAI_PROMPT_CACHE_MODE');
+    expect(CONFIG_FINGERPRINT_ENV_ALLOWLIST).toContain('OPENAI_EXTRACT_PROMPT_CACHE');
+    expect(CONFIG_FINGERPRINT_ENV_ALLOWLIST).toContain('OPENAI_EXTRACT_SERVICE_TIER');
+    expect(CONFIG_FINGERPRINT_ENV_ALLOWLIST).toContain('OPENAI_OBSERVATION_REASONING_EFFORT');
   });
 });
 
@@ -681,5 +683,74 @@ describe('createProductionEvidenceContextFactory', () => {
       },
     });
     expect(() => factory({ sessionId: 'sess_g', userId: 'u1' })).not.toThrow();
+  });
+});
+
+// ── Codex cycle-1 fix coverage ─────────────────────────────────────────────
+
+describe('cycle-1: publisher checksum verification', () => {
+  test('a read-back checksum mismatch fails BOTH the 200 and the 412 path', async () => {
+    const candidate = makeCandidate();
+    // 200 path: stored object reports a WRONG checksum.
+    const send200 = async (cmd) => {
+      if (cmd.constructor.name === 'PutObjectCommand') return { VersionId: 'vA' };
+      return {
+        Body: { transformToByteArray: async () => Buffer.from(candidate.bytes) },
+        VersionId: 'vA',
+        LastModified: new Date(),
+        ChecksumSHA256: 'WRONGCHECKSUM=',
+      };
+    };
+    const res200 = await createManifestPublisher({ bucket: 'b', sendCommand: send200 }).publish(
+      candidate
+    );
+    expect(res200).toMatchObject({ ok: false, error: 'readback_checksum_mismatch' });
+
+    // 412 path: existing object bytes match but the reported checksum lies.
+    const send412 = async (cmd) => {
+      if (cmd.constructor.name === 'PutObjectCommand') {
+        const err = new Error('PreconditionFailed');
+        err.name = 'PreconditionFailed';
+        err.$metadata = { httpStatusCode: 412 };
+        throw err;
+      }
+      return {
+        Body: { transformToByteArray: async () => Buffer.from(candidate.bytes) },
+        VersionId: 'vB',
+        LastModified: new Date(),
+        ChecksumSHA256: 'WRONGCHECKSUM=',
+      };
+    };
+    const res412 = await createManifestPublisher({ bucket: 'b', sendCommand: send412 }).publish(
+      candidate
+    );
+    expect(res412).toMatchObject({ ok: false, error: 'readback_checksum_mismatch' });
+  });
+});
+
+describe('cycle-1: guardEvidenceRole — fail-open live, fail-closed evidence', () => {
+  test('a double enterTurnScope no longer throws through; the invalid latch is preserved', async () => {
+    const { guardEvidenceRole } = await import('../extraction/plan00-session-manifest.js');
+    const raw = createMutationObserver({ sessionId: 'sess_guard' });
+    const guarded = guardEvidenceRole(raw, 'mutation');
+    guarded.enterTurnScope('turn_1');
+    // The raw observer THROWS here (turn_scope_reentered latched first);
+    // the guard must swallow the throw so a live turn cannot be aborted.
+    expect(() => guarded.enterTurnScope('turn_2')).not.toThrow();
+    expect(guarded.invalid?.reason).toBe('turn_scope_reentered');
+    // Non-throwing methods pass through untouched.
+    guarded.exitTurnScope();
+    expect(guarded.openTurnId).toBeNull();
+  });
+
+  test('the production factory wraps ALL evidence roles defensively', () => {
+    const factory = createProductionEvidenceContextFactory({
+      env: { S3_BUCKET: 'b' },
+      fetchImpl: async () => ({ ok: false, status: 404 }),
+    });
+    const roles = factory({ sessionId: 'sess_gf', userId: 'u1' });
+    roles.mutationObserver.enterTurnScope('t1');
+    expect(() => roles.mutationObserver.enterTurnScope('t2')).not.toThrow();
+    expect(roles.mutationObserver.invalid?.reason).toBe('turn_scope_reentered');
   });
 });

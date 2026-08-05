@@ -8,7 +8,7 @@
  * stale the cohort; test-pinned).
  */
 
-import { writeFileSync } from 'node:fs';
+import { existsSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export function renderEvidenceProjection(fold, { generatedAtIso }) {
@@ -63,10 +63,19 @@ export function renderEvidenceProjection(fold, { generatedAtIso }) {
 }
 
 export function writeProjections(handoffDir, fold, { generatedAtIso }) {
+  if (!existsSync(handoffDir)) {
+    throw new Error(`handoff directory does not exist: ${handoffDir}`);
+  }
   const { json, markdown } = renderEvidenceProjection(fold, { generatedAtIso });
   const jsonPath = path.join(handoffDir, 'PLAN-00-EVIDENCE.json');
   const mdPath = path.join(handoffDir, 'PLAN-00-EVIDENCE.md');
-  writeFileSync(jsonPath, `${JSON.stringify(json, null, 2)}\n`);
-  writeFileSync(mdPath, `${markdown}\n`);
+  // Atomic per-file: temp + rename so a crashed writer never leaves a
+  // half-written projection (Codex cycle-1).
+  const tmpJson = `${jsonPath}.tmp-${process.pid}`;
+  const tmpMd = `${mdPath}.tmp-${process.pid}`;
+  writeFileSync(tmpJson, `${JSON.stringify(json, null, 2)}\n`);
+  writeFileSync(tmpMd, `${markdown}\n`);
+  renameSync(tmpJson, jsonPath);
+  renameSync(tmpMd, mdPath);
   return { jsonPath, mdPath };
 }

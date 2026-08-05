@@ -69,13 +69,16 @@ export function createS3Store({ bucket, region = process.env.AWS_REGION || 'eu-w
     async getObjectCurrent({ key }) {
       const { sdk, s3 } = await client();
       try {
-        const res = await s3.send(new sdk.GetObjectCommand({ Bucket: bucket, Key: key }));
+        const res = await s3.send(
+          new sdk.GetObjectCommand({ Bucket: bucket, Key: key, ChecksumMode: 'ENABLED' })
+        );
         const bytes = Buffer.from(await res.Body.transformToByteArray());
         return {
           found: true,
           bytes,
           versionId: res.VersionId ?? null,
           lastModified: res.LastModified ? new Date(res.LastModified).toISOString() : null,
+          checksumSha256: res.ChecksumSHA256 ?? null,
         };
       } catch (err) {
         const status = err?.$metadata?.httpStatusCode ?? null;
@@ -86,13 +89,19 @@ export function createS3Store({ bucket, region = process.env.AWS_REGION || 'eu-w
     async getObjectVersion({ key, versionId }) {
       const { sdk, s3 } = await client();
       const res = await s3.send(
-        new sdk.GetObjectCommand({ Bucket: bucket, Key: key, VersionId: versionId })
+        new sdk.GetObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          VersionId: versionId,
+          ChecksumMode: 'ENABLED',
+        })
       );
       const bytes = Buffer.from(await res.Body.transformToByteArray());
       return {
         bytes,
         versionId: res.VersionId ?? versionId,
         lastModified: res.LastModified ? new Date(res.LastModified).toISOString() : null,
+        checksumSha256: res.ChecksumSHA256 ?? null,
       };
     },
     async listAllVersions({ prefix }) {
@@ -242,6 +251,16 @@ export async function loadAuditedPrefix(store, prefix) {
         holds.push({ code: 'version_inaccessible', key, version_id: v.versionId, error: err?.message });
         held = true;
         continue;
+      }
+      // Codex cycle-1 — when the store reports a checksum, it must MATCH
+      // the bytes (an S3-side checksum divergence is a HOLD, not trust).
+      if (got.checksumSha256 != null) {
+        const computed = createHash('sha256').update(got.bytes).digest('base64');
+        if (computed !== got.checksumSha256) {
+          holds.push({ code: 'version_checksum_mismatch', key, version_id: v.versionId });
+          held = true;
+          continue;
+        }
       }
       if (firstBytes == null) {
         firstBytes = got.bytes;

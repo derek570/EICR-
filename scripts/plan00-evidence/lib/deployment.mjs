@@ -86,7 +86,11 @@ export async function checkLiveDeployment({
       '--region',
       region,
     ]);
-    const image = taskDef?.taskDefinition?.containerDefinitions?.[0]?.image ?? null;
+    const containerDefs = taskDef?.taskDefinition?.containerDefinitions ?? [];
+    const backendDef =
+      containerDefs.find((c) => c?.name === 'eicr-backend') ??
+      (containerDefs.length === 1 ? containerDefs[0] : null);
+    const image = backendDef?.image ?? null;
 
     const tasks = await awsRunner([
       'ecs',
@@ -111,7 +115,25 @@ export async function checkLiveDeployment({
         '--region',
         region,
       ]);
-      imageDigest = detail?.tasks?.[0]?.containers?.[0]?.imageDigest ?? null;
+      // Codex cycle-1 — EVERY running task's backend container must agree
+      // on one digest; overlap during a rollout is 'unavailable', never a
+      // match against whichever task listed first.
+      const digests = new Set();
+      for (const task of detail?.tasks ?? []) {
+        const containers = task?.containers ?? [];
+        const backend =
+          containers.find((c) => c?.name === 'eicr-backend') ??
+          (containers.length === 1 ? containers[0] : null);
+        if (backend?.imageDigest) digests.add(backend.imageDigest);
+      }
+      if (digests.size > 1) {
+        return {
+          available: false,
+          fingerprint_matches: false,
+          reason: 'rollout_in_progress_multiple_digests',
+        };
+      }
+      imageDigest = digests.size === 1 ? [...digests][0] : null;
     }
 
     let commitSha = null;

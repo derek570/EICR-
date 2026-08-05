@@ -88,7 +88,13 @@ async function publishEventAt(store, { kind, cohortId, namespace, body, at }) {
 function stageABody(overrides = {}) {
   return {
     deploy_run: { run_id: '1', head_sha: 'a'.repeat(40), repository: 'derek570/EICR-' },
-    runtime: { image_digest: 'sha256:img', task_def_arn: 'arn:task/377' },
+    runtime: {
+      image_digest: 'sha256:img',
+      task_def_arn: 'arn:task/377',
+      task_family: 'eicr-backend',
+      task_revision: '377',
+      deployment_fingerprint: FP,
+    },
     evidence_bucket: 'test-bucket',
     evidence_bucket_versioning: 'Enabled',
     config_fingerprint: 'cfg',
@@ -407,13 +413,16 @@ async function writeManifestPair(store, { sessionId, completion, at }) {
     started_at: new Date(Date.parse(completion.completed_at) - 60_000).toISOString(),
     deployment: completion.deployment,
   };
+  const hashes = {};
   for (const manifest of [start, completion]) {
     const bytes = canonicalBytes(manifest);
     const hash = createHash('sha256').update(bytes).digest('hex');
+    hashes[manifest.manifest_kind] = hash;
     const key = `${MANIFEST_PREFIX}/${FP}/${sessionId}/${manifest.manifest_kind}-${hash}.json`;
     const receipt = await publishDurable(store, { key, bytes });
     if (!receipt.ok) throw new Error(`manifest publish failed: ${receipt.error}`);
   }
+  return { startHash: hashes.start, completionHash: hashes.completion };
 }
 
 /** Bind a session + attest the day (manual pass) + dialogue hearing. */
@@ -431,7 +440,7 @@ async function bindAndAttestDay(
   }
 ) {
   const completion = eligibleCompletion({ sessionId, completedAt, overrides: completionOverrides });
-  await writeManifestPair(store, { sessionId, completion, at: `${day}T10:00:00Z` });
+  const hashes = await writeManifestPair(store, { sessionId, completion, at: `${day}T10:00:00Z` });
   await publishEventAt(store, {
     kind: 'production_session_bound',
     cohortId,
@@ -439,8 +448,8 @@ async function bindAndAttestDay(
     body: {
       field_session_id: sessionId,
       deployment_fingerprint: FP,
-      start_manifest: { published_hash: 'sh' },
-      completion_manifest: { published_hash: 'ch' },
+      start_manifest: { content_hash: hashes.startHash },
+      completion_manifest: { content_hash: hashes.completionHash },
     },
     at: `${day}T10:05:00Z`,
   });
@@ -1692,7 +1701,9 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
       },
     });
     const fold = await foldNow(store, cohortId);
-    expect(fold.state).toBe('STAGE_A_IMPLEMENTED');
+    // Visible invalid evidence is HOLD, never a clean stage-only state
+    // (Codex cycle-1 fail-closed rule).
+    expect(fold.state).toBe('HOLD_EVIDENCE');
     expect(fold.cohort_initialized).toBeNull();
   });
 
@@ -1855,9 +1866,15 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
       at: '2026-08-09T11:00:00Z',
     });
     const fold = await foldNow(store, cohortId);
+    // The PENDING-side check fires first (the atomic reservation predates
+    // deployment), which structurally covers the terminal too.
     expect(
       fold.invalid.some((i) =>
-        i.problems.some((p) => p.code === 'terminal_before_cohort_deployment')
+        i.problems.some(
+          (p) =>
+            p.code === 'pending_before_cohort_deployment' ||
+            p.code === 'terminal_before_cohort_deployment'
+        )
       )
     ).toBe(true);
   });
@@ -2068,5 +2085,415 @@ describe('I — trusted deploy + task-role proof', () => {
       taskDefArn: 'x',
     });
     expect(no.proven).toBe(false);
+  });
+});
+
+// ═══ J. Codex cycle-1 fix coverage ════════════════════════════════════════
+
+describe('J — cycle-1: real-traffic route normalization', () => {
+  test('an inspector_live round with returned tier `priority` satisfies the Luna-Fast gate', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await bindAndAttestDay(store, {
+      cohortId,
+      sessionId: 'sess_rt',
+      day: '2026-08-10',
+      completedAt: '2026-08-10T09:55:00Z',
+      completionOverrides: {
+        evidence: {
+          round_usage: {
+            rounds: [
+              inspectorRound({
+                billable_kind: 'inspector_live',
+                billing_tier: 'priority',
+                response_tier: 'priority',
+                billing_model: 'gpt-5.6-luna-2026-06',
+              }),
+              terraRound({ billable_kind: 'inspector_live' }),
+            ],
+          },
+        },
+      },
+    });
+    const fold = await foldNow(store, cohortId);
+    const day = fold.day_evaluations.find((d) => d.day === '2026-08-10');
+    expect(day.requirements.luna_fast_round).toBe(true);
+    expect(day.requirements.terra_observation_round).toBe(true);
+  });
+
+  test('an UNATTRIBUTED Terra-shaped row never satisfies the Terra gate', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await bindAndAttestDay(store, {
+      cohortId,
+      sessionId: 'sess_ua',
+      day: '2026-08-10',
+      completedAt: '2026-08-10T09:55:00Z',
+      completionOverrides: {
+        evidence: {
+          round_usage: {
+            rounds: [inspectorRound(), terraRound({ attribution_status: 'validation_error' })],
+          },
+        },
+      },
+    });
+    const fold = await foldNow(store, cohortId);
+    const day = fold.day_evaluations.find((d) => d.day === '2026-08-10');
+    expect(day.requirements.terra_observation_round).toBe(false);
+  });
+});
+
+describe('J — cycle-1: generation-chain ordering', () => {
+  test('a replacement whose PENDING predates the predecessor terminal BLOCKS', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    const key = `ir:${cohortId}:rep-40`;
+    // Gen 2 pending is reserved BEFORE gen 1's INVALID terminal exists.
+    const { candidate: g1 } = await publishAttempt(store, {
+      cohortId,
+      requirementKey: key,
+      generation: 1,
+      verdict: 'INVALID',
+      providerIds: [],
+      repetitionOrdinal: 40,
+      skipTerminal: true,
+      at: '2026-08-10T09:00:00Z',
+    });
+    // Reserve gen 2 now (09:05), then publish gen 1's terminal later (09:10).
+    tickClock(store, '2026-08-10T09:05:00Z');
+    const g2 = buildAttemptCandidate({
+      cohortId,
+      requirementKey: key,
+      generation: 2,
+      requirement: { requirementClass: 'pinned_ir', model: 'gpt-5.6-luna', tier: 'fast' },
+    });
+    await reserveAttempt(store, g2, { dispatchLatch: { begun: false } });
+    tickClock(store, '2026-08-10T09:10:00Z');
+    await publishEventAt(store, {
+      kind: 'attempt_terminal',
+      cohortId,
+      namespace: 'machine',
+      body: {
+        requirement_key: key,
+        attempt_ref: g1.attemptRef,
+        attempt_generation: 1,
+        requirement_class: 'pinned_ir',
+        verdict: 'INVALID',
+        model: 'gpt-5.6-luna',
+        tier: 'fast',
+        report_digest: 'r1',
+        provider_call_ids: [],
+        generated_at: '2026-08-10T09:09:00Z',
+        repetition_ordinal: 40,
+      },
+    });
+    tickClock(store, '2026-08-10T09:20:00Z');
+    await publishEventAt(store, {
+      kind: 'attempt_terminal',
+      cohortId,
+      namespace: 'machine',
+      body: {
+        requirement_key: key,
+        attempt_ref: g2.attemptRef,
+        attempt_generation: 2,
+        requirement_class: 'pinned_ir',
+        verdict: 'PASS',
+        model: 'gpt-5.6-luna',
+        tier: 'fast',
+        report_digest: 'r2',
+        provider_call_ids: ['p_g2'],
+        generated_at: '2026-08-10T09:19:00Z',
+        repetition_ordinal: 40,
+      },
+    });
+    const fold = await foldNow(store, cohortId);
+    expect(fold.blocks.some((b) => b.code === 'replacement_before_predecessor_terminal')).toBe(
+      true
+    );
+  });
+
+  test('a replacement generation after a VALID terminal BLOCKS', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    const key = `ir:${cohortId}:rep-41`;
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: key,
+      generation: 1,
+      verdict: 'PASS',
+      repetitionOrdinal: 41,
+      at: '2026-08-10T09:00:00Z',
+    });
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: key,
+      generation: 2,
+      verdict: 'INVALID',
+      providerIds: [],
+      repetitionOrdinal: 41,
+      at: '2026-08-10T09:30:00Z',
+    });
+    const fold = await foldNow(store, cohortId);
+    expect(
+      fold.blocks.some(
+        (b) =>
+          b.code === 'replacement_after_valid_terminal' ||
+          b.code === 'valid_terminal_not_final_generation'
+      )
+    ).toBe(true);
+  });
+});
+
+describe('J — cycle-1: binding + scoping integrity', () => {
+  test('a bound event whose recorded manifest hashes mismatch the collected pair is INVALID', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    const completion = eligibleCompletion({
+      sessionId: 'sess_bh',
+      completedAt: '2026-08-10T09:55:00Z',
+    });
+    await writeManifestPair(store, {
+      sessionId: 'sess_bh',
+      completion,
+      at: '2026-08-10T10:00:00Z',
+    });
+    await publishEventAt(store, {
+      kind: 'production_session_bound',
+      cohortId,
+      namespace: 'machine',
+      body: {
+        field_session_id: 'sess_bh',
+        deployment_fingerprint: FP,
+        start_manifest: { content_hash: 'f'.repeat(64) },
+        completion_manifest: { content_hash: 'f'.repeat(64) },
+      },
+      at: '2026-08-10T10:05:00Z',
+    });
+    const fold = await foldNow(store, cohortId);
+    expect(fold.holds.some((h) => h.code === 'session_binding_invalid')).toBe(true);
+  });
+
+  test('records under a FOREIGN cohort prefix cannot contribute — integrity hold', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    // A structurally valid decision event under a DIFFERENT cohort id fed
+    // into this fold's record set.
+    await publishEventAt(store, {
+      kind: 'non_safety_decision',
+      cohortId: 'cohort-foreign000001',
+      namespace: 'derek',
+      body: {
+        mismatch_id: 'mm_x',
+        decision: 'approved',
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+    const { loadAuditedPrefix: load } = await import('../../scripts/plan00-evidence/lib/store.mjs');
+    const all = await load(store, `${EVIDENCE_PREFIX}/events/`);
+    const stageA = all.records.filter((r) => r.key.includes(`/${STAGE_A_COHORT}/`));
+    const rest = all.records.filter((r) => !r.key.includes(`/${STAGE_A_COHORT}/`));
+    const fold = foldEvidence({
+      stageARecords: stageA,
+      cohortId,
+      cohortRecords: rest, // includes the foreign record
+      reservationRecords: [],
+      integrityHolds: [],
+      manifestsBySession: new Map(),
+      expectationManifest: EXPECTATION_MANIFEST,
+      recomputedOracleDigest: EXPECTATION_MANIFEST.semantic_oracle_digest,
+      liveDeployment: LIVE_OK,
+    });
+    expect(fold.holds.some((h) => h.code === 'record_outside_fold_cohort')).toBe(true);
+  });
+
+  test('an unknown corpus-gap deferral target is INVALID and defers nothing', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishEventAt(store, {
+      kind: 'corpus_gap_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        stratum_or_fixture: 'not-a-real-fixture',
+        decision: 'approved',
+        safety_critical: false,
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+    const fold = await foldNow(store, cohortId);
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
+  });
+});
+
+describe('J — cycle-1: the runner protocol', () => {
+  const { default: _unused } = {};
+
+  async function runnerCohort() {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    return { store, cohortId };
+  }
+
+  test('a PASS execution with provider ids publishes exactly one PASS terminal echoing the PENDING', async () => {
+    const { runReservedAttempt } = await import('../../scripts/plan00-evidence/lib/runner.mjs');
+    const { store, cohortId } = await runnerCohort();
+    tickClock(store, '2026-08-10T09:00:00Z');
+    const res = await runReservedAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-1`,
+      generation: 1,
+      requirementClass: 'pinned_ir',
+      model: 'gpt-5.6-luna',
+      tier: 'fast',
+      repetitionOrdinal: 1,
+      execute: async () => ({
+        verdict: 'PASS',
+        reportDigest: 'rep',
+        providerCallIds: ['prov_1'],
+      }),
+      nowIso: () => new Date(clockMs).toISOString(),
+    });
+    expect(res.dispatched).toBe(true);
+    expect(res.verdict).toBe('PASS');
+    expect(res.terminalPublished).toBe(true);
+    const fold = await foldNow(store, cohortId);
+    expect(fold.blocks).toEqual([]);
+    expect(fold.holds.filter((h) => h.code === 'orphan_pending')).toEqual([]);
+  });
+
+  test('a throwing executor publishes an INVALID terminal (infrastructure, never semantic)', async () => {
+    const { runReservedAttempt } = await import('../../scripts/plan00-evidence/lib/runner.mjs');
+    const { store, cohortId } = await runnerCohort();
+    tickClock(store, '2026-08-10T09:00:00Z');
+    const res = await runReservedAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-2`,
+      generation: 1,
+      requirementClass: 'pinned_ir',
+      model: 'gpt-5.6-luna',
+      tier: 'fast',
+      repetitionOrdinal: 2,
+      execute: async () => {
+        throw new Error('provider down');
+      },
+      nowIso: () => new Date(clockMs).toISOString(),
+    });
+    expect(res.verdict).toBe('INVALID');
+    expect(res.terminalPublished).toBe(true);
+    const fold = await foldNow(store, cohortId);
+    expect(fold.holds.some((h) => h.code === 'invalid_awaiting_replacement')).toBe(true);
+  });
+
+  test('a PASS with ZERO provider ids is DOWNGRADED to INVALID — never fabricated identity', async () => {
+    const { runReservedAttempt } = await import('../../scripts/plan00-evidence/lib/runner.mjs');
+    const { store, cohortId } = await runnerCohort();
+    tickClock(store, '2026-08-10T09:00:00Z');
+    const res = await runReservedAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-3`,
+      generation: 1,
+      requirementClass: 'pinned_ir',
+      model: 'gpt-5.6-luna',
+      tier: 'fast',
+      repetitionOrdinal: 3,
+      execute: async () => ({ verdict: 'PASS', reportDigest: 'rep', providerCallIds: [] }),
+      nowIso: () => new Date(clockMs).toISOString(),
+    });
+    expect(res.verdict).toBe('INVALID');
+    expect(res.reason).toBe('provider_ids_unavailable');
+  });
+
+  test('losing the reservation race means ZERO dispatch and ZERO terminal', async () => {
+    const { runReservedAttempt } = await import('../../scripts/plan00-evidence/lib/runner.mjs');
+    const { store, cohortId } = await runnerCohort();
+    tickClock(store, '2026-08-10T09:00:00Z');
+    const winner = buildAttemptCandidate({
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-4`,
+      generation: 1,
+      requirement: { requirementClass: 'pinned_ir', model: 'gpt-5.6-luna', tier: 'fast' },
+    });
+    await reserveAttempt(store, winner, { dispatchLatch: { begun: false } });
+    let executed = false;
+    const res = await runReservedAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-4`,
+      generation: 1,
+      requirementClass: 'pinned_ir',
+      model: 'gpt-5.6-luna',
+      tier: 'fast',
+      repetitionOrdinal: 4,
+      execute: async () => {
+        executed = true;
+        return { verdict: 'PASS', reportDigest: 'x', providerCallIds: ['p'] };
+      },
+    });
+    expect(res.dispatched).toBe(false);
+    expect(executed).toBe(false);
+    expect(res.reservation.otherWinner).toBe(true);
+  });
+});
+
+describe('J — cycle-1: collector closed schemas', () => {
+  test('a start manifest carrying a completion field (even null) rejects', async () => {
+    const store = createMemoryStore();
+    const good = eligibleCompletion({ sessionId: 'sess_cs', completedAt: '2026-08-10T09:55:00Z' });
+    const badStart = {
+      schema_version: 1,
+      manifest_kind: 'start',
+      session_id: 'sess_cs',
+      boundary: 'session_started',
+      started_at: '2026-08-10T09:00:00Z',
+      deployment: good.deployment,
+      completed_at: null,
+    };
+    tickClock(store, '2026-08-10T10:00:00Z');
+    for (const manifest of [badStart, good]) {
+      const bytes = canonicalBytes(manifest);
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      await publishDurable(store, {
+        key: `${MANIFEST_PREFIX}/${FP}/sess_cs/${manifest.manifest_kind}-${hash}.json`,
+        bytes,
+      });
+    }
+    const pair = await collectSessionManifests(store, {
+      deploymentFingerprint: FP,
+      sessionId: 'sess_cs',
+    });
+    expect(pair.problems.some((p) => p.code === 'start_manifest_completion_field_present')).toBe(
+      true
+    );
+  });
+
+  test('a completion manifest without the evidence projection rejects', async () => {
+    const store = createMemoryStore();
+    const good = eligibleCompletion({ sessionId: 'sess_ce', completedAt: '2026-08-10T09:55:00Z' });
+    const bad = { ...good, evidence: { projection: 'something_else' } };
+    tickClock(store, '2026-08-10T10:00:00Z');
+    const start = {
+      schema_version: 1,
+      manifest_kind: 'start',
+      session_id: 'sess_ce',
+      boundary: 'session_started',
+      started_at: '2026-08-10T09:00:00Z',
+      deployment: good.deployment,
+    };
+    for (const manifest of [start, bad]) {
+      const bytes = canonicalBytes(manifest);
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      await publishDurable(store, {
+        key: `${MANIFEST_PREFIX}/${FP}/sess_ce/${manifest.manifest_kind}-${hash}.json`,
+        bytes,
+      });
+    }
+    const pair = await collectSessionManifests(store, {
+      deploymentFingerprint: FP,
+      sessionId: 'sess_ce',
+    });
+    expect(pair.problems.some((p) => p.code === 'completion_evidence_projection_missing')).toBe(
+      true
+    );
   });
 });

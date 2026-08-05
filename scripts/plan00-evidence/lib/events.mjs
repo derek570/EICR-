@@ -151,6 +151,21 @@ export function validateStoredEvent({ key, payload }) {
       }
     }
   }
+  if (kind === 'stage_a_deployed') {
+    // Codex cycle-1 — the deployment cross-binding is only real when the
+    // fingerprints EXIST: null placeholders cannot bind a cohort.
+    for (const field of ['config_fingerprint', 'tool_fingerprint', 'prompt_fingerprint']) {
+      if (typeof payload[field] !== 'string' || payload[field].length === 0) {
+        problems.push({ code: 'stage_a_fingerprint_missing', key, field });
+      }
+    }
+    if (
+      typeof payload.runtime?.deployment_fingerprint !== 'string' ||
+      payload.runtime.deployment_fingerprint.length === 0
+    ) {
+      problems.push({ code: 'stage_a_deployment_fingerprint_missing', key });
+    }
+  }
   if (kind === 'attempt_terminal' && !TERMINAL_VERDICTS.includes(payload.verdict)) {
     problems.push({ code: 'unknown_verdict', key, verdict: payload.verdict ?? null });
   }
