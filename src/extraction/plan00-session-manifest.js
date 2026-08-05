@@ -589,11 +589,22 @@ export function createProductionEvidenceContextFactory({
       return {
         observer,
         // ONLY the mutation observer is guard-wrapped: it is the one role
-        // that deliberately THROWS on contract violations, and its return
-        // values are never dereferenced by callers. The ask/delivery
-        // ledgers return verdict objects that enumerated callers
-        // dereference immediately (row.op_keys, verdict.accepted) — a
-        // guard returning undefined there would CREATE a throw path.
+        // that deliberately THROWS on contract violations, and no caller
+        // dereferences a PROPERTY off one of its return values. The
+        // ask/delivery ledgers return verdict objects that enumerated
+        // callers dereference immediately (row.op_keys, verdict.accepted)
+        // — a guard returning undefined there would CREATE a throw path.
+        //
+        // Plan 00B-3 C2 narrowed that premise deliberately: `enterTurnScope`
+        // now returns a CLOSED success token (`true`) and its four call
+        // sites DO read that value — but only to compare it against `true`,
+        // never to dereference it. That is exactly why the token is a
+        // primitive and why this guard's caught-failure result stays
+        // `undefined`: the swallow degrades a refused enter to "not
+        // entered", which is precisely what the call site must conclude,
+        // and it can never produce a TypeError. Keep any future return
+        // value of a guarded method in that shape — a primitive whose
+        // falsy value is the correct fail-closed reading.
         mutationObserver: guardEvidenceRole(createMutationObserver({ sessionId }), 'mutation'),
         askLedger: createAskLedger(),
         deliveryLedger: createDeliveryLedger(),

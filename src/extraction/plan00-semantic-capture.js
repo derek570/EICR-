@@ -124,6 +124,18 @@ export function createMutationObserver({ sessionId = null } = {}) {
      * Enter an evaluation turn scope. A second enter while one is open
      * THROWS (capture INVALID first) — overlapping turn scopes would make
      * receipt→turn attribution ambiguous, the exact class the oracle holds.
+     *
+     * Plan 00B-3 C2 — returns the CLOSED success token `true`, and ONLY
+     * after the scope is genuinely installed. Call sites latch their
+     * "I own this scope" flag from that token, never from "the call
+     * didn't throw": in production the observer is wrapped by
+     * `guardEvidenceRole` (plan00-session-manifest.js), which SWALLOWS the
+     * throw and returns `undefined` — so a refused enter is indistinguishable
+     * from a successful one at the call site unless the success itself is
+     * signalled. `openTurnId` cannot disambiguate either: a rejected
+     * SAME-id re-entry leaves the open turn id equal to the requested one.
+     * A caller that exits unconditionally would clear a CONCURRENT turn's
+     * scope on a refusal, so the token gates cleanup as well as bookkeeping.
      */
     enterTurnScope(turnId) {
       if (currentTurn) {
@@ -138,6 +150,7 @@ export function createMutationObserver({ sessionId = null } = {}) {
         throw new Error('plan00: enterTurnScope requires a non-empty turn id');
       }
       currentTurn = { turnId, ordinal: 0 };
+      return true;
     },
 
     exitTurnScope() {

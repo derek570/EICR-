@@ -4413,20 +4413,34 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   // extractionTurnId is minted, cleared in the outer finally. Dormant single
   // Symbol lookup. The regex fast-path correlation id binds exactly once to
   // this server-minted turn BEFORE live execution.
+  //
+  // Plan 00B-3 C2 — the enter now lives INSIDE the try, and cleanup is
+  // conditional on the closed success token:
+  //   * inside the try, so a throw anywhere between scope-enter and the
+  //     dispatch call (bindFastCorrelation, or any statement a future change
+  //     adds here) can no longer leak an OPEN turn scope onto the observer —
+  //     every exit path from this point runs the finally.
+  //   * conditional on the token, because in production the observer is the
+  //     `guardEvidenceRole` proxy, which SWALLOWS enterTurnScope's throw and
+  //     returns undefined. A null-check-only exit (the previous shape) would
+  //     therefore call exitTurnScope after a REFUSED enter and clear a
+  //     CONCURRENT turn's scope — closing this evidence hole by opening
+  //     someone else's.
   const plan00MutationObserver = getMutationObserver(session);
-  if (plan00MutationObserver) {
-    plan00MutationObserver.enterTurnScope(extractionTurnId);
-    if (typeof options.regexFastCorrelationId === 'string' && options.regexFastCorrelationId) {
-      plan00MutationObserver.bindFastCorrelation(options.regexFastCorrelationId);
-    }
-  }
+  let plan00TurnScopeEntered = false;
   try {
+    if (plan00MutationObserver) {
+      plan00TurnScopeEntered = plan00MutationObserver.enterTurnScope(extractionTurnId) === true;
+      if (typeof options.regexFastCorrelationId === 'string' && options.regexFastCorrelationId) {
+        plan00MutationObserver.bindFastCorrelation(options.regexFastCorrelationId);
+      }
+    }
     return await runShadowHarnessDispatch(session, transcriptText, regexResults, options, {
       log,
       mode,
     });
   } finally {
-    if (plan00MutationObserver) plan00MutationObserver.exitTurnScope();
+    if (plan00TurnScopeEntered) plan00MutationObserver.exitTurnScope();
   }
 }
 
