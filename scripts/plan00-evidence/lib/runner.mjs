@@ -18,9 +18,16 @@
  * wires the real live dispatch (surfacing provider response ids) in.
  */
 
-import { evidenceEventHash } from '../../field-replay/lib/canonical-crypto.mjs';
+import { canonicalBytes, evidenceEventHash } from '../../field-replay/lib/canonical-crypto.mjs';
+import { EVIDENCE_PREFIX } from './constants.mjs';
 import { buildEvent, validateStoredEvent } from './events.mjs';
 import { publishDurable } from './store.mjs';
+
+/** Content-addressed report key (the fold audits this prefix; a withheld
+ *  or altered report can never hide behind its terminal). */
+export function reportKey({ cohortId, reportDigest }) {
+  return `${EVIDENCE_PREFIX}/reports/${cohortId}/${reportDigest}.json`;
+}
 import { allocateOrdinal, buildAttemptCandidate, buildOrdinalCandidate, reserveAttempt } from './reservations.mjs';
 
 /** Map the semantic-judge verdict vocabulary onto terminal verdicts. */
@@ -60,6 +67,7 @@ export async function runReservedAttempt(
     model,
     tier,
     allocationVersionId = null,
+    deploymentFingerprint = null,
     promptDigest = null,
     toolDigest = null,
     expectationDigest = null,
@@ -117,18 +125,16 @@ export async function runReservedAttempt(
     verdict = 'INVALID';
     reason = 'provider_ids_unavailable';
   }
-  if (verdict !== 'INVALID' && (typeof outcome.reportDigest !== 'string' || outcome.reportDigest.length === 0)) {
-    verdict = 'INVALID';
-    reason = 'report_digest_unavailable';
-  }
   // C2 — the sample identity is a terminal-evidence canonical hash of the
-  // ordered provider-call ids, requirement key, model/tier and digests;
-  // caller timestamps/ids cannot alter it. Null ONLY on INVALID.
+  // ordered provider-call ids, deployed fingerprint, requirement key,
+  // model/tier and digests; caller timestamps/ids cannot alter it. Null
+  // ONLY on INVALID.
   const sampleIdentity =
     verdict === 'INVALID'
       ? (outcome.sampleIdentity ?? null)
       : evidenceEventHash({
           provider_call_ids: providerCallIds,
+          deployment_fingerprint: deploymentFingerprint ?? null,
           requirement_key: requirementKey,
           model,
           tier,
@@ -136,6 +142,24 @@ export async function runReservedAttempt(
           tool_digest: toolDigest,
           expectation_digest: expectationDigest,
         });
+
+  // Referenced-report integrity (C2): the canonical PII-free report is
+  // published CONTENT-ADDRESSED before its terminal; report_digest is
+  // recomputed here, never caller-supplied bytes trusted.
+  let reportDigest = outcome.reportDigest ?? null;
+  if (verdict !== 'INVALID') {
+    const reportBody = outcome.report ?? { verdict, provider_call_ids: providerCallIds };
+    reportDigest = evidenceEventHash(reportBody);
+    const reportReceipt = await publishDurable(store, {
+      key: reportKey({ cohortId, reportDigest }),
+      bytes: canonicalBytes(reportBody),
+    });
+    if (!reportReceipt.ok) {
+      verdict = 'INVALID';
+      reason = `report_publish_failed:${reportReceipt.error}`;
+      reportDigest = outcome.reportDigest ?? null;
+    }
+  }
 
   const body = {
     requirement_key: requirementKey,
@@ -150,7 +174,7 @@ export async function runReservedAttempt(
     prompt_digest: promptDigest,
     tool_digest: toolDigest,
     expectation_digest: expectationDigest,
-    report_digest: outcome.reportDigest ?? null,
+    report_digest: reportDigest,
     provider_call_ids: providerCallIds,
     sample_identity: sampleIdentity,
     generated_at: nowIso(),

@@ -402,8 +402,10 @@ async function cmdBindSession(args, store) {
   const state = await loadCohortState(store, cohortId);
   // Mini-review — the fingerprint must come from the stage-A event THIS
   // cohort's initialization bound (by explicit hash), never the globally
-  // newest deploy.
+  // newest deploy. Cycle-2: binding REQUIRES an initialized cohort — a
+  // pre-initialisation bind would be permanently invalid evidence.
   const init = latestValid(state.cohortRecords, 'cohort_initialized');
+  if (!init) throw new Error(`cohort ${cohortId} is not initialized — run init-cohort before binding sessions`);
   const stageACandidates = state.stageARecords.filter(
     (r) => validateStoredEvent({ key: r.key, payload: r.payload }).length === 0
   );
@@ -619,13 +621,26 @@ async function cmdStatus(args, store) {
   const manifest = expectationManifestContent();
   const oracle = await recomputeOracleDigest();
 
-  const stageA = latestValid(state.stageARecords, 'stage_a_deployed');
+  // Cycle-2 — the live check compares against the stage-A event BOUND by
+  // this cohort's initialization (by explicit hash), incl. the exact task
+  // definition and the recomputed live config fingerprint.
+  const init = latestValid(state.cohortRecords, 'cohort_initialized');
+  const stageACandidates = state.stageARecords.filter(
+    (r) => validateStoredEvent({ key: r.key, payload: r.payload }).length === 0
+  );
+  const stageA = init
+    ? (stageACandidates.find(
+        (r) => evidenceEventHash(r.payload) === init.payload.stage_a_event_hash
+      ) ?? null)
+    : latestValid(state.stageARecords, 'stage_a_deployed');
   const live = await checkLiveDeployment({
     awsRunner: awsJson,
     expected: stageA
       ? {
+          task_def_arn: stageA.payload.runtime?.task_def_arn ?? null,
           image_digest: stageA.payload.runtime?.image_digest ?? null,
           commit_sha: stageA.payload.deploy_run?.head_sha ?? null,
+          config_fingerprint: stageA.payload.config_fingerprint ?? null,
         }
       : null,
   });

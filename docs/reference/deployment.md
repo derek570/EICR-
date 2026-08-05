@@ -102,13 +102,16 @@ node scripts/plan00-evidence/cli.mjs bind-session --session-id <sid>   # fingerp
 node scripts/plan00-evidence/cli.mjs attest-daily --session-ids <sid> --confirmation-session <sid>   --confirmation-ref '<op_key>' --heard true --result pass
 node scripts/plan00-evidence/cli.mjs attest-dialogue-hearing --session-id <sid> --delivery-ref d:N   --heard true --result pass
 node scripts/plan00-evidence/cli.mjs decide-mismatch --mismatch-id <id> --decision approved|rejected
-node scripts/plan00-evidence/cli.mjs decide-corpus-gap --target <fixture> --decision approved|rejected
+node scripts/plan00-evidence/cli.mjs decide-corpus-gap --target <manifest-named-non-safety-stratum> --decision approved|rejected
+# (Whole attested fixtures can NEVER be deferred — unclassified targets
+#  default to safety-critical.)
 
 # Evidence runners (machine namespace; reservation-guarded, exactly-one terminal).
-# NOTE: the enumerated 00B lane machinery does not yet surface provider
-# response ids, so live runs terminate INVALID (provider_ids_unavailable) and
-# stay replaceable under the same requirement key until a reviewed 00B
-# successor exposes them — fail closed, never fabricated.
+# NOTE: these currently REFUSE — before allocating or reserving anything —
+# because the enumerated 00B lane machinery is mock/replay-only and mock
+# verdicts must never enter the evidence store. The runner protocol is
+# complete and test-pinned; a reviewed 00B successor wires real live
+# dispatch (surfacing provider response ids) in.
 node scripts/plan00-evidence/cli.mjs run-ir --fixture <corpus-id>
 node scripts/plan00-evidence/cli.mjs run-corpus --lane haiku|luna
 

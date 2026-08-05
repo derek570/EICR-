@@ -178,6 +178,16 @@ export async function publishDurable(store, { key, bytes }, { retries = 3, sleep
       if (sha256Hex(back.bytes) !== sha256Hex(bytes)) {
         return { ok: false, error: 'readback_content_mismatch', key };
       }
+      // Cycle-2 — the checksum and receipt time are PROOF, not decoration:
+      // our conditional writes always carry ChecksumSHA256, so the read-back
+      // must return it matching, and LastModified must parse.
+      const expectedChecksum = createHash('sha256').update(bytes).digest('base64');
+      if (back.checksumSha256 !== expectedChecksum) {
+        return { ok: false, error: 'readback_checksum_mismatch', key };
+      }
+      if (!Number.isFinite(Date.parse(back.lastModified ?? ''))) {
+        return { ok: false, error: 'readback_last_modified_invalid', key };
+      }
       return {
         ok: true,
         key,
@@ -195,6 +205,13 @@ export async function publishDurable(store, { key, bytes }, { retries = 3, sleep
       }
       if (typeof back.versionId !== 'string' || back.versionId.length === 0 || back.versionId === 'null') {
         return { ok: false, error: 'existing_version_id_invalid', key };
+      }
+      const existingChecksum = createHash('sha256').update(bytes).digest('base64');
+      if (back.checksumSha256 !== existingChecksum) {
+        return { ok: false, error: 'existing_checksum_mismatch', key };
+      }
+      if (!Number.isFinite(Date.parse(back.lastModified ?? ''))) {
+        return { ok: false, error: 'existing_last_modified_invalid', key };
       }
       return {
         ok: true,
@@ -252,6 +269,11 @@ export async function loadAuditedPrefix(store, prefix) {
         held = true;
         continue;
       }
+      if (got.versionId != null && got.versionId !== v.versionId) {
+        holds.push({ code: 'version_id_echo_mismatch', key, version_id: v.versionId });
+        held = true;
+        continue;
+      }
       // Codex cycle-1 — when the store reports a checksum, it must MATCH
       // the bytes (an S3-side checksum divergence is a HOLD, not trust).
       if (got.checksumSha256 != null) {
@@ -271,7 +293,12 @@ export async function loadAuditedPrefix(store, prefix) {
       }
       versionIds.push(v.versionId);
       const lm = got.lastModified ?? v.lastModified;
-      if (lm != null && (earliest == null || Date.parse(lm) < Date.parse(earliest))) {
+      if (lm == null || !Number.isFinite(Date.parse(lm))) {
+        holds.push({ code: 'version_last_modified_invalid', key, version_id: v.versionId });
+        held = true;
+        continue;
+      }
+      if (earliest == null || Date.parse(lm) < Date.parse(earliest)) {
         earliest = lm;
       }
     }

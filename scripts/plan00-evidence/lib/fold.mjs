@@ -209,6 +209,7 @@ export function foldEvidence({
   cohortId = null,
   cohortRecords = [],
   reservationRecords = [],
+  reportRecords = [],
   integrityHolds = [],
   manifestsBySession = new Map(),
   expectationManifest = null,
@@ -372,6 +373,22 @@ export function foldEvidence({
     pendingByRef.set(ref, p);
   }
 
+  // Audited content-addressed reports: name must equal the recomputed
+  // content hash (evidenceEventHash of the payload).
+  const auditedReportDigests = new Set();
+  for (const rec of [...reportRecords].sort(byReceiptThenKey)) {
+    const m = rec.key.match(/\/reports\/[^/]+\/([0-9a-f]{64})\.json$/);
+    if (!m) {
+      holds.push({ tier: 'integrity', code: 'report_key_malformed', key: rec.key });
+      continue;
+    }
+    if (evidenceEventHash(rec.payload) !== m[1]) {
+      holds.push({ tier: 'integrity', code: 'report_content_hash_mismatch', key: rec.key });
+      continue;
+    }
+    auditedReportDigests.add(m[1]);
+  }
+
   // ── terminals: pairing + identity (tiers 2/3) ──
   const terminals = byKind('attempt_terminal');
   const terminalsByRef = new Map();
@@ -440,9 +457,58 @@ export function foldEvidence({
         invalid.push({ key: t.key, problems: [{ code: 'terminal_missing_report_digest' }] });
         continue;
       }
-      if (tp.sample_identity != null && typeof tp.sample_identity !== 'string') {
-        invalid.push({ key: t.key, problems: [{ code: 'terminal_sample_identity_malformed' }] });
+      // Cycle-2 — a PASS/FAIL sample identity may NEVER be null (the plan
+      // reserves null for INVALID terminals with no provider id).
+      if (typeof tp.sample_identity !== 'string' || tp.sample_identity.length === 0) {
+        invalid.push({ key: t.key, problems: [{ code: 'terminal_sample_identity_missing' }] });
         continue;
+      }
+      // Cycle-2 — the terminal must be bound to the attested lane contract:
+      // digests non-empty, expectation digest anchored to the attested
+      // vendor manifest, and the model consistent with the class/lane.
+      const missingDigest = ['prompt_digest', 'tool_digest', 'expectation_digest'].find(
+        (dg) => typeof tp[dg] !== 'string' || tp[dg].length === 0
+      );
+      if (missingDigest) {
+        invalid.push({
+          key: t.key,
+          problems: [{ code: 'terminal_digest_missing', field: missingDigest }],
+        });
+        continue;
+      }
+      const attestedVendorSha = expectationManifest?.vendor_live_expectations?.sha256 ?? null;
+      if (attestedVendorSha != null && tp.expectation_digest !== attestedVendorSha) {
+        invalid.push({ key: t.key, problems: [{ code: 'terminal_expectation_digest_unattached' }] });
+        continue;
+      }
+      const modelStr = typeof tp.model === 'string' ? tp.model : '';
+      if (tp.requirement_class === 'pinned_ir') {
+        if (!modelStr.startsWith(LUNA_MODEL_FAMILY) || !FAST_TIERS.includes(tp.tier)) {
+          invalid.push({ key: t.key, problems: [{ code: 'terminal_model_contract_violation' }] });
+          continue;
+        }
+      }
+      if (tp.requirement_class === 'vendor_corpus') {
+        const laneOk =
+          (tp.model_lane === 'luna' && modelStr.startsWith(LUNA_MODEL_FAMILY)) ||
+          (tp.model_lane === 'haiku' && modelStr.startsWith('claude-haiku'));
+        if (!laneOk) {
+          invalid.push({ key: t.key, problems: [{ code: 'terminal_model_lane_mismatch' }] });
+          continue;
+        }
+      }
+      // Cycle-2 — referenced-report integrity: the content-addressed report
+      // must EXIST in the audited reports prefix. Missing content is
+      // classified per the recorded verdict: a FAIL cannot hide (BLOCK), a
+      // PASS can never count (HOLD).
+      if (!auditedReportDigests.has(tp.report_digest)) {
+        if (tp.verdict === 'FAIL') {
+          blocks.push({ code: 'fail_report_withheld', key: t.key, report_digest: tp.report_digest });
+        } else {
+          holds.push({ tier: 'report', code: 'pass_report_missing', key: t.key });
+          invalid.push({ key: t.key, problems: [{ code: 'terminal_report_missing' }] });
+          continue;
+        }
       }
       // Ordinal binding: a pinned-IR / vendor-corpus terminal must bind its
       // allocation VersionId to an AUDITED logical-ordinal reservation whose
@@ -522,6 +588,44 @@ export function foldEvidence({
       blocks.push({ code: 'report_digest_reuse', report_digest: rd });
     } else {
       seenReportDigests.set(rd, ref);
+    }
+  }
+  // Cycle-2 — allocations and IR repetition ordinals are COHORT-wide
+  // single-use across days: one allocation VersionId binds exactly one
+  // requirement key, and one repetition ordinal counts exactly once.
+  // A pinned-IR allocation backs exactly ONE requirement; a vendor-corpus
+  // allocation backs exactly one (lane, run) GROUP — every fixture of that
+  // run shares it BY DESIGN ("include that ordinal in every fixture/turn
+  // requirement key for the run"), but a second lane/run may never reuse it.
+  const seenAllocationUse = new Map(); // allocation_version_id → use identity string
+  const seenIrOrdinals = new Map(); // repetition_ordinal → requirement_key
+  for (const [, { terminal }] of validTerminals) {
+    const tp = terminal.payload;
+    if (tp.allocation_version_id != null) {
+      const use =
+        tp.requirement_class === 'vendor_corpus'
+          ? `corpus:${tp.model_lane}:${tp.corpus_run_ordinal}`
+          : `single:${tp.requirement_key}`;
+      const prior = seenAllocationUse.get(tp.allocation_version_id);
+      if (prior != null && prior !== use) {
+        blocks.push({
+          code: 'allocation_reused_across_requirements',
+          allocation_version_id: tp.allocation_version_id,
+        });
+      } else {
+        seenAllocationUse.set(tp.allocation_version_id, use);
+      }
+    }
+    if (tp.requirement_class === 'pinned_ir' && tp.repetition_ordinal != null) {
+      const prior = seenIrOrdinals.get(tp.repetition_ordinal);
+      if (prior != null && prior !== tp.requirement_key) {
+        blocks.push({
+          code: 'ir_ordinal_reuse_across_days',
+          repetition_ordinal: tp.repetition_ordinal,
+        });
+      } else {
+        seenIrOrdinals.set(tp.repetition_ordinal, tp.requirement_key);
+      }
     }
   }
 
@@ -658,9 +762,40 @@ export function foldEvidence({
   }
 
   // ── semantic classification (ONLY structurally valid, uniquely paired) ──
+  // Cycle-2 — decisions are hardened: a REJECTION is irreversible (a later
+  // approval cannot overwrite it), a decision must reference a real
+  // mismatch and postdate its terminal, and conflicting outcomes surface.
   const decisions = byKind('non_safety_decision');
+  const mismatchTerminals = new Map(); // mismatch_id → terminal record
+  for (const [, { terminal }] of validTerminals) {
+    const mm = terminal.payload.mismatch?.mismatch_id ?? null;
+    if (mm != null) mismatchTerminals.set(mm, terminal);
+  }
   const decisionByMismatch = new Map();
-  for (const d of decisions) decisionByMismatch.set(d.payload.mismatch_id, d.payload.decision);
+  for (const d of decisions) {
+    const id = d.payload.mismatch_id;
+    const target = mismatchTerminals.get(id) ?? null;
+    if (!target) {
+      invalid.push({ key: d.key, problems: [{ code: 'decision_unmatched_mismatch', mismatch_id: id }] });
+      continue;
+    }
+    if (!['approved', 'rejected'].includes(d.payload.decision)) {
+      invalid.push({ key: d.key, problems: [{ code: 'decision_unknown_outcome' }] });
+      continue;
+    }
+    const dAt = parseInstant(d.published_at);
+    const tAt = parseInstant(target.published_at);
+    if (dAt == null || tAt == null || dAt < tAt) {
+      invalid.push({ key: d.key, problems: [{ code: 'decision_predates_mismatch' }] });
+      continue;
+    }
+    const prior = decisionByMismatch.get(id);
+    if (prior === 'rejected') continue; // irreversible
+    if (prior != null && prior !== d.payload.decision) {
+      blocks.push({ code: 'conflicting_mismatch_decisions', mismatch_id: id });
+    }
+    decisionByMismatch.set(id, d.payload.decision);
+  }
 
   for (const [key, req] of requirements) {
     const counted = req.counted;
@@ -676,9 +811,14 @@ export function foldEvidence({
           requirement_key: key,
           requirement_class: tp.requirement_class,
         });
+      } else if (tp.mismatch?.mismatch_id == null || typeof tp.mismatch?.safety_critical !== 'boolean') {
+        // Cycle-2 — an UNCLASSIFIED vendor FAIL is unwaivable: without an
+        // explicit mismatch identity + boolean safety classification no
+        // decision can ever legitimately apply.
+        blocks.push({ code: 'unclassified_mismatch_fail', requirement_key: key });
       } else {
-        const mismatchId = tp.mismatch?.mismatch_id ?? null;
-        const decision = mismatchId != null ? decisionByMismatch.get(mismatchId) : undefined;
+        const mismatchId = tp.mismatch.mismatch_id;
+        const decision = decisionByMismatch.get(mismatchId);
         if (decision === 'rejected') {
           blocks.push({ code: 'non_safety_mismatch_rejected', mismatch_id: mismatchId });
         } else if (decision !== 'approved') {
@@ -742,6 +882,10 @@ export function foldEvidence({
       const boundAt = parseInstant(b.published_at);
       if (initPublishedAt != null && (boundAt == null || boundAt < initPublishedAt)) {
         problems.push({ code: 'bound_before_cohort_deployment' });
+      }
+      const manifestAt = parseInstant(manifests.published_at);
+      if (initPublishedAt != null && (manifestAt == null || manifestAt < initPublishedAt)) {
+        problems.push({ code: 'manifest_before_cohort_deployment' });
       }
     }
     if (problems.length > 0) {
@@ -985,6 +1129,10 @@ export function foldEvidence({
       if (!sessionEvidenceEligible(manifests.completion)) continue;
       const publishedAt = parseInstant(manifests.published_at);
       if (publishedAt == null || londonDayOf(publishedAt) !== day) continue;
+      // Cycle-2 — the BINDING EVENT's receipt must share the day too: a
+      // later-day bind cannot retroactively satisfy an earlier day.
+      const boundEventAt = parseInstant(boundBySession.get(sid).published_at);
+      if (boundEventAt == null || londonDayOf(boundEventAt) !== day) continue;
       boundSameDay = true;
       const gates = roundUsageGatesOf(manifests.completion);
       lunaFast = lunaFast || gates.lunaFast;
@@ -1015,10 +1163,20 @@ export function foldEvidence({
   let progress = null;
   let staleDeployment = false;
   const corruptionVisible = holds.length > 0 || invalid.length > 0;
+  // Cycle-2 — the fresh live check binds from the moment a stage-A event
+  // exists: pre-initialisation drift holds too (a stale deploy must not
+  // look like a clean STAGE_A_IMPLEMENTED).
+  const liveDrifted =
+    stageAEvent != null &&
+    liveDeployment != null &&
+    (!liveDeployment.available || !liveDeployment.fingerprint_matches);
   if (blocks.length > 0) {
     state = 'BLOCKED';
   } else if (!cohortInit) {
-    if (corruptionVisible) {
+    if (liveDrifted) {
+      state = 'HOLD_EVIDENCE';
+      staleDeployment = true;
+    } else if (corruptionVisible) {
       state = 'HOLD_EVIDENCE';
     } else if (!stageAEvent) {
       state = 'NOT_STARTED';

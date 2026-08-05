@@ -17,6 +17,7 @@
 
 import { verifyTrustedRun } from '../../field-replay/lib/evidence-events.mjs';
 import { collectSessionManifests } from './collector.mjs';
+import { computeConfigFingerprint } from '../../../src/extraction/plan00-session-manifest.js';
 
 export const DEPLOY_REPO = 'derek570/EICR-';
 export const DEPLOY_WORKFLOW_PATH = '.github/workflows/deploy.yml';
@@ -152,12 +153,26 @@ export async function checkLiveDeployment({
       commitSha = tags.find((t) => /^[0-9a-f]{40}$/.test(t)) ?? null;
     }
 
-    const live = { task_def_arn: taskDefArn, image, image_digest: imageDigest, commit_sha: commitSha };
+    // Cycle-2 — a same-image task-definition/env change must be VISIBLE:
+    // recompute the config fingerprint from the LIVE task-definition
+    // environment with the SAME derivation the server uses.
+    const taskEnv = {};
+    for (const row of backendDef?.environment ?? []) taskEnv[row.name] = row.value;
+    const liveConfigFingerprint = computeConfigFingerprint(taskEnv);
+
+    const live = {
+      task_def_arn: taskDefArn,
+      image,
+      image_digest: imageDigest,
+      commit_sha: commitSha,
+      config_fingerprint: liveConfigFingerprint,
+    };
     if (!expected) return { available: true, fingerprint_matches: true, live };
     const matches =
       (expected.task_def_arn == null || expected.task_def_arn === taskDefArn) &&
       (expected.image_digest == null || expected.image_digest === imageDigest) &&
-      (expected.commit_sha == null || expected.commit_sha === commitSha);
+      (expected.commit_sha == null || expected.commit_sha === commitSha) &&
+      (expected.config_fingerprint == null || expected.config_fingerprint === liveConfigFingerprint);
     return {
       available: true,
       fingerprint_matches: matches,

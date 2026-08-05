@@ -50,9 +50,63 @@ function validateStartManifest(payload) {
   return problems;
 }
 
+const COMPLETION_ALLOWED_KEYS = new Set([
+  'schema_version',
+  'manifest_kind',
+  'session_id',
+  'boundary',
+  'completed_at',
+  'status',
+  'deployment',
+  'evidence',
+]);
+const STATUS_ALLOWED_KEYS = new Set([
+  'non_quiescent_at_stop',
+  'revision_instability',
+  'eligible_for_family_credit',
+]);
+const EVIDENCE_ALLOWED_KEYS = new Set([
+  'projection',
+  'session_id',
+  'boundary',
+  'quiescence',
+  'open_asks',
+  'ineligible_conditions',
+  'unknown_producers',
+  'eligible_for_family_credit',
+  'ask_families',
+  'deliveries',
+  'delivery_history_ambiguous_op_keys',
+  'rejected_deliveries',
+  'playbacks',
+  'idempotent_playbacks',
+  'rejected_playbacks',
+  'round_usage',
+  'family_gates',
+  'count_contradictions',
+  'unscoped_rejected_asks',
+  'rejection_regime_contradictions',
+  'lifecycle_state_contradictions',
+]);
+
 function validateCompletionManifest(payload) {
   const problems = [];
   if (payload.schema_version !== 1) problems.push({ code: 'completion_schema_version_unknown' });
+  for (const key of Object.keys(payload)) {
+    if (!COMPLETION_ALLOWED_KEYS.has(key)) {
+      problems.push({ code: 'completion_manifest_extra_key', field: key });
+    }
+  }
+  for (const key of Object.keys(payload.status ?? {})) {
+    if (!STATUS_ALLOWED_KEYS.has(key)) {
+      problems.push({ code: 'completion_status_extra_key', field: key });
+    }
+  }
+  for (const key of Object.keys(payload.evidence ?? {})) {
+    if (!EVIDENCE_ALLOWED_KEYS.has(key)) {
+      problems.push({ code: 'completion_evidence_extra_key', field: key });
+    }
+  }
   if (!parseableInstant(payload.completed_at)) problems.push({ code: 'completion_completed_at_unparseable' });
   if (!payload.status || typeof payload.status !== 'object') {
     problems.push({ code: 'completion_missing_status' });

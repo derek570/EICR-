@@ -17,11 +17,15 @@ export async function loadCohortState(store, cohortId) {
   const reservations = cohortId
     ? await loadAuditedPrefix(store, `${EVIDENCE_PREFIX}/reservations/${cohortId}/`)
     : { records: [], holds: [] };
+  const reports = cohortId
+    ? await loadAuditedPrefix(store, `${EVIDENCE_PREFIX}/reports/${cohortId}/`)
+    : { records: [], holds: [] };
   return {
     stageARecords: stageA.records,
     cohortRecords: cohort.records,
     reservationRecords: reservations.records,
-    integrityHolds: [...stageA.holds, ...cohort.holds, ...reservations.holds],
+    reportRecords: reports.records,
+    integrityHolds: [...stageA.holds, ...cohort.holds, ...reservations.holds, ...reports.holds],
   };
 }
 

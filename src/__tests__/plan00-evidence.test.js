@@ -64,9 +64,10 @@ const FP = 'f'.repeat(64);
 
 const EXPECTATION_MANIFEST = {
   combined_sha256: 'combined-sha',
-  vendor_live_expectations: { fixture_ids: ['fx1', 'fx2'] },
+  vendor_live_expectations: { fixture_ids: ['fx1', 'fx2'], sha256: 'vendor-sha' },
   semantic_oracle_digest: 'oracle-digest',
 };
+const TEST_DIGESTS = { promptDigest: 'pd', toolDigest: 'td', expectationDigest: 'vendor-sha' };
 const LIVE_OK = { available: true, fingerprint_matches: true };
 
 // ── shared builders ──────────────────────────────────────────────────────
@@ -187,7 +188,10 @@ async function publishAttempt(
   // Ordinal-bound classes allocate their audited logical ordinal first and
   // echo its VersionId through PENDING and terminal (fold-verified).
   let allocationVersionId = null;
-  if (repetitionOrdinal != null || corpusRunOrdinal != null) {
+  if (
+    (requirementClass === 'pinned_ir' && repetitionOrdinal != null) ||
+    (requirementClass === 'vendor_corpus' && corpusRunOrdinal != null)
+  ) {
     const lane = requirementClass === 'pinned_ir' ? 'ir-repetition' : `corpus-run-${modelLane}`;
     allocationVersionId = await ensureOrdinal(store, {
       cohortId,
@@ -199,12 +203,29 @@ async function publishAttempt(
     cohortId,
     requirementKey,
     generation,
-    requirement: { requirementClass, model, tier, allocationVersionId },
+    requirement: {
+      requirementClass,
+      model,
+      tier,
+      allocationVersionId,
+      ...TEST_DIGESTS,
+    },
   });
   const res = await reserveAttempt(store, candidate, { dispatchLatch: { begun: false } });
   if (!res.authorised) throw new Error(`test reservation failed: ${JSON.stringify(res)}`);
   if (skipTerminal) return { candidate };
   if (terminalAt) tickClock(store, terminalAt);
+  // Content-addressed report published BEFORE the terminal (fold-audited).
+  let reportDigest = null;
+  if (verdict !== 'INVALID') {
+    const reportBody = { requirement_key: requirementKey, generation };
+    reportDigest = evidenceEventHash(reportBody);
+    const rr = await publishDurable(store, {
+      key: `${EVIDENCE_PREFIX}/reports/${cohortId}/${reportDigest}.json`,
+      bytes: canonicalBytes(reportBody),
+    });
+    if (!rr.ok) throw new Error(`test report publish failed: ${rr.error}`);
+  }
   const body = {
     requirement_key: requirementKey,
     attempt_ref: attemptRefOverride ?? candidate.attemptRef,
@@ -214,7 +235,10 @@ async function publishAttempt(
     model,
     tier,
     allocation_version_id: allocationVersionId,
-    report_digest: `rep_${requirementKey}_${generation}`,
+    prompt_digest: TEST_DIGESTS.promptDigest,
+    tool_digest: TEST_DIGESTS.toolDigest,
+    expectation_digest: TEST_DIGESTS.expectationDigest,
+    report_digest: reportDigest,
     provider_call_ids:
       providerIds ?? (verdict === 'INVALID' ? [] : [`prov_${requirementKey}_${generation}`]),
     sample_identity: verdict === 'INVALID' ? null : `sid_${requirementKey}_${generation}`,
@@ -1257,6 +1281,8 @@ describe('E — semantic classification after structural validity', () => {
       requirementKey: `corpus:${cohortId}:haiku:run-1:fx1`,
       requirementClass: 'vendor_corpus',
       verdict: 'FAIL',
+      model: 'claude-haiku-4-5',
+      tier: null,
       modelLane: 'haiku',
       corpusRunOrdinal: 1,
       fixtureId: 'fx1',
@@ -2205,6 +2231,7 @@ describe('J — cycle-1: generation-chain ordering', () => {
         model: 'gpt-5.6-luna',
         tier: 'fast',
         allocationVersionId,
+        ...TEST_DIGESTS,
       },
     });
     await reserveAttempt(store, g2, { dispatchLatch: { begun: false } });
@@ -2222,6 +2249,9 @@ describe('J — cycle-1: generation-chain ordering', () => {
         model: 'gpt-5.6-luna',
         tier: 'fast',
         allocation_version_id: allocationVersionId,
+        prompt_digest: 'pd',
+        tool_digest: 'td',
+        expectation_digest: 'vendor-sha',
         report_digest: 'r1',
         provider_call_ids: [],
         generated_at: '2026-08-10T09:09:00Z',
@@ -2229,6 +2259,12 @@ describe('J — cycle-1: generation-chain ordering', () => {
       },
     });
     tickClock(store, '2026-08-10T09:20:00Z');
+    const g2Report = { chain: 'g2' };
+    const g2ReportDigest = evidenceEventHash(g2Report);
+    await publishDurable(store, {
+      key: `${EVIDENCE_PREFIX}/reports/${cohortId}/${g2ReportDigest}.json`,
+      bytes: canonicalBytes(g2Report),
+    });
     await publishEventAt(store, {
       kind: 'attempt_terminal',
       cohortId,
@@ -2242,7 +2278,10 @@ describe('J — cycle-1: generation-chain ordering', () => {
         model: 'gpt-5.6-luna',
         tier: 'fast',
         allocation_version_id: allocationVersionId,
-        report_digest: 'r2',
+        prompt_digest: 'pd',
+        tool_digest: 'td',
+        expectation_digest: 'vendor-sha',
+        report_digest: g2ReportDigest,
         provider_call_ids: ['p_g2'],
         sample_identity: 'sid_g2',
         generated_at: '2026-08-10T09:19:00Z',
@@ -2565,5 +2604,175 @@ describe('J — cycle-1: collector closed schemas', () => {
     expect(pair.problems.some((p) => p.code === 'completion_evidence_projection_missing')).toBe(
       true
     );
+  });
+});
+
+// ═══ K. cycle-2 fix coverage ══════════════════════════════════════════════
+
+describe('K — cycle-2: cohort-wide single-use + reports + decisions', () => {
+  test('reusing an IR ordinal on a LATER day (fresh requirement key) BLOCKS', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-1`,
+      repetitionOrdinal: 1,
+      at: '2026-08-10T09:00:00Z',
+    });
+    // Day 2 mints a DIFFERENT requirement key but claims the same ordinal.
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-1-day2`,
+      repetitionOrdinal: 1,
+      at: '2026-08-12T09:00:00Z',
+    });
+    const fold = await foldNow(store, cohortId);
+    expect(fold.blocks.some((b) => b.code === 'ir_ordinal_reuse_across_days')).toBe(true);
+  });
+
+  test('a WITHHELD report: FAIL still blocks (cannot hide), PASS can never count', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    // Publish a PASS terminal whose report object is then hidden by a
+    // divergent overwrite (the audited reader drops it).
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-7`,
+      repetitionOrdinal: 7,
+      at: '2026-08-10T09:00:00Z',
+    });
+    const { versions } = await store.listAllVersions({
+      prefix: `${EVIDENCE_PREFIX}/reports/${cohortId}/`,
+    });
+    store._putUnconditional(versions[0].key, Buffer.from('{"tampered":true}'));
+    const fold = await foldNow(store, cohortId);
+    expect(
+      fold.holds.some(
+        (h) =>
+          h.code === 'pass_report_missing' ||
+          h.code === 'report_content_hash_mismatch' ||
+          h.code === 'same_key_divergent_bytes'
+      )
+    ).toBe(true);
+    expect(fold.state).not.toBe('DONE');
+  });
+
+  test('an unclassified vendor FAIL (no mismatch identity) is unwaivably BLOCKED', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx1`,
+      requirementClass: 'vendor_corpus',
+      verdict: 'FAIL',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx1',
+      at: '2026-08-10T09:00:00Z',
+    });
+    const fold = await foldNow(store, cohortId);
+    expect(fold.blocks.some((b) => b.code === 'unclassified_mismatch_fail')).toBe(true);
+  });
+
+  test('a REJECTED mismatch decision is irreversible — a later approval cannot overwrite it', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx1`,
+      requirementClass: 'vendor_corpus',
+      verdict: 'FAIL',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx1',
+      mismatch: { mismatch_id: 'mm_rr', safety_critical: false },
+      at: '2026-08-10T09:00:00Z',
+    });
+    for (const decision of ['rejected', 'approved']) {
+      tickClock(store);
+      await publishEventAt(store, {
+        kind: 'non_safety_decision',
+        cohortId,
+        namespace: 'derek',
+        body: {
+          mismatch_id: 'mm_rr',
+          decision,
+          reviewer: 'Derek',
+          decided_at: new Date(clockMs).toISOString(),
+        },
+      });
+    }
+    const fold = await foldNow(store, cohortId);
+    expect(fold.state).toBe('BLOCKED');
+    expect(fold.blocks.some((b) => b.code === 'non_safety_mismatch_rejected')).toBe(true);
+  });
+
+  test('a decision published BEFORE its mismatch terminal is INVALID', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishEventAt(store, {
+      kind: 'non_safety_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        mismatch_id: 'mm_early',
+        decision: 'approved',
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+      at: '2026-08-10T08:00:00Z',
+    });
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx1`,
+      requirementClass: 'vendor_corpus',
+      verdict: 'FAIL',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx1',
+      mismatch: { mismatch_id: 'mm_early', safety_critical: false },
+      at: '2026-08-10T09:00:00Z',
+    });
+    const fold = await foldNow(store, cohortId);
+    expect(
+      fold.invalid.some((i) => i.problems.some((p) => p.code === 'decision_predates_mismatch'))
+    ).toBe(true);
+    // The mismatch therefore stays UNDECIDED (held), never silently approved.
+    expect(fold.holds.some((h) => h.code === 'undecided_non_safety_mismatch')).toBe(true);
+  });
+
+  test('a wrong-model pinned-IR terminal (Terra on the IR lane) is INVALID', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-1`,
+      repetitionOrdinal: 1,
+      model: 'gpt-5.6-terra',
+      tier: 'standard',
+      at: '2026-08-10T09:00:00Z',
+    });
+    const fold = await foldNow(store, cohortId);
+    expect(
+      fold.invalid.some((i) =>
+        i.problems.some((p) => p.code === 'terminal_model_contract_violation')
+      )
+    ).toBe(true);
+  });
+
+  test('pre-initialisation live-deployment drift already HOLDS as STALE_DEPLOYMENT', async () => {
+    const store = createMemoryStore();
+    await publishEventAt(store, {
+      kind: 'stage_a_deployed',
+      cohortId: STAGE_A_COHORT,
+      namespace: 'machine',
+      body: stageABody(),
+      at: '2026-08-09T08:00:00Z',
+    });
+    const fold = await foldNow(store, null, {
+      live: { available: true, fingerprint_matches: false, reason: 'deployment_drift' },
+    });
+    expect(fold.state).toBe('HOLD_EVIDENCE');
+    expect(fold.stale_deployment).toBe(true);
   });
 });
