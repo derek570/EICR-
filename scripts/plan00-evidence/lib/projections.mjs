@@ -54,6 +54,22 @@ export function renderEvidenceProjection(fold, { generatedAtIso }) {
     for (const b of fold.blocks) lines.push(`- \`${b.code}\` ${JSON.stringify({ ...b, code: undefined })}`);
     lines.push('');
   }
+  lines.push('## Operator commands (the sole post-EP resume/finalisation path)');
+  lines.push('');
+  lines.push('```bash');
+  lines.push('# Publish/verify the Stage-A deployment event (after a green deploy):');
+  lines.push('node scripts/plan00-evidence/cli.mjs publish-stage-a --run-id <id> --head-sha <sha>');
+  lines.push('# Interactive attestation + cohort initialisation:');
+  lines.push('node scripts/plan00-evidence/cli.mjs attest-expectations');
+  lines.push(`node scripts/plan00-evidence/cli.mjs init-cohort${fold.cohort_id ? ` --cohort ${fold.cohort_id}` : ''}`);
+  lines.push('# Bind a production session / attest a field day:');
+  lines.push(`node scripts/plan00-evidence/cli.mjs bind-session --session-id <sid>${fold.cohort_id ? ` --cohort ${fold.cohort_id}` : ''}`);
+  lines.push(`node scripts/plan00-evidence/cli.mjs attest-daily --session-ids <sid> --confirmation-session <sid> --confirmation-ref '<op_key>' --heard true --result pass${fold.cohort_id ? ` --cohort ${fold.cohort_id}` : ''}`);
+  lines.push(`node scripts/plan00-evidence/cli.mjs attest-dialogue-hearing --session-id <sid> --delivery-ref d:N --heard true --result pass${fold.cohort_id ? ` --cohort ${fold.cohort_id}` : ''}`);
+  lines.push('# THE downstream gate (exits non-zero unless DONE against a matching live deployment):');
+  lines.push(`node scripts/plan00-evidence/cli.mjs status --exit-nonzero-unless-done${fold.cohort_id ? ` --cohort ${fold.cohort_id}` : ''}`);
+  lines.push('```');
+  lines.push('');
   if (fold.holds.length) {
     lines.push('## Holds');
     for (const h of fold.holds) lines.push(`- \`${h.code}\` ${JSON.stringify({ ...h, code: undefined, tier: undefined })}`);

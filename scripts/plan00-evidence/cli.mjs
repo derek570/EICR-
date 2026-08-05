@@ -199,8 +199,21 @@ async function cmdPublishStageA(args, store) {
   let proof;
   if (proofMode === 'smoke') {
     if (!args['session-id']) throw new Error('--role-proof smoke requires --session-id');
-    const fingerprint = args['deployment-fingerprint'];
-    if (!fingerprint) throw new Error('--role-proof smoke requires --deployment-fingerprint');
+    // Cycle-7 — the smoke fingerprint derives from the CURRENT live
+    // deployment identity (never operator-supplied): a valid pair from an
+    // older revision must not authorise the new one.
+    const liveArnMatch = String(live.live.task_def_arn ?? '').match(
+      /task-definition\/([^:]+):(\d+)$/
+    );
+    if (!liveArnMatch || !live.live.image_digest) {
+      throw new Error('cannot derive live deployment identity for the smoke proof');
+    }
+    const fingerprint = deploymentFingerprintOf({
+      task_arn: live.live.task_def_arn,
+      task_family: liveArnMatch[1],
+      task_revision: liveArnMatch[2],
+      image_id: live.live.image_digest,
+    });
     proof = await proveTaskRolePrefixAccessViaSmoke(store, {
       deploymentFingerprint: fingerprint,
       sessionId: args['session-id'],
@@ -315,6 +328,12 @@ async function cmdAttestExpectations(args, store) {
     vendorLiveSha256: manifest.vendor_live_sha256,
     deterministicEgressSha256: manifest.deterministic_egress_sha256,
   });
+  // Plan C4 — the single authoritative command RENDERS both frozen
+  // manifests for Derek (hashes alone are not a review; cycle-7).
+  console.log('════ vendor_live_expectations (frozen; attesting these bytes) ════');
+  console.log(JSON.stringify(manifest.vendor_live_expectations, null, 2));
+  console.log('════ deterministic_egress_expectations (frozen) ════');
+  console.log(JSON.stringify(manifest.deterministic_egress_expectations, null, 2));
   await confirmInteractive(
     `Attest BOTH frozen expectation manifests?\n` +
       `  vendor_live sha256:          ${manifest.vendor_live_sha256}\n` +

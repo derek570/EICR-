@@ -119,12 +119,21 @@ export async function checkLiveDeployment({
       // Codex cycle-1 — EVERY running task's backend container must agree
       // on one digest; overlap during a rollout is 'unavailable', never a
       // match against whichever task listed first.
+      const described = detail?.tasks ?? [];
+      // Cycle-7 — a list/describe race must fail closed: every listed ARN
+      // must come back as a complete described row.
+      if (described.length !== taskArns.length) {
+        return { available: false, fingerprint_matches: false, reason: 'task_describe_incomplete' };
+      }
       const digests = new Set();
-      for (const task of detail?.tasks ?? []) {
+      for (const task of described) {
         // Cycle-6 — every RUNNING task must be on the service's task
         // definition: a same-digest older-revision task during a rollout is
         // 'unavailable', never a match against mixed revisions.
-        if (task?.taskDefinitionArn != null && task.taskDefinitionArn !== taskDefArn) {
+        if (task?.taskDefinitionArn == null) {
+          return { available: false, fingerprint_matches: false, reason: 'task_definition_arn_missing' };
+        }
+        if (task.taskDefinitionArn !== taskDefArn) {
           return {
             available: false,
             fingerprint_matches: false,

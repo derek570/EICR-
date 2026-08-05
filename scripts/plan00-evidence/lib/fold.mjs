@@ -366,9 +366,26 @@ export function foldEvidence({
   const initPublishedAt = cohortInit ? parseInstant(cohortInit.published_at) : null;
 
   // ── reservations: logical ordinals + PENDING records (key-verified) ──
-  const ordinalByVersionId = new Map(); // allocation VersionId → {lane, ordinal}
+  // Cycle-7 — reservations are CLASSIFIED BY KEY SHAPE first (a mistyped
+  // payload kind must never make an orphan PENDING vanish): keys under
+  // .../attempts/<digest>/gen-N.json are attempt PENDINGs, keys under
+  // .../<lane>/ordinal-N.json are logical ordinals, anything else HOLDS.
+  const ATTEMPT_KEY_RE = /\/reservations\/[^/]+\/attempts\/[0-9a-f]{64}\/gen-\d+\.json$/;
+  const ORDINAL_KEY_RE = /\/reservations\/[^/]+\/[^/]+\/ordinal-\d+\.json$/;
+  const ordinalShapedRecords = [];
+  const attemptShapedRecords = [];
   for (const rec of reservationsSorted) {
-    if (rec.payload?.reservation_kind !== 'logical_ordinal') continue;
+    if (ATTEMPT_KEY_RE.test(rec.key)) attemptShapedRecords.push(rec);
+    else if (ORDINAL_KEY_RE.test(rec.key)) ordinalShapedRecords.push(rec);
+    else holds.push({ tier: 'integrity', code: 'reservation_key_unclassifiable', key: rec.key });
+  }
+
+  const ordinalByVersionId = new Map(); // allocation VersionId → {lane, ordinal}
+  for (const rec of ordinalShapedRecords) {
+    if (rec.payload?.reservation_kind !== 'logical_ordinal') {
+      holds.push({ tier: 'integrity', code: 'ordinal_reservation_malformed', key: rec.key });
+      continue;
+    }
     // Cycle-5 — an ordinal reservation is indexed ONLY when its closed body
     // reproduces its deterministic key; a malformed record is an integrity
     // hold, never silently skipped beside counting ordinals.
@@ -411,9 +428,43 @@ export function foldEvidence({
     }
   }
   const pendings = [];
-  for (const rec of reservationsSorted) {
-    if (rec.payload?.reservation_kind !== 'attempt_pending') continue;
+  const PENDING_KEYS = [
+    'schema_version',
+    'reservation_kind',
+    'cohort_id',
+    'requirement_key',
+    'attempt_generation',
+    'attempt_ref',
+    'allocation_version_id',
+    'requirement_class',
+    'model',
+    'tier',
+    'prompt_digest',
+    'tool_digest',
+    'expectation_digest',
+  ];
+  for (const rec of attemptShapedRecords) {
     const p = rec.payload;
+    // Cycle-7 — exact closed schema for the atomic PENDING (a key-shaped
+    // attempt record with a wrong kind/extra fields/empty ref HOLDS, never
+    // silently vanishes).
+    const keysExactPending =
+      p != null &&
+      typeof p === 'object' &&
+      Object.keys(p).every((k) => PENDING_KEYS.includes(k)) &&
+      PENDING_KEYS.every((k) => k in p);
+    if (
+      !keysExactPending ||
+      p.reservation_kind !== 'attempt_pending' ||
+      p.schema_version !== 1 ||
+      typeof p.attempt_ref !== 'string' ||
+      p.attempt_ref.length === 0 ||
+      !Number.isInteger(p.attempt_generation) ||
+      p.attempt_generation < 1
+    ) {
+      holds.push({ tier: 'integrity', code: 'pending_reservation_malformed', key: rec.key });
+      continue;
+    }
     const expectedKey =
       p.requirement_key != null && p.attempt_generation != null && p.cohort_id != null
         ? attemptPendingKey({

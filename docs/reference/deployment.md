@@ -118,6 +118,9 @@ node scripts/plan00-evidence/cli.mjs run-corpus --lane haiku|luna
 # Status: version-audited fold + fresh live ECS drift check; regenerates the
 # handoff-local PLAN-00-EVIDENCE.{json,md} projections (never the tracked index):
 node scripts/plan00-evidence/cli.mjs status
+# Downstream latency plans MUST use the gate form — exits non-zero for every
+# state except DONE-against-a-matching-live-deployment:
+node scripts/plan00-evidence/cli.mjs status --exit-nonzero-unless-done
 ```
 
 A failed deploy or defective publisher blocks attestation/cohort initialisation
