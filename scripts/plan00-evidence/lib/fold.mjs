@@ -36,6 +36,7 @@ import {
   TERRA_MODEL_FAMILY,
   londonDayOf,
 } from './constants.mjs';
+import { collectNonSafetyDeferralTargets } from './deferral-targets.mjs';
 import { validateAttemptReport, validateStoredEvent } from './events.mjs';
 import { computeCohortFingerprint } from './fingerprint.mjs';
 import { attemptPendingKey, ordinalReservationKey } from './reservations.mjs';
@@ -1244,16 +1245,22 @@ export function foldEvidence({
       .filter((g) => g.safety_critical === false)
       .map((g) => g.stratum)
   );
+  // Plan 00B-4 C4 — a whole attested fixture is now deferrable IFF the
+  // expectation manifest classifies it `safety_critical: false`. The rule
+  // itself lives in lib/deferral-targets.mjs so the CLI's mint-time refusal
+  // and this admission gate can never drift apart; the classification rides in
+  // the vendor lane manifest, so it is covered by
+  // vendor_live_sha256/combined_sha256 and cannot be widened without
+  // invalidating the attestation this fold is bound to. Missing/true/unknown
+  // stays fail-closed exactly as before.
+  const deferrableTargets = collectNonSafetyDeferralTargets(expectationManifest);
   const approvedDeferrals = new Set();
   for (const g of gapDecisions) {
     const p = g.payload;
-    // Mini-review — UNCLASSIFIED targets default to SAFETY-CRITICAL: only a
-    // manifest-named gap stratum EXPLICITLY carrying safety_critical:false
-    // is deferrable. Whole attested fixtures carry no per-expectation
-    // safety classification and can NEVER be deferred (follow-up:
-    // per-fixture safety metadata in the expectation manifest).
-    const known = namedGapStrata.has(p.stratum_or_fixture);
-    if (!known || p.safety_critical === true) {
+    // UNCLASSIFIED targets default to SAFETY-CRITICAL: a target is deferrable
+    // only when it is EXPLICITLY carried as non-safety by the manifest —
+    // either as a named gap stratum or as an attested fixture.
+    if (!deferrableTargets.has(p.stratum_or_fixture) || p.safety_critical === true) {
       invalid.push({
         key: g.key,
         problems: [{ code: 'corpus_gap_target_invalid', target: p.stratum_or_fixture ?? null }],

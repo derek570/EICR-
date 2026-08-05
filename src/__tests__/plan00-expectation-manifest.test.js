@@ -98,6 +98,49 @@ describe('published combined manifest — merge-blocking drift check (§B6)', ()
     }
   });
 
+  test('every attested fixture carries a dated, reviewed safety classification', () => {
+    // Plan 00B-4 C4 — classification is what a corpus-gap deferral is allowed
+    // to target, so it must exist for EVERY fixture and be a real boolean; a
+    // missing or non-boolean flag is unclassified, and unclassified is
+    // fail-closed safety-critical at both the CLI and the fold.
+    const fixtures = manifest.vendor_live_expectations.fixtures;
+    expect(fixtures.map((f) => f.corpus_id)).toEqual(manifest.vendor_live_expectations.fixture_ids);
+    for (const f of fixtures) {
+      expect(typeof f.safety_critical).toBe('boolean');
+      // An unreviewed fixture renders a NULL date, so this is what fails when
+      // a fixture joins the lane without anyone classifying it.
+      expect(f.safety_classified_on).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+    // The classification was REVIEWED, not derived — so it must actually
+    // discriminate rather than blanket one way.
+    expect(fixtures.some((f) => f.safety_critical === true)).toBe(true);
+    expect(fixtures.some((f) => f.safety_critical === false)).toBe(true);
+  });
+
+  test('STRUCTURAL GUARD: a fixture projecting a mutating operation MUST be safety-critical', () => {
+    // Deliberately ONE-DIRECTIONAL. Zero-mutation does NOT imply non-safety —
+    // frc_e94d9854… ("Delete Ze") projects zero operations yet its entire
+    // point is that the certificate changes, so it is safety-critical BY
+    // REVIEW. The only sound automatic check is the converse: nothing that
+    // writes may be classified waivable. A fixture that later starts
+    // projecting a mutation without being re-reviewed fails here.
+    for (const f of manifest.vendor_live_expectations.fixtures) {
+      const proj = projectFixtureExpectation(loadFixture(repoRoot, f.corpus_id));
+      if ((proj.operations ?? []).length > 0) {
+        expect(f.safety_critical).toBe(true);
+      }
+    }
+  });
+
+  test('classification rides INSIDE the vendor lane hash — re-classifying invalidates attestations', () => {
+    // It must be covered by vendor_live_sha256 (and hence combined_sha256), or
+    // a fixture could be silently downgraded to waivable under an attestation
+    // that never saw the change.
+    expect(JSON.stringify(renderExpectationManifests(repoRoot).vendorLive)).toContain(
+      'safety_critical'
+    );
+  });
+
   test('RED: a changed oracle input fails the digest closed', () => {
     const oracle = computeSemanticOracleDigest(repoRoot);
     const tampered = [...oracle.rows];

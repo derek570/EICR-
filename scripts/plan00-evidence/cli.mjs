@@ -40,6 +40,7 @@ import {
 import { foldEvidence } from './lib/fold.mjs';
 import { computeFold, loadCohortState as loadCohortStateShared, latestValid as latestValidShared } from './lib/fold-runner.mjs';
 import { collectSessionManifests } from './lib/collector.mjs';
+import { resolveDeferralTarget } from './lib/deferral-targets.mjs';
 import {
   checkLiveDeployment,
   proveTaskRolePrefixAccessViaIam,
@@ -563,20 +564,25 @@ async function cmdDecideCorpusGap(args, store) {
   }
   // Codex cycle-1 — the target must be KNOWN: an attested fixture id or a
   // manifest-named NON-SAFETY gap stratum. Safety strata cannot be waived.
+  //
+  // Plan 00B-4 C4 — deferral targets resolve from the UNION of manifest-named
+  // gap strata and attested fixtures, in both cases ONLY when the manifest
+  // explicitly carries `safety_critical: false`. UNCLASSIFIED (absent, non-
+  // boolean, or true) defaults to safety-critical and is refused here. The rule
+  // is imported from lib/deferral-targets.mjs — the SAME function the fold's
+  // admission gate calls — so the CLI can never mint an event the fold would
+  // then reject as invalid.
   const manifest = expectationManifestContent();
-  const gap = (manifest.strata_named_gaps ?? []).find((g) => g.stratum === args.target);
-  // Mini-review — UNCLASSIFIED targets default to safety-critical: only a
-  // manifest-named gap stratum explicitly carrying safety_critical:false is
-  // deferrable. A whole attested fixture has no per-expectation safety
-  // classification, so it can never be deferred (follow-up: per-fixture
-  // safety metadata in the expectation manifest).
-  if (!gap) {
+  const resolved = resolveDeferralTarget(manifest, args.target);
+  if (!resolved.known) {
     throw new Error(
-      `"${args.target}" is not a manifest-named gap stratum — unclassified targets default to safety-critical and cannot be deferred`
+      `"${args.target}" is neither a manifest-named gap stratum nor an attested fixture — unclassified targets default to safety-critical and cannot be deferred`
     );
   }
-  if (gap.safety_critical === true) {
-    throw new Error(`"${args.target}" is safety-critical — it cannot be deferred`);
+  if (!resolved.deferrable) {
+    throw new Error(
+      `"${args.target}" is safety-critical (or unclassified) — it cannot be deferred`
+    );
   }
   await confirmInteractive(
     `Corpus-gap deferral for ${args.target}: ${args.decision}? (safety-critical strata cannot be deferred)`

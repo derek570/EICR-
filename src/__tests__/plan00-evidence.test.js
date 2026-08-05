@@ -22,6 +22,9 @@
 
 import { describe, test, expect } from '@jest/globals';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createMemoryStore } from '../../scripts/plan00-evidence/lib/memory-store.mjs';
 import {
@@ -50,6 +53,10 @@ import { foldEvidence } from '../../scripts/plan00-evidence/lib/fold.mjs';
 import { computeFold } from '../../scripts/plan00-evidence/lib/fold-runner.mjs';
 import { collectSessionManifests } from '../../scripts/plan00-evidence/lib/collector.mjs';
 import {
+  collectNonSafetyDeferralTargets,
+  resolveDeferralTarget,
+} from '../../scripts/plan00-evidence/lib/deferral-targets.mjs';
+import {
   proveTaskRolePrefixAccessViaIam,
   verifyTrustedDeploy,
 } from '../../scripts/plan00-evidence/lib/deployment.mjs';
@@ -58,6 +65,8 @@ import {
   canonicalBytes,
   evidenceEventHash,
 } from '../../scripts/field-replay/lib/canonical-crypto.mjs';
+
+const repoRootForC4 = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const COHORT = 'cohort-test0000000001';
 const FP = 'f'.repeat(64);
@@ -1761,9 +1770,11 @@ describe('G — per-day route/cache/family/IR/corpus gates', () => {
     });
     fold = await foldNow(store, cohortId);
     day = fold.day_evaluations.find((d) => d.day === '2026-08-10');
-    // Unclassified targets default to safety-critical: a whole attested
-    // fixture is NEVER deferrable, so the lane stays incomplete and the
-    // decision itself is held invalid.
+    // C4 made whole fixtures deferrable — but ONLY when the bound manifest
+    // explicitly classifies them `safety_critical: false`. This manifest
+    // carries no `fixtures[]` block at all, so `fx2` is UNCLASSIFIED, which
+    // defaults to safety-critical: the lane stays incomplete and the decision
+    // itself is held invalid. (Group M exercises the classified cases.)
     expect(day.requirements.corpus_luna).toBe(false);
     expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
   });
@@ -3031,5 +3042,319 @@ describe('L — cycle-6: exact report schema, strict ids, rollout mixing', () =>
     await publishDurable(store, { key, bytes: canonicalBytes(badBody) });
     const fold = await foldNow(store, cohortId);
     expect(fold.holds.some((h) => h.code === 'ordinal_reservation_malformed')).toBe(true);
+  });
+});
+
+// ═══ M. C4 — per-fixture safety classification + deferral targets ═════════
+
+describe('M — C4: per-fixture safety_critical classification governs deferrals', () => {
+  // The manifest a C4 cohort is bound to now carries a per-fixture
+  // classification alongside the bare id list. The three sha256 values are
+  // IDENTICAL to EXPECTATION_MANIFEST's, so establishCohort's fingerprint
+  // still binds — only the classification vocabulary is added.
+  function manifestWith(fixtures, strata = []) {
+    return {
+      ...EXPECTATION_MANIFEST,
+      vendor_live_expectations: {
+        ...EXPECTATION_MANIFEST.vendor_live_expectations,
+        fixtures,
+      },
+      strata_named_gaps: strata,
+    };
+  }
+
+  // fx1 safety-critical, fx2 explicitly reviewed non-safety.
+  const CLASSIFIED = manifestWith([
+    { corpus_id: 'fx1', safety_critical: true },
+    { corpus_id: 'fx2', safety_critical: false },
+  ]);
+
+  async function foldWith(store, cohortId, expectationManifest) {
+    return computeFold(store, {
+      cohortId,
+      expectationManifest,
+      recomputedOracleDigest: EXPECTATION_MANIFEST.semantic_oracle_digest,
+      liveDeployment: LIVE_OK,
+    });
+  }
+
+  async function approveGap(store, cohortId, target) {
+    await publishEventAt(store, {
+      kind: 'corpus_gap_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        stratum_or_fixture: target,
+        decision: 'approved',
+        safety_critical: false,
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+  }
+
+  // ── the shared rule itself (the ONE function both gates call) ──────────
+
+  describe('the shared rule — lib/deferral-targets.mjs', () => {
+    test('a target is deferrable ONLY when explicitly classified safety_critical:false', () => {
+      // All four classification cases, on BOTH carriers. Anything that is not
+      // an explicit `false` is UNCLASSIFIED and therefore safety-critical.
+      const m = manifestWith(
+        [
+          { corpus_id: 'fx-false', safety_critical: false },
+          { corpus_id: 'fx-true', safety_critical: true },
+          { corpus_id: 'fx-missing' },
+          { corpus_id: 'fx-weird', safety_critical: 'no' },
+        ],
+        [
+          { stratum: 's-false', safety_critical: false },
+          { stratum: 's-true', safety_critical: true },
+          { stratum: 's-missing' },
+          { stratum: 's-weird', safety_critical: 0 },
+        ]
+      );
+      expect([...collectNonSafetyDeferralTargets(m)].sort()).toEqual(['fx-false', 's-false']);
+
+      expect(resolveDeferralTarget(m, 'fx-false')).toEqual({
+        known: true,
+        kind: 'fixture',
+        deferrable: true,
+      });
+      expect(resolveDeferralTarget(m, 's-false')).toEqual({
+        known: true,
+        kind: 'stratum',
+        deferrable: true,
+      });
+      for (const t of ['fx-true', 'fx-missing', 'fx-weird', 's-true', 's-missing', 's-weird']) {
+        const r = resolveDeferralTarget(m, t);
+        expect(r.known).toBe(true);
+        expect(r.deferrable).toBe(false);
+      }
+      // Unknown ids are distinguishable from known-but-safety-critical ones
+      // so the CLI can say WHY it refused, but neither is deferrable.
+      expect(resolveDeferralTarget(m, 'nope')).toEqual({
+        known: false,
+        kind: null,
+        deferrable: false,
+      });
+    });
+
+    test('a fixture in fixture_ids but ABSENT from fixtures[] is unclassified, never deferrable', () => {
+      // The pre-C4 manifest shape: ids listed, no classification block. It
+      // must stay fail-closed rather than becoming implicitly waivable.
+      expect(collectNonSafetyDeferralTargets(EXPECTATION_MANIFEST).size).toBe(0);
+      expect(resolveDeferralTarget(EXPECTATION_MANIFEST, 'fx2')).toEqual({
+        known: false,
+        kind: null,
+        deferrable: false,
+      });
+    });
+
+    test('a null/empty manifest defers nothing rather than throwing', () => {
+      expect(collectNonSafetyDeferralTargets(null).size).toBe(0);
+      expect(collectNonSafetyDeferralTargets({}).size).toBe(0);
+      expect(resolveDeferralTarget(null, 'anything').deferrable).toBe(false);
+    });
+  });
+
+  // ── the CLI mint-time gate calls the SAME rule (no second copy) ────────
+
+  describe('the CLI mint gate shares the rule (drift is structurally impossible)', () => {
+    const cliSrc = fs.readFileSync(
+      path.join(repoRootForC4, 'scripts', 'plan00-evidence', 'cli.mjs'),
+      'utf8'
+    );
+    const foldSrc = fs.readFileSync(
+      path.join(repoRootForC4, 'scripts', 'plan00-evidence', 'lib', 'fold.mjs'),
+      'utf8'
+    );
+
+    test('both consumers import from lib/deferral-targets.mjs and hand-roll nothing', () => {
+      expect(cliSrc).toContain("from './lib/deferral-targets.mjs'");
+      expect(cliSrc).toContain('resolveDeferralTarget(manifest, args.target)');
+      expect(foldSrc).toContain("from './deferral-targets.mjs'");
+      expect(foldSrc).toContain('collectNonSafetyDeferralTargets(expectationManifest)');
+      // If either grew its own classification test again, the CLI could mint
+      // an event the fold then rejects — the exact drift C4 removes.
+      expect(cliSrc).not.toMatch(/safety_critical === false/);
+    });
+
+    test('against the REAL committed manifest the CLI refuses every safety-critical fixture', () => {
+      const real = JSON.parse(
+        fs.readFileSync(
+          path.join(repoRootForC4, 'scripts', 'model-ab', 'plan00-expectation-manifest.json'),
+          'utf8'
+        )
+      );
+      const deferrable = collectNonSafetyDeferralTargets(real);
+      for (const id of real.vendor_live_expectations.fixture_ids) {
+        const classified = real.vendor_live_expectations.fixtures.find((f) => f.corpus_id === id);
+        expect(typeof classified.safety_critical).toBe('boolean');
+        expect(deferrable.has(id)).toBe(classified.safety_critical === false);
+      }
+      // Not a hypothetical split: the review classified some of each.
+      expect(deferrable.size).toBeGreaterThan(0);
+      expect(deferrable.size).toBeLessThan(real.vendor_live_expectations.fixture_ids.length);
+    });
+  });
+
+  // ── the fold admission gate, all four classification cases ─────────────
+
+  test('an APPROVED deferral of a non-safety fixture subtracts it from the completeness gate', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx1`,
+      requirementClass: 'vendor_corpus',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx1',
+      at: '2026-08-10T09:00:00Z',
+    });
+    // Without the deferral the run is incomplete (fx2 never ran)…
+    let fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.day_evaluations.find((d) => d.day === '2026-08-10').requirements.corpus_luna).toBe(
+      false
+    );
+
+    await approveGap(store, cohortId, 'fx2');
+    fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(false);
+    expect(fold.day_evaluations.find((d) => d.day === '2026-08-10').requirements.corpus_luna).toBe(
+      true
+    );
+  });
+
+  test('a SAFETY-CRITICAL fixture target is INVALID at the fold and excuses nothing', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await approveGap(store, cohortId, 'fx1');
+    const fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
+    expect(fold.day_evaluations.find((d) => d.day === '2026-08-10')).toBeUndefined();
+  });
+
+  test('an UNCLASSIFIED fixture (absent, or a non-boolean flag) is INVALID at the fold', async () => {
+    for (const fixtures of [
+      [{ corpus_id: 'fx1', safety_critical: true }], // fx2 absent entirely
+      [
+        { corpus_id: 'fx1', safety_critical: true },
+        { corpus_id: 'fx2', safety_critical: 'no' },
+      ],
+    ]) {
+      const store = createMemoryStore();
+      const { cohortId } = await establishCohort(store);
+      await approveGap(store, cohortId, 'fx2');
+      const fold = await foldWith(store, cohortId, manifestWith(fixtures));
+      expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
+    }
+  });
+
+  test('a decision whose OWN payload claims safety_critical:true is INVALID even for a non-safety target', async () => {
+    // Belt and braces: the manifest classification is authoritative, but a
+    // self-declared safety-critical deferral is refused outright rather than
+    // silently overridden by the manifest.
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishEventAt(store, {
+      kind: 'corpus_gap_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        stratum_or_fixture: 'fx2',
+        decision: 'approved',
+        safety_critical: true,
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+    const fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
+  });
+
+  // ── deferral ↔ mismatch: a fixture that RAN and FAILED is not covered ──
+
+  test('an approved-deferred fixture that nonetheless FAILED still HOLDs until decide-mismatch runs', async () => {
+    // A deferral covers ABSENT or INVALID work. Work that ran and produced a
+    // non-safety FAIL is a real mismatch and needs its OWN decision — the
+    // deferral must not launder it away.
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx1`,
+      requirementClass: 'vendor_corpus',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx1',
+      at: '2026-08-10T09:00:00Z',
+    });
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx2`,
+      requirementClass: 'vendor_corpus',
+      verdict: 'FAIL',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx2',
+      mismatch: { mismatch_id: 'mm_c4', safety_critical: false },
+      at: '2026-08-10T09:30:00Z',
+    });
+    await approveGap(store, cohortId, 'fx2');
+
+    let fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'undecided_non_safety_mismatch')).toBe(true);
+    expect(fold.state).toBe('HOLD_EVIDENCE');
+
+    await publishEventAt(store, {
+      kind: 'non_safety_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        mismatch_id: 'mm_c4',
+        decision: 'approved',
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+    fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'undecided_non_safety_mismatch')).toBe(false);
+    expect(fold.notes.some((n) => n.code === 'approved_non_safety_mismatch')).toBe(true);
+  });
+
+  test('an approved-deferred fixture with a SAFETY-CRITICAL FAIL is still BLOCKED', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx2`,
+      requirementClass: 'vendor_corpus',
+      verdict: 'FAIL',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx2',
+      mismatch: { mismatch_id: 'mm_c4s', safety_critical: true },
+      at: '2026-08-10T09:30:00Z',
+    });
+    await approveGap(store, cohortId, 'fx2');
+    const fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.blocks.some((b) => b.code === 'semantic_safety_fail')).toBe(true);
+    expect(fold.state).toBe('BLOCKED');
+  });
+
+  test('a manifest-named non-safety STRATUM still defers (C4 widens, never narrows)', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await approveGap(store, cohortId, 'multi_board_routing');
+    const fold = await foldWith(
+      store,
+      cohortId,
+      manifestWith(
+        [{ corpus_id: 'fx1', safety_critical: true }],
+        [{ stratum: 'multi_board_routing', safety_critical: false }]
+      )
+    );
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(false);
   });
 });

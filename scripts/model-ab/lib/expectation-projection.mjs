@@ -188,6 +188,89 @@ export const STRATA_NAMED_GAPS = Object.freeze([
   },
 ]);
 
+/**
+ * Plan 00B-4 C4 — REVIEWED per-fixture safety classification.
+ *
+ * A corpus gap may only ever be deferred (Derek `decide-corpus-gap
+ * --decision approved`) when the thing being deferred cannot hide a WRONG
+ * CERTIFICATE VALUE. Before C4 the deferral vocabulary was strata-only, so a
+ * whole attested fixture could never be deferred at all — correct while there
+ * was no per-fixture classification, but it made the gate un-actionable for
+ * the pure-audibility fixtures whose failure can only ever be "the assistant
+ * said nothing", never "the certificate holds 16 Ω where it should hold 1.6".
+ *
+ * The classification is a HAND-REVIEWED constant, deliberately NOT derived
+ * from the projection. `frc_e94d9854…` ("Delete Ze" → "Ze cleared") is the
+ * proof that derivation would be unsound: it projects ZERO operations (a
+ * clear is not an operation in the projection vocabulary) yet it mutates the
+ * certificate and is unambiguously safety-critical. Zero-mutation therefore
+ * does NOT imply non-safety, and only a human may say which way a fixture
+ * falls.
+ *
+ * The one-directional structural guard that IS sound — any fixture projecting
+ * a mutating operation must be classified safety-critical — is pinned by
+ * test, so a fixture that starts writing can never silently stay deferrable.
+ *
+ * UNCLASSIFIED IS SAFETY-CRITICAL. `classifyFixtureSafety` fails closed for
+ * any id absent from this map, so adding a fixture without reviewing it makes
+ * it non-deferrable rather than silently waivable.
+ */
+export const FIXTURE_SAFETY_CLASSIFICATION = Object.freeze({
+  // Writes ring r1+r2 for circuit 2 — a wrong value reaches the certificate.
+  frc_342b5176bba77d4e9a031c6541d60e63: { safety_critical: true, dated: '2026-08-05' },
+  // P5 same-turn clear→write collapse — the surviving IR write is the point.
+  frc_4687948efcd06a3cd9dce203a3aa4ffe: { safety_critical: true, dated: '2026-08-05' },
+  // Plan D impedance clamp (Ze 16 → 1.6) — the 10×-error class itself.
+  frc_51be8bece8e63330a2f0daf78220af92: { safety_critical: true, dated: '2026-08-05' },
+  // P4 answered-ask decline ack — answered "No. Don't worry."; ZERO writes,
+  // the whole expectation is one spoken acknowledgement.
+  frc_85ace7677d0e1c4a7b2f3609e5d1a8c4: { safety_critical: false, dated: '2026-08-05' },
+  // F/U-1 spoken calc read-back — WRITES measured_zs_ohm 1.21.
+  frc_9aa68a437135b079a615109b10fcc63a: { safety_critical: true, dated: '2026-08-05' },
+  // F/U-4 supply-Ze canonical key + calculated Zs write.
+  frc_a5f8cfebcb5cd7749412d09d984ebf09: { safety_critical: true, dated: '2026-08-05' },
+  // marker-② catch-all audibility net — calculate_zs computed:[]; ZERO writes.
+  frc_b6ec5356f67d8655db214b4f16ae8d83: { safety_critical: false, dated: '2026-08-05' },
+  // marker-① no-op apology — the model no-op'd; ZERO writes.
+  frc_c55c996fa1014e088455af77216220d1: { safety_critical: false, dated: '2026-08-05' },
+  // A1a "Delete Ze" → "Ze cleared". Projects zero OPERATIONS but CLEARS a
+  // certificate value — safety-critical despite the empty projection. This
+  // entry is why the classification is reviewed rather than derived.
+  frc_e94d9854ba728621ade73126161023da: { safety_critical: true, dated: '2026-08-05' },
+});
+
+/**
+ * Fail-closed safety lookup: anything not explicitly reviewed as
+ * `safety_critical: false` is safety-critical.
+ */
+export function classifyFixtureSafety(corpusId) {
+  const entry = FIXTURE_SAFETY_CLASSIFICATION[corpusId];
+  return entry?.safety_critical === false ? false : true;
+}
+
+/**
+ * The full reviewed record as it is stamped into the vendor lane manifest:
+ * the verdict PLUS the date the review happened.
+ *
+ * The date is carried deliberately. Reading the committed manifest is how a
+ * future reviewer (or Derek) audits whether a waivable classification was ever
+ * looked at, and an undated verdict is indistinguishable from a guess. It
+ * rides in the hash for the same reason the verdict does — re-dating means
+ * re-reviewing, and a re-review must re-attest.
+ *
+ * Fail-closed like `classifyFixtureSafety`: an unreviewed id renders
+ * safety-critical with a NULL date, which the manifest test rejects loudly
+ * rather than letting an unreviewed fixture sit in the committed artifact
+ * looking classified.
+ */
+export function classifyFixtureSafetyRecord(corpusId) {
+  const entry = FIXTURE_SAFETY_CLASSIFICATION[corpusId];
+  return {
+    safety_critical: classifyFixtureSafety(corpusId),
+    safety_classified_on: typeof entry?.dated === 'string' ? entry.dated : null,
+  };
+}
+
 export function loadFixture(repoRoot, corpusId) {
   const p = path.join(
     repoRoot,
@@ -211,9 +294,16 @@ export function listCorpusIds(repoRoot) {
 
 /** Render both lane manifests + their hashes (pure; no writes). */
 export function renderExpectationManifests(repoRoot) {
-  const vendorProjections = VENDOR_LIVE_FIXTURE_IDS.map((id) =>
-    projectFixtureExpectation(loadFixture(repoRoot, id))
-  );
+  // C4 — the reviewed safety classification rides INSIDE the vendor lane
+  // manifest deliberately: it therefore flows into vendor_live_sha256 and
+  // combined_sha256, so re-classifying a fixture invalidates every prior
+  // attestation instead of quietly widening what may be deferred under one.
+  // projectFixtureExpectation stays a pure SEMANTIC projection; the
+  // classification is governance metadata joined at render time.
+  const vendorProjections = VENDOR_LIVE_FIXTURE_IDS.map((id) => ({
+    ...projectFixtureExpectation(loadFixture(repoRoot, id)),
+    ...classifyFixtureSafetyRecord(id),
+  }));
   const vendorLive = {
     schema_version: 1,
     status: EXPECTATION_STATUS,
