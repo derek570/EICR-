@@ -120,10 +120,21 @@ export async function checkLiveDeployment({
       // on one digest; overlap during a rollout is 'unavailable', never a
       // match against whichever task listed first.
       const described = detail?.tasks ?? [];
-      // Cycle-7 — a list/describe race must fail closed: every listed ARN
-      // must come back as a complete described row.
-      if (described.length !== taskArns.length) {
+      // Cycle-7/8 — a list/describe race must fail closed BIJECTIVELY:
+      // every listed ARN comes back exactly once as a complete RUNNING row
+      // (equal cardinality alone would accept duplicated/stale rows).
+      const describedArns = described.map((t) => t?.taskArn ?? null);
+      const listedSet = new Set(taskArns);
+      const describedSet = new Set(describedArns);
+      const bijective =
+        described.length === taskArns.length &&
+        describedSet.size === described.length &&
+        describedArns.every((arn) => arn != null && listedSet.has(arn));
+      if (!bijective || (detail?.failures ?? []).length > 0) {
         return { available: false, fingerprint_matches: false, reason: 'task_describe_incomplete' };
+      }
+      if (described.some((t) => t?.lastStatus !== 'RUNNING')) {
+        return { available: false, fingerprint_matches: false, reason: 'task_not_running' };
       }
       const digests = new Set();
       for (const task of described) {

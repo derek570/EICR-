@@ -2967,6 +2967,8 @@ describe('L — cycle-6: exact report schema, strict ids, rollout mixing', () =>
         return {
           tasks: [
             {
+              taskArn: 't1',
+              lastStatus: 'RUNNING',
               taskDefinitionArn: 'arn:task/399',
               containers: [{ name: 'eicr-backend', imageDigest: 'sha256:same' }],
             },

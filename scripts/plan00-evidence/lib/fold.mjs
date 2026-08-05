@@ -453,6 +453,7 @@ export function foldEvidence({
       typeof p === 'object' &&
       Object.keys(p).every((k) => PENDING_KEYS.includes(k)) &&
       PENDING_KEYS.every((k) => k in p);
+    const strOrNull = (v) => v === null || (typeof v === 'string' && v.length > 0);
     if (
       !keysExactPending ||
       p.reservation_kind !== 'attempt_pending' ||
@@ -460,7 +461,21 @@ export function foldEvidence({
       typeof p.attempt_ref !== 'string' ||
       p.attempt_ref.length === 0 ||
       !Number.isInteger(p.attempt_generation) ||
-      p.attempt_generation < 1
+      p.attempt_generation < 1 ||
+      // Cycle-8 — EVERY field typed before any derivation: a non-string
+      // requirement_key must HOLD, never reach createHash and crash the
+      // authoritative fold.
+      typeof p.requirement_key !== 'string' ||
+      p.requirement_key.length === 0 ||
+      typeof p.cohort_id !== 'string' ||
+      p.cohort_id.length === 0 ||
+      !strOrNull(p.requirement_class) ||
+      !strOrNull(p.model) ||
+      !strOrNull(p.tier) ||
+      !strOrNull(p.allocation_version_id) ||
+      !strOrNull(p.prompt_digest) ||
+      !strOrNull(p.tool_digest) ||
+      !strOrNull(p.expectation_digest)
     ) {
       holds.push({ tier: 'integrity', code: 'pending_reservation_malformed', key: rec.key });
       continue;
