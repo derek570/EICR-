@@ -38,7 +38,7 @@ import {
 } from './constants.mjs';
 import { validateAttemptReport, validateStoredEvent } from './events.mjs';
 import { computeCohortFingerprint } from './fingerprint.mjs';
-import { attemptPendingKey } from './reservations.mjs';
+import { attemptPendingKey, ordinalReservationKey } from './reservations.mjs';
 
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
 
@@ -369,10 +369,22 @@ export function foldEvidence({
   const ordinalByVersionId = new Map(); // allocation VersionId → {lane, ordinal}
   for (const rec of reservationsSorted) {
     if (rec.payload?.reservation_kind !== 'logical_ordinal') continue;
+    // Cycle-5 — an ordinal reservation is indexed ONLY when its closed body
+    // reproduces its deterministic key; a malformed record is an integrity
+    // hold, never silently skipped beside counting ordinals.
+    const q = rec.payload;
+    const expectedKey =
+      typeof q.lane === 'string' && Number.isInteger(q.ordinal) && typeof q.cohort_id === 'string'
+        ? ordinalReservationKey({ cohortId: q.cohort_id, lane: q.lane, ordinal: q.ordinal })
+        : null;
+    if (expectedKey !== rec.key || typeof q.nonce !== 'string' || q.ordinal < 1) {
+      holds.push({ tier: 'integrity', code: 'ordinal_reservation_malformed', key: rec.key });
+      continue;
+    }
     for (const vid of rec.version_ids ?? []) {
       ordinalByVersionId.set(vid, {
-        lane: rec.payload.lane,
-        ordinal: rec.payload.ordinal,
+        lane: q.lane,
+        ordinal: q.ordinal,
         key: rec.key,
       });
     }
@@ -476,12 +488,22 @@ export function foldEvidence({
       });
       continue;
     }
-    const ids = Array.isArray(tp.provider_call_ids) ? tp.provider_call_ids : [];
+    // Cycle-5 — provider_call_ids must be a WELL-FORMED array of non-empty
+    // strings for EVERY verdict: a malformed representation must never
+    // coerce to "no ids" (which would legitimise a null sample identity).
+    if (
+      !Array.isArray(tp.provider_call_ids) ||
+      tp.provider_call_ids.some((id) => typeof id !== 'string' || id.length === 0)
+    ) {
+      invalid.push({ key: t.key, problems: [{ code: 'terminal_provider_ids_malformed' }] });
+      continue;
+    }
+    const ids = tp.provider_call_ids;
     if (tp.verdict !== 'INVALID') {
       // Mini-review — PASS/FAIL evidence must carry REAL identity: non-empty
       // string provider ids, a non-empty report digest and a non-null
       // sample identity (null is legal ONLY on INVALID).
-      if (ids.length === 0 || ids.some((id) => typeof id !== 'string' || id.length === 0)) {
+      if (ids.length === 0) {
         invalid.push({ key: t.key, problems: [{ code: 'terminal_missing_provider_ids' }] });
         continue;
       }
@@ -551,7 +573,11 @@ export function foldEvidence({
         // safety-critical while the terminal claims non-safety is exactly
         // the false-DONE hole this closes.
         if (validateAttemptReport(report).length > 0) {
-          blocks.push({ code: 'report_schema_invalid', key: t.key });
+          // Structural, not semantic: INVALID/HOLD per validation
+          // precedence (an integrity BLOCK is reserved for conflicting
+          // terminals and withheld FAIL reports).
+          invalid.push({ key: t.key, problems: [{ code: 'report_schema_invalid' }] });
+          holds.push({ tier: 'report', code: 'report_schema_invalid', key: t.key });
           continue;
         }
         const idsAgree =
@@ -566,7 +592,8 @@ export function foldEvidence({
           !idsAgree ||
           !mismatchAgree
         ) {
-          blocks.push({ code: 'report_terminal_contradiction', key: t.key });
+          invalid.push({ key: t.key, problems: [{ code: 'report_terminal_contradiction' }] });
+          holds.push({ tier: 'report', code: 'report_terminal_contradiction', key: t.key });
           continue;
         }
       }

@@ -63,12 +63,12 @@ const COHORT = 'cohort-test0000000001';
 const FP = 'f'.repeat(64);
 
 const EXPECTATION_MANIFEST = {
-  combined_sha256: 'combined-sha',
-  vendor_live_expectations: { fixture_ids: ['fx1', 'fx2'], sha256: 'vendor-sha' },
-  deterministic_egress_expectations: { sha256: 'egress-sha' },
+  combined_sha256: '1a'.repeat(32),
+  vendor_live_expectations: { fixture_ids: ['fx1', 'fx2'], sha256: '2b'.repeat(32) },
+  deterministic_egress_expectations: { sha256: '3c'.repeat(32) },
   semantic_oracle_digest: 'oracle-digest',
 };
-const TEST_DIGESTS = { promptDigest: 'pd', toolDigest: 'td', expectationDigest: 'vendor-sha' };
+const TEST_DIGESTS = { promptDigest: 'pd', toolDigest: 'td', expectationDigest: '2b'.repeat(32) };
 const LIVE_OK = { available: true, fingerprint_matches: true };
 
 // ── shared builders ──────────────────────────────────────────────────────
@@ -1817,9 +1817,9 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
       body: {
         reviewer: 'Derek',
         attested_at: new Date(clockMs).toISOString(),
-        combined_sha256: 'STALE',
-        vendor_live_sha256: 'STALE-V',
-        deterministic_egress_sha256: 'STALE-E',
+        combined_sha256: '9f'.repeat(32),
+        vendor_live_sha256: '9e'.repeat(32),
+        deterministic_egress_sha256: '9d'.repeat(32),
       },
     });
     await publishEventAt(store, {
@@ -2302,7 +2302,7 @@ describe('J — cycle-1: generation-chain ordering', () => {
         allocation_version_id: allocationVersionId,
         prompt_digest: 'pd',
         tool_digest: 'td',
-        expectation_digest: 'vendor-sha',
+        expectation_digest: '2b'.repeat(32),
         report_digest: 'r1',
         provider_call_ids: [],
         generated_at: '2026-08-10T09:09:00Z',
@@ -2328,7 +2328,7 @@ describe('J — cycle-1: generation-chain ordering', () => {
       tier: 'fast',
       prompt_digest: 'pd',
       tool_digest: 'td',
-      expectation_digest: 'vendor-sha',
+      expectation_digest: '2b'.repeat(32),
     });
     await publishDurable(store, {
       key: `${EVIDENCE_PREFIX}/reports/${cohortId}/${g2ReportDigest}.json`,
@@ -2349,7 +2349,7 @@ describe('J — cycle-1: generation-chain ordering', () => {
         allocation_version_id: allocationVersionId,
         prompt_digest: 'pd',
         tool_digest: 'td',
-        expectation_digest: 'vendor-sha',
+        expectation_digest: '2b'.repeat(32),
         report_digest: g2ReportDigest,
         provider_call_ids: ['p_g2'],
         sample_identity: g2Sample,

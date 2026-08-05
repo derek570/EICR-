@@ -312,6 +312,8 @@ async function cmdAttestExpectations(args, store) {
   const { cohortId, hash } = computeCohortFingerprint({
     stageAPayload: stageA.payload,
     combinedSha256: manifest.combined_sha256,
+    vendorLiveSha256: manifest.vendor_live_sha256,
+    deterministicEgressSha256: manifest.deterministic_egress_sha256,
   });
   await confirmInteractive(
     `Attest BOTH frozen expectation manifests?\n` +

@@ -246,13 +246,17 @@ export async function reserveAttempt(store, candidate, { dispatchLatch } = {}) {
     }
     if (
       current?.reservation_kind === 'attempt_pending' &&
-      current?.requirement_key === body.requirement_key &&
-      current?.attempt_generation === body.attempt_generation &&
       typeof current?.attempt_ref === 'string' &&
       current.attempt_ref !== attemptRef
     ) {
-      // A valid reservation with a DIFFERENT ref — another winner; this
-      // invocation calls NO provider.
+      // Cycle-5 — a different-ref winner is honoured ONLY when its COMPLETE
+      // canonical body equals ours except the ref itself; any other field
+      // divergence is an integrity conflict, never a silent concession.
+      const ours = { ...body, attempt_ref: null };
+      const theirs = { ...current, attempt_ref: null };
+      if (sha256Hex(canonicalBytes(ours)) !== sha256Hex(canonicalBytes(theirs))) {
+        return { authorised: false, hold: { code: 'pending_winner_field_divergence', key } };
+      }
       return { authorised: false, otherWinner: true, winnerRef: current.attempt_ref };
     }
     // Same ref with a different body, or a malformed winner — integrity.

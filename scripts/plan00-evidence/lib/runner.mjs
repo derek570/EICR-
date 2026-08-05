@@ -125,6 +125,31 @@ export async function runReservedAttempt(
 
   let verdict = outcome.verdict === 'PASS' || outcome.verdict === 'FAIL' ? outcome.verdict : 'INVALID';
   let reason = outcome.reason ?? null;
+  // Cycle-5 — the mismatch is NORMALISED ONCE into the closed shape and
+  // that normalised value (or nothing) is what reaches BOTH the report and
+  // the terminal: a malformed executor mismatch (extra prose, customer
+  // data) can never leak into the append-only stream.
+  let mismatch = null;
+  if (outcome.mismatch != null) {
+    const mm = outcome.mismatch;
+    if (
+      mm &&
+      typeof mm === 'object' &&
+      typeof mm.mismatch_id === 'string' &&
+      mm.mismatch_id.length > 0 &&
+      typeof mm.safety_critical === 'boolean'
+    ) {
+      mismatch = { mismatch_id: mm.mismatch_id, safety_critical: mm.safety_critical };
+    } else {
+      verdict = 'INVALID';
+      reason = 'mismatch_shape_invalid';
+    }
+  }
+  if (verdict === 'PASS' && mismatch != null) {
+    verdict = 'INVALID';
+    reason = 'pass_with_mismatch';
+    mismatch = null;
+  }
   const providerCallIds = (Array.isArray(outcome.providerCallIds) ? outcome.providerCallIds : []).filter(
     (id) => typeof id === 'string' && id.length > 0
   );
@@ -169,7 +194,7 @@ export async function runReservedAttempt(
       attempt_generation: generation,
       verdict,
       provider_call_ids: providerCallIds,
-      mismatch: outcome.mismatch ?? null,
+      mismatch,
     };
     const reportProblems = validateAttemptReport(reportBody);
     if (reportProblems.length > 0) {
@@ -212,7 +237,7 @@ export async function runReservedAttempt(
     ...(corpusRunOrdinal != null ? { corpus_run_ordinal: corpusRunOrdinal } : {}),
     ...(fixtureId != null ? { fixture_id: fixtureId } : {}),
     ...(modelLane != null ? { model_lane: modelLane } : {}),
-    ...(outcome.mismatch != null ? { mismatch: outcome.mismatch } : {}),
+    ...(mismatch != null ? { mismatch } : {}),
   };
   const event = buildEvent({ kind: 'attempt_terminal', cohortId, namespace: 'machine', body });
   const problems = validateStoredEvent({ key: event.key, payload: event.payload });
