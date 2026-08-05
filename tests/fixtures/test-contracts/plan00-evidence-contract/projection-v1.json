@@ -182,6 +182,7 @@
       {
         "provider": "openai",
         "api_transport": "responses",
+        "turn_kind": "reading",
         "requested_model": "gpt-5.6-luna",
         "requested_tier": "fast",
         "response_model": "gpt-5.6-luna",
@@ -206,6 +207,7 @@
       {
         "provider": "openai",
         "api_transport": "chat_completions",
+        "turn_kind": "reading",
         "requested_model": "gpt-5.6-terra",
         "requested_tier": "standard",
         "response_model": "gpt-5.6-terra",

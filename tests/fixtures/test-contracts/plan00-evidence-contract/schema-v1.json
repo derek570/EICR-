@@ -375,6 +375,7 @@
         "allowlist": [
           "provider",
           "api_transport",
+          "turn_kind",
           "requested_model",
           "requested_tier",
           "response_model",
@@ -396,12 +397,14 @@
           "billable_kind",
           "loop_invocation_id"
         ],
-        "api_transport": "anthropic_messages | chat_completions | responses | null — WHICH API served the round (adapter-stamped actual transport, never configuration)"
+        "api_transport": "anthropic_messages | chat_completions | responses | null — WHICH API served the round (adapter-stamped actual transport, never configuration)",
+        "turn_kind": "observation | reading — WHICH KIND of loop produced the round, threaded from the shadow harness's routeToObservationTier decision (the authoritative producer). The producer is a boolean, so every non-observation loop (reading, keepalive, shadow, legacy) normalises to 'reading' and a malformed/absent value earns no Terra credit"
       },
       "field_spec": {
         "required": {
           "provider": "string|null",
           "api_transport": "string|null",
+          "turn_kind": "string|null",
           "requested_model": "string|null",
           "requested_tier": "string|null",
           "response_model": "string|null",

@@ -1080,6 +1080,137 @@ describe('C5 — api_transport in round_usage', () => {
   });
 });
 
+// ── C5 (00B live-lane) — the observation/reading discriminator ─────────────
+//
+// The authoritative producer is `routeToObservationTier` in the shadow
+// harness, and it is a BOOLEAN: it can prove a loop WAS an observation loop
+// and nothing else. So the closed vocabulary is exactly {observation,
+// reading} and the mapping these pins assert against is:
+//
+//   observation loop            -> 'observation'
+//   reading / keepalive /
+//   shadow / legacy loop        -> 'reading'
+//   malformed or absent value   -> 'reading'   (earns no Terra credit)
+//
+// The last row is what makes the 00C Terra gate fail closed: credit requires
+// an explicit 'observation', so nothing can back into it by omission.
+
+describe('C5 (live-lane) — turn_kind in round_usage', () => {
+  const baseRound = {
+    provider: 'openai',
+    requestedModel: 'gpt-5.6-terra',
+    requestedTier: 'standard',
+    responseModel: 'gpt-5.6-terra',
+    responseTier: 'standard',
+    usage: { input_tokens: 10, output_tokens: 5 },
+    roundIdx: 0,
+    apiTransport: 'responses',
+  };
+
+  test('an observation loop is the ONLY input that yields observation', () => {
+    expect(attributeRoundUsage({ ...baseRound, turnKind: 'observation' }).turn_kind).toBe(
+      'observation'
+    );
+  });
+
+  test.each([
+    ['reading', 'reading'],
+    ['keepalive', 'reading'],
+    ['shadow', 'reading'],
+  ])('a %s loop carries turn_kind reading', (threaded) => {
+    // The producer cannot distinguish these classes from one another — it only
+    // knows "not an observation" — so they all normalise to the same value.
+    expect(attributeRoundUsage({ ...baseRound, turnKind: threaded }).turn_kind).toBe('reading');
+  });
+
+  test('a LEGACY caller that threads nothing carries reading, never null', () => {
+    // Unlike api_transport (where an unknown transport must stay null rather
+    // than be guessed), the kind vocabulary is closed and "not proven to be an
+    // observation" IS the reading case — so absence is answerable, and leaving
+    // it null would put an unreadable value in front of the Terra gate.
+    const bare = attributeRoundUsage({ ...baseRound, turnKind: undefined });
+    expect(bare.turn_kind).toBe('reading');
+    const omitted = attributeRoundUsage({ ...baseRound });
+    expect(omitted.turn_kind).toBe('reading');
+  });
+
+  test.each([
+    ['null', null],
+    ['wrong case', 'Observation'],
+    ['near miss', 'observation_tier'],
+    ['non-string', 1],
+    ['object', { kind: 'observation' }],
+  ])('a malformed value (%s) earns no observation credit', (_label, threaded) => {
+    expect(attributeRoundUsage({ ...baseRound, turnKind: threaded }).turn_kind).toBe('reading');
+  });
+
+  test('the round_usage sub-record retains turn_kind through the allowlist', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry);
+    const row = (turnKind) => ({
+      provider: 'openai',
+      api_transport: 'responses',
+      turn_kind: turnKind,
+      requested_model: 'gpt-5.6-terra',
+      requested_tier: 'standard',
+      response_model: 'gpt-5.6-terra',
+      response_tier: 'standard',
+      billing_model: 'gpt-5.6-terra',
+      billing_tier: 'standard',
+      model_provenance: 'returned',
+      tier_provenance: 'returned',
+      attribution_status: 'attributed',
+      reasoning_effort: 'low',
+      prompt_cache_mode: 'explicit',
+      prompt_cache_breakpoint_enabled: true,
+      prompt_cache_key_id: 'pck',
+      fresh_input_tokens: 1,
+      cache_read_input_tokens: 2,
+      cache_write_input_tokens: 3,
+      output_tokens: 4,
+      round_idx: 0,
+    });
+    ctx.roundUsageSink(row('observation'), {
+      loopInvocationId: 'loop_obs',
+      billableKind: 'inspector_extraction',
+    });
+    ctx.roundUsageSink(row('reading'), {
+      loopInvocationId: 'loop_read',
+      billableKind: 'inspector_extraction',
+    });
+    const rows = rowsOfKind(entry, 'round_usage');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.turn_kind)).toEqual(['observation', 'reading']);
+  });
+
+  test('a producer row with NO turn_kind key still lands as an explicit null', () => {
+    // The sink hand-copies the allowlist with `?? null`, so a row from a not
+    // yet migrated producer is representable rather than dropped — and null is
+    // not 'observation', so it takes no Terra credit at the fold.
+    const entry = makeEntry();
+    const ctx = composeCtx(entry);
+    ctx.roundUsageSink(
+      {
+        provider: 'openai',
+        api_transport: 'responses',
+        requested_model: 'gpt-5.6-terra',
+        response_model: 'gpt-5.6-terra',
+        billing_model: 'gpt-5.6-terra',
+        billing_tier: 'standard',
+        model_provenance: 'returned',
+        tier_provenance: 'returned',
+        attribution_status: 'attributed',
+        round_idx: 0,
+      },
+      { loopInvocationId: 'loop_legacy', billableKind: 'inspector_extraction' }
+    );
+    const rows = rowsOfKind(entry, 'round_usage');
+    expect(rows).toHaveLength(1);
+    expect(Object.prototype.hasOwnProperty.call(rows[0], 'turn_kind')).toBe(true);
+    expect(rows[0].turn_kind).toBeNull();
+  });
+});
+
 // ── 5. The three-way agreement invariant (CREATED by this plan) ────────────
 
 describe('three-way agreement (C0)', () => {

@@ -674,6 +674,12 @@ const ROUND_USAGE_ALLOWLIST = Object.freeze([
   // transport: anthropic_messages | chat_completions | responses; never
   // configuration). The Terra/cache gates consume the actual transport.
   'api_transport',
+  // Plan 00B live-lane C5 — WHICH KIND of loop produced the round
+  // (observation | reading), threaded from the shadow harness's
+  // routeToObservationTier decision. The Terra gate requires an explicit
+  // 'observation'; every other loop class normalises to 'reading' at the
+  // producer, so an absent/malformed value can never earn Terra credit.
+  'turn_kind',
   'requested_model',
   'requested_tier',
   'response_model',

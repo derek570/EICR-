@@ -292,6 +292,9 @@ function inspectorRound(overrides = {}) {
   return {
     provider: 'openai',
     api_transport: 'responses',
+    // 00B live-lane C5 — an ordinary reading loop; the Terra gate must NOT
+    // credit one, whatever its model/effort/tier say.
+    turn_kind: 'reading',
     requested_model: 'gpt-5.6-luna',
     requested_tier: 'fast',
     response_model: 'gpt-5.6-luna',
@@ -318,6 +321,11 @@ function inspectorRound(overrides = {}) {
 
 function terraRound(overrides = {}) {
   return inspectorRound({
+    // 00B live-lane C5 — a Terra ROUND is only observation evidence when the
+    // harness actually routed the loop to the observation tier; the helper
+    // models that routed loop, and the pins below flip it to prove the gate
+    // consumes the discriminator rather than re-inferring it from the model.
+    turn_kind: 'observation',
     requested_model: 'gpt-5.6-terra',
     response_model: 'gpt-5.6-terra',
     billing_model: 'gpt-5.6-terra',
@@ -1614,6 +1622,27 @@ describe('G — per-day route/cache/family/IR/corpus gates', () => {
             inspectorRound(),
             terraRound({ api_transport: 'chat_completions', reasoning_effort: null }),
           ],
+        },
+      },
+    });
+    expect(day.requirements.terra_observation_round).toBe(false);
+  });
+
+  // 00B live-lane C5 — the Terra gate consumes the harness's OWN observation
+  // decision, not a model/effort/tier proxy. These pins flip ONLY turn_kind on
+  // an otherwise-perfect Terra row: if the gate ever went back to inferring the
+  // kind from model+effort+tier, every one of them would go green and the
+  // discriminator would be dead weight.
+  test.each([
+    ['a reading loop', 'reading'],
+    ['an absent value', null],
+    ['a wrong-case near miss', 'Observation'],
+    ['a near-miss token', 'observation_tier'],
+  ])('%s never satisfies the Terra observation gate', async (_label, turnKind) => {
+    const day = await dayFold({
+      evidence: {
+        round_usage: {
+          rounds: [inspectorRound(), terraRound({ turn_kind: turnKind })],
         },
       },
     });

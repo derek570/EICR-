@@ -116,6 +116,15 @@ export function attributeRoundUsage({
   // transport: anthropic_messages | chat_completions | responses). Callers
   // that thread nothing attribute null — never a configuration guess.
   apiTransport = null,
+  // Plan 00B live-lane C5 — WHICH KIND of loop the round belongs to. The
+  // authoritative producer is `routeToObservationTier` in the shadow harness,
+  // which is a BOOLEAN: it can prove a loop WAS an observation loop, and
+  // nothing else. So the closed vocabulary is exactly {observation, reading}
+  // and every non-observation loop — reading, keepalive, shadow and legacy
+  // alike — normalises to 'reading'. Anything malformed or absent normalises
+  // there too, which is what makes the 00C Terra gate fail closed: Terra
+  // credit requires an explicit 'observation', never an inferred one.
+  turnKind = null,
 }) {
   const transportProvider = provider;
   const requestedTierNormalized =
@@ -161,6 +170,7 @@ export function attributeRoundUsage({
     round_idx: roundIdx,
     provider: transportProvider,
     api_transport: apiTransport ?? null,
+    turn_kind: turnKind === 'observation' ? 'observation' : 'reading',
     requested_model: requestedModel,
     requested_tier: transportProvider === 'openai' ? (requestedTier ?? null) : null,
     response_model: responseModel ?? null,

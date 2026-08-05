@@ -170,7 +170,13 @@ export function familyGatesOf(completionManifest) {
  *  Luna-Fast counts ONLY attributed OpenAI rounds from accepted inspector
  *  kinds; billing_tier carries the RAW returned label so `priority` IS
  *  Fast; a Terra observation round is provable ONLY on the Responses
- *  transport with LOW effort and Standard/omitted tier; cache evidence
+ *  transport with LOW effort and Standard/omitted tier AND an explicit
+ *  `turn_kind === 'observation'` (00B live-lane C5) stamped by the shadow
+ *  harness's own routing decision — model+effort+tier alone are a PROXY for
+ *  "this was an observation turn", and this gate no longer accepts a proxy.
+ *  Every other loop class (reading, keepalive, shadow, legacy) is stamped
+ *  'reading' at the producer, and a malformed or absent value can never
+ *  satisfy the equality, so the term fails closed; cache evidence
  *  requires a WARM read on the explicit route of an attributed inspector
  *  round (cold-only write rows are insufficient by design). */
 export function roundUsageGatesOf(completionManifest) {
@@ -195,6 +201,7 @@ export function roundUsageGatesOf(completionManifest) {
   const terraObservation = inspector.some(
     (r) =>
       isTerra(r) &&
+      r.turn_kind === 'observation' &&
       r.api_transport === 'responses' &&
       r.reasoning_effort === 'low' &&
       (r.billing_tier == null || STANDARD_TIERS.includes(r.billing_tier))

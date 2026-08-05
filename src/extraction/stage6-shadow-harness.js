@@ -1690,6 +1690,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         provider: selectedTarget.provider,
         openAIServiceTier: observationOpenAIServiceTier,
         openAIReasoningEffort,
+        // Plan 00B live-lane C5 — this seam is the AUTHORITATIVE producer of
+        // the observation/reading discriminator: routeToObservationTier is the
+        // only place the classification is actually made. Downstream evidence
+        // (cost-tracker → lifecycle sink → projector → fold Terra gate) must
+        // receive it threaded, because inferring "was this an observation?"
+        // from the served model or tier is the very proxy the gate rejects.
+        // The producer is a boolean, so a false is 'reading' for every other
+        // loop class alike (reading, keepalive, shadow, legacy).
+        turnKind: routeToObservationTier ? 'observation' : 'reading',
         // Lock the selected model across every round for observation-tier
         // turns (disable the round-1 latency override); reading turns keep it.
         allowRound1ModelOverride: !round1OverrideLocked,
