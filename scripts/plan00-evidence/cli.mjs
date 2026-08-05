@@ -156,35 +156,8 @@ async function publishEvent(store, { kind, cohortId, namespace, body }) {
 const loadCohortState = loadCohortStateShared;
 const latestValid = latestValidShared;
 
-/** Prospective cohort id/fingerprint from the current stage-A deploy event
- *  plus the attested expectation hashes (plan §C5). */
-export function computeCohortFingerprint({ stageAPayload, combinedSha256 }) {
-  const fingerprint = {
-    deploy_run: stageAPayload.deploy_run,
-    runtime: stageAPayload.runtime,
-    evidence_bucket: stageAPayload.evidence_bucket,
-    evidence_bucket_versioning: stageAPayload.evidence_bucket_versioning,
-    event_schema_hash: stageAPayload.event_schema_hash,
-    prompt_fingerprint: stageAPayload.prompt_fingerprint,
-    tool_fingerprint: stageAPayload.tool_fingerprint,
-    config_fingerprint: stageAPayload.config_fingerprint,
-    semantic_oracle_digest: stageAPayload.semantic_oracle_digest,
-    deployed_evidence_runtime_digest: stageAPayload.deployed_evidence_runtime_digest,
-    expectations_combined_sha256: combinedSha256,
-  };
-  const hash = evidenceEventHash(fingerprint);
-  return { fingerprint, hash, cohortId: `cohort-${hash.slice(0, 16)}` };
-}
-
-/** Resolve the target cohort: --cohort wins; otherwise EXACTLY ONE cohort
- *  prefix may exist (Codex cycle-1 — never lexicographic newest). */
-async function resolveCohortId(store, args) {
-  if (args.cohort) return args.cohort;
-  const ids = await findCohortIds(store);
-  if (ids.length === 1) return ids[0];
-  if (ids.length === 0) throw new Error('no cohort exists yet — run attest-expectations first');
-  throw new Error(`multiple cohorts exist (${ids.join(', ')}) — pass --cohort explicitly`);
-}
+export { computeCohortFingerprint } from './lib/fingerprint.mjs';
+import { computeCohortFingerprint } from './lib/fingerprint.mjs';
 
 async function findCohortIds(store) {
   const { versions } = await store.listAllVersions({ prefix: `${EVIDENCE_PREFIX}/events/` });
@@ -370,8 +343,10 @@ async function cmdInitCohort(args, store) {
   const live = await checkLiveDeployment({
     awsRunner: awsJson,
     expected: {
+      task_def_arn: stageA.payload.runtime?.task_def_arn ?? null,
       image_digest: stageA.payload.runtime?.image_digest ?? null,
       commit_sha: stageA.payload.deploy_run?.head_sha ?? null,
+      config_fingerprint: stageA.payload.config_fingerprint ?? null,
     },
   });
   if (!live.available || !live.fingerprint_matches) {

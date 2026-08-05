@@ -37,6 +37,7 @@ import {
   londonDayOf,
 } from './constants.mjs';
 import { validateStoredEvent } from './events.mjs';
+import { computeCohortFingerprint } from './fingerprint.mjs';
 import { attemptPendingKey } from './reservations.mjs';
 
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
@@ -182,8 +183,14 @@ export function roundUsageGatesOf(completionManifest) {
   );
   const isLuna = (r) => typeof r.billing_model === 'string' && r.billing_model.startsWith(LUNA_MODEL_FAMILY);
   const isTerra = (r) => typeof r.billing_model === 'string' && r.billing_model.startsWith(TERRA_MODEL_FAMILY);
+  // Cycle-3 — the plan's counting rule is LITERAL: ordinary-reading
+  // (Luna Fast) evidence counts ONLY from accepted `inspector_live` rounds
+  // (the live loop's stamp); the wider inspector set serves Terra/cache.
   const lunaFast = inspector.some(
-    (r) => isLuna(r) && (FAST_TIERS.includes(r.billing_tier) || FAST_TIERS.includes(r.response_tier))
+    (r) =>
+      r.billable_kind === 'inspector_live' &&
+      isLuna(r) &&
+      (FAST_TIERS.includes(r.billing_tier) || FAST_TIERS.includes(r.response_tier))
   );
   const terraObservation = inspector.some(
     (r) =>
@@ -290,13 +297,36 @@ export function foldEvidence({
       });
     } else if (
       expectationManifest &&
-      boundAttested.payload.combined_sha256 !== expectationManifest.combined_sha256
+      (boundAttested.payload.combined_sha256 !== expectationManifest.combined_sha256 ||
+        (boundAttested.payload.vendor_live_sha256 != null &&
+          boundAttested.payload.vendor_live_sha256 !==
+            expectationManifest.vendor_live_expectations?.sha256) ||
+        (boundAttested.payload.deterministic_egress_sha256 != null &&
+          boundAttested.payload.deterministic_egress_sha256 !==
+            expectationManifest.deterministic_egress_expectations?.sha256))
     ) {
       holds.push({ tier: 'attestation', code: 'expectation_hash_mismatch', key: boundAttested.key });
     } else {
-      cohortInit = rec;
-      stageAEvent = boundStageA;
-      attestedEvent = boundAttested;
+      // Cycle-3 — the initialization's stored fingerprint AND the cohort id
+      // must REPRODUCE from the bound stage-A event + attested hashes.
+      const derived = computeCohortFingerprint({
+        stageAPayload: boundStageA.payload,
+        combinedSha256: boundAttested.payload.combined_sha256,
+      });
+      if (
+        evidenceEventHash(rec.payload.cohort_fingerprint ?? {}) !==
+          evidenceEventHash(derived.fingerprint) ||
+        (cohortId != null && derived.cohortId !== cohortId)
+      ) {
+        invalid.push({
+          key: rec.key,
+          problems: [{ code: 'cohort_fingerprint_unreproducible' }],
+        });
+      } else {
+        cohortInit = rec;
+        stageAEvent = boundStageA;
+        attestedEvent = boundAttested;
+      }
     }
   }
 
@@ -375,7 +405,7 @@ export function foldEvidence({
 
   // Audited content-addressed reports: name must equal the recomputed
   // content hash (evidenceEventHash of the payload).
-  const auditedReportDigests = new Set();
+  const auditedReports = new Map(); // digest → payload
   for (const rec of [...reportRecords].sort(byReceiptThenKey)) {
     const m = rec.key.match(/\/reports\/[^/]+\/([0-9a-f]{64})\.json$/);
     if (!m) {
@@ -386,7 +416,7 @@ export function foldEvidence({
       holds.push({ tier: 'integrity', code: 'report_content_hash_mismatch', key: rec.key });
       continue;
     }
-    auditedReportDigests.add(m[1]);
+    auditedReports.set(m[1], rec.payload);
   }
 
   // ── terminals: pairing + identity (tiers 2/3) ──
@@ -497,11 +527,13 @@ export function foldEvidence({
           continue;
         }
       }
-      // Cycle-2 — referenced-report integrity: the content-addressed report
-      // must EXIST in the audited reports prefix. Missing content is
-      // classified per the recorded verdict: a FAIL cannot hide (BLOCK), a
-      // PASS can never count (HOLD).
-      if (!auditedReportDigests.has(tp.report_digest)) {
+      // Cycle-2/3 — referenced-report integrity: the content-addressed
+      // report must EXIST and AGREE with its terminal (verdict, provider
+      // ids, requirement identity). Missing content is classified per the
+      // recorded verdict: a FAIL cannot hide (BLOCK), a PASS can never
+      // count (HOLD). A CONTRADICTORY report is an integrity BLOCK.
+      const report = auditedReports.get(tp.report_digest) ?? null;
+      if (!report) {
         if (tp.verdict === 'FAIL') {
           blocks.push({ code: 'fail_report_withheld', key: t.key, report_digest: tp.report_digest });
         } else {
@@ -509,6 +541,37 @@ export function foldEvidence({
           invalid.push({ key: t.key, problems: [{ code: 'terminal_report_missing' }] });
           continue;
         }
+      } else {
+        const idsAgree =
+          Array.isArray(report.provider_call_ids) &&
+          report.provider_call_ids.length === ids.length &&
+          report.provider_call_ids.every((id, i) => id === ids[i]);
+        if (
+          report.verdict !== tp.verdict ||
+          report.requirement_key !== tp.requirement_key ||
+          !idsAgree
+        ) {
+          blocks.push({ code: 'report_terminal_contradiction', key: t.key });
+          continue;
+        }
+      }
+      // Cycle-3 — the sample identity is RECOMPUTED, never trusted: it must
+      // equal the canonical hash over the ordered provider ids, the
+      // cohort's deployed fingerprint, the requirement identity and the
+      // digests.
+      const expectedSample = evidenceEventHash({
+        provider_call_ids: ids,
+        deployment_fingerprint: stageADeploymentFingerprint ?? null,
+        requirement_key: tp.requirement_key,
+        model: tp.model,
+        tier: tp.tier,
+        prompt_digest: tp.prompt_digest,
+        tool_digest: tp.tool_digest,
+        expectation_digest: tp.expectation_digest,
+      });
+      if (tp.sample_identity !== expectedSample) {
+        invalid.push({ key: t.key, problems: [{ code: 'terminal_sample_identity_mismatch' }] });
+        continue;
       }
       // Ordinal binding: a pinned-IR / vendor-corpus terminal must bind its
       // allocation VersionId to an AUDITED logical-ordinal reservation whose
@@ -1025,10 +1088,11 @@ export function foldEvidence({
       blocks.push({ code: 'dialogue_hearing_fail', key: dh.key });
       continue;
     }
-    if (!validDialogueHearingsBySession.has(p.field_session_id)) {
-      validDialogueHearingsBySession.set(p.field_session_id, []);
+    const hearingKey = `${p.field_session_id}::${receiptDay}`;
+    if (!validDialogueHearingsBySession.has(hearingKey)) {
+      validDialogueHearingsBySession.set(hearingKey, []);
     }
-    validDialogueHearingsBySession.get(p.field_session_id).push({ event: dh, payload: p });
+    validDialogueHearingsBySession.get(hearingKey).push({ event: dh, payload: p });
   }
 
   // ── per-day acceptance ──
@@ -1093,12 +1157,23 @@ export function foldEvidence({
 
     const corpusComplete = {};
     for (const lane of ['haiku', 'luna']) {
-      const laneTerminals = dayTerminals.filter(
-        (r) =>
-          r.terminal.payload.requirement_class === 'vendor_corpus' &&
-          r.terminal.payload.model_lane === lane &&
-          r.terminal.payload.verdict === 'PASS'
-      );
+      // Cycle-3 — an APPROVED non-safety FAIL satisfies its fixture (the
+      // decision must have operational effect: named, quantified, decided);
+      // rejected/undecided mismatches already HOLD/BLOCK elsewhere.
+      const laneTerminals = dayTerminals.filter((r) => {
+        const tp = r.terminal.payload;
+        if (tp.requirement_class !== 'vendor_corpus' || tp.model_lane !== lane) return false;
+        if (tp.verdict === 'PASS') return true;
+        if (tp.verdict === 'FAIL') {
+          const mm = tp.mismatch?.mismatch_id ?? null;
+          return (
+            mm != null &&
+            tp.mismatch?.safety_critical === false &&
+            decisionByMismatch.get(mm) === 'approved'
+          );
+        }
+        return false;
+      });
       const byRun = new Map();
       for (const r of laneTerminals) {
         const run = r.terminal.payload.corpus_run_ordinal;
@@ -1139,7 +1214,9 @@ export function foldEvidence({
       terraObservation = terraObservation || gates.terraObservation;
       explicitCacheRead = explicitCacheRead || gates.explicitCacheRead;
       const fam = familyGatesOf(manifests.completion);
-      const hearing = (validDialogueHearingsBySession.get(sid) ?? []).length > 0;
+      // Cycle-3 — the hearing must share the evaluated day (a later-day
+      // hearing cannot backfill an earlier day's family gate).
+      const hearing = (validDialogueHearingsBySession.get(`${sid}::${day}`) ?? []).length > 0;
       dialogueFamily = dialogueFamily || (fam.dialogue_script && hearing);
       addressMirrorFamily = addressMirrorFamily || fam.address_mirror;
     }
@@ -1155,6 +1232,32 @@ export function foldEvidence({
   }
 
   const acceptedDays = [...dayEvaluations.values()].filter((e) => e.accepted).map((e) => e.day);
+
+  // Cycle-3 — every manifest-named NON-SAFETY gap stratum must carry an
+  // explicit, dated Derek decision before the cohort can complete: an
+  // APPROVED deferral is named in projections; a REJECTED one means the
+  // gap must be closed by real work (permanent HOLD in this cohort);
+  // undecided = HOLD.
+  if (cohortInit) {
+    const gapDecisionByStratum = new Map();
+    for (const g of gapDecisions) {
+      if (namedGapStrata.has(g.payload.stratum_or_fixture)) {
+        const prior = gapDecisionByStratum.get(g.payload.stratum_or_fixture);
+        if (prior === 'rejected') continue; // irreversible
+        gapDecisionByStratum.set(g.payload.stratum_or_fixture, g.payload.decision);
+      }
+    }
+    for (const stratum of namedGapStrata) {
+      const decision = gapDecisionByStratum.get(stratum);
+      if (decision === 'approved') {
+        notes.push({ code: 'approved_named_gap', stratum });
+      } else if (decision === 'rejected') {
+        holds.push({ tier: 'semantic', code: 'rejected_named_gap_unclosed', stratum });
+      } else {
+        holds.push({ tier: 'semantic', code: 'undecided_named_gap', stratum });
+      }
+    }
+  }
 
   // ── state resolution ──
   // BLOCKED dominates; visible corruption/invalid evidence is HOLD, never

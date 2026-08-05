@@ -99,7 +99,9 @@ export function createS3Store({ bucket, region = process.env.AWS_REGION || 'eu-w
       const bytes = Buffer.from(await res.Body.transformToByteArray());
       return {
         bytes,
-        versionId: res.VersionId ?? versionId,
+        // RAW echo — substituting the requested id would make the audit
+        // check tautological (cycle-3).
+        versionId: res.VersionId ?? null,
         lastModified: res.LastModified ? new Date(res.LastModified).toISOString() : null,
         checksumSha256: res.ChecksumSHA256 ?? null,
       };
@@ -269,14 +271,20 @@ export async function loadAuditedPrefix(store, prefix) {
         held = true;
         continue;
       }
-      if (got.versionId != null && got.versionId !== v.versionId) {
+      // Cycle-3 — the version echo and checksum are REQUIRED proof, not
+      // optional decoration: every audited object was written by our own
+      // conditional publishers with ChecksumSHA256, so absence is a HOLD.
+      if (got.versionId == null || got.versionId !== v.versionId) {
         holds.push({ code: 'version_id_echo_mismatch', key, version_id: v.versionId });
         held = true;
         continue;
       }
-      // Codex cycle-1 — when the store reports a checksum, it must MATCH
-      // the bytes (an S3-side checksum divergence is a HOLD, not trust).
-      if (got.checksumSha256 != null) {
+      if (got.checksumSha256 == null) {
+        holds.push({ code: 'version_checksum_missing', key, version_id: v.versionId });
+        held = true;
+        continue;
+      }
+      {
         const computed = createHash('sha256').update(got.bytes).digest('base64');
         if (computed !== got.checksumSha256) {
           holds.push({ code: 'version_checksum_mismatch', key, version_id: v.versionId });

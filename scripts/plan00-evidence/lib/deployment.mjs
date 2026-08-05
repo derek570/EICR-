@@ -184,28 +184,18 @@ export async function checkLiveDeployment({
   }
 }
 
-function statementAllowsPrefix(statement) {
-  const actions = [].concat(statement?.Action ?? []);
-  const resources = [].concat(statement?.Resource ?? []);
-  const hasPut = actions.some((a) => a === 's3:PutObject' || a === 's3:*' || a === '*');
-  const hasGet = actions.some((a) => a === 's3:GetObject' || a === 's3:*' || a === '*');
-  const covers = resources.some(
-    (r) =>
-      r === MANIFEST_PREFIX_ARN ||
-      r === 'arn:aws:s3:::eicr-files-production/*' ||
-      r === 'arn:aws:s3:::eicr-files-production*' ||
-      r === '*'
-  );
-  return statement?.Effect === 'Allow' && covers ? { put: hasPut, get: hasGet } : { put: false, get: false };
-}
-
 /**
- * §C5 pre-stage proof, IAM mode: read-only inspection of the deployed task
- * role's inline + managed policies. Missing/denied proof BLOCKS
- * `stage_a_deployed`; the remedy is a source-committed IAM fix in a fresh
- * handoff, never a live-only edit.
+ * §C5 pre-stage proof, IAM mode — EFFECTIVE permissions via read-only
+ * `iam simulate-principal-policy` (cycle-3: an Allow-statement scan ignored
+ * explicit denies, conditions and boundaries). Every evaluated action must
+ * come back exactly "allowed"; anything else — implicit/explicit deny,
+ * unsupported condition context, missing results — fails CLOSED.
  */
-export async function proveTaskRolePrefixAccessViaIam({ awsRunner, taskDefArn, region = 'eu-west-2' }) {
+export async function proveTaskRolePrefixAccessViaIam({
+  awsRunner,
+  taskDefArn,
+  region = 'eu-west-2',
+}) {
   try {
     const taskDef = await awsRunner([
       'ecs',
@@ -217,46 +207,30 @@ export async function proveTaskRolePrefixAccessViaIam({ awsRunner, taskDefArn, r
     ]);
     const roleArn = taskDef?.taskDefinition?.taskRoleArn ?? null;
     if (!roleArn) return { proven: false, reason: 'no_task_role' };
-    const roleName = roleArn.split('/').pop();
-    let put = false;
-    let get = false;
-    const inline = await awsRunner(['iam', 'list-role-policies', '--role-name', roleName]);
-    for (const policyName of inline?.PolicyNames ?? []) {
-      const pol = await awsRunner([
-        'iam',
-        'get-role-policy',
-        '--role-name',
-        roleName,
-        '--policy-name',
-        policyName,
-      ]);
-      for (const st of [].concat(pol?.PolicyDocument?.Statement ?? [])) {
-        const v = statementAllowsPrefix(st);
-        put = put || v.put;
-        get = get || v.get;
-      }
-    }
-    const attached = await awsRunner(['iam', 'list-attached-role-policies', '--role-name', roleName]);
-    for (const p of attached?.AttachedPolicies ?? []) {
-      const meta = await awsRunner(['iam', 'get-policy', '--policy-arn', p.PolicyArn]);
-      const versionId = meta?.Policy?.DefaultVersionId;
-      if (!versionId) continue;
-      const doc = await awsRunner([
-        'iam',
-        'get-policy-version',
-        '--policy-arn',
-        p.PolicyArn,
-        '--version-id',
-        versionId,
-      ]);
-      for (const st of [].concat(doc?.PolicyVersion?.Document?.Statement ?? [])) {
-        const v = statementAllowsPrefix(st);
-        put = put || v.put;
-        get = get || v.get;
-      }
-    }
-    if (put && get) return { proven: true, mode: 'iam', role: roleName };
-    return { proven: false, reason: 'policy_missing_prefix_grant', role: roleName, put, get };
+    const sim = await awsRunner([
+      'iam',
+      'simulate-principal-policy',
+      '--policy-source-arn',
+      roleArn,
+      '--action-names',
+      's3:PutObject',
+      's3:GetObject',
+      '--resource-arns',
+      MANIFEST_PREFIX_ARN,
+    ]);
+    const results = sim?.EvaluationResults ?? [];
+    const actions = new Set(results.map((r) => r.EvalActionName));
+    const allAllowed =
+      actions.has('s3:PutObject') &&
+      actions.has('s3:GetObject') &&
+      results.length > 0 &&
+      results.every((r) => r.EvalDecision === 'allowed');
+    if (allAllowed) return { proven: true, mode: 'iam', role: roleArn };
+    return {
+      proven: false,
+      reason: 'simulation_not_allowed',
+      results: results.map((r) => ({ action: r.EvalActionName, decision: r.EvalDecision })),
+    };
   } catch (err) {
     return { proven: false, reason: `iam_inspection_failed:${err?.message}` };
   }

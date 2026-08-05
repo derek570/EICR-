@@ -65,6 +65,7 @@ const FP = 'f'.repeat(64);
 const EXPECTATION_MANIFEST = {
   combined_sha256: 'combined-sha',
   vendor_live_expectations: { fixture_ids: ['fx1', 'fx2'], sha256: 'vendor-sha' },
+  deterministic_egress_expectations: { sha256: 'egress-sha' },
   semantic_oracle_digest: 'oracle-digest',
 };
 const TEST_DIGESTS = { promptDigest: 'pd', toolDigest: 'td', expectationDigest: 'vendor-sha' };
@@ -141,6 +142,8 @@ async function establishCohort(store, { at = '2026-08-09T08:00:00Z' } = {}) {
       reviewer: 'Derek',
       attested_at: new Date(clockMs - 500).toISOString(),
       combined_sha256: EXPECTATION_MANIFEST.combined_sha256,
+      vendor_live_sha256: EXPECTATION_MANIFEST.vendor_live_expectations.sha256,
+      deterministic_egress_sha256: EXPECTATION_MANIFEST.deterministic_egress_expectations.sha256,
     },
   });
   const { fingerprint } = computeCohortFingerprint({
@@ -215,10 +218,21 @@ async function publishAttempt(
   if (!res.authorised) throw new Error(`test reservation failed: ${JSON.stringify(res)}`);
   if (skipTerminal) return { candidate };
   if (terminalAt) tickClock(store, terminalAt);
-  // Content-addressed report published BEFORE the terminal (fold-audited).
+  // Content-addressed report published BEFORE the terminal (fold-audited;
+  // the fold cross-checks verdict/ids/requirement against it).
+  const resolvedProviderIds =
+    providerIds ?? (verdict === 'INVALID' ? [] : [`prov_${requirementKey}_${generation}`]);
   let reportDigest = null;
   if (verdict !== 'INVALID') {
-    const reportBody = { requirement_key: requirementKey, generation };
+    const reportBody = {
+      schema_version: 1,
+      kind: 'attempt_report',
+      requirement_key: requirementKey,
+      attempt_generation: generation,
+      verdict,
+      provider_call_ids: resolvedProviderIds,
+      mismatch: mismatch ?? null,
+    };
     reportDigest = evidenceEventHash(reportBody);
     const rr = await publishDurable(store, {
       key: `${EVIDENCE_PREFIX}/reports/${cohortId}/${reportDigest}.json`,
@@ -226,6 +240,19 @@ async function publishAttempt(
     });
     if (!rr.ok) throw new Error(`test report publish failed: ${rr.error}`);
   }
+  const sampleIdentity =
+    verdict === 'INVALID'
+      ? null
+      : evidenceEventHash({
+          provider_call_ids: resolvedProviderIds,
+          deployment_fingerprint: FP,
+          requirement_key: requirementKey,
+          model,
+          tier,
+          prompt_digest: TEST_DIGESTS.promptDigest,
+          tool_digest: TEST_DIGESTS.toolDigest,
+          expectation_digest: TEST_DIGESTS.expectationDigest,
+        });
   const body = {
     requirement_key: requirementKey,
     attempt_ref: attemptRefOverride ?? candidate.attemptRef,
@@ -239,9 +266,8 @@ async function publishAttempt(
     tool_digest: TEST_DIGESTS.toolDigest,
     expectation_digest: TEST_DIGESTS.expectationDigest,
     report_digest: reportDigest,
-    provider_call_ids:
-      providerIds ?? (verdict === 'INVALID' ? [] : [`prov_${requirementKey}_${generation}`]),
-    sample_identity: verdict === 'INVALID' ? null : `sid_${requirementKey}_${generation}`,
+    provider_call_ids: resolvedProviderIds,
+    sample_identity: sampleIdentity,
     generated_at: generatedAt ?? new Date(clockMs - 100).toISOString(),
     ...(repetitionOrdinal != null ? { repetition_ordinal: repetitionOrdinal } : {}),
     ...(corpusRunOrdinal != null ? { corpus_run_ordinal: corpusRunOrdinal } : {}),
@@ -280,7 +306,7 @@ function inspectorRound(overrides = {}) {
     cache_write_input_tokens: 0,
     output_tokens: 50,
     round_idx: 0,
-    billable_kind: 'inspector_extraction',
+    billable_kind: 'inspector_live',
     loop_invocation_id: 'loop_1',
     ...overrides,
   };
@@ -2102,45 +2128,37 @@ describe('I — trusted deploy + task-role proof', () => {
     expect(badSha.ok).toBe(false);
   });
 
-  test('IAM role proof: grant present proves; absent grant refuses stage_a', async () => {
-    const policies = {
-      granted: {
-        PolicyDocument: {
-          Statement: [
-            {
-              Effect: 'Allow',
-              Action: ['s3:PutObject', 's3:GetObject'],
-              Resource: 'arn:aws:s3:::eicr-files-production/plan00-session-manifests/*',
-            },
-          ],
-        },
-      },
-      denied: {
-        PolicyDocument: {
-          Statement: [{ Effect: 'Allow', Action: ['s3:ListBucket'], Resource: '*' }],
-        },
-      },
-    };
-    const runner = (which) => async (args) => {
+  test('IAM role proof: effective-permission simulation — allowed proves; ANY deny refuses', async () => {
+    const runner = (decisions) => async (args) => {
       const cmd = args.join(' ');
       if (cmd.startsWith('ecs describe-task-definition')) {
         return { taskDefinition: { taskRoleArn: 'arn:aws:iam::1:role/eicr-task-role' } };
       }
-      if (cmd.startsWith('iam list-role-policies')) return { PolicyNames: ['inline1'] };
-      if (cmd.startsWith('iam get-role-policy')) return policies[which];
-      if (cmd.startsWith('iam list-attached-role-policies')) return { AttachedPolicies: [] };
+      if (cmd.startsWith('iam simulate-principal-policy')) {
+        return {
+          EvaluationResults: [
+            { EvalActionName: 's3:PutObject', EvalDecision: decisions[0] },
+            { EvalActionName: 's3:GetObject', EvalDecision: decisions[1] },
+          ],
+        };
+      }
       throw new Error(`unexpected ${cmd}`);
     };
     const yes = await proveTaskRolePrefixAccessViaIam({
-      awsRunner: runner('granted'),
+      awsRunner: runner(['allowed', 'allowed']),
       taskDefArn: 'x',
     });
     expect(yes.proven).toBe(true);
-    const no = await proveTaskRolePrefixAccessViaIam({
-      awsRunner: runner('denied'),
-      taskDefArn: 'x',
-    });
-    expect(no.proven).toBe(false);
+    for (const decisions of [
+      ['allowed', 'implicitDeny'],
+      ['explicitDeny', 'allowed'],
+    ]) {
+      const no = await proveTaskRolePrefixAccessViaIam({
+        awsRunner: runner(decisions),
+        taskDefArn: 'x',
+      });
+      expect(no.proven).toBe(false);
+    }
   });
 });
 
@@ -2175,6 +2193,25 @@ describe('J — cycle-1: real-traffic route normalization', () => {
     const day = fold.day_evaluations.find((d) => d.day === '2026-08-10');
     expect(day.requirements.luna_fast_round).toBe(true);
     expect(day.requirements.terra_observation_round).toBe(true);
+  });
+
+  test('an inspector_extraction (direct-ingest default) Luna row does NOT satisfy the ordinary-reading gate', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await bindAndAttestDay(store, {
+      cohortId,
+      sessionId: 'sess_ie',
+      day: '2026-08-10',
+      completedAt: '2026-08-10T09:55:00Z',
+      completionOverrides: {
+        evidence: {
+          round_usage: { rounds: [inspectorRound({ billable_kind: 'inspector_extraction' })] },
+        },
+      },
+    });
+    const fold = await foldNow(store, cohortId);
+    const day = fold.day_evaluations.find((d) => d.day === '2026-08-10');
+    expect(day.requirements.luna_fast_round).toBe(false);
   });
 
   test('an UNATTRIBUTED Terra-shaped row never satisfies the Terra gate', async () => {
@@ -2259,8 +2296,26 @@ describe('J — cycle-1: generation-chain ordering', () => {
       },
     });
     tickClock(store, '2026-08-10T09:20:00Z');
-    const g2Report = { chain: 'g2' };
+    const g2Report = {
+      schema_version: 1,
+      kind: 'attempt_report',
+      requirement_key: key,
+      attempt_generation: 2,
+      verdict: 'PASS',
+      provider_call_ids: ['p_g2'],
+      mismatch: null,
+    };
     const g2ReportDigest = evidenceEventHash(g2Report);
+    const g2Sample = evidenceEventHash({
+      provider_call_ids: ['p_g2'],
+      deployment_fingerprint: FP,
+      requirement_key: key,
+      model: 'gpt-5.6-luna',
+      tier: 'fast',
+      prompt_digest: 'pd',
+      tool_digest: 'td',
+      expectation_digest: 'vendor-sha',
+    });
     await publishDurable(store, {
       key: `${EVIDENCE_PREFIX}/reports/${cohortId}/${g2ReportDigest}.json`,
       bytes: canonicalBytes(g2Report),
@@ -2283,7 +2338,7 @@ describe('J — cycle-1: generation-chain ordering', () => {
         expectation_digest: 'vendor-sha',
         report_digest: g2ReportDigest,
         provider_call_ids: ['p_g2'],
-        sample_identity: 'sid_g2',
+        sample_identity: g2Sample,
         generated_at: '2026-08-10T09:19:00Z',
         repetition_ordinal: 40,
       },

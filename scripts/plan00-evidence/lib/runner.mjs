@@ -105,10 +105,19 @@ export async function runReservedAttempt(
   dispatchLatch.begun = true;
   try {
     outcome = await execute();
+    // Cycle-3 — a malformed executor RESULT is a harness failure exactly
+    // like a throw: normalise to INVALID, never dereference blind (an
+    // orphan PENDING here would be an avoidable cohort-ender).
+    if (!outcome || typeof outcome !== 'object') {
+      outcome = {
+        verdict: 'INVALID',
+        providerCallIds: [],
+        reason: 'executor_result_malformed',
+      };
+    }
   } catch (err) {
     outcome = {
       verdict: 'INVALID',
-      reportDigest: null,
       providerCallIds: [],
       reason: `executor_threw:${err?.message ?? 'unknown'}`,
     };
@@ -143,12 +152,22 @@ export async function runReservedAttempt(
           expectation_digest: expectationDigest,
         });
 
-  // Referenced-report integrity (C2): the canonical PII-free report is
-  // published CONTENT-ADDRESSED before its terminal; report_digest is
-  // recomputed here, never caller-supplied bytes trusted.
-  let reportDigest = outcome.reportDigest ?? null;
+  // Referenced-report integrity (C2): the canonical PII-free report is a
+  // CLOSED schema BUILT HERE from validated fields only (never a free-form
+  // executor object — that would be a PII/agreement hole), published
+  // content-addressed BEFORE its terminal so the fold can cross-check the
+  // terminal against it.
+  let reportDigest = null;
   if (verdict !== 'INVALID') {
-    const reportBody = outcome.report ?? { verdict, provider_call_ids: providerCallIds };
+    const reportBody = {
+      schema_version: 1,
+      kind: 'attempt_report',
+      requirement_key: requirementKey,
+      attempt_generation: generation,
+      verdict,
+      provider_call_ids: providerCallIds,
+      mismatch: outcome.mismatch ?? null,
+    };
     reportDigest = evidenceEventHash(reportBody);
     const reportReceipt = await publishDurable(store, {
       key: reportKey({ cohortId, reportDigest }),
@@ -157,7 +176,7 @@ export async function runReservedAttempt(
     if (!reportReceipt.ok) {
       verdict = 'INVALID';
       reason = `report_publish_failed:${reportReceipt.error}`;
-      reportDigest = outcome.reportDigest ?? null;
+      reportDigest = null;
     }
   }
 
