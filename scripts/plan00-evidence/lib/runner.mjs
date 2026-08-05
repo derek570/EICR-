@@ -11,14 +11,14 @@
  * provider ids on a non-INVALID verdict is DOWNGRADED to INVALID with a
  * named reason (fail closed, never fabricated ids).
  *
- * The default live executor wraps the enumerated Plan 00B lane machinery
- * (`bootLaneDriver`/`driveFixture`) — which does not yet surface provider
- * response/message ids. Until a reviewed 00B successor exposes them, live
- * runs therefore terminate INVALID (`provider_ids_unavailable`) and remain
- * replaceable under the same requirement key; this is the honest fail-closed
- * outcome, recorded loudly rather than silently.
+ * There is NO live executor yet: the enumerated Plan 00B lane machinery is
+ * mock/replay-only and mock verdicts must never enter the evidence store,
+ * so the CLI run commands REFUSE before allocating anything. This protocol
+ * is test-pinned against injected executors and a reviewed 00B successor
+ * wires the real live dispatch (surfacing provider response ids) in.
  */
 
+import { evidenceEventHash } from '../../field-replay/lib/canonical-crypto.mjs';
 import { buildEvent, validateStoredEvent } from './events.mjs';
 import { publishDurable } from './store.mjs';
 import { allocateOrdinal, buildAttemptCandidate, buildOrdinalCandidate, reserveAttempt } from './reservations.mjs';
@@ -108,13 +108,34 @@ export async function runReservedAttempt(
 
   let verdict = outcome.verdict === 'PASS' || outcome.verdict === 'FAIL' ? outcome.verdict : 'INVALID';
   let reason = outcome.reason ?? null;
-  const providerCallIds = Array.isArray(outcome.providerCallIds) ? outcome.providerCallIds : [];
+  const providerCallIds = (Array.isArray(outcome.providerCallIds) ? outcome.providerCallIds : []).filter(
+    (id) => typeof id === 'string' && id.length > 0
+  );
   if (verdict !== 'INVALID' && providerCallIds.length === 0) {
     // Fail CLOSED: a semantic verdict without provider identity cannot
     // count; it stays replaceable under the same requirement key.
     verdict = 'INVALID';
     reason = 'provider_ids_unavailable';
   }
+  if (verdict !== 'INVALID' && (typeof outcome.reportDigest !== 'string' || outcome.reportDigest.length === 0)) {
+    verdict = 'INVALID';
+    reason = 'report_digest_unavailable';
+  }
+  // C2 — the sample identity is a terminal-evidence canonical hash of the
+  // ordered provider-call ids, requirement key, model/tier and digests;
+  // caller timestamps/ids cannot alter it. Null ONLY on INVALID.
+  const sampleIdentity =
+    verdict === 'INVALID'
+      ? (outcome.sampleIdentity ?? null)
+      : evidenceEventHash({
+          provider_call_ids: providerCallIds,
+          requirement_key: requirementKey,
+          model,
+          tier,
+          prompt_digest: promptDigest,
+          tool_digest: toolDigest,
+          expectation_digest: expectationDigest,
+        });
 
   const body = {
     requirement_key: requirementKey,
@@ -131,7 +152,7 @@ export async function runReservedAttempt(
     expectation_digest: expectationDigest,
     report_digest: outcome.reportDigest ?? null,
     provider_call_ids: providerCallIds,
-    sample_identity: outcome.sampleIdentity ?? null,
+    sample_identity: sampleIdentity,
     generated_at: nowIso(),
     ...(reason != null ? { invalid_reason: reason } : {}),
     ...(repetitionOrdinal != null ? { repetition_ordinal: repetitionOrdinal } : {}),

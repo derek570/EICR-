@@ -588,9 +588,15 @@ export function createProductionEvidenceContextFactory({
     try {
       return {
         observer,
+        // ONLY the mutation observer is guard-wrapped: it is the one role
+        // that deliberately THROWS on contract violations, and its return
+        // values are never dereferenced by callers. The ask/delivery
+        // ledgers return verdict objects that enumerated callers
+        // dereference immediately (row.op_keys, verdict.accepted) — a
+        // guard returning undefined there would CREATE a throw path.
         mutationObserver: guardEvidenceRole(createMutationObserver({ sessionId }), 'mutation'),
-        askLedger: guardEvidenceRole(createAskLedger(), 'ask'),
-        deliveryLedger: guardEvidenceRole(createDeliveryLedger(), 'delivery'),
+        askLedger: createAskLedger(),
+        deliveryLedger: createDeliveryLedger(),
       };
     } catch (err) {
       // Evidence composition failed — the session still gets manifests

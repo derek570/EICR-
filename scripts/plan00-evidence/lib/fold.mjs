@@ -332,7 +332,18 @@ export function foldEvidence({
   const stageADeploymentFingerprint = stageAEvent?.payload?.runtime?.deployment_fingerprint ?? null;
   const initPublishedAt = cohortInit ? parseInstant(cohortInit.published_at) : null;
 
-  // ── reservations: PENDING records (key-derivation verified) ──
+  // ── reservations: logical ordinals + PENDING records (key-verified) ──
+  const ordinalByVersionId = new Map(); // allocation VersionId → {lane, ordinal}
+  for (const rec of reservationsSorted) {
+    if (rec.payload?.reservation_kind !== 'logical_ordinal') continue;
+    for (const vid of rec.version_ids ?? []) {
+      ordinalByVersionId.set(vid, {
+        lane: rec.payload.lane,
+        ordinal: rec.payload.ordinal,
+        key: rec.key,
+      });
+    }
+  }
   const pendings = [];
   for (const rec of reservationsSorted) {
     if (rec.payload?.reservation_kind !== 'attempt_pending') continue;
@@ -417,9 +428,41 @@ export function foldEvidence({
       continue;
     }
     const ids = Array.isArray(tp.provider_call_ids) ? tp.provider_call_ids : [];
-    if (tp.verdict !== 'INVALID' && ids.length === 0) {
-      invalid.push({ key: t.key, problems: [{ code: 'terminal_missing_provider_ids' }] });
-      continue;
+    if (tp.verdict !== 'INVALID') {
+      // Mini-review — PASS/FAIL evidence must carry REAL identity: non-empty
+      // string provider ids, a non-empty report digest and a non-null
+      // sample identity (null is legal ONLY on INVALID).
+      if (ids.length === 0 || ids.some((id) => typeof id !== 'string' || id.length === 0)) {
+        invalid.push({ key: t.key, problems: [{ code: 'terminal_missing_provider_ids' }] });
+        continue;
+      }
+      if (typeof tp.report_digest !== 'string' || tp.report_digest.length === 0) {
+        invalid.push({ key: t.key, problems: [{ code: 'terminal_missing_report_digest' }] });
+        continue;
+      }
+      if (tp.sample_identity != null && typeof tp.sample_identity !== 'string') {
+        invalid.push({ key: t.key, problems: [{ code: 'terminal_sample_identity_malformed' }] });
+        continue;
+      }
+      // Ordinal binding: a pinned-IR / vendor-corpus terminal must bind its
+      // allocation VersionId to an AUDITED logical-ordinal reservation whose
+      // lane + ordinal agree with the terminal's own ordinal fields.
+      if (tp.requirement_class === 'pinned_ir' || tp.requirement_class === 'vendor_corpus') {
+        const allocation =
+          tp.allocation_version_id != null ? ordinalByVersionId.get(tp.allocation_version_id) : null;
+        if (!allocation) {
+          invalid.push({ key: t.key, problems: [{ code: 'terminal_allocation_unresolved' }] });
+          continue;
+        }
+        const expectedOrdinal =
+          tp.requirement_class === 'pinned_ir' ? tp.repetition_ordinal : tp.corpus_run_ordinal;
+        const expectedLane =
+          tp.requirement_class === 'pinned_ir' ? 'ir-repetition' : `corpus-run-${tp.model_lane}`;
+        if (allocation.ordinal !== expectedOrdinal || allocation.lane !== expectedLane) {
+          invalid.push({ key: t.key, problems: [{ code: 'terminal_allocation_ordinal_mismatch' }] });
+          continue;
+        }
+      }
     }
     const generatedAt = parseInstant(tp.generated_at);
     const receiptAt = parseInstant(t.published_at);
@@ -469,6 +512,18 @@ export function foldEvidence({
       }
     }
   }
+  // Report digests are cohort-wide single-use too (a rewrapped report under
+  // a fresh ref cannot count twice).
+  const seenReportDigests = new Map();
+  for (const [ref, { terminal }] of validTerminals) {
+    const rd = terminal.payload.report_digest ?? null;
+    if (rd == null) continue;
+    if (seenReportDigests.has(rd) && seenReportDigests.get(rd) !== ref) {
+      blocks.push({ code: 'report_digest_reuse', report_digest: rd });
+    } else {
+      seenReportDigests.set(rd, ref);
+    }
+  }
 
   // ── per-requirement resolution (generation chain, INVALID replacement) ──
   const requirements = new Map();
@@ -485,41 +540,92 @@ export function foldEvidence({
       blocks.push({ code: 'duplicate_valid_terminals_for_key', requirement_key: key });
       continue;
     }
-    // Codex cycle-1 — the replacement GENERATION CHAIN is validated, not
-    // trusted: a valid terminal must be the HIGHEST generation, every
-    // earlier generation must be a structurally valid INVALID, and each
-    // replacement PENDING must postdate its predecessor's terminal receipt.
+    // Codex cycle-1 + mini-review — the replacement GENERATION CHAIN is
+    // validated over ALL audited PENDINGs for this requirement key, not
+    // just structurally valid terminals: a malformed link makes successors
+    // UNVERIFIABLE (HOLD, uncreditable), while genuinely CONTRADICTORY
+    // shapes (a replacement racing/preceding its predecessor terminal, or
+    // any generation after a valid terminal) BLOCK.
     let chainOk = true;
-    const generations = req.all.map((r) => r.pending.payload.attempt_generation);
-    for (let i = 0; i < req.all.length; i += 1) {
-      const expectedGen = i + 1;
-      if (generations[i] !== expectedGen) {
-        blocks.push({
+    const allPendingsForKey = pendings
+      .filter((rec) => rec.payload.requirement_key === key)
+      .sort((a, b) => (a.payload.attempt_generation ?? 0) - (b.payload.attempt_generation ?? 0));
+    const generationsPresent = allPendingsForKey.map((rec) => rec.payload.attempt_generation);
+    for (let i = 0; i < generationsPresent.length; i += 1) {
+      if (generationsPresent[i] !== i + 1) {
+        holds.push({
+          tier: 'attempt',
           code: 'attempt_generation_chain_broken',
           requirement_key: key,
-          generations,
+          generations: generationsPresent,
         });
         chainOk = false;
         break;
       }
-      if (i > 0) {
-        const predecessor = req.all[i - 1];
+    }
+    if (chainOk) {
+      // Requirement-defining metadata must be byte-identical across
+      // generations (a replacement reuses the EXACT requirement).
+      const first = allPendingsForKey[0]?.payload ?? null;
+      for (const rec of allPendingsForKey.slice(1)) {
+        const q = rec.payload;
+        if (
+          (q.requirement_class ?? null) !== (first.requirement_class ?? null) ||
+          (q.model ?? null) !== (first.model ?? null) ||
+          (q.tier ?? null) !== (first.tier ?? null) ||
+          (q.allocation_version_id ?? null) !== (first.allocation_version_id ?? null) ||
+          (q.prompt_digest ?? null) !== (first.prompt_digest ?? null) ||
+          (q.tool_digest ?? null) !== (first.tool_digest ?? null) ||
+          (q.expectation_digest ?? null) !== (first.expectation_digest ?? null)
+        ) {
+          holds.push({
+            tier: 'attempt',
+            code: 'replacement_metadata_drift',
+            requirement_key: key,
+            generation: q.attempt_generation,
+          });
+          chainOk = false;
+          break;
+        }
+      }
+    }
+    if (chainOk) {
+      const terminalByGeneration = new Map(
+        req.all.map((r) => [r.pending.payload.attempt_generation, r])
+      );
+      for (const rec of allPendingsForKey) {
+        const gen = rec.payload.attempt_generation;
+        if (gen === 1) continue;
+        const predecessor = terminalByGeneration.get(gen - 1) ?? null;
+        if (!predecessor) {
+          // The predecessor terminal is missing or structurally invalid —
+          // this generation is UNVERIFIABLE (its own orphan/invalid state is
+          // already held elsewhere); successors stay uncreditable.
+          holds.push({
+            tier: 'attempt',
+            code: 'replacement_chain_unverifiable',
+            requirement_key: key,
+            generation: gen,
+          });
+          chainOk = false;
+          break;
+        }
         if (predecessor.terminal.payload.verdict !== 'INVALID') {
           blocks.push({
             code: 'replacement_after_valid_terminal',
             requirement_key: key,
-            generation: generations[i],
+            generation: gen,
           });
           chainOk = false;
           break;
         }
         const predTerminalAt = parseInstant(predecessor.terminal.published_at);
-        const pendingAt = parseInstant(req.all[i].pending.published_at);
+        const pendingAt = parseInstant(rec.published_at);
         if (predTerminalAt == null || pendingAt == null || pendingAt < predTerminalAt) {
           blocks.push({
             code: 'replacement_before_predecessor_terminal',
             requirement_key: key,
-            generation: generations[i],
+            generation: gen,
           });
           chainOk = false;
           break;
@@ -619,6 +725,20 @@ export function foldEvidence({
       ) {
         problems.push({ code: 'bound_deployment_fingerprint_mismatch' });
       }
+      // Mini-review — the bound manifests' prompt/tool/config fingerprints
+      // and deployment fingerprint must equal the cohort's stage-A event.
+      if (stageAEvent && manifests?.completion?.deployment) {
+        const d = manifests.completion.deployment;
+        const sp = stageAEvent.payload;
+        if (
+          (stageADeploymentFingerprint != null && d.fingerprint !== stageADeploymentFingerprint) ||
+          (sp.prompt_fingerprint != null && d.prompt_fingerprint !== sp.prompt_fingerprint) ||
+          (sp.tool_fingerprint != null && d.tool_fingerprint !== sp.tool_fingerprint) ||
+          (sp.config_fingerprint != null && d.config_fingerprint !== sp.config_fingerprint)
+        ) {
+          problems.push({ code: 'bound_manifest_fingerprint_drift' });
+        }
+      }
       const boundAt = parseInstant(b.published_at);
       if (initPublishedAt != null && (boundAt == null || boundAt < initPublishedAt)) {
         problems.push({ code: 'bound_before_cohort_deployment' });
@@ -680,6 +800,13 @@ export function foldEvidence({
         attestedAt >= receiptAt + CLOCK_SKEW_MS
       ) {
         problems.push({ code: 'attested_at_ordering_invalid' });
+      }
+      // Mini-review — the heard confirmation must belong to THIS day: the
+      // confirmation session's completion-manifest receipt shares the
+      // attestation's Europe/London day.
+      const confPublishedAt = parseInstant(manifests.published_at);
+      if (receiptDay != null && (confPublishedAt == null || londonDayOf(confPublishedAt) !== receiptDay)) {
+        problems.push({ code: 'confirmation_session_day_mismatch' });
       }
       const res = resolveManualConfirmationRef(manifests.completion, p.confirmation_ref);
       if (!res.resolved) {
@@ -765,17 +892,18 @@ export function foldEvidence({
   const attestedFixtureIds = expectationManifest?.vendor_live_expectations?.fixture_ids ?? [];
   const namedGapStrata = new Set(
     (expectationManifest?.strata_named_gaps ?? [])
-      .filter((g) => g.safety_critical !== true)
+      .filter((g) => g.safety_critical === false)
       .map((g) => g.stratum)
   );
   const approvedDeferrals = new Set();
   for (const g of gapDecisions) {
     const p = g.payload;
-    // Codex cycle-1 — a deferral target must be KNOWN (an attested fixture
-    // id or a manifest-named non-safety gap stratum) and non-safety per the
-    // event; anything else is INVALID and defers nothing.
-    const known =
-      attestedFixtureIds.includes(p.stratum_or_fixture) || namedGapStrata.has(p.stratum_or_fixture);
+    // Mini-review — UNCLASSIFIED targets default to SAFETY-CRITICAL: only a
+    // manifest-named gap stratum EXPLICITLY carrying safety_critical:false
+    // is deferrable. Whole attested fixtures carry no per-expectation
+    // safety classification and can NEVER be deferred (follow-up:
+    // per-fixture safety metadata in the expectation manifest).
+    const known = namedGapStrata.has(p.stratum_or_fixture);
     if (!known || p.safety_critical === true) {
       invalid.push({
         key: g.key,

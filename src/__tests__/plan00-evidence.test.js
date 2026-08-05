@@ -85,6 +85,19 @@ async function publishEventAt(store, { kind, cohortId, namespace, body, at }) {
   return { event, receipt };
 }
 
+const ordinalCache = new WeakMap(); // store → Map('lane:ordinal' → versionId)
+async function ensureOrdinal(store, { cohortId, lane, ordinal }) {
+  if (!ordinalCache.has(store)) ordinalCache.set(store, new Map());
+  const cache = ordinalCache.get(store);
+  const cacheKey = `${cohortId}:${lane}:${ordinal}`;
+  if (cache.has(cacheKey)) return cache.get(cacheKey);
+  const candidate = buildOrdinalCandidate({ cohortId, lane, ordinal });
+  const res = await allocateOrdinal(store, candidate);
+  if (!res.allocated) throw new Error(`test ordinal allocation failed: ${JSON.stringify(res)}`);
+  cache.set(cacheKey, res.versionId);
+  return res.versionId;
+}
+
 function stageABody(overrides = {}) {
   return {
     deploy_run: { run_id: '1', head_sha: 'a'.repeat(40), repository: 'derek570/EICR-' },
@@ -171,11 +184,22 @@ async function publishAttempt(
   }
 ) {
   if (at) tickClock(store, at);
+  // Ordinal-bound classes allocate their audited logical ordinal first and
+  // echo its VersionId through PENDING and terminal (fold-verified).
+  let allocationVersionId = null;
+  if (repetitionOrdinal != null || corpusRunOrdinal != null) {
+    const lane = requirementClass === 'pinned_ir' ? 'ir-repetition' : `corpus-run-${modelLane}`;
+    allocationVersionId = await ensureOrdinal(store, {
+      cohortId,
+      lane,
+      ordinal: repetitionOrdinal ?? corpusRunOrdinal,
+    });
+  }
   const candidate = buildAttemptCandidate({
     cohortId,
     requirementKey,
     generation,
-    requirement: { requirementClass, model, tier },
+    requirement: { requirementClass, model, tier, allocationVersionId },
   });
   const res = await reserveAttempt(store, candidate, { dispatchLatch: { begun: false } });
   if (!res.authorised) throw new Error(`test reservation failed: ${JSON.stringify(res)}`);
@@ -189,9 +213,11 @@ async function publishAttempt(
     verdict,
     model,
     tier,
+    allocation_version_id: allocationVersionId,
     report_digest: `rep_${requirementKey}_${generation}`,
     provider_call_ids:
       providerIds ?? (verdict === 'INVALID' ? [] : [`prov_${requirementKey}_${generation}`]),
+    sample_identity: verdict === 'INVALID' ? null : `sid_${requirementKey}_${generation}`,
     generated_at: generatedAt ?? new Date(clockMs - 100).toISOString(),
     ...(repetitionOrdinal != null ? { repetition_ordinal: repetitionOrdinal } : {}),
     ...(corpusRunOrdinal != null ? { corpus_run_ordinal: corpusRunOrdinal } : {}),
@@ -1621,7 +1647,7 @@ describe('G — per-day route/cache/family/IR/corpus gates', () => {
     expect(fold.blocks.some((b) => b.code === 'ir_ordinal_reuse_within_day')).toBe(true);
   });
 
-  test('an incomplete corpus run (missing fixture) fails the lane; an approved deferral excuses it', async () => {
+  test('an incomplete corpus run fails the lane; a FIXTURE-ID deferral is INVALID and excuses nothing', async () => {
     const store = createMemoryStore();
     const { cohortId } = await establishCohort(store);
     await publishAttempt(store, {
@@ -1650,7 +1676,11 @@ describe('G — per-day route/cache/family/IR/corpus gates', () => {
     });
     fold = await foldNow(store, cohortId);
     day = fold.day_evaluations.find((d) => d.day === '2026-08-10');
-    expect(day.requirements.corpus_luna).toBe(true);
+    // Unclassified targets default to safety-critical: a whole attested
+    // fixture is NEVER deferrable, so the lane stays incomplete and the
+    // decision itself is held invalid.
+    expect(day.requirements.corpus_luna).toBe(false);
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
   });
 });
 
@@ -2161,11 +2191,21 @@ describe('J — cycle-1: generation-chain ordering', () => {
     });
     // Reserve gen 2 now (09:05), then publish gen 1's terminal later (09:10).
     tickClock(store, '2026-08-10T09:05:00Z');
+    const allocationVersionId = await ensureOrdinal(store, {
+      cohortId,
+      lane: 'ir-repetition',
+      ordinal: 40,
+    });
     const g2 = buildAttemptCandidate({
       cohortId,
       requirementKey: key,
       generation: 2,
-      requirement: { requirementClass: 'pinned_ir', model: 'gpt-5.6-luna', tier: 'fast' },
+      requirement: {
+        requirementClass: 'pinned_ir',
+        model: 'gpt-5.6-luna',
+        tier: 'fast',
+        allocationVersionId,
+      },
     });
     await reserveAttempt(store, g2, { dispatchLatch: { begun: false } });
     tickClock(store, '2026-08-10T09:10:00Z');
@@ -2181,6 +2221,7 @@ describe('J — cycle-1: generation-chain ordering', () => {
         verdict: 'INVALID',
         model: 'gpt-5.6-luna',
         tier: 'fast',
+        allocation_version_id: allocationVersionId,
         report_digest: 'r1',
         provider_call_ids: [],
         generated_at: '2026-08-10T09:09:00Z',
@@ -2200,8 +2241,10 @@ describe('J — cycle-1: generation-chain ordering', () => {
         verdict: 'PASS',
         model: 'gpt-5.6-luna',
         tier: 'fast',
+        allocation_version_id: allocationVersionId,
         report_digest: 'r2',
         provider_call_ids: ['p_g2'],
+        sample_identity: 'sid_g2',
         generated_at: '2026-08-10T09:19:00Z',
         repetition_ordinal: 40,
       },
@@ -2305,6 +2348,33 @@ describe('J — cycle-1: binding + scoping integrity', () => {
       liveDeployment: LIVE_OK,
     });
     expect(fold.holds.some((h) => h.code === 'record_outside_fold_cohort')).toBe(true);
+  });
+
+  test('a manifest-named NON-SAFETY gap stratum deferral is accepted (but reduces no fixture set)', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishEventAt(store, {
+      kind: 'corpus_gap_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        stratum_or_fixture: 'multi_board_routing',
+        decision: 'approved',
+        safety_critical: false,
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+    const fold = await computeFold(store, {
+      cohortId,
+      expectationManifest: {
+        ...EXPECTATION_MANIFEST,
+        strata_named_gaps: [{ stratum: 'multi_board_routing', safety_critical: false }],
+      },
+      recomputedOracleDigest: EXPECTATION_MANIFEST.semantic_oracle_digest,
+      liveDeployment: LIVE_OK,
+    });
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(false);
   });
 
   test('an unknown corpus-gap deferral target is INVALID and defers nothing', async () => {

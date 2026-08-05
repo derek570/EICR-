@@ -30,9 +30,14 @@ const COMPLETION_FORBIDDEN_IN_START = [
   'round_usage',
 ];
 
+function parseableInstant(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
 function validateStartManifest(payload) {
   const problems = [];
   if (payload.schema_version !== 1) problems.push({ code: 'start_schema_version_unknown' });
+  if (payload.boundary !== 'session_started') problems.push({ code: 'start_boundary_invalid' });
   for (const key of Object.keys(payload)) {
     if (!START_ALLOWED_KEYS.has(key)) {
       problems.push({ code: 'start_manifest_extra_key', field: key });
@@ -41,14 +46,14 @@ function validateStartManifest(payload) {
   for (const key of COMPLETION_FORBIDDEN_IN_START) {
     if (key in payload) problems.push({ code: 'start_manifest_completion_field_present', field: key });
   }
-  if (typeof payload.started_at !== 'string') problems.push({ code: 'start_missing_started_at' });
+  if (!parseableInstant(payload.started_at)) problems.push({ code: 'start_started_at_unparseable' });
   return problems;
 }
 
 function validateCompletionManifest(payload) {
   const problems = [];
   if (payload.schema_version !== 1) problems.push({ code: 'completion_schema_version_unknown' });
-  if (typeof payload.completed_at !== 'string') problems.push({ code: 'completion_missing_completed_at' });
+  if (!parseableInstant(payload.completed_at)) problems.push({ code: 'completion_completed_at_unparseable' });
   if (!payload.status || typeof payload.status !== 'object') {
     problems.push({ code: 'completion_missing_status' });
   }
@@ -126,9 +131,11 @@ export async function collectSessionManifests(store, { deploymentFingerprint, se
 
   if (start && completion) {
     // Task-rollover / identity drift: start and completion must agree on
-    // the FULL deployment identity — disagreement makes the session invalid.
-    const a = JSON.stringify(start.deployment?.identity ?? null);
-    const b = JSON.stringify(completion.deployment?.identity ?? null);
+    // the WHOLE deployment section (identity + every fingerprint) —
+    // disagreement makes the session invalid (mini-review widened this
+    // from identity-only).
+    const a = JSON.stringify(start.deployment ?? null);
+    const b = JSON.stringify(completion.deployment ?? null);
     if (a !== b) problems.push({ code: 'start_completion_identity_disagreement' });
     if (start.deployment?.identity == null || completion.deployment?.identity == null) {
       problems.push({ code: 'deployment_identity_missing' });
@@ -136,11 +143,12 @@ export async function collectSessionManifests(store, { deploymentFingerprint, se
     if (start.deployment?.fingerprint !== deploymentFingerprint) {
       problems.push({ code: 'deployment_fingerprint_mismatch' });
     }
-    if (
-      start.started_at != null &&
-      completion.completed_at != null &&
-      Date.parse(completion.completed_at) < Date.parse(start.started_at)
-    ) {
+    if (completion.deployment?.fingerprint !== deploymentFingerprint) {
+      problems.push({ code: 'completion_fingerprint_mismatch' });
+    }
+    const startAt = Date.parse(start.started_at ?? '');
+    const completedAt = Date.parse(completion.completed_at ?? '');
+    if (!Number.isFinite(startAt) || !Number.isFinite(completedAt) || completedAt < startAt) {
       problems.push({ code: 'completion_before_start' });
     }
   }

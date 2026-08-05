@@ -269,6 +269,16 @@ async function cmdPublishStageA(args, store) {
   if (!identity.task_revision || !identity.image_id) {
     throw new Error('cannot derive deployment identity (task revision / image digest missing)');
   }
+  // Mini-review — the fingerprints must be computed from the EXACT
+  // deployed source: the checkout must be at head_sha with a clean tree.
+  const { stdout: headOut } = await execFileAsync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD']);
+  if (headOut.trim() !== headSha) {
+    throw new Error(`checkout HEAD ${headOut.trim().slice(0, 12)} != deployed head_sha — cannot fingerprint`);
+  }
+  const { stdout: dirtyOut } = await execFileAsync('git', ['-C', REPO_ROOT, 'status', '--porcelain']);
+  if (dirtyOut.trim().length > 0) {
+    throw new Error('checkout is dirty — fingerprints must come from the exact deployed source');
+  }
   const promptFingerprint = computePromptFingerprint();
   const toolFingerprint = await computeToolFingerprint();
   const configFingerprint = computeConfigFingerprint(taskEnv);
@@ -389,11 +399,20 @@ async function cmdBindSession(args, store) {
   const sessionId = args['session-id'];
   const cohortId = await resolveCohortId(store, args);
   if (!sessionId) throw new Error('bind-session requires --session-id');
-  const { stageARecords } = await loadCohortState(store, null);
-  const stageA = latestValid(stageARecords, 'stage_a_deployed');
-  if (!stageA) throw new Error('no valid stage_a_deployed event');
-  // Codex cycle-1 — the operator supplies SESSION IDS ONLY: the deployment
-  // fingerprint comes exclusively from the validated stage-A event.
+  const state = await loadCohortState(store, cohortId);
+  // Mini-review — the fingerprint must come from the stage-A event THIS
+  // cohort's initialization bound (by explicit hash), never the globally
+  // newest deploy.
+  const init = latestValid(state.cohortRecords, 'cohort_initialized');
+  const stageACandidates = state.stageARecords.filter(
+    (r) => validateStoredEvent({ key: r.key, payload: r.payload }).length === 0
+  );
+  const stageA = init
+    ? (stageACandidates.find(
+        (r) => evidenceEventHash(r.payload) === init.payload.stage_a_event_hash
+      ) ?? null)
+    : latestValid(state.stageARecords, 'stage_a_deployed');
+  if (!stageA) throw new Error('no valid stage_a_deployed event bound to this cohort');
   const fingerprint = stageA.payload.runtime?.deployment_fingerprint ?? null;
   if (!fingerprint) throw new Error('stage_a_deployed carries no deployment_fingerprint');
   const pair = await collectSessionManifests(store, {
@@ -517,12 +536,18 @@ async function cmdDecideCorpusGap(args, store) {
   // Codex cycle-1 — the target must be KNOWN: an attested fixture id or a
   // manifest-named NON-SAFETY gap stratum. Safety strata cannot be waived.
   const manifest = expectationManifestContent();
-  const fixtureIds = manifest.vendor_live_expectations?.fixture_ids ?? [];
   const gap = (manifest.strata_named_gaps ?? []).find((g) => g.stratum === args.target);
-  if (!fixtureIds.includes(args.target) && !gap) {
-    throw new Error(`unknown deferral target "${args.target}" — not an attested fixture or named gap`);
+  // Mini-review — UNCLASSIFIED targets default to safety-critical: only a
+  // manifest-named gap stratum explicitly carrying safety_critical:false is
+  // deferrable. A whole attested fixture has no per-expectation safety
+  // classification, so it can never be deferred (follow-up: per-fixture
+  // safety metadata in the expectation manifest).
+  if (!gap) {
+    throw new Error(
+      `"${args.target}" is not a manifest-named gap stratum — unclassified targets default to safety-critical and cannot be deferred`
+    );
   }
-  if (gap?.safety_critical === true) {
+  if (gap.safety_critical === true) {
     throw new Error(`"${args.target}" is safety-critical — it cannot be deferred`);
   }
   await confirmInteractive(
@@ -544,40 +569,24 @@ async function cmdDecideCorpusGap(args, store) {
   console.log(`corpus_gap_decision published: ${event.key} (version ${receipt.versionId})`);
 }
 
-/** The live per-fixture lane executor (enumerated 00B machinery, consumed
- *  by import only). NOTE: the current lane result surfaces verdict +
- *  mismatches but NOT provider response ids, so live runs terminate
- *  INVALID (`provider_ids_unavailable`) until a reviewed 00B successor
- *  exposes them — fail closed, replaceable, never fabricated. */
-async function liveLaneExecutor({ fixtureId, model }) {
-  const lane = await import('../model-ab/lib/lane-driver.mjs');
-  const proj = await import('../model-ab/lib/expectation-projection.mjs');
-  const judgeMod = await import('../model-ab/lib/semantic-judge.mjs');
-  const fixture = proj.loadFixture(REPO_ROOT, fixtureId);
-  const expectation = proj.projectFixtureExpectation(fixture);
-  const boot = await lane.bootLaneDriver({ repoRoot: REPO_ROOT });
-  const result = await lane.driveFixture({
-    boot,
-    fixture,
-    expectation,
-    judge: (exp, frozen, meta) => judgeMod.judgeSample(exp, frozen, meta),
-  });
-  const { canonicalBytes } = await import('../field-replay/lib/canonical-crypto.mjs');
-  const { createHash } = await import('node:crypto');
-  return {
-    verdict: mapLaneVerdict(result.verdict),
-    reportDigest: createHash('sha256').update(canonicalBytes(result)).digest('hex'),
-    providerCallIds: Array.isArray(result.provider_call_ids) ? result.provider_call_ids : [],
-    mismatch:
-      result.verdict === 'FAIL'
-        ? {
-            mismatch_id: `mm_${fixtureId}_${createHash('sha256').update(canonicalBytes(result.mismatches ?? [])).digest('hex').slice(0, 12)}`,
-            safety_critical: false,
-          }
-        : undefined,
-    reason: result.reason ?? undefined,
-    _model: model,
-  };
+/**
+ * Live vendor dispatch is NOT yet available: the enumerated Plan 00B lane
+ * machinery is mock/replay-only (its own tests pin that `--mode=live`
+ * executes NO lane), and a mock result must never enter the evidence
+ * store as vendor evidence. The run commands therefore REFUSE — BEFORE
+ * allocating any ordinal or reservation, so nothing is consumed — until a
+ * reviewed 00B successor ships real live dispatch that surfaces provider
+ * response ids. The runner PROTOCOL (lib/runner.mjs) is complete and
+ * test-pinned against injected executors; the successor wires the real
+ * executor in.
+ */
+function refuseLiveDispatch() {
+  throw new Error(
+    'REFUSED: no live vendor lane executor exists yet — the enumerated 00B lane machinery is ' +
+      'mock/replay-only and mock verdicts must never enter the evidence store. A reviewed 00B ' +
+      'successor must ship live dispatch (surfacing provider response ids) and wire it into ' +
+      'lib/runner.mjs; nothing was allocated or reserved.'
+  );
 }
 
 async function requireInitializedCohort(store, args) {
@@ -591,70 +600,14 @@ async function requireInitializedCohort(store, args) {
 
 async function cmdRunIr(args, store) {
   await assertBucketVersioned(store);
-  const { cohortId } = await requireInitializedCohort(store, args);
-  const fixtureId = args.fixture;
-  if (!fixtureId) throw new Error('run-ir requires --fixture <pinned-ir corpus id>');
-  const allocation = await allocateNextOrdinal(store, { cohortId, lane: 'ir-repetition' });
-  if (allocation.hold) throw new Error(`ordinal allocation held: ${JSON.stringify(allocation.hold)}`);
-  const requirementKey = `ir:${cohortId}:rep-${allocation.ordinal}`;
-  const result = await runReservedAttempt(store, {
-    cohortId,
-    requirementKey,
-    generation: Number(args.generation ?? 1),
-    requirementClass: 'pinned_ir',
-    model: args.model ?? 'gpt-5.6-luna',
-    tier: args.tier ?? 'fast',
-    allocationVersionId: allocation.versionId,
-    repetitionOrdinal: allocation.ordinal,
-    execute: () => liveLaneExecutor({ fixtureId, model: args.model ?? 'gpt-5.6-luna' }),
-  });
-  if (!result.dispatched) {
-    console.log(`no dispatch: ${JSON.stringify(result.reservation)}`);
-    return;
-  }
-  console.log(
-    `pinned-IR repetition ${allocation.ordinal}: verdict ${result.verdict}` +
-      `${result.reason ? ` (${result.reason})` : ''} — terminal ${result.terminalPublished ? result.receipt.key : 'NOT PUBLISHED'}`
-  );
+  await requireInitializedCohort(store, args);
+  refuseLiveDispatch();
 }
 
 async function cmdRunCorpus(args, store) {
   await assertBucketVersioned(store);
-  const { cohortId } = await requireInitializedCohort(store, args);
-  const lane = args.lane;
-  if (!['haiku', 'luna'].includes(lane)) throw new Error('run-corpus requires --lane haiku|luna');
-  const manifest = expectationManifestContent();
-  const fixtureIds = manifest.vendor_live_expectations?.fixture_ids ?? [];
-  const allocation = await allocateNextOrdinal(store, { cohortId, lane: `corpus-run-${lane}` });
-  if (allocation.hold) throw new Error(`run-ordinal allocation held: ${JSON.stringify(allocation.hold)}`);
-  const model = lane === 'haiku' ? (args.model ?? 'claude-haiku-4-5') : (args.model ?? 'gpt-5.6-luna');
-  const paceMs = Number(args['inter-fixture-ms'] ?? 10000);
-  console.log(`corpus run ${allocation.ordinal} (${lane}): ${fixtureIds.length} fixtures, pacing ${paceMs}ms`);
-  for (const fixtureId of fixtureIds) {
-    const requirementKey = `corpus:${cohortId}:${lane}:run-${allocation.ordinal}:${fixtureId}`;
-    const result = await runReservedAttempt(store, {
-      cohortId,
-      requirementKey,
-      generation: Number(args.generation ?? 1),
-      requirementClass: 'vendor_corpus',
-      model,
-      tier: lane === 'haiku' ? null : 'fast',
-      allocationVersionId: allocation.versionId,
-      corpusRunOrdinal: allocation.ordinal,
-      fixtureId,
-      modelLane: lane,
-      execute: () => liveLaneExecutor({ fixtureId, model }),
-    });
-    if (!result.dispatched) {
-      console.log(`  ${fixtureId}: no dispatch (${JSON.stringify(result.reservation.hold ?? 'other winner')})`);
-      continue;
-    }
-    console.log(
-      `  ${fixtureId}: ${result.verdict}${result.reason ? ` (${result.reason})` : ''}` +
-        ` — ${result.terminalPublished ? 'terminal published' : 'TERMINAL NOT PUBLISHED'}`
-    );
-    await new Promise((r) => setTimeout(r, paceMs));
-  }
+  await requireInitializedCohort(store, args);
+  refuseLiveDispatch();
 }
 
 async function cmdStatus(args, store) {
