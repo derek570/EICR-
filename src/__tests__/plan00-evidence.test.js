@@ -133,6 +133,8 @@ async function establishCohort(store, { at = '2026-08-09T08:00:00Z' } = {}) {
   const { cohortId } = computeCohortFingerprint({
     stageAPayload: stageA.payload,
     combinedSha256: EXPECTATION_MANIFEST.combined_sha256,
+    vendorLiveSha256: EXPECTATION_MANIFEST.vendor_live_expectations.sha256,
+    deterministicEgressSha256: EXPECTATION_MANIFEST.deterministic_egress_expectations.sha256,
   });
   const { event: attested } = await publishEventAt(store, {
     kind: 'expectations_attested',
@@ -149,6 +151,8 @@ async function establishCohort(store, { at = '2026-08-09T08:00:00Z' } = {}) {
   const { fingerprint } = computeCohortFingerprint({
     stageAPayload: stageA.payload,
     combinedSha256: EXPECTATION_MANIFEST.combined_sha256,
+    vendorLiveSha256: EXPECTATION_MANIFEST.vendor_live_expectations.sha256,
+    deterministicEgressSha256: EXPECTATION_MANIFEST.deterministic_egress_expectations.sha256,
   });
   await publishEventAt(store, {
     kind: 'cohort_initialized',
@@ -1771,6 +1775,8 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
     const { cohortId } = computeCohortFingerprint({
       stageAPayload: stageA.payload,
       combinedSha256: EXPECTATION_MANIFEST.combined_sha256,
+      vendorLiveSha256: EXPECTATION_MANIFEST.vendor_live_expectations.sha256,
+      deterministicEgressSha256: EXPECTATION_MANIFEST.deterministic_egress_expectations.sha256,
     });
     await publishEventAt(store, {
       kind: 'cohort_initialized',
@@ -1801,6 +1807,8 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
     const { cohortId } = computeCohortFingerprint({
       stageAPayload: stageA.payload,
       combinedSha256: EXPECTATION_MANIFEST.combined_sha256,
+      vendorLiveSha256: EXPECTATION_MANIFEST.vendor_live_expectations.sha256,
+      deterministicEgressSha256: EXPECTATION_MANIFEST.deterministic_egress_expectations.sha256,
     });
     const { event: attested } = await publishEventAt(store, {
       kind: 'expectations_attested',
@@ -1810,6 +1818,8 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
         reviewer: 'Derek',
         attested_at: new Date(clockMs).toISOString(),
         combined_sha256: 'STALE',
+        vendor_live_sha256: 'STALE-V',
+        deterministic_egress_sha256: 'STALE-E',
       },
     });
     await publishEventAt(store, {
@@ -1918,6 +1928,8 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
     const { cohortId, fingerprint } = computeCohortFingerprint({
       stageAPayload: stageA.payload,
       combinedSha256: EXPECTATION_MANIFEST.combined_sha256,
+      vendorLiveSha256: EXPECTATION_MANIFEST.vendor_live_expectations.sha256,
+      deterministicEgressSha256: EXPECTATION_MANIFEST.deterministic_egress_expectations.sha256,
     });
     await publishAttempt(store, {
       cohortId,
@@ -1933,6 +1945,8 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
         reviewer: 'Derek',
         attested_at: new Date(clockMs).toISOString(),
         combined_sha256: EXPECTATION_MANIFEST.combined_sha256,
+        vendor_live_sha256: EXPECTATION_MANIFEST.vendor_live_expectations.sha256,
+        deterministic_egress_sha256: EXPECTATION_MANIFEST.deterministic_egress_expectations.sha256,
       },
       at: '2026-08-09T10:00:00Z',
     });

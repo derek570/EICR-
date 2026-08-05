@@ -20,7 +20,7 @@
 
 import { canonicalBytes, evidenceEventHash } from '../../field-replay/lib/canonical-crypto.mjs';
 import { EVIDENCE_PREFIX } from './constants.mjs';
-import { buildEvent, validateStoredEvent } from './events.mjs';
+import { buildEvent, validateAttemptReport, validateStoredEvent } from './events.mjs';
 import { publishDurable } from './store.mjs';
 
 /** Content-addressed report key (the fold audits this prefix; a withheld
@@ -138,9 +138,12 @@ export async function runReservedAttempt(
   // ordered provider-call ids, deployed fingerprint, requirement key,
   // model/tier and digests; caller timestamps/ids cannot alter it. Null
   // ONLY on INVALID.
+  // Cycle-4 — the identity is computed whenever ORDERED PROVIDER IDS
+  // exist, whatever the verdict; null ONLY for an INVALID terminal that
+  // received no provider id. Never caller-supplied.
   const sampleIdentity =
-    verdict === 'INVALID'
-      ? (outcome.sampleIdentity ?? null)
+    providerCallIds.length === 0
+      ? null
       : evidenceEventHash({
           provider_call_ids: providerCallIds,
           deployment_fingerprint: deploymentFingerprint ?? null,
@@ -168,8 +171,15 @@ export async function runReservedAttempt(
       provider_call_ids: providerCallIds,
       mismatch: outcome.mismatch ?? null,
     };
-    reportDigest = evidenceEventHash(reportBody);
-    const reportReceipt = await publishDurable(store, {
+    const reportProblems = validateAttemptReport(reportBody);
+    if (reportProblems.length > 0) {
+      verdict = 'INVALID';
+      reason = `report_schema_invalid:${reportProblems[0].code}`;
+    }
+    reportDigest = reportProblems.length === 0 ? evidenceEventHash(reportBody) : null;
+    const reportReceipt = reportProblems.length
+      ? { ok: true }
+      : await publishDurable(store, {
       key: reportKey({ cohortId, reportDigest }),
       bytes: canonicalBytes(reportBody),
     });

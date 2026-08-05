@@ -159,6 +159,16 @@ const latestValid = latestValidShared;
 export { computeCohortFingerprint } from './lib/fingerprint.mjs';
 import { computeCohortFingerprint } from './lib/fingerprint.mjs';
 
+/** Resolve the target cohort: --cohort wins; otherwise EXACTLY ONE cohort
+ *  prefix may exist (never lexicographic newest). */
+async function resolveCohortId(store, args) {
+  if (args.cohort) return args.cohort;
+  const ids = await findCohortIds(store);
+  if (ids.length === 1) return ids[0];
+  if (ids.length === 0) throw new Error('no cohort exists yet — run attest-expectations first');
+  throw new Error(`multiple cohorts exist (${ids.join(', ')}) — pass --cohort explicitly`);
+}
+
 async function findCohortIds(store) {
   const { versions } = await store.listAllVersions({ prefix: `${EVIDENCE_PREFIX}/events/` });
   const ids = new Set();
@@ -333,6 +343,8 @@ async function cmdInitCohort(args, store) {
   const { cohortId, fingerprint, hash } = computeCohortFingerprint({
     stageAPayload: stageA.payload,
     combinedSha256: manifest.combined_sha256,
+    vendorLiveSha256: manifest.vendor_live_sha256,
+    deterministicEgressSha256: manifest.deterministic_egress_sha256,
   });
   const { cohortRecords } = await loadCohortState(store, cohortId);
   const attested = latestValid(cohortRecords, 'expectations_attested');

@@ -49,7 +49,13 @@ const KIND_REQUIRED_FIELDS = Object.freeze({
   ],
   production_session_bound: ['field_session_id', 'start_manifest', 'completion_manifest'],
   cohort_blocked: ['reason'],
-  expectations_attested: ['reviewer', 'attested_at', 'combined_sha256'],
+  expectations_attested: [
+    'reviewer',
+    'attested_at',
+    'combined_sha256',
+    'vendor_live_sha256',
+    'deterministic_egress_sha256',
+  ],
   manual_attestation: [
     'day',
     'field_session_ids',
@@ -85,6 +91,63 @@ export function eventSchemaHash() {
     requirement_classes: REQUIREMENT_CLASSES,
     kind_required_fields: KIND_REQUIRED_FIELDS,
   });
+}
+
+/** The CLOSED attempt_report schema shared by the runner (producer) and
+ *  the fold (verifier) — cycle-4: one validator, exact keys, exact
+ *  mismatch shape; a report is REJECTED on any unknown key or malformed
+ *  field so a contradictory/extra-field report can never advance. */
+const REPORT_ALLOWED_KEYS = Object.freeze([
+  'schema_version',
+  'kind',
+  'requirement_key',
+  'attempt_generation',
+  'verdict',
+  'provider_call_ids',
+  'mismatch',
+]);
+const MISMATCH_ALLOWED_KEYS = Object.freeze(['mismatch_id', 'safety_critical']);
+
+export function validateAttemptReport(report) {
+  const problems = [];
+  if (!report || typeof report !== 'object' || Array.isArray(report)) {
+    return [{ code: 'report_not_object' }];
+  }
+  for (const key of Object.keys(report)) {
+    if (!REPORT_ALLOWED_KEYS.includes(key)) problems.push({ code: 'report_extra_key', field: key });
+  }
+  if (report.schema_version !== 1) problems.push({ code: 'report_schema_version' });
+  if (report.kind !== 'attempt_report') problems.push({ code: 'report_kind' });
+  if (typeof report.requirement_key !== 'string' || !report.requirement_key.length) {
+    problems.push({ code: 'report_requirement_key' });
+  }
+  if (!Number.isInteger(report.attempt_generation)) problems.push({ code: 'report_generation' });
+  if (!TERMINAL_VERDICTS.includes(report.verdict)) problems.push({ code: 'report_verdict' });
+  if (
+    !Array.isArray(report.provider_call_ids) ||
+    report.provider_call_ids.some((id) => typeof id !== 'string' || !id.length)
+  ) {
+    problems.push({ code: 'report_provider_ids' });
+  }
+  if (report.mismatch !== null && report.mismatch !== undefined) {
+    const mm = report.mismatch;
+    if (!mm || typeof mm !== 'object' || Array.isArray(mm)) {
+      problems.push({ code: 'report_mismatch_shape' });
+    } else {
+      for (const key of Object.keys(mm)) {
+        if (!MISMATCH_ALLOWED_KEYS.includes(key)) {
+          problems.push({ code: 'report_mismatch_extra_key', field: key });
+        }
+      }
+      if (typeof mm.mismatch_id !== 'string' || !mm.mismatch_id.length) {
+        problems.push({ code: 'report_mismatch_id' });
+      }
+      if (typeof mm.safety_critical !== 'boolean') {
+        problems.push({ code: 'report_mismatch_safety_flag' });
+      }
+    }
+  }
+  return problems;
 }
 
 /** Build a canonical event: payload + content hash + its authoritative key. */

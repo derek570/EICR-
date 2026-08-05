@@ -36,7 +36,7 @@ import {
   TERRA_MODEL_FAMILY,
   londonDayOf,
 } from './constants.mjs';
-import { validateStoredEvent } from './events.mjs';
+import { validateAttemptReport, validateStoredEvent } from './events.mjs';
 import { computeCohortFingerprint } from './fingerprint.mjs';
 import { attemptPendingKey } from './reservations.mjs';
 
@@ -312,6 +312,8 @@ export function foldEvidence({
       const derived = computeCohortFingerprint({
         stageAPayload: boundStageA.payload,
         combinedSha256: boundAttested.payload.combined_sha256,
+        vendorLiveSha256: boundAttested.payload.vendor_live_sha256 ?? null,
+        deterministicEgressSha256: boundAttested.payload.deterministic_egress_sha256 ?? null,
       });
       if (
         evidenceEventHash(rec.payload.cohort_fingerprint ?? {}) !==
@@ -542,37 +544,33 @@ export function foldEvidence({
           continue;
         }
       } else {
+        // Cycle-4 — the report is validated against the SHARED closed
+        // schema (unknown keys/malformed fields reject) and must agree
+        // with its terminal on verdict, generation, ordered provider ids
+        // AND the canonical mismatch classification — a report claiming
+        // safety-critical while the terminal claims non-safety is exactly
+        // the false-DONE hole this closes.
+        if (validateAttemptReport(report).length > 0) {
+          blocks.push({ code: 'report_schema_invalid', key: t.key });
+          continue;
+        }
         const idsAgree =
-          Array.isArray(report.provider_call_ids) &&
           report.provider_call_ids.length === ids.length &&
           report.provider_call_ids.every((id, i) => id === ids[i]);
+        const mismatchAgree =
+          evidenceEventHash(report.mismatch ?? null) === evidenceEventHash(tp.mismatch ?? null);
         if (
           report.verdict !== tp.verdict ||
           report.requirement_key !== tp.requirement_key ||
-          !idsAgree
+          report.attempt_generation !== tp.attempt_generation ||
+          !idsAgree ||
+          !mismatchAgree
         ) {
           blocks.push({ code: 'report_terminal_contradiction', key: t.key });
           continue;
         }
       }
-      // Cycle-3 — the sample identity is RECOMPUTED, never trusted: it must
-      // equal the canonical hash over the ordered provider ids, the
-      // cohort's deployed fingerprint, the requirement identity and the
-      // digests.
-      const expectedSample = evidenceEventHash({
-        provider_call_ids: ids,
-        deployment_fingerprint: stageADeploymentFingerprint ?? null,
-        requirement_key: tp.requirement_key,
-        model: tp.model,
-        tier: tp.tier,
-        prompt_digest: tp.prompt_digest,
-        tool_digest: tp.tool_digest,
-        expectation_digest: tp.expectation_digest,
-      });
-      if (tp.sample_identity !== expectedSample) {
-        invalid.push({ key: t.key, problems: [{ code: 'terminal_sample_identity_mismatch' }] });
-        continue;
-      }
+
       // Ordinal binding: a pinned-IR / vendor-corpus terminal must bind its
       // allocation VersionId to an AUDITED logical-ordinal reservation whose
       // lane + ordinal agree with the terminal's own ordinal fields.
@@ -601,6 +599,28 @@ export function foldEvidence({
     }
     if (generatedAt != null && receiptAt != null && generatedAt > receiptAt + CLOCK_SKEW_MS) {
       invalid.push({ key: t.key, problems: [{ code: 'terminal_generated_after_receipt' }] });
+      continue;
+    }
+    // Cycle-3/4 — the sample identity is RECOMPUTED whenever provider ids
+    // exist (ANY verdict), never trusted; null is legal ONLY for an
+    // INVALID terminal with zero provider ids.
+    if (ids.length > 0) {
+      const expectedSample = evidenceEventHash({
+        provider_call_ids: ids,
+        deployment_fingerprint: stageADeploymentFingerprint ?? null,
+        requirement_key: tp.requirement_key,
+        model: tp.model,
+        tier: tp.tier,
+        prompt_digest: tp.prompt_digest,
+        tool_digest: tp.tool_digest,
+        expectation_digest: tp.expectation_digest,
+      });
+      if (tp.sample_identity !== expectedSample) {
+        invalid.push({ key: t.key, problems: [{ code: 'terminal_sample_identity_mismatch' }] });
+        continue;
+      }
+    } else if (tp.sample_identity != null) {
+      invalid.push({ key: t.key, problems: [{ code: 'terminal_sample_identity_unexpected' }] });
       continue;
     }
     // Same-London-day PENDING/terminal + post-initialisation PENDING

@@ -7,7 +7,12 @@
 
 import { evidenceEventHash } from '../../field-replay/lib/canonical-crypto.mjs';
 
-export function computeCohortFingerprint({ stageAPayload, combinedSha256 }) {
+export function computeCohortFingerprint({
+  stageAPayload,
+  combinedSha256,
+  vendorLiveSha256 = null,
+  deterministicEgressSha256 = null,
+}) {
   const fingerprint = {
     deploy_run: stageAPayload.deploy_run,
     runtime: stageAPayload.runtime,
@@ -20,6 +25,8 @@ export function computeCohortFingerprint({ stageAPayload, combinedSha256 }) {
     semantic_oracle_digest: stageAPayload.semantic_oracle_digest,
     deployed_evidence_runtime_digest: stageAPayload.deployed_evidence_runtime_digest,
     expectations_combined_sha256: combinedSha256,
+    expectations_vendor_live_sha256: vendorLiveSha256,
+    expectations_deterministic_egress_sha256: deterministicEgressSha256,
   };
   const hash = evidenceEventHash(fingerprint);
   return { fingerprint, hash, cohortId: `cohort-${hash.slice(0, 16)}` };
