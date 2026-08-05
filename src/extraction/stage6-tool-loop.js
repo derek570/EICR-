@@ -641,6 +641,11 @@ export async function runToolLoop({
         // carries none, so the anthropic transport is attributed here.
         apiTransport:
           assistantMsg.api_transport ?? (provider === 'openai' ? null : 'anthropic_messages'),
+        // Plan 00B-4 §C1c — the provider's own opaque call id for this
+        // round. Both OpenAI adapters stamp it onto the same `id` carrier
+        // key the Anthropic SDK message already populates natively, so one
+        // read covers every transport with no provider branch here.
+        providerCallId: assistantMsg.id ?? null,
         // Plan 00B live-lane C5 — the caller's already-computed loop kind.
         // Every round of one loop shares it: the observation decision is made
         // once, before the loop runs, and cannot change mid-loop.

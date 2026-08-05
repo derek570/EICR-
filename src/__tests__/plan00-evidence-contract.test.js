@@ -1211,6 +1211,119 @@ describe('C5 (live-lane) — turn_kind in round_usage', () => {
   });
 });
 
+// ── C1c (00B-4) — the provider call id, end to end ─────────────────────────
+//
+// 00C hashes the ORDERED list of provider call ids into the sample identity
+// and the fold enforces cohort-wide single use, so this field is the evidence
+// lane's proof that a sample consumed real vendor calls. It must survive
+// verbatim from the adapter carrier to the ledger row: derived, guessed or
+// dropped ids are all equally worthless as evidence.
+//
+// The allowlist pin matters most. `plan00Sink` hand-copies a CLOSED key list
+// rather than spreading the row, so a producer can start emitting a field and
+// have it silently vanish one layer down — which is exactly what would have
+// happened here without the allowlist edit.
+
+describe('C1c — provider_call_id in round_usage', () => {
+  const baseRound = {
+    provider: 'anthropic',
+    requestedModel: 'claude-haiku-4-5-20251001',
+    responseModel: 'claude-haiku-4-5-20251001',
+    usage: { input_tokens: 10, output_tokens: 5 },
+    roundIdx: 0,
+    apiTransport: 'anthropic_messages',
+  };
+
+  test('a real vendor id is carried verbatim', () => {
+    expect(
+      attributeRoundUsage({ ...baseRound, providerCallId: 'msg_01ABCdef' }).provider_call_id
+    ).toBe('msg_01ABCdef');
+  });
+
+  test('surrounding whitespace is trimmed, never the id itself', () => {
+    // Trim only: the id is an opaque vendor handle, so any transformation
+    // beyond stripping transport whitespace would break single-use matching
+    // at the fold.
+    expect(
+      attributeRoundUsage({ ...baseRound, providerCallId: '  resp_abc123  ' }).provider_call_id
+    ).toBe('resp_abc123');
+  });
+
+  test.each([
+    ['absent', undefined],
+    ['null', null],
+    ['empty', ''],
+    ['whitespace only', '   '],
+    ['non-string', 12345],
+    ['object', { id: 'msg_1' }],
+  ])('an unusable id (%s) attributes null rather than a fabricated value', (_label, threaded) => {
+    // Null is the honest answer and it is what makes the lane fail CLOSED: the
+    // driver's live refusal counts a null-id round as MISSING and terminates
+    // the sample INVALID. Inventing an id here would manufacture evidence.
+    expect(attributeRoundUsage({ ...baseRound, providerCallId: threaded }).provider_call_id).toBe(
+      null
+    );
+  });
+
+  test('the round_usage sub-record retains provider_call_id through the allowlist', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry);
+    const row = (providerCallId) => ({
+      provider: 'anthropic',
+      api_transport: 'anthropic_messages',
+      turn_kind: 'reading',
+      provider_call_id: providerCallId,
+      requested_model: 'claude-haiku-4-5-20251001',
+      response_model: 'claude-haiku-4-5-20251001',
+      billing_model: 'claude-haiku-4-5-20251001',
+      billing_tier: null,
+      model_provenance: 'returned',
+      tier_provenance: 'unavailable_for_provider',
+      attribution_status: 'attributed',
+      round_idx: 0,
+    });
+    ctx.roundUsageSink(row('msg_round_a'), {
+      loopInvocationId: 'loop_a',
+      billableKind: 'inspector_extraction',
+    });
+    ctx.roundUsageSink(row('msg_round_b'), {
+      loopInvocationId: 'loop_b',
+      billableKind: 'inspector_extraction',
+    });
+    const rows = rowsOfKind(entry, 'round_usage');
+    expect(rows).toHaveLength(2);
+    // Order is load-bearing — 00C hashes the ordered list into the identity.
+    expect(rows.map((r) => r.provider_call_id)).toEqual(['msg_round_a', 'msg_round_b']);
+  });
+
+  test('a producer row with NO provider_call_id key lands as an explicit null', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry);
+    ctx.roundUsageSink(
+      {
+        provider: 'anthropic',
+        api_transport: 'anthropic_messages',
+        requested_model: 'claude-haiku-4-5-20251001',
+        response_model: 'claude-haiku-4-5-20251001',
+        billing_model: 'claude-haiku-4-5-20251001',
+        billing_tier: null,
+        model_provenance: 'returned',
+        tier_provenance: 'unavailable_for_provider',
+        attribution_status: 'attributed',
+        round_idx: 0,
+      },
+      { loopInvocationId: 'loop_legacy', billableKind: 'inspector_extraction' }
+    );
+    const rows = rowsOfKind(entry, 'round_usage');
+    expect(rows).toHaveLength(1);
+    // Present-as-null, not missing: a dropped key is indistinguishable from a
+    // row the projection never saw, and the driver must be able to COUNT the
+    // rounds that failed to account for themselves.
+    expect(Object.prototype.hasOwnProperty.call(rows[0], 'provider_call_id')).toBe(true);
+    expect(rows[0].provider_call_id).toBeNull();
+  });
+});
+
 // ── 5. The three-way agreement invariant (CREATED by this plan) ────────────
 
 describe('three-way agreement (C0)', () => {

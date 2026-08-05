@@ -705,6 +705,13 @@ const ROUND_USAGE_ALLOWLIST = Object.freeze([
   // 'observation'; every other loop class normalises to 'reading' at the
   // producer, so an absent/malformed value can never earn Terra credit.
   'turn_kind',
+  // Plan 00B-4 §C1c — the provider's OWN opaque call id for the round
+  // (`msg_…` / `chatcmpl-…` / `resp_…`). This is the evidence lane's only
+  // proof that a sample consumed a real vendor call: 00C hashes the ordered
+  // ids into the sample identity and the fold enforces cohort-wide
+  // single-use, so the id must reach the projection verbatim. It is an
+  // opaque vendor handle — no prompt, transcript or inspector content.
+  'provider_call_id',
   'requested_model',
   'requested_tier',
   'response_model',

@@ -15,6 +15,7 @@
  *   3 — provider call-id capture and error classification
  *   4 — the retry clamp, driven through the REAL session path
  *   5 — lane-driver liveMode wiring
+ *   6 — the provider call-id chain, end to end (§C1c)
  */
 
 import { jest } from '@jest/globals';
@@ -704,5 +705,170 @@ describe('5 — driveFixture liveMode', () => {
         judge: () => ({ verdict: 'PASS' }),
       })
     ).rejects.toThrow(/liveMode boot must supply liveProviderClients/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 6 — the provider call-id chain, end to end (§C1c)
+//
+// A live sample's ENTIRE claim is that it consumed real vendor calls, and
+// 00C hashes the ordered ids into `sample_identity`. So the id has to survive
+// an unbroken chain: adapter → finalMessage carrier → tool loop → round_usage
+// row → allowlist → evidence projection → driver. Every link below is pinned
+// against the REAL producer (the real tool loop, the real adapter internals),
+// never a re-implementation, because a mirror that drifts is exactly how a
+// fabricated-but-plausible id would get past this.
+// ─────────────────────────────────────────────────────────────────────────
+describe('6 — provider call-id chain (C1c)', () => {
+  /** One complete Anthropic round; `id` omitted entirely when null. */
+  function anthropicRound(id) {
+    const start = { type: 'message_start', message: { usage: { input_tokens: 10 } } };
+    if (id !== null) start.message.id = id;
+    return [
+      start,
+      { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Recorded.' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } },
+    ];
+  }
+
+  async function runAnthropicLoop(ids) {
+    const { runToolLoop } = await import('../extraction/stage6-tool-loop.js');
+    const { mockClient } = await import('./helpers/mockStream.js');
+    return runToolLoop({
+      client: mockClient(ids.map((id) => anthropicRound(id))),
+      model: 'claude-haiku-4-5-20251001',
+      system: 'SYS',
+      messages: [{ role: 'user', content: 'Zs on circuit 4 is 0.63' }],
+      tools: [
+        {
+          name: 'record_reading',
+          description: 'd',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ],
+      dispatcher: async (call) => ({ tool_use_id: call.tool_call_id, content: '{}' }),
+      ctx: { sessionId: 's-c1c', turnId: 't-c1c' },
+    });
+  }
+
+  test('the REAL tool loop carries the Anthropic message id onto the round_usage row', async () => {
+    const out = await runAnthropicLoop(['msg_live_round_1']);
+    expect(out.round_usage).toHaveLength(1);
+    expect(out.round_usage[0].provider_call_id).toBe('msg_live_round_1');
+  });
+
+  test('a round whose provider returned no id attributes null — never a fabricated one', async () => {
+    const out = await runAnthropicLoop([null]);
+    expect(out.round_usage[0].provider_call_id).toBeNull();
+  });
+
+  test('the OpenAI chat-completions adapter stamps `chatcmpl-…` on the same carrier key', async () => {
+    const { _internals } = await import('../extraction/openai-tooluse-adapter.js');
+    const create = jest.fn(async () => ({
+      id: 'chatcmpl_live_1',
+      model: 'gpt-5.6-luna',
+      choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'Recorded.' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 2 },
+    }));
+    const stream = _internals.createStream(
+      { chat: { completions: { create } } },
+      {
+        model: 'gpt-5.6-luna',
+        max_tokens: 1024,
+        system: 'SYS',
+        messages: [{ role: 'user', content: 'reading' }],
+        tools: [],
+      }
+    );
+    const final = await stream.finalMessage();
+    // The SAME key the Anthropic SDK message uses — one attribution read
+    // covers every transport, so no provider branch can go stale.
+    expect(final.id).toBe('chatcmpl_live_1');
+    expect(final.api_transport).toBe('chat_completions');
+  });
+
+  test('an id-less chat-completions response yields null, not undefined-as-truthy', async () => {
+    const { _internals } = await import('../extraction/openai-tooluse-adapter.js');
+    const create = jest.fn(async () => ({
+      choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'x' } }],
+      usage: {},
+    }));
+    const stream = _internals.createStream(
+      { chat: { completions: { create } } },
+      { model: 'gpt-4o', max_tokens: 512, system: 'S', messages: [], tools: [] }
+    );
+    expect((await stream.finalMessage()).id).toBeNull();
+  });
+
+  test('the OpenAI responses adapter stamps `resp_…` on that same carrier key', async () => {
+    const { _internals } = await import('../extraction/openai-responses-adapter.js');
+    const msg = _internals.toAnthropicMessage(
+      { id: 'resp_live_1', model: 'gpt-5.6-luna', output: [], usage: {} },
+      'gpt-5.6-luna',
+      undefined,
+      null
+    );
+    expect(msg.id).toBe('resp_live_1');
+    expect(msg.api_transport).toBe('responses');
+    expect(
+      _internals.toAnthropicMessage({ model: 'm', output: [], usage: {} }, 'm', undefined, null).id
+    ).toBeNull();
+  });
+
+  test('collectProviderCallIds preserves round order and counts unprovable rounds', async () => {
+    const { collectProviderCallIds } = await import('../../scripts/model-ab/lib/lane-driver.mjs');
+    const frozen = {
+      evidence: {
+        round_usage: {
+          rounds: [
+            { provider_call_id: 'msg_b' },
+            { provider_call_id: null },
+            { provider_call_id: '  msg_a  ' },
+            { provider_call_id: '   ' },
+            {},
+          ],
+        },
+      },
+    };
+    // Order is load-bearing: 00C hashes the ORDERED list into sample_identity,
+    // so this must never be sorted or deduped on the way out.
+    expect(collectProviderCallIds(frozen)).toEqual({
+      ids: ['msg_b', 'msg_a'],
+      rounds: 5,
+      missing: 3,
+    });
+    // A frozen shape with no round_usage at all is 0 rounds, not a throw —
+    // the refusal below is what turns that into an INVALID terminal.
+    expect(collectProviderCallIds({})).toEqual({ ids: [], rounds: 0, missing: 0 });
+    expect(collectProviderCallIds({ evidence: { round_usage: { rounds: 'nope' } } })).toEqual({
+      ids: [],
+      rounds: 0,
+      missing: 0,
+    });
+  });
+
+  test('liveProviderIdRefusal fails closed on incomplete or duplicated identities', async () => {
+    const { liveProviderIdRefusal } = await import('../../scripts/model-ab/lib/lane-driver.mjs');
+    // Clean: every round accounted for by its own distinct id.
+    expect(liveProviderIdRefusal({ ids: ['a', 'b'], rounds: 2, missing: 0 })).toBeNull();
+    // Zero rounds means nothing proves a vendor call happened at all.
+    expect(liveProviderIdRefusal({ ids: [], rounds: 0, missing: 0 })).toBe(
+      'provider_ids_incomplete'
+    );
+    // One unprovable round taints the sample — a PASS built on it is exactly
+    // the mock-verdict class the sealed capability exists to make impossible.
+    expect(liveProviderIdRefusal({ ids: ['a'], rounds: 2, missing: 1 })).toBe(
+      'provider_ids_incomplete'
+    );
+    // Two rounds attributed to one call: the ordered-id hash would collide
+    // with a genuinely-shorter run, so it can never reach the judge.
+    expect(liveProviderIdRefusal({ ids: ['a', 'a'], rounds: 2, missing: 0 })).toBe(
+      'provider_ids_duplicated'
+    );
+    // Malformed input is refused, never coerced into a pass.
+    expect(liveProviderIdRefusal({})).toBe('provider_ids_incomplete');
+    expect(liveProviderIdRefusal(null)).toBe('provider_ids_incomplete');
   });
 });

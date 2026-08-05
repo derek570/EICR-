@@ -455,6 +455,11 @@ function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier, promp
     requested_service_tier: fallbackServiceTier ?? null,
     // Plan 00B-3 C5 — the ACTUAL API transport that served this round.
     api_transport: 'responses',
+    // Plan 00B-4 §C1c — the provider's own opaque call id (`resp_…`),
+    // stamped on the SAME carrier key the Anthropic SDK message uses, so
+    // round attribution reads one field for every provider. Opaque id
+    // only: no prompt, transcript or inspector content travels with it.
+    id: typeof finalResp?.id === 'string' && finalResp.id.length > 0 ? finalResp.id : null,
   };
   if (promptCache) message.prompt_cache = promptCache;
   return message;

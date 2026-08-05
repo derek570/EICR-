@@ -148,8 +148,62 @@ function frameBuffer(frame) {
 }
 
 /**
+ * Plan 00B-4 §C1c — read the provider's OWN opaque call ids out of the frozen
+ * round_usage evidence, in round order.
+ *
+ * The ids travel adapter → finalMessage carrier → `attributeRoundUsage` →
+ * cost-tracker → the 00C round_usage ledger sink → the evidence projection, so
+ * by the time we read them here they are already PII-free closed evidence: an
+ * opaque vendor handle per round and nothing else. 00C hashes the ORDERED list
+ * into the sample identity and the fold enforces cohort-wide single-use, which
+ * is why order is preserved verbatim and nothing is deduped or synthesised.
+ *
+ * Returns the ids plus the two counts the caller needs to fail CLOSED: a live
+ * sample that cannot account for every completed round with a distinct real
+ * vendor id is not evidence, whatever its judge verdict says.
+ */
+export function collectProviderCallIds(frozen) {
+  const rounds = frozen?.evidence?.round_usage?.rounds ?? [];
+  const ids = [];
+  let missing = 0;
+  for (const row of Array.isArray(rounds) ? rounds : []) {
+    const id = typeof row?.provider_call_id === 'string' ? row.provider_call_id.trim() : '';
+    if (id.length === 0) {
+      missing += 1;
+      continue;
+    }
+    ids.push(id);
+  }
+  return { ids, rounds: Array.isArray(rounds) ? rounds.length : 0, missing };
+}
+
+/**
+ * Plan 00B-4 §C1c — the LIVE fail-closed decision, extracted as a pure predicate
+ * so it is pinnable without booting a server.
+ *
+ * A live sample's entire claim is that it consumed REAL vendor calls, so every
+ * completed round must account for itself with its own distinct id. A round that
+ * produced no id is unprovable; a repeated id means two rounds were attributed
+ * to one call. Both are INVALID terminals — never a judge verdict, because a
+ * PASS built on unprovable dispatch is exactly the mock-verdict class the sealed
+ * capability exists to make unrepresentable.
+ *
+ * Mock mode has no vendor ids by construction and is exempt (and cannot reach
+ * the durable store anyway). Returns null when the sample may proceed to the
+ * judge, else the INVALID reason string.
+ */
+export function liveProviderIdRefusal(providerCalls) {
+  const ids = Array.isArray(providerCalls?.ids) ? providerCalls.ids : [];
+  const rounds = Number.isInteger(providerCalls?.rounds) ? providerCalls.rounds : 0;
+  const missing = Number.isInteger(providerCalls?.missing) ? providerCalls.missing : 0;
+  if (rounds === 0 || missing > 0) return 'provider_ids_incomplete';
+  if (new Set(ids).size !== ids.length) return 'provider_ids_duplicated';
+  return null;
+}
+
+/**
  * Drive ONE fixture through the real server and judge its frozen evidence.
- * Returns { corpus_id, verdict, reason, mismatches }.
+ * Returns { corpus_id, verdict, reason, mismatches, provider_call_ids }.
  */
 export async function driveFixture({ boot, fixture, expectation, judge, log = () => {} }) {
   const {
@@ -175,6 +229,7 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
         verdict: 'INVALID_HOLD',
         reason: 'fixture_confirmations_flag_mismatch',
         mismatches: [],
+        provider_call_ids: [],
       };
     }
   }
@@ -251,17 +306,37 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     })
   );
 
+  // These three refusals fire BEFORE any turn is driven, so no provider call
+  // can have been consumed — the empty id list is a fact, not a gap.
   const entryRef = activeSessions.get(sessionId);
   if (!entryRef) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: 'session_start_failed', mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: 'session_start_failed',
+      mismatches: [],
+      provider_call_ids: [],
+    };
   }
   // Boot assertions: the handshake must not suppress Stage-6 asks, and the
   // captured session is THE entry session (identity retained to the end).
   if (entryRef.fallbackToLegacy !== fallbackToLegacy) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: 'handshake_mismapped', mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: 'handshake_mismapped',
+      mismatches: [],
+      provider_call_ids: [],
+    };
   }
   if (capturedSession == null || entryRef.session !== capturedSession) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: 'session_factory_not_used', mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: 'session_factory_not_used',
+      mismatches: [],
+      provider_call_ids: [],
+    };
   }
 
   const violations = [];
@@ -503,20 +578,59 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     // some paths register no close handler on stubs — non-fatal
   }
   const leaked = clockCtl.resetLedger();
+
+  // The normalised context is ENTRY-only and the entry left the registry at
+  // stop — the RETAINED reference is the only thing the accessor can serve.
+  // Read once, HERE, so the provider-call ids survive the failure returns too:
+  // an errored round still consumed a vendor identity, and 00C's fold needs
+  // that identity recorded even when this sample terminates INVALID.
+  const frozen = getCompletionFreeze(entryRef);
+  const providerCalls = collectProviderCallIds(frozen);
+
   if (activeSessions.has(sessionId)) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: 'entry_not_deleted', mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: 'entry_not_deleted',
+      mismatches: [],
+      provider_call_ids: providerCalls.ids,
+    };
   }
   log(`lane-driver: ${corpusId} cleared ${leaked.clearedPending} armed timers at teardown`);
 
   if (failure) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: failure, mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: failure,
+      mismatches: [],
+      provider_call_ids: providerCalls.ids,
+    };
   }
 
-  // The normalised context is ENTRY-only and the entry left the registry at
-  // stop — the RETAINED reference is the only thing the accessor can serve.
-  const frozen = getCompletionFreeze(entryRef);
+  // LIVE fail-closed — the decision itself lives in `liveProviderIdRefusal` so a
+  // unit test can pin it without booting a server. Mock mode is exempt by
+  // construction (no vendor ids exist) and cannot reach the durable store
+  // anyway — see the sealed dispatch capability.
+  const idRefusal = liveMode ? liveProviderIdRefusal(providerCalls) : null;
+  if (idRefusal) {
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: idRefusal,
+      mismatches: [],
+      provider_call_ids: providerCalls.ids,
+    };
+  }
+
   void EVALUATION_CONTEXT;
-  return { corpus_id: corpusId, ...judge(expectation, frozen, { turnIds }) };
+  return {
+    corpus_id: corpusId,
+    ...judge(expectation, frozen, { turnIds }),
+    // AFTER the judge spread: the ids are the driver's own observation of the
+    // wire and are never the judge's to overwrite.
+    provider_call_ids: providerCalls.ids,
+  };
 }
 
 /**

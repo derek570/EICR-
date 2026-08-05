@@ -308,6 +308,11 @@ function createStream(openai, streamArgs, options) {
             content: buildAnthropicContent(message),
             responseModel: resp.model ?? null,
             responseServiceTier: resp.service_tier ?? null,
+            // Plan 00B-4 §C1c — the provider's own opaque call id
+            // (`chatcmpl-…`). It is the ONLY durable proof that a lane
+            // sample consumed a real vendor call, so it must survive the
+            // adapter; it carries no inspector content.
+            responseId: typeof resp?.id === 'string' && resp.id.length > 0 ? resp.id : null,
           };
         });
     }
@@ -331,7 +336,8 @@ function createStream(openai, streamArgs, options) {
     // the loop-level Fast env default and mis-billing every round as Fast
     // with a fast_response_tier_missing contradiction.
     async finalMessage() {
-      const { content, usage, stopReason, responseModel, responseServiceTier } = await run();
+      const { content, usage, stopReason, responseModel, responseServiceTier, responseId } =
+        await run();
       return {
         content,
         usage,
@@ -342,6 +348,10 @@ function createStream(openai, streamArgs, options) {
         response_service_tier: responseServiceTier,
         // Plan 00B-3 C5 — the ACTUAL API transport that served this round.
         api_transport: 'chat_completions',
+        // Plan 00B-4 §C1c — stamped on the SAME carrier the Anthropic SDK
+        // message uses for its own `id`, so one attribution seam covers
+        // every provider without branching on transport.
+        id: responseId,
       };
     },
   };

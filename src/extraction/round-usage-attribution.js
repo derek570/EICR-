@@ -125,6 +125,13 @@ export function attributeRoundUsage({
   // there too, which is what makes the 00C Terra gate fail closed: Terra
   // credit requires an explicit 'observation', never an inferred one.
   turnKind = null,
+  // Plan 00B-4 §C1c — the provider's OWN opaque call id for this round
+  // (`msg_…` / `chatcmpl-…` / `resp_…`), adapter-stamped on the finalMessage
+  // carrier. It is the evidence lane's proof that a sample consumed a real
+  // vendor call, and 00C hashes the ordered ids into the sample identity, so
+  // it must be carried verbatim — never derived, never fabricated. It is an
+  // opaque vendor handle only: no prompt, transcript or inspector content.
+  providerCallId = null,
 }) {
   const transportProvider = provider;
   const requestedTierNormalized =
@@ -171,6 +178,10 @@ export function attributeRoundUsage({
     provider: transportProvider,
     api_transport: apiTransport ?? null,
     turn_kind: turnKind === 'observation' ? 'observation' : 'reading',
+    provider_call_id:
+      typeof providerCallId === 'string' && providerCallId.trim().length > 0
+        ? providerCallId.trim()
+        : null,
     requested_model: requestedModel,
     requested_tier: transportProvider === 'openai' ? (requestedTier ?? null) : null,
     response_model: responseModel ?? null,

@@ -377,6 +377,7 @@
           "provider",
           "api_transport",
           "turn_kind",
+          "provider_call_id",
           "requested_model",
           "requested_tier",
           "response_model",
@@ -399,13 +400,15 @@
           "loop_invocation_id"
         ],
         "api_transport": "anthropic_messages | chat_completions | responses | null — WHICH API served the round (adapter-stamped actual transport, never configuration)",
-        "turn_kind": "observation | reading — WHICH KIND of loop produced the round, threaded from the shadow harness's routeToObservationTier decision (the authoritative producer). The producer is a boolean, so every non-observation loop (reading, keepalive, shadow, legacy) normalises to 'reading' and a malformed/absent value earns no Terra credit"
+        "turn_kind": "observation | reading — WHICH KIND of loop produced the round, threaded from the shadow harness's routeToObservationTier decision (the authoritative producer). The producer is a boolean, so every non-observation loop (reading, keepalive, shadow, legacy) normalises to 'reading' and a malformed/absent value earns no Terra credit",
+        "provider_call_id": "string|null — the VENDOR's own opaque call id for this round (`msg_…` / `chatcmpl-…` / `resp_…`), stamped by whichever adapter served it onto the one carrier key the Anthropic SDK message already uses. It is the only durable proof a live-lane round consumed a real provider call, and 00C hashes the ORDERED per-round list into sample_identity; PII-free by construction (an opaque vendor identifier, never inspector content). A round the provider gave no id for attributes null rather than a fabricated value, and the lane refuses such a sample outright"
       },
       "field_spec": {
         "required": {
           "provider": "string|null",
           "api_transport": "string|null",
           "turn_kind": "string|null",
+          "provider_call_id": "string|null",
           "requested_model": "string|null",
           "requested_tier": "string|null",
           "response_model": "string|null",
