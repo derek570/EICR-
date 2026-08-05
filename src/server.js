@@ -10,6 +10,7 @@ import * as auth from './auth.js';
 import { startWorker } from './queue.js';
 import { initSocketIO } from './realtime.js';
 import { initSonnetStream } from './extraction/sonnet-stream.js';
+import { createProductionEvidenceContextFactory } from './extraction/plan00-session-manifest.js';
 import { activeSessions } from './extraction/active-sessions.js';
 import { flushAllSessions as flushAllRealtimeLogs } from './extraction/realtime-log-sink.js';
 import { closeTransporter } from './services/email.js';
@@ -38,7 +39,18 @@ const sonnetWss = initSonnetStream(
     const { getAnthropicKey } = await import('./services/secrets.js');
     return getAnthropicKey();
   },
-  auth.verifyToken
+  auth.verifyToken,
+  {
+    // Plan 00C §C3 — register the session-manifest builder/publisher through
+    // Plan 00B's frozen lifecycle chokepoint. Every live session gets the
+    // full evaluation context (manifest observer + mutation observer +
+    // ask/delivery ledgers) so the completion manifest's family evidence
+    // derives from the sub_records bridge. Failures inside the evidence
+    // layer make ONLY that session's Plan 00 evidence ineligible — the hook
+    // layer isolates them from the inspector's live extraction/audible turn
+    // (registration-site wiring: deployed_evidence_runtime_digest only).
+    evaluationContextFactory: createProductionEvidenceContextFactory(),
+  }
 );
 
 // ════════════════════════════════════════════════════════════════════════════
