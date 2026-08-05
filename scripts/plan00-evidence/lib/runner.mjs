@@ -150,9 +150,22 @@ export async function runReservedAttempt(
     reason = 'pass_with_mismatch';
     mismatch = null;
   }
-  const providerCallIds = (Array.isArray(outcome.providerCallIds) ? outcome.providerCallIds : []).filter(
-    (id) => typeof id === 'string' && id.length > 0
-  );
+  // Cycle-6 — STRICT: a malformed provider-id representation is a harness
+  // failure, never sanitised down to the well-formed subset (the dropped
+  // element would escape reuse checks and the sample identity).
+  let providerCallIds;
+  if (outcome.providerCallIds == null) {
+    providerCallIds = [];
+  } else if (
+    Array.isArray(outcome.providerCallIds) &&
+    outcome.providerCallIds.every((id) => typeof id === 'string' && id.length > 0)
+  ) {
+    providerCallIds = outcome.providerCallIds;
+  } else {
+    providerCallIds = [];
+    verdict = 'INVALID';
+    reason = 'provider_ids_malformed';
+  }
   if (verdict !== 'INVALID' && providerCallIds.length === 0) {
     // Fail CLOSED: a semantic verdict without provider identity cannot
     // count; it stays replaceable under the same requirement key.

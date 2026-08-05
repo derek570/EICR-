@@ -116,6 +116,15 @@ export function validateAttemptReport(report) {
   for (const key of Object.keys(report)) {
     if (!REPORT_ALLOWED_KEYS.includes(key)) problems.push({ code: 'report_extra_key', field: key });
   }
+  // EXACT closed shape (cycle-5/6): every key present exactly once — an
+  // ABSENT mismatch key is as invalid as an extra one — and PASS never
+  // carries a mismatch.
+  for (const key of REPORT_ALLOWED_KEYS) {
+    if (!(key in report)) problems.push({ code: 'report_missing_key', field: key });
+  }
+  if (report.verdict === 'PASS' && report.mismatch != null) {
+    problems.push({ code: 'report_pass_with_mismatch' });
+  }
   if (report.schema_version !== 1) problems.push({ code: 'report_schema_version' });
   if (report.kind !== 'attempt_report') problems.push({ code: 'report_kind' });
   if (typeof report.requirement_key !== 'string' || !report.requirement_key.length) {
@@ -212,6 +221,27 @@ export function validateStoredEvent({ key, payload }) {
       if (payload[field] === undefined) {
         problems.push({ code: 'missing_required_field', key, kind, field });
       }
+    }
+  }
+  if (kind === 'expectations_attested') {
+    // Cycle-5/6 — component hashes are REAL 64-hex anchors.
+    for (const field of ['combined_sha256', 'vendor_live_sha256', 'deterministic_egress_sha256']) {
+      if (!/^[0-9a-f]{64}$/.test(String(payload[field] ?? ''))) {
+        problems.push({ code: 'attested_hash_malformed', key, field });
+      }
+    }
+  }
+  if (kind === 'manual_attestation' || kind === 'dialogue_hearing_attestation') {
+    if (!['pass', 'fail'].includes(payload.manual_result)) {
+      problems.push({ code: 'manual_result_invalid', key });
+    }
+    if (typeof payload.heard_completed_during_session !== 'boolean') {
+      problems.push({ code: 'heard_flag_not_boolean', key });
+    }
+  }
+  if (kind === 'non_safety_decision' || kind === 'corpus_gap_decision') {
+    if (!['approved', 'rejected'].includes(payload.decision)) {
+      problems.push({ code: 'decision_invalid', key });
     }
   }
   if (kind === 'stage_a_deployed') {

@@ -121,6 +121,16 @@ export async function checkLiveDeployment({
       // match against whichever task listed first.
       const digests = new Set();
       for (const task of detail?.tasks ?? []) {
+        // Cycle-6 — every RUNNING task must be on the service's task
+        // definition: a same-digest older-revision task during a rollout is
+        // 'unavailable', never a match against mixed revisions.
+        if (task?.taskDefinitionArn != null && task.taskDefinitionArn !== taskDefArn) {
+          return {
+            available: false,
+            fingerprint_matches: false,
+            reason: 'rollout_in_progress_mixed_task_definitions',
+          };
+        }
         const containers = task?.containers ?? [];
         const backend =
           containers.find((c) => c?.name === 'eicr-backend') ??
@@ -133,6 +143,9 @@ export async function checkLiveDeployment({
           fingerprint_matches: false,
           reason: 'rollout_in_progress_multiple_digests',
         };
+      }
+      if (taskArns.length > 0 && digests.size === 0) {
+        return { available: false, fingerprint_matches: false, reason: 'running_task_digest_missing' };
       }
       imageDigest = digests.size === 1 ? [...digests][0] : null;
     }

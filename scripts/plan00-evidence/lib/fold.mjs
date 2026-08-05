@@ -373,11 +373,32 @@ export function foldEvidence({
     // reproduces its deterministic key; a malformed record is an integrity
     // hold, never silently skipped beside counting ordinals.
     const q = rec.payload;
+    const ORDINAL_KEYS = [
+      'schema_version',
+      'reservation_kind',
+      'cohort_id',
+      'lane',
+      'ordinal',
+      'allocator',
+      'nonce',
+    ];
+    const keysExact =
+      Object.keys(q).every((k) => ORDINAL_KEYS.includes(k)) &&
+      ORDINAL_KEYS.every((k) => k in q);
+    const laneKnown = ['ir-repetition', 'corpus-run-haiku', 'corpus-run-luna'].includes(q.lane);
     const expectedKey =
       typeof q.lane === 'string' && Number.isInteger(q.ordinal) && typeof q.cohort_id === 'string'
         ? ordinalReservationKey({ cohortId: q.cohort_id, lane: q.lane, ordinal: q.ordinal })
         : null;
-    if (expectedKey !== rec.key || typeof q.nonce !== 'string' || q.ordinal < 1) {
+    if (
+      expectedKey !== rec.key ||
+      !keysExact ||
+      q.schema_version !== 1 ||
+      !laneKnown ||
+      typeof q.nonce !== 'string' ||
+      q.nonce.length === 0 ||
+      q.ordinal < 1
+    ) {
       holds.push({ tier: 'integrity', code: 'ordinal_reservation_malformed', key: rec.key });
       continue;
     }

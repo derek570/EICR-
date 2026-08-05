@@ -435,8 +435,17 @@ async function cmdAttestDaily(args, store) {
   const sessionIds = String(args['session-ids'] ?? '').split(',').filter(Boolean);
   const confirmationSession = args['confirmation-session'];
   const confirmationRef = args['confirmation-ref'];
+  if (!['true', 'false'].includes(String(args.heard))) {
+    throw new Error('attest-daily requires an EXPLICIT --heard true|false');
+  }
   const heard = args.heard === 'true';
   const result = args.result;
+  if (!['pass', 'fail'].includes(result)) {
+    throw new Error('attest-daily requires --result pass|fail');
+  }
+  if (heard === false && result === 'pass') {
+    throw new Error('false + pass is never valid — a not-heard confirmation cannot PASS');
+  }
   if (!cohortId || sessionIds.length === 0 || !confirmationSession || !confirmationRef || !result) {
     throw new Error(
       'attest-daily requires --session-ids, --confirmation-session, --confirmation-ref, --heard, --result'
@@ -471,8 +480,17 @@ async function cmdAttestDialogueHearing(args, store) {
   const cohortId = await resolveCohortId(store, args);
   const sessionId = args['session-id'];
   const deliveryRef = args['delivery-ref'];
+  if (!['true', 'false'].includes(String(args.heard))) {
+    throw new Error('attest-dialogue-hearing requires an EXPLICIT --heard true|false');
+  }
   const heard = args.heard === 'true';
   const result = args.result;
+  if (!['pass', 'fail'].includes(result)) {
+    throw new Error('attest-dialogue-hearing requires --result pass|fail');
+  }
+  if (heard === false && result === 'pass') {
+    throw new Error('false + pass is never valid');
+  }
   if (!cohortId || !sessionId || !deliveryRef || !result) {
     throw new Error('attest-dialogue-hearing requires --session-id, --delivery-ref, --heard, --result');
   }
@@ -498,7 +516,7 @@ async function cmdAttestDialogueHearing(args, store) {
 
 async function cmdDecideMismatch(args, store) {
   const cohortId = await resolveCohortId(store, args);
-  if (!cohortId || !args['mismatch-id'] || !args.decision) {
+  if (!cohortId || !args['mismatch-id'] || !['approved', 'rejected'].includes(args.decision)) {
     throw new Error('decide-mismatch requires --mismatch-id and --decision approved|rejected');
   }
   await confirmInteractive(
@@ -521,7 +539,7 @@ async function cmdDecideMismatch(args, store) {
 
 async function cmdDecideCorpusGap(args, store) {
   const cohortId = await resolveCohortId(store, args);
-  if (!cohortId || !args.target || !args.decision) {
+  if (!cohortId || !args.target || !['approved', 'rejected'].includes(args.decision)) {
     throw new Error('decide-corpus-gap requires --target and --decision approved|rejected');
   }
   // Codex cycle-1 — the target must be KNOWN: an attested fixture id or a

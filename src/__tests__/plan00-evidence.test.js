@@ -2845,3 +2845,160 @@ describe('K — cycle-2: cohort-wide single-use + reports + decisions', () => {
     expect(fold.stale_deployment).toBe(true);
   });
 });
+
+// ═══ L. cycle-6 pins ══════════════════════════════════════════════════════
+
+describe('L — cycle-6: exact report schema, strict ids, rollout mixing', () => {
+  test('report validator: an ABSENT mismatch key rejects; PASS with a mismatch rejects', async () => {
+    const { validateAttemptReport } = await import('../../scripts/plan00-evidence/lib/events.mjs');
+    const base = {
+      schema_version: 1,
+      kind: 'attempt_report',
+      requirement_key: 'k',
+      attempt_generation: 1,
+      verdict: 'PASS',
+      provider_call_ids: ['p'],
+    };
+    expect(validateAttemptReport(base).some((p) => p.code === 'report_missing_key')).toBe(true);
+    expect(
+      validateAttemptReport({
+        ...base,
+        mismatch: { mismatch_id: 'x', safety_critical: false },
+      }).some((p) => p.code === 'report_pass_with_mismatch')
+    ).toBe(true);
+    expect(validateAttemptReport({ ...base, mismatch: null })).toEqual([]);
+  });
+
+  test('tier-1: malformed attested hashes, non-boolean heard flags and unknown decisions reject', async () => {
+    const { buildEvent, validateStoredEvent } =
+      await import('../../scripts/plan00-evidence/lib/events.mjs');
+    const bad = buildEvent({
+      kind: 'expectations_attested',
+      cohortId: 'cohort-x',
+      namespace: 'derek',
+      body: {
+        reviewer: 'Derek',
+        attested_at: '2026-08-05T00:00:00Z',
+        combined_sha256: 'not-a-hash',
+        vendor_live_sha256: 'a',
+        deterministic_egress_sha256: 'b',
+      },
+    });
+    expect(
+      validateStoredEvent({ key: bad.key, payload: bad.payload }).some(
+        (p) => p.code === 'attested_hash_malformed'
+      )
+    ).toBe(true);
+    const badManual = buildEvent({
+      kind: 'manual_attestation',
+      cohortId: 'cohort-x',
+      namespace: 'derek',
+      body: {
+        day: null,
+        field_session_ids: ['s'],
+        field_context: 'genuine_on_site',
+        manual_heard_by: 'Derek',
+        heard_completed_during_session: 'yes',
+        confirmation_ref: 'r',
+        confirmation_session_id: 's',
+        attested_at: '2026-08-05T00:00:00Z',
+        manual_result: 'banana',
+      },
+    });
+    const problems = validateStoredEvent({ key: badManual.key, payload: badManual.payload });
+    expect(problems.some((p) => p.code === 'manual_result_invalid')).toBe(true);
+    expect(problems.some((p) => p.code === 'heard_flag_not_boolean')).toBe(true);
+    const badDecision = buildEvent({
+      kind: 'non_safety_decision',
+      cohortId: 'cohort-x',
+      namespace: 'derek',
+      body: {
+        mismatch_id: 'm',
+        decision: 'typo',
+        reviewer: 'Derek',
+        decided_at: '2026-08-05T00:00:00Z',
+      },
+    });
+    expect(
+      validateStoredEvent({ key: badDecision.key, payload: badDecision.payload }).some(
+        (p) => p.code === 'decision_invalid'
+      )
+    ).toBe(true);
+  });
+
+  test('runner: a malformed provider-id array normalises the WHOLE outcome to INVALID (never a sanitised subset)', async () => {
+    const { runReservedAttempt } = await import('../../scripts/plan00-evidence/lib/runner.mjs');
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    tickClock(store, '2026-08-10T09:00:00Z');
+    const res = await runReservedAttempt(store, {
+      cohortId,
+      requirementKey: `ir:${cohortId}:rep-1`,
+      generation: 1,
+      requirementClass: 'pinned_ir',
+      model: 'gpt-5.6-luna',
+      tier: 'fast',
+      repetitionOrdinal: 1,
+      execute: async () => ({ verdict: 'PASS', reportDigest: 'r', providerCallIds: ['good', 7] }),
+      nowIso: () => new Date(clockMs).toISOString(),
+    });
+    expect(res.verdict).toBe('INVALID');
+    expect(res.reason).toBe('provider_ids_malformed');
+    expect(res.event.payload.provider_call_ids).toEqual([]);
+  });
+
+  test('live check: a same-digest OLDER-revision running task is a rollout, never a match', async () => {
+    const { checkLiveDeployment } =
+      await import('../../scripts/plan00-evidence/lib/deployment.mjs');
+    const runner = async (args) => {
+      const cmd = args.join(' ');
+      if (cmd.startsWith('ecs describe-services')) {
+        return { services: [{ taskDefinition: 'arn:task/400' }] };
+      }
+      if (cmd.startsWith('ecs describe-task-definition')) {
+        return {
+          taskDefinition: {
+            containerDefinitions: [{ name: 'eicr-backend', image: 'img', environment: [] }],
+          },
+        };
+      }
+      if (cmd.startsWith('ecs list-tasks')) return { taskArns: ['t1'] };
+      if (cmd.startsWith('ecs describe-tasks')) {
+        return {
+          tasks: [
+            {
+              taskDefinitionArn: 'arn:task/399',
+              containers: [{ name: 'eicr-backend', imageDigest: 'sha256:same' }],
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected ${cmd}`);
+    };
+    const res = await checkLiveDeployment({
+      awsRunner: runner,
+      expected: { image_digest: 'sha256:same' },
+    });
+    expect(res.available).toBe(false);
+    expect(res.reason).toBe('rollout_in_progress_mixed_task_definitions');
+  });
+
+  test('fold: an ordinal reservation with a wrong schema version / empty nonce / extra key HOLDS', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    const badBody = {
+      schema_version: 999,
+      reservation_kind: 'logical_ordinal',
+      cohort_id: cohortId,
+      lane: 'ir-repetition',
+      ordinal: 1,
+      allocator: null,
+      nonce: '',
+      extra_field: true,
+    };
+    const key = `${EVIDENCE_PREFIX}/reservations/${cohortId}/ir-repetition/ordinal-000001.json`;
+    await publishDurable(store, { key, bytes: canonicalBytes(badBody) });
+    const fold = await foldNow(store, cohortId);
+    expect(fold.holds.some((h) => h.code === 'ordinal_reservation_malformed')).toBe(true);
+  });
+});
