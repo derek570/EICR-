@@ -1,5 +1,5 @@
 {
-  "_comment": "Plan 00B-3 C0 — HAND-COMPUTED expected evidence_projection_v1 for snapshot-ineligible-v1.json (fixture B). The named fixture case's composed session-level outcome: the rejected resolution stays visible, grants ZERO family credit, the ask stays open (non-quiescent), and the freeze/unknown rows render the session INELIGIBLE.",
+  "_comment": "Plan 00B-3 C0 — HAND-COMPUTED expected evidence_projection_v1 for snapshot-ineligible-v1.json (fixture B). The named fixture case's composed session-level outcome: the rejected resolution stays visible, grants ZERO family credit, the ask stays open (non-quiescent), and the freeze/unknown rows render the session INELIGIBLE. The 00B live-lane C3 capture_budget_overflow marker routes into the SAME ineligible_conditions list — an evidence stream that stopped growing part-way through is provably incomplete and must never fold as complete.",
   "projection": "evidence_projection_v1",
   "session_id": "sess_fixture_b",
   "boundary": "session_stopped",
@@ -27,6 +27,11 @@
       "condition": "delivery_prepared_outstanding",
       "reason": null,
       "count": 1
+    },
+    {
+      "condition": "capture_budget_overflow",
+      "reason": "staged_ack",
+      "count": 4
     }
   ],
   "unknown_producers": [

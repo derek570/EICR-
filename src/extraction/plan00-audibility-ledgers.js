@@ -22,6 +22,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { makeBudgetHolder } from './plan00-capture-budget.js';
 
 /**
  * Plan 00B-2 C2 — evaluation-only per-turn emission observer Symbols.
@@ -162,6 +163,8 @@ export function createAskLedger() {
   const markInvalid = (reason, detail) => {
     if (!invalid) invalid = Object.freeze({ reason, detail: detail ?? null });
   };
+  // Plan 00B C3 — capture/row budget (private default until a context shares one).
+  const budgetHolder = makeBudgetHolder();
 
   return {
     get entries() {
@@ -172,6 +175,11 @@ export function createAskLedger() {
     },
     markInvalid,
 
+    /** Plan 00B C3 — adopt the session-shared capture budget (first-wins). */
+    adoptCaptureBudget(shared) {
+      budgetHolder.adopt(shared);
+    },
+
     /**
      * Stage 1 — semantic production, pre-wire, pre-lossy-projection.
      * Plan 00B-3 C1 — every transition method returns an explicit VERDICT
@@ -179,13 +187,19 @@ export function createAskLedger() {
      * (one derivation, never a parallel append beside the ledger).
      */
     produced(liveAskKey, meta = {}) {
-      entries.push({
-        key: liveAskKey,
-        state: 'produced',
-        runtime_id: null,
-        meta,
-        history: ['produced'],
-      });
+      // Plan 00B C3 — past the capture budget the declaration is not retained.
+      // The verdict is unchanged, so the production caller behaves identically;
+      // the evidence simply stops growing (and is already latched INVALID by the
+      // overflow sink, so a truncated ledger can never fold as complete).
+      if (budgetHolder.current.admit('ask_entry')) {
+        entries.push({
+          key: liveAskKey,
+          state: 'produced',
+          runtime_id: null,
+          meta,
+          history: ['produced'],
+        });
+      }
       return { accepted: true, reason: null };
     },
 
@@ -211,7 +225,10 @@ export function createAskLedger() {
       }
       candidates[0].state = 'emitted';
       candidates[0].runtime_id = runtimeId;
-      candidates[0].history.push('emitted');
+      // Plan 00B C3 — the STATE transition is the ledger's semantic content and
+      // always applies; only the per-entry `history` trail (an independently
+      // unbounded array) is budgeted.
+      if (budgetHolder.current.admit('ask_history')) candidates[0].history.push('emitted');
       return { accepted: true, reason: null };
     },
 
@@ -244,7 +261,7 @@ export function createAskLedger() {
       }
       entry.state = terminal;
       entry.terminal_detail = detail;
-      entry.history.push(terminal);
+      if (budgetHolder.current.admit('ask_history')) entry.history.push(terminal);
       return { accepted: true, reason: null };
     },
 
@@ -260,7 +277,10 @@ export function createAskLedger() {
         markInvalid('reissue_without_emitted', { runtimeId });
         return { accepted: false, reason: 'reissue_without_emitted' };
       }
-      entry.history.push('reissued_attempt');
+      // Plan 00B C3 — the reissue trail is the clearest per-entry unbounded
+      // growth site (one push per reconnect replay, no new entry), so it is
+      // budgeted like every other capture write.
+      if (budgetHolder.current.admit('ask_history')) entry.history.push('reissued_attempt');
       return { accepted: true, reason: null };
     },
 
@@ -283,7 +303,7 @@ export function createAskLedger() {
       if (entry.state === 'emitted' || entry.state === 'produced') {
         entry.state = 'reissued';
         entry.terminal_detail = { successor_runtime_id: successorRuntimeId };
-        entry.history.push('reissued');
+        if (budgetHolder.current.admit('ask_history')) entry.history.push('reissued');
         return { accepted: true, reason: null, transitioned: true };
       }
       entry.terminal_detail = {
@@ -316,6 +336,9 @@ export function createDeliveryLedger() {
 
   const ackBodyHash = (body) => createHash('sha256').update(JSON.stringify(body)).digest('hex');
 
+  // Plan 00B C3 — capture/row budget (private default until a context shares one).
+  const budgetHolder = makeBudgetHolder();
+
   return {
     get deliveries() {
       return deliveries;
@@ -330,6 +353,11 @@ export function createDeliveryLedger() {
       return invalid;
     },
     markInvalid,
+
+    /** Plan 00B C3 — adopt the session-shared capture budget (first-wins). */
+    adoptCaptureBudget(shared) {
+      budgetHolder.adopt(shared);
+    },
 
     /**
      * One immutable operation-bound delivery_attempt per successful send /
@@ -395,7 +423,10 @@ export function createDeliveryLedger() {
         // rules resolve against (deterministic from the ledger sequence).
         delivery_ref: `d:${seq}`,
       });
-      deliveries.push(row);
+      // Plan 00B C3 — past the budget the row is still BUILT and RETURNED (the
+      // sequence and the caller's contract are production surface), it is just
+      // not retained in the growing ledger.
+      if (budgetHolder.current.admit('delivery_row')) deliveries.push(row);
       return row;
     },
 
@@ -406,6 +437,7 @@ export function createDeliveryLedger() {
      * reconstructs a missing pre-crash delivery or playback.
      */
     markDeliveryHistoryAmbiguous(opIdentity) {
+      if (!budgetHolder.current.admit('ambiguous_op_key')) return;
       ambiguousOps.add(operationIdentityKey(opIdentity));
     },
 
@@ -428,6 +460,7 @@ export function createDeliveryLedger() {
         markInvalid('fast_provisional_without_owner_proof', { correlationId });
         return;
       }
+      if (!budgetHolder.current.admit('provisional')) return;
       provisionals.push({
         correlation_id: correlationId,
         candidate: {
@@ -463,7 +496,12 @@ export function createDeliveryLedger() {
       if (!prov) {
         return { accepted: false, reason: 'fast_ack_without_provisional', preAdmission: true };
       }
-      prov.staged_acks.push(ackBody);
+      // Plan 00B C3 — the NESTED unbounded site the plan calls out by name: a
+      // repeated ACK against ONE correlation id grows `staged_acks` without
+      // adding a provisional, delivery, playback or lifecycle row, so no
+      // top-level row count could ever see it. The production verdict is
+      // returned BYTE-IDENTICALLY either way — only retention is budgeted.
+      if (budgetHolder.current.admit('staged_ack')) prov.staged_acks.push(ackBody);
       return { accepted: true, reason: null };
     },
 
@@ -597,7 +635,11 @@ export function createDeliveryLedger() {
         transport,
         source,
       });
-      playbacks.push(row);
+      // Plan 00B C3 — the verdict (and therefore every production branch that
+      // reads it) is unchanged; only retention is budgeted. Past the budget the
+      // downstream lifecycle append is blocked too, so a retransmission that
+      // can no longer be recognised as idempotent still mints no row.
+      if (budgetHolder.current.admit('playback_row')) playbacks.push(row);
       return { accepted: 'authoritative', reason: null, row, existing: null };
     },
   };

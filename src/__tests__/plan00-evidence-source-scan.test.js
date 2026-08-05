@@ -169,9 +169,19 @@ describe('evidence-producer source-coverage scan (C3)', () => {
       'producer_unknown',
       'round_usage',
       'freeze_invalid',
+      // Plan 00B C3 — the reserved capture-budget overflow marker.
+      'capture_budget_overflow',
     ]);
     for (const kind of kinds) expect(known.has(kind)).toBe(true);
     // and the freeze/round seams genuinely exist
     expect(kinds.has('freeze_invalid') || hooksText.includes("'freeze_invalid'")).toBe(true);
+    // Plan 00B C3 — the overflow marker is appended through the SAME owned
+    // seam, but by imported constant rather than by literal (so the kind name
+    // has exactly one definition, shared with the admission gate's exemption).
+    // The regex above therefore cannot see it; assert the call site directly,
+    // in the same spirit as the fixed-kind wrapper assertions above.
+    expect(hooksText).toContain(
+      'appendLedgerRow(ledger, ctx.observer ?? null, CAPTURE_BUDGET_OVERFLOW_KIND,'
+    );
   });
 });

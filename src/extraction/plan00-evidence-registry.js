@@ -330,6 +330,11 @@ export const NON_PRODUCER_ROW_KINDS = Object.freeze([
   'non_mutating_audible',
   'freeze_invalid',
   'producer_unknown',
+  // Plan 00B C3 — the single reserved row minted when the per-session
+  // capture/row budget is exhausted. Non-producer by construction: it is
+  // server-owned bookkeeping about the evidence stream itself, and it makes
+  // the session ineligible rather than crediting any family.
+  'capture_budget_overflow',
 ]);
 
 /** Row kinds appended by registered producer adapters. */

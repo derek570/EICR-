@@ -54,6 +54,12 @@ import {
   NON_QUIESCENT_TERMINALS,
   REJECTION_REASONS,
 } from './plan00-evidence-registry.js';
+import {
+  createCaptureBudget,
+  makeBudgetHolder,
+  CAPTURE_BUDGET_OVERFLOW_KIND,
+} from './plan00-capture-budget.js';
+import logger from '../logger.js';
 
 export const EVIDENCE_OBSERVER = Symbol('plan00.evidenceObserver');
 export const LIFECYCLE_LEDGER = Symbol('plan00.lifecycleLedger');
@@ -125,6 +131,11 @@ function createLedgerState() {
     subRecords: [],
     producerCounts,
     producerInvalid: null,
+    // Plan 00B C3 — capture/row budget holder. A PRIVATE default keeps a
+    // standalone ledger bounded (tests, hand-built eval shapes); the
+    // session-shared budget is adopted once by `attachEvaluationContext`, so
+    // the ceiling is on TOTAL evidence memory rather than per-collection.
+    budgetHolder: makeBudgetHolder(),
   };
 }
 
@@ -199,6 +210,20 @@ export function getEvaluationContext(entry) {
 }
 
 function appendLedgerRow(ledger, observer, kind, detail) {
+  // Plan 00B C3 — THE row-admission gate for every lifecycle sub-record. The
+  // reserved overflow marker is exempt BY NAME: that exemption IS the plan's
+  // "reserved capacity for exactly one overflow marker row" (it is minted
+  // exactly once, from the first-wins sink below, so the exemption cannot be
+  // spent twice). Declining here bumps no revision, appends no row and fires
+  // no observer callback — and because NO caller consumes this return value,
+  // production control flow is untouched.
+  if (
+    kind !== CAPTURE_BUDGET_OVERFLOW_KIND &&
+    ledger.budgetHolder &&
+    !ledger.budgetHolder.current.admit('lifecycle_row')
+  ) {
+    return null;
+  }
   if (!(kind in ledger.revisions)) ledger.revisions[kind] = 0;
   ledger.revisions[kind] += 1;
   // Codex r3 finding 4 — DEEP freeze: a shallow-frozen row left nested
@@ -736,7 +761,19 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     nonMutatingAudible: [],
     // C2.5 — dialogue delivery prepare/commit state (payload → descriptor).
     deliveryPrepared: new Map(),
+    // Plan 00B C3 — THE session-shared capture budget. Created here because
+    // this is the single place every evidence role of one session meets; the
+    // roles adopt it below (first-wins) so the bound is on total evidence
+    // memory rather than per-collection.
+    captureBudget: createCaptureBudget(),
   };
+
+  // Adopt the shared budget into every role that owns an unbounded collection.
+  // Each role also carries a private default, so a role used standalone (or a
+  // hand-built partial context) is still bounded.
+  for (const role of [askLedger, deliveryLedger, mutationObserver]) {
+    role?.adoptCaptureBudget?.(ctx.captureBudget);
+  }
 
   const ledgerOf = () => ctx.entryRef?.[LIFECYCLE_LEDGER] ?? null;
   const appendSub = (kind, detail) => {
@@ -801,7 +838,14 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       });
       return;
     }
-    ctx.askRuntimeBindings.set(runtimeId, { key: liveAskKey, family, producerId, meta });
+    // Plan 00B C3 — the ctx binding maps are evidence-side only (nothing in
+    // production reads them), so past the budget the binding is simply not
+    // retained. A later miss can only take a rejected/unknown branch whose
+    // append is already blocked by the same budget, so no row can be minted
+    // from the absence.
+    if (ctx.captureBudget?.admit('ask_runtime_binding') !== false) {
+      ctx.askRuntimeBindings.set(runtimeId, { key: liveAskKey, family, producerId, meta });
+    }
     // Codex r1 (B-1) — the REGISTRY-derived family wins over caller meta:
     // spreading meta after `family` let a caller overwrite the ledger
     // family, splitting the quiescence count from the sub-record family.
@@ -924,6 +968,9 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   // ── C2.4 srv-* two-half join ──
   ctx.recordSrvAnswerFrame = ({ runtimeId, consumedUtteranceId }) => {
     if (!ctx.askLedger) return;
+    // Plan 00B C3 — budgeted; an unretained half can only leave the join
+    // unresolved, and the row that join would have appended is blocked too.
+    if (ctx.captureBudget?.admit('srv_answer_half') === false) return;
     ctx.srvAnswerHalves.set(runtimeId, { consumedUtteranceId: consumedUtteranceId ?? null });
   };
 
@@ -1237,9 +1284,13 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   };
 
   ctx.recordNonMutatingAudible = ({ channel, kind, text = null }) => {
-    ctx.nonMutatingAudible.push(
-      Object.freeze({ channel: channel ?? null, kind: kind ?? null, text })
-    );
+    // Plan 00B C3 — budgeted. `appendSub` carries its own admission gate, so
+    // past the budget neither the mirror array nor the row grows.
+    if (ctx.captureBudget?.admit('non_mutating_audible') !== false) {
+      ctx.nonMutatingAudible.push(
+        Object.freeze({ channel: channel ?? null, kind: kind ?? null, text })
+      );
+    }
     appendSub('non_mutating_audible', { channel: channel ?? null, audible_kind: kind ?? null });
   };
 
@@ -1274,7 +1325,12 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       return { identity: null, unresolved: matches.length === 0 ? 'unmatched' : 'ambiguous' };
     }
     const rc = matches[0];
-    ctx.deliveryClaimedReceipts.add(rc.operation_id);
+    // Plan 00B C3 — budgeted. The claim set only guards evidence-side
+    // double-binding; past the budget every row it would have guarded is
+    // already refused, so an unrecorded claim cannot manufacture credit.
+    if (ctx.captureBudget?.admit('delivery_claimed_receipt') !== false) {
+      ctx.deliveryClaimedReceipts.add(rc.operation_id);
+    }
     return {
       identity: {
         extractionTurnId: rc.extraction_turn_id ?? null,
@@ -1301,7 +1357,12 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
   // operation for a manual exactly-once PASS).
   ctx.pendingRecoveryLineages = new Set();
   ctx.noteAddressMirrorRecovery = (claimLineage) => {
-    if (claimLineage) ctx.pendingRecoveryLineages.add(claimLineage);
+    // Plan 00B C3 — budgeted. The lineage set only decides whether a
+    // recovered send is flagged ambiguous; past the budget the delivery rows
+    // it would have flagged are already refused.
+    if (!claimLineage) return;
+    if (ctx.captureBudget?.admit('recovery_lineage') === false) return;
+    ctx.pendingRecoveryLineages.add(claimLineage);
   };
   ctx.recordAddressMirrorTerminal = ({
     claimLineage,
@@ -1354,10 +1415,15 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       claimLineage,
       claimToken,
     });
-    ctx.addressMirrorUnits.set(claimLineage, {
-      identities,
-      observedAttempts: new Set(attempt != null ? [attempt] : []),
-    });
+    // Plan 00B C3 — budgeted. Past the budget the unit is not retained, so a
+    // later ack resolves to no unit and stays non-authoritative telemetry —
+    // the same fail-closed shape a stale/wrong-token ack already takes.
+    if (ctx.captureBudget?.admit('address_mirror_unit') !== false) {
+      ctx.addressMirrorUnits.set(claimLineage, {
+        identities,
+        observedAttempts: new Set(attempt != null ? [attempt] : []),
+      });
+    }
     if (isForeignRecovery) {
       for (const op of identities) {
         ctx.deliveryLedger.markDeliveryHistoryAmbiguous(op);
@@ -1401,6 +1467,10 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
       ownerVerified: true,
       candidate,
     });
+    // Plan 00B C3 — budgeted. Past the budget the reservation is not
+    // retained, so `finishFastTts`/`attemptFastPromotion` simply find nothing
+    // and return — no promotion, and therefore no row that could be credited.
+    if (ctx.captureBudget?.admit('fast_tts_reservation') === false) return;
     ctx.fastTtsReservations.set(correlationId, {
       candidate: {
         field: candidate?.field ?? null,
@@ -1568,6 +1638,10 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
 
   ctx.deliveryEmit = {
     prepare(payload, descriptor) {
+      // Plan 00B C3 — budgeted. A prepare whose commit never arrives is the
+      // leak here; past the budget the descriptor is not retained and the
+      // matching commit simply finds nothing (its rows are refused anyway).
+      if (ctx.captureBudget?.admit('delivery_prepared') === false) return;
       ctx.deliveryPrepared.set(payload, descriptor);
     },
     commit(payload, descriptor) {
@@ -1646,7 +1720,52 @@ export function attachEvaluationContext(entry, ctx) {
   if (ctx.observer) {
     registerEvidenceObserver(entry, ctx.observer);
   }
+  bindCaptureBudget(entry, ctx);
   return ctx;
+}
+
+/**
+ * Plan 00B C3 — join the session-shared capture budget to the lifecycle
+ * ledger, and register the ONE overflow sink.
+ *
+ * This is the only place both the `entry` (which owns the lifecycle ledger)
+ * and the `ctx` (which owns the shared budget) are in scope, which is why the
+ * sink lives here rather than in the budget module — and the reserved marker
+ * row MUST be appended from this file regardless (the evidence source-scan
+ * test forbids `appendLedgerRow` calls outside the adapters).
+ *
+ * The sink fires SYNCHRONOUSLY from inside the first refused `admit()`, and
+ * it does its work in a deliberate order:
+ *
+ *  1. Latch every evidence role INVALID FIRST. Downstream code is about to
+ *     see collections that stopped growing (an entry that was never pushed,
+ *     a delivery that was never retained) and may latch its own, misleading
+ *     reason — `emitted_without_produced`, `playback_without_delivery_attempt`.
+ *     All of these latches are first-wins, so claiming them here guarantees
+ *     the recorded reason is the true one.
+ *  2. Append the single reserved `capture_budget_overflow` row (exempt from
+ *     the admission gate by kind, and mintable only once because the sink
+ *     itself is first-wins).
+ *  3. Emit exactly one bounded telemetry line.
+ */
+function bindCaptureBudget(entry, ctx) {
+  const budget = ctx?.captureBudget;
+  if (!budget || typeof budget.onFirstOverflow !== 'function') return;
+  const ledger = entry?.[LIFECYCLE_LEDGER] ?? null;
+  ledger?.budgetHolder?.adopt?.(budget);
+  budget.onFirstOverflow(({ site, limit, admitted }) => {
+    const detail = { site: site ?? null, limit, admitted };
+    if (ledger) markProducerInvalid(ledger, CAPTURE_BUDGET_OVERFLOW_KIND, detail);
+    ctx.askLedger?.markInvalid?.(CAPTURE_BUDGET_OVERFLOW_KIND, detail);
+    ctx.deliveryLedger?.markInvalid?.(CAPTURE_BUDGET_OVERFLOW_KIND, detail);
+    ctx.mutationObserver?.markInvalid?.(CAPTURE_BUDGET_OVERFLOW_KIND, detail);
+    appendLedgerRow(ledger, ctx.observer ?? null, CAPTURE_BUDGET_OVERFLOW_KIND, {
+      capture_site: site ?? null,
+      row_limit: limit,
+      admitted_rows: admitted,
+    });
+    logger.warn('plan00.capture_budget_overflow', detail);
+  });
 }
 
 export const _internals = Object.freeze({

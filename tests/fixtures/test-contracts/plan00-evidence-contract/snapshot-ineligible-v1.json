@@ -1,5 +1,5 @@
 {
-  "_comment": "Plan 00B-3 C0 — HAND-AUTHORED ineligible-session completion snapshot (fixture B). Covers the named fixture case (answered_without_full_proof: rejected audit row, NO invalid latch, entry stays open and counts non-quiescent), a stop-boundary-terminal dispatcher ask (open-at-stop rule), rejected delivery/playback audit rows, an unknown-producer row, and the condition-gated freeze_invalid rows (delivery_invalid via the fast_provisional_unconsumed fold + nonzero delivery_prepared_outstanding).",
+  "_comment": "Plan 00B-3 C0 — HAND-AUTHORED ineligible-session completion snapshot (fixture B). Covers the named fixture case (answered_without_full_proof: rejected audit row, NO invalid latch, entry stays open and counts non-quiescent), a stop-boundary-terminal dispatcher ask (open-at-stop rule), rejected delivery/playback audit rows, an unknown-producer row, the condition-gated freeze_invalid rows (delivery_invalid via the fast_provisional_unconsumed fold + nonzero delivery_prepared_outstanding), and (00B live-lane C3) the ONE reserved capture_budget_overflow marker. The overflow marker's row_limit/admitted_rows are deliberately SYNTHETIC small values — this fixture pins the row SHAPE and its ineligibility consequence, while the production budget constant is pinned separately by unit test, so tuning the constant can never invalidate the contract fixture.",
   "sessionId": "sess_fixture_b",
   "boundary": "session_stopped",
   "counts": {
@@ -39,6 +39,7 @@
     "playback_rejected": 1,
     "producer_unknown": 1,
     "freeze_invalid": 3,
+    "capture_budget_overflow": 1,
     "usage_revision": 0
   },
   "sub_records": [
@@ -139,6 +140,13 @@
       "condition": "delivery_prepared_outstanding",
       "reason": null,
       "count": 1
+    },
+    {
+      "kind": "capture_budget_overflow",
+      "revision": 1,
+      "capture_site": "staged_ack",
+      "row_limit": 4,
+      "admitted_rows": 4
     }
   ]
 }

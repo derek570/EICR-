@@ -143,7 +143,8 @@
     "round_usage",
     "non_mutating_audible",
     "freeze_invalid",
-    "producer_unknown"
+    "producer_unknown",
+    "capture_budget_overflow"
   ],
   "row_kinds": {
     "ask_lifecycle": {
@@ -462,6 +463,24 @@
         "optional": {}
       }
     },
+    "capture_budget_overflow": {
+      "class": "invalid_audit",
+      "credit_bearing": false,
+      "fields": {
+        "capture_site": "the enumerated PLAN00_CAPTURE_SITES member whose write was first refused",
+        "row_limit": "the per-session admitted-capture budget in force",
+        "admitted_rows": "how many captures were admitted before the budget was spent"
+      },
+      "rule": "The ONE reserved row minted when a session exhausts the shared per-session capture/row budget (PLAN00_CAPTURE_ROW_BUDGET). Capacity for exactly this row is reserved, so it can always be appended; after it, ALL further evidence-row and capture growth stops while production control flow and counters continue untouched, and every evidence role latches INVALID. Its presence means the ledger is provably incomplete, so the session is INELIGIBLE and earns zero family credit — an incomplete ledger must never fold as complete.",
+      "field_spec": {
+        "required": {
+          "capture_site": "string|null",
+          "row_limit": "number",
+          "admitted_rows": "number"
+        },
+        "optional": {}
+      }
+    },
     "producer_unknown": {
       "class": "invalid_audit",
       "credit_bearing": false,
@@ -669,7 +688,8 @@
   },
   "session_ineligibility_row_classes": [
     "freeze_invalid",
-    "producer_unknown"
+    "producer_unknown",
+    "capture_budget_overflow"
   ],
   "family_gate_rules": {
     "dialogue_script": {
