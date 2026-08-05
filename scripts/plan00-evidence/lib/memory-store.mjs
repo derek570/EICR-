@@ -17,13 +17,50 @@
 
 import { createHash } from 'node:crypto';
 
+import { isDurableStore } from './store.mjs';
+
 let versionCounter = 0;
 function nextVersionId() {
   versionCounter += 1;
   return `v${String(versionCounter).padStart(8, '0')}`;
 }
 
-export function createMemoryStore({ bucket = 'test-bucket', versioning = 'Enabled', now } = {}) {
+/** The only options this constructor understands. Anything else is rejected
+ *  rather than ignored — see `createMemoryStore`. */
+const MEMORY_STORE_OPTION_KEYS = Object.freeze(['bucket', 'versioning', 'now']);
+
+/**
+ * 00B-4 §C1b — the memory store is the ONLY place a fake/injected executor is
+ * reachable, so it must be structurally impossible to point one at the real
+ * evidence bucket.
+ *
+ * The constructor previously took `{bucket, versioning, now}` and SILENTLY
+ * IGNORED every other key. That silence is the hazard: a caller wiring
+ * `createMemoryStore({ s3: realStore })` — or, far more plausibly, a future
+ * refactor threading an adapter through a shared options bag — would get a
+ * working memory store, notice nothing, and the fake-executor path would sit
+ * one careless line away from the durable one. Rejecting unknown keys AND any
+ * value that carries the durable brand turns "mock verdict in the evidence
+ * store" from forbidden-by-discipline into unrepresentable-by-construction.
+ */
+export function createMemoryStore(options = {}) {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw new TypeError('createMemoryStore: options must be a plain object');
+  }
+  for (const [key, value] of Object.entries(options)) {
+    if (isDurableStore(value)) {
+      throw new TypeError(
+        `createMemoryStore: refusing a DURABLE store adapter (option "${key}") — the memory ` +
+          'store exists so fake executors can never reach the real evidence bucket'
+      );
+    }
+    if (!MEMORY_STORE_OPTION_KEYS.includes(key)) {
+      throw new TypeError(
+        `createMemoryStore: unknown option "${key}" — allowed: ${MEMORY_STORE_OPTION_KEYS.join(', ')}`
+      );
+    }
+  }
+  const { bucket = 'test-bucket', versioning = 'Enabled', now } = options;
   const clock = { now: now ?? (() => new Date().toISOString()) };
   /** key → [{versionId, bytes|null(deleteMarker), lastModified}] (append order) */
   const objects = new Map();

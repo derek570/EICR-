@@ -11,16 +11,20 @@
  * provider ids on a non-INVALID verdict is DOWNGRADED to INVALID with a
  * named reason (fail closed, never fabricated ids).
  *
- * There is NO live executor yet: the enumerated Plan 00B lane machinery is
- * mock/replay-only and mock verdicts must never enter the evidence store,
- * so the CLI run commands REFUSE before allocating anything. This protocol
- * is test-pinned against injected executors and a reviewed 00B successor
- * wires the real live dispatch (surfacing provider response ids) in.
+ * Dispatch AUTHORITY (00B-4 §C1b) is decided before anything is consumed.
+ * Against the DURABLE evidence store the caller must hold a SEALED
+ * live-dispatch capability (lib/live-capability.mjs) — an injected `execute`
+ * is refused outright, so a mock verdict cannot be published as durable
+ * evidence even by mistake. Injected fakes remain fully supported against the
+ * in-memory store, which is itself structurally unable to be handed the S3
+ * adapter. The gate runs BEFORE `buildAttemptCandidate`, so a refusal costs no
+ * ordinal, no reservation and no provider call.
  */
 
 import { canonicalBytes, evidenceEventHash } from '../../field-replay/lib/canonical-crypto.mjs';
 import { EVIDENCE_PREFIX } from './constants.mjs';
 import { buildEvent, validateAttemptReport, validateStoredEvent } from './events.mjs';
+import { assertDispatchAuthority } from './live-capability.mjs';
 import { publishDurable } from './store.mjs';
 
 /** Content-addressed report key (the fold audits this prefix; a withheld
@@ -52,10 +56,14 @@ export async function allocateNextOrdinal(store, { cohortId, lane, startAt = 1, 
 }
 
 /**
- * Run ONE reserved attempt end-to-end. `execute()` is the provider dispatch
- * (injected; the CLI wires the live lane) returning
+ * Run ONE reserved attempt end-to-end. The dispatch function returns
  * { verdict: 'PASS'|'FAIL'|'INVALID', reportDigest, providerCallIds,
  *   sampleIdentity?, mismatch?, reason? }.
+ *
+ * Exactly one of `execute` (a plain injected function — memory store only) and
+ * `liveDispatch` (a sealed capability — required for the durable store) is
+ * supplied; `assertDispatchAuthority` decides which is legitimate here and
+ * returns the executor actually authorised to run.
  */
 export async function runReservedAttempt(
   store,
@@ -75,10 +83,15 @@ export async function runReservedAttempt(
     corpusRunOrdinal = null,
     fixtureId = null,
     modelLane = null,
-    execute,
+    execute = null,
+    liveDispatch = null,
     nowIso = () => new Date().toISOString(),
   }
 ) {
+  // 00B-4 §C1b — authority FIRST. A refusal here must cost nothing: no
+  // ordinal is bound, no PENDING is created, no provider is called.
+  const dispatch = assertDispatchAuthority(store, { execute, liveDispatch });
+
   const candidate = buildAttemptCandidate({
     cohortId,
     requirementKey,
@@ -104,7 +117,7 @@ export async function runReservedAttempt(
   let outcome;
   dispatchLatch.begun = true;
   try {
-    outcome = await execute();
+    outcome = await dispatch();
     // Cycle-3 — a malformed executor RESULT is a harness failure exactly
     // like a throw: normalise to INVALID, never dereference blind (an
     // orphan PENDING here would be an avoidable cohort-ender).

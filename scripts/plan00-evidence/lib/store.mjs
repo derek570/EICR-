@@ -25,6 +25,26 @@ export function sha256Hex(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/**
+ * 00B-4 §C1b — the DURABLE brand.
+ *
+ * The store interface is deliberately duck-typed (that is what lets the
+ * in-memory fake stand in for S3 everywhere), but duck typing means nothing
+ * downstream could tell "the real evidence bucket" from "a test double". The
+ * sealed-dispatch boundary needs exactly that distinction — a fake executor is
+ * legitimate against a memory store and is a forged-evidence incident against
+ * the real one — so durability is carried as an unforgeable module-private
+ * brand rather than a copyable property. A caller cannot set it, spread it onto
+ * a lookalike object, or reconstruct it from serialised state: the only way in
+ * is to have been returned by `createS3Store`.
+ */
+const DURABLE_STORES = new WeakSet();
+
+/** True only for a store minted by `createS3Store` in this process. */
+export function isDurableStore(store) {
+  return typeof store === 'object' && store !== null && DURABLE_STORES.has(store);
+}
+
 /** Real S3-backed store (operator credentials). */
 export function createS3Store({ bucket, region = process.env.AWS_REGION || 'eu-west-2' }) {
   let clientPromise = null;
@@ -38,7 +58,7 @@ export function createS3Store({ bucket, region = process.env.AWS_REGION || 'eu-w
     return clientPromise;
   };
 
-  return {
+  const store = {
     bucket,
     async getBucketVersioningStatus() {
       const { sdk, s3 } = await client();
@@ -143,6 +163,8 @@ export function createS3Store({ bucket, region = process.env.AWS_REGION || 'eu-w
       return { versions, deleteMarkers };
     },
   };
+  DURABLE_STORES.add(store);
+  return store;
 }
 
 /** Fail-closed bucket-versioning guard shared by publishers and folds. */

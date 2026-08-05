@@ -179,6 +179,16 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     }
   }
 
+  // 00B-4 §C1b — LIVE mode reuses this whole body and diverges in exactly three
+  // places: the client injected at construction, the per-turn scripted swap,
+  // and the full-consumption assertion. Everything else — ingress mapping, the
+  // answer pump, playback acks, teardown, judging — is deliberately SHARED, so
+  // the live sample exercises the same code path the deterministic lane pins.
+  const liveMode = boot.liveMode === true;
+  if (liveMode && (typeof boot.liveProviderClients !== 'object' || boot.liveProviderClients === null)) {
+    throw new TypeError('driveFixture: liveMode boot must supply liveProviderClients');
+  }
+
   // C4 scripted-client seam: construction-time factory. The ONE session is
   // constructed with an undispatchable bootstrap client and captured; real
   // vendor construction is impossible (keys cleared + guard).
@@ -198,7 +208,14 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
   const sessionFactory = ({ apiKey, sessionId: sid, certificateType }) => {
     capturedSession = new EICRExtractionSession(apiKey, sid, certificateType, {
       toolCallsMode: 'live',
-      providerClients: { [defaultProvider]: bootstrapClient },
+      // Live: BOTH branded evaluation clients, so `_createExtractionClient`
+      // (which passes no `maxRetries`) can never run and produce an
+      // un-clamped SDK client — whichever provider the model routes to.
+      // Plus the application-level one-call clamp, because SDK `maxRetries: 0`
+      // leaves `callWithRetry`'s own 3-attempt loop untouched.
+      ...(liveMode
+        ? { providerClients: boot.liveProviderClients, maxProviderAttempts: 1 }
+        : { providerClients: { [defaultProvider]: bootstrapClient } }),
     });
     return capturedSession;
   };
@@ -260,15 +277,22 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
   for (const turn of fixture.turns ?? []) {
     // Per-turn strict scripted client, swapped in IMMEDIATELY before the
     // transcript; the session is never reconstructed or restarted.
-    const turnClient = makeTurnClient({
-      baseRounds: turn.model_rounds ?? [],
-      branches: turn.branches ?? [],
-      turnState: {},
-      violations,
-      corpusId,
-      turnIndex: turn.turn_index,
-    });
-    capturedSession.client = turnClient;
+    //
+    // LIVE: there is no script to swap in. The branded vendor client injected
+    // at construction stays for the whole fixture, and `turn.model_rounds` is
+    // IGNORED — the point of the live sample is that the model, not the
+    // fixture, decides the rounds.
+    const turnClient = liveMode
+      ? null
+      : makeTurnClient({
+          baseRounds: turn.model_rounds ?? [],
+          branches: turn.branches ?? [],
+          turnState: {},
+          violations,
+          corpusId,
+          turnIndex: turn.turn_index,
+        });
+    if (!liveMode) capturedSession.client = turnClient;
 
     const declaredAnswers = [...(turn.ask_answers ?? [])];
     const answeredIds = new Set();
@@ -422,7 +446,12 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     }
     // Strict per-turn consumption before advancing; assert NO vendor
     // fallback and NO unexpected call.
-    turnClient.assertFullyConsumed();
+    //
+    // LIVE: there is no script, so "fully consumed" is meaningless. The
+    // equivalent live invariant — that every provider call was real and
+    // identified — is enforced one level up by the provider-call recorder and
+    // by the runner's fail-closed `provider_ids_unavailable` terminal.
+    if (!liveMode) turnClient.assertFullyConsumed();
     if (violations.length > 0) {
       failure = failure ?? `scripted_client_violation:${violations[0]?.code ?? 'violation'}`;
     }

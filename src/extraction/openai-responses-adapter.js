@@ -578,14 +578,20 @@ function createStream(openai, streamArgs, options) {
  * Build an Anthropic-API-shaped wrapper around OpenAI's Responses API,
  * exposing `messages.stream` (the method runToolLoop uses).
  *
- * @param {{apiKey:string}} opts
+ * `maxRetries` is OPTIONAL and OMITTED unless supplied, so production keeps the
+ * SDK default byte-identically. It exists for the Plan-00 live evaluation lane,
+ * which must issue exactly one provider call per attempt: a silent SDK retry
+ * would consume a second provider identity that the evidence record could never
+ * account for.
+ *
+ * @param {{apiKey:string, maxRetries?:number}} opts
  * @returns {{messages:{stream:Function, create:Function}}}
  */
-export function createOpenAIResponsesAdapter({ apiKey }) {
+export function createOpenAIResponsesAdapter({ apiKey, maxRetries }) {
   if (!apiKey) {
     throw new Error('createOpenAIResponsesAdapter: apiKey required');
   }
-  const openai = new OpenAI({ apiKey });
+  const openai = new OpenAI(maxRetries == null ? { apiKey } : { apiKey, maxRetries });
   return {
     messages: {
       stream: (streamArgs, options) => createStream(openai, streamArgs, options),
