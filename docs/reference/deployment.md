@@ -84,6 +84,51 @@ The field-replay correctness gate replays real captured field sessions through t
 - **Deferred (`field-replay-hardening-followups`):** signed-commit governance, trusted-run evidence + `ci-history-checks` history closure, the nightly live lane (`ANTHROPIC_API_KEY` + protected environment), and the per-fixture signed attestation are the malice-hardening the threat model defers; they were built in the original foundation and removed from the shipping gate.
 - **Delivery is PR-only** — the hub auto-push rule is auto-PR-then-`gh pr merge` (Derek, 2026-07-16).
 
+## Plan 00C — Stage-A evidence operator commands (2026-08-05)
+
+Post-deploy, the Plan 00 three-day evidence gate is driven ONLY by the committed
+operator commands (never a second `/ep`; `.ep-done` has no evidentiary weight):
+
+```bash
+# After the merge deploy goes green — verifies the trusted GitHub run (deploy JOB
+# conclusion, never rolloutState), the live ECS/ECR runtime identity and the
+# task-role manifest-prefix proof, then publishes stage_a_deployed:
+node scripts/plan00-evidence/cli.mjs publish-stage-a --run-id <deploy-run-id> --head-sha <merge-sha>
+
+# Interactive Derek-namespace commands (TTY-gated; automated runners cannot invoke):
+node scripts/plan00-evidence/cli.mjs attest-expectations
+node scripts/plan00-evidence/cli.mjs init-cohort            # -> HOLD_EVIDENCE 0/3
+node scripts/plan00-evidence/cli.mjs bind-session --session-id <sid>   # fingerprint derives from stage_a_deployed
+node scripts/plan00-evidence/cli.mjs attest-daily --session-ids <sid> --confirmation-session <sid>   --confirmation-ref '<op_key>' --heard true --result pass
+node scripts/plan00-evidence/cli.mjs attest-dialogue-hearing --session-id <sid> --delivery-ref d:N   --heard true --result pass
+node scripts/plan00-evidence/cli.mjs decide-mismatch --mismatch-id <id> --decision approved|rejected
+node scripts/plan00-evidence/cli.mjs decide-corpus-gap --target <manifest-named-non-safety-stratum> --decision approved|rejected
+# (Whole attested fixtures can NEVER be deferred — unclassified targets
+#  default to safety-critical.)
+
+# Evidence runners (machine namespace; reservation-guarded, exactly-one terminal).
+# NOTE: these currently REFUSE — before allocating or reserving anything —
+# because the enumerated 00B lane machinery is mock/replay-only and mock
+# verdicts must never enter the evidence store. The runner protocol is
+# complete and test-pinned; a reviewed 00B successor wires real live
+# dispatch (surfacing provider response ids) in.
+node scripts/plan00-evidence/cli.mjs run-ir --fixture <corpus-id>
+node scripts/plan00-evidence/cli.mjs run-corpus --lane haiku|luna
+
+# Status: version-audited fold + fresh live ECS drift check; regenerates the
+# handoff-local PLAN-00-EVIDENCE.{json,md} projections (never the tracked index):
+node scripts/plan00-evidence/cli.mjs status
+# Downstream latency plans MUST use the gate form — exits non-zero for every
+# state except DONE-against-a-matching-live-deployment:
+node scripts/plan00-evidence/cli.mjs status --exit-nonzero-unless-done
+```
+
+A failed deploy or defective publisher blocks attestation/cohort initialisation
+and requires a fresh fix-forward handoff/PR. A missing task-role prefix grant is
+remedied by a source-committed IAM fix (never a live edit) and starts a new
+prospective cohort. Later behaviour-changing latency plans call `status` and stay
+blocked until it returns DONE against a matching live deployment.
+
 ## Deployment State (Jan 2026)
 
 - PWA Frontend: `eicr-pwa` service running on ECS Fargate

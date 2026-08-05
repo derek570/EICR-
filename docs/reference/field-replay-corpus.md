@@ -275,3 +275,21 @@ first, and the implementation converges against it.
   (`snapshot/projection-lifecycle-contradiction-v1.json`) plus the
   `ack-sequences-v1.json` action fixture — all reused by 00C Stage A,
   whose fold must HOLD on any contradiction class.
+
+## Plan 00C — Stage A shipped (2026-08-05)
+
+The consumer 00B pointed at now exists. `src/extraction/plan00-session-manifest.js`
+registers the pure manifest builder/publisher through the frozen 00B hook at
+server boot; its acceptance suite (`src/__tests__/plan00-session-manifest.test.js`)
+reuses ALL FIVE committed contract artifacts — the eligible, ineligible and
+lifecycle-contradiction snapshot/projection pairs are deep-equal targets for the
+builder's embedded `evidence_projection_v1`, and the `ack-sequences-v1.json`
+action fixture is driven through the REAL evaluation context and read back from
+the frozen candidate manifest. The operator-side fold (`scripts/plan00-evidence/`)
+consumes the projection under the recorded rules: any `freeze_invalid` /
+`producer_unknown` row, any `count_contradictions` /
+`rejection_regime_contradictions` / `lifecycle_state_contradictions` entry, any
+non-quiescent stop or open Tier-2 ask renders that session's evidence INELIGIBLE
+(fold HOLD/INVALID, zero family credit) — pinned by
+`src/__tests__/plan00-evidence.test.js`. Recorded-corpus fixtures and the gate
+lanes are untouched; the evidence layer observes sessions, never replays them.
