@@ -15,6 +15,7 @@ import {
   EVIDENCE_PREFIX,
   EVIDENCE_SCHEMA_VERSION,
   MACHINE_EVENT_KINDS,
+  MISMATCH_KINDS,
   REQUIREMENT_CLASSES,
   STAGE_A_COHORT,
   STAGE_A_EVENT_KINDS,
@@ -89,6 +90,11 @@ export function eventSchemaHash() {
     derek_kinds: DEREK_EVENT_KINDS,
     verdicts: TERMINAL_VERDICTS,
     requirement_classes: REQUIREMENT_CLASSES,
+    // 00B-4 §C1a: the mismatch vocabulary is part of the schema a cohort was
+    // attested against. Binding it here means widening or renaming a kind
+    // surfaces as deployment/cohort drift rather than silently changing what
+    // an already-attested cohort's stored terminals are held to.
+    mismatch_kinds: MISMATCH_KINDS,
     kind_required_fields: KIND_REQUIRED_FIELDS,
   });
 }
@@ -106,7 +112,68 @@ const REPORT_ALLOWED_KEYS = Object.freeze([
   'provider_call_ids',
   'mismatch',
 ]);
-const MISMATCH_ALLOWED_KEYS = Object.freeze(['mismatch_id', 'safety_critical']);
+/**
+ * 00B-4 §C1a: the CLOSED mismatch shape. `mismatch_id` and `mismatch_kind` are
+ * two DIFFERENT things and are validated independently:
+ *   - `mismatch_id` is an opaque deterministic identity minted from PII-free
+ *     attempt identity. It is validated STRUCTURALLY only — no validator can
+ *     recompute it, because a stored report carries neither the cohort id nor
+ *     the discriminator the id was minted from.
+ *   - `mismatch_kind` is the judge's CLOSED discriminator, persisted verbatim,
+ *     and is the field the closed vocabulary governs.
+ * Neither check may stand in for the other: an unknown kind must not be
+ * excused by a well-formed id, and a malformed id must not be excused by a
+ * known kind. The two are proven independent by test.
+ */
+const MISMATCH_ALLOWED_KEYS = Object.freeze(['mismatch_id', 'mismatch_kind', 'safety_critical']);
+
+/** Shared closed-shape check for a non-null mismatch object. `codes` names the
+ *  four problem codes so the report surface and the stored-terminal surface
+ *  stay separately diagnosable while sharing ONE rule. */
+function collectMismatchProblems(mm, codes, extra = {}) {
+  const problems = [];
+  if (!mm || typeof mm !== 'object' || Array.isArray(mm)) {
+    return [{ code: codes.shape, ...extra }];
+  }
+  for (const key of Object.keys(mm)) {
+    if (!MISMATCH_ALLOWED_KEYS.includes(key)) {
+      problems.push({ code: codes.extraKey, field: key, ...extra });
+    }
+  }
+  if (typeof mm.mismatch_id !== 'string' || !mm.mismatch_id.length) {
+    problems.push({ code: codes.id, ...extra });
+  }
+  if (typeof mm.mismatch_kind !== 'string' || !mm.mismatch_kind.length) {
+    problems.push({ code: codes.kind, ...extra });
+  } else if (!MISMATCH_KINDS.includes(mm.mismatch_kind)) {
+    // Deliberately NOT folded into the structural check: an unrecognised kind
+    // is a well-formed value the evidence layer refuses to classify, which is
+    // a different failure from a missing/garbage field.
+    problems.push({ code: codes.kindUnknown, ...extra });
+  }
+  if (typeof mm.safety_critical !== 'boolean') {
+    problems.push({ code: codes.safetyFlag, ...extra });
+  }
+  return problems;
+}
+
+const REPORT_MISMATCH_CODES = Object.freeze({
+  shape: 'report_mismatch_shape',
+  extraKey: 'report_mismatch_extra_key',
+  id: 'report_mismatch_id',
+  kind: 'report_mismatch_kind',
+  kindUnknown: 'report_mismatch_kind_unknown',
+  safetyFlag: 'report_mismatch_safety_flag',
+});
+
+const TERMINAL_MISMATCH_CODES = Object.freeze({
+  shape: 'terminal_mismatch_shape',
+  extraKey: 'terminal_mismatch_extra_key',
+  id: 'terminal_mismatch_id',
+  kind: 'terminal_mismatch_kind',
+  kindUnknown: 'terminal_mismatch_kind_unknown',
+  safetyFlag: 'terminal_mismatch_safety_flag',
+});
 
 export function validateAttemptReport(report) {
   const problems = [];
@@ -139,22 +206,7 @@ export function validateAttemptReport(report) {
     problems.push({ code: 'report_provider_ids' });
   }
   if (report.mismatch !== null && report.mismatch !== undefined) {
-    const mm = report.mismatch;
-    if (!mm || typeof mm !== 'object' || Array.isArray(mm)) {
-      problems.push({ code: 'report_mismatch_shape' });
-    } else {
-      for (const key of Object.keys(mm)) {
-        if (!MISMATCH_ALLOWED_KEYS.includes(key)) {
-          problems.push({ code: 'report_mismatch_extra_key', field: key });
-        }
-      }
-      if (typeof mm.mismatch_id !== 'string' || !mm.mismatch_id.length) {
-        problems.push({ code: 'report_mismatch_id' });
-      }
-      if (typeof mm.safety_critical !== 'boolean') {
-        problems.push({ code: 'report_mismatch_safety_flag' });
-      }
-    }
+    problems.push(...collectMismatchProblems(report.mismatch, REPORT_MISMATCH_CODES));
   }
   return problems;
 }
@@ -268,6 +320,13 @@ export function validateStoredEvent({ key, payload }) {
       key,
       requirement_class: payload.requirement_class ?? null,
     });
+  }
+  if (kind === 'attempt_terminal' && payload.mismatch !== null && payload.mismatch !== undefined) {
+    // 00B-4 §C1a — the terminal is the row the fold decides on, so the closed
+    // mismatch shape is enforced at REST and not only at the producer. A
+    // terminal written by any other route (a hand-published event, a future
+    // second producer) is held to exactly the same rule as the runner's.
+    problems.push(...collectMismatchProblems(payload.mismatch, TERMINAL_MISMATCH_CODES, { key }));
   }
   const recomputed = evidenceEventHash(payload);
   if (recomputed !== nameHash) {

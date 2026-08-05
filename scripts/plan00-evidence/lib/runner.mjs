@@ -129,6 +129,16 @@ export async function runReservedAttempt(
   // that normalised value (or nothing) is what reaches BOTH the report and
   // the terminal: a malformed executor mismatch (extra prose, customer
   // data) can never leak into the append-only stream.
+  //
+  // 00B-4 §C1a — the normaliser is a WHITELIST, so it silently DESTROYED any
+  // field it did not name. `mismatch_kind` is now carried explicitly, and a
+  // kind-less executor FAIL terminates INVALID rather than persisting a
+  // mismatch nothing downstream can classify: the fold's only alternative
+  // would be an irreversible `unclassified_mismatch_fail` BLOCK on evidence
+  // that was merely mis-plumbed. Note this rebuild is what keeps the free-form
+  // half out — the judge's `reason` string and its raw expected/actual detail
+  // (field values, transcript fragments, circuit text) are dropped HERE and
+  // exist only in the run console.
   let mismatch = null;
   if (outcome.mismatch != null) {
     const mm = outcome.mismatch;
@@ -137,9 +147,15 @@ export async function runReservedAttempt(
       typeof mm === 'object' &&
       typeof mm.mismatch_id === 'string' &&
       mm.mismatch_id.length > 0 &&
+      typeof mm.mismatch_kind === 'string' &&
+      mm.mismatch_kind.length > 0 &&
       typeof mm.safety_critical === 'boolean'
     ) {
-      mismatch = { mismatch_id: mm.mismatch_id, safety_critical: mm.safety_critical };
+      mismatch = {
+        mismatch_id: mm.mismatch_id,
+        mismatch_kind: mm.mismatch_kind,
+        safety_critical: mm.safety_critical,
+      };
     } else {
       verdict = 'INVALID';
       reason = 'mismatch_shape_invalid';

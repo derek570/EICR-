@@ -54,6 +54,17 @@ export const RESERVATION_LANES = Object.freeze([
 /** Terminal verdicts. */
 export const TERMINAL_VERDICTS = Object.freeze(['PASS', 'FAIL', 'INVALID']);
 
+/**
+ * The CLOSED semantic-mismatch discriminator vocabulary (00B-4 §C1a),
+ * re-exported from its single source beside the judge that emits it. It is
+ * declared THERE so a vocabulary edit sits next to the emission sites it
+ * describes, and re-exported HERE so the evidence layer keeps one import
+ * surface for every closed vocabulary it validates against. The re-export is
+ * deliberately not a copy: two lists would drift silently, and the drift would
+ * only ever surface as a rejected mint on a live lane run.
+ */
+export { SEMANTIC_MISMATCH_KINDS as MISMATCH_KINDS } from '../../model-ab/lib/mismatch-kinds.mjs';
+
 /** Requirement classes a terminal may satisfy. Safety-critical classes
  *  (structurally valid FAIL ⇒ irreversible BLOCKED) are marked below. */
 export const REQUIREMENT_CLASSES = Object.freeze([
