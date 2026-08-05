@@ -14,19 +14,22 @@
  *
  *  2. Per-attempt-generation PENDING objects — the reservation IS the
  *     authoritative `attempt_pending` record (no separate lock ⇒ no
- *     lock-only crash state). Key derives from the non-caller-overridable
- *     requirement_key + generation; body carries one runner-minted
- *     cryptographically random opaque `attempt_ref`, the logical-allocation
- *     VersionId, requested model/tier and every prompt/tool/expectation
- *     digest. Provider dispatch is allowed ONLY after a 200 + exact
- *     versioned read-back, or after the same-invocation lost-200 recovery:
- *     on 412, if the current reservation's COMPLETE canonical body matches
- *     the frozen candidate retained by this still-running invocation AND
- *     the invocation-local dispatch latch proves dispatch has not begun,
- *     treat it as recovery of this runner's lost 200 (exactly one dispatch
- *     permitted). A valid reservation with a different attempt_ref is
- *     another winner: call NO provider. Any same-ref key/body mismatch is
- *     an integrity HOLD/BLOCK.
+ *     lock-only crash state). The key derives from the non-caller-
+ *     overridable requirement_key + generation; the body carries one
+ *     runner-minted cryptographically random opaque `attempt_ref`, the
+ *     logical-allocation VersionId, requested model/tier and every
+ *     prompt/tool/expectation digest.
+ *
+ * The invocation RETAINS its frozen candidate (`buildAttemptCandidate`) so
+ * a lost 200 / transport error can be recovered by retrying `reserveAttempt`
+ * with the SAME candidate: on 412, a COMPLETE canonical-body match against
+ * the frozen candidate — while the invocation-local dispatch latch proves
+ * dispatch has not begun — is recovery of this runner's lost 200 and
+ * permits exactly one provider dispatch. A valid reservation with a
+ * DIFFERENT attempt_ref is another winner (zero provider calls). Any
+ * same-ref key/body mismatch is an integrity HOLD/BLOCK. A 409 retries the
+ * exact same key/ref/body and never skips a generation or mints a new
+ * ordinal.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -51,18 +54,23 @@ export function attemptPendingKey({ cohortId, requirementKey, generation }) {
   return `${EVIDENCE_PREFIX}/reservations/${cohortId}/attempts/${requirementKeyDigest(requirementKey)}/gen-${generation}.json`;
 }
 
+
+/** Any delete marker in a reservation key's version history is an
+ *  integrity violation: evidence is never deleted, so a marker means an
+ *  operator mistake is hiding state — HOLD, never create-through. */
+async function deleteMarkerHold(store, key, code) {
+  if (typeof store.listAllVersions !== 'function') return null;
+  const { deleteMarkers } = await store.listAllVersions({ prefix: key });
+  if (deleteMarkers.some((d) => d.key === key)) return { code, key };
+  return null;
+}
+
 function versionOk(versionId) {
   return typeof versionId === 'string' && versionId.length > 0 && versionId !== 'null';
 }
 
-/**
- * Try to allocate ONE specific ordinal. Outcomes:
- *  - { allocated: true, versionId, key, body }        — this invocation owns it
- *  - { allocated: false, taken: true, winner }        — valid other winner; pick next ordinal AFTER a refold
- *  - { allocated: false, hold: {...} }                — integrity HOLD/BLOCK
- */
-export async function allocateOrdinal(store, { cohortId, lane, ordinal, allocator }) {
-  const key = ordinalReservationKey({ cohortId, lane, ordinal });
+/** Freeze an ordinal-allocation candidate (nonce identifies THIS invocation). */
+export function buildOrdinalCandidate({ cohortId, lane, ordinal, allocator }) {
   const body = {
     schema_version: EVIDENCE_SCHEMA_VERSION,
     reservation_kind: 'logical_ordinal',
@@ -72,9 +80,69 @@ export async function allocateOrdinal(store, { cohortId, lane, ordinal, allocato
     allocator: allocator ?? null,
     nonce: `ord_${randomBytes(16).toString('hex')}`,
   };
-  const bytes = canonicalBytes(body);
+  return {
+    key: ordinalReservationKey({ cohortId, lane, ordinal }),
+    body,
+    bytes: canonicalBytes(body),
+  };
+}
+
+/**
+ * Try to claim ONE specific ordinal with a frozen candidate. Retryable with
+ * the SAME candidate after transport errors. Outcomes:
+ *  - { allocated: true, versionId, recovered? }
+ *  - { allocated: false, taken: true, winner }   — refold, then next ordinal
+ *  - { allocated: false, hold: {...} }           — integrity HOLD/BLOCK
+ */
+export async function allocateOrdinal(store, candidate) {
+  const { key, bytes, body } = candidate;
+  const marker = await deleteMarkerHold(store, key, 'allocation_hidden_by_delete_marker');
+  if (marker) return { allocated: false, hold: marker };
+
+  const resolveExisting = async () => {
+    const back = await store.getObjectCurrent({ key });
+    if (!back.found) {
+      return { allocated: false, hold: { code: 'allocation_hidden_by_delete_marker', key } };
+    }
+    if (sha256Hex(back.bytes) === sha256Hex(bytes)) {
+      // Our own lost 200 — only this invocation knows this nonce.
+      if (!versionOk(back.versionId)) {
+        return { allocated: false, hold: { code: 'allocation_version_id_invalid', key } };
+      }
+      return { allocated: true, versionId: back.versionId, recovered: true };
+    }
+    let winner;
+    try {
+      winner = JSON.parse(back.bytes.toString('utf8'));
+    } catch {
+      return { allocated: false, hold: { code: 'allocation_unparseable', key } };
+    }
+    if (
+      winner?.reservation_kind !== 'logical_ordinal' ||
+      winner?.lane !== body.lane ||
+      winner?.ordinal !== body.ordinal ||
+      winner?.cohort_id !== body.cohort_id
+    ) {
+      return { allocated: false, hold: { code: 'allocation_winner_invalid', key } };
+    }
+    return { allocated: false, taken: true, winner };
+  };
+
   for (let attempt = 0; ; attempt += 1) {
-    const put = await store.putObjectIfAbsent({ key, bytes });
+    let put;
+    try {
+      put = await store.putObjectIfAbsent({ key, bytes });
+    } catch (err) {
+      // Transport failure — the write may or may not have happened (a lost
+      // 200). Resolve by reading back; a missing object means the write
+      // never landed and the same candidate may retry.
+      const existing = await resolveExisting();
+      if (existing.hold?.code === 'allocation_hidden_by_delete_marker') {
+        if (attempt < 4) continue;
+        return { allocated: false, hold: { code: 'allocation_transport_unresolved', key, error: err?.message } };
+      }
+      return existing;
+    }
     if (put.status === 200) {
       if (!versionOk(put.versionId)) {
         return { allocated: false, hold: { code: 'allocation_version_id_invalid', key } };
@@ -86,41 +154,15 @@ export async function allocateOrdinal(store, { cohortId, lane, ordinal, allocato
       if (sha256Hex(back.bytes) !== sha256Hex(bytes)) {
         return { allocated: false, hold: { code: 'allocation_content_mismatch', key } };
       }
-      return { allocated: true, key, versionId: put.versionId, body };
+      return { allocated: true, versionId: put.versionId };
     }
     if (put.status === 412) {
-      const back = await store.getObjectCurrent({ key });
-      if (!back.found) {
-        // Existing-but-unreadable: could be a delete marker hiding history.
-        return { allocated: false, hold: { code: 'allocation_hidden_by_delete_marker', key } };
-      }
-      let winner;
-      try {
-        winner = JSON.parse(back.bytes.toString('utf8'));
-      } catch {
-        return { allocated: false, hold: { code: 'allocation_unparseable', key } };
-      }
-      if (sha256Hex(back.bytes) === sha256Hex(bytes)) {
-        // Our own lost 200 (same nonce can only be ours).
-        if (!versionOk(back.versionId)) {
-          return { allocated: false, hold: { code: 'allocation_version_id_invalid', key } };
-        }
-        return { allocated: true, key, versionId: back.versionId, body, recovered: true };
-      }
-      if (
-        winner?.reservation_kind !== 'logical_ordinal' ||
-        winner?.lane !== lane ||
-        winner?.ordinal !== ordinal ||
-        winner?.cohort_id !== cohortId
-      ) {
-        return { allocated: false, hold: { code: 'allocation_winner_invalid', key } };
-      }
-      return { allocated: false, taken: true, winner };
+      return resolveExisting();
     }
     if (put.status === 409) {
       // Never a new ordinal merely because of 409 — retry the SAME key.
       if (attempt < 4) {
-        await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 25 * (attempt + 1)));
         continue;
       }
       return { allocated: false, hold: { code: 'allocation_conflict_unresolved', key } };
@@ -129,23 +171,11 @@ export async function allocateOrdinal(store, { cohortId, lane, ordinal, allocato
   }
 }
 
-/**
- * Create (or recover) the atomic per-attempt-generation PENDING and decide
- * dispatch authorisation. `dispatchLatch` is the invocation-local latch:
- * { begun: boolean } owned by the caller and set to true ONLY by the caller
- * immediately before provider dispatch.
- *
- * Outcomes:
- *  - { authorised: true, attemptRef, key, versionId, lastModified, body }
- *  - { authorised: false, otherWinner: true, winnerRef }
- *  - { authorised: false, hold: {...} }
- */
-export async function reserveAttemptPending(
-  store,
-  { cohortId, requirementKey, generation, requirement, dispatchLatch }
-) {
+/** Freeze the atomic per-attempt-generation PENDING candidate this
+ *  invocation will retain across retries. `requirement_key` and generation
+ *  come from the harness, never a caller override (plan §C1). */
+export function buildAttemptCandidate({ cohortId, requirementKey, generation, requirement }) {
   const attemptRef = mintAttemptRef();
-  const key = attemptPendingKey({ cohortId, requirementKey, generation });
   const body = {
     schema_version: EVIDENCE_SCHEMA_VERSION,
     reservation_kind: 'attempt_pending',
@@ -161,11 +191,33 @@ export async function reserveAttemptPending(
     tool_digest: requirement?.toolDigest ?? null,
     expectation_digest: requirement?.expectationDigest ?? null,
   };
-  const bytes = canonicalBytes(body);
+  return {
+    attemptRef,
+    key: attemptPendingKey({ cohortId, requirementKey, generation }),
+    body,
+    bytes: canonicalBytes(body),
+  };
+}
 
-  const resolve412 = async () => {
+/**
+ * Create (or recover) the atomic PENDING and decide dispatch authorisation.
+ * `dispatchLatch` is the invocation-local latch { begun: boolean } owned by
+ * the caller and set true ONLY immediately before provider dispatch.
+ *
+ * Outcomes:
+ *  - { authorised: true, attemptRef, versionId, lastModified, recovered? }
+ *  - { authorised: false, otherWinner: true, winnerRef }
+ *  - { authorised: false, hold: {...} }
+ */
+export async function reserveAttempt(store, candidate, { dispatchLatch } = {}) {
+  const { key, bytes, attemptRef, body } = candidate;
+  const marker = await deleteMarkerHold(store, key, 'pending_hidden_by_delete_marker');
+  if (marker) return { authorised: false, hold: marker };
+
+  const resolveExisting = async ({ fromTransportError = false } = {}) => {
     const back = await store.getObjectCurrent({ key });
     if (!back.found) {
+      if (fromTransportError) return { retry: true };
       return { authorised: false, hold: { code: 'pending_hidden_by_delete_marker', key } };
     }
     let current;
@@ -175,9 +227,9 @@ export async function reserveAttemptPending(
       return { authorised: false, hold: { code: 'pending_unparseable', key } };
     }
     if (sha256Hex(back.bytes) === sha256Hex(bytes)) {
-      // COMPLETE canonical body match ⇒ recovery of THIS invocation's lost
-      // 200 — but only while the invocation-local latch proves dispatch has
-      // not already begun.
+      // COMPLETE canonical-body match ⇒ recovery of THIS invocation's lost
+      // 200 — permitted only while the local latch proves dispatch has not
+      // begun.
       if (dispatchLatch?.begun) {
         return { authorised: false, hold: { code: 'recovery_after_dispatch_began', key } };
       }
@@ -188,30 +240,41 @@ export async function reserveAttemptPending(
         authorised: true,
         recovered: true,
         attemptRef,
-        key,
         versionId: back.versionId,
         lastModified: back.lastModified,
-        body,
       };
     }
-    if (current?.attempt_ref && current.attempt_ref !== attemptRef) {
-      // A valid reservation with a DIFFERENT ref is another winner — this
-      // invocation calls no provider.
-      if (
-        current.reservation_kind !== 'attempt_pending' ||
-        current.requirement_key !== requirementKey ||
-        current.attempt_generation !== generation
-      ) {
-        return { authorised: false, hold: { code: 'pending_winner_invalid', key } };
-      }
+    if (
+      current?.reservation_kind === 'attempt_pending' &&
+      current?.requirement_key === body.requirement_key &&
+      current?.attempt_generation === body.attempt_generation &&
+      typeof current?.attempt_ref === 'string' &&
+      current.attempt_ref !== attemptRef
+    ) {
+      // A valid reservation with a DIFFERENT ref — another winner; this
+      // invocation calls NO provider.
       return { authorised: false, otherWinner: true, winnerRef: current.attempt_ref };
     }
-    // Same ref but different body — an integrity violation, never retry.
-    return { authorised: false, hold: { code: 'pending_same_ref_body_mismatch', key } };
+    // Same ref with a different body, or a malformed winner — integrity.
+    return { authorised: false, hold: { code: 'pending_integrity_conflict', key } };
   };
 
   for (let attempt = 0; ; attempt += 1) {
-    const put = await store.putObjectIfAbsent({ key, bytes });
+    let put;
+    try {
+      put = await store.putObjectIfAbsent({ key, bytes });
+    } catch (err) {
+      const resolved = await resolveExisting({ fromTransportError: true });
+      if (resolved.retry) {
+        // Crash-before-create leaves NO attempt state — safely retryable.
+        if (attempt < 4) continue;
+        return {
+          authorised: false,
+          hold: { code: 'pending_transport_unresolved', key, error: err?.message },
+        };
+      }
+      return resolved;
+    }
     if (put.status === 200) {
       if (!versionOk(put.versionId)) {
         return { authorised: false, hold: { code: 'pending_version_id_invalid', key } };
@@ -226,20 +289,18 @@ export async function reserveAttemptPending(
       return {
         authorised: true,
         attemptRef,
-        key,
         versionId: put.versionId,
         lastModified: back.lastModified,
-        body,
       };
     }
     if (put.status === 412) {
-      return resolve412();
+      return resolveExisting();
     }
     if (put.status === 409) {
       // Refold-and-retry the EXACT same reservation key/ref/body; the 412
       // recovery rule applies after the retry. Never a skipped generation.
       if (attempt < 4) {
-        await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, 25 * (attempt + 1)));
         continue;
       }
       return { authorised: false, hold: { code: 'pending_conflict_unresolved', key } };

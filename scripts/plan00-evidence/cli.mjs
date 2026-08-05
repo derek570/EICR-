@@ -38,6 +38,7 @@ import {
   publishDurable,
 } from './lib/store.mjs';
 import { foldEvidence } from './lib/fold.mjs';
+import { computeFold, loadCohortState as loadCohortStateShared, latestValid as latestValidShared } from './lib/fold-runner.mjs';
 import { collectSessionManifests } from './lib/collector.mjs';
 import {
   checkLiveDeployment,
@@ -145,29 +146,8 @@ async function publishEvent(store, { kind, cohortId, namespace, body }) {
   return { event, receipt };
 }
 
-async function loadCohortState(store, cohortId) {
-  const stageA = await loadAuditedPrefix(store, `${EVIDENCE_PREFIX}/events/${STAGE_A_COHORT}/`);
-  const cohort = cohortId
-    ? await loadAuditedPrefix(store, `${EVIDENCE_PREFIX}/events/${cohortId}/`)
-    : { records: [], holds: [] };
-  const reservations = cohortId
-    ? await loadAuditedPrefix(store, `${EVIDENCE_PREFIX}/reservations/${cohortId}/`)
-    : { records: [], holds: [] };
-  return {
-    stageARecords: stageA.records,
-    cohortRecords: cohort.records,
-    reservationRecords: reservations.records,
-    integrityHolds: [...stageA.holds, ...cohort.holds, ...reservations.holds],
-  };
-}
-
-function latestValid(records, kind) {
-  const valid = records.filter(
-    (r) =>
-      r.payload?.kind === kind && validateStoredEvent({ key: r.key, payload: r.payload }).length === 0
-  );
-  return valid.sort((a, b) => Date.parse(a.published_at) - Date.parse(b.published_at)).at(-1) ?? null;
-}
+const loadCohortState = loadCohortStateShared;
+const latestValid = latestValidShared;
 
 /** Prospective cohort id/fingerprint from the current stage-A deploy event
  *  plus the attested expectation hashes (plan §C5). */
@@ -509,23 +489,8 @@ async function cmdStatus(args, store) {
       : null,
   });
 
-  // Load manifests for every bound session.
-  const manifestsBySession = new Map();
-  for (const rec of state.cohortRecords) {
-    if (rec.payload?.kind !== 'production_session_bound') continue;
-    const sid = rec.payload.field_session_id;
-    const fp = rec.payload.deployment_fingerprint;
-    if (!sid || !fp || manifestsBySession.has(sid)) continue;
-    manifestsBySession.set(
-      sid,
-      await collectSessionManifests(store, { deploymentFingerprint: fp, sessionId: sid })
-    );
-  }
-
-  const fold = foldEvidence({
-    ...state,
+  const fold = await computeFold(store, {
     cohortId,
-    manifestsBySession,
     expectationManifest: manifest,
     recomputedOracleDigest: oracle,
     liveDeployment: live,
