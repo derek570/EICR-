@@ -206,6 +206,21 @@ jobs:
             fi
           done
 
+      - name: Hub CLAUDE.md size guard (blocking)
+        # Runs INSIDE test-backend so it rides the `Test Backend (Node.js)`
+        # required check and blocks the merge. CLAUDE.md is auto-loaded into
+        # every session, subagent and /rp reviewer, so its cost is paid
+        # per-context — growth is invisible where it happens. The changelog
+        # table reached 122 rows / ~158k chars (single rows over 11k) before
+        # 2026-08-05 despite the file's own "index only" / "one line each"
+        # rules; nothing enforced them. Hard-fail, not warn-only: a warning
+        # is precisely what failed to hold the line. The fix on failure is
+        # to move detail into docs/reference/changelog.md, NOT to raise the
+        # budget. Emergency bypass: [skip-hub-size] in the commit message or
+        # PR title (both null-safe here), then fix it in the follow-up.
+        if: "!contains(github.event.head_commit.message, '[skip-hub-size]') && !contains(github.event.pull_request.title, '[skip-hub-size]')"
+        run: node scripts/check-hub-size.mjs
+
       - name: Run Jest tests
         run: npm test -- --coverage --ci
         env:
