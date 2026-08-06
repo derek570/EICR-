@@ -619,6 +619,42 @@ describe('Tier-2 (b4) — Codex r4 finding 2: mirror regions fail CLOSED on a co
   });
 });
 
+describe('Tier-2 (b4b) — 2026-08-06: an ordinary transcript must NOT latch the session', () => {
+  // THE FIELD DEFECT. The ingress bracket sits on the transcript path ~490
+  // lines before the `isExtracting` gate, so it runs for EVERY transcript.
+  // Once the production evidence factory was wired unconditionally into
+  // `src/server.js` the observer became present on every live session, and
+  // ordinary pipelining — a previous turn still in the model loop when the
+  // next transcript lands — hit `openTurnId != null` on a transcript with
+  // nothing to do with addresses. `markInvalid` is first-wins and PERMANENT,
+  // so one routine overlap latched the WHOLE session's capture invalid and
+  // the fold silently skipped a clean field session. b4 above still proves
+  // the genuine conflict latches; this proves the pass-through does not.
+  test('a non-mirror transcript arriving while another turn holds the scope leaves the capture VALID', async () => {
+    const { factory, roles } = makeFullContextFactory('sess-am-passthru');
+    const wss = initSonnetStream(null, getKey, verifyToken, {
+      evaluationContextFactory: factory,
+    });
+    const ws = connect(wss);
+    await sendFrame(ws, { type: 'session_start', sessionId: 'sess-am-passthru', jobState: {} });
+    const entry = activeSessions.get('sess-am-passthru');
+    // The production shape of ordinary pipelining: a previous turn is still
+    // in the model loop, so it holds the observer scope open AND has
+    // `isExtracting` set. The ingress bracket runs BEFORE the isExtracting
+    // gate, so it sees this transcript; the extraction path does not (the
+    // transcript is buffered), which is why only the ingress bracket could
+    // produce the false latch.
+    roles.mutationObserver.enterTurnScope('utt-other-turn');
+    entry.isExtracting = true;
+    // ...and this transcript is an ordinary dictated reading, not an address
+    // command and not an answer to a mirror question, so the region below
+    // invokes no controller transition and mutates nothing.
+    await sendFrame(ws, transcriptFrame('sess-am-passthru', 'Circuit two Zs is one point one'));
+    expect(roles.mutationObserver.invalid).toBeNull();
+    roles.mutationObserver.exitTurnScope();
+  });
+});
+
 describe('Tier-2 (b5) — mini-review r4: the ANSWER-region scope-conflict branch', () => {
   test('an open scope at ask_user_answered mirror recovery latches INVALID', async () => {
     const { factory, roles } = makeFullContextFactory('sess-am-conc2');

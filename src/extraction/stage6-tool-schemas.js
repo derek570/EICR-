@@ -251,7 +251,7 @@ const recordReading = makeTool({
     board_id: {
       type: 'string',
       description:
-        'Board the circuit lives on. Defaults to currentBoardId when omitted. Pass explicitly when the inspector names a board different from the current one (e.g. "circuit 4 on the main board" while a sub-board is current).',
+        'PREFER OMITTING THIS. Defaults to currentBoardId, which is almost always right; the system prompt asks you to switch boards with select_board rather than pass an id here. If you do pass it, it must be the EXACT board id copied from the BOARDS section of the snapshot — not a designation ("the main board", "DB-2") and not a board TYPE. There is no board id "main". A value that disagrees with currentBoardId is REJECTED wrong_board and writes nothing.',
     },
   },
   required: ['field', 'circuit', 'value', 'confidence', 'source_turn_id'],
@@ -306,7 +306,8 @@ const clearReading = makeTool({
     // record_reading for rationale).
     board_id: {
       type: 'string',
-      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
+      description:
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
   },
   required: ['field', 'circuit', 'reason'],
@@ -428,7 +429,8 @@ const createCircuit = makeTool({
     // record_reading for rationale).
     board_id: {
       type: 'string',
-      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
+      description:
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
   },
   required: ['circuit_ref'],
@@ -482,7 +484,8 @@ const renameCircuit = makeTool({
     // record_reading for rationale).
     board_id: {
       type: 'string',
-      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
+      description:
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
   },
   required: ['from_ref', 'circuit_ref'],
@@ -902,7 +905,8 @@ const deleteCircuit = makeTool({
     // record_reading for rationale).
     board_id: {
       type: 'string',
-      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
+      description:
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
   },
   required: ['circuit_ref'],
@@ -947,7 +951,8 @@ const calculateZs = makeTool({
     // on the named board; defaults to currentBoardId.
     board_id: {
       type: 'string',
-      description: 'Board the circuits live on. Defaults to currentBoardId when omitted.',
+      description:
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
   },
   required: ['all'],
@@ -998,7 +1003,8 @@ const calculateR1PlusR2 = makeTool({
     // on the named board; defaults to currentBoardId.
     board_id: {
       type: 'string',
-      description: 'Board the circuits live on. Defaults to currentBoardId when omitted.',
+      description:
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
   },
   required: ['method', 'all'],
@@ -1123,7 +1129,7 @@ const setFieldForAllCircuits = makeTool({
     board_id: {
       type: 'string',
       description:
-        'Scope the bulk write to the named board (defaults to currentBoardId). Pass "*" to apply across every board on the job.',
+        'Scope the bulk write to one board — the EXACT board id from the BOARDS section of the snapshot, never a designation or a board TYPE (there is no board id "main"). Defaults to currentBoardId. Pass "*" to apply across every board on the job.',
     },
     // PLAN-backend-final.md Phase 8.1 — "apart from / except / excluding /
     // all but" subtractive selector. Circuit refs in Stage 6 are NUMERIC
@@ -1172,7 +1178,8 @@ const markDistributionCircuit = makeTool({
     },
     board_id: {
       type: 'string',
-      description: 'Board the circuit lives on. Defaults to currentBoardId when omitted.',
+      description:
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
     feeds_board_id: {
       type: 'string',
@@ -1199,7 +1206,7 @@ const markDistributionCircuit = makeTool({
 const selectBoard = makeTool({
   name: 'select_board',
   description:
-    'Set the current board for subsequent circuit operations. Use when the inspector indicates they have moved to a different consumer unit they previously added. Copy the EXACT id from the BOARDS section of the snapshot, or from the most recent add_board response. The id may be a UUID (existing main board, e.g. "C58D2373-…") or a server-synthesised string ("sub-1", "sub-2") — never invent ids. Designations like "DB-2" or "Garage CU" are NOT accepted by this version.',
+    'Set the current board for subsequent circuit operations. Use when the inspector indicates they have moved to a different consumer unit they previously added. Copy the EXACT id from the BOARDS section of the snapshot, or from the most recent add_board response. The id may be a UUID (existing main board, e.g. "C58D2373-…") or a server-synthesised string ("sub-1", "sub-2") — never invent ids, and note that "main" is a board TYPE, not an id. Designations like "the main board", "DB-2" or "Garage CU" are NOT accepted by this version.',
   properties: {
     board_id: {
       type: 'string',

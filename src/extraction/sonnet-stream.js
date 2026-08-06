@@ -65,7 +65,11 @@ import {
   EVALUATION_CONTEXT,
   PLAN00_ROUND_USAGE_SINK,
 } from './plan00-lifecycle-hooks.js';
-import { attachMutationObserver, getMutationObserver } from './plan00-semantic-capture.js';
+import {
+  attachMutationObserver,
+  getMutationObserver,
+  EVIDENCE_TURN_ID,
+} from './plan00-semantic-capture.js';
 import {
   PLAN00_ASK_EMIT_OBSERVER,
   PLAN00_DELIVERY_EMIT_OBSERVER,
@@ -329,6 +333,45 @@ function sendAddressMirrorAskClear(ws, askId, sessionId) {
       sessionId,
     })
   );
+}
+
+/**
+ * Latch a mirror-region scope conflict — but only when the region is actually
+ * going to run a controller transition against the observed snapshot.
+ *
+ * WHY GATED (2026-08-06): both mirror regions used to call `markInvalid`
+ * the instant they saw `openTurnId != null`, before doing any work. That was
+ * written (f497cf8e, 2026-08-04) while the mutation observer genuinely was
+ * absent in production, so the bracket was a null lookup and the pre-emptive
+ * shape cost nothing. A day later `createProductionEvidenceContextFactory()`
+ * was wired unconditionally into `src/server.js`, so the observer is now
+ * present on EVERY live session — and the ingress bracket sits on the
+ * transcript path ~490 lines BEFORE the `isExtracting` gate. Ordinary
+ * pipelining (a previous turn still in the model loop while the next
+ * transcript arrives) therefore hit `openTurnId != null` on a transcript that
+ * has nothing to do with addresses, and `markInvalid` is first-wins and
+ * permanent — so one routine overlap latched the WHOLE session's capture
+ * invalid and the fold silently skipped a perfectly good field session.
+ *
+ * The hazard the guard exists for is real and unchanged: if this region
+ * mutates the observed snapshot while a foreign turn scope is open, those
+ * writes are credited to the WRONG turn. So the latch stays PRE-EMPTIVE —
+ * each caller decides whether its region is actually going to run a
+ * controller transition and only calls in that case. It must stay pre-emptive
+ * rather than deferred-until-after-the-call, because the mutation happens
+ * INSIDE the controller: wait for the outcome and the observer will already
+ * have latched the vaguer `commit_without_origin_frame` and won the
+ * first-wins race, losing the specific diagnosis.
+ *
+ * Still fails CLOSED, and still never throws into production.
+ */
+function latchMirrorScopeConflict(mo, conflictTurnId, region) {
+  if (!mo || conflictTurnId == null) return;
+  try {
+    mo.markInvalid('mirror_scope_conflict', { open_turn_id: conflictTurnId, region });
+  } catch {
+    // isolated — evidence capture must never break the live audible turn
+  }
 }
 
 function attachAddressMirrorAskClear(result, clearAskId) {
@@ -1598,15 +1641,27 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptOrdinal 
     // NEVER derived from the observer's open-turn state at send time
     // (mini-review r1 finding 5 — that invented `{turn:null, ordinal:0}`
     // keys). Every operation-backed unit binds through the canonical
-    // receipt resolver instead; `result.utterance_id` is the same value the
-    // harness minted as the receipts' extraction_turn_id (its explicit
-    // fallback), so a buffered older result binds to its OWN turn's
-    // receipts even when a newer same-slot write has since accumulated
-    // (mini-review r1 finding 4).
+    // receipt resolver instead, keyed by the turn id the frame CARRIES, so a
+    // buffered older result binds to its OWN turn's receipts even when a
+    // newer same-slot write has since accumulated (mini-review r1 finding 4).
+    //
+    // 2026-08-06 — that carried id is `EVIDENCE_TURN_ID`, NOT
+    // `result.utterance_id`. The original comment here asserted the two were
+    // the same value; they diverge on every turn that answers an ask, because
+    // `advanceResponseEpoch` moves `result.utterance_id` to the ANSWERING
+    // utterance while the receipts stay scoped under the loop-opening
+    // `extractionTurnId`. The binder then matched zero receipts and latched
+    // the session `confirmation_delivery_binding_unmatched` — a false
+    // ineligibility on correct audio and a correct write. `utterance_id`
+    // remains the fallback for frames that lost the Symbol across a
+    // serialisation boundary (S3 / rehydration), which is exactly the
+    // pre-fix behaviour and never worse.
     const resultTurnId =
-      typeof result?.utterance_id === 'string' && result.utterance_id.length > 0
-        ? result.utterance_id
-        : null;
+      typeof result?.[EVIDENCE_TURN_ID] === 'string' && result[EVIDENCE_TURN_ID].length > 0
+        ? result[EVIDENCE_TURN_ID]
+        : typeof result?.utterance_id === 'string' && result.utterance_id.length > 0
+          ? result.utterance_id
+          : null;
     const stageMirrorTerminal = (text) => {
       const lineage = `${mirrorDelivery.kind}:${mirrorDelivery.token}`;
       // One unit per claim lineage — the same result surfaces the terminal
@@ -2866,21 +2921,32 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               // REAL atoms, so under evaluation this region must carry a
               // turn scope + a declared producer origin or every real mirror
               // write latches `commit_without_origin_frame` and the terminal
-              // can never bind. Evaluation-only: the observer is absent in
-              // production and the bracket is a null lookup.
+              // can never bind. NOTE: the observer used to be absent in
+              // production and this whole bracket a null lookup — that has
+              // NOT been true since `createProductionEvidenceContextFactory()`
+              // was wired into `src/server.js`; it is present on every live
+              // session now. See `latchMirrorScopeConflict`.
               const answerMirrorMo = entry[EVALUATION_CONTEXT]?.mutationObserver ?? null;
               let answerMirrorScopeOpened = false;
-              if (answerMirrorMo && answerMirrorMo.openTurnId != null) {
-                // Codex r4 finding 2 — an already-open scope here means a
-                // concurrent suspended turn: silently borrowing its id
-                // would credit this region's writes to the WRONG turn.
-                // Fail CLOSED (capture INVALID), never throw into
-                // production.
-                answerMirrorMo.markInvalid('mirror_scope_conflict', {
-                  open_turn_id: answerMirrorMo.openTurnId,
-                  region: 'address_mirror_answer',
-                });
-              }
+              // Codex r4 finding 2 — an already-open scope here means a
+              // concurrent suspended turn: silently borrowing its id would
+              // credit this region's writes to the WRONG turn. Fail CLOSED
+              // (capture INVALID), never throw into production.
+              //
+              // Unlike the ingress bracket, this one is NOT gated on an
+              // anchor: it is reached only from `ask_user_answered`, and it
+              // exists solely to run a mirror controller transition — there is
+              // no pass-through path through it, so it cannot produce the
+              // pipelining false positive the ingress bracket did.
+              const answerMirrorConflictTurnId =
+                answerMirrorMo && answerMirrorMo.openTurnId != null
+                  ? answerMirrorMo.openTurnId
+                  : null;
+              latchMirrorScopeConflict(
+                answerMirrorMo,
+                answerMirrorConflictTurnId,
+                'address_mirror_answer'
+              );
               if (answerMirrorMo && answerMirrorMo.openTurnId == null) {
                 try {
                   // Plan 00B-3 C2 — latch from the closed success token, not
@@ -5489,6 +5555,26 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // resolution region: recovered/direct resolution + controller
         // mutation through result replay).
         const mirrorIngressProducer = beginProducer(entry, 'address_mirror_ingress');
+        // The three anchors that decide whether ANY controller transition runs
+        // below. Hoisted above the evaluation bracket (2026-08-06) because the
+        // scope-conflict latch needs them — see the block comment on
+        // `ingressMirrorConflictTurnId`. All three are pure reads of the
+        // frame / transcript text; computing them a few lines earlier has no
+        // side effects and costs one extra regex parse on the stale-outcome
+        // path.
+        const mirrorContext =
+          msg.in_response_to && typeof msg.in_response_to === 'object' ? msg.in_response_to : null;
+        const hasRecoveredAnswerAnchor =
+          mirrorContext?.purpose === ADDRESS_MIRROR_PURPOSE ||
+          mirrorContext?.type === ADDRESS_MIRROR_QUESTION_TYPE;
+        const hasDirectClarificationAnchor =
+          mirrorContext?.type === ADDRESS_MIRROR_DIRECT_QUESTION_TYPE;
+        const directCommand = parseDirectAddressMirrorCommand(canonicalTranscriptText);
+        // Every controller call below is guarded by one of these three, so
+        // when none holds this region is a pure pass-through that mutates
+        // nothing.
+        const mirrorWillInvokeController =
+          hasRecoveredAnswerAnchor || hasDirectClarificationAnchor || Boolean(directCommand);
         // Plan 00B-2 C2 (Codex r2 finding 1) — same bracket as the
         // answer-recovery region: the controller mutates the observed
         // snapshot through the real atoms, so evaluation needs a turn scope
@@ -5497,13 +5583,41 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // result will carry, so the terminal binds turn-exactly.
         const ingressMirrorMo = entry[EVALUATION_CONTEXT]?.mutationObserver ?? null;
         let ingressMirrorScopeOpened = false;
-        if (ingressMirrorMo && ingressMirrorMo.openTurnId != null) {
-          // Codex r4 finding 2 — same fail-closed rule as the answer
-          // region: never borrow a concurrent suspended turn's scope.
-          ingressMirrorMo.markInvalid('mirror_scope_conflict', {
-            open_turn_id: ingressMirrorMo.openTurnId,
-            region: 'address_mirror_ingress',
-          });
+        // Codex r4 finding 2 — an already-open scope here means a concurrent
+        // suspended turn: silently borrowing its id would credit this
+        // region's writes to the WRONG turn. Fail CLOSED (capture INVALID),
+        // never throw into production.
+        //
+        // 2026-08-06 — now gated on `mirrorWillInvokeController`. This bracket
+        // sits on the transcript path ~490 lines BEFORE the `isExtracting`
+        // gate, so it runs for EVERY transcript. The latch was written
+        // (f497cf8e, 2026-08-04) while the observer was genuinely absent in
+        // production and the whole bracket a null lookup; a day later
+        // `createProductionEvidenceContextFactory()` was wired unconditionally
+        // into `src/server.js` and the observer became present on every live
+        // session. Ordinary pipelining — a previous turn still in the model
+        // loop when the next transcript lands — then hit `openTurnId != null`
+        // on a transcript that has nothing to do with addresses, and
+        // `markInvalid` is first-wins and PERMANENT, so one routine overlap
+        // latched the entire session's capture invalid and the fold silently
+        // skipped a perfectly good field session.
+        //
+        // The hazard is real when this region actually mutates; it does not
+        // exist when it passes through. Gating on the anchors (rather than on
+        // the outcome afterwards) keeps the latch PRE-EMPTIVE, which matters:
+        // the mutation happens inside the controller call, and if we waited
+        // until it returned the observer would already have latched the
+        // vaguer `commit_without_origin_frame` and won the first-wins race.
+        const ingressMirrorConflictTurnId =
+          ingressMirrorMo && ingressMirrorMo.openTurnId != null && mirrorWillInvokeController
+            ? ingressMirrorMo.openTurnId
+            : null;
+        if (ingressMirrorConflictTurnId != null) {
+          latchMirrorScopeConflict(
+            ingressMirrorMo,
+            ingressMirrorConflictTurnId,
+            'address_mirror_ingress'
+          );
         }
         if (ingressMirrorMo && ingressMirrorMo.openTurnId == null) {
           try {
@@ -5525,15 +5639,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         }
         try {
           const mirrorWrites = createPerTurnWrites();
-          const context =
-            msg.in_response_to && typeof msg.in_response_to === 'object'
-              ? msg.in_response_to
-              : null;
-          const hasRecoveredAnswerAnchor =
-            context?.purpose === ADDRESS_MIRROR_PURPOSE ||
-            context?.type === ADDRESS_MIRROR_QUESTION_TYPE;
-          const hasDirectClarificationAnchor =
-            context?.type === ADDRESS_MIRROR_DIRECT_QUESTION_TYPE;
+          // `mirrorContext` / `hasRecoveredAnswerAnchor` /
+          // `hasDirectClarificationAnchor` / `directCommand` are hoisted above
+          // the evaluation bracket (see the scope-conflict comment there).
+          const context = mirrorContext;
           const recoveredAskId =
             typeof context?.tool_call_id === 'string' && context.tool_call_id.length > 0
               ? context.tool_call_id
@@ -5568,7 +5677,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             );
             return;
           }
-          const directCommand = parseDirectAddressMirrorCommand(canonicalTranscriptText);
           if (!mirrorOutcome.handled && directCommand) {
             mirrorOutcome = await entry.addressMirrorController.resolvePendingDirectCommand({
               text: canonicalTranscriptText,
@@ -5582,7 +5690,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               occurrenceAnchor
             );
           }
-
           const terminalMirrorOutcome = new Set([
             'yes',
             'no',
@@ -7346,6 +7453,65 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     );
   }
 
+  // Settle budget. 4s comfortably covers the two things we wait on (a model
+  // round-trip tail and a 1-3s observation-refinement search) while staying
+  // well inside the client's stop handling; 25ms polling keeps the observed
+  // overhead on the overwhelmingly common already-quiet path at zero (the
+  // first `outstanding()` check returns empty and we never enter the loop).
+  const STOP_SETTLE_TIMEOUT_MS = 4000;
+  const STOP_SETTLE_POLL_MS = 25;
+
+  // 2026-08-06 — bounded settle for the in-flight tail at stop.
+  //
+  // WHY: `isStopping` (set synchronously in beginEntryTeardown) stops NEW
+  // transcripts entering the pipeline, but it does nothing about a turn that
+  // was ALREADY past that guard. In the field this is routine rather than
+  // exotic: ambient noise at the moment the inspector reaches for stop gets
+  // transcribed, opens a turn, and the stop frame lands while that turn is
+  // still in the model loop. Teardown then ran straight through to the
+  // evidence freeze, which observed a non-zero in-flight counter and froze
+  // the whole session `non_quiescent_at_stop: 1` — evidence-INELIGIBLE. A
+  // clean, correct session was being discarded because of how it ended.
+  //
+  // Waiting here is free in user terms: at the call site `session_ack` has
+  // ALREADY been sent, so the client's stop is acknowledged immediately and
+  // this settle delays nothing the inspector can perceive — only the evidence
+  // freeze and `activeSessions.delete` at the tail.
+  // We wait on the two counters that a stop can genuinely race —
+  // `isExtracting` (the turn itself) and `pendingRefinements` (the
+  // fire-and-forget observation-refinement tail, which teardown has never
+  // awaited). Everything else feeding the quiescence check is already
+  // finally-paired or explicitly cleared by the teardown body.
+  //
+  // Bounded, and non-fatal on timeout: a turn wedged on an unanswerable ask
+  // must never prevent the session from stopping. On expiry we log which
+  // counters were still outstanding and proceed — the freeze then records
+  // the ineligibility truthfully, as before. This makes the common case
+  // work; it does not paper over a genuine hang.
+  async function settleInFlightBeforeFreeze(entry, sessionId) {
+    const outstanding = () => {
+      const reasons = [];
+      if (entry.isExtracting) reasons.push('extraction_in_flight');
+      if (entry.pendingRefinements?.size > 0) reasons.push('refinements_in_flight');
+      return reasons;
+    };
+    let reasons = outstanding();
+    if (reasons.length === 0) return;
+    const startedAt = Date.now();
+    const deadline = startedAt + STOP_SETTLE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, STOP_SETTLE_POLL_MS));
+      reasons = outstanding();
+      if (reasons.length === 0) break;
+    }
+    logger.info('stage6.stop_settle', {
+      sessionId,
+      settled: reasons.length === 0,
+      waitedMs: Date.now() - startedAt,
+      outstanding: reasons,
+    });
+  }
+
   async function runSessionStopTeardown(ws, sessionId, entry) {
     // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — the isStopping flag is
     // flipped by beginEntryTeardown BEFORE any rejectAll / flush / S3 awaits.
@@ -7445,6 +7611,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     // rather than hanging as an orphan. Cheap (O(pendingAsks.size)), runs
     // while the entry is still in activeSessions — callers awaiting the
     // ask Promise receive the rejection before session_ack emit.
+    //
+    // 2026-08-06 — settle the in-flight tail FIRST, so this sweep is also
+    // what cleans up after it. Deliberately ordered settle-then-sweep: a turn
+    // that resumes during the settle may register a fresh ask, and the sweep
+    // below is the mechanism that resolves it as `session_stopped` rather
+    // than leaving an orphan. Reversing the order would reopen exactly the
+    // race this belt-and-suspenders pass exists to close.
+    await settleInFlightBeforeFreeze(entry, sessionId);
     entry.pendingAsks.rejectAll('session_stopped');
     // Plan 05-04 — destroy the restrained-mode state machine BEFORE
     // activeSessions.delete so the pending 60s release timer can't fire

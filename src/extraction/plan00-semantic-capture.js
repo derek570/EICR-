@@ -23,6 +23,34 @@ import { makeBudgetHolder } from './plan00-capture-budget.js';
 
 export const MUTATION_OBSERVER = Symbol('plan00.mutationObserver');
 
+/**
+ * The extraction turn id that the mutation observer's receipts for this
+ * result were scoped under — stamped onto a result frame by the harness so a
+ * delivery can bind to its OWN turn's receipts.
+ *
+ * WHY THIS EXISTS (2026-08-06): the delivery binder previously derived the
+ * receipt turn key from `result.utterance_id`, on the stated premise that it
+ * "is the same value the harness minted as the receipts' extraction_turn_id".
+ * That premise holds only on ask-free turns. `result.utterance_id` is the
+ * RESPONSE EPOCH (`responseEpochRef.current`, snapshotted at frame
+ * construction — see stage6-shadow-harness.js), which `advanceResponseEpoch`
+ * moves to the ANSWERING utterance whenever an in-flight ask is resolved;
+ * the receipts, meanwhile, are scoped under the LOOP-OPENING
+ * `extractionTurnId`. On any turn where an ask was raised on utterance A and
+ * answered by chimed utterance B, the binder filtered receipts by B, matched
+ * zero, and latched the whole session's delivery ledger invalid as
+ * `confirmation_delivery_binding_unmatched`. Both production values are
+ * correct and must stay as they are — the response epoch has to be the
+ * answering utterance so the iOS chime watchdog disarms — so the fix is to
+ * carry the receipt-scope id alongside rather than to conflate the two.
+ *
+ * Non-enumerable Symbol: invisible to JSON.stringify, so this is ZERO wire
+ * change. A result that crosses a serialisation boundary (S3, rehydration)
+ * loses it and the binder falls back to `result.utterance_id` — i.e. exactly
+ * today's behaviour, never worse.
+ */
+export const EVIDENCE_TURN_ID = Symbol('plan00.evidenceTurnId');
+
 /** Semantic origins a producer boundary may declare (§B2). */
 export const SEMANTIC_ORIGINS = Object.freeze([
   'model_direct',
