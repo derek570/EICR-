@@ -293,3 +293,96 @@ non-quiescent stop or open Tier-2 ask renders that session's evidence INELIGIBLE
 (fold HOLD/INVALID, zero family credit) — pinned by
 `src/__tests__/plan00-evidence.test.js`. Recorded-corpus fixtures and the gate
 lanes are untouched; the evidence layer observes sessions, never replays them.
+
+## Plan 00B-4 — the live vendor lane actually dispatches (2026-08-05)
+
+The sanctioned 00B successor. Before this, `run-ir` / `run-corpus` refused
+unconditionally: there was no live executor, so anything they could have written to
+the append-only evidence store would have been a mock verdict wearing a real
+verdict's shape. Six enumerated follow-ups from the 00C execution log ship here,
+plus the digest/success-record contract that makes them re-verifiable.
+
+**The lane dispatches under a sealed capability, not a convention.**
+`runReservedAttempt` no longer accepts an arbitrary injected executor against the
+durable store; authority is a frozen object held in a module-private `WeakSet`
+(`scripts/plan00-evidence/lib/live-capability.mjs`), mintable only from branded live
+clients for every required provider with both vendor keys present, every attestation
+flag set and the mock deny absent. Injected fakes stay fully supported — but only
+against the in-memory store, which itself now refuses the S3 adapter under any option
+name. The authority check runs BEFORE the attempt candidate is built, so a refusal
+costs no ordinal, no PENDING reservation and no provider call.
+
+**Exactly-once is the reservation, not the ordinal.** Two coordinators may
+legitimately hold the same ordinal and derive the same outstanding set — that is the
+RESUME path. Exclusivity comes from the per-(requirement key, attempt generation)
+conditional-create PENDING reservation; the race pin asserts exactly one of two
+concurrent coordinators dispatches while both hold ordinal 1.
+
+**One provider call per attempt, enforced where the retries actually live.** SDK
+`maxRetries: 0` is not sufficient: `callWithRetry` in `eicr-extraction-session.js`
+wraps every provider call in its own attempt loop (default 3), so a single attempt
+could yield three provider identities. The lane clamps it through an
+evaluation-context-scoped `maxProviderAttempts` that is null everywhere else, and a
+pin drives the REAL session to prove one provider error yields one request, one
+recorded id and one INVALID terminal — with a companion pin that the production
+budget outside the lane is still 3.
+
+**Provider call ids are surfaced, ordered and unforgeable-by-omission.** Both OpenAI
+adapters stamp the vendor's opaque call id onto the same carrier key the Anthropic
+SDK already exposes; the tool loop attributes it per round, `round_usage` carries it
+through the closed hand-copied allowlist, and the lane driver refuses a whole sample
+that cannot account for every round. The list is deliberately un-sorted and
+un-deduped — `sample_identity` hashes the ordered list, so reordering would silently
+change identity and deduping would let a 5-round run masquerade as a 3-round one.
+This is what the cohort-wide single-use checks already in `fold.mjs`
+(`provider_call_id_reuse`, `sample_identity_reuse`, `report_digest_reuse`) bite on.
+
+**Run-time gating refuses before it allocates.** `assertRunPreconditions` walks an
+ordered precedence — mode, the success-artifact chain, bucket versioning, cohort
+resolution, superseded-cohort refusal, cohort-bound manifest sha + oracle digest
+equality, attested-vs-committed manifest mirror, **nested-vs-top-level mirror
+agreement**, dispatch-source binding (bound sha, head sha, clean tree), echoed
+fingerprints. Every refusal pin asserts the store still holds zero reservations: a
+gate that refuses after burning an ordinal is not a gate. The mirror-agreement clause
+is the expensive one to have missed — the manifest states each lane's sha256 twice,
+`fold.mjs` enforces terminals against the nested value while the coordinator binds
+the top-level mirror, so a drift binds every terminal to a digest the fold then
+rejects, discovered only after the vendor calls are paid for.
+
+**The self-consistent lie is closed.** Every pre-existing Plan-00 command compared the
+manifest to itself, so a regenerated or hand-edited manifest passed by construction.
+`scripts/plan00-evidence/lib/success-record.mjs` + `assertPlan00Anchors` make the 00B
+`/ep` success record — written only for a run genuinely merged AND deployed — the
+anchor OUTSIDE the manifest, in four phase-aware modes (`publish` / `attest` / `init`
+/ `run`). Cohort supersession is now RECORDED, not inferred from recency: a second
+`publish-stage-a` is refused only as a REBIND (same deploy run id, head sha and
+runtime fingerprint as the Stage-A event a live cohort is already bound to), never
+merely because a cohort exists — refusing that would make a post-deploy restart
+impossible. `init-cohort` writes the superseded id onto the new record atomically;
+`status` reports a superseded cohort as VOID with zero day credit; the run gate
+refuses a voided cohort before allocating, because dispatching into one spends real
+vendor money on evidence that can never count.
+
+**Supporting fixes.** `enterTurnScope` returns a literal `true` and every call site
+derives its cleanup latch from `=== true` — under the no-throw guard proxy, "didn't
+throw" was not an ownership signal and an unconditional exit could clear a concurrent
+turn's scope (four production sites, two of them not named by the plan). `round_usage`
+carries an explicit `turn_kind` from `routeToObservationTier`, so the 00C Terra gate
+credits what the system DECIDED rather than what a reader infers from model/tier/effort
+side effects. Capture ledgers share one bounded budget (`plan00-capture-budget.js`).
+Per-fixture safety classification metadata drives the deferral consumers.
+
+**Digest partition.** `SEMANTIC_ORACLE_INPUTS` is 42 entries: the evidence PRODUCERS,
+the projection/judge chain and the frozen contract fixtures — plus, new here,
+`src/extraction/plan00-capture-budget.js`, because what it decides is how many rows
+each ledger retains, i.e. WHICH evidence exists for the oracle to judge, while every
+enumerated file's own bytes stay identical. A class-level test now scans every
+enumerated `src/extraction/plan00-*.js` input for relative `./plan00-*` imports and
+fails if a target is unenumerated, so the next such module cannot silently detach
+behaviour from the digest. The evidence store and CLI admission-gate layer
+(`fold.mjs`, `events.mjs`, `store.mjs`, `success-record.mjs`, `cli.mjs`) is EXCLUDED
+and that exclusion is pinned: including it would invert the dependency the digest
+serves, since the CLI reads the digest to fail closed on oracle drift and every gate
+tightening would then demand a fresh 00B-successor delivery before the tightened gate
+could run. `src/extraction/plan00-session-manifest.js` remains 00C's, under its own
+`deployed_evidence_runtime_digest`.
