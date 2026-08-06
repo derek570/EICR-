@@ -29,7 +29,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 
-import { EVIDENCE_BUCKET, EVIDENCE_PREFIX, STAGE_A_COHORT } from './lib/constants.mjs';
+import {
+  EVIDENCE_BUCKET,
+  EVIDENCE_PREFIX,
+  REQUIRED_DAYS,
+  STAGE_A_COHORT,
+} from './lib/constants.mjs';
 import { buildEvent, eventSchemaHash, validateStoredEvent } from './lib/events.mjs';
 import {
   assertBucketVersioned,
@@ -188,7 +193,7 @@ import { computeCohortFingerprint } from './lib/fingerprint.mjs';
  * may exist (never lexicographic newest).
  *
  * "Live" is now explicit rather than implied by recency. A source deploy voids
- * the running three-day count, and the only way to restart it is a new Stage-A
+ * the running accepted-day count, and the only way to restart it is a new Stage-A
  * publish + `init-cohort`, which mints a NEW cohort id. Before supersession was
  * recorded, that left two cohort prefixes in the bucket with nothing to say
  * which one was current: every subsequent run/decide/status command refused with
@@ -619,7 +624,7 @@ async function cmdInitCohort(args, store, overrides = {}) {
   if (!live.available || !live.fingerprint_matches) {
     throw new Error(`live deployment drift (${live.reason}) — a new deploy needs a new cohort`);
   }
-  // Which cohort does this one VOID? A deploy voids the running three-day
+  // Which cohort does this one VOID? A deploy voids the running accepted-day
   // count, and the restart mints a new cohort id — so without an explicit
   // record the bucket ends up holding two cohort prefixes and no statement of
   // which is current. Recording it here, at the one moment both ids are known,
@@ -663,7 +668,7 @@ async function cmdInitCohort(args, store, overrides = {}) {
   });
   console.log(`cohort_initialized published: ${event.key} (version ${receipt.versionId})`);
   if (supersedes) console.log(`cohort ${supersedes} is now VOID (superseded by ${cohortId}).`);
-  console.log(`Status is now HOLD_EVIDENCE — 0/3 for cohort ${cohortId}.`);
+  console.log(`Status is now HOLD_EVIDENCE — 0/${REQUIRED_DAYS} for cohort ${cohortId}.`);
 }
 
 async function cmdBindSession(args, store) {

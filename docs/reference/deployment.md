@@ -86,8 +86,11 @@ The field-replay correctness gate replays real captured field sessions through t
 
 ## Plan 00C — Stage-A evidence operator commands (2026-08-05)
 
-Post-deploy, the Plan 00 three-day evidence gate is driven ONLY by the committed
-operator commands (never a second `/ep`; `.ep-done` has no evidentiary weight):
+Post-deploy, the Plan 00 evidence gate is driven ONLY by the committed operator
+commands (never a second `/ep`; `.ep-done` has no evidentiary weight). The gate
+needs `REQUIRED_DAYS` ACCEPTED London days (`scripts/plan00-evidence/lib/constants.mjs`
+— 1 since 2026-08-06; was 3). A "day" is the whole ~10-requirement coverage
+bundle landing inside one Europe/London day, not a bucket of turns:
 
 ```bash
 # After the merge deploy goes green — verifies the trusted GitHub run (deploy JOB
@@ -97,7 +100,7 @@ node scripts/plan00-evidence/cli.mjs publish-stage-a --run-id <deploy-run-id> --
 
 # Interactive Derek-namespace commands (TTY-gated; automated runners cannot invoke):
 node scripts/plan00-evidence/cli.mjs attest-expectations
-node scripts/plan00-evidence/cli.mjs init-cohort            # -> HOLD_EVIDENCE 0/3
+node scripts/plan00-evidence/cli.mjs init-cohort            # -> HOLD_EVIDENCE 0/REQUIRED_DAYS (0/1)
 node scripts/plan00-evidence/cli.mjs bind-session --session-id <sid>   # fingerprint derives from stage_a_deployed
 node scripts/plan00-evidence/cli.mjs attest-daily --session-ids <sid> --confirmation-session <sid>   --confirmation-ref '<op_key>' --heard true --result pass
 node scripts/plan00-evidence/cli.mjs attest-dialogue-hearing --session-id <sid> --delivery-ref d:N   --heard true --result pass
@@ -107,11 +110,15 @@ node scripts/plan00-evidence/cli.mjs decide-corpus-gap --target <manifest-named-
 #  default to safety-critical.)
 
 # Evidence runners (machine namespace; reservation-guarded, exactly-one terminal).
-# NOTE: these currently REFUSE — before allocating or reserving anything —
-# because the enumerated 00B lane machinery is mock/replay-only and mock
-# verdicts must never enter the evidence store. The runner protocol is
-# complete and test-pinned; a reviewed 00B successor wires real live
-# dispatch (surfacing provider response ids) in.
+# These dispatch for real as of 00B-2/00B-3 (PRs #154/#157) — the old blanket
+# `refuseLiveDispatch()` throw is gone. Authority to write attempt records to
+# the DURABLE bucket is now a WeakSet-held capability that
+# `scripts/plan00-evidence/lib/live-capability.mjs` REFUSES to mint unless every
+# live-lane precondition already holds (boot-branded retry-disabled clients, no
+# mock network deny, real vendor keys, and passed oracle-digest / attestation /
+# deployment / source-binding checks). A mock verdict in the evidence store is
+# unrepresentable rather than merely forbidden — so a refusal here means a
+# precondition is unmet, NOT that the lane is unimplemented.
 node scripts/plan00-evidence/cli.mjs run-ir --fixture <corpus-id>
 node scripts/plan00-evidence/cli.mjs run-corpus --lane haiku|luna
 

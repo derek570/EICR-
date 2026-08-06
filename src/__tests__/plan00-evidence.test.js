@@ -15,7 +15,7 @@
  *      holds until a Derek decision, wrong-key safety FAIL stays HOLD)
  *   F. manual + dialogue-hearing attestation matrices
  *   G. per-day gates (IR ordinals, corpus runs, Luna-Fast/Terra/cache
- *      counting rules, family gates) and the deterministic 0/3 → DONE walk
+ *      counting rules, family gates) and the deterministic 0/N → DONE walk
  *   H. lifecycle states, BLOCKED dominance, STALE_DEPLOYMENT
  *   I. collector pair audit + trusted-deploy verification + role proofs
  */
@@ -30,6 +30,7 @@ import { createMemoryStore } from '../../scripts/plan00-evidence/lib/memory-stor
 import {
   EVIDENCE_PREFIX,
   MANIFEST_PREFIX,
+  REQUIRED_DAYS,
   STAGE_A_COHORT,
   londonDayOf,
 } from '../../scripts/plan00-evidence/lib/constants.mjs';
@@ -621,6 +622,17 @@ async function publishAcceptedDay(store, { cohortId, day, dayIndex }) {
       });
     }
   }
+}
+
+/** `count` ascending, non-adjacent Europe/London days starting 2026-08-10 —
+ *  the day sequence the DONE-walk tests publish accepted evidence on. Derived
+ *  from a count rather than hardcoded so the walk stays valid at any
+ *  REQUIRED_DAYS; non-adjacent so a day-boundary bug can't pass by accident. */
+function walkDays(count) {
+  const start = Date.UTC(2026, 7, 10);
+  return Array.from({ length: count }, (_, i) =>
+    new Date(start + i * 2 * 86400000).toISOString().slice(0, 10)
+  );
 }
 
 async function foldNow(store, cohortId, { live = LIVE_OK } = {}) {
@@ -1782,8 +1794,8 @@ describe('G — per-day route/cache/family/IR/corpus gates', () => {
 
 // ═══ H. lifecycle states, dominance, staleness ════════════════════════════
 
-describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
-  test('empty store is NOT_STARTED; stage_a alone is STAGE_A_IMPLEMENTED; init is HOLD 0/3', async () => {
+describe('H — fold states and the deterministic 0/N → DONE walk', () => {
+  test('empty store is NOT_STARTED; stage_a alone is STAGE_A_IMPLEMENTED; init is HOLD 0/N', async () => {
     const store = createMemoryStore();
     let fold = await foldNow(store, null);
     expect(fold.state).toBe('NOT_STARTED');
@@ -1800,7 +1812,7 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
     const { cohortId } = await establishCohort(store2);
     fold = await foldNow(store2, cohortId);
     expect(fold.state).toBe('HOLD_EVIDENCE');
-    expect(fold.progress).toBe('0/3');
+    expect(fold.progress).toBe(`0/${REQUIRED_DAYS}`);
   });
 
   test('cohort init with a mismatched stage-a/attested hash is INVALID and cannot initialise', async () => {
@@ -1890,23 +1902,24 @@ describe('H — fold states and the deterministic 0/3 → DONE walk', () => {
     expect(fold.state).not.toBe('DONE');
   });
 
-  test('deterministic walk: 1/3 → 2/3 → DONE on the third accepted day', async () => {
+  // Asserted against REQUIRED_DAYS rather than a literal count: the walk is
+  // about the STATE MACHINE (every day below the threshold HOLDs, the
+  // threshold day flips DONE), which must stay meaningful whatever the
+  // threshold is set to. Pinning `'3/3'` made the test silently vacuous the
+  // moment the constant moved.
+  test('deterministic walk: HOLD below REQUIRED_DAYS, DONE on the threshold day', async () => {
     const store = createMemoryStore();
     const { cohortId } = await establishCohort(store);
-    await publishAcceptedDay(store, { cohortId, day: '2026-08-10', dayIndex: 1 });
-    let fold = await foldNow(store, cohortId);
-    expect(fold.state).toBe('HOLD_EVIDENCE');
-    expect(fold.progress).toBe('1/3');
-    expect(fold.accepted_days).toEqual(['2026-08-10']);
-
-    await publishAcceptedDay(store, { cohortId, day: '2026-08-12', dayIndex: 2 });
-    fold = await foldNow(store, cohortId);
-    expect(fold.progress).toBe('2/3');
-
-    await publishAcceptedDay(store, { cohortId, day: '2026-08-14', dayIndex: 3 });
-    fold = await foldNow(store, cohortId);
+    const days = walkDays(REQUIRED_DAYS);
+    let fold = null;
+    for (const [i, day] of days.entries()) {
+      await publishAcceptedDay(store, { cohortId, day, dayIndex: i + 1 });
+      fold = await foldNow(store, cohortId);
+      expect(fold.accepted_days).toEqual(days.slice(0, i + 1));
+      expect(fold.progress).toBe(`${i + 1}/${REQUIRED_DAYS}`);
+      expect(fold.state).toBe(i + 1 >= REQUIRED_DAYS ? 'DONE' : 'HOLD_EVIDENCE');
+    }
     expect(fold.state).toBe('DONE');
-    expect(fold.progress).toBe('3/3');
   });
 
   test('BLOCKED dominance: a safety fail flips a would-be DONE cohort to BLOCKED', async () => {
