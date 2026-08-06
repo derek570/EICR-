@@ -7453,6 +7453,65 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     );
   }
 
+  // Settle budget. 4s comfortably covers the two things we wait on (a model
+  // round-trip tail and a 1-3s observation-refinement search) while staying
+  // well inside the client's stop handling; 25ms polling keeps the observed
+  // overhead on the overwhelmingly common already-quiet path at zero (the
+  // first `outstanding()` check returns empty and we never enter the loop).
+  const STOP_SETTLE_TIMEOUT_MS = 4000;
+  const STOP_SETTLE_POLL_MS = 25;
+
+  // 2026-08-06 — bounded settle for the in-flight tail at stop.
+  //
+  // WHY: `isStopping` (set synchronously in beginEntryTeardown) stops NEW
+  // transcripts entering the pipeline, but it does nothing about a turn that
+  // was ALREADY past that guard. In the field this is routine rather than
+  // exotic: ambient noise at the moment the inspector reaches for stop gets
+  // transcribed, opens a turn, and the stop frame lands while that turn is
+  // still in the model loop. Teardown then ran straight through to the
+  // evidence freeze, which observed a non-zero in-flight counter and froze
+  // the whole session `non_quiescent_at_stop: 1` — evidence-INELIGIBLE. A
+  // clean, correct session was being discarded because of how it ended.
+  //
+  // Waiting here is free in user terms: at the call site `session_ack` has
+  // ALREADY been sent, so the client's stop is acknowledged immediately and
+  // this settle delays nothing the inspector can perceive — only the evidence
+  // freeze and `activeSessions.delete` at the tail.
+  // We wait on the two counters that a stop can genuinely race —
+  // `isExtracting` (the turn itself) and `pendingRefinements` (the
+  // fire-and-forget observation-refinement tail, which teardown has never
+  // awaited). Everything else feeding the quiescence check is already
+  // finally-paired or explicitly cleared by the teardown body.
+  //
+  // Bounded, and non-fatal on timeout: a turn wedged on an unanswerable ask
+  // must never prevent the session from stopping. On expiry we log which
+  // counters were still outstanding and proceed — the freeze then records
+  // the ineligibility truthfully, as before. This makes the common case
+  // work; it does not paper over a genuine hang.
+  async function settleInFlightBeforeFreeze(entry, sessionId) {
+    const outstanding = () => {
+      const reasons = [];
+      if (entry.isExtracting) reasons.push('extraction_in_flight');
+      if (entry.pendingRefinements?.size > 0) reasons.push('refinements_in_flight');
+      return reasons;
+    };
+    let reasons = outstanding();
+    if (reasons.length === 0) return;
+    const startedAt = Date.now();
+    const deadline = startedAt + STOP_SETTLE_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, STOP_SETTLE_POLL_MS));
+      reasons = outstanding();
+      if (reasons.length === 0) break;
+    }
+    logger.info('stage6.stop_settle', {
+      sessionId,
+      settled: reasons.length === 0,
+      waitedMs: Date.now() - startedAt,
+      outstanding: reasons,
+    });
+  }
+
   async function runSessionStopTeardown(ws, sessionId, entry) {
     // Plan 03-12 STT-10a (STG r5 BLOCK remediation) — the isStopping flag is
     // flipped by beginEntryTeardown BEFORE any rejectAll / flush / S3 awaits.
@@ -7552,6 +7611,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     // rather than hanging as an orphan. Cheap (O(pendingAsks.size)), runs
     // while the entry is still in activeSessions — callers awaiting the
     // ask Promise receive the rejection before session_ack emit.
+    //
+    // 2026-08-06 — settle the in-flight tail FIRST, so this sweep is also
+    // what cleans up after it. Deliberately ordered settle-then-sweep: a turn
+    // that resumes during the settle may register a fresh ask, and the sweep
+    // below is the mechanism that resolves it as `session_stopped` rather
+    // than leaving an orphan. Reversing the order would reopen exactly the
+    // race this belt-and-suspenders pass exists to close.
+    await settleInFlightBeforeFreeze(entry, sessionId);
     entry.pendingAsks.rejectAll('session_stopped');
     // Plan 05-04 — destroy the restrained-mode state machine BEFORE
     // activeSessions.delete so the pending 60s release timer can't fire
