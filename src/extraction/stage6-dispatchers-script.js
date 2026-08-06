@@ -79,7 +79,7 @@ export async function dispatchStartDialogueScript(call, ctx) {
   // (bucket lookup, seeded effective board, reading-key encoding and the
   // outward `boardId` on the per-turn write), which would otherwise disagree
   // about whether an empty string means "current board" or a real scope.
-  const input = normaliseBoardScopeInput(call.input || {});
+  const input = normaliseBoardScopeInput(call.input || {}, session.stateSnapshot);
 
   // Resolve the WebSocket the engine should emit the first ask through.
   // The composer in stage6-dispatchers.js doesn't currently thread

@@ -87,13 +87,54 @@ export function isUnscopedBoardId(boardId) {
  * destructive or authoritative write at the current board. See the exemption
  * note on `validateBoardScope`.
  *
+ * ── The `'main'` ALIAS (2026-08-06, first live Plan-00 field session) ─────
+ * `'main'` is a board TYPE, not a board id. On a CCU-derived job every board
+ * carries a UUID, so a model that says `board_id: 'main'` — meaning "the main
+ * board" — produces a guaranteed `wrong_board` rejection and a SILENTLY
+ * DROPPED reading. That is exactly what happened in the field: a dictated Zs
+ * vanished, breaching Audio-First invariant #2.
+ *
+ * When `snapshot` is supplied, `'main'` is canonicalised to ABSENT under three
+ * conjunctive conditions, each of which exists to hold the blast radius at
+ * "converts a GUARANTEED rejection into the write the inspector asked for":
+ *   1. no board LITERALLY has id `'main'`. On legacy/synthesised snapshots
+ *      `DEFAULT_MAIN_BOARD_ID` IS a real id and the existing exact-match path
+ *      already succeeds — never shadow a real id.
+ *   2. the canonical main board (`resolveCanonicalMainBoardId` — the
+ *      ATTRIBUTION resolver, never a sub-board) IS the selected board. If the
+ *      inspector is standing at a sub-board then `'main'` is a genuine
+ *      cross-board write and MUST still be rejected; silently retargeting it
+ *      at the sub-board would corrupt the certificate. That rejection is no
+ *      longer silent — see the `wrong_board` partial-failure family.
+ *   3. the caller opted in by passing a snapshot. The three exempt dispatchers
+ *      above pass none, so their reject-on-alias behaviour is untouched.
+ *
+ * Deleting the key rather than rewriting it to the resolved id reuses the one
+ * unscoped spelling every downstream reader already agrees on, so no consumer
+ * has to learn a new shape.
+ *
  * @template {object} T
  * @param {T} input
+ * @param {object} [snapshot] state snapshot; omit to disable alias canonicalisation
  * @returns {T} the same object
  */
-export function normaliseBoardScopeInput(input) {
-  if (input && typeof input === 'object' && input.board_id === '') {
+export function normaliseBoardScopeInput(input, snapshot) {
+  if (!input || typeof input !== 'object') return input;
+  if (input.board_id === '') {
     delete input.board_id;
+    return input;
+  }
+  if (input.board_id === DEFAULT_MAIN_BOARD_ID && snapshot && typeof snapshot === 'object') {
+    const boards = Array.isArray(snapshot.boards) ? snapshot.boards : null;
+    const shadowsRealId =
+      boards && boards.some((b) => b && typeof b === 'object' && b.id === DEFAULT_MAIN_BOARD_ID);
+    if (
+      boards &&
+      !shadowsRealId &&
+      resolveCanonicalMainBoardId(boards) === snapshot.currentBoardId
+    ) {
+      delete input.board_id;
+    }
   }
   return input;
 }

@@ -353,7 +353,7 @@ export async function dispatchRecordReading(call, ctx) {
   // while `validateBoardScope` compared it to the current board id and rejected
   // the whole call as `wrong_board`. Doing this at the dispatcher boundary means
   // every seam below sees the one spelling they already agree on — absent.
-  const input = normaliseBoardScopeInput(call.input ?? {});
+  const input = normaliseBoardScopeInput(call.input ?? {}, session.stateSnapshot);
 
   // PLAN-2D: non-strict tool sampling makes the dispatcher the first
   // authoritative enum boundary. This check deliberately precedes coercion,
@@ -939,7 +939,7 @@ export async function dispatchClearReading(call, ctx) {
   // clear, which is in scope; `clear_board_reading` is deliberately EXEMPT (an
   // injected empty id there must keep rejecting rather than silently retarget a
   // destructive clear at the current board).
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1095,7 +1095,7 @@ export async function dispatchClearReading(call, ctx) {
 export async function dispatchCreateCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchRecordReading.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1325,7 +1325,7 @@ export async function dispatchCreateCircuit(call, ctx) {
 export async function dispatchRenameCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchRecordReading.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1522,7 +1522,7 @@ export async function dispatchRenameCircuit(call, ctx) {
 export async function dispatchDeleteCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchRecordReading.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1822,7 +1822,7 @@ export async function dispatchCalculateZs(call, ctx) {
   // through `validateCalculateBoardTarget` rather than `validateBoardScope`, and
   // its `?? currentBoardId` guard is a `== null` check too, so an empty id used
   // to survive as a phantom explicit target and come back `board_not_found`.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err = validateCalculateZs(input, session.stateSnapshot);
   if (err) {
@@ -1932,7 +1932,7 @@ export async function dispatchCalculateZs(call, ctx) {
 export async function dispatchCalculateR1PlusR2(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchCalculateZs.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err = validateCalculateR1PlusR2(input, session.stateSnapshot);
   if (err) {
@@ -2091,7 +2091,7 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // A2-multiboard item 6 — see dispatchRecordReading. Only the empty string is
   // touched; the `'*'` broadcast sentinel is not a board id and is passed
   // through untouched to the per-board fan-out below.
-  const input = normaliseBoardScopeInput(call.input ?? {});
+  const input = normaliseBoardScopeInput(call.input ?? {}, session.stateSnapshot);
 
   if (typeof input.field !== 'string' || !CIRCUIT_FIELD_SET.has(input.field)) {
     const fieldErr = {

@@ -1097,7 +1097,7 @@ export async function dispatchMarkDistributionCircuit(call, ctx) {
   // The two destructive/authoritative board dispatchers in this file
   // (`clear_board_reading`, `record_board_reading`) are deliberately EXEMPT and
   // must keep rejecting an injected empty id — see validateBoardScope.
-  const input = normaliseBoardScopeInput(call.input ?? {});
+  const input = normaliseBoardScopeInput(call.input ?? {}, session.stateSnapshot);
 
   function reject(code, field) {
     const err = field == null ? { code } : { code, field };
