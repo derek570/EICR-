@@ -1012,6 +1012,12 @@ export async function dispatchAddBoard(call, ctx) {
 // Idempotency note: select_board('main') when already on main still emits
 // one boardOps entry. The wire shape carries "the model called the tool",
 // not "the model changed state"; suppression isn't this layer's concern.
+//
+// 2026-08-06 — that stays true, but the entry now carries an ADDITIVE `changed`
+// flag so the layer that DOES own wording (the bundler) can tell a real switch
+// from a re-selection. It is a fact about the state transition, not a decision
+// about speech: nothing is suppressed here, no wire consumer is required to
+// read it, and `current_board_changed` still broadcasts either way.
 // ---------------------------------------------------------------------------
 export async function dispatchSelectBoard(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
@@ -1049,8 +1055,12 @@ export async function dispatchSelectBoard(call, ctx) {
   // 3) Mutate currentBoardId; emit wire op.
   //    Plan 00B §B2 — routed through the canonical atom (assignment
   //    behaviour byte-identical; receipt only on a REAL board change).
+  //    `changed` is captured BEFORE the mutation (and after
+  //    ensureMultiBoardShape, which may itself seed currentBoardId) so it
+  //    records the real transition rather than the post-write tautology.
+  const changed = snapshot.currentBoardId !== target.id;
   setCurrentBoardInSnapshot(snapshot, target.id);
-  perTurnWrites.boardOps.push({ op: 'select_board', board_id: target.id });
+  perTurnWrites.boardOps.push({ op: 'select_board', board_id: target.id, changed });
 
   // 4) Log success.
   logToolCall(logger, {
@@ -1097,7 +1107,7 @@ export async function dispatchMarkDistributionCircuit(call, ctx) {
   // The two destructive/authoritative board dispatchers in this file
   // (`clear_board_reading`, `record_board_reading`) are deliberately EXEMPT and
   // must keep rejecting an injected empty id — see validateBoardScope.
-  const input = normaliseBoardScopeInput(call.input ?? {});
+  const input = normaliseBoardScopeInput(call.input ?? {}, session.stateSnapshot);
 
   function reject(code, field) {
     const err = field == null ? { code } : { code, field };

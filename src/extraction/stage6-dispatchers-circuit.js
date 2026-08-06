@@ -353,7 +353,7 @@ export async function dispatchRecordReading(call, ctx) {
   // while `validateBoardScope` compared it to the current board id and rejected
   // the whole call as `wrong_board`. Doing this at the dispatcher boundary means
   // every seam below sees the one spelling they already agree on — absent.
-  const input = normaliseBoardScopeInput(call.input ?? {});
+  const input = normaliseBoardScopeInput(call.input ?? {}, session.stateSnapshot);
 
   // PLAN-2D: non-strict tool sampling makes the dispatcher the first
   // authoritative enum boundary. This check deliberately precedes coercion,
@@ -503,21 +503,33 @@ export async function dispatchRecordReading(call, ctx) {
       validation_error: err,
       input_summary: { field: input.field, circuit: input.circuit },
     });
-    // Plan 2A channel 1 — the id-112 mechanism. `circuit_not_found` ONLY:
-    // `validateBoardScope` runs first and its `wrong_board` outcome is a
-    // DIFFERENT class (the circuit may well exist, on another board), so
-    // "circuit N wasn't found" would be a false statement about the
-    // installation. Every other `validateRecordReading` code
-    // (`value_out_of_range` etc.) is a value-shaped rejection the model can
-    // and does re-ask about, and is deliberately left to it — a notice there
-    // would double up on the model's own clarification.
-    if (err.code === 'circuit_not_found') {
+    // Plan 2A channel 1 — the id-112 mechanism. TWO classes speak, each under
+    // its OWN family, because they are different statements about the world:
+    //
+    //   * `circuit_not_found` — the circuit is not on the board being written
+    //     to.
+    //   * `wrong_board` — `validateBoardScope` runs first; the circuit may well
+    //     exist, just on another board. Saying "circuit N wasn't found" here
+    //     would be a false statement about the installation, which is why this
+    //     is a separate family rather than a shared one.
+    //
+    // `wrong_board` spoke NOTHING until 2026-08-06, and that silence cost a
+    // live dictated Zs in the field (session 10A27714…, turn-10: rejected at
+    // round 1, never retried, and the turn's only speech was an unrelated
+    // no-op "Switched board"). A structurally complete reading that vanishes
+    // without a word is the exact breach of Audio-First invariant #2.
+    //
+    // Every other `validateRecordReading` code (`value_out_of_range` etc.) is a
+    // value-shaped rejection the model can and does re-ask about, and is
+    // deliberately left to it — a notice there would double up on the model's
+    // own clarification.
+    if (err.code === 'circuit_not_found' || err.code === 'wrong_board') {
       stageCircuitPartialFailure(ctx, {
-        reason: 'circuit_not_found',
+        reason: err.code,
         field: input.field,
         circuit: input.circuit,
         boardId: input.board_id,
-        producer: 'record_reading_circuit_not_found',
+        producer: `record_reading_${err.code}`,
       });
     }
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
@@ -939,7 +951,7 @@ export async function dispatchClearReading(call, ctx) {
   // clear, which is in scope; `clear_board_reading` is deliberately EXEMPT (an
   // injected empty id there must keep rejecting rather than silently retarget a
   // destructive clear at the current board).
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1095,7 +1107,7 @@ export async function dispatchClearReading(call, ctx) {
 export async function dispatchCreateCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchRecordReading.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1325,7 +1337,7 @@ export async function dispatchCreateCircuit(call, ctx) {
 export async function dispatchRenameCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchRecordReading.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1522,7 +1534,7 @@ export async function dispatchRenameCircuit(call, ctx) {
 export async function dispatchDeleteCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchRecordReading.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err =
     validateBoardScope(input, session.stateSnapshot) ||
@@ -1822,7 +1834,7 @@ export async function dispatchCalculateZs(call, ctx) {
   // through `validateCalculateBoardTarget` rather than `validateBoardScope`, and
   // its `?? currentBoardId` guard is a `== null` check too, so an empty id used
   // to survive as a phantom explicit target and come back `board_not_found`.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err = validateCalculateZs(input, session.stateSnapshot);
   if (err) {
@@ -1932,7 +1944,7 @@ export async function dispatchCalculateZs(call, ctx) {
 export async function dispatchCalculateR1PlusR2(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchCalculateZs.
-  const input = normaliseBoardScopeInput(call.input);
+  const input = normaliseBoardScopeInput(call.input, session.stateSnapshot);
 
   const err = validateCalculateR1PlusR2(input, session.stateSnapshot);
   if (err) {
@@ -2091,7 +2103,7 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // A2-multiboard item 6 — see dispatchRecordReading. Only the empty string is
   // touched; the `'*'` broadcast sentinel is not a board id and is passed
   // through untouched to the per-board fan-out below.
-  const input = normaliseBoardScopeInput(call.input ?? {});
+  const input = normaliseBoardScopeInput(call.input ?? {}, session.stateSnapshot);
 
   if (typeof input.field !== 'string' || !CIRCUIT_FIELD_SET.has(input.field)) {
     const fieldErr = {

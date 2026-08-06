@@ -98,7 +98,15 @@ describe('dispatchSelectBoard happy paths', () => {
     expect(session.stateSnapshot.currentBoardId).toBe('sub-1');
 
     expect(writes.boardOps).toHaveLength(1);
-    expect(writes.boardOps[0]).toEqual({ op: 'select_board', board_id: 'sub-1' });
+    // 2026-08-06 — `changed` joined the entry as an ADDITIVE transition fact
+    // (see stage6-select-board-noop-speech.test.js). The op/board_id pair is
+    // still pinned exactly; the flag is asserted alongside rather than folded
+    // into a loose match, so a future key still has to be justified here.
+    expect(writes.boardOps[0]).toEqual({
+      op: 'select_board',
+      board_id: 'sub-1',
+      changed: true,
+    });
 
     const rows = toolCallRows(logger);
     expect(rows).toHaveLength(1);
@@ -125,7 +133,15 @@ describe('dispatchSelectBoard happy paths', () => {
     expect(res.is_error).toBe(false);
     expect(session.stateSnapshot.currentBoardId).toBe('main');
     expect(writes.boardOps).toHaveLength(1);
-    expect(writes.boardOps[0]).toEqual({ op: 'select_board', board_id: 'main' });
+    // The wire contract this test names is UNCHANGED: a re-selection still
+    // emits exactly one entry, because the op records that the model called
+    // the tool. `changed:false` is the added fact that lets the bundler word
+    // it honestly ("Already on the … board") instead of claiming a switch.
+    expect(writes.boardOps[0]).toEqual({
+      op: 'select_board',
+      board_id: 'main',
+      changed: false,
+    });
   });
 });
 

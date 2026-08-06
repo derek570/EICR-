@@ -1099,7 +1099,21 @@ describe('§5.B1 — channel 1: record_reading circuit_not_found (the id-112 sha
     assertNoGenericApologies(result, opts.logger);
   });
 
-  test('a wrong_board rejection is a DIFFERENT class and stages no notice', async () => {
+  test('a wrong_board rejection SPEAKS its own family — the 2026-08-06 field regression', async () => {
+    // PROVENANCE — this test previously pinned the OPPOSITE: `wrong_board` was
+    // treated as "a DIFFERENT class" that staged nothing, so a structurally
+    // complete dictated reading aimed at another board was dropped in total
+    // silence. The first live Plan-00 field session hit exactly that (backend
+    // session 10A27714…, turn-10): a dictated Zs was rejected `wrong_board`,
+    // the only thing the inspector heard was "Switched board", and the reading
+    // was never retried. Silence here is a direct breach of Audio-First
+    // invariant #2 — a dropped reading is invisible to a hands-free user.
+    //
+    // It stays its OWN family rather than folding into `circuit_not_found`,
+    // because those variants would state something false about the
+    // installation: the circuit very probably DOES exist, just on another
+    // board. The recovery differs too — one breath ("I'm on the garage board")
+    // fixes this, where a missing circuit does not.
     const session = makeSession({
       circuits: { 4: { circuit_designation: 'Sockets' } },
       boards: [
@@ -1117,8 +1131,26 @@ describe('§5.B1 — channel 1: record_reading circuit_not_found (the id-112 sha
       reading(4, 'measured_zs_ohm', '0.5', { board_id: 'no-such-board' }),
     ]);
     const opts = baseOpts();
-    await runShadowHarness(session, 'Zs on 4 is 0.4.', [], opts);
-    expect(noticeRows(opts.logger)).toHaveLength(0);
+    const result = await runShadowHarness(session, 'Zs on 4 is 0.4.', [], opts);
+
+    const rows = noticeRows(opts.logger);
+    expect(rows).toHaveLength(1);
+    expect(rows[0][1]).toMatchObject({
+      reason: 'wrong_board',
+      field: 'zs',
+      producer: 'record_reading_wrong_board',
+      board: 'no-such-board',
+      spoken_refs: '4',
+    });
+
+    // …and it reaches the inspector's ears, naming the schema label, the
+    // circuit and the cause. The surviving sibling write is what keeps
+    // `allRejected` false, so drain rule (1) does not suppress it.
+    const texts = audibleConfs(result).map((c) => c.text);
+    expect(
+      texts.some((t) => t.includes(label('measured_zs_ohm')) && t.includes('different board'))
+    ).toBe(true);
+    assertNoGenericApologies(result, opts.logger);
   });
 });
 

@@ -231,10 +231,28 @@ function synthesiseStateChangeConfirmations(
         }
       } else if (op.op === 'select_board') {
         const desig = boardDesignations instanceof Map ? boardDesignations.get(op.board_id) : null;
+        // 2026-08-06 — a re-selection of the board already current says so,
+        // instead of claiming a switch that never happened.
+        //
+        // WHY THIS IS WORDING, NOT SUPPRESSION: a fired chime is a promise —
+        // the lever for not-responding is upstream of here, and gating "should
+        // we speak?" on content is the F7 invariant breach. So a no-op still
+        // speaks; it just stops lying. "Switched board" made a failed turn
+        // sound productive in the field (session 10A27714…, turn-10: a
+        // dictated Zs was rejected `wrong_board`, the model re-selected the
+        // board it was already on, and the ONLY thing the inspector heard was
+        // a confident "Switched board"). Hearing "Already on the DB-1 board"
+        // is what tells a hands-free inspector the recovery achieved nothing.
+        //
+        // `changed` is additive: only an explicit `false` changes the wording,
+        // so every producer that predates the flag keeps its exact bytes.
+        const noop = op.changed === false;
         if (typeof desig === 'string' && desig.trim()) {
-          text = `Switched to the ${desig.trim()} board`;
+          text = noop
+            ? `Already on the ${desig.trim()} board`
+            : `Switched to the ${desig.trim()} board`;
         } else {
-          text = `Switched board`;
+          text = noop ? `Already on that board` : `Switched board`;
         }
       } else if (op.op === 'mark_distribution_circuit') {
         const ref = op.circuit_ref;
