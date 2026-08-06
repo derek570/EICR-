@@ -38,7 +38,11 @@ import {
   publishDurable,
 } from './lib/store.mjs';
 import { foldEvidence } from './lib/fold.mjs';
-import { computeFold, loadCohortState as loadCohortStateShared, latestValid as latestValidShared } from './lib/fold-runner.mjs';
+import {
+  computeFold,
+  loadCohortState as loadCohortStateShared,
+  latestValid as latestValidShared,
+} from './lib/fold-runner.mjs';
 import { collectSessionManifests } from './lib/collector.mjs';
 import { resolveDeferralTarget } from './lib/deferral-targets.mjs';
 import {
@@ -48,7 +52,21 @@ import {
   verifyTrustedDeploy,
 } from './lib/deployment.mjs';
 import { writeProjections } from './lib/projections.mjs';
-import { allocateNextOrdinal, mapLaneVerdict, runReservedAttempt } from './lib/runner.mjs';
+import { allocateNextOrdinal, runReservedAttempt } from './lib/runner.mjs';
+import { translateJudgeResult } from './lib/executor-translation.mjs';
+import {
+  deriveDispatchState,
+  vendorCorpusLane,
+  vendorCorpusRequirementKey,
+} from './lib/dispatch-plan.mjs';
+import {
+  PINNED_IR_IDENTITY,
+  assertNoPinnedIrOverride,
+  loadPinnedIrTarget,
+  pinnedIrRequirementKey,
+} from './lib/pinned-ir.mjs';
+import { PINNED_IR_MODEL_LANE, pinLaneModelEnv, resolveLaneModel } from './lib/lane-models.mjs';
+import { mintLiveDispatchCapability } from './lib/live-capability.mjs';
 import { evidenceEventHash } from '../field-replay/lib/canonical-crypto.mjs';
 import {
   computeConfigFingerprint,
@@ -188,7 +206,8 @@ async function cmdPublishStageA(args, store) {
   if (!runId || !headSha) throw new Error('publish-stage-a requires --run-id and --head-sha');
 
   const deploy = await verifyTrustedDeploy({ runId, headSha, fetchRun: ghRunFetcher });
-  if (!deploy.ok) throw new Error(`trusted-deploy verification failed: ${deploy.errors.join(', ')}`);
+  if (!deploy.ok)
+    throw new Error(`trusted-deploy verification failed: ${deploy.errors.join(', ')}`);
 
   const live = await checkLiveDeployment({ awsRunner: awsJson, expected: { commit_sha: headSha } });
   if (!live.available || !live.fingerprint_matches) {
@@ -235,7 +254,9 @@ async function cmdPublishStageA(args, store) {
   const oracle = await recomputeOracleDigest();
   const manifest = expectationManifestContent();
   if (oracle !== manifest.semantic_oracle_digest) {
-    throw new Error('semantic_oracle_digest drift: checked-out sources no longer match the manifest');
+    throw new Error(
+      'semantic_oracle_digest drift: checked-out sources no longer match the manifest'
+    );
   }
   // Codex cycle-1 — NON-NULL fingerprints, computed with THE SAME
   // derivations the deployed server uses (one implementation, imported):
@@ -270,9 +291,16 @@ async function cmdPublishStageA(args, store) {
   // deployed source: the checkout must be at head_sha with a clean tree.
   const { stdout: headOut } = await execFileAsync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD']);
   if (headOut.trim() !== headSha) {
-    throw new Error(`checkout HEAD ${headOut.trim().slice(0, 12)} != deployed head_sha — cannot fingerprint`);
+    throw new Error(
+      `checkout HEAD ${headOut.trim().slice(0, 12)} != deployed head_sha — cannot fingerprint`
+    );
   }
-  const { stdout: dirtyOut } = await execFileAsync('git', ['-C', REPO_ROOT, 'status', '--porcelain']);
+  const { stdout: dirtyOut } = await execFileAsync('git', [
+    '-C',
+    REPO_ROOT,
+    'status',
+    '--porcelain',
+  ]);
   if (dirtyOut.trim().length > 0) {
     throw new Error('checkout is dirty — fingerprints must come from the exact deployed source');
   }
@@ -318,7 +346,9 @@ async function cmdAttestExpectations(args, store) {
   const manifest = expectationManifestContent();
   const oracle = await recomputeOracleDigest();
   if (oracle !== manifest.semantic_oracle_digest) {
-    throw new Error('semantic_oracle_digest drift: checked-out sources no longer match the manifest');
+    throw new Error(
+      'semantic_oracle_digest drift: checked-out sources no longer match the manifest'
+    );
   }
   const { stageARecords } = await loadCohortState(store, null);
   const stageA = latestValid(stageARecords, 'stage_a_deployed');
@@ -370,7 +400,8 @@ async function cmdInitCohort(args, store) {
   });
   const { cohortRecords } = await loadCohortState(store, cohortId);
   const attested = latestValid(cohortRecords, 'expectations_attested');
-  if (!attested) throw new Error(`no expectations_attested under ${cohortId} — run attest-expectations`);
+  if (!attested)
+    throw new Error(`no expectations_attested under ${cohortId} — run attest-expectations`);
   if (attested.payload.combined_sha256 !== manifest.combined_sha256) {
     throw new Error('attested expectation hash no longer matches the committed manifest');
   }
@@ -414,7 +445,10 @@ async function cmdBindSession(args, store) {
   // newest deploy. Cycle-2: binding REQUIRES an initialized cohort — a
   // pre-initialisation bind would be permanently invalid evidence.
   const init = latestValid(state.cohortRecords, 'cohort_initialized');
-  if (!init) throw new Error(`cohort ${cohortId} is not initialized — run init-cohort before binding sessions`);
+  if (!init)
+    throw new Error(
+      `cohort ${cohortId} is not initialized — run init-cohort before binding sessions`
+    );
   const stageACandidates = state.stageARecords.filter(
     (r) => validateStoredEvent({ key: r.key, payload: r.payload }).length === 0
   );
@@ -452,7 +486,9 @@ async function cmdBindSession(args, store) {
 
 async function cmdAttestDaily(args, store) {
   const cohortId = await resolveCohortId(store, args);
-  const sessionIds = String(args['session-ids'] ?? '').split(',').filter(Boolean);
+  const sessionIds = String(args['session-ids'] ?? '')
+    .split(',')
+    .filter(Boolean);
   const confirmationSession = args['confirmation-session'];
   const confirmationRef = args['confirmation-ref'];
   if (!['true', 'false'].includes(String(args.heard))) {
@@ -512,7 +548,9 @@ async function cmdAttestDialogueHearing(args, store) {
     throw new Error('false + pass is never valid');
   }
   if (!cohortId || !sessionId || !deliveryRef || !result) {
-    throw new Error('attest-dialogue-hearing requires --session-id, --delivery-ref, --heard, --result');
+    throw new Error(
+      'attest-dialogue-hearing requires --session-id, --delivery-ref, --heard, --result'
+    );
   }
   await confirmInteractive(
     `Dialogue hearing attestation?\n  session: ${sessionId}\n  delivery: ${deliveryRef}\n` +
@@ -531,7 +569,9 @@ async function cmdAttestDialogueHearing(args, store) {
       attested_at: new Date().toISOString(),
     },
   });
-  console.log(`dialogue_hearing_attestation published: ${event.key} (version ${receipt.versionId})`);
+  console.log(
+    `dialogue_hearing_attestation published: ${event.key} (version ${receipt.versionId})`
+  );
 }
 
 async function cmdDecideMismatch(args, store) {
@@ -539,9 +579,7 @@ async function cmdDecideMismatch(args, store) {
   if (!cohortId || !args['mismatch-id'] || !['approved', 'rejected'].includes(args.decision)) {
     throw new Error('decide-mismatch requires --mismatch-id and --decision approved|rejected');
   }
-  await confirmInteractive(
-    `Decide non-safety mismatch ${args['mismatch-id']}: ${args.decision}?`
-  );
+  await confirmInteractive(`Decide non-safety mismatch ${args['mismatch-id']}: ${args.decision}?`);
   const { event, receipt } = await publishEvent(store, {
     kind: 'non_safety_decision',
     cohortId,
@@ -603,52 +641,631 @@ async function cmdDecideCorpusGap(args, store) {
   console.log(`corpus_gap_decision published: ${event.key} (version ${receipt.versionId})`);
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// §C1d/§C1e — the live vendor-lane run coordinator
+//
+// `run-ir` and `run-corpus` are the only commands that spend real vendor money
+// and write vendor evidence. Every fact that could make that evidence a LIE is
+// therefore checked BEFORE an ordinal is allocated or a PENDING reservation is
+// created: a refusal must cost nothing. `assertRunPreconditions` is that gate,
+// and every step in it is a refusal, never a warning.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Pace BETWEEN samples — never between the turns inside one sample. */
+const DEFAULT_INTER_SAMPLE_MS = 10000;
+
 /**
- * Live vendor dispatch is NOT yet available: the enumerated Plan 00B lane
- * machinery is mock/replay-only (its own tests pin that `--mode=live`
- * executes NO lane), and a mock result must never enter the evidence
- * store as vendor evidence. The run commands therefore REFUSE — BEFORE
- * allocating any ordinal or reservation, so nothing is consumed — until a
- * reviewed 00B successor ships real live dispatch that surfaces provider
- * response ids. The runner PROTOCOL (lib/runner.mjs) is complete and
- * test-pinned against injected executors; the successor wires the real
- * executor in.
+ * The judge policy both lanes share. A dialogue script legitimately leaves an
+ * ask open outside the declared turn window (the `dialogue_answer_ingress`
+ * exclusion — a fixture cannot even declare the trailing script ask its own
+ * transcript provokes), so that ONE family is windowed and every other family
+ * stays strict. Exported so the orchestration tests pin the coordinator's
+ * actual value rather than an agreeing copy that could drift from it.
  */
-function refuseLiveDispatch() {
-  throw new Error(
-    'REFUSED: no live vendor lane executor exists yet — the enumerated 00B lane machinery is ' +
-      'mock/replay-only and mock verdicts must never enter the evidence store. A reviewed 00B ' +
-      'successor must ship live dispatch (surfacing provider response ids) and wire it into ' +
-      'lib/runner.mjs; nothing was allocated or reserved.'
+export const WINDOWED_OPEN_ASK_FAMILIES = Object.freeze(['dialogue_script']);
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The one record of `kind` whose event hash is EXACTLY the one this cohort
+ * bound at initialisation. Deliberately NOT `latestValid`: "the newest valid
+ * record of this kind" is the right answer while establishing a cohort and the
+ * wrong answer forever afterwards — a second `publish-stage-a`, or a
+ * re-attestation of an edited manifest, would silently re-point a running
+ * cohort at a deployment or an expectation set it never initialised against,
+ * and every terminal published after that would carry fingerprints belonging
+ * to something else.
+ */
+function boundValidRecord(records, kind, eventHash) {
+  if (typeof eventHash !== 'string' || eventHash.length === 0) return null;
+  return (
+    records.find(
+      (r) =>
+        r.payload?.kind === kind &&
+        validateStoredEvent({ key: r.key, payload: r.payload }).length === 0 &&
+        evidenceEventHash(r.payload) === eventHash
+    ) ?? null
   );
 }
 
-async function requireInitializedCohort(store, args) {
+/**
+ * Everything that must be true before ONE vendor call may be dispatched.
+ *
+ * The ordering is load-bearing — cheapest and most-likely-wrong first, and
+ * every branch throws before `allocateNextOrdinal` is reached, so a refused run
+ * consumes no ordinal, publishes no reservation and spends no money.
+ *
+ * `overrides` exists so each refusal branch is unit-testable without an AWS
+ * account, a git checkout in a particular state, or a real oracle recompute.
+ */
+export async function assertRunPreconditions(store, args, overrides = {}) {
+  const {
+    readManifest = expectationManifestContent,
+    recomputeOracle = recomputeOracleDigest,
+    liveCheck = (expected) => checkLiveDeployment({ awsRunner: awsJson, expected }),
+    readHeadSha = async () =>
+      (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT })).stdout,
+    readPorcelain = async () =>
+      (await execFileAsync('git', ['status', '--porcelain'], { cwd: REPO_ROOT })).stdout,
+  } = overrides;
+
+  // 0 — mode. There is exactly ONE mode that may publish vendor evidence, and
+  // an unrecognised `--mode` is refused rather than ignored: silently
+  // discarding `--mode=mock` would let an operator believe they had run a dry
+  // rehearsal while real money was spent and real evidence published.
+  if (args.mode !== undefined && args.mode !== 'live') {
+    throw new Error(
+      `REFUSED: the run commands dispatch the LIVE vendor lane only; --mode=${args.mode} would ` +
+        'publish a mock/replay verdict as vendor evidence. Nothing was allocated or reserved.'
+    );
+  }
+
+  await assertBucketVersioned(store);
+
+  // 1 — an initialised cohort, and the EXACT stage-A + attestation it bound.
   const cohortId = await resolveCohortId(store, args);
   const state = await loadCohortState(store, cohortId);
   const init = latestValid(state.cohortRecords, 'cohort_initialized');
   if (!init) throw new Error(`cohort ${cohortId} is not initialized — run init-cohort first`);
-  const stageA = latestValid(state.stageARecords, 'stage_a_deployed');
-  return { cohortId, stageA };
+
+  const stageA = boundValidRecord(
+    state.stageARecords,
+    'stage_a_deployed',
+    init.payload.stage_a_event_hash
+  );
+  if (!stageA) {
+    throw new Error(
+      `REFUSED: cohort ${cohortId} binds stage_a_event_hash ${init.payload.stage_a_event_hash} ` +
+        'but no valid stage_a_deployed event with that hash is readable. Nothing was allocated ' +
+        'or reserved.'
+    );
+  }
+  const attested = boundValidRecord(
+    state.cohortRecords,
+    'expectations_attested',
+    init.payload.expectations_event_hash
+  );
+  if (!attested) {
+    throw new Error(
+      `REFUSED: cohort ${cohortId} binds expectations_event_hash ` +
+        `${init.payload.expectations_event_hash} but no valid expectations_attested event with ` +
+        'that hash is readable. Nothing was allocated or reserved.'
+    );
+  }
+
+  // 2 — the ORACLE. `fold.mjs` recomputes this digest and voids the cohort if
+  // it drifts, so dispatching under a drifted oracle burns real money to
+  // produce evidence that is already known to be unusable. Note this catches
+  // strictly more than an expectation-hash check: a mutated dispatch-path file
+  // that is an enumerated oracle input drifts the digest even when every
+  // projected expectation is byte-identical.
+  const manifest = readManifest();
+  const oracle = await recomputeOracle();
+  if (oracle !== manifest.semantic_oracle_digest) {
+    throw new Error(
+      'REFUSED: semantic_oracle_digest drift — the checked-out oracle sources hash to ' +
+        `${oracle} but the committed manifest declares ${manifest.semantic_oracle_digest}. ` +
+        'Regenerate and re-attest before dispatching. Nothing was allocated or reserved.'
+    );
+  }
+
+  // 3 — the ATTESTED expectations must still be the COMMITTED expectations.
+  // Derek attested specific bytes; a manifest edited since then is a different
+  // set of promises and may not be measured under his attestation.
+  for (const [field, attestedValue, committedValue] of [
+    ['combined_sha256', attested.payload.combined_sha256, manifest.combined_sha256],
+    ['vendor_live_sha256', attested.payload.vendor_live_sha256, manifest.vendor_live_sha256],
+    [
+      'deterministic_egress_sha256',
+      attested.payload.deterministic_egress_sha256,
+      manifest.deterministic_egress_sha256,
+    ],
+  ]) {
+    if (attestedValue !== committedValue) {
+      throw new Error(
+        `REFUSED: attested ${field} (${attestedValue}) no longer matches the committed manifest ` +
+          `(${committedValue}) — re-attest before dispatching. Nothing was allocated or reserved.`
+      );
+    }
+  }
+
+  // 3b — the manifest states each lane's sha TWICE: once nested under the lane
+  // object and once as a top-level mirror. `fold.mjs` enforces terminals
+  // against the NESTED value while the coordinator binds the TOP-LEVEL one, so
+  // a drift between the two mirrors would bind every terminal to a digest the
+  // fold then rejects as `terminal_expectation_digest_unattached` — after the
+  // money was spent. Cheap to check, and unfalsifiable if left unchecked.
+  for (const [lane, nested, mirror] of [
+    ['vendor_live', manifest.vendor_live_expectations?.sha256, manifest.vendor_live_sha256],
+    [
+      'deterministic_egress',
+      manifest.deterministic_egress_expectations?.sha256,
+      manifest.deterministic_egress_sha256,
+    ],
+  ]) {
+    if (typeof nested !== 'string' || nested.length === 0 || nested !== mirror) {
+      throw new Error(
+        `REFUSED: manifest ${lane} sha256 mirrors disagree (nested ${nested}, top-level ` +
+          `${mirror}) — regenerate the manifest. Nothing was allocated or reserved.`
+      );
+    }
+  }
+
+  // 4 — DISPATCH-SOURCE binding. The lane boots production modules from THIS
+  // checkout and judges the result against the deployed stack, so a checkout
+  // that is not the deployed commit measures one thing and attributes it to
+  // another. A dirty tree is refused for the same reason and is strictly
+  // worse: uncommitted edits are unrecoverable provenance — no later reader
+  // can reconstruct what actually ran.
+  const boundSha = stageA.payload.deploy_run?.head_sha ?? null;
+  if (!boundSha) {
+    throw new Error(
+      'REFUSED: the bound stage_a_deployed event carries no deploy_run.head_sha, so the dispatch ' +
+        'source cannot be bound to the deployment. Nothing was allocated or reserved.'
+    );
+  }
+  const head = String(await readHeadSha()).trim();
+  if (head !== boundSha) {
+    throw new Error(
+      `REFUSED: dispatch-source drift — HEAD is ${head} but the cohort's deployment was built ` +
+        `from ${boundSha}. Check out the deployed commit. Nothing was allocated or reserved.`
+    );
+  }
+  const porcelain = String(await readPorcelain()).trim();
+  if (porcelain !== '') {
+    const shown = porcelain.split('\n').slice(0, 5).join('; ');
+    throw new Error(
+      'REFUSED: the checkout is dirty, so what the lane dispatches cannot be reconstructed from ' +
+        `the recorded commit (${shown}${porcelain.split('\n').length > 5 ? '; …' : ''}). ` +
+        'Nothing was allocated or reserved.'
+    );
+  }
+
+  // 5 — the LIVE deployment must still BE the cohort's deployment.
+  const live = await liveCheck({
+    task_def_arn: stageA.payload.runtime?.task_def_arn ?? null,
+    image_digest: stageA.payload.runtime?.image_digest ?? null,
+    commit_sha: boundSha,
+    config_fingerprint: stageA.payload.config_fingerprint ?? null,
+  });
+  if (!live.available || !live.fingerprint_matches) {
+    throw new Error(
+      `REFUSED: live deployment drift (${live.reason ?? 'unavailable'}) — a new deploy needs a ` +
+        'new cohort. Nothing was allocated or reserved.'
+    );
+  }
+
+  // 6 — the fingerprints every terminal must echo. A VALID `stage_a_deployed`
+  // event is schema-guaranteed to carry all three, so an absence here means
+  // the schema and this reader have diverged: fail closed rather than publish
+  // a terminal with a null digest.
+  const deploymentFingerprint = stageA.payload.runtime?.deployment_fingerprint ?? null;
+  const promptDigest = stageA.payload.prompt_fingerprint ?? null;
+  const toolDigest = stageA.payload.tool_fingerprint ?? null;
+  for (const [name, value] of [
+    ['runtime.deployment_fingerprint', deploymentFingerprint],
+    ['prompt_fingerprint', promptDigest],
+    ['tool_fingerprint', toolDigest],
+  ]) {
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(
+        `REFUSED: the bound stage_a_deployed event carries no ${name}. Nothing was allocated or ` +
+          'reserved.'
+      );
+    }
+  }
+
+  return {
+    cohortId,
+    state,
+    init,
+    stageA,
+    attested,
+    manifest,
+    oracle,
+    live,
+    headSha: head,
+    deploymentFingerprint,
+    promptDigest,
+    toolDigest,
+    /**
+     * The four facts `mintLiveDispatchCapability` demands. They are asserted
+     * `true` here — at the end of the gate that actually established them —
+     * rather than passed in by a caller who could assert them without having
+     * checked anything.
+     */
+    attestation: Object.freeze({
+      oracleDigestVerified: true,
+      expectationAttestationVerified: true,
+      deploymentVerified: true,
+      sourceBindingVerified: true,
+    }),
+  };
 }
 
-async function cmdRunIr(args, store) {
-  await assertBucketVersioned(store);
-  await requireInitializedCohort(store, args);
-  refuseLiveDispatch();
+/**
+ * A mock verdict must never enter the evidence store. `bootLiveLaneDriver`
+ * declares `liveMode: true`; the mock `bootLaneDriver` does not. Asserting it
+ * at the moment of dispatch — rather than trusting the import — means a future
+ * refactor that swaps the boot function cannot silently begin publishing
+ * replayed verdicts as vendor evidence.
+ */
+export function assertLiveBoot(boot) {
+  if (boot?.liveMode !== true) {
+    throw new Error(
+      'REFUSED: the lane boot is not live — mock/replay verdicts must never enter the evidence ' +
+        'store. Nothing was dispatched.'
+    );
+  }
 }
 
-async function cmdRunCorpus(args, store) {
-  await assertBucketVersioned(store);
-  await requireInitializedCohort(store, args);
-  refuseLiveDispatch();
+/**
+ * Pin the lane's model environment, boot the live lane, hand it to `fn`, and
+ * ALWAYS tear the clock control down.
+ *
+ * `pinLaneModelEnv` must run before the boot: the boot performs the production
+ * imports and `EICRExtractionSession` snapshots `SONNET_EXTRACT_MODEL` at
+ * construction, so setting it afterwards would leave the terminal declaring a
+ * model the call never used.
+ *
+ * The lane modules are DYNAMIC imports because they pull the whole backend
+ * (`sonnet-stream`, the extraction session, the playback app) into memory; a
+ * plain `status` invocation must not pay that, and — more importantly — must
+ * not be able to reach a real provider client at all.
+ */
+export async function withLiveLane({ modelLane, repoRoot = REPO_ROOT, log = () => {} }, fn) {
+  const descriptor = pinLaneModelEnv(modelLane);
+  const [bootMod, driverMod, judgeMod] = await Promise.all([
+    import('../model-ab/lib/live-lane-boot.mjs'),
+    import('../model-ab/lib/lane-driver.mjs'),
+    import('../model-ab/lib/semantic-judge.mjs'),
+  ]);
+  log(
+    `lane ${descriptor.model_lane}: booting live driver (${descriptor.model} @ ${descriptor.tier})`
+  );
+  const boot = await bootMod.bootLiveLaneDriver({ repoRoot });
+  try {
+    assertLiveBoot(boot);
+    return await fn({ boot, driverMod, judgeMod, descriptor });
+  } finally {
+    // Teardown must never mask the run's own failure.
+    try {
+      boot.clockCtl?.uninstall?.();
+    } catch (err) {
+      log(`lane ${descriptor.model_lane}: clock teardown failed (${err.message})`);
+    }
+  }
 }
+
+/**
+ * Load the fixture + projected expectation for one vendor-corpus requirement,
+ * deriving the board wildcard the same way the mock wrapper does (single-board
+ * jobs judge with the wildcard, §B5).
+ */
+function loadCorpusTarget(projectionMod, fixtureId) {
+  const fixture = projectionMod.loadFixture(REPO_ROOT, fixtureId);
+  const boardCount = Array.isArray(fixture.job_state?.boards) ? fixture.job_state.boards.length : 0;
+  return {
+    fixtureId,
+    fixture,
+    expectation: projectionMod.projectFixtureExpectation(fixture),
+    boardWildcard: boardCount <= 1,
+  };
+}
+
+/**
+ * Fixture input vs projection target: a one-to-one join and committed-vs-
+ * rendered digest agreement, BEFORE any sample runs. Mirrors the mock lane's
+ * own pre-guards — a corpus run that silently skipped a fixture, or measured
+ * against a stale rendered manifest, would report a complete run it never did.
+ */
+function assertCorpusProjectionIntegrity(projectionMod, manifest) {
+  const inventory = projectionMod.listCorpusIds(REPO_ROOT);
+  const declared = [...projectionMod.VENDOR_LIVE_FIXTURE_IDS].sort();
+  const joinOk =
+    inventory.length === declared.length && declared.every((id, i) => inventory[i] === id);
+  if (!joinOk) {
+    throw new Error(
+      'REFUSED: the corpus inventory does not join the vendor-lane fixture ids one-to-one ' +
+        `(inventory ${inventory.length}, declared ${declared.length}). Nothing was allocated ` +
+        'or reserved.'
+    );
+  }
+  const rendered = projectionMod.renderExpectationManifests(REPO_ROOT);
+  if (manifest.vendor_live_expectations?.sha256 !== rendered.vendor_live_sha256) {
+    throw new Error(
+      'REFUSED: the committed vendor_live_expectations sha256 does not match the rendered ' +
+        'projection — stale manifest. Nothing was allocated or reserved.'
+    );
+  }
+}
+
+/**
+ * Drive one lane ordinal to completion.
+ *
+ * The shape is the same for both lanes and the differences are entirely in
+ * `spec`: which requirement keys an ordinal owns, and what fixture each key
+ * names. Everything else — folding before dispatch, adopting an in-flight
+ * ordinal, honouring generation N+1 only after an INVALID terminal, no-opping
+ * on completed work, pacing, and the per-attempt capability mint — is common,
+ * and deliberately written ONCE so the two lanes cannot drift into two
+ * different exactly-once stories.
+ */
+async function coordinateRun(store, args, spec, overrides = {}) {
+  const {
+    sleep = defaultSleep,
+    log = (m) => console.log(m),
+    laneSession = withLiveLane,
+    preconditions = assertRunPreconditions,
+  } = overrides;
+
+  const pre = await preconditions(store, args, overrides);
+  const { cohortId, manifest, deploymentFingerprint, promptDigest, toolDigest, attestation } = pre;
+  await spec.prepare(pre);
+
+  // FOLD before dispatching: what is already done, in flight, or INVALID is a
+  // property of the store, never of this process's memory.
+  const refold = async () => deriveDispatchState(await loadCohortState(store, cohortId));
+
+  const allocation = await allocateNextOrdinal(store, {
+    cohortId,
+    lane: spec.lane,
+    refold,
+    runRequirements: (ordinal) => spec.plan(ordinal).map((e) => e.requirementKey),
+    requestNewRepetition: spec.requestNewRepetition,
+  });
+
+  if (allocation.hold) {
+    throw new Error(
+      `HOLD (${allocation.hold.code}): ${allocation.hold.detail ?? JSON.stringify(allocation.hold)}` +
+        ' — nothing was dispatched'
+    );
+  }
+  if (allocation.complete) {
+    log(
+      `${spec.lane}: ordinal ${allocation.ordinal ?? 'n/a'} is already complete — nothing to ` +
+        `dispatch. Pass ${spec.newRunFlag} to start a new one.`
+    );
+    return {
+      cohortId,
+      lane: spec.lane,
+      ordinal: allocation.ordinal,
+      dispatched: 0,
+      complete: true,
+    };
+  }
+
+  const { ordinal, versionId, adopted, dispatch } = allocation;
+  log(
+    `${spec.lane}: ${adopted ? 'adopted' : 'allocated'} ordinal ${ordinal} ` +
+      `(allocation ${versionId}); ${dispatch.length} outstanding requirement(s)`
+  );
+  if (dispatch.length === 0) {
+    return { cohortId, lane: spec.lane, ordinal, dispatched: 0, complete: false };
+  }
+
+  // A dispatch entry outside this ordinal's own plan means the allocator and
+  // the lane spec disagree about what the ordinal owns. Fail closed: guessing
+  // would publish a terminal under a requirement key nothing can interpret.
+  const planned = new Map(spec.plan(ordinal).map((e) => [e.requirementKey, e]));
+  for (const entry of dispatch) {
+    if (!planned.has(entry.requirementKey)) {
+      throw new Error(
+        `REFUSED: outstanding requirement ${entry.requirementKey} is not part of ${spec.lane} ` +
+          `ordinal ${ordinal}'s plan — allocator/lane disagreement. Nothing was dispatched.`
+      );
+    }
+  }
+
+  const interSampleMs = Number.isFinite(Number(args['inter-turn-ms']))
+    ? Number(args['inter-turn-ms'])
+    : DEFAULT_INTER_SAMPLE_MS;
+
+  const outcomes = [];
+  await laneSession({ modelLane: spec.modelLane, repoRoot: REPO_ROOT, log }, async (lane) => {
+    let index = 0;
+    for (const entry of dispatch) {
+      // Pace BETWEEN samples only — the turns inside one fixture are the
+      // behaviour under test and must run at their natural cadence.
+      if (index > 0 && interSampleMs > 0) await sleep(interSampleMs);
+      index += 1;
+
+      const target = await spec.load(planned.get(entry.requirementKey), lane);
+      log(
+        `${spec.lane}: ordinal ${ordinal} → ${target.fixtureId} ` +
+          `(gen ${entry.generation}, ${entry.reason})`
+      );
+
+      /**
+       * ONE fixture, dispatched under the sealed live capability. The executor
+       * returns only `{verdict, reason, mismatch, providerCallIds}`: the report
+       * digest and sample identity are the RUNNER's to compute, and the judge's
+       * free-form `reason`/expected/actual detail is dropped by
+       * `translateJudgeResult` so it can never reach the evidence store.
+       */
+      const runOneFixture = async () => {
+        const laneResult = await lane.driverMod.driveFixture({
+          boot: lane.boot,
+          fixture: target.fixture,
+          expectation: target.expectation,
+          // `boardWildcard` before the spread so driveFixture's own opts
+          // (turnIds) are forwarded; `windowedOpenAskFamilies` AFTER it so no
+          // driver option can widen or disable the policy.
+          judge: (exp, frozen, opts) =>
+            lane.judgeMod.judgeFrozenEvidence(exp, frozen, {
+              boardWildcard: target.boardWildcard,
+              ...(opts ?? {}),
+              windowedOpenAskFamilies: [...WINDOWED_OPEN_ASK_FAMILIES],
+            }),
+          log,
+        });
+        const translated = translateJudgeResult(laneResult, {
+          cohortId,
+          requirementKey: entry.requirementKey,
+          attemptGeneration: entry.generation,
+          corpusId: target.fixtureId,
+        });
+        return {
+          verdict: translated.verdict,
+          reason: translated.reason,
+          mismatch: translated.mismatch,
+          providerCallIds: laneResult?.provider_call_ids ?? null,
+        };
+      };
+
+      const outcome = await runReservedAttempt(store, {
+        cohortId,
+        requirementKey: entry.requirementKey,
+        generation: entry.generation,
+        requirementClass: spec.requirementClass,
+        model: lane.descriptor.model,
+        tier: lane.descriptor.tier,
+        modelLane: lane.descriptor.model_lane,
+        allocationVersionId: entry.allocationVersionId ?? versionId,
+        deploymentFingerprint,
+        promptDigest,
+        toolDigest,
+        // The LANE-WIDE attested digest, never a per-fixture one: `fold.mjs`
+        // rejects any other value as `terminal_expectation_digest_unattached`.
+        expectationDigest: manifest.vendor_live_sha256,
+        fixtureId: target.fixtureId,
+        ...(spec.ordinalField === 'repetitionOrdinal'
+          ? { repetitionOrdinal: ordinal }
+          : { corpusRunOrdinal: ordinal }),
+        // Minted per attempt, closing over exactly this fixture: a capability
+        // that outlived its attempt would be an authority to dispatch anything.
+        liveDispatch: mintLiveDispatchCapability({
+          dispatch: runOneFixture,
+          clients: lane.boot.liveProviderClients,
+          attestation,
+        }),
+      });
+
+      if (!outcome.dispatched) {
+        // A sibling coordinator holds this requirement, or an orphan PENDING
+        // blocks it. Both are correct outcomes, not failures: leave the rest of
+        // the run to whoever owns it.
+        log(
+          `${spec.lane}: ${entry.requirementKey} not dispatched ` +
+            `(${outcome.reservation?.reason ?? 'unauthorised'})`
+        );
+      } else {
+        log(
+          `${spec.lane}: ${target.fixtureId} → ${outcome.verdict}` +
+            (outcome.reason ? ` (${outcome.reason})` : '')
+        );
+      }
+      outcomes.push({
+        requirementKey: entry.requirementKey,
+        fixtureId: target.fixtureId,
+        ...outcome,
+      });
+    }
+  });
+
+  return {
+    cohortId,
+    lane: spec.lane,
+    ordinal,
+    dispatched: outcomes.filter((o) => o.dispatched).length,
+    complete: false,
+    outcomes,
+  };
+}
+
+async function cmdRunIr(args, store, overrides = {}) {
+  // Refuse a redirected probe BEFORE anything else: an override that was
+  // silently ignored would let an operator believe they had re-pointed the
+  // daily probe, and evidence published under `pinned_ir` describing another
+  // fixture is undetectable downstream (the terminal carries the ordinal, not
+  // the provenance of the thing judged).
+  assertNoPinnedIrOverride(args);
+  let target = null;
+  const spec = {
+    lane: PINNED_IR_IDENTITY.lane,
+    modelLane: PINNED_IR_MODEL_LANE,
+    requirementClass: PINNED_IR_IDENTITY.requirement_class,
+    ordinalField: 'repetitionOrdinal',
+    newRunFlag: '--new-repetition',
+    requestNewRepetition: args['new-repetition'] === true,
+    async prepare() {
+      // Proves the corpus still matches the frozen pinned identity.
+      target = await loadPinnedIrTarget(REPO_ROOT);
+    },
+    plan(ordinal) {
+      return [{ requirementKey: pinnedIrRequirementKey(ordinal), fixtureId: target.fixtureId }];
+    },
+    async load() {
+      return target;
+    },
+  };
+  return coordinateRun(store, args, spec, overrides);
+}
+
+async function cmdRunCorpus(args, store, overrides = {}) {
+  const modelLane = args['model-lane'] ?? args.lane ?? PINNED_IR_MODEL_LANE;
+  // Throws on an unknown lane — never a silent default, because the lane name
+  // is what the terminal declares and what the fold measures the model against.
+  resolveLaneModel(modelLane);
+  let projectionMod = null;
+  let fixtureIds = [];
+  const spec = {
+    lane: vendorCorpusLane(modelLane),
+    modelLane,
+    requirementClass: 'vendor_corpus',
+    ordinalField: 'corpusRunOrdinal',
+    newRunFlag: '--new-run',
+    requestNewRepetition: args['new-run'] === true,
+    async prepare(pre) {
+      projectionMod = await import('../model-ab/lib/expectation-projection.mjs');
+      assertCorpusProjectionIntegrity(projectionMod, pre.manifest);
+      fixtureIds = [...projectionMod.VENDOR_LIVE_FIXTURE_IDS];
+    },
+    plan(ordinal) {
+      return fixtureIds.map((fixtureId) => ({
+        requirementKey: vendorCorpusRequirementKey({
+          modelLane,
+          corpusRunOrdinal: ordinal,
+          fixtureId,
+        }),
+        fixtureId,
+      }));
+    },
+    async load(entry) {
+      return loadCorpusTarget(projectionMod, entry.fixtureId);
+    },
+  };
+  return coordinateRun(store, args, spec, overrides);
+}
+
+export { cmdRunIr, cmdRunCorpus };
 
 async function cmdStatus(args, store) {
   await assertBucketVersioned(store);
   const ids = await findCohortIds(store);
   const cohortId = args.cohort ?? (ids.length === 1 ? ids[0] : null);
-  if (!cohortId && ids.length > 1) throw new Error(`multiple cohorts exist (${ids.join(', ')}) — pass --cohort`);
+  if (!cohortId && ids.length > 1)
+    throw new Error(`multiple cohorts exist (${ids.join(', ')}) — pass --cohort`);
   const state = await loadCohortState(store, cohortId);
   const manifest = expectationManifestContent();
   const oracle = await recomputeOracleDigest();
@@ -688,7 +1305,8 @@ async function cmdStatus(args, store) {
   const generatedAtIso = new Date().toISOString();
   const { jsonPath, mdPath } = writeProjections(handoffDir, fold, { generatedAtIso });
   console.log(`State: ${fold.state}${fold.progress ? ` — ${fold.progress}` : ''}`);
-  if (fold.stale_deployment) console.log('STALE_DEPLOYMENT — live runtime does not match the cohort.');
+  if (fold.stale_deployment)
+    console.log('STALE_DEPLOYMENT — live runtime does not match the cohort.');
   console.log(`Projections written: ${jsonPath}, ${mdPath}`);
   if (args['exit-nonzero-unless-done'] && fold.state !== 'DONE') process.exit(2);
 }
@@ -707,8 +1325,7 @@ const COMMANDS = {
   status: cmdStatus,
 };
 
-const isMain =
-  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const [sub, ...rest] = process.argv.slice(2);
   const handler = COMMANDS[sub];

@@ -23,6 +23,7 @@
 
 import { canonicalBytes, evidenceEventHash } from '../../field-replay/lib/canonical-crypto.mjs';
 import { EVIDENCE_PREFIX } from './constants.mjs';
+import { laneOrdinals, resolveAllocationVersionId, summariseRun } from './dispatch-plan.mjs';
 import { buildEvent, validateAttemptReport, validateStoredEvent } from './events.mjs';
 import { assertDispatchAuthority } from './live-capability.mjs';
 import { publishDurable } from './store.mjs';
@@ -32,7 +33,12 @@ import { publishDurable } from './store.mjs';
 export function reportKey({ cohortId, reportDigest }) {
   return `${EVIDENCE_PREFIX}/reports/${cohortId}/${reportDigest}.json`;
 }
-import { allocateOrdinal, buildAttemptCandidate, buildOrdinalCandidate, reserveAttempt } from './reservations.mjs';
+import {
+  allocateOrdinal,
+  buildAttemptCandidate,
+  buildOrdinalCandidate,
+  reserveAttempt,
+} from './reservations.mjs';
 
 /** Map the semantic-judge verdict vocabulary onto terminal verdicts. */
 export function mapLaneVerdict(laneVerdict) {
@@ -41,16 +47,118 @@ export function mapLaneVerdict(laneVerdict) {
   return 'INVALID'; // INVALID_HOLD and anything unknown fail closed
 }
 
-/** Allocate the next unused ordinal in a lane, refolding between attempts
- *  (a taken ordinal means another contender won — pick the NEXT unused,
- *  never re-dispatch). */
-export async function allocateNextOrdinal(store, { cohortId, lane, startAt = 1, maxScan = 10000 }) {
-  for (let ordinal = startAt; ordinal < startAt + maxScan; ordinal += 1) {
+/**
+ * Allocate — or ADOPT — the logical ordinal for a run (00B-4 §C1d).
+ *
+ * The old behaviour was to walk straight to the NEXT ordinal whenever
+ * `allocateOrdinal` reported taken. Its docstring claimed a refold that never
+ * happened, and the effect was the opposite of what the comment promised: two
+ * coordinators racing the same lane produced two SIBLING runs, and a
+ * coordinator that died after allocating an ordinal but before finishing its
+ * requirements left an abandoned run that nobody would ever resume — the next
+ * contender skipped past it. Both are duplicate vendor spend on evidence that
+ * can never be reconciled.
+ *
+ * So a taken ordinal now triggers a REFOLD and a re-decision from the refolded
+ * state:
+ *   - the winning run is INCOMPLETE  ⇒ ADOPT it (same ordinal, same allocation
+ *     VersionId) and resume only its outstanding requirements;
+ *   - the refold proves it COMPLETE  ⇒ dispatch nothing, unless a new
+ *     repetition was explicitly requested, in which case allocate beyond the
+ *     highest existing ordinal;
+ *   - anything the fold would call an integrity problem ⇒ HOLD.
+ *
+ * Adoption is COOPERATIVE and this function is NOT the exclusivity mechanism.
+ * Two coordinators may legitimately adopt the same ordinal and derive the same
+ * outstanding set; exclusivity lives one level down in the conditional-create
+ * PENDING reservation per (requirement key, attempt generation), so the
+ * guarantee is exactly-once provider dispatch per (requirement, generation) —
+ * not zero work by the allocation loser.
+ *
+ * `refold` MUST return a dispatch state (see lib/dispatch-plan.mjs). It is
+ * required: without it there is no way to re-decide, and silently falling back
+ * to the old skip-ahead behaviour would reintroduce sibling runs. Absent ⇒ HOLD.
+ *
+ * @param {object} store
+ * @param {{cohortId: string, lane: string, startAt?: number, maxScan?: number,
+ *          refold?: () => Promise<object>,
+ *          runRequirements?: (ordinal: number) => string[],
+ *          requestNewRepetition?: boolean}} opts
+ */
+export async function allocateNextOrdinal(
+  store,
+  {
+    cohortId,
+    lane,
+    startAt = 1,
+    maxScan = 10000,
+    refold = null,
+    runRequirements = null,
+    requestNewRepetition = false,
+  }
+) {
+  if (typeof refold !== 'function' || typeof runRequirements !== 'function') {
+    return { hold: { code: 'refold_unavailable', lane } };
+  }
+  let ordinal = startAt;
+  const limit = startAt + maxScan;
+  while (ordinal < limit) {
     const candidate = buildOrdinalCandidate({ cohortId, lane, ordinal });
     const res = await allocateOrdinal(store, candidate);
-    if (res.allocated) return { ordinal, versionId: res.versionId };
-    if (res.taken) continue;
-    return { hold: res.hold };
+    if (res.allocated) {
+      return {
+        ordinal,
+        versionId: res.versionId,
+        adopted: false,
+        dispatch: runRequirements(ordinal).map((requirementKey) => ({
+          requirementKey,
+          generation: 1,
+          allocationVersionId: res.versionId,
+          reason: 'no_prior_attempt',
+        })),
+      };
+    }
+    if (!res.taken) return { hold: res.hold };
+
+    // Taken — somebody else owns this ordinal. Re-decide from the truth.
+    const state = await refold();
+    const existing = laneOrdinals(state, lane);
+    if (existing.length === 0) {
+      // The reservation exists (the conditional create said taken) but the
+      // refold cannot see it. Adopting blind would bind an unknown allocation;
+      // skipping ahead would create the sibling this whole loop exists to
+      // prevent. Neither is safe, so hold.
+      return { hold: { code: 'ordinal_taken_but_unfolded', lane, ordinal } };
+    }
+    let highest = 0;
+    for (const entry of existing) {
+      if (entry.ordinal > highest) highest = entry.ordinal;
+      const summary = summariseRun(state, runRequirements(entry.ordinal));
+      if (summary.hold) return { hold: { ...summary.hold, lane, ordinal: entry.ordinal } };
+      if (summary.complete) continue;
+      const resolved = resolveAllocationVersionId(entry, summary.echoedVersionIds);
+      if (resolved.hold) return { hold: { ...resolved.hold, lane } };
+      return {
+        ordinal: entry.ordinal,
+        versionId: resolved.versionId,
+        adopted: true,
+        dispatch: summary.dispatch.map((d) => ({
+          ...d,
+          allocationVersionId: d.allocationVersionId ?? resolved.versionId,
+        })),
+      };
+    }
+    // Every existing run in this lane is complete.
+    if (!requestNewRepetition) {
+      return {
+        ordinal: highest || null,
+        versionId: null,
+        adopted: false,
+        complete: true,
+        dispatch: [],
+      };
+    }
+    ordinal = Math.max(ordinal + 1, highest + 1);
   }
   return { hold: { code: 'ordinal_scan_exhausted', lane } };
 }
@@ -136,7 +244,8 @@ export async function runReservedAttempt(
     };
   }
 
-  let verdict = outcome.verdict === 'PASS' || outcome.verdict === 'FAIL' ? outcome.verdict : 'INVALID';
+  let verdict =
+    outcome.verdict === 'PASS' || outcome.verdict === 'FAIL' ? outcome.verdict : 'INVALID';
   let reason = outcome.reason ?? null;
   // Cycle-5 — the mismatch is NORMALISED ONCE into the closed shape and
   // that normalised value (or nothing) is what reaches BOTH the report and
@@ -247,9 +356,9 @@ export async function runReservedAttempt(
     const reportReceipt = reportProblems.length
       ? { ok: true }
       : await publishDurable(store, {
-      key: reportKey({ cohortId, reportDigest }),
-      bytes: canonicalBytes(reportBody),
-    });
+          key: reportKey({ cohortId, reportDigest }),
+          bytes: canonicalBytes(reportBody),
+        });
     if (!reportReceipt.ok) {
       verdict = 'INVALID';
       reason = `report_publish_failed:${reportReceipt.error}`;
