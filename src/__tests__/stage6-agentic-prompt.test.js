@@ -479,8 +479,16 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // <=32 A socket-final-circuit gate and sequential applicability/premises
       // asks. PLAN-3's silent clarification terminal adds one bounded tool
       // contract; measured 24238 and cap retains ~100-token headroom.
+      // 2026-08-06 (board-id steer): a live session lost a dictated Zs because
+      // the model passed board_id:"main" — a board TYPE, not an id — which the
+      // validator rejected `wrong_board`, and the model then "recovered" with a
+      // lone no-op select_board and ended the turn, so the reading was never
+      // written. The select_board("main") exemplar is removed and the two-step
+      // recovery (select_board THEN re-issue with NO board_id) is made
+      // mandatory. Shared region, so both renders grow; measured 24364 and cap
+      // retains ~100-token headroom.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(24338);
+      expect(estimate).toBeLessThanOrEqual(24464);
     });
   });
 
@@ -1231,8 +1239,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // PLAN-3 AFDD table + mismatch recovery, including review-closure circuit
       // applicability: measured 18712; cap 18812 leaves ~100 tokens while
       // pinning the complete reviewed decision table.
+      // 2026-08-06 (board-id steer): shared-region growth — the select_board
+      // "main" exemplar removed and two-step wrong_board recovery made
+      // mandatory (see the Group 1 combined-cap comment). Measured 19115; cap
+      // 19215 leaves ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(19088);
+      expect(estimate).toBeLessThanOrEqual(19215);
     });
   });
 
