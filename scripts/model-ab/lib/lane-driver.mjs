@@ -66,8 +66,8 @@ export async function bootLaneDriver({ repoRoot }) {
   const { installRecordedFetchDeny } = await import(flLib('network-guard.mjs'));
   installRecordedFetchDeny();
 
-  const FakeTimers = (await import('@sinonjs/fake-timers')).default ??
-    (await import('@sinonjs/fake-timers'));
+  const FakeTimers =
+    (await import('@sinonjs/fake-timers')).default ?? (await import('@sinonjs/fake-timers'));
   const { installReplayClock, DEFAULT_CALLSITE_ALLOWLIST, TIMER_CLASSES } = await import(
     flLib('replay-clock.mjs')
   );
@@ -240,7 +240,10 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
   // answer pump, playback acks, teardown, judging — is deliberately SHARED, so
   // the live sample exercises the same code path the deterministic lane pins.
   const liveMode = boot.liveMode === true;
-  if (liveMode && (typeof boot.liveProviderClients !== 'object' || boot.liveProviderClients === null)) {
+  if (
+    liveMode &&
+    (typeof boot.liveProviderClients !== 'object' || boot.liveProviderClients === null)
+  ) {
     throw new TypeError('driveFixture: liveMode boot must supply liveProviderClients');
   }
 
@@ -283,10 +286,15 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     deliveryLedger: boot.ledgers.createDeliveryLedger(),
   };
 
-  const wss = initSonnetStream(null, async () => 'lane-mock-key', () => true, {
-    evaluationContextFactory: () => roles,
-    sessionFactory,
-  });
+  const wss = initSonnetStream(
+    null,
+    async () => 'lane-mock-key',
+    () => true,
+    {
+      evaluationContextFactory: () => roles,
+      sessionFactory,
+    }
+  );
   const { ws, sent, emit } = makeCapturedWs();
   wss.emit('connection', ws, { headers: {} }, DRIVER_USER);
 

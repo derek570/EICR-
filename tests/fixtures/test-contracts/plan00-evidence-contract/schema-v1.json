@@ -12,18 +12,8 @@
     "Ordering rule: the sub_records array order IS the global event order (append-only, replay-deterministic). delivery rows additionally carry the delivery ledger's monotonic at_seq and a stable delivery_ref derived from it.",
     "Ordering (Codex r1 A-1/B-7): the sub_records array order IS the global event order; evidence_projection_v1 stamps each projected delivery/playback/idempotent/rejected/ambiguity event with `seq` = its sub_records array index at projection time, so grouped projections retain the cross-class interleaving the fold's ordering rules need. Trusted wall-clock timestamps remain 00C ENVELOPE facts by the layer split — never reconstructed from sub_records."
   ],
-  "snapshot_keys": [
-    "sessionId",
-    "boundary",
-    "counts",
-    "revisions",
-    "sub_records"
-  ],
-  "ask_quiescence_families": [
-    "dispatcher",
-    "dialogue_script",
-    "address_mirror"
-  ],
+  "snapshot_keys": ["sessionId", "boundary", "counts", "revisions", "sub_records"],
+  "ask_quiescence_families": ["dispatcher", "dialogue_script", "address_mirror"],
   "quiescence_count_keys": {
     "open_asks_dispatcher": "open (produced|emitted) askLedger entries whose registry quiescence_family is dispatcher, plus entries terminal-resolved with a stop-boundary terminal",
     "open_asks_dialogue_script": "same rule for dialogue_script",
@@ -54,12 +44,7 @@
       "unknown_terminal"
     ]
   },
-  "semantic_families": [
-    "ordinary_confirmation",
-    "dialogue_script",
-    "address_mirror",
-    "fast_tts"
-  ],
+  "semantic_families": ["ordinary_confirmation", "dialogue_script", "address_mirror", "fast_tts"],
   "transports": [
     "ws_extraction",
     "ws_vcr",
@@ -731,18 +716,9 @@
   "lifecycle_transition_grammar": {
     "rule": "Cycle-6 (R6-1): accepted ask_lifecycle rows must follow the CLOSED per-runtime transition grammar below (family-qualified). An accepted row violating it is an invalid_lifecycle_transition contradiction in lifecycle_state_contradictions: it does NOT mutate the tracked state (terminals never reopen) and renders the session INELIGIBLE — 00C's fold MUST HOLD on any lifecycle_state_contradictions entry.",
     "transitions": {
-      "absent": [
-        "produced"
-      ],
-      "produced": [
-        "emitted",
-        "replaced"
-      ],
-      "emitted": [
-        "reissued_attempt",
-        "resolved",
-        "replaced"
-      ],
+      "absent": ["produced"],
+      "produced": ["emitted", "replaced"],
+      "emitted": ["reissued_attempt", "resolved", "replaced"],
       "terminal": []
     },
     "notes": "reissued_attempt preserves the emitted state; resolved moves to closed (or open_at_stop for a NON_QUIESCENT terminal); replaced closes; join_expired rows carry no runtime and are outside the grammar."
