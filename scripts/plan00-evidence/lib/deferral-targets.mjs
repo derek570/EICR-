@@ -56,9 +56,7 @@ export function collectNonSafetyDeferralTargets(expectationManifest) {
  * @returns {{known: boolean, kind: 'stratum'|'fixture'|null, deferrable: boolean}}
  */
 export function resolveDeferralTarget(expectationManifest, target) {
-  const stratum = (expectationManifest?.strata_named_gaps ?? []).find(
-    (g) => g?.stratum === target
-  );
+  const stratum = (expectationManifest?.strata_named_gaps ?? []).find((g) => g?.stratum === target);
   const fixture = (expectationManifest?.vendor_live_expectations?.fixtures ?? []).find(
     (f) => f?.corpus_id === target
   );

@@ -77,7 +77,8 @@ export const PROVIDER_ERROR_KINDS = Object.freeze({
   PROVIDER: 'provider_error',
 });
 
-const NETWORK_ERRNO = /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ECONNABORTED)$/;
+const NETWORK_ERRNO =
+  /^(ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EPIPE|ECONNABORTED)$/;
 
 /**
  * Pin the live-lane environment. Deliberately mirrors `pinMockLaneEnv` for the
@@ -162,7 +163,11 @@ export function classifyProviderError(err) {
   const code = err?.code ?? err?.cause?.code ?? err?.errno;
   if (typeof code === 'string' && NETWORK_ERRNO.test(code)) return PROVIDER_ERROR_KINDS.NETWORK;
   const name = err?.name ?? err?.constructor?.name;
-  if (name === 'APIConnectionError' || name === 'APIConnectionTimeoutError' || name === 'AbortError') {
+  if (
+    name === 'APIConnectionError' ||
+    name === 'APIConnectionTimeoutError' ||
+    name === 'AbortError'
+  ) {
     return PROVIDER_ERROR_KINDS.NETWORK;
   }
   if (typeof status === 'number') return PROVIDER_ERROR_KINDS.PROVIDER;
@@ -310,14 +315,20 @@ export function createLiveEvaluationClients({
   }
 
   return {
-    anthropic: brandLiveEvaluationClient(wrapRecordingClient(anthropicRaw, { provider: 'anthropic', recorder }), {
-      provider: 'anthropic',
-      maxRetries: 0,
-    }),
-    openai: brandLiveEvaluationClient(wrapRecordingClient(openaiRaw, { provider: 'openai', recorder }), {
-      provider: 'openai',
-      maxRetries: 0,
-    }),
+    anthropic: brandLiveEvaluationClient(
+      wrapRecordingClient(anthropicRaw, { provider: 'anthropic', recorder }),
+      {
+        provider: 'anthropic',
+        maxRetries: 0,
+      }
+    ),
+    openai: brandLiveEvaluationClient(
+      wrapRecordingClient(openaiRaw, { provider: 'openai', recorder }),
+      {
+        provider: 'openai',
+        maxRetries: 0,
+      }
+    ),
   };
 }
 
@@ -394,7 +405,10 @@ export async function bootLiveLaneDriver({
   const srcMod = (f) => pathToFileURL(path.join(repoRoot, 'src', f)).href;
 
   const { installLiveFetchPolicy } = await import(flLib('network-guard.mjs'));
-  const fetchPolicy = installLiveFetchPolicy({ allowedHosts: [...allowedHosts], hardMaxVendorCalls });
+  const fetchPolicy = installLiveFetchPolicy({
+    allowedHosts: [...allowedHosts],
+    hardMaxVendorCalls,
+  });
 
   const sonnetStream = await import(srcMod('extraction/sonnet-stream.js'));
   const lifecycle = await import(srcMod('extraction/plan00-lifecycle-hooks.js'));
@@ -403,8 +417,12 @@ export async function bootLiveLaneDriver({
   const ledgers = await import(srcMod('extraction/plan00-audibility-ledgers.js'));
   const { createPlaybackAckRouter } = await import(srcMod('routes/voice-latency-playback-ack.js'));
   const { default: Anthropic } = await import('@anthropic-ai/sdk');
-  const { createOpenAIToolUseAdapter } = await import(srcMod('extraction/openai-tooluse-adapter.js'));
-  const { createOpenAIResponsesAdapter } = await import(srcMod('extraction/openai-responses-adapter.js'));
+  const { createOpenAIToolUseAdapter } = await import(
+    srcMod('extraction/openai-tooluse-adapter.js')
+  );
+  const { createOpenAIResponsesAdapter } = await import(
+    srcMod('extraction/openai-responses-adapter.js')
+  );
   const express = (await import('express')).default;
   const request = (await import('supertest')).default;
 

@@ -3359,7 +3359,6 @@ describe('M — C4: per-fixture safety_critical classification governs deferrals
   });
 });
 
-
 // ─────────────────────────────────────────────────────────────────────────
 // N — 00B-4 §C1a: the executor→runner translation layer.
 //
@@ -3446,9 +3445,8 @@ describe('N — C1a: the executor→runner translation layer', () => {
     });
 
     test('the id check and the kind check are independent — neither stands in for the other', async () => {
-      const { validateAttemptReport } = await import(
-        '../../scripts/plan00-evidence/lib/events.mjs'
-      );
+      const { validateAttemptReport } =
+        await import('../../scripts/plan00-evidence/lib/events.mjs');
       const report = (mismatch) => ({
         schema_version: 1,
         kind: 'attempt_report',
@@ -3462,7 +3460,11 @@ describe('N — C1a: the executor→runner translation layer', () => {
       // A perfectly-shaped id with an OFF-VOCABULARY kind fails on the KIND
       // code only — the structural id check cannot see it.
       const badKind = validateAttemptReport(
-        report({ mismatch_id: 'a'.repeat(32), mismatch_kind: 'brand_new_class', safety_critical: false })
+        report({
+          mismatch_id: 'a'.repeat(32),
+          mismatch_kind: 'brand_new_class',
+          safety_critical: false,
+        })
       );
       expect(badKind.map((p) => p.code)).toEqual(['report_mismatch_kind_unknown']);
 
@@ -3478,9 +3480,8 @@ describe('N — C1a: the executor→runner translation layer', () => {
 
   describe('the allow-list widening is load-bearing', () => {
     test('the PRE-widening allow-list would have REJECTED mismatch_kind', async () => {
-      const { validateAttemptReport } = await import(
-        '../../scripts/plan00-evidence/lib/events.mjs'
-      );
+      const { validateAttemptReport } =
+        await import('../../scripts/plan00-evidence/lib/events.mjs');
       const mismatch = {
         mismatch_id: 'a'.repeat(32),
         mismatch_kind: 'wrong_value',
@@ -3526,14 +3527,14 @@ describe('N — C1a: the executor→runner translation layer', () => {
     });
 
     test('the closed vocabulary is bound into eventSchemaHash (a vocab edit is cohort drift)', async () => {
-      const { MISMATCH_KINDS } = await import(
-        '../../scripts/plan00-evidence/lib/constants.mjs'
-      );
+      const { MISMATCH_KINDS } = await import('../../scripts/plan00-evidence/lib/constants.mjs');
       // The live hash must differ from one computed over a DIFFERENT
       // vocabulary — i.e. the vocabulary genuinely participates. If a future
       // edit dropped `mismatch_kinds` from the schema hash, an existing cohort
       // would silently accept discriminators it was never attested against.
-      const withDifferentVocab = evidenceEventHash({ mismatch_kinds: [...MISMATCH_KINDS, 'invented_kind'] });
+      const withDifferentVocab = evidenceEventHash({
+        mismatch_kinds: [...MISMATCH_KINDS, 'invented_kind'],
+      });
       const withLiveVocab = evidenceEventHash({ mismatch_kinds: [...MISMATCH_KINDS] });
       expect(withDifferentVocab).not.toBe(withLiveVocab);
       expect(typeof eventSchemaHash()).toBe('string');
@@ -3646,9 +3647,14 @@ describe('N — C1a: the executor→runner translation layer', () => {
       expect(contradiction.verdict).toBe('INVALID');
       expect(contradiction.reason).toBe('judge_pass_with_mismatch');
 
-      expect(translateJudgeResult({ verdict: 'INVALID_HOLD', reason: 'mutation_invalid:x' }, c)).toEqual(
-        { verdict: 'INVALID', reason: 'judge_invalid_hold', mismatch: null, mismatchKinds: [] }
-      );
+      expect(
+        translateJudgeResult({ verdict: 'INVALID_HOLD', reason: 'mutation_invalid:x' }, c)
+      ).toEqual({
+        verdict: 'INVALID',
+        reason: 'judge_invalid_hold',
+        mismatch: null,
+        mismatchKinds: [],
+      });
 
       for (const malformed of [null, undefined, 'FAIL', 42, []]) {
         expect(translateJudgeResult(malformed, c).reason).toBe('judge_result_malformed');
@@ -3779,9 +3785,8 @@ describe('N — C1a: the executor→runner translation layer', () => {
 
     test('a PASS report carrying mismatch:null validates clean and terminates PASS', async () => {
       const { runReservedAttempt } = await loadRunner();
-      const { validateAttemptReport } = await import(
-        '../../scripts/plan00-evidence/lib/events.mjs'
-      );
+      const { validateAttemptReport } =
+        await import('../../scripts/plan00-evidence/lib/events.mjs');
       // The exact-presence loop is UNCHANGED by C1a: `mismatch` remains a
       // REQUIRED key whose value may be null. A PASS must not trip
       // `report_schema_invalid:report_missing_key`.
@@ -3972,9 +3977,8 @@ describe('N — C1a: the executor→runner translation layer', () => {
   // ── closed-vocabulary drift guard against the judge that emits it ───────
 
   test('MISMATCH_KINDS is exactly what semantic-judge.mjs can emit', async () => {
-    const { SEMANTIC_MISMATCH_KINDS } = await import(
-      '../../scripts/model-ab/lib/mismatch-kinds.mjs'
-    );
+    const { SEMANTIC_MISMATCH_KINDS } =
+      await import('../../scripts/model-ab/lib/mismatch-kinds.mjs');
     const source = fs.readFileSync(
       path.join(repoRootForC4, 'scripts', 'model-ab', 'lib', 'semantic-judge.mjs'),
       'utf8'
