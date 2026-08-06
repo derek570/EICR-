@@ -397,6 +397,15 @@ export const SEMANTIC_ORACLE_INPUTS = Object.freeze([
   'tests/fixtures/test-contracts/plan00-evidence-contract/projection-lifecycle-contradiction-v1.json',
   'src/extraction/plan00-evidence-registry.js',
   'src/extraction/plan00-evidence-projection.js',
+  // Plan 00B-4 (C3 ledger capture/row budget) — the shared budget holder that
+  // decides how many rows each capture ledger retains. It is imported by three
+  // inputs already enumerated above (plan00-semantic-capture.js,
+  // plan00-audibility-ledgers.js, plan00-lifecycle-hooks.js), and widening or
+  // narrowing a budget changes WHICH evidence exists for the oracle to judge.
+  // Leaving it out would let the captured evidence set move underneath a digest
+  // that never changed — the untracked-transitive-input hole this list exists
+  // to close.
+  'src/extraction/plan00-capture-budget.js',
 ]);
 
 export function computeSemanticOracleDigest(repoRoot) {

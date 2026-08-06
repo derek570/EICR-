@@ -2554,6 +2554,9 @@ describe('SEMANTIC_ORACLE_INPUTS membership (C0)', () => {
     'tests/fixtures/test-contracts/plan00-evidence-contract/projection-lifecycle-contradiction-v1.json',
     'src/extraction/plan00-evidence-registry.js',
     'src/extraction/plan00-evidence-projection.js',
+    // 00B-4 C3: imported by three enumerated capture producers, and it decides
+    // how many rows each ledger keeps — i.e. which evidence exists at all.
+    'src/extraction/plan00-capture-budget.js',
   ];
 
   test.each(REQUIRED)('%s is an enumerated semantic-oracle input', (rel) => {
@@ -2562,5 +2565,79 @@ describe('SEMANTIC_ORACLE_INPUTS membership (C0)', () => {
 
   test('the future 00C consumer is EXPLICITLY excluded (00C digest-partition rule)', () => {
     expect(SEMANTIC_ORACLE_INPUTS).not.toContain('src/extraction/plan00-session-manifest.js');
+  });
+
+  // The same digest-partition rule, stated from the other side.
+  //
+  // `SEMANTIC_ORACLE_INPUTS` enumerates the sources whose BEHAVIOUR the 00B
+  // expectations are written against: the evidence PRODUCERS (extraction
+  // session, vendor adapters, lane driver) plus the projection/judge chain and
+  // the frozen contract fixtures. It is not "every file Plan 00 touches".
+  //
+  // The `scripts/plan00-evidence/lib/` layer is the evidence STORE and the CLI
+  // admission gate. It neither produces, transforms nor judges evidence — it
+  // decides whether a write is allowed to happen at all. `fold.mjs` computes
+  // gate credit and `events.mjs` defines the on-disk event schema, and if this
+  // layer belonged in the oracle digest those two would be its first entries;
+  // they are deliberately absent, so `success-record.mjs` (an admission gate
+  // added by 00B-4) belongs on the same side of the partition.
+  //
+  // Including it would also invert the dependency the digest exists to serve:
+  // the CLI reads the digest in order to fail closed on oracle drift. Make the
+  // gate an input and every tightening of the gate mutates the digest, which
+  // demands a fresh 00B-successor delivery before the tightened gate may run —
+  // the exact over-broad failure `computeSemanticOracleDigest`'s docstring
+  // warns against.
+  test.each([
+    'scripts/plan00-evidence/lib/success-record.mjs',
+    'scripts/plan00-evidence/lib/fold.mjs',
+    'scripts/plan00-evidence/lib/events.mjs',
+    'scripts/plan00-evidence/lib/store.mjs',
+    'scripts/plan00-evidence/cli.mjs',
+  ])('%s is EXCLUDED — evidence store/admission gate, not an oracle input', (rel) => {
+    expect(SEMANTIC_ORACLE_INPUTS).not.toContain(rel);
+  });
+
+  // The untracked-transitive-input hole, closed as a CLASS rather than as the
+  // one instance that happened to be noticed.
+  //
+  // The digest is only a truthful statement about "the behaviour the 00B
+  // expectations were proven against" if it covers everything that behaviour
+  // depends on. An enumerated producer importing an UNenumerated sibling lets
+  // the captured evidence set move while the digest stays byte-identical — and
+  // since 00C consumes the digest precisely to decide whether the oracle is
+  // still trustworthy, that drift is invisible exactly where it matters most.
+  //
+  // 00B-4 found one live instance: `plan00-capture-budget.js` (new in C3) is
+  // imported by three enumerated capture producers and decides how many rows
+  // each ledger retains — i.e. WHICH evidence exists for the oracle to judge —
+  // yet it was absent from the list. It was caught by hand. This test is what
+  // makes the next one impossible to miss.
+  //
+  // Scoped to the `plan00-*` producer family deliberately: there the rule "an
+  // enumerated plan00 module's plan00 siblings are also oracle inputs" holds
+  // without exception. The wider enumerated sources (`eicr-extraction-session.js`,
+  // `stage6-tool-loop.js`, …) live in general extraction code and legitimately
+  // import many siblings carrying no Plan-00 evidence semantics, so the same
+  // blanket rule would be false for them. The equivalent check for the lane
+  // driver's cross-layer imports lives in plan00-lane-driver.test.js.
+  test('every plan00 sibling imported by an enumerated plan00 input is itself enumerated', () => {
+    const family = SEMANTIC_ORACLE_INPUTS.filter((rel) =>
+      /^src\/extraction\/plan00-[^/]+\.js$/.test(rel)
+    );
+    // Guard the guard: were the family ever to empty (a rename, a directory
+    // move), a vacuous pass would silently retire this contract.
+    expect(family.length).toBeGreaterThanOrEqual(6);
+
+    const missing = [];
+    for (const rel of family) {
+      const source = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+      const specifiers = [...source.matchAll(/from\s+'(\.\/plan00-[^']+)'/g)].map((m) => m[1]);
+      for (const spec of new Set(specifiers)) {
+        const imported = `src/extraction/${spec.slice(2)}`;
+        if (!SEMANTIC_ORACLE_INPUTS.includes(imported)) missing.push(`${rel} -> ${imported}`);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });
