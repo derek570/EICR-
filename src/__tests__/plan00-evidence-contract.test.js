@@ -1464,6 +1464,92 @@ describe('three-way agreement (C0)', () => {
     ]);
   });
 
+  // ── the freeze→driver SEAM ───────────────────────────────────────────────
+  //
+  // The lane driver reads provider identities straight off the RAW completion
+  // latch — it does not project first (projecting inside the driver would mean
+  // statically importing a `src/extraction` module from `lane-driver.mjs`,
+  // which loads BEFORE the network guard and the replay clock are installed).
+  // `collectProviderCallIds` is therefore a deliberate hand-maintained MIRROR
+  // of the projection's `case 'round_usage'` arm, and this is its reciprocal
+  // drift test — the same contract the `ios-dedupe-key.js` mirror carries.
+  //
+  // It exists because the two halves previously did NOT meet: the driver test
+  // hand-built a projection-shaped latch and the loop test asserted on the
+  // tool loop's own return value, so a driver reading a key the latch never
+  // has passed every suite while the live vendor lane could not produce one
+  // valid terminal. Never split this back into two shape-independent halves.
+  test('SEAM: collectProviderCallIds reads the real latch and agrees with the projection', async () => {
+    const { collectProviderCallIds } = await import('../../scripts/model-ab/lib/lane-driver.mjs');
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_seam' });
+    const row = (providerCallId, roundIdx) => ({
+      provider: 'anthropic',
+      api_transport: 'anthropic_messages',
+      turn_kind: 'reading',
+      provider_call_id: providerCallId,
+      requested_model: 'claude-haiku-4-5-20251001',
+      response_model: 'claude-haiku-4-5-20251001',
+      billing_model: 'claude-haiku-4-5-20251001',
+      billing_tier: null,
+      model_provenance: 'returned',
+      tier_provenance: 'unavailable_for_provider',
+      attribution_status: 'attributed',
+      round_idx: roundIdx,
+    });
+    // Two proven rounds and one whose provider returned no id — the honest
+    // null the attribution layer records rather than fabricating an identity.
+    ctx.roundUsageSink(row('msg_seam_1', 0), {
+      loopInvocationId: 'loop_seam',
+      billableKind: 'inspector_extraction',
+    });
+    ctx.roundUsageSink(row(null, 1), {
+      loopInvocationId: 'loop_seam',
+      billableKind: 'inspector_extraction',
+    });
+    ctx.roundUsageSink(row('msg_seam_2', 2), {
+      loopInvocationId: 'loop_seam',
+      billableKind: 'inspector_extraction',
+    });
+
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_seam',
+      boundary: 'session_stopped',
+    });
+    // The driver reads THIS object — exactly what getCompletionFreeze returns.
+    expect(getCompletionFreeze(entry)).toBe(frozen);
+    const collected = collectProviderCallIds(frozen);
+    expect(collected).toEqual({
+      ids: ['msg_seam_1', 'msg_seam_2'],
+      rounds: 3,
+      missing: 1,
+    });
+
+    // Reciprocal drift lock: the mirror must see the same rows, in the same
+    // order, as the canonical projection arm it mirrors. If that arm changes
+    // (a revision gate, a dedupe, a rename), this fails LOUDLY here instead
+    // of silently starving the live lane of provable identities.
+    //
+    // The comparator is `buildEvidenceProjectionV1`, NOT `projectFrozenLedgersV1`:
+    // the frozen-ledger projection deliberately carries no round_usage at all
+    // (module docstring — "cost evidence rides sub_records, not frozen
+    // ledgers", and `comparableSubset` strips it for that reason). That is
+    // precisely why the driver cannot "just project first" and why the mirror
+    // exists.
+    //
+    // Both sides are provably reading the SAME rows: the freeze uses one
+    // latched copy for the builder snapshot and for `evidence.sub_records`.
+    expect(frozen.candidate.sub_records).toBe(frozen.evidence.sub_records);
+    const projected = buildEvidenceProjectionV1(frozen.candidate).round_usage.rounds;
+    expect(projected.map((r) => r.provider_call_id)).toEqual(['msg_seam_1', null, 'msg_seam_2']);
+    expect(collected.rounds).toBe(projected.length);
+    expect(collected.ids).toEqual(
+      projected
+        .map((r) => (typeof r.provider_call_id === 'string' ? r.provider_call_id.trim() : ''))
+        .filter(Boolean)
+    );
+  });
+
   test('the retained object-identity immutability check still holds beside the new invariant', () => {
     const entry = composeRichSession();
     const frozen = freezeEvidenceCompletion(entry, {

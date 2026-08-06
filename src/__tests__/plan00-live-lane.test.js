@@ -916,36 +916,52 @@ describe('6 — provider call-id chain (C1c)', () => {
     ).toBeNull();
   });
 
-  test('collectProviderCallIds preserves round order and counts unprovable rounds', async () => {
+  test('collectProviderCallIds reads the REAL frozen shape: sub_records, kind-filtered', async () => {
     const { collectProviderCallIds } = await import('../../scripts/model-ab/lib/lane-driver.mjs');
+    // This is the shape `composeFrozenEvidence` actually produces: round_usage
+    // rows ride `sub_records` as FLAT rows carrying a `kind` discriminator,
+    // interleaved with every other producer's rows. There is no
+    // `evidence.round_usage` key on the latch — the only object of that name is
+    // the OUTPUT of buildEvidenceProjectionV1, which is never written back.
+    // An earlier revision of this test hand-built `{round_usage:{rounds}}` and
+    // so PINNED THE BUG AS INTENDED BEHAVIOUR while the live lane could not
+    // produce a single valid terminal. Keep this fixture shaped like production.
     const frozen = {
       evidence: {
-        round_usage: {
-          rounds: [
-            { provider_call_id: 'msg_b' },
-            { provider_call_id: null },
-            { provider_call_id: '  msg_a  ' },
-            { provider_call_id: '   ' },
-            {},
-          ],
-        },
+        sub_records: [
+          { kind: 'ask_produced', runtime_id: 'srv_1' },
+          { kind: 'round_usage', provider_call_id: 'msg_b' },
+          { kind: 'round_usage', provider_call_id: null },
+          { kind: 'delivery_row', correlation_id: 'corr_1' },
+          { kind: 'round_usage', provider_call_id: '  msg_a  ' },
+          { kind: 'round_usage', provider_call_id: '   ' },
+          { kind: 'round_usage' },
+        ],
       },
     };
     // Order is load-bearing: 00C hashes the ORDERED list into sample_identity,
-    // so this must never be sorted or deduped on the way out.
+    // so this must never be sorted or deduped on the way out. Non-round_usage
+    // rows must not inflate the round count either — `rounds` is what the
+    // refusal below compares the id count against.
     expect(collectProviderCallIds(frozen)).toEqual({
       ids: ['msg_b', 'msg_a'],
       rounds: 5,
       missing: 3,
     });
-    // A frozen shape with no round_usage at all is 0 rounds, not a throw —
-    // the refusal below is what turns that into an INVALID terminal.
+    // Degenerate shapes are 0 rounds, not a throw — the refusal below is what
+    // turns that into an INVALID terminal. Fail CLOSED, never fabricate.
     expect(collectProviderCallIds({})).toEqual({ ids: [], rounds: 0, missing: 0 });
-    expect(collectProviderCallIds({ evidence: { round_usage: { rounds: 'nope' } } })).toEqual({
+    expect(collectProviderCallIds(undefined)).toEqual({ ids: [], rounds: 0, missing: 0 });
+    expect(collectProviderCallIds({ evidence: { sub_records: 'nope' } })).toEqual({
       ids: [],
       rounds: 0,
       missing: 0,
     });
+    // The OLD (wrong) shape must now read as zero rounds. If someone
+    // "restores" the projection-shaped access path, this line goes red.
+    expect(
+      collectProviderCallIds({ evidence: { round_usage: { rounds: [{ provider_call_id: 'x' }] } } })
+    ).toEqual({ ids: [], rounds: 0, missing: 0 });
   });
 
   test('liveProviderIdRefusal fails closed on incomplete or duplicated identities', async () => {

@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "e1b38e7b1deb4cf444bb42ff9b5eb1056f4a9e0ce8081cc60f163ae96bcc37b5",
+  "semantic_oracle_digest": "aa2044eb7dd279b457c0a82848e182004cd07fa37a86ac2de79c5dc382aa400b",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -577,7 +577,7 @@
     },
     {
       "path": "scripts/model-ab/lib/lane-driver.mjs",
-      "sha256": "d8badb52d74dc2a0c2295923cf073c4c0b0f8e7f03729dbb6aea645e9210c451"
+      "sha256": "e8d48c123b99a08cf30c3626bad1a4e6828187ead9c2efccc2fe6f6b76557f05"
     },
     {
       "path": "scripts/field-replay/lib/replay-runner-core.mjs",

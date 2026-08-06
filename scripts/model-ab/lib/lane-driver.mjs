@@ -161,12 +161,39 @@ function frameBuffer(frame) {
  * Returns the ids plus the two counts the caller needs to fail CLOSED: a live
  * sample that cannot account for every completed round with a distinct real
  * vendor id is not evidence, whatever its judge verdict says.
+ *
+ * WHERE THE ROWS ACTUALLY LIVE — read this before "simplifying" the access
+ * path. `getCompletionFreeze(entry)` hands back the completion latch, whose
+ * `.evidence` is built by `composeFrozenEvidence`, and that function enumerates
+ * its keys EXPLICITLY: there is no `round_usage` key on it and there never was.
+ * Cost evidence rides `sub_records` as flat append-ordered rows carrying a
+ * `kind: 'round_usage'` discriminator (the sink appends via
+ * `appendLedgerRow(ledger, observer, 'round_usage', detail)`), and the ONLY
+ * place a `round_usage: { rounds }` object exists is the OUTPUT of
+ * `buildEvidenceProjectionV1` — a different object that is never assigned back
+ * onto the latch. Reading `frozen.evidence.round_usage.rounds` therefore always
+ * yields `[]`, which `liveProviderIdRefusal` correctly turns into
+ * `provider_ids_incomplete` — i.e. the bug silently made the entire live vendor
+ * lane unable to produce a single valid terminal.
+ *
+ * This filter is a deliberate MIRROR of the projection's `case 'round_usage'`
+ * arm rather than an import: `src/extraction` modules are loaded dynamically by
+ * `bootLaneDriver` AFTER the network guard and replay clock are installed, so a
+ * static import here would break that ordering discipline. The mirror is
+ * legitimate because the projection's arm is an unconditional ordered push that
+ * strips only `kind`/`revision` (never `provider_call_id`), and it is held to
+ * that by a reciprocal drift test — `collectProviderCallIds` and
+ * `projectFrozenLedgersV1(frozen).round_usage.rounds` are asserted to agree over
+ * the SAME real frozen latch, so a future change to either side fails loudly.
  */
 export function collectProviderCallIds(frozen) {
-  const rounds = frozen?.evidence?.round_usage?.rounds ?? [];
+  const subRecords = frozen?.evidence?.sub_records;
+  const rounds = Array.isArray(subRecords)
+    ? subRecords.filter((r) => r?.kind === 'round_usage')
+    : [];
   const ids = [];
   let missing = 0;
-  for (const row of Array.isArray(rounds) ? rounds : []) {
+  for (const row of rounds) {
     const id = typeof row?.provider_call_id === 'string' ? row.provider_call_id.trim() : '';
     if (id.length === 0) {
       missing += 1;
@@ -174,7 +201,7 @@ export function collectProviderCallIds(frozen) {
     }
     ids.push(id);
   }
-  return { ids, rounds: Array.isArray(rounds) ? rounds.length : 0, missing };
+  return { ids, rounds: rounds.length, missing };
 }
 
 /**
@@ -270,7 +297,9 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
       // (which passes no `maxRetries`) can never run and produce an
       // un-clamped SDK client — whichever provider the model routes to.
       // Plus the application-level one-call clamp, because SDK `maxRetries: 0`
-      // leaves `callWithRetry`'s own 3-attempt loop untouched.
+      // only silences the SDK's OWN retries — `callWithRetry` wraps them in a
+      // second loop of its own (`maxRetries`, a caller-supplied parameter
+      // defaulting to 3), which the SDK setting cannot reach.
       ...(liveMode
         ? { providerClients: boot.liveProviderClients, maxProviderAttempts: 1 }
         : { providerClients: { [defaultProvider]: bootstrapClient } }),
