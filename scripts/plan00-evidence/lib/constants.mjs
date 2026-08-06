@@ -104,9 +104,37 @@ export const STANDARD_TIERS = Object.freeze(['standard', 'default']);
  *  valid S3 LastModified among byte-identical versions. */
 export const DAY_ZONE = 'Europe/London';
 
-/** Per-day minimum pinned-IR repetitions; cohort minimum across three days. */
+/** Per-day minimum pinned-IR repetitions. */
 export const IR_REPS_PER_DAY = 5;
-export const REQUIRED_DAYS = 3;
+
+/** How many ACCEPTED days the cohort needs before it can reach DONE.
+ *
+ *  Was 3 (2026-08-03 plan 00C); dropped to 1 on 2026-08-06 (Derek) — the
+ *  calendar-day spread was the wrong axis. A "day" is not a bucket of turns,
+ *  it is the full ~10-requirement COVERAGE bundle (pinned IR × IR_REPS_PER_DAY,
+ *  both corpus lanes, a genuinely bound field session, a Luna fast round, a
+ *  Terra observation round, explicit cache evidence, the dialogue-script and
+ *  address-mirror families, and Derek's heard-it attestation) all landing
+ *  inside one Europe/London day. Requiring that bundle THREE times bought
+ *  repetition, not coverage, at the cost of freezing the backend for three
+ *  calendar days (any relevant source deploy voids the cohort and restarts
+ *  the count). Derek is the sole user and has accepted the flake risk that
+ *  repetition would have covered; coverage — the part that actually decides
+ *  whether the comparison is trustworthy — is unchanged and still enforced
+ *  per day, and evidence keeps accruing after DONE.
+ *
+ *  MUST be >= 1. At 0 the fold's `acceptedDays.length >= REQUIRED_DAYS` test
+ *  is vacuously true, so a cohort would reach DONE the instant it initialised
+ *  with ZERO evidence — certifying the model comparison on no data at all.
+ *  Asserted at module load so that mistake can never ship silently. */
+export const REQUIRED_DAYS = 1;
+
+if (!Number.isInteger(REQUIRED_DAYS) || REQUIRED_DAYS < 1) {
+  throw new Error(
+    `REQUIRED_DAYS must be an integer >= 1 (got ${REQUIRED_DAYS}); ` +
+      'at 0 the cohort reaches DONE with no evidence.'
+  );
+}
 
 /** Format an ISO timestamp / epoch-ms as a Europe/London YYYY-MM-DD day. */
 export function londonDayOf(instant) {
