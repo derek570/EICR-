@@ -67,6 +67,11 @@ import {
 } from './lib/pinned-ir.mjs';
 import { PINNED_IR_MODEL_LANE, pinLaneModelEnv, resolveLaneModel } from './lib/lane-models.mjs';
 import { mintLiveDispatchCapability } from './lib/live-capability.mjs';
+import {
+  ANCHOR_MODES,
+  assertNotStageARebind,
+  assertSuccessArtifactChain,
+} from './lib/success-record.mjs';
 import { evidenceEventHash } from '../field-replay/lib/canonical-crypto.mjs';
 import {
   computeConfigFingerprint,
@@ -178,14 +183,70 @@ const latestValid = latestValidShared;
 export { computeCohortFingerprint } from './lib/fingerprint.mjs';
 import { computeCohortFingerprint } from './lib/fingerprint.mjs';
 
-/** Resolve the target cohort: --cohort wins; otherwise EXACTLY ONE cohort
- *  prefix may exist (never lexicographic newest). */
+/**
+ * Resolve the target cohort: `--cohort` wins; otherwise exactly one LIVE cohort
+ * may exist (never lexicographic newest).
+ *
+ * "Live" is now explicit rather than implied by recency. A source deploy voids
+ * the running three-day count, and the only way to restart it is a new Stage-A
+ * publish + `init-cohort`, which mints a NEW cohort id. Before supersession was
+ * recorded, that left two cohort prefixes in the bucket with nothing to say
+ * which one was current: every subsequent run/decide/status command refused with
+ * `multiple cohorts exist — pass --cohort explicitly`, and the obvious operator
+ * response (pass the id they remember) is exactly the wrong one, because the
+ * cohort they remember is the voided one and its accumulated days are dead.
+ *
+ * So `init-cohort` records `supersedes` on the new cohort record and this
+ * resolver follows the chain: a cohort named by any live cohort's `supersedes`
+ * is VOID, and only the survivors are candidates. A chain (A→B→C) resolves to C
+ * naturally, because both A and B are named as superseded.
+ *
+ * A single cohort id short-circuits BEFORE the supersession load, deliberately:
+ * it costs nothing to resolve, and it preserves the more useful downstream
+ * message ("cohort X is not initialized — run init-cohort first") for the
+ * commonest failure of all, the half-finished first-time setup.
+ */
 async function resolveCohortId(store, args) {
   if (args.cohort) return args.cohort;
   const ids = await findCohortIds(store);
-  if (ids.length === 1) return ids[0];
   if (ids.length === 0) throw new Error('no cohort exists yet — run attest-expectations first');
-  throw new Error(`multiple cohorts exist (${ids.join(', ')}) — pass --cohort explicitly`);
+  if (ids.length === 1) return ids[0];
+
+  const { initialized, superseded, live } = await loadCohortSupersession(store, ids);
+  const liveInitialized = live.filter((id) => initialized.has(id));
+  if (liveInitialized.length === 1) return liveInitialized[0];
+  if (liveInitialized.length === 0 && live.length === 1) return live[0];
+
+  const voided = [...superseded.entries()].map(([from, to]) => `${from} superseded by ${to}`);
+  throw new Error(
+    `multiple cohorts exist (${live.join(', ')}) — pass --cohort explicitly` +
+      (voided.length > 0 ? ` [${voided.join('; ')}]` : '')
+  );
+}
+
+/**
+ * Read every cohort's `cohort_initialized` record and derive the supersession
+ * graph.
+ *
+ * Returns the `superseded` map (voided id → the id that voided it), the
+ * `initialized` records by id, and the `live` ids in stable sort order. An
+ * uninitialised cohort prefix — events published under an id whose init never
+ * completed — is neither live-blocking nor superseding: it simply has no record
+ * to read, so it contributes nothing to either map.
+ */
+async function loadCohortSupersession(store, knownIds = null) {
+  const ids = knownIds ?? (await findCohortIds(store));
+  const initialized = new Map();
+  const superseded = new Map();
+  for (const id of ids) {
+    const { cohortRecords } = await loadCohortState(store, id);
+    const init = latestValid(cohortRecords, 'cohort_initialized');
+    if (!init) continue;
+    initialized.set(id, init);
+    const prior = init.payload.supersedes;
+    if (typeof prior === 'string' && prior.length > 0 && prior !== id) superseded.set(prior, id);
+  }
+  return { ids, initialized, superseded, live: ids.filter((id) => !superseded.has(id)) };
 }
 
 async function findCohortIds(store) {
@@ -198,9 +259,142 @@ async function findCohortIds(store) {
   return [...ids].sort();
 }
 
+/**
+ * Which cohort `status` reports on.
+ *
+ * Deliberately a SEPARATE ladder from `resolveCohortId`, and deliberately
+ * extracted as a pure function rather than left inline. It differs from the
+ * write-command resolver in exactly one way that matters: `status` is the
+ * diagnostic an operator reaches for when something is WRONG, so it must still
+ * pick a cohort that has no valid `cohort_initialized` record — the uninitialised
+ * case the write commands are right to refuse is precisely the case a human
+ * needs to see. Leaving that ladder inline in `cmdStatus` would have made it
+ * untestable without stubbing AWS, so the only way to pin it would have been to
+ * pin a copy — which is how the two resolvers would silently drift apart on the
+ * supersession rule they DO share.
+ *
+ * Returns null when no cohort exists at all (`status` prints the empty state).
+ */
+export function resolveStatusCohortId({ ids, initialized, live }, explicitCohortId = null) {
+  if (explicitCohortId) return explicitCohortId;
+  const liveInitialized = live.filter((id) => initialized.has(id));
+  if (liveInitialized.length === 1) return liveInitialized[0];
+  if (live.length === 1) return live[0];
+  if (ids.length === 1) return ids[0];
+  if (ids.length > 1) {
+    throw new Error(`multiple live cohorts exist (${live.join(', ')}) — pass --cohort`);
+  }
+  return null;
+}
+
+/**
+ * Plan 00B-4 §"Digest + success-record contract" — the ONE shared validator
+ * every Plan-00 command runs before it writes anything.
+ *
+ * It is PHASE-AWARE because the anchors it checks do not all exist yet at every
+ * call site: `publish-stage-a` runs before any Stage-A event exists, `attest`
+ * after one does but before a cohort, `init` when both exist, and the run
+ * commands only ever against an already-initialised cohort. A single
+ * check-everything validator would therefore be unusable at the first call site
+ * and a single check-nothing one would be useless at the last, so the mode
+ * selects exactly what its phase CAN verify — and each mode fails closed on all
+ * of it.
+ *
+ * Common to every mode: the shipped 00B success record still describes the
+ * checked-out manifest, and the checked-out oracle sources still hash to what
+ * that manifest declares (`assertSuccessArtifactChain`). That is the part which
+ * cannot be self-consistently faked, because the success record lives outside
+ * the repo and was written by a run that genuinely merged and deployed.
+ */
+export async function assertPlan00Anchors({ mode, store = null, args = {}, overrides = {} }) {
+  if (!ANCHOR_MODES.includes(mode)) {
+    throw new Error(
+      `assertPlan00Anchors: unknown mode ${JSON.stringify(mode)} (expected one of ${ANCHOR_MODES.join(', ')})`
+    );
+  }
+  const {
+    readManifest = expectationManifestContent,
+    recomputeOracle = recomputeOracleDigest,
+    successRecord = {},
+  } = overrides;
+
+  const chain = await assertSuccessArtifactChain({
+    repoRoot: REPO_ROOT,
+    readManifest,
+    recomputeOracle,
+    ...successRecord,
+  });
+
+  if (mode === 'publish') {
+    // The two inputs that IDENTIFY the deployment being anchored. Checked here
+    // rather than only at the call site so the rebind test below always has
+    // something real to compare.
+    for (const flag of ['run-id', 'head-sha']) {
+      const value = args[flag];
+      if (value === undefined || value === true || String(value).length === 0) {
+        throw new Error(
+          `REFUSED: publish-stage-a requires --${flag} (the deploy run that produced the ` +
+            'runtime being anchored). Nothing was written.'
+        );
+      }
+    }
+    // Resolve which Stage-A event a live cohort is currently bound to, so the
+    // caller can run the rebind test once it knows the runtime fingerprint.
+    // `null` means nothing is bound yet — the first-publish path, always admitted.
+    const { initialized, live } = await loadCohortSupersession(store);
+    const liveInitialized = live.filter((id) => initialized.has(id));
+    let rebindTarget = null;
+    if (liveInitialized.length === 1) {
+      const cohortId = liveInitialized[0];
+      const { stageARecords } = await loadCohortState(store, cohortId);
+      const bound = boundValidRecord(
+        stageARecords,
+        'stage_a_deployed',
+        initialized.get(cohortId).payload.stage_a_event_hash
+      );
+      rebindTarget = { cohortId, boundStageAPayload: bound?.payload ?? null };
+    }
+    return { ...chain, rebindTarget };
+  }
+
+  if (mode === 'attest' || mode === 'init') {
+    const { stageARecords } = await loadCohortState(store, null);
+    const stageA = latestValid(stageARecords, 'stage_a_deployed');
+    if (!stageA) {
+      throw new Error(
+        'REFUSED: no valid stage_a_deployed event is readable — run publish-stage-a first. ' +
+          'Nothing was written.'
+      );
+    }
+    // The Stage-A anchor records the oracle digest the DEPLOYED runtime was
+    // published against. If the checkout has drifted since, attesting or
+    // initialising now would bind an expectation set proven under one oracle to
+    // a runtime published under another — and nothing downstream re-joins them.
+    if (stageA.payload.semantic_oracle_digest !== chain.oracleDigest) {
+      throw new Error(
+        `REFUSED: the published Stage-A anchor declares semantic_oracle_digest ` +
+          `${stageA.payload.semantic_oracle_digest} but the checked-out sources hash to ` +
+          `${chain.oracleDigest}. Re-deploy and re-publish before ${mode === 'attest' ? 'attesting' : 'initialising'}. ` +
+          'Nothing was written.'
+      );
+    }
+    return { ...chain, stageA };
+  }
+
+  // 'run' — the cohort-bound anchor equality is layered on by
+  // `assertRunPreconditions`, which has already resolved the cohort.
+  return chain;
+}
+
 // ── subcommands ──────────────────────────────────────────────────────────
 
-async function cmdPublishStageA(args, store) {
+async function cmdPublishStageA(args, store, overrides = {}) {
+  // Phase gate FIRST: a tampered success record or a drifted oracle refuses
+  // before any gh/aws round trip, so a bad invocation costs nothing and writes
+  // nothing. It also resolves which stage_a event (if any) a live cohort binds,
+  // for the rebind test below.
+  const anchors = await assertPlan00Anchors({ mode: 'publish', store, args, overrides });
+
   const runId = args['run-id'];
   const headSha = args['head-sha'];
   if (!runId || !headSha) throw new Error('publish-stage-a requires --run-id and --head-sha');
@@ -251,13 +445,9 @@ async function cmdPublishStageA(args, store) {
   }
 
   const versioning = await store.getBucketVersioningStatus();
-  const oracle = await recomputeOracleDigest();
-  const manifest = expectationManifestContent();
-  if (oracle !== manifest.semantic_oracle_digest) {
-    throw new Error(
-      'semantic_oracle_digest drift: checked-out sources no longer match the manifest'
-    );
-  }
+  // Already proven by the phase gate above (record → manifest bytes → oracle);
+  // reused rather than recomputed so the walk happens exactly once per command.
+  const oracle = anchors.oracleDigest;
   // Codex cycle-1 — NON-NULL fingerprints, computed with THE SAME
   // derivations the deployed server uses (one implementation, imported):
   // prompt/tool from this checkout (verified == deployed head_sha above);
@@ -310,6 +500,21 @@ async function cmdPublishStageA(args, store) {
   if (!promptFingerprint || !toolFingerprint || !configFingerprint) {
     throw new Error('fingerprint computation failed — refusing to publish stage_a_deployed');
   }
+  // The rebind test can only run HERE: the runtime fingerprint is the third
+  // leg of deployment identity and is not derivable until the live task
+  // definition has been read. A publish that matches the live cohort's bound
+  // stage-A on all three is the same deployment, so it is refused; anything
+  // differing is a genuinely new deployment and is admitted.
+  const deploymentFingerprint = deploymentFingerprintOf(identity);
+  assertNotStageARebind({
+    boundStageAPayload: anchors.rebindTarget?.boundStageAPayload ?? null,
+    cohortId: anchors.rebindTarget?.cohortId ?? null,
+    candidate: {
+      run_id: String(runId),
+      head_sha: headSha,
+      deployment_fingerprint: deploymentFingerprint,
+    },
+  });
   const { event, receipt } = await publishEvent(store, {
     kind: 'stage_a_deployed',
     cohortId: STAGE_A_COHORT,
@@ -325,7 +530,7 @@ async function cmdPublishStageA(args, store) {
         ...live.live,
         task_family: identity.task_family,
         task_revision: identity.task_revision,
-        deployment_fingerprint: deploymentFingerprintOf(identity),
+        deployment_fingerprint: deploymentFingerprint,
       },
       evidence_bucket: store.bucket,
       evidence_bucket_versioning: versioning,
@@ -342,17 +547,13 @@ async function cmdPublishStageA(args, store) {
   console.log('Fold state is now STAGE_A_IMPLEMENTED (run `status` to verify).');
 }
 
-async function cmdAttestExpectations(args, store) {
-  const manifest = expectationManifestContent();
-  const oracle = await recomputeOracleDigest();
-  if (oracle !== manifest.semantic_oracle_digest) {
-    throw new Error(
-      'semantic_oracle_digest drift: checked-out sources no longer match the manifest'
-    );
-  }
-  const { stageARecords } = await loadCohortState(store, null);
-  const stageA = latestValid(stageARecords, 'stage_a_deployed');
-  if (!stageA) throw new Error('no valid stage_a_deployed event — run publish-stage-a first');
+async function cmdAttestExpectations(args, store, overrides = {}) {
+  // Phase gate: the success-record chain PLUS the published Stage-A anchor.
+  // Attesting is where Derek's signature enters the evidence, so it must not be
+  // possible against a manifest the shipped 00B run never proved, nor against a
+  // runtime published under a different oracle.
+  const anchors = await assertPlan00Anchors({ mode: 'attest', store, args, overrides });
+  const { manifest, stageA } = anchors;
   const { cohortId, hash } = computeCohortFingerprint({
     stageAPayload: stageA.payload,
     combinedSha256: manifest.combined_sha256,
@@ -387,11 +588,12 @@ async function cmdAttestExpectations(args, store) {
   console.log(`expectations_attested published: ${event.key} (version ${receipt.versionId})`);
 }
 
-async function cmdInitCohort(args, store) {
-  const manifest = expectationManifestContent();
-  const { stageARecords } = await loadCohortState(store, null);
-  const stageA = latestValid(stageARecords, 'stage_a_deployed');
-  if (!stageA) throw new Error('no valid stage_a_deployed event');
+async function cmdInitCohort(args, store, overrides = {}) {
+  // Phase gate: success-record chain + the published Stage-A anchor. Init is
+  // the moment the cohort record is minted, so these anchors are bound INTO it
+  // below — after this point nothing re-derives them, they are compared.
+  const anchors = await assertPlan00Anchors({ mode: 'init', store, args, overrides });
+  const { manifest, stageA } = anchors;
   const { cohortId, fingerprint, hash } = computeCohortFingerprint({
     stageAPayload: stageA.payload,
     combinedSha256: manifest.combined_sha256,
@@ -417,8 +619,27 @@ async function cmdInitCohort(args, store) {
   if (!live.available || !live.fingerprint_matches) {
     throw new Error(`live deployment drift (${live.reason}) — a new deploy needs a new cohort`);
   }
+  // Which cohort does this one VOID? A deploy voids the running three-day
+  // count, and the restart mints a new cohort id — so without an explicit
+  // record the bucket ends up holding two cohort prefixes and no statement of
+  // which is current. Recording it here, at the one moment both ids are known,
+  // is what lets `status` report VOID and the run commands resolve without
+  // `--cohort`. Re-initialising the SAME id supersedes nothing (it is the same
+  // cohort, not a successor).
+  const { initialized, live: liveCohorts } = await loadCohortSupersession(store);
+  const priorLive = liveCohorts.filter((id) => initialized.has(id) && id !== cohortId);
+  if (priorLive.length > 1) {
+    throw new Error(
+      `REFUSED: ${priorLive.length} live cohorts already exist (${priorLive.join(', ')}) — ` +
+        'this cohort cannot state which one it supersedes, and guessing would void the wrong ' +
+        'evidence. Resolve the split by hand before initialising. Nothing was written.'
+    );
+  }
+  const supersedes = priorLive[0] ?? null;
+
   await confirmInteractive(
-    `Initialise cohort ${cohortId}?\n  fingerprint: ${hash}\n  stage_a: ${stageA.key}`
+    `Initialise cohort ${cohortId}?\n  fingerprint: ${hash}\n  stage_a: ${stageA.key}` +
+      (supersedes ? `\n  SUPERSEDES: ${supersedes} (its accumulated days are voided)` : '')
   );
   const { event, receipt } = await publishEvent(store, {
     kind: 'cohort_initialized',
@@ -429,9 +650,19 @@ async function cmdInitCohort(args, store) {
       stage_a_event_hash: evidenceEventHash(stageA.payload),
       expectations_event_hash: evidenceEventHash(attested.payload),
       initialized_at: new Date().toISOString(),
+      // ADDITIVE-OPTIONAL payload fields. Deliberately NOT added to
+      // `KIND_REQUIRED_FIELDS`: that map is hashed into `eventSchemaHash()`,
+      // which every stage_a_deployed event carries, so requiring them would
+      // surface as deployment drift on a cohort that has done nothing wrong.
+      // `validateStoredEvent` tolerates extra keys, so an older reader is
+      // unaffected and a newer one gets the binding.
+      supersedes,
+      manifest_artifact_sha256: anchors.manifestSha256,
+      semantic_oracle_digest: anchors.oracleDigest,
     },
   });
   console.log(`cohort_initialized published: ${event.key} (version ${receipt.versionId})`);
+  if (supersedes) console.log(`cohort ${supersedes} is now VOID (superseded by ${cohortId}).`);
   console.log(`Status is now HOLD_EVIDENCE — 0/3 for cohort ${cohortId}.`);
 }
 
@@ -707,6 +938,7 @@ export async function assertRunPreconditions(store, args, overrides = {}) {
       (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT })).stdout,
     readPorcelain = async () =>
       (await execFileAsync('git', ['status', '--porcelain'], { cwd: REPO_ROOT })).stdout,
+    successRecord = {},
   } = overrides;
 
   // 0 — mode. There is exactly ONE mode that may publish vendor evidence, and
@@ -720,10 +952,38 @@ export async function assertRunPreconditions(store, args, overrides = {}) {
     );
   }
 
+  // 0b — the success-artifact chain. Deliberately BEFORE any store work: the
+  // manifest under contract is what every downstream check compares against, so
+  // if the shipped 00B record no longer describes it there is nothing worth
+  // reading a cohort for, and a refusal here costs no ordinal and no
+  // reservation.
+  const anchors = await assertPlan00Anchors({
+    mode: 'run',
+    store,
+    args,
+    overrides: { readManifest, recomputeOracle, successRecord },
+  });
+
   await assertBucketVersioned(store);
 
   // 1 — an initialised cohort, and the EXACT stage-A + attestation it bound.
   const cohortId = await resolveCohortId(store, args);
+
+  // 1a — a SUPERSEDED cohort is void, and dispatching into it spends real money
+  // on evidence that can never count toward the gate. The resolver already skips
+  // voided cohorts, so this only fires for an explicit `--cohort <old id>` — the
+  // exact mistake an operator makes when they paste the id they remember, which
+  // is by construction the one that was re-anchored.
+  const { superseded } = await loadCohortSupersession(store);
+  if (superseded.has(cohortId)) {
+    throw new Error(
+      `REFUSED: cohort ${cohortId} was superseded by ${superseded.get(cohortId)} — a later ` +
+        'deployment re-anchored the chain, so it accrues no further days and any evidence ' +
+        'published against it is dead on arrival. Run against the successor. Nothing was ' +
+        'allocated or reserved.'
+    );
+  }
+
   const state = await loadCohortState(store, cohortId);
   const init = latestValid(state.cohortRecords, 'cohort_initialized');
   if (!init) throw new Error(`cohort ${cohortId} is not initialized — run init-cohort first`);
@@ -753,21 +1013,50 @@ export async function assertRunPreconditions(store, args, overrides = {}) {
     );
   }
 
+  // 1b — the cohort's OWN bound anchors. `cohort_initialized` records the
+  // manifest sha and oracle digest that were true at init, atomically with the
+  // stage-A binding. Step 0b proved the checked-out tree is self-consistent and
+  // matches the shipped 00B record; this proves it is the SAME tree this cohort
+  // was initialised against. Without it a cohort could be initialised, the
+  // manifest regenerated, the 00B record refreshed by a later delivery, and
+  // dispatch would carry on accruing days against expectations nobody ever
+  // attested for THIS cohort. Fail-closed on absence: every cohort reachable by
+  // this code path was initialised by the same `init-cohort` that writes them.
+  for (const [field, bound, current] of [
+    ['manifest_artifact_sha256', init.payload.manifest_artifact_sha256, anchors.manifestSha256],
+    ['semantic_oracle_digest', init.payload.semantic_oracle_digest, anchors.oracleDigest],
+  ]) {
+    if (typeof bound !== 'string' || bound.length === 0) {
+      throw new Error(
+        `REFUSED: cohort ${cohortId} records no ${field} — it predates the success-artifact ` +
+          'binding and cannot prove which manifest it was initialised against. Re-initialise ' +
+          'the cohort. Nothing was allocated or reserved.'
+      );
+    }
+    if (bound !== current) {
+      throw new Error(
+        `REFUSED: cohort ${cohortId} was initialised against ${field} ${bound} but the ` +
+          `checked-out tree now yields ${current}. The manifest changed under a running cohort; ` +
+          're-deploy, re-publish and re-initialise. Nothing was allocated or reserved.'
+      );
+    }
+  }
+
   // 2 — the ORACLE. `fold.mjs` recomputes this digest and voids the cohort if
   // it drifts, so dispatching under a drifted oracle burns real money to
-  // produce evidence that is already known to be unusable. Note this catches
-  // strictly more than an expectation-hash check: a mutated dispatch-path file
-  // that is an enumerated oracle input drifts the digest even when every
-  // projected expectation is byte-identical.
-  const manifest = readManifest();
-  const oracle = await recomputeOracle();
-  if (oracle !== manifest.semantic_oracle_digest) {
-    throw new Error(
-      'REFUSED: semantic_oracle_digest drift — the checked-out oracle sources hash to ' +
-        `${oracle} but the committed manifest declares ${manifest.semantic_oracle_digest}. ` +
-        'Regenerate and re-attest before dispatching. Nothing was allocated or reserved.'
-    );
-  }
+  // produce evidence that is already known to be unusable. It catches strictly
+  // more than an expectation-hash check: a mutated dispatch-path file that is
+  // an enumerated oracle input drifts the digest even when every projected
+  // expectation is byte-identical.
+  //
+  // The comparison itself now lives in step 0b (`assertSuccessArtifactChain`
+  // performs exactly this test as the last link of the chain), so it is NOT
+  // repeated here — a second identical `if` would be dead code that reads like
+  // a live guard. What step 0b cannot express is the cohort binding, which is
+  // step 1b above. The manifest and digest are reused rather than re-read so
+  // the source tree is walked exactly once per command.
+  const manifest = anchors.manifest;
+  const oracle = anchors.oracleDigest;
 
   // 3 — the ATTESTED expectations must still be the COMMITTED expectations.
   // Derek attested specific bytes; a manifest edited since then is a different
@@ -1258,14 +1547,43 @@ async function cmdRunCorpus(args, store, overrides = {}) {
   return coordinateRun(store, args, spec, overrides);
 }
 
-export { cmdRunIr, cmdRunCorpus };
+// `cmdStatus` and `resolveCohortId` are exported for their tests: the
+// supersession contract is a property of the SHARED resolver every run/decide
+// command calls and of the VOID branch `status` prints, so pinning them anywhere
+// other than the real functions would pin a copy.
+export { cmdRunIr, cmdRunCorpus, cmdStatus, resolveCohortId };
 
+/**
+ * Report cohort state.
+ *
+ * Deliberately does NOT run the success-record phase gate the write commands
+ * run. `status` is the diagnostic an operator reaches for precisely WHEN
+ * something is wrong; a status that refused to print because the manifest had
+ * drifted would leave them with no way to see what drifted. It writes nothing,
+ * so there is nothing to protect.
+ */
 async function cmdStatus(args, store) {
   await assertBucketVersioned(store);
-  const ids = await findCohortIds(store);
-  const cohortId = args.cohort ?? (ids.length === 1 ? ids[0] : null);
-  if (!cohortId && ids.length > 1)
-    throw new Error(`multiple cohorts exist (${ids.join(', ')}) — pass --cohort`);
+  const supersession = await loadCohortSupersession(store);
+  const { superseded } = supersession;
+  const cohortId = resolveStatusCohortId(supersession, args.cohort ?? null);
+
+  // A superseded cohort is VOID: a source deploy re-anchored the chain, so its
+  // accumulated days do not count and it will never accrue another. Reported
+  // explicitly rather than folded, because folding it would print a
+  // qualifying-day count that reads like progress toward a gate it can no
+  // longer pass.
+  if (cohortId && superseded.has(cohortId)) {
+    const successor = superseded.get(cohortId);
+    console.log(`State: VOID (superseded by ${successor})`);
+    console.log('qualifying_days: 0');
+    console.log(
+      `Cohort ${cohortId} was re-anchored by a later deployment. Its accumulated evidence does ` +
+        `not count toward the gate and it accrues no further days. Run status against ${successor}.`
+    );
+    return;
+  }
+
   const state = await loadCohortState(store, cohortId);
   const manifest = expectationManifestContent();
   const oracle = await recomputeOracleDigest();
@@ -1305,6 +1623,13 @@ async function cmdStatus(args, store) {
   const generatedAtIso = new Date().toISOString();
   const { jsonPath, mdPath } = writeProjections(handoffDir, fold, { generatedAtIso });
   console.log(`State: ${fold.state}${fold.progress ? ` — ${fold.progress}` : ''}`);
+  if (superseded.size > 0) {
+    console.log(
+      `superseded (VOID, 0 days each): ${[...superseded.entries()]
+        .map(([from, to]) => `${from} → ${to}`)
+        .join(', ')}`
+    );
+  }
   if (fold.stale_deployment)
     console.log('STALE_DEPLOYMENT — live runtime does not match the cohort.');
   console.log(`Projections written: ${jsonPath}, ${mdPath}`);

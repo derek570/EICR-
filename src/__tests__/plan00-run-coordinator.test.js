@@ -22,6 +22,7 @@
  * capability seal — the fake lives inside the sealed dispatch, not around it.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -76,6 +77,48 @@ const FP = 'f'.repeat(64);
 const HEAD_SHA = 'a'.repeat(40);
 const ORACLE_DIGEST = REAL_MANIFEST.semantic_oracle_digest;
 
+// ── the 00B success-artifact anchor ───────────────────────────────────────
+//
+// The phase gate reads a machine-local `/ep` success record. Tests inject one
+// rather than depending on the operator's `~/.claude/handoffs` tree: the real
+// record is refreshed by each delivery, so a test that read it would go red on
+// every manifest regeneration for reasons that have nothing to do with the
+// code under test. What IS asserted against the real bytes is the manifest —
+// `MANIFEST_BYTES` below is the committed file, so a record claiming a
+// different sha still fails exactly as it would in production.
+const MANIFEST_BYTES = readFileSync(
+  path.join(REPO_ROOT, 'scripts/model-ab/plan00-expectation-manifest.json')
+);
+const MANIFEST_SHA256 = createHash('sha256').update(MANIFEST_BYTES).digest('hex');
+
+function successRecordFixture(overrides = {}) {
+  return {
+    schema_version: 1,
+    terminal_class: 'shipped',
+    plan: { sha256: '1'.repeat(64) },
+    merge_commit: '9'.repeat(40),
+    deploy: { result: 'success' },
+    artifacts: [
+      {
+        id: 'plan00_expectation_manifest',
+        path: 'scripts/model-ab/plan00-expectation-manifest.json',
+        sha256: MANIFEST_SHA256,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+/** The `successRecord` override block a passing call needs. */
+function passingSuccessRecord(extra = {}) {
+  return {
+    recordPath: '/test/PLAN-final.md.ep-success.json',
+    readRecord: () => successRecordFixture(),
+    readManifestBytes: () => MANIFEST_BYTES,
+    ...extra,
+  };
+}
+
 // ── cohort seeding ────────────────────────────────────────────────────────
 
 let clockMs = Date.parse('2026-08-10T09:00:00Z');
@@ -122,7 +165,7 @@ function stageABody(overrides = {}) {
  */
 async function establishCohort(
   store,
-  { at = '2026-08-09T08:00:00Z', stageA: stageAOverrides } = {}
+  { at = '2026-08-09T08:00:00Z', stageA: stageAOverrides, initBody: initOverrides } = {}
 ) {
   const { event: stageA } = await publishEventAt(store, {
     kind: 'stage_a_deployed',
@@ -159,6 +202,13 @@ async function establishCohort(
       cohort_fingerprint: fingerprint,
       stage_a_event_hash: evidenceEventHash(stageA.payload),
       expectations_event_hash: evidenceEventHash(attested.payload),
+      // The anchors `init-cohort` binds atomically with the stage-A hash. Step
+      // 1b of `assertRunPreconditions` requires exact equality against these, so
+      // omitting them here would refuse every seeded cohort — which is the
+      // production behaviour for a cohort that predates the binding.
+      manifest_artifact_sha256: MANIFEST_SHA256,
+      semantic_oracle_digest: ORACLE_DIGEST,
+      ...initOverrides,
     },
   });
   return { cohortId, stageA, attested };
@@ -202,6 +252,7 @@ function passingOverrides(extra = {}) {
     liveCheck: async () => ({ available: true, fingerprint_matches: true }),
     readHeadSha: async () => `${HEAD_SHA}\n`,
     readPorcelain: async () => '',
+    successRecord: passingSuccessRecord(),
     ...extra,
   };
 }
