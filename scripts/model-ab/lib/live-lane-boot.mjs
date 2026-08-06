@@ -230,36 +230,48 @@ export function wrapRecordingClient(client, { provider, recorder }) {
     throw new TypeError('wrapRecordingClient: recorder must expose record()');
   }
   const messages = client.messages;
-  const wrapped = {
-    ...client,
-    messages: {
-      ...messages,
-      async create(...args) {
-        try {
-          const response = await messages.create.apply(messages, args);
-          recorder.record({
-            provider,
-            callId: extractProviderCallId(response),
-            ok: true,
-          });
-          return response;
-        } catch (err) {
-          recorder.record({
-            provider,
-            callId: extractProviderCallId(err),
-            ok: false,
-            errorKind: classifyProviderError(err),
-          });
-          throw err;
-        }
-      },
-    },
+  // DELEGATE, never spread. Object spread copies OWN ENUMERABLE properties only,
+  // and a real SDK client keeps its whole surface on the PROTOTYPE: on
+  // `@anthropic-ai/sdk` the own keys of `client.messages` are just
+  // `['_client', 'batches']`, so `{...messages}` yields an object with neither
+  // `create` nor `stream`. Stage 6 dispatches via `client.messages.stream(...)`
+  // (`src/extraction/stage6-tool-loop.js`), so a spread wrapper made every live
+  // round throw `client.messages.stream is not a function` — the lane could not
+  // complete a single round. `Object.create` keeps the real prototype in the
+  // chain, so every unwrapped member reaches the caller and `this` still
+  // resolves to the SDK's own internals.
+  const wrappedMessages = Object.create(messages);
+  wrappedMessages.create = async function create(...args) {
+    try {
+      const response = await messages.create.apply(messages, args);
+      recorder.record({
+        provider,
+        callId: extractProviderCallId(response),
+        ok: true,
+      });
+      return response;
+    } catch (err) {
+      recorder.record({
+        provider,
+        callId: extractProviderCallId(err),
+        ok: false,
+        errorKind: classifyProviderError(err),
+      });
+      throw err;
+    }
   };
-  // `stream` is not on the live session's dispatch path (verified: the session
-  // only ever calls `messages.create`). It is carried through UNWRAPPED rather
-  // than deleted so a future caller gets the real method instead of a silent
-  // undefined — and a pin asserts the recorder saw a create-shaped call, so a
-  // future switch to `stream` fails loudly instead of recording nothing.
+  // Only `create` is recorded, and the live Stage-6 path uses `stream` — so on a
+  // live run the recorder observes NOTHING. That is tolerable ONLY because the
+  // recorder feeds no decision: the provider ids that reach the attempt record
+  // come from the `round_usage` rows (`scripts/model-ab/lib/lane-driver.mjs`),
+  // written by `src/extraction/round-usage-attribution.js` on the streaming path
+  // itself. The recorder is an unconsumed observability stub. Wrapping `stream`
+  // is deliberately NOT done here: its provider id only becomes available when
+  // the stream resolves, so recording at call time could only fabricate an `ok`
+  // verdict for a call that may still fail — and a fabricated verdict is exactly
+  // what this lane exists to make impossible.
+  const wrapped = Object.create(client);
+  wrapped.messages = wrappedMessages;
   return wrapped;
 }
 

@@ -494,6 +494,71 @@ describe('3 — provider call-id capture', () => {
     });
   });
 
+  // REGRESSION PIN. The wrapper was originally built with object spread, which
+  // copies OWN ENUMERABLE properties only. Every case above passes a plain
+  // object literal, so the spread looked correct — but a REAL SDK client keeps
+  // its surface on the PROTOTYPE (on `@anthropic-ai/sdk` the own keys of
+  // `client.messages` are `['_client','batches']`), so the spread produced a
+  // `messages` with neither `create` nor `stream`. Stage 6 dispatches through
+  // `client.messages.stream(...)`, so EVERY live round threw
+  // `client.messages.stream is not a function` and the lane could not complete
+  // a single round. This models the SDK's real shape: the methods are reachable
+  // only through the prototype chain.
+  test('wrapRecordingClient preserves a prototype-borne SDK surface (stream + this)', async () => {
+    const recorder = createProviderCallRecorder();
+    const streamCalls = [];
+    const createCalls = [];
+
+    class MessagesResource {
+      constructor(parent) {
+        this._client = parent;
+      }
+      async create(args) {
+        // Reads `this._client` so a broken `this` fails loudly rather than
+        // silently returning a wrong-shaped result.
+        createCalls.push({ args, viaClient: this._client.tag });
+        return { id: 'msg_proto' };
+      }
+      stream(args) {
+        streamCalls.push({ args, viaClient: this._client.tag });
+        return { kind: 'MessageStream' };
+      }
+    }
+    class FakeSdk {
+      constructor() {
+        this.tag = 'real-client';
+        this.messages = new MessagesResource(this);
+      }
+      baseURL() {
+        return 'https://api.example';
+      }
+    }
+    const client = new FakeSdk();
+    // The precondition that makes this test meaningful: nothing the wrapper
+    // needs is an own property of `messages`.
+    expect(Object.keys(client.messages)).toEqual(['_client']);
+
+    const wrapped = wrapRecordingClient(client, { provider: 'anthropic', recorder });
+
+    // The dispatch method Stage 6 actually calls must survive wrapping.
+    expect(typeof wrapped.messages.stream).toBe('function');
+    expect(wrapped.messages.stream({ model: 'm' })).toEqual({ kind: 'MessageStream' });
+    expect(streamCalls).toEqual([{ args: { model: 'm' }, viaClient: 'real-client' }]);
+
+    // …and so must the rest of the client's prototype surface.
+    expect(typeof wrapped.baseURL).toBe('function');
+
+    // `create` is still instrumented, and still runs against the REAL resource.
+    await expect(wrapped.messages.create({ model: 'm' })).resolves.toEqual({ id: 'msg_proto' });
+    expect(createCalls).toEqual([{ args: { model: 'm' }, viaClient: 'real-client' }]);
+    expect(recorder.ids()).toEqual(['msg_proto']);
+
+    // The underlying client is never mutated (the wrapper is a separate object).
+    expect(wrapped).not.toBe(client);
+    expect(Object.prototype.hasOwnProperty.call(client, 'messages')).toBe(true);
+    expect(client.messages.create).not.toBe(wrapped.messages.create);
+  });
+
   test('wrapRecordingClient refuses a client it cannot instrument', () => {
     const recorder = createProviderCallRecorder();
     expect(() => wrapRecordingClient(null, { provider: 'anthropic', recorder })).toThrow(
