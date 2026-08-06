@@ -128,3 +128,6 @@ voice-regression-report.md
 .field-replay-drafts/
 tests/fixtures/field-replay-corpus/**/*.review.json
 *.manifest.json
+
+# Codex CLI session scratch (tool state, not project content)
+.codex/
