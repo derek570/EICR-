@@ -970,6 +970,32 @@ export const PARTIAL_FAILURE_FAMILIES = Object.freeze({
     (t) => `Couldn't record ${t.fieldLabel} for ${t.subjectLower}.`,
     (t) => `${t.subject} ${t.wasWere} updated — ${t.fieldLabel} didn't go in for ${t.pronoun}.`,
   ]),
+  // 2026-08-06 — `validateBoardScope` rejected the write because the call named
+  // a board other than the one selected. Until now this class spoke NOTHING: a
+  // structurally complete dictated reading was dropped in silence, which is the
+  // exact breach of Audio-First invariant #2 that cost a live Zs in the field
+  // (session 10A27714…, turn-10). It is deliberately NOT folded into
+  // `circuit_not_found` — the circuit very probably DOES exist, just on another
+  // board, so those variants would be a false statement about the installation.
+  //
+  // Every variant names the CAUSE and the RECOVERY, because unlike a missing
+  // circuit the inspector can fix this in one breath by saying which board they
+  // are on. The board is never NAMED: the only descriptor these templates get is
+  // the target/field grammar, and inventing a designation here would risk
+  // speaking the wrong board's name — worse than speaking none.
+  //
+  // Every variant interpolates `fieldLabel`, and not merely for house style: the
+  // §5.A1 leak-safety invariant requires it, and the §5.A6b collision pins mean
+  // a label-less variant would render two DIFFERENT fields as identical bytes,
+  // folding two live identities onto one line inside the 30 s dedupe window.
+  wrong_board: Object.freeze([
+    (t) =>
+      `No ${t.fieldLabel} recorded for ${t.subjectLower} — that's on a different board to the one I'm on. Tell me which board, then say it again.`,
+    (t) =>
+      `${t.fieldLabel} for ${t.subjectLower} was aimed at another board, so nothing went in. Say which board you're on and repeat it.`,
+    (t) =>
+      `I'm on a different board, so ${t.fieldLabel} didn't go in for ${t.subjectLower}. Switch board first, then say it again.`,
+  ]),
   // PLAN-2B §3.3 — a no-match designation span inside an otherwise-successful
   // multi-description answer. The raw dictated span is deliberately absent:
   // only the server-owned one-based segment ordinal reaches these templates.
@@ -1184,6 +1210,8 @@ export const PARTIAL_FAILURE_TERMINALS = Object.freeze({
     `I still haven't got the ${t.fieldLabel} for ${t.subjectLower} — attempt ${n}; try saying just the number on its own.`,
   write_failed: (t, n) =>
     `That's attempt ${n} — ${t.fieldLabel} still hasn't saved for ${t.subjectLower}.`,
+  wrong_board: (t, n) =>
+    `Attempt ${n}, and ${t.fieldLabel} for ${t.subjectLower} is still going to a board I'm not on — name the board before the value.`,
   designation_no_match: (t, n) =>
     `That's attempt ${n} — I still can't match ${t.subjectLower}, and ${t.fieldLabel} remains unrecorded for ${t.pronoun}.`,
 });

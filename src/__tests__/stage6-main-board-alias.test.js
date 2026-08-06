@@ -232,6 +232,17 @@ describe('record_reading — the exact field regression', () => {
     expect(out.error.code).toBe('wrong_board');
     expect(session.stateSnapshot.circuits[`${SUB_UUID}::2`].measured_zs_ohm).toBeUndefined();
     expect(p.readings.size).toBe(0);
+
+    // …but it is no longer SILENT. A genuine cross-board write must still be
+    // refused, and the inspector must hear that it was refused — otherwise the
+    // canonicalisation above has merely narrowed the silent-loss window rather
+    // than closing it. The rejection stages a `wrong_board` partial-failure
+    // notice (its own accumulator, per plan 2A §3.1's structural separation).
+    expect(p.partialFailureNotices).toHaveLength(1);
+    expect(p.partialFailureNotices[0]).toMatchObject({
+      reason: 'wrong_board',
+      producer: 'record_reading_wrong_board',
+    });
   });
 });
 

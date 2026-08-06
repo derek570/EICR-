@@ -503,21 +503,33 @@ export async function dispatchRecordReading(call, ctx) {
       validation_error: err,
       input_summary: { field: input.field, circuit: input.circuit },
     });
-    // Plan 2A channel 1 — the id-112 mechanism. `circuit_not_found` ONLY:
-    // `validateBoardScope` runs first and its `wrong_board` outcome is a
-    // DIFFERENT class (the circuit may well exist, on another board), so
-    // "circuit N wasn't found" would be a false statement about the
-    // installation. Every other `validateRecordReading` code
-    // (`value_out_of_range` etc.) is a value-shaped rejection the model can
-    // and does re-ask about, and is deliberately left to it — a notice there
-    // would double up on the model's own clarification.
-    if (err.code === 'circuit_not_found') {
+    // Plan 2A channel 1 — the id-112 mechanism. TWO classes speak, each under
+    // its OWN family, because they are different statements about the world:
+    //
+    //   * `circuit_not_found` — the circuit is not on the board being written
+    //     to.
+    //   * `wrong_board` — `validateBoardScope` runs first; the circuit may well
+    //     exist, just on another board. Saying "circuit N wasn't found" here
+    //     would be a false statement about the installation, which is why this
+    //     is a separate family rather than a shared one.
+    //
+    // `wrong_board` spoke NOTHING until 2026-08-06, and that silence cost a
+    // live dictated Zs in the field (session 10A27714…, turn-10: rejected at
+    // round 1, never retried, and the turn's only speech was an unrelated
+    // no-op "Switched board"). A structurally complete reading that vanishes
+    // without a word is the exact breach of Audio-First invariant #2.
+    //
+    // Every other `validateRecordReading` code (`value_out_of_range` etc.) is a
+    // value-shaped rejection the model can and does re-ask about, and is
+    // deliberately left to it — a notice there would double up on the model's
+    // own clarification.
+    if (err.code === 'circuit_not_found' || err.code === 'wrong_board') {
       stageCircuitPartialFailure(ctx, {
-        reason: 'circuit_not_found',
+        reason: err.code,
         field: input.field,
         circuit: input.circuit,
         boardId: input.board_id,
-        producer: 'record_reading_circuit_not_found',
+        producer: `record_reading_${err.code}`,
       });
     }
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
