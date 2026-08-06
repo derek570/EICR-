@@ -264,6 +264,13 @@ export async function runToolLoop({
   provider,
   openAIServiceTier,
   openAIReasoningEffort,
+  /**
+   * Plan 00B live-lane C5 — 'observation' when the CALLER already decided this
+   * whole loop is an observation-tier turn, else 'reading'. Threaded, never
+   * re-derived: the loop cannot see the classifier, and re-inferring the kind
+   * from model/tier is exactly the proxy defect the discriminator closes.
+   */
+  turnKind = null,
   system,
   messages,
   tools,
@@ -634,6 +641,15 @@ export async function runToolLoop({
         // carries none, so the anthropic transport is attributed here.
         apiTransport:
           assistantMsg.api_transport ?? (provider === 'openai' ? null : 'anthropic_messages'),
+        // Plan 00B-4 §C1c — the provider's own opaque call id for this
+        // round. Both OpenAI adapters stamp it onto the same `id` carrier
+        // key the Anthropic SDK message already populates natively, so one
+        // read covers every transport with no provider branch here.
+        providerCallId: assistantMsg.id ?? null,
+        // Plan 00B live-lane C5 — the caller's already-computed loop kind.
+        // Every round of one loop shares it: the observation decision is made
+        // once, before the loop runs, and cannot change mid-loop.
+        turnKind,
         promptCache: {
           mode: assistantMsg.prompt_cache?.mode ?? null,
           breakpoint_enabled: assistantMsg.prompt_cache?.breakpoint_enabled ?? false,

@@ -22,6 +22,9 @@
 
 import { describe, test, expect } from '@jest/globals';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createMemoryStore } from '../../scripts/plan00-evidence/lib/memory-store.mjs';
 import {
@@ -50,6 +53,10 @@ import { foldEvidence } from '../../scripts/plan00-evidence/lib/fold.mjs';
 import { computeFold } from '../../scripts/plan00-evidence/lib/fold-runner.mjs';
 import { collectSessionManifests } from '../../scripts/plan00-evidence/lib/collector.mjs';
 import {
+  collectNonSafetyDeferralTargets,
+  resolveDeferralTarget,
+} from '../../scripts/plan00-evidence/lib/deferral-targets.mjs';
+import {
   proveTaskRolePrefixAccessViaIam,
   verifyTrustedDeploy,
 } from '../../scripts/plan00-evidence/lib/deployment.mjs';
@@ -58,6 +65,8 @@ import {
   canonicalBytes,
   evidenceEventHash,
 } from '../../scripts/field-replay/lib/canonical-crypto.mjs';
+
+const repoRootForC4 = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const COHORT = 'cohort-test0000000001';
 const FP = 'f'.repeat(64);
@@ -292,6 +301,9 @@ function inspectorRound(overrides = {}) {
   return {
     provider: 'openai',
     api_transport: 'responses',
+    // 00B live-lane C5 — an ordinary reading loop; the Terra gate must NOT
+    // credit one, whatever its model/effort/tier say.
+    turn_kind: 'reading',
     requested_model: 'gpt-5.6-luna',
     requested_tier: 'fast',
     response_model: 'gpt-5.6-luna',
@@ -318,6 +330,11 @@ function inspectorRound(overrides = {}) {
 
 function terraRound(overrides = {}) {
   return inspectorRound({
+    // 00B live-lane C5 — a Terra ROUND is only observation evidence when the
+    // harness actually routed the loop to the observation tier; the helper
+    // models that routed loop, and the pins below flip it to prove the gate
+    // consumes the discriminator rather than re-inferring it from the model.
+    turn_kind: 'observation',
     requested_model: 'gpt-5.6-terra',
     response_model: 'gpt-5.6-terra',
     billing_model: 'gpt-5.6-terra',
@@ -1253,7 +1270,7 @@ describe('E — semantic classification after structural validity', () => {
       modelLane: 'luna',
       corpusRunOrdinal: 1,
       fixtureId: 'fx1',
-      mismatch: { mismatch_id: 'mm_1', safety_critical: false },
+      mismatch: { mismatch_id: 'mm_1', mismatch_kind: 'wrong_value', safety_critical: false },
       at: '2026-08-10T09:00:00Z',
     });
     let fold = await foldNow(store, cohortId);
@@ -1284,7 +1301,7 @@ describe('E — semantic classification after structural validity', () => {
       modelLane: 'luna',
       corpusRunOrdinal: 1,
       fixtureId: 'fx2',
-      mismatch: { mismatch_id: 'mm_2', safety_critical: false },
+      mismatch: { mismatch_id: 'mm_2', mismatch_kind: 'operation_missing', safety_critical: false },
       at: '2026-08-10T10:00:00Z',
     });
     await publishEventAt(store, {
@@ -1316,7 +1333,7 @@ describe('E — semantic classification after structural validity', () => {
       modelLane: 'haiku',
       corpusRunOrdinal: 1,
       fixtureId: 'fx1',
-      mismatch: { mismatch_id: 'mm_s', safety_critical: true },
+      mismatch: { mismatch_id: 'mm_s', mismatch_kind: 'extra_mutation', safety_critical: true },
       at: '2026-08-10T09:00:00Z',
     });
     const fold = await foldNow(store, cohortId);
@@ -1620,6 +1637,27 @@ describe('G — per-day route/cache/family/IR/corpus gates', () => {
     expect(day.requirements.terra_observation_round).toBe(false);
   });
 
+  // 00B live-lane C5 — the Terra gate consumes the harness's OWN observation
+  // decision, not a model/effort/tier proxy. These pins flip ONLY turn_kind on
+  // an otherwise-perfect Terra row: if the gate ever went back to inferring the
+  // kind from model+effort+tier, every one of them would go green and the
+  // discriminator would be dead weight.
+  test.each([
+    ['a reading loop', 'reading'],
+    ['an absent value', null],
+    ['a wrong-case near miss', 'Observation'],
+    ['a near-miss token', 'observation_tier'],
+  ])('%s never satisfies the Terra observation gate', async (_label, turnKind) => {
+    const day = await dayFold({
+      evidence: {
+        round_usage: {
+          rounds: [inspectorRound(), terraRound({ turn_kind: turnKind })],
+        },
+      },
+    });
+    expect(day.requirements.terra_observation_round).toBe(false);
+  });
+
   test('keepalive / orphan-review / legacy rows NEVER count for any gate', async () => {
     const day = await dayFold({
       evidence: {
@@ -1732,9 +1770,11 @@ describe('G — per-day route/cache/family/IR/corpus gates', () => {
     });
     fold = await foldNow(store, cohortId);
     day = fold.day_evaluations.find((d) => d.day === '2026-08-10');
-    // Unclassified targets default to safety-critical: a whole attested
-    // fixture is NEVER deferrable, so the lane stays incomplete and the
-    // decision itself is held invalid.
+    // C4 made whole fixtures deferrable — but ONLY when the bound manifest
+    // explicitly classifies them `safety_critical: false`. This manifest
+    // carries no `fixtures[]` block at all, so `fx2` is UNCLASSIFIED, which
+    // defaults to safety-critical: the lane stays incomplete and the decision
+    // itself is held invalid. (Group M exercises the classified cases.)
     expect(day.requirements.corpus_luna).toBe(false);
     expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
   });
@@ -2754,7 +2794,7 @@ describe('K — cycle-2: cohort-wide single-use + reports + decisions', () => {
       modelLane: 'luna',
       corpusRunOrdinal: 1,
       fixtureId: 'fx1',
-      mismatch: { mismatch_id: 'mm_rr', safety_critical: false },
+      mismatch: { mismatch_id: 'mm_rr', mismatch_kind: 'wrong_value', safety_critical: false },
       at: '2026-08-10T09:00:00Z',
     });
     for (const decision of ['rejected', 'approved']) {
@@ -2799,7 +2839,7 @@ describe('K — cycle-2: cohort-wide single-use + reports + decisions', () => {
       modelLane: 'luna',
       corpusRunOrdinal: 1,
       fixtureId: 'fx1',
-      mismatch: { mismatch_id: 'mm_early', safety_critical: false },
+      mismatch: { mismatch_id: 'mm_early', mismatch_kind: 'wrong_value', safety_critical: false },
       at: '2026-08-10T09:00:00Z',
     });
     const fold = await foldNow(store, cohortId);
@@ -2863,7 +2903,7 @@ describe('L — cycle-6: exact report schema, strict ids, rollout mixing', () =>
     expect(
       validateAttemptReport({
         ...base,
-        mismatch: { mismatch_id: 'x', safety_critical: false },
+        mismatch: { mismatch_id: 'x', mismatch_kind: 'wrong_value', safety_critical: false },
       }).some((p) => p.code === 'report_pass_with_mismatch')
     ).toBe(true);
     expect(validateAttemptReport({ ...base, mismatch: null })).toEqual([]);
@@ -3002,5 +3042,967 @@ describe('L — cycle-6: exact report schema, strict ids, rollout mixing', () =>
     await publishDurable(store, { key, bytes: canonicalBytes(badBody) });
     const fold = await foldNow(store, cohortId);
     expect(fold.holds.some((h) => h.code === 'ordinal_reservation_malformed')).toBe(true);
+  });
+});
+
+// ═══ M. C4 — per-fixture safety classification + deferral targets ═════════
+
+describe('M — C4: per-fixture safety_critical classification governs deferrals', () => {
+  // The manifest a C4 cohort is bound to now carries a per-fixture
+  // classification alongside the bare id list. The three sha256 values are
+  // IDENTICAL to EXPECTATION_MANIFEST's, so establishCohort's fingerprint
+  // still binds — only the classification vocabulary is added.
+  function manifestWith(fixtures, strata = []) {
+    return {
+      ...EXPECTATION_MANIFEST,
+      vendor_live_expectations: {
+        ...EXPECTATION_MANIFEST.vendor_live_expectations,
+        fixtures,
+      },
+      strata_named_gaps: strata,
+    };
+  }
+
+  // fx1 safety-critical, fx2 explicitly reviewed non-safety.
+  const CLASSIFIED = manifestWith([
+    { corpus_id: 'fx1', safety_critical: true },
+    { corpus_id: 'fx2', safety_critical: false },
+  ]);
+
+  async function foldWith(store, cohortId, expectationManifest) {
+    return computeFold(store, {
+      cohortId,
+      expectationManifest,
+      recomputedOracleDigest: EXPECTATION_MANIFEST.semantic_oracle_digest,
+      liveDeployment: LIVE_OK,
+    });
+  }
+
+  async function approveGap(store, cohortId, target) {
+    await publishEventAt(store, {
+      kind: 'corpus_gap_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        stratum_or_fixture: target,
+        decision: 'approved',
+        safety_critical: false,
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+  }
+
+  // ── the shared rule itself (the ONE function both gates call) ──────────
+
+  describe('the shared rule — lib/deferral-targets.mjs', () => {
+    test('a target is deferrable ONLY when explicitly classified safety_critical:false', () => {
+      // All four classification cases, on BOTH carriers. Anything that is not
+      // an explicit `false` is UNCLASSIFIED and therefore safety-critical.
+      const m = manifestWith(
+        [
+          { corpus_id: 'fx-false', safety_critical: false },
+          { corpus_id: 'fx-true', safety_critical: true },
+          { corpus_id: 'fx-missing' },
+          { corpus_id: 'fx-weird', safety_critical: 'no' },
+        ],
+        [
+          { stratum: 's-false', safety_critical: false },
+          { stratum: 's-true', safety_critical: true },
+          { stratum: 's-missing' },
+          { stratum: 's-weird', safety_critical: 0 },
+        ]
+      );
+      expect([...collectNonSafetyDeferralTargets(m)].sort()).toEqual(['fx-false', 's-false']);
+
+      expect(resolveDeferralTarget(m, 'fx-false')).toEqual({
+        known: true,
+        kind: 'fixture',
+        deferrable: true,
+      });
+      expect(resolveDeferralTarget(m, 's-false')).toEqual({
+        known: true,
+        kind: 'stratum',
+        deferrable: true,
+      });
+      for (const t of ['fx-true', 'fx-missing', 'fx-weird', 's-true', 's-missing', 's-weird']) {
+        const r = resolveDeferralTarget(m, t);
+        expect(r.known).toBe(true);
+        expect(r.deferrable).toBe(false);
+      }
+      // Unknown ids are distinguishable from known-but-safety-critical ones
+      // so the CLI can say WHY it refused, but neither is deferrable.
+      expect(resolveDeferralTarget(m, 'nope')).toEqual({
+        known: false,
+        kind: null,
+        deferrable: false,
+      });
+    });
+
+    test('a fixture in fixture_ids but ABSENT from fixtures[] is unclassified, never deferrable', () => {
+      // The pre-C4 manifest shape: ids listed, no classification block. It
+      // must stay fail-closed rather than becoming implicitly waivable.
+      expect(collectNonSafetyDeferralTargets(EXPECTATION_MANIFEST).size).toBe(0);
+      expect(resolveDeferralTarget(EXPECTATION_MANIFEST, 'fx2')).toEqual({
+        known: false,
+        kind: null,
+        deferrable: false,
+      });
+    });
+
+    test('a null/empty manifest defers nothing rather than throwing', () => {
+      expect(collectNonSafetyDeferralTargets(null).size).toBe(0);
+      expect(collectNonSafetyDeferralTargets({}).size).toBe(0);
+      expect(resolveDeferralTarget(null, 'anything').deferrable).toBe(false);
+    });
+  });
+
+  // ── the CLI mint-time gate calls the SAME rule (no second copy) ────────
+
+  describe('the CLI mint gate shares the rule (drift is structurally impossible)', () => {
+    const cliSrc = fs.readFileSync(
+      path.join(repoRootForC4, 'scripts', 'plan00-evidence', 'cli.mjs'),
+      'utf8'
+    );
+    const foldSrc = fs.readFileSync(
+      path.join(repoRootForC4, 'scripts', 'plan00-evidence', 'lib', 'fold.mjs'),
+      'utf8'
+    );
+
+    test('both consumers import from lib/deferral-targets.mjs and hand-roll nothing', () => {
+      expect(cliSrc).toContain("from './lib/deferral-targets.mjs'");
+      expect(cliSrc).toContain('resolveDeferralTarget(manifest, args.target)');
+      expect(foldSrc).toContain("from './deferral-targets.mjs'");
+      expect(foldSrc).toContain('collectNonSafetyDeferralTargets(expectationManifest)');
+      // If either grew its own classification test again, the CLI could mint
+      // an event the fold then rejects — the exact drift C4 removes.
+      expect(cliSrc).not.toMatch(/safety_critical === false/);
+    });
+
+    test('against the REAL committed manifest the CLI refuses every safety-critical fixture', () => {
+      const real = JSON.parse(
+        fs.readFileSync(
+          path.join(repoRootForC4, 'scripts', 'model-ab', 'plan00-expectation-manifest.json'),
+          'utf8'
+        )
+      );
+      const deferrable = collectNonSafetyDeferralTargets(real);
+      for (const id of real.vendor_live_expectations.fixture_ids) {
+        const classified = real.vendor_live_expectations.fixtures.find((f) => f.corpus_id === id);
+        expect(typeof classified.safety_critical).toBe('boolean');
+        expect(deferrable.has(id)).toBe(classified.safety_critical === false);
+      }
+      // Not a hypothetical split: the review classified some of each.
+      expect(deferrable.size).toBeGreaterThan(0);
+      expect(deferrable.size).toBeLessThan(real.vendor_live_expectations.fixture_ids.length);
+    });
+  });
+
+  // ── the fold admission gate, all four classification cases ─────────────
+
+  test('an APPROVED deferral of a non-safety fixture subtracts it from the completeness gate', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx1`,
+      requirementClass: 'vendor_corpus',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx1',
+      at: '2026-08-10T09:00:00Z',
+    });
+    // Without the deferral the run is incomplete (fx2 never ran)…
+    let fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.day_evaluations.find((d) => d.day === '2026-08-10').requirements.corpus_luna).toBe(
+      false
+    );
+
+    await approveGap(store, cohortId, 'fx2');
+    fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(false);
+    expect(fold.day_evaluations.find((d) => d.day === '2026-08-10').requirements.corpus_luna).toBe(
+      true
+    );
+  });
+
+  test('a SAFETY-CRITICAL fixture target is INVALID at the fold and excuses nothing', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await approveGap(store, cohortId, 'fx1');
+    const fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
+    expect(fold.day_evaluations.find((d) => d.day === '2026-08-10')).toBeUndefined();
+  });
+
+  test('an UNCLASSIFIED fixture (absent, or a non-boolean flag) is INVALID at the fold', async () => {
+    for (const fixtures of [
+      [{ corpus_id: 'fx1', safety_critical: true }], // fx2 absent entirely
+      [
+        { corpus_id: 'fx1', safety_critical: true },
+        { corpus_id: 'fx2', safety_critical: 'no' },
+      ],
+    ]) {
+      const store = createMemoryStore();
+      const { cohortId } = await establishCohort(store);
+      await approveGap(store, cohortId, 'fx2');
+      const fold = await foldWith(store, cohortId, manifestWith(fixtures));
+      expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
+    }
+  });
+
+  test('a decision whose OWN payload claims safety_critical:true is INVALID even for a non-safety target', async () => {
+    // Belt and braces: the manifest classification is authoritative, but a
+    // self-declared safety-critical deferral is refused outright rather than
+    // silently overridden by the manifest.
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishEventAt(store, {
+      kind: 'corpus_gap_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        stratum_or_fixture: 'fx2',
+        decision: 'approved',
+        safety_critical: true,
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+    const fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(true);
+  });
+
+  // ── deferral ↔ mismatch: a fixture that RAN and FAILED is not covered ──
+
+  test('an approved-deferred fixture that nonetheless FAILED still HOLDs until decide-mismatch runs', async () => {
+    // A deferral covers ABSENT or INVALID work. Work that ran and produced a
+    // non-safety FAIL is a real mismatch and needs its OWN decision — the
+    // deferral must not launder it away.
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx1`,
+      requirementClass: 'vendor_corpus',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx1',
+      at: '2026-08-10T09:00:00Z',
+    });
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx2`,
+      requirementClass: 'vendor_corpus',
+      verdict: 'FAIL',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx2',
+      mismatch: { mismatch_id: 'mm_c4', mismatch_kind: 'wrong_value', safety_critical: false },
+      at: '2026-08-10T09:30:00Z',
+    });
+    await approveGap(store, cohortId, 'fx2');
+
+    let fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'undecided_non_safety_mismatch')).toBe(true);
+    expect(fold.state).toBe('HOLD_EVIDENCE');
+
+    await publishEventAt(store, {
+      kind: 'non_safety_decision',
+      cohortId,
+      namespace: 'derek',
+      body: {
+        mismatch_id: 'mm_c4',
+        decision: 'approved',
+        reviewer: 'Derek',
+        decided_at: new Date(clockMs).toISOString(),
+      },
+    });
+    fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.holds.some((h) => h.code === 'undecided_non_safety_mismatch')).toBe(false);
+    expect(fold.notes.some((n) => n.code === 'approved_non_safety_mismatch')).toBe(true);
+  });
+
+  test('an approved-deferred fixture with a SAFETY-CRITICAL FAIL is still BLOCKED', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await publishAttempt(store, {
+      cohortId,
+      requirementKey: `corpus:${cohortId}:luna:run-1:fx2`,
+      requirementClass: 'vendor_corpus',
+      verdict: 'FAIL',
+      modelLane: 'luna',
+      corpusRunOrdinal: 1,
+      fixtureId: 'fx2',
+      mismatch: { mismatch_id: 'mm_c4s', mismatch_kind: 'extra_mutation', safety_critical: true },
+      at: '2026-08-10T09:30:00Z',
+    });
+    await approveGap(store, cohortId, 'fx2');
+    const fold = await foldWith(store, cohortId, CLASSIFIED);
+    expect(fold.blocks.some((b) => b.code === 'semantic_safety_fail')).toBe(true);
+    expect(fold.state).toBe('BLOCKED');
+  });
+
+  test('a manifest-named non-safety STRATUM still defers (C4 widens, never narrows)', async () => {
+    const store = createMemoryStore();
+    const { cohortId } = await establishCohort(store);
+    await approveGap(store, cohortId, 'multi_board_routing');
+    const fold = await foldWith(
+      store,
+      cohortId,
+      manifestWith(
+        [{ corpus_id: 'fx1', safety_critical: true }],
+        [{ stratum: 'multi_board_routing', safety_critical: false }]
+      )
+    );
+    expect(fold.holds.some((h) => h.code === 'corpus_gap_decision_invalid')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// N — 00B-4 §C1a: the executor→runner translation layer.
+//
+// The judge returns `{verdict, reason, mismatches: [...]}` — PLURAL and
+// free-form-bearing. `runReservedAttempt` consumes a SINGULAR, CLOSED
+// `outcome.mismatch`. Forwarding one as the other does not fail loudly: the
+// runner's whitelist normaliser drops everything it does not name and the
+// attempt terminates with no usable mismatch, which the fold reads as
+// `unclassified_mismatch_fail` — an IRREVERSIBLE block on an append-only
+// stream, indistinguishable from a genuine unclassifiable safety failure.
+// These pins hold the seam that keeps the two shapes different.
+// ─────────────────────────────────────────────────────────────────────────
+describe('N — C1a: the executor→runner translation layer', () => {
+  // Real corpus ids from the attested C4 classification, so the safety
+  // resolution under test is the SHIPPED one, not a test-local fiction.
+  const NON_SAFETY_FIXTURE = 'frc_85ace7677d0e1c4a7b2f3609e5d1a8c4';
+  const SAFETY_FIXTURE = 'frc_51be8bece8e63330a2f0daf78220af92';
+
+  const MINT_INPUTS = {
+    cohortId: 'cohort-c1a0000000001',
+    requirementKey: 'corpus:cohort-c1a0000000001:luna:run-1:fx2',
+    attemptGeneration: 1,
+    mismatchKind: 'wrong_value',
+  };
+
+  async function loadTranslation() {
+    return import('../../scripts/plan00-evidence/lib/executor-translation.mjs');
+  }
+
+  // ── mismatch_id (opaque, structural) vs mismatch_kind (closed vocab) ────
+
+  describe('mismatch_id and mismatch_kind are two different things', () => {
+    test('mintMismatchId is deterministic and scoped by every identity input', async () => {
+      const { mintMismatchId } = await loadTranslation();
+      const base = mintMismatchId(MINT_INPUTS);
+      // Deterministic: a frozen judge result must yield the SAME id on every
+      // run, or a re-fold would strand the decide-mismatch record Derek
+      // already published against the old id.
+      expect(mintMismatchId(MINT_INPUTS)).toBe(base);
+
+      // Every identity input is load-bearing. Generation especially: a
+      // decision about generation 1 must not silently pre-clear generation 2.
+      const perturbations = [
+        { ...MINT_INPUTS, attemptGeneration: 2 },
+        { ...MINT_INPUTS, mismatchKind: 'extra_mutation' },
+        { ...MINT_INPUTS, cohortId: 'cohort-c1a0000000002' },
+        { ...MINT_INPUTS, requirementKey: `${MINT_INPUTS.requirementKey}x` },
+      ];
+      for (const p of perturbations) expect(mintMismatchId(p)).not.toBe(base);
+      expect(new Set(perturbations.map(mintMismatchId)).size).toBe(perturbations.length);
+    });
+
+    test('a minted id carries no PII and is opaque (structural validation only)', async () => {
+      const { mintMismatchId, isWellFormedMismatchId, MISMATCH_ID_LENGTH } =
+        await loadTranslation();
+      const id = mintMismatchId(MINT_INPUTS);
+      expect(id).toHaveLength(MISMATCH_ID_LENGTH);
+      expect(isWellFormedMismatchId(id)).toBe(true);
+      // Opaque: none of the inputs are recoverable from the id, and in
+      // particular the discriminator does not appear in it — which is WHY no
+      // validator can recompute it and the check must stay structural.
+      expect(id).not.toContain('wrong_value');
+      expect(id).not.toContain('luna');
+      expect(id).not.toContain(MINT_INPUTS.cohortId);
+    });
+
+    test('isWellFormedMismatchId checks SHAPE only — never membership', async () => {
+      const { isWellFormedMismatchId, MISMATCH_ID_LENGTH } = await loadTranslation();
+      for (const bad of [
+        'mm_1',
+        '',
+        'Z'.repeat(MISMATCH_ID_LENGTH), // right length, wrong charset
+        'a'.repeat(MISMATCH_ID_LENGTH - 1),
+        'a'.repeat(MISMATCH_ID_LENGTH + 1),
+        null,
+        42,
+        undefined,
+      ]) {
+        expect(isWellFormedMismatchId(bad)).toBe(false);
+      }
+      // A well-formed id says NOTHING about the kind beside it: the two live
+      // on separate axes by construction.
+      expect(isWellFormedMismatchId('a'.repeat(MISMATCH_ID_LENGTH))).toBe(true);
+    });
+
+    test('the id check and the kind check are independent — neither stands in for the other', async () => {
+      const { validateAttemptReport } =
+        await import('../../scripts/plan00-evidence/lib/events.mjs');
+      const report = (mismatch) => ({
+        schema_version: 1,
+        kind: 'attempt_report',
+        requirement_key: 'r',
+        attempt_generation: 1,
+        verdict: 'FAIL',
+        provider_call_ids: ['p1'],
+        mismatch,
+      });
+
+      // A perfectly-shaped id with an OFF-VOCABULARY kind fails on the KIND
+      // code only — the structural id check cannot see it.
+      const badKind = validateAttemptReport(
+        report({
+          mismatch_id: 'a'.repeat(32),
+          mismatch_kind: 'brand_new_class',
+          safety_critical: false,
+        })
+      );
+      expect(badKind.map((p) => p.code)).toEqual(['report_mismatch_kind_unknown']);
+
+      // A valid vocabulary member with a MISSING id fails on the ID code only.
+      const badId = validateAttemptReport(
+        report({ mismatch_id: '', mismatch_kind: 'wrong_value', safety_critical: false })
+      );
+      expect(badId.map((p) => p.code)).toEqual(['report_mismatch_id']);
+    });
+  });
+
+  // ── the MISMATCH_ALLOWED_KEYS widening is load-bearing (RED-first) ──────
+
+  describe('the allow-list widening is load-bearing', () => {
+    test('the PRE-widening allow-list would have REJECTED mismatch_kind', async () => {
+      const { validateAttemptReport } =
+        await import('../../scripts/plan00-evidence/lib/events.mjs');
+      const mismatch = {
+        mismatch_id: 'a'.repeat(32),
+        mismatch_kind: 'wrong_value',
+        safety_critical: false,
+      };
+      // Reconstruct the pre-C1a allow-list and prove the new key is an extra
+      // under it. Without the widening, every classified FAIL would have
+      // terminated `report_schema_invalid:report_mismatch_extra_key`.
+      const PRE_C1A_ALLOWED = ['mismatch_id', 'safety_critical'];
+      const extras = Object.keys(mismatch).filter((k) => !PRE_C1A_ALLOWED.includes(k));
+      expect(extras).toEqual(['mismatch_kind']);
+
+      // Under the SHIPPED allow-list the same object validates clean.
+      expect(
+        validateAttemptReport({
+          schema_version: 1,
+          kind: 'attempt_report',
+          requirement_key: 'r',
+          attempt_generation: 1,
+          verdict: 'FAIL',
+          provider_call_ids: ['p1'],
+          mismatch,
+        })
+      ).toEqual([]);
+    });
+
+    test('a STORED attempt_terminal carrying a kind-less mismatch is rejected', async () => {
+      // The report validator alone is not enough — a terminal is a separate
+      // persisted row and must be governed by the same closed shape, or a
+      // hand-published event could seed an unclassifiable mismatch directly.
+      const event = buildEvent({
+        kind: 'attempt_terminal',
+        cohortId: COHORT,
+        namespace: 'machine',
+        body: {
+          requirement_key: 'r',
+          verdict: 'FAIL',
+          mismatch: { mismatch_id: 'a'.repeat(32), safety_critical: false },
+        },
+      });
+      const problems = validateStoredEvent({ key: event.key, payload: event.payload });
+      expect(problems.some((p) => p.code === 'terminal_mismatch_kind')).toBe(true);
+    });
+
+    test('the closed vocabulary is bound into eventSchemaHash (a vocab edit is cohort drift)', async () => {
+      const { MISMATCH_KINDS } = await import('../../scripts/plan00-evidence/lib/constants.mjs');
+      // The live hash must differ from one computed over a DIFFERENT
+      // vocabulary — i.e. the vocabulary genuinely participates. If a future
+      // edit dropped `mismatch_kinds` from the schema hash, an existing cohort
+      // would silently accept discriminators it was never attested against.
+      const withDifferentVocab = evidenceEventHash({
+        mismatch_kinds: [...MISMATCH_KINDS, 'invented_kind'],
+      });
+      const withLiveVocab = evidenceEventHash({ mismatch_kinds: [...MISMATCH_KINDS] });
+      expect(withDifferentVocab).not.toBe(withLiveVocab);
+      expect(typeof eventSchemaHash()).toBe('string');
+    });
+  });
+
+  // ── translateJudgeResult ───────────────────────────────────────────────
+
+  describe('translateJudgeResult', () => {
+    const ctx = (corpusId) => ({ ...MINT_INPUTS, corpusId });
+
+    test('a classified FAIL resolves safety from the ATTESTED C4 map, fail-closed', async () => {
+      const { translateJudgeResult, mintMismatchId } = await loadTranslation();
+      const judge = { verdict: 'FAIL', reason: 'x', mismatches: [{ class: 'wrong_value' }] };
+
+      // Reviewed non-safety fixture → decisionable.
+      const nonSafety = translateJudgeResult(judge, ctx(NON_SAFETY_FIXTURE));
+      expect(nonSafety.verdict).toBe('FAIL');
+      expect(nonSafety.mismatch).toEqual({
+        mismatch_id: mintMismatchId({ ...MINT_INPUTS, mismatchKind: 'wrong_value' }),
+        mismatch_kind: 'wrong_value',
+        safety_critical: false,
+      });
+
+      // Reviewed safety-critical fixture → blocking.
+      expect(translateJudgeResult(judge, ctx(SAFETY_FIXTURE)).mismatch.safety_critical).toBe(true);
+
+      // UNCLASSIFIED fixture → fail closed to safety-critical. The judge does
+      // not know whether the fixture mutates a certificate, so an unlisted id
+      // must never be laundered into a decisionable non-safety hold.
+      expect(translateJudgeResult(judge, ctx('frc_not_in_the_map')).mismatch.safety_critical).toBe(
+        true
+      );
+    });
+
+    test('terminal selection is deterministic and emission-order invariant', async () => {
+      const { translateJudgeResult } = await loadTranslation();
+      // Ordered by (mismatch_kind, then the judge's own emission index).
+      // `extra_mutation` sorts before `wrong_value`, whichever order the judge
+      // emitted them in — a selection that varied would mint a NEW id for the
+      // same failure and strand an existing decide-mismatch record.
+      const a = translateJudgeResult(
+        { verdict: 'FAIL', mismatches: [{ class: 'wrong_value' }, { class: 'extra_mutation' }] },
+        ctx(NON_SAFETY_FIXTURE)
+      );
+      const b = translateJudgeResult(
+        { verdict: 'FAIL', mismatches: [{ class: 'extra_mutation' }, { class: 'wrong_value' }] },
+        ctx(NON_SAFETY_FIXTURE)
+      );
+      expect(a.mismatch.mismatch_kind).toBe('extra_mutation');
+      expect(a.mismatch).toEqual(b.mismatch);
+      expect(a.mismatchKinds).toEqual(['extra_mutation', 'wrong_value']);
+
+      // Duplicates collapse in the console list and never change the terminal.
+      const dupes = translateJudgeResult(
+        {
+          verdict: 'FAIL',
+          mismatches: [{ class: 'wrong_value' }, { class: 'wrong_value' }],
+        },
+        ctx(NON_SAFETY_FIXTURE)
+      );
+      expect(dupes.mismatchKinds).toEqual(['wrong_value']);
+      expect(dupes.mismatch.mismatch_kind).toBe('wrong_value');
+    });
+
+    test('an UNMAPPABLE FAIL stays FAIL — never downgraded to a retryable INVALID', async () => {
+      const { translateJudgeResult } = await loadTranslation();
+      const out = translateJudgeResult(
+        { verdict: 'FAIL', mismatches: [{ class: 'brand_new_class' }] },
+        ctx(NON_SAFETY_FIXTURE)
+      );
+      // Downgrading would let a real semantic failure be retried away at the
+      // next generation. The fold's `unclassified_mismatch_fail` BLOCK is the
+      // correct fail-closed terminal.
+      expect(out.verdict).toBe('FAIL');
+      expect(out.reason).toBe('judge_mismatch_unmappable');
+      expect(out.mismatch).toBeNull();
+      // The console list still names the unknown kind, so the vocabulary gap
+      // is diagnosable from the run output.
+      expect(out.mismatchKinds).toEqual(['brand_new_class']);
+
+      // A mix of known + unknown still yields the KNOWN terminal, and the
+      // console list reports both.
+      const mixed = translateJudgeResult(
+        { verdict: 'FAIL', mismatches: [{ class: 'brand_new_class' }, { class: 'wrong_value' }] },
+        ctx(NON_SAFETY_FIXTURE)
+      );
+      expect(mixed.mismatch.mismatch_kind).toBe('wrong_value');
+      expect(mixed.mismatchKinds).toEqual(['brand_new_class', 'wrong_value']);
+    });
+
+    test('every non-FAIL disposition lands on a CLOSED reason literal', async () => {
+      const { translateJudgeResult, TRANSLATION_REASONS } = await loadTranslation();
+      const c = ctx(NON_SAFETY_FIXTURE);
+
+      expect(translateJudgeResult({ verdict: 'PASS', mismatches: [] }, c)).toEqual({
+        verdict: 'PASS',
+        reason: null,
+        mismatch: null,
+        mismatchKinds: [],
+      });
+
+      // A PASS carrying mismatches is the judge contradicting itself: the
+      // attempt measured nothing, so INVALID (retryable) — never a silent
+      // downgrade to FAIL.
+      const contradiction = translateJudgeResult(
+        { verdict: 'PASS', mismatches: [{ class: 'wrong_value' }] },
+        c
+      );
+      expect(contradiction.verdict).toBe('INVALID');
+      expect(contradiction.reason).toBe('judge_pass_with_mismatch');
+
+      expect(
+        translateJudgeResult({ verdict: 'INVALID_HOLD', reason: 'mutation_invalid:x' }, c)
+      ).toEqual({
+        verdict: 'INVALID',
+        reason: 'judge_invalid_hold',
+        mismatch: null,
+        mismatchKinds: [],
+      });
+
+      for (const malformed of [null, undefined, 'FAIL', 42, []]) {
+        expect(translateJudgeResult(malformed, c).reason).toBe('judge_result_malformed');
+      }
+
+      // The runner persists whatever `reason` this layer returns, verbatim, as
+      // `invalid_reason`. So the set of reasons it can EVER return must be the
+      // declared closed list.
+      for (const r of [contradiction.reason, 'judge_invalid_hold', 'judge_result_malformed']) {
+        expect(TRANSLATION_REASONS).toContain(r);
+      }
+    });
+
+    test('NOTHING free-form crosses the seam', async () => {
+      const { translateJudgeResult } = await loadTranslation();
+      // A judge result loaded with exactly the material the PII rule bans:
+      // field values, transcript fragments, circuit text and a free-form
+      // reason string.
+      const out = translateJudgeResult(
+        {
+          verdict: 'FAIL',
+          reason: 'wrong_value on measured_zs_ohm for circuit 4',
+          mismatches: [
+            {
+              class: 'wrong_value',
+              expected: '0.83',
+              actual: '8.3',
+              field: 'measured_zs_ohm',
+              circuit: 'Upstairs Lights',
+              transcript: 'Zs for circuit 4 is 0.83',
+            },
+          ],
+        },
+        ctx(NON_SAFETY_FIXTURE)
+      );
+      const serialised = JSON.stringify({ mismatch: out.mismatch, reason: out.reason });
+      for (const leak of ['0.83', '8.3', 'Upstairs Lights', 'circuit 4', 'measured_zs_ohm']) {
+        expect(serialised).not.toContain(leak);
+      }
+      expect(Object.keys(out.mismatch).sort()).toEqual([
+        'mismatch_id',
+        'mismatch_kind',
+        'safety_critical',
+      ]);
+    });
+  });
+
+  // ── round-trip through runReservedAttempt, asserted on PERSISTED bytes ──
+
+  describe('round-trip through runReservedAttempt', () => {
+    async function loadRunner() {
+      return import('../../scripts/plan00-evidence/lib/runner.mjs');
+    }
+
+    // Read terminals back out of the store rather than trusting the runner's
+    // return value — the pin is about what is PERSISTED.
+    async function readTerminals(store, cohortId) {
+      const { records } = await loadAuditedPrefix(store, `${EVIDENCE_PREFIX}/events/`);
+      return records
+        .map((r) => r.payload)
+        .filter((p) => p?.kind === 'attempt_terminal' && p?.cohort_id === cohortId);
+    }
+
+    function runArgs(cohortId, execute) {
+      return {
+        cohortId,
+        requirementKey: `corpus:${cohortId}:luna:run-1:fx2`,
+        generation: 1,
+        requirementClass: 'vendor_corpus',
+        model: 'gpt-5.6-luna',
+        tier: 'fast',
+        ...TEST_DIGESTS,
+        execute,
+      };
+    }
+
+    test('a FAIL carrying mismatch_kind round-trips it VERBATIM into the terminal', async () => {
+      const { runReservedAttempt } = await loadRunner();
+      const store = createMemoryStore();
+      const cohortId = 'cohort-c1a0000000010';
+      const res = await runReservedAttempt(
+        store,
+        runArgs(cohortId, async () => ({
+          verdict: 'FAIL',
+          providerCallIds: ['prov_c1a_1'],
+          mismatch: {
+            mismatch_id: 'b'.repeat(32),
+            mismatch_kind: 'clear_without_matching_write',
+            safety_critical: false,
+          },
+        }))
+      );
+      expect(res.terminalPublished).toBe(true);
+
+      const [terminal] = await readTerminals(store, cohortId);
+      // `buildEvent` spreads the body into the payload — there is no
+      // `payload.body` hop, and asserting through one would silently pass.
+      expect(terminal.verdict).toBe('FAIL');
+      expect(terminal.mismatch).toEqual({
+        mismatch_id: 'b'.repeat(32),
+        mismatch_kind: 'clear_without_matching_write',
+        safety_critical: false,
+      });
+    });
+
+    test('a kind-less executor FAIL terminates INVALID rather than persisting it', async () => {
+      const { runReservedAttempt } = await loadRunner();
+      const store = createMemoryStore();
+      const cohortId = 'cohort-c1a0000000011';
+      const res = await runReservedAttempt(
+        store,
+        runArgs(cohortId, async () => ({
+          verdict: 'FAIL',
+          providerCallIds: ['prov_c1a_2'],
+          mismatch: { mismatch_id: 'c'.repeat(32), safety_critical: false },
+        }))
+      );
+      expect(res.verdict).toBe('INVALID');
+      expect(res.reason).toBe('mismatch_shape_invalid');
+
+      const [terminal] = await readTerminals(store, cohortId);
+      expect(terminal.verdict).toBe('INVALID');
+      expect(terminal.invalid_reason).toBe('mismatch_shape_invalid');
+      // The key is OMITTED, not nulled — nothing downstream can mistake a
+      // mis-plumbed attempt for a classified one.
+      expect('mismatch' in terminal).toBe(false);
+    });
+
+    test('a PASS report carrying mismatch:null validates clean and terminates PASS', async () => {
+      const { runReservedAttempt } = await loadRunner();
+      const { validateAttemptReport } =
+        await import('../../scripts/plan00-evidence/lib/events.mjs');
+      // The exact-presence loop is UNCHANGED by C1a: `mismatch` remains a
+      // REQUIRED key whose value may be null. A PASS must not trip
+      // `report_schema_invalid:report_missing_key`.
+      expect(
+        validateAttemptReport({
+          schema_version: 1,
+          kind: 'attempt_report',
+          requirement_key: 'r',
+          attempt_generation: 1,
+          verdict: 'PASS',
+          provider_call_ids: ['p1'],
+          mismatch: null,
+        })
+      ).toEqual([]);
+
+      const store = createMemoryStore();
+      const cohortId = 'cohort-c1a0000000012';
+      const res = await runReservedAttempt(
+        store,
+        runArgs(cohortId, async () => ({
+          verdict: 'PASS',
+          providerCallIds: ['prov_c1a_3'],
+          mismatch: null,
+        }))
+      );
+      expect(res.verdict).toBe('PASS');
+      const [terminal] = await readTerminals(store, cohortId);
+      expect(terminal.verdict).toBe('PASS');
+      expect('invalid_reason' in terminal).toBe(false);
+      expect('mismatch' in terminal).toBe(false);
+    });
+
+    test('the full deduped kind list reaches the console and NO evidence row', async () => {
+      const { translateJudgeResult } = await loadTranslation();
+      const { runReservedAttempt } = await loadRunner();
+      const store = createMemoryStore();
+      const cohortId = 'cohort-c1a0000000013';
+
+      const translated = translateJudgeResult(
+        {
+          verdict: 'FAIL',
+          mismatches: [
+            { class: 'wrong_value' },
+            { class: 'extra_mutation' },
+            { class: 'wrong_value' },
+          ],
+        },
+        {
+          cohortId,
+          requirementKey: `corpus:${cohortId}:luna:run-1:fx2`,
+          attemptGeneration: 1,
+          corpusId: NON_SAFETY_FIXTURE,
+        }
+      );
+      // Console-only: deduped, sorted, complete.
+      expect(translated.mismatchKinds).toEqual(['extra_mutation', 'wrong_value']);
+
+      await runReservedAttempt(
+        store,
+        runArgs(cohortId, async () => ({
+          verdict: translated.verdict,
+          providerCallIds: ['prov_c1a_4'],
+          mismatch: translated.mismatch,
+          reason: translated.reason ?? undefined,
+        }))
+      );
+
+      // Only the TERMINAL mismatch is persisted; the list is nowhere in the
+      // evidence stream — proven by scanning every stored byte, not just the
+      // terminal (a list smuggled into a report would fail this too).
+      const allBytes = [...store._objects.values()]
+        .flatMap((versions) => versions.map((v) => (v.bytes ? v.bytes.toString('utf8') : '')))
+        .join('\n');
+      expect(allBytes).not.toContain('mismatchKinds');
+      // The judge saw TWO distinct kinds; only the terminal one is persisted, so
+      // the OTHER kind must appear nowhere in the stream at all.
+      expect(allBytes).not.toContain('wrong_value');
+
+      const [terminal] = await readTerminals(store, cohortId);
+      expect(terminal.mismatch.mismatch_kind).toBe('extra_mutation');
+    });
+  });
+
+  // ── fold consequences (the pins group M does NOT already cover) ─────────
+
+  describe('fold consequences of a translated terminal', () => {
+    // Group M already pins the two decided cases against this same machinery
+    // (`an approved-deferred fixture that nonetheless FAILED still HOLDs…`
+    // and `…with a SAFETY-CRITICAL FAIL is still BLOCKED`). What is NEW under
+    // C1a is the UNMAPPABLE terminal, and the end-to-end proof that a mismatch
+    // minted by the real translation layer folds the way its inputs say.
+    function manifestWith(fixtures) {
+      return {
+        ...EXPECTATION_MANIFEST,
+        vendor_live_expectations: { ...EXPECTATION_MANIFEST.vendor_live_expectations, fixtures },
+      };
+    }
+    const CLASSIFIED = manifestWith([
+      { corpus_id: 'fx1', safety_critical: true },
+      { corpus_id: 'fx2', safety_critical: false },
+    ]);
+
+    async function foldWith(store, cohortId) {
+      return computeFold(store, {
+        cohortId,
+        expectationManifest: CLASSIFIED,
+        recomputedOracleDigest: EXPECTATION_MANIFEST.semantic_oracle_digest,
+        liveDeployment: LIVE_OK,
+      });
+    }
+
+    test('a FAIL with NO mismatch at all is an irreversible unclassified BLOCK', async () => {
+      // This is exactly the state a mis-plumbed translation layer would
+      // produce, and exactly why the seam has to exist: the fold cannot tell
+      // a plumbing gap from a genuine unclassifiable safety failure, so it
+      // blocks. The C1a normaliser is what stops this being reachable by
+      // accident.
+      const store = createMemoryStore();
+      const { cohortId } = await establishCohort(store);
+      await publishAttempt(store, {
+        cohortId,
+        requirementKey: `corpus:${cohortId}:luna:run-1:fx2`,
+        requirementClass: 'vendor_corpus',
+        verdict: 'FAIL',
+        modelLane: 'luna',
+        corpusRunOrdinal: 1,
+        fixtureId: 'fx2',
+        at: '2026-08-10T09:30:00Z',
+      });
+      const fold = await foldWith(store, cohortId);
+      expect(fold.blocks.some((b) => b.code === 'unclassified_mismatch_fail')).toBe(true);
+      expect(fold.state).toBe('BLOCKED');
+    });
+
+    test('a mismatch minted by the REAL translation layer folds as a decisionable hold', async () => {
+      const { translateJudgeResult } = await loadTranslation();
+      const store = createMemoryStore();
+      const { cohortId } = await establishCohort(store);
+      const requirementKey = `corpus:${cohortId}:luna:run-1:fx2`;
+
+      // End-to-end: judge shape in, closed mismatch out, persisted, folded.
+      const translated = translateJudgeResult(
+        { verdict: 'FAIL', reason: 'free form', mismatches: [{ class: 'wrong_value' }] },
+        {
+          cohortId,
+          requirementKey,
+          attemptGeneration: 1,
+          corpusId: NON_SAFETY_FIXTURE,
+        }
+      );
+      expect(translated.mismatch.safety_critical).toBe(false);
+
+      await publishAttempt(store, {
+        cohortId,
+        requirementKey,
+        requirementClass: 'vendor_corpus',
+        verdict: 'FAIL',
+        modelLane: 'luna',
+        corpusRunOrdinal: 1,
+        fixtureId: 'fx2',
+        mismatch: translated.mismatch,
+        at: '2026-08-10T09:30:00Z',
+      });
+
+      let fold = await foldWith(store, cohortId);
+      expect(fold.holds.some((h) => h.code === 'undecided_non_safety_mismatch')).toBe(true);
+      expect(fold.state).toBe('HOLD_EVIDENCE');
+
+      // And ONLY decide-mismatch clears it — keyed on the MINTED id, which is
+      // what makes the id's determinism load-bearing rather than cosmetic.
+      await publishEventAt(store, {
+        kind: 'non_safety_decision',
+        cohortId,
+        namespace: 'derek',
+        body: {
+          mismatch_id: translated.mismatch.mismatch_id,
+          decision: 'approved',
+          reviewer: 'Derek',
+          decided_at: new Date(clockMs).toISOString(),
+        },
+      });
+      fold = await foldWith(store, cohortId);
+      expect(fold.holds.some((h) => h.code === 'undecided_non_safety_mismatch')).toBe(false);
+      expect(fold.notes.some((n) => n.code === 'approved_non_safety_mismatch')).toBe(true);
+    });
+  });
+
+  // ── closed-vocabulary drift guard against the judge that emits it ───────
+
+  test('MISMATCH_KINDS is exactly what semantic-judge.mjs can emit', async () => {
+    const { SEMANTIC_MISMATCH_KINDS } =
+      await import('../../scripts/model-ab/lib/mismatch-kinds.mjs');
+    const source = fs.readFileSync(
+      path.join(repoRootForC4, 'scripts', 'model-ab', 'lib', 'semantic-judge.mjs'),
+      'utf8'
+    );
+    // Two emission surfaces: the static `class:` pushes, and the three failure
+    // reasons returned by the NON-EXPORTED `matchOperation` (which the judge
+    // promotes to a mismatch class). The reason scan is region-bounded to that
+    // function on purpose — the file's other `reason:` literals belong to
+    // INVALID_HOLD verdicts, which carry an EMPTY mismatch list and are
+    // therefore NOT part of this vocabulary.
+    const classes = [...source.matchAll(/\bclass:\s*'([a-z0-9_]+)'/g)].map((m) => m[1]);
+    const start = source.indexOf('function matchOperation');
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf('\n}\n', start);
+    expect(end).toBeGreaterThan(start);
+    const reasons = [...source.slice(start, end).matchAll(/\breason:\s*'([a-z0-9_]+)'/g)].map(
+      (m) => m[1]
+    );
+
+    // A new emission site that is not added to the vocabulary would make every
+    // FAIL it produces terminate `judge_mismatch_unmappable` → an irreversible
+    // BLOCK. This test is the thing that makes that a loud failure instead.
+    expect([...new Set([...classes, ...reasons])].sort()).toEqual(
+      [...SEMANTIC_MISMATCH_KINDS].sort()
+    );
   });
 });

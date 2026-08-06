@@ -455,6 +455,11 @@ function toAnthropicMessage(finalResp, fallbackModel, fallbackServiceTier, promp
     requested_service_tier: fallbackServiceTier ?? null,
     // Plan 00B-3 C5 — the ACTUAL API transport that served this round.
     api_transport: 'responses',
+    // Plan 00B-4 §C1c — the provider's own opaque call id (`resp_…`),
+    // stamped on the SAME carrier key the Anthropic SDK message uses, so
+    // round attribution reads one field for every provider. Opaque id
+    // only: no prompt, transcript or inspector content travels with it.
+    id: typeof finalResp?.id === 'string' && finalResp.id.length > 0 ? finalResp.id : null,
   };
   if (promptCache) message.prompt_cache = promptCache;
   return message;
@@ -578,14 +583,20 @@ function createStream(openai, streamArgs, options) {
  * Build an Anthropic-API-shaped wrapper around OpenAI's Responses API,
  * exposing `messages.stream` (the method runToolLoop uses).
  *
- * @param {{apiKey:string}} opts
+ * `maxRetries` is OPTIONAL and OMITTED unless supplied, so production keeps the
+ * SDK default byte-identically. It exists for the Plan-00 live evaluation lane,
+ * which must issue exactly one provider call per attempt: a silent SDK retry
+ * would consume a second provider identity that the evidence record could never
+ * account for.
+ *
+ * @param {{apiKey:string, maxRetries?:number}} opts
  * @returns {{messages:{stream:Function, create:Function}}}
  */
-export function createOpenAIResponsesAdapter({ apiKey }) {
+export function createOpenAIResponsesAdapter({ apiKey, maxRetries }) {
   if (!apiKey) {
     throw new Error('createOpenAIResponsesAdapter: apiKey required');
   }
-  const openai = new OpenAI({ apiKey });
+  const openai = new OpenAI(maxRetries == null ? { apiKey } : { apiKey, maxRetries });
   return {
     messages: {
       stream: (streamArgs, options) => createStream(openai, streamArgs, options),

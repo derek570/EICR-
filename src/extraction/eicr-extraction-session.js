@@ -1192,6 +1192,29 @@ export class EICRExtractionSession {
     // task-def pins it explicitly either way).
     this.agenticAnswersEnabled = this._resolveAgenticAnswers(options.agenticAnswersEnabled);
 
+    // Plan 00B-4 §C1b — APPLICATION-level provider-attempt cap for the live
+    // evaluation lane. Same constructor-latched contract as the flags above
+    // (Research §Pitfall 4: mid-session mutation must not drift behaviour),
+    // and deliberately an OPTION rather than an env read or a lookup into the
+    // mutable EVALUATION_CONTEXT global — the value must be fixed at the
+    // moment the lane builds the session, not re-decided per call.
+    //
+    // WHY it exists: SDK `maxRetries: 0` is NOT sufficient to deliver the
+    // one-call rule the evidence lane needs. `callWithRetry` below runs its
+    // OWN attempt loop over 429/5xx, so a rate-limited provider call would
+    // silently consume a second (and third) provider identity that the
+    // attempt record could never account for — the sample identity would then
+    // be computed from an incomplete provider-call-id set.  The lane pins this
+    // to 1 so one dispatch means exactly one provider request.
+    //
+    // `null` (the default, and every production call site) leaves the loop
+    // byte-identical to today: no clamp is applied and each caller's own
+    // `maxRetries` argument stands unchanged.
+    this._maxProviderAttempts =
+      Number.isInteger(options.maxProviderAttempts) && options.maxProviderAttempts > 0
+        ? options.maxProviderAttempts
+        : null;
+
     // Stage 6 Phase 4: mode-gated prompt selection.
     //   off         → legacy cert-specific prompt (STR-01 rollback path).
     //   shadow/live → cert-agnostic agentic prompt; cert-specific facts
@@ -3214,7 +3237,14 @@ export class EICRExtractionSession {
     if (options.toolChoice) requestParams.tool_choice = options.toolChoice;
 
     let lastError;
-    for (let attempt = 0; attempt < maxRetries; attempt++) {
+    // Plan 00B-4 §C1b — the evaluation-lane clamp. Outside the lane
+    // `_maxProviderAttempts` is null and `attemptCap === maxRetries`, so every
+    // production path keeps its existing retry budget exactly.
+    const attemptCap =
+      this._maxProviderAttempts != null
+        ? Math.min(maxRetries, this._maxProviderAttempts)
+        : maxRetries;
+    for (let attempt = 0; attempt < attemptCap; attempt++) {
       try {
         const response = await target.client.messages.create(requestParams, { timeout: 30000 });
         Object.defineProperty(response, '_certmateAccounting', {
@@ -3242,8 +3272,13 @@ export class EICRExtractionSession {
         lastError = error;
         if (error.status === 429 || error.status >= 500) {
           const delay = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+          // `attemptCap`, not `maxRetries` — outside the lane the two are
+          // equal so production log bytes are unchanged, but a clamped lane
+          // run must not claim a budget of 3 it will never use. The backoff
+          // itself is deliberately untouched: shortening the final sleep
+          // would be a production behaviour change outside the lane.
           logger.warn(
-            `Session ${this.sessionId} Sonnet error ${error.status}, retry ${attempt + 1}/${maxRetries} after ${delay}ms`
+            `Session ${this.sessionId} Sonnet error ${error.status}, retry ${attempt + 1}/${attemptCap} after ${delay}ms`
           );
           await new Promise((r) => setTimeout(r, delay));
           continue;

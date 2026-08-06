@@ -19,6 +19,8 @@
  * compared or accepted.
  */
 
+import { makeBudgetHolder } from './plan00-capture-budget.js';
+
 export const MUTATION_OBSERVER = Symbol('plan00.mutationObserver');
 
 /** Semantic origins a producer boundary may declare (§B2). */
@@ -106,6 +108,10 @@ export function createMutationObserver({ sessionId = null } = {}) {
   // correlation id binds exactly once to the server-minted turn BEFORE live
   // execution. Re-binding is a capture error.
   const fastCorrelationTurns = new Map();
+  // Plan 00B C3 — capture/row budget. A private default keeps a standalone
+  // observer bounded; `adoptCaptureBudget` swaps in the session-shared budget
+  // once (first-wins) when an evaluation context normalises.
+  const budgetHolder = makeBudgetHolder();
 
   const observer = {
     sessionId,
@@ -116,6 +122,11 @@ export function createMutationObserver({ sessionId = null } = {}) {
       return invalid;
     },
 
+    /** Plan 00B C3 — adopt the session-shared capture budget (first-wins). */
+    adoptCaptureBudget(shared) {
+      budgetHolder.adopt(shared);
+    },
+
     markInvalid(reason, detail) {
       if (!invalid) invalid = Object.freeze({ reason, detail: detail ?? null });
     },
@@ -124,6 +135,18 @@ export function createMutationObserver({ sessionId = null } = {}) {
      * Enter an evaluation turn scope. A second enter while one is open
      * THROWS (capture INVALID first) — overlapping turn scopes would make
      * receipt→turn attribution ambiguous, the exact class the oracle holds.
+     *
+     * Plan 00B-3 C2 — returns the CLOSED success token `true`, and ONLY
+     * after the scope is genuinely installed. Call sites latch their
+     * "I own this scope" flag from that token, never from "the call
+     * didn't throw": in production the observer is wrapped by
+     * `guardEvidenceRole` (plan00-session-manifest.js), which SWALLOWS the
+     * throw and returns `undefined` — so a refused enter is indistinguishable
+     * from a successful one at the call site unless the success itself is
+     * signalled. `openTurnId` cannot disambiguate either: a rejected
+     * SAME-id re-entry leaves the open turn id equal to the requested one.
+     * A caller that exits unconditionally would clear a CONCURRENT turn's
+     * scope on a refusal, so the token gates cleanup as well as bookkeeping.
      */
     enterTurnScope(turnId) {
       if (currentTurn) {
@@ -138,6 +161,7 @@ export function createMutationObserver({ sessionId = null } = {}) {
         throw new Error('plan00: enterTurnScope requires a non-empty turn id');
       }
       currentTurn = { turnId, ordinal: 0 };
+      return true;
     },
 
     exitTurnScope() {
@@ -159,6 +183,9 @@ export function createMutationObserver({ sessionId = null } = {}) {
         this.markInvalid('fast_correlation_rebound', { correlationId });
         return;
       }
+      // Plan 00B C3 — capture growth stops at the budget; the production
+      // caller's return contract is unchanged (this method returns nothing).
+      if (!budgetHolder.current.admit('fast_correlation_turn')) return;
       fastCorrelationTurns.set(correlationId, currentTurn.turnId);
     },
 
@@ -260,7 +287,10 @@ export function createMutationObserver({ sessionId = null } = {}) {
           write_sequence: null,
           journal_source: null,
         });
-        receipts.push(receipt);
+        // Plan 00B C3 — past the budget the receipt is built but NOT retained,
+        // so memory stops growing while the return contract stays identical
+        // (every production call site discards this value anyway).
+        if (budgetHolder.current.admit('mutation_receipt')) receipts.push(receipt);
         return receipt;
       } catch (err) {
         this.markInvalid('commit_threw', { message: err?.message });
@@ -308,6 +338,9 @@ export function createMutationObserver({ sessionId = null } = {}) {
           claimed.add(match);
           // Receipts are frozen — the overlay is recorded as a parallel,
           // immutable annotation keyed by operation id.
+          // Plan 00B C3 — the claim still stands (it prevents a double-claim);
+          // only the unbounded annotation map stops growing past the budget.
+          if (!budgetHolder.current.admit('journal_overlay')) continue;
           overlay.set(match.operation_id, {
             write_sequence: writeSequenceOf(row) ?? null,
             journal_source: source,

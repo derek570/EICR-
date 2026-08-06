@@ -2100,15 +2100,25 @@ function validateAndCorrectFields(result, sessionId) {
 export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initOptions = {}) {
   const wss = new WebSocketServer({ noServer: true });
 
-  // Plan 00B §B1 + 00B-2 C1 — test/evaluation-only server option. When
+  // Plan 00B §B1 + 00B-2 C1 — server-level evaluation-context option. When
   // provided, each fresh activeSessions entry gets a FULL evaluation context
   // (observer + mutation observer + ask/delivery ledgers, normalised once)
   // composed at session creation, before start/rehydration and before any
   // message traffic, so the semantic-oracle harness can observe the REAL
   // lifecycle without threading new parameters through the connection
-  // closure. The sole production caller is src/server.js (src/index.js does
-  // not exist) and it never passes initOptions, so this branch never runs
-  // live.
+  // closure.
+  //
+  // 00B-4 C6 — this comment previously claimed the sole production caller
+  // "never passes initOptions, so this branch never runs live". That is FALSE
+  // as of Plan 00C Stage A (PR #155): src/server.js registers
+  // createProductionEvidenceContextFactory() here, so the factory branch runs
+  // on EVERY live session. What is conditional is the CONTEXT SHAPE, not the
+  // branch: a session created with a factory carries an evaluation context
+  // and a session created without one (tests, and any future caller that
+  // omits initOptions) does not. Downstream `if (evaluationContext)` guards
+  // must therefore be read as "with-context vs without-context", never as
+  // "test-only vs production" — treating them as dead in production is how a
+  // real live-path defect hides behind a stale comment.
   const evaluationContextFactory =
     typeof initOptions?.evaluationContextFactory === 'function'
       ? initOptions.evaluationContextFactory
@@ -2873,13 +2883,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               }
               if (answerMirrorMo && answerMirrorMo.openTurnId == null) {
                 try {
-                  answerMirrorMo.enterTurnScope(
-                    typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id
-                      ? msg.consumed_utterance_id
-                      : `mirror-answer-${msg.tool_call_id}`
-                  );
-                  answerMirrorScopeOpened = true;
-                  answerMirrorMo.setOriginFrame({ origin: 'ask_auto_resolve' });
+                  // Plan 00B-3 C2 — latch from the closed success token, not
+                  // from "didn't throw": under the production
+                  // `guardEvidenceRole` proxy a REFUSED enter (malformed turn
+                  // id) is swallowed and never reaches the catch below, so a
+                  // bare assignment would claim a scope this region does not
+                  // own and the finally would exit it.
+                  answerMirrorScopeOpened =
+                    answerMirrorMo.enterTurnScope(
+                      typeof msg.consumed_utterance_id === 'string' && msg.consumed_utterance_id
+                        ? msg.consumed_utterance_id
+                        : `mirror-answer-${msg.tool_call_id}`
+                    ) === true;
+                  if (answerMirrorScopeOpened) {
+                    answerMirrorMo.setOriginFrame({ origin: 'ask_auto_resolve' });
+                  }
                 } catch {
                   // isolated — the observer has already latched INVALID
                 }
@@ -5489,13 +5507,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         }
         if (ingressMirrorMo && ingressMirrorMo.openTurnId == null) {
           try {
-            ingressMirrorMo.enterTurnScope(
-              typeof msg.utterance_id === 'string' && msg.utterance_id
-                ? msg.utterance_id
-                : `mirror-${reservationKey.slice(-12)}`
-            );
-            ingressMirrorScopeOpened = true;
-            ingressMirrorMo.setOriginFrame({ origin: 'ask_auto_resolve' });
+            // Plan 00B-3 C2 — latch from the closed success token (see the
+            // answer-mirror region): the production guard proxy swallows a
+            // refused enter, so "didn't throw" is not evidence of ownership.
+            ingressMirrorScopeOpened =
+              ingressMirrorMo.enterTurnScope(
+                typeof msg.utterance_id === 'string' && msg.utterance_id
+                  ? msg.utterance_id
+                  : `mirror-${reservationKey.slice(-12)}`
+              ) === true;
+            if (ingressMirrorScopeOpened) {
+              ingressMirrorMo.setOriginFrame({ origin: 'ask_auto_resolve' });
+            }
           } catch {
             // isolated — the observer has already latched INVALID
           }
@@ -6174,17 +6197,30 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       // never the handler's outer finally), and the mutation observer's
       // turn scope for these turns uses the already-minted SERVER
       // generationId (client utterance_id stays correlation metadata only).
+      //
+      // Plan 00B-3 C2 — the stamp+enter block now lives INSIDE the try, and
+      // the entered latch is set ONLY from enterTurnScope's closed success
+      // token:
+      //   * inside the try, so a throw from enterTurnScope can no longer
+      //     strand the two stamped ws observers (the region-local finally
+      //     that deletes them never ran on that path) NOR leak an open turn
+      //     scope — every exit from this point runs the finally below.
+      //   * token-derived, because in production the observer is the
+      //     `guardEvidenceRole` proxy, which SWALLOWS the throw and returns
+      //     undefined; latching on "the call didn't throw" would set the flag
+      //     after a REFUSED enter and the finally would then clear a
+      //     CONCURRENT turn's scope.
       const plan00Tier2Ctx = entry[EVALUATION_CONTEXT] ?? null;
       let plan00Tier2TurnScopeEntered = false;
-      if (plan00Tier2Ctx && ws) {
-        ws[PLAN00_ASK_EMIT_OBSERVER] = plan00Tier2Ctx.askEmit;
-        ws[PLAN00_DELIVERY_EMIT_OBSERVER] = plan00Tier2Ctx.deliveryEmit;
-        if (plan00Tier2Ctx.mutationObserver) {
-          plan00Tier2Ctx.mutationObserver.enterTurnScope(generationId);
-          plan00Tier2TurnScopeEntered = true;
-        }
-      }
       try {
+        if (plan00Tier2Ctx && ws) {
+          ws[PLAN00_ASK_EMIT_OBSERVER] = plan00Tier2Ctx.askEmit;
+          ws[PLAN00_DELIVERY_EMIT_OBSERVER] = plan00Tier2Ctx.deliveryEmit;
+          if (plan00Tier2Ctx.mutationObserver) {
+            plan00Tier2TurnScopeEntered =
+              plan00Tier2Ctx.mutationObserver.enterTurnScope(generationId) === true;
+          }
+        }
         const ringScriptOutcome = processRingContinuityTurn({
           ws,
           session: entry.session,

@@ -438,6 +438,19 @@ export function buildEvidenceProjectionV1(snapshot) {
           count: row.count ?? null,
         });
         break;
+      // Plan 00B C3 — the reserved capture-budget overflow marker. Its
+      // presence means the session's evidence stopped growing part-way
+      // through, so the ledger is provably incomplete and MUST NOT fold as
+      // complete: it routes straight into `ineligible_conditions`, which
+      // clears `eligible_for_family_credit` and therefore yields zero family
+      // credit downstream (fold.mjs reads that one flag).
+      case 'capture_budget_overflow':
+        ineligibleConditions.push({
+          condition: 'capture_budget_overflow',
+          reason: row.capture_site ?? null,
+          count: row.admitted_rows ?? null,
+        });
+        break;
       case 'producer_unknown':
         unknownProducers.push({
           event_class: row.event_class ?? null,

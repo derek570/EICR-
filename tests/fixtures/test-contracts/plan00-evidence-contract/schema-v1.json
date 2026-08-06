@@ -12,18 +12,8 @@
     "Ordering rule: the sub_records array order IS the global event order (append-only, replay-deterministic). delivery rows additionally carry the delivery ledger's monotonic at_seq and a stable delivery_ref derived from it.",
     "Ordering (Codex r1 A-1/B-7): the sub_records array order IS the global event order; evidence_projection_v1 stamps each projected delivery/playback/idempotent/rejected/ambiguity event with `seq` = its sub_records array index at projection time, so grouped projections retain the cross-class interleaving the fold's ordering rules need. Trusted wall-clock timestamps remain 00C ENVELOPE facts by the layer split — never reconstructed from sub_records."
   ],
-  "snapshot_keys": [
-    "sessionId",
-    "boundary",
-    "counts",
-    "revisions",
-    "sub_records"
-  ],
-  "ask_quiescence_families": [
-    "dispatcher",
-    "dialogue_script",
-    "address_mirror"
-  ],
+  "snapshot_keys": ["sessionId", "boundary", "counts", "revisions", "sub_records"],
+  "ask_quiescence_families": ["dispatcher", "dialogue_script", "address_mirror"],
   "quiescence_count_keys": {
     "open_asks_dispatcher": "open (produced|emitted) askLedger entries whose registry quiescence_family is dispatcher, plus entries terminal-resolved with a stop-boundary terminal",
     "open_asks_dialogue_script": "same rule for dialogue_script",
@@ -54,12 +44,7 @@
       "unknown_terminal"
     ]
   },
-  "semantic_families": [
-    "ordinary_confirmation",
-    "dialogue_script",
-    "address_mirror",
-    "fast_tts"
-  ],
+  "semantic_families": ["ordinary_confirmation", "dialogue_script", "address_mirror", "fast_tts"],
   "transports": [
     "ws_extraction",
     "ws_vcr",
@@ -143,7 +128,8 @@
     "round_usage",
     "non_mutating_audible",
     "freeze_invalid",
-    "producer_unknown"
+    "producer_unknown",
+    "capture_budget_overflow"
   ],
   "row_kinds": {
     "ask_lifecycle": {
@@ -375,6 +361,8 @@
         "allowlist": [
           "provider",
           "api_transport",
+          "turn_kind",
+          "provider_call_id",
           "requested_model",
           "requested_tier",
           "response_model",
@@ -396,12 +384,16 @@
           "billable_kind",
           "loop_invocation_id"
         ],
-        "api_transport": "anthropic_messages | chat_completions | responses | null — WHICH API served the round (adapter-stamped actual transport, never configuration)"
+        "api_transport": "anthropic_messages | chat_completions | responses | null — WHICH API served the round (adapter-stamped actual transport, never configuration)",
+        "turn_kind": "observation | reading — WHICH KIND of loop produced the round, threaded from the shadow harness's routeToObservationTier decision (the authoritative producer). The producer is a boolean, so every non-observation loop (reading, keepalive, shadow, legacy) normalises to 'reading' and a malformed/absent value earns no Terra credit",
+        "provider_call_id": "string|null — the VENDOR's own opaque call id for this round (`msg_…` / `chatcmpl-…` / `resp_…`), stamped by whichever adapter served it onto the one carrier key the Anthropic SDK message already uses. It is the only durable proof a live-lane round consumed a real provider call, and 00C hashes the ORDERED per-round list into sample_identity; PII-free by construction (an opaque vendor identifier, never inspector content). A round the provider gave no id for attributes null rather than a fabricated value, and the lane refuses such a sample outright"
       },
       "field_spec": {
         "required": {
           "provider": "string|null",
           "api_transport": "string|null",
+          "turn_kind": "string|null",
+          "provider_call_id": "string|null",
           "requested_model": "string|null",
           "requested_tier": "string|null",
           "response_model": "string|null",
@@ -455,6 +447,24 @@
           "condition": "freeze_condition",
           "reason": "string|null",
           "count": "number|null"
+        },
+        "optional": {}
+      }
+    },
+    "capture_budget_overflow": {
+      "class": "invalid_audit",
+      "credit_bearing": false,
+      "fields": {
+        "capture_site": "the enumerated PLAN00_CAPTURE_SITES member whose write was first refused",
+        "row_limit": "the per-session admitted-capture budget in force",
+        "admitted_rows": "how many captures were admitted before the budget was spent"
+      },
+      "rule": "The ONE reserved row minted when a session exhausts the shared per-session capture/row budget (PLAN00_CAPTURE_ROW_BUDGET). Capacity for exactly this row is reserved, so it can always be appended; after it, ALL further evidence-row and capture growth stops while production control flow and counters continue untouched, and every evidence role latches INVALID. Its presence means the ledger is provably incomplete, so the session is INELIGIBLE and earns zero family credit — an incomplete ledger must never fold as complete.",
+      "field_spec": {
+        "required": {
+          "capture_site": "string|null",
+          "row_limit": "number",
+          "admitted_rows": "number"
         },
         "optional": {}
       }
@@ -666,7 +676,8 @@
   },
   "session_ineligibility_row_classes": [
     "freeze_invalid",
-    "producer_unknown"
+    "producer_unknown",
+    "capture_budget_overflow"
   ],
   "family_gate_rules": {
     "dialogue_script": {
@@ -705,18 +716,9 @@
   "lifecycle_transition_grammar": {
     "rule": "Cycle-6 (R6-1): accepted ask_lifecycle rows must follow the CLOSED per-runtime transition grammar below (family-qualified). An accepted row violating it is an invalid_lifecycle_transition contradiction in lifecycle_state_contradictions: it does NOT mutate the tracked state (terminals never reopen) and renders the session INELIGIBLE — 00C's fold MUST HOLD on any lifecycle_state_contradictions entry.",
     "transitions": {
-      "absent": [
-        "produced"
-      ],
-      "produced": [
-        "emitted",
-        "replaced"
-      ],
-      "emitted": [
-        "reissued_attempt",
-        "resolved",
-        "replaced"
-      ],
+      "absent": ["produced"],
+      "produced": ["emitted", "replaced"],
+      "emitted": ["reissued_attempt", "resolved", "replaced"],
       "terminal": []
     },
     "notes": "reissued_attempt preserves the emitted state; resolved moves to closed (or open_at_stop for a NON_QUIESCENT terminal); replaced closes; join_expired rows carry no runtime and are outside the grammar."

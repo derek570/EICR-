@@ -1080,6 +1080,250 @@ describe('C5 — api_transport in round_usage', () => {
   });
 });
 
+// ── C5 (00B live-lane) — the observation/reading discriminator ─────────────
+//
+// The authoritative producer is `routeToObservationTier` in the shadow
+// harness, and it is a BOOLEAN: it can prove a loop WAS an observation loop
+// and nothing else. So the closed vocabulary is exactly {observation,
+// reading} and the mapping these pins assert against is:
+//
+//   observation loop            -> 'observation'
+//   reading / keepalive /
+//   shadow / legacy loop        -> 'reading'
+//   malformed or absent value   -> 'reading'   (earns no Terra credit)
+//
+// The last row is what makes the 00C Terra gate fail closed: credit requires
+// an explicit 'observation', so nothing can back into it by omission.
+
+describe('C5 (live-lane) — turn_kind in round_usage', () => {
+  const baseRound = {
+    provider: 'openai',
+    requestedModel: 'gpt-5.6-terra',
+    requestedTier: 'standard',
+    responseModel: 'gpt-5.6-terra',
+    responseTier: 'standard',
+    usage: { input_tokens: 10, output_tokens: 5 },
+    roundIdx: 0,
+    apiTransport: 'responses',
+  };
+
+  test('an observation loop is the ONLY input that yields observation', () => {
+    expect(attributeRoundUsage({ ...baseRound, turnKind: 'observation' }).turn_kind).toBe(
+      'observation'
+    );
+  });
+
+  test.each([
+    ['reading', 'reading'],
+    ['keepalive', 'reading'],
+    ['shadow', 'reading'],
+  ])('a %s loop carries turn_kind reading', (threaded) => {
+    // The producer cannot distinguish these classes from one another — it only
+    // knows "not an observation" — so they all normalise to the same value.
+    expect(attributeRoundUsage({ ...baseRound, turnKind: threaded }).turn_kind).toBe('reading');
+  });
+
+  test('a LEGACY caller that threads nothing carries reading, never null', () => {
+    // Unlike api_transport (where an unknown transport must stay null rather
+    // than be guessed), the kind vocabulary is closed and "not proven to be an
+    // observation" IS the reading case — so absence is answerable, and leaving
+    // it null would put an unreadable value in front of the Terra gate.
+    const bare = attributeRoundUsage({ ...baseRound, turnKind: undefined });
+    expect(bare.turn_kind).toBe('reading');
+    const omitted = attributeRoundUsage({ ...baseRound });
+    expect(omitted.turn_kind).toBe('reading');
+  });
+
+  test.each([
+    ['null', null],
+    ['wrong case', 'Observation'],
+    ['near miss', 'observation_tier'],
+    ['non-string', 1],
+    ['object', { kind: 'observation' }],
+  ])('a malformed value (%s) earns no observation credit', (_label, threaded) => {
+    expect(attributeRoundUsage({ ...baseRound, turnKind: threaded }).turn_kind).toBe('reading');
+  });
+
+  test('the round_usage sub-record retains turn_kind through the allowlist', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry);
+    const row = (turnKind) => ({
+      provider: 'openai',
+      api_transport: 'responses',
+      turn_kind: turnKind,
+      requested_model: 'gpt-5.6-terra',
+      requested_tier: 'standard',
+      response_model: 'gpt-5.6-terra',
+      response_tier: 'standard',
+      billing_model: 'gpt-5.6-terra',
+      billing_tier: 'standard',
+      model_provenance: 'returned',
+      tier_provenance: 'returned',
+      attribution_status: 'attributed',
+      reasoning_effort: 'low',
+      prompt_cache_mode: 'explicit',
+      prompt_cache_breakpoint_enabled: true,
+      prompt_cache_key_id: 'pck',
+      fresh_input_tokens: 1,
+      cache_read_input_tokens: 2,
+      cache_write_input_tokens: 3,
+      output_tokens: 4,
+      round_idx: 0,
+    });
+    ctx.roundUsageSink(row('observation'), {
+      loopInvocationId: 'loop_obs',
+      billableKind: 'inspector_extraction',
+    });
+    ctx.roundUsageSink(row('reading'), {
+      loopInvocationId: 'loop_read',
+      billableKind: 'inspector_extraction',
+    });
+    const rows = rowsOfKind(entry, 'round_usage');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.turn_kind)).toEqual(['observation', 'reading']);
+  });
+
+  test('a producer row with NO turn_kind key still lands as an explicit null', () => {
+    // The sink hand-copies the allowlist with `?? null`, so a row from a not
+    // yet migrated producer is representable rather than dropped — and null is
+    // not 'observation', so it takes no Terra credit at the fold.
+    const entry = makeEntry();
+    const ctx = composeCtx(entry);
+    ctx.roundUsageSink(
+      {
+        provider: 'openai',
+        api_transport: 'responses',
+        requested_model: 'gpt-5.6-terra',
+        response_model: 'gpt-5.6-terra',
+        billing_model: 'gpt-5.6-terra',
+        billing_tier: 'standard',
+        model_provenance: 'returned',
+        tier_provenance: 'returned',
+        attribution_status: 'attributed',
+        round_idx: 0,
+      },
+      { loopInvocationId: 'loop_legacy', billableKind: 'inspector_extraction' }
+    );
+    const rows = rowsOfKind(entry, 'round_usage');
+    expect(rows).toHaveLength(1);
+    expect(Object.prototype.hasOwnProperty.call(rows[0], 'turn_kind')).toBe(true);
+    expect(rows[0].turn_kind).toBeNull();
+  });
+});
+
+// ── C1c (00B-4) — the provider call id, end to end ─────────────────────────
+//
+// 00C hashes the ORDERED list of provider call ids into the sample identity
+// and the fold enforces cohort-wide single use, so this field is the evidence
+// lane's proof that a sample consumed real vendor calls. It must survive
+// verbatim from the adapter carrier to the ledger row: derived, guessed or
+// dropped ids are all equally worthless as evidence.
+//
+// The allowlist pin matters most. `plan00Sink` hand-copies a CLOSED key list
+// rather than spreading the row, so a producer can start emitting a field and
+// have it silently vanish one layer down — which is exactly what would have
+// happened here without the allowlist edit.
+
+describe('C1c — provider_call_id in round_usage', () => {
+  const baseRound = {
+    provider: 'anthropic',
+    requestedModel: 'claude-haiku-4-5-20251001',
+    responseModel: 'claude-haiku-4-5-20251001',
+    usage: { input_tokens: 10, output_tokens: 5 },
+    roundIdx: 0,
+    apiTransport: 'anthropic_messages',
+  };
+
+  test('a real vendor id is carried verbatim', () => {
+    expect(
+      attributeRoundUsage({ ...baseRound, providerCallId: 'msg_01ABCdef' }).provider_call_id
+    ).toBe('msg_01ABCdef');
+  });
+
+  test('surrounding whitespace is trimmed, never the id itself', () => {
+    // Trim only: the id is an opaque vendor handle, so any transformation
+    // beyond stripping transport whitespace would break single-use matching
+    // at the fold.
+    expect(
+      attributeRoundUsage({ ...baseRound, providerCallId: '  resp_abc123  ' }).provider_call_id
+    ).toBe('resp_abc123');
+  });
+
+  test.each([
+    ['absent', undefined],
+    ['null', null],
+    ['empty', ''],
+    ['whitespace only', '   '],
+    ['non-string', 12345],
+    ['object', { id: 'msg_1' }],
+  ])('an unusable id (%s) attributes null rather than a fabricated value', (_label, threaded) => {
+    // Null is the honest answer and it is what makes the lane fail CLOSED: the
+    // driver's live refusal counts a null-id round as MISSING and terminates
+    // the sample INVALID. Inventing an id here would manufacture evidence.
+    expect(attributeRoundUsage({ ...baseRound, providerCallId: threaded }).provider_call_id).toBe(
+      null
+    );
+  });
+
+  test('the round_usage sub-record retains provider_call_id through the allowlist', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry);
+    const row = (providerCallId) => ({
+      provider: 'anthropic',
+      api_transport: 'anthropic_messages',
+      turn_kind: 'reading',
+      provider_call_id: providerCallId,
+      requested_model: 'claude-haiku-4-5-20251001',
+      response_model: 'claude-haiku-4-5-20251001',
+      billing_model: 'claude-haiku-4-5-20251001',
+      billing_tier: null,
+      model_provenance: 'returned',
+      tier_provenance: 'unavailable_for_provider',
+      attribution_status: 'attributed',
+      round_idx: 0,
+    });
+    ctx.roundUsageSink(row('msg_round_a'), {
+      loopInvocationId: 'loop_a',
+      billableKind: 'inspector_extraction',
+    });
+    ctx.roundUsageSink(row('msg_round_b'), {
+      loopInvocationId: 'loop_b',
+      billableKind: 'inspector_extraction',
+    });
+    const rows = rowsOfKind(entry, 'round_usage');
+    expect(rows).toHaveLength(2);
+    // Order is load-bearing — 00C hashes the ordered list into the identity.
+    expect(rows.map((r) => r.provider_call_id)).toEqual(['msg_round_a', 'msg_round_b']);
+  });
+
+  test('a producer row with NO provider_call_id key lands as an explicit null', () => {
+    const entry = makeEntry();
+    const ctx = composeCtx(entry);
+    ctx.roundUsageSink(
+      {
+        provider: 'anthropic',
+        api_transport: 'anthropic_messages',
+        requested_model: 'claude-haiku-4-5-20251001',
+        response_model: 'claude-haiku-4-5-20251001',
+        billing_model: 'claude-haiku-4-5-20251001',
+        billing_tier: null,
+        model_provenance: 'returned',
+        tier_provenance: 'unavailable_for_provider',
+        attribution_status: 'attributed',
+        round_idx: 0,
+      },
+      { loopInvocationId: 'loop_legacy', billableKind: 'inspector_extraction' }
+    );
+    const rows = rowsOfKind(entry, 'round_usage');
+    expect(rows).toHaveLength(1);
+    // Present-as-null, not missing: a dropped key is indistinguishable from a
+    // row the projection never saw, and the driver must be able to COUNT the
+    // rounds that failed to account for themselves.
+    expect(Object.prototype.hasOwnProperty.call(rows[0], 'provider_call_id')).toBe(true);
+    expect(rows[0].provider_call_id).toBeNull();
+  });
+});
+
 // ── 5. The three-way agreement invariant (CREATED by this plan) ────────────
 
 describe('three-way agreement (C0)', () => {
@@ -1218,6 +1462,92 @@ describe('three-way agreement (C0)', () => {
     expect(fromSnapshot.ineligible_conditions).toEqual([
       { condition: 'delivery_invalid', reason: 'fast_provisional_unconsumed', count: null },
     ]);
+  });
+
+  // ── the freeze→driver SEAM ───────────────────────────────────────────────
+  //
+  // The lane driver reads provider identities straight off the RAW completion
+  // latch — it does not project first (projecting inside the driver would mean
+  // statically importing a `src/extraction` module from `lane-driver.mjs`,
+  // which loads BEFORE the network guard and the replay clock are installed).
+  // `collectProviderCallIds` is therefore a deliberate hand-maintained MIRROR
+  // of the projection's `case 'round_usage'` arm, and this is its reciprocal
+  // drift test — the same contract the `ios-dedupe-key.js` mirror carries.
+  //
+  // It exists because the two halves previously did NOT meet: the driver test
+  // hand-built a projection-shaped latch and the loop test asserted on the
+  // tool loop's own return value, so a driver reading a key the latch never
+  // has passed every suite while the live vendor lane could not produce one
+  // valid terminal. Never split this back into two shape-independent halves.
+  test('SEAM: collectProviderCallIds reads the real latch and agrees with the projection', async () => {
+    const { collectProviderCallIds } = await import('../../scripts/model-ab/lib/lane-driver.mjs');
+    const entry = makeEntry();
+    const ctx = composeCtx(entry, { sessionId: 'sess_seam' });
+    const row = (providerCallId, roundIdx) => ({
+      provider: 'anthropic',
+      api_transport: 'anthropic_messages',
+      turn_kind: 'reading',
+      provider_call_id: providerCallId,
+      requested_model: 'claude-haiku-4-5-20251001',
+      response_model: 'claude-haiku-4-5-20251001',
+      billing_model: 'claude-haiku-4-5-20251001',
+      billing_tier: null,
+      model_provenance: 'returned',
+      tier_provenance: 'unavailable_for_provider',
+      attribution_status: 'attributed',
+      round_idx: roundIdx,
+    });
+    // Two proven rounds and one whose provider returned no id — the honest
+    // null the attribution layer records rather than fabricating an identity.
+    ctx.roundUsageSink(row('msg_seam_1', 0), {
+      loopInvocationId: 'loop_seam',
+      billableKind: 'inspector_extraction',
+    });
+    ctx.roundUsageSink(row(null, 1), {
+      loopInvocationId: 'loop_seam',
+      billableKind: 'inspector_extraction',
+    });
+    ctx.roundUsageSink(row('msg_seam_2', 2), {
+      loopInvocationId: 'loop_seam',
+      billableKind: 'inspector_extraction',
+    });
+
+    const frozen = freezeEvidenceCompletion(entry, {
+      sessionId: 'sess_seam',
+      boundary: 'session_stopped',
+    });
+    // The driver reads THIS object — exactly what getCompletionFreeze returns.
+    expect(getCompletionFreeze(entry)).toBe(frozen);
+    const collected = collectProviderCallIds(frozen);
+    expect(collected).toEqual({
+      ids: ['msg_seam_1', 'msg_seam_2'],
+      rounds: 3,
+      missing: 1,
+    });
+
+    // Reciprocal drift lock: the mirror must see the same rows, in the same
+    // order, as the canonical projection arm it mirrors. If that arm changes
+    // (a revision gate, a dedupe, a rename), this fails LOUDLY here instead
+    // of silently starving the live lane of provable identities.
+    //
+    // The comparator is `buildEvidenceProjectionV1`, NOT `projectFrozenLedgersV1`:
+    // the frozen-ledger projection deliberately carries no round_usage at all
+    // (module docstring — "cost evidence rides sub_records, not frozen
+    // ledgers", and `comparableSubset` strips it for that reason). That is
+    // precisely why the driver cannot "just project first" and why the mirror
+    // exists.
+    //
+    // Both sides are provably reading the SAME rows: the freeze uses one
+    // latched copy for the builder snapshot and for `evidence.sub_records`.
+    expect(frozen.candidate.sub_records).toBe(frozen.evidence.sub_records);
+    const projected = buildEvidenceProjectionV1(frozen.candidate).round_usage.rounds;
+    expect(projected.map((r) => r.provider_call_id)).toEqual(['msg_seam_1', null, 'msg_seam_2']);
+    expect(collected.rounds).toBe(projected.length);
+    expect(collected.ids).toEqual(
+      projected
+        .map((r) => (typeof r.provider_call_id === 'string' ? r.provider_call_id.trim() : ''))
+        .filter(Boolean)
+    );
   });
 
   test('the retained object-identity immutability check still holds beside the new invariant', () => {
@@ -2310,6 +2640,9 @@ describe('SEMANTIC_ORACLE_INPUTS membership (C0)', () => {
     'tests/fixtures/test-contracts/plan00-evidence-contract/projection-lifecycle-contradiction-v1.json',
     'src/extraction/plan00-evidence-registry.js',
     'src/extraction/plan00-evidence-projection.js',
+    // 00B-4 C3: imported by three enumerated capture producers, and it decides
+    // how many rows each ledger keeps — i.e. which evidence exists at all.
+    'src/extraction/plan00-capture-budget.js',
   ];
 
   test.each(REQUIRED)('%s is an enumerated semantic-oracle input', (rel) => {
@@ -2318,5 +2651,79 @@ describe('SEMANTIC_ORACLE_INPUTS membership (C0)', () => {
 
   test('the future 00C consumer is EXPLICITLY excluded (00C digest-partition rule)', () => {
     expect(SEMANTIC_ORACLE_INPUTS).not.toContain('src/extraction/plan00-session-manifest.js');
+  });
+
+  // The same digest-partition rule, stated from the other side.
+  //
+  // `SEMANTIC_ORACLE_INPUTS` enumerates the sources whose BEHAVIOUR the 00B
+  // expectations are written against: the evidence PRODUCERS (extraction
+  // session, vendor adapters, lane driver) plus the projection/judge chain and
+  // the frozen contract fixtures. It is not "every file Plan 00 touches".
+  //
+  // The `scripts/plan00-evidence/lib/` layer is the evidence STORE and the CLI
+  // admission gate. It neither produces, transforms nor judges evidence — it
+  // decides whether a write is allowed to happen at all. `fold.mjs` computes
+  // gate credit and `events.mjs` defines the on-disk event schema, and if this
+  // layer belonged in the oracle digest those two would be its first entries;
+  // they are deliberately absent, so `success-record.mjs` (an admission gate
+  // added by 00B-4) belongs on the same side of the partition.
+  //
+  // Including it would also invert the dependency the digest exists to serve:
+  // the CLI reads the digest in order to fail closed on oracle drift. Make the
+  // gate an input and every tightening of the gate mutates the digest, which
+  // demands a fresh 00B-successor delivery before the tightened gate may run —
+  // the exact over-broad failure `computeSemanticOracleDigest`'s docstring
+  // warns against.
+  test.each([
+    'scripts/plan00-evidence/lib/success-record.mjs',
+    'scripts/plan00-evidence/lib/fold.mjs',
+    'scripts/plan00-evidence/lib/events.mjs',
+    'scripts/plan00-evidence/lib/store.mjs',
+    'scripts/plan00-evidence/cli.mjs',
+  ])('%s is EXCLUDED — evidence store/admission gate, not an oracle input', (rel) => {
+    expect(SEMANTIC_ORACLE_INPUTS).not.toContain(rel);
+  });
+
+  // The untracked-transitive-input hole, closed as a CLASS rather than as the
+  // one instance that happened to be noticed.
+  //
+  // The digest is only a truthful statement about "the behaviour the 00B
+  // expectations were proven against" if it covers everything that behaviour
+  // depends on. An enumerated producer importing an UNenumerated sibling lets
+  // the captured evidence set move while the digest stays byte-identical — and
+  // since 00C consumes the digest precisely to decide whether the oracle is
+  // still trustworthy, that drift is invisible exactly where it matters most.
+  //
+  // 00B-4 found one live instance: `plan00-capture-budget.js` (new in C3) is
+  // imported by three enumerated capture producers and decides how many rows
+  // each ledger retains — i.e. WHICH evidence exists for the oracle to judge —
+  // yet it was absent from the list. It was caught by hand. This test is what
+  // makes the next one impossible to miss.
+  //
+  // Scoped to the `plan00-*` producer family deliberately: there the rule "an
+  // enumerated plan00 module's plan00 siblings are also oracle inputs" holds
+  // without exception. The wider enumerated sources (`eicr-extraction-session.js`,
+  // `stage6-tool-loop.js`, …) live in general extraction code and legitimately
+  // import many siblings carrying no Plan-00 evidence semantics, so the same
+  // blanket rule would be false for them. The equivalent check for the lane
+  // driver's cross-layer imports lives in plan00-lane-driver.test.js.
+  test('every plan00 sibling imported by an enumerated plan00 input is itself enumerated', () => {
+    const family = SEMANTIC_ORACLE_INPUTS.filter((rel) =>
+      /^src\/extraction\/plan00-[^/]+\.js$/.test(rel)
+    );
+    // Guard the guard: were the family ever to empty (a rename, a directory
+    // move), a vacuous pass would silently retire this contract.
+    expect(family.length).toBeGreaterThanOrEqual(6);
+
+    const missing = [];
+    for (const rel of family) {
+      const source = fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+      const specifiers = [...source.matchAll(/from\s+'(\.\/plan00-[^']+)'/g)].map((m) => m[1]);
+      for (const spec of new Set(specifiers)) {
+        const imported = `src/extraction/${spec.slice(2)}`;
+        if (!SEMANTIC_ORACLE_INPUTS.includes(imported)) missing.push(`${rel} -> ${imported}`);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });

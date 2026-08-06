@@ -66,8 +66,8 @@ export async function bootLaneDriver({ repoRoot }) {
   const { installRecordedFetchDeny } = await import(flLib('network-guard.mjs'));
   installRecordedFetchDeny();
 
-  const FakeTimers = (await import('@sinonjs/fake-timers')).default ??
-    (await import('@sinonjs/fake-timers'));
+  const FakeTimers =
+    (await import('@sinonjs/fake-timers')).default ?? (await import('@sinonjs/fake-timers'));
   const { installReplayClock, DEFAULT_CALLSITE_ALLOWLIST, TIMER_CLASSES } = await import(
     flLib('replay-clock.mjs')
   );
@@ -148,8 +148,89 @@ function frameBuffer(frame) {
 }
 
 /**
+ * Plan 00B-4 §C1c — read the provider's OWN opaque call ids out of the frozen
+ * round_usage evidence, in round order.
+ *
+ * The ids travel adapter → finalMessage carrier → `attributeRoundUsage` →
+ * cost-tracker → the 00C round_usage ledger sink → the evidence projection, so
+ * by the time we read them here they are already PII-free closed evidence: an
+ * opaque vendor handle per round and nothing else. 00C hashes the ORDERED list
+ * into the sample identity and the fold enforces cohort-wide single-use, which
+ * is why order is preserved verbatim and nothing is deduped or synthesised.
+ *
+ * Returns the ids plus the two counts the caller needs to fail CLOSED: a live
+ * sample that cannot account for every completed round with a distinct real
+ * vendor id is not evidence, whatever its judge verdict says.
+ *
+ * WHERE THE ROWS ACTUALLY LIVE — read this before "simplifying" the access
+ * path. `getCompletionFreeze(entry)` hands back the completion latch, whose
+ * `.evidence` is built by `composeFrozenEvidence`, and that function enumerates
+ * its keys EXPLICITLY: there is no `round_usage` key on it and there never was.
+ * Cost evidence rides `sub_records` as flat append-ordered rows carrying a
+ * `kind: 'round_usage'` discriminator (the sink appends via
+ * `appendLedgerRow(ledger, observer, 'round_usage', detail)`), and the ONLY
+ * place a `round_usage: { rounds }` object exists is the OUTPUT of
+ * `buildEvidenceProjectionV1` — a different object that is never assigned back
+ * onto the latch. Reading `frozen.evidence.round_usage.rounds` therefore always
+ * yields `[]`, which `liveProviderIdRefusal` correctly turns into
+ * `provider_ids_incomplete` — i.e. the bug silently made the entire live vendor
+ * lane unable to produce a single valid terminal.
+ *
+ * This filter is a deliberate MIRROR of the projection's `case 'round_usage'`
+ * arm rather than an import: `src/extraction` modules are loaded dynamically by
+ * `bootLaneDriver` AFTER the network guard and replay clock are installed, so a
+ * static import here would break that ordering discipline. The mirror is
+ * legitimate because the projection's arm is an unconditional ordered push that
+ * strips only `kind`/`revision` (never `provider_call_id`), and it is held to
+ * that by a reciprocal drift test — `collectProviderCallIds` and
+ * `projectFrozenLedgersV1(frozen).round_usage.rounds` are asserted to agree over
+ * the SAME real frozen latch, so a future change to either side fails loudly.
+ */
+export function collectProviderCallIds(frozen) {
+  const subRecords = frozen?.evidence?.sub_records;
+  const rounds = Array.isArray(subRecords)
+    ? subRecords.filter((r) => r?.kind === 'round_usage')
+    : [];
+  const ids = [];
+  let missing = 0;
+  for (const row of rounds) {
+    const id = typeof row?.provider_call_id === 'string' ? row.provider_call_id.trim() : '';
+    if (id.length === 0) {
+      missing += 1;
+      continue;
+    }
+    ids.push(id);
+  }
+  return { ids, rounds: rounds.length, missing };
+}
+
+/**
+ * Plan 00B-4 §C1c — the LIVE fail-closed decision, extracted as a pure predicate
+ * so it is pinnable without booting a server.
+ *
+ * A live sample's entire claim is that it consumed REAL vendor calls, so every
+ * completed round must account for itself with its own distinct id. A round that
+ * produced no id is unprovable; a repeated id means two rounds were attributed
+ * to one call. Both are INVALID terminals — never a judge verdict, because a
+ * PASS built on unprovable dispatch is exactly the mock-verdict class the sealed
+ * capability exists to make unrepresentable.
+ *
+ * Mock mode has no vendor ids by construction and is exempt (and cannot reach
+ * the durable store anyway). Returns null when the sample may proceed to the
+ * judge, else the INVALID reason string.
+ */
+export function liveProviderIdRefusal(providerCalls) {
+  const ids = Array.isArray(providerCalls?.ids) ? providerCalls.ids : [];
+  const rounds = Number.isInteger(providerCalls?.rounds) ? providerCalls.rounds : 0;
+  const missing = Number.isInteger(providerCalls?.missing) ? providerCalls.missing : 0;
+  if (rounds === 0 || missing > 0) return 'provider_ids_incomplete';
+  if (new Set(ids).size !== ids.length) return 'provider_ids_duplicated';
+  return null;
+}
+
+/**
  * Drive ONE fixture through the real server and judge its frozen evidence.
- * Returns { corpus_id, verdict, reason, mismatches }.
+ * Returns { corpus_id, verdict, reason, mismatches, provider_call_ids }.
  */
 export async function driveFixture({ boot, fixture, expectation, judge, log = () => {} }) {
   const {
@@ -175,8 +256,22 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
         verdict: 'INVALID_HOLD',
         reason: 'fixture_confirmations_flag_mismatch',
         mismatches: [],
+        provider_call_ids: [],
       };
     }
+  }
+
+  // 00B-4 §C1b — LIVE mode reuses this whole body and diverges in exactly three
+  // places: the client injected at construction, the per-turn scripted swap,
+  // and the full-consumption assertion. Everything else — ingress mapping, the
+  // answer pump, playback acks, teardown, judging — is deliberately SHARED, so
+  // the live sample exercises the same code path the deterministic lane pins.
+  const liveMode = boot.liveMode === true;
+  if (
+    liveMode &&
+    (typeof boot.liveProviderClients !== 'object' || boot.liveProviderClients === null)
+  ) {
+    throw new TypeError('driveFixture: liveMode boot must supply liveProviderClients');
   }
 
   // C4 scripted-client seam: construction-time factory. The ONE session is
@@ -198,7 +293,16 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
   const sessionFactory = ({ apiKey, sessionId: sid, certificateType }) => {
     capturedSession = new EICRExtractionSession(apiKey, sid, certificateType, {
       toolCallsMode: 'live',
-      providerClients: { [defaultProvider]: bootstrapClient },
+      // Live: BOTH branded evaluation clients, so `_createExtractionClient`
+      // (which passes no `maxRetries`) can never run and produce an
+      // un-clamped SDK client — whichever provider the model routes to.
+      // Plus the application-level one-call clamp, because SDK `maxRetries: 0`
+      // only silences the SDK's OWN retries — `callWithRetry` wraps them in a
+      // second loop of its own (`maxRetries`, a caller-supplied parameter
+      // defaulting to 3), which the SDK setting cannot reach.
+      ...(liveMode
+        ? { providerClients: boot.liveProviderClients, maxProviderAttempts: 1 }
+        : { providerClients: { [defaultProvider]: bootstrapClient } }),
     });
     return capturedSession;
   };
@@ -211,10 +315,15 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     deliveryLedger: boot.ledgers.createDeliveryLedger(),
   };
 
-  const wss = initSonnetStream(null, async () => 'lane-mock-key', () => true, {
-    evaluationContextFactory: () => roles,
-    sessionFactory,
-  });
+  const wss = initSonnetStream(
+    null,
+    async () => 'lane-mock-key',
+    () => true,
+    {
+      evaluationContextFactory: () => roles,
+      sessionFactory,
+    }
+  );
   const { ws, sent, emit } = makeCapturedWs();
   wss.emit('connection', ws, { headers: {} }, DRIVER_USER);
 
@@ -234,17 +343,37 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     })
   );
 
+  // These three refusals fire BEFORE any turn is driven, so no provider call
+  // can have been consumed — the empty id list is a fact, not a gap.
   const entryRef = activeSessions.get(sessionId);
   if (!entryRef) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: 'session_start_failed', mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: 'session_start_failed',
+      mismatches: [],
+      provider_call_ids: [],
+    };
   }
   // Boot assertions: the handshake must not suppress Stage-6 asks, and the
   // captured session is THE entry session (identity retained to the end).
   if (entryRef.fallbackToLegacy !== fallbackToLegacy) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: 'handshake_mismapped', mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: 'handshake_mismapped',
+      mismatches: [],
+      provider_call_ids: [],
+    };
   }
   if (capturedSession == null || entryRef.session !== capturedSession) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: 'session_factory_not_used', mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: 'session_factory_not_used',
+      mismatches: [],
+      provider_call_ids: [],
+    };
   }
 
   const violations = [];
@@ -260,15 +389,22 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
   for (const turn of fixture.turns ?? []) {
     // Per-turn strict scripted client, swapped in IMMEDIATELY before the
     // transcript; the session is never reconstructed or restarted.
-    const turnClient = makeTurnClient({
-      baseRounds: turn.model_rounds ?? [],
-      branches: turn.branches ?? [],
-      turnState: {},
-      violations,
-      corpusId,
-      turnIndex: turn.turn_index,
-    });
-    capturedSession.client = turnClient;
+    //
+    // LIVE: there is no script to swap in. The branded vendor client injected
+    // at construction stays for the whole fixture, and `turn.model_rounds` is
+    // IGNORED — the point of the live sample is that the model, not the
+    // fixture, decides the rounds.
+    const turnClient = liveMode
+      ? null
+      : makeTurnClient({
+          baseRounds: turn.model_rounds ?? [],
+          branches: turn.branches ?? [],
+          turnState: {},
+          violations,
+          corpusId,
+          turnIndex: turn.turn_index,
+        });
+    if (!liveMode) capturedSession.client = turnClient;
 
     const declaredAnswers = [...(turn.ask_answers ?? [])];
     const answeredIds = new Set();
@@ -422,7 +558,12 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     }
     // Strict per-turn consumption before advancing; assert NO vendor
     // fallback and NO unexpected call.
-    turnClient.assertFullyConsumed();
+    //
+    // LIVE: there is no script, so "fully consumed" is meaningless. The
+    // equivalent live invariant — that every provider call was real and
+    // identified — is enforced one level up by the provider-call recorder and
+    // by the runner's fail-closed `provider_ids_unavailable` terminal.
+    if (!liveMode) turnClient.assertFullyConsumed();
     if (violations.length > 0) {
       failure = failure ?? `scripted_client_violation:${violations[0]?.code ?? 'violation'}`;
     }
@@ -474,20 +615,59 @@ export async function driveFixture({ boot, fixture, expectation, judge, log = ()
     // some paths register no close handler on stubs — non-fatal
   }
   const leaked = clockCtl.resetLedger();
+
+  // The normalised context is ENTRY-only and the entry left the registry at
+  // stop — the RETAINED reference is the only thing the accessor can serve.
+  // Read once, HERE, so the provider-call ids survive the failure returns too:
+  // an errored round still consumed a vendor identity, and 00C's fold needs
+  // that identity recorded even when this sample terminates INVALID.
+  const frozen = getCompletionFreeze(entryRef);
+  const providerCalls = collectProviderCallIds(frozen);
+
   if (activeSessions.has(sessionId)) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: 'entry_not_deleted', mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: 'entry_not_deleted',
+      mismatches: [],
+      provider_call_ids: providerCalls.ids,
+    };
   }
   log(`lane-driver: ${corpusId} cleared ${leaked.clearedPending} armed timers at teardown`);
 
   if (failure) {
-    return { corpus_id: corpusId, verdict: 'INVALID_HOLD', reason: failure, mismatches: [] };
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: failure,
+      mismatches: [],
+      provider_call_ids: providerCalls.ids,
+    };
   }
 
-  // The normalised context is ENTRY-only and the entry left the registry at
-  // stop — the RETAINED reference is the only thing the accessor can serve.
-  const frozen = getCompletionFreeze(entryRef);
+  // LIVE fail-closed — the decision itself lives in `liveProviderIdRefusal` so a
+  // unit test can pin it without booting a server. Mock mode is exempt by
+  // construction (no vendor ids exist) and cannot reach the durable store
+  // anyway — see the sealed dispatch capability.
+  const idRefusal = liveMode ? liveProviderIdRefusal(providerCalls) : null;
+  if (idRefusal) {
+    return {
+      corpus_id: corpusId,
+      verdict: 'INVALID_HOLD',
+      reason: idRefusal,
+      mismatches: [],
+      provider_call_ids: providerCalls.ids,
+    };
+  }
+
   void EVALUATION_CONTEXT;
-  return { corpus_id: corpusId, ...judge(expectation, frozen, { turnIds }) };
+  return {
+    corpus_id: corpusId,
+    ...judge(expectation, frozen, { turnIds }),
+    // AFTER the judge spread: the ids are the driver's own observation of the
+    // wire and are never the judge's to overwrite.
+    provider_call_ids: providerCalls.ids,
+  };
 }
 
 /**

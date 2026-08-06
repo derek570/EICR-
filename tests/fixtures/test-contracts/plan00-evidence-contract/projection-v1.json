@@ -182,6 +182,8 @@
       {
         "provider": "openai",
         "api_transport": "responses",
+        "turn_kind": "reading",
+        "provider_call_id": "resp_68c1f0a94b2e4f0b9d3a7c5e21048f66",
         "requested_model": "gpt-5.6-luna",
         "requested_tier": "fast",
         "response_model": "gpt-5.6-luna",
@@ -206,6 +208,8 @@
       {
         "provider": "openai",
         "api_transport": "chat_completions",
+        "turn_kind": "reading",
+        "provider_call_id": "chatcmpl-9Kt2XbQ7mZfR4sLdWv0nHy3Ea6Uc",
         "requested_model": "gpt-5.6-terra",
         "requested_tier": "standard",
         "response_model": "gpt-5.6-terra",

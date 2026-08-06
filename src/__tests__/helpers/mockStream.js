@@ -52,11 +52,21 @@ export function mockStream(events) {
       // tool-loop's defensive `usage || {}`-style accumulator treats as
       // zero — matching real-world SDK shape drift / partial streams.
       let usage;
+      // Plan 00B-4 §C1c: the real SDK's assembled Message carries the vendor's
+      // own opaque call id (`msg_…`) from message_start, and round attribution
+      // now reads exactly that field to prove a round consumed a real provider
+      // call. Omitting it here would let a helper gap masquerade as a
+      // production gap (or vice versa), so the mock mirrors the SDK: id present
+      // when the fixture's message_start declares one, absent when it doesn't.
+      let messageId;
 
       for (const ev of events) {
         if (ev.type === 'message_start') {
           if (ev.message?.usage) {
             usage = { ...ev.message.usage };
+          }
+          if (typeof ev.message?.id === 'string' && ev.message.id.length > 0) {
+            messageId = ev.message.id;
           }
         } else if (ev.type === 'message_delta' && ev.usage) {
           // Anthropic's message_delta carries cumulative output_tokens
@@ -104,7 +114,11 @@ export function mockStream(events) {
         .sort((a, b) => a - b)
         .map((i) => stateByIndex.get(i).block);
 
-      return { role: 'assistant', content, stop_reason: stopReason, usage };
+      const message = { role: 'assistant', content, stop_reason: stopReason, usage };
+      // Only stamped when the fixture declared one — an absent id must stay
+      // absent so the tool loop's `?? null` normalisation is exercised.
+      if (messageId !== undefined) message.id = messageId;
+      return message;
     },
   };
 }
