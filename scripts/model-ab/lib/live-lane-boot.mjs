@@ -18,16 +18,22 @@
  * 00B's evidence contract needs each attempt to consume exactly ONE provider
  * identity, because `sample_identity` is a hash over the ordered provider call
  * ids and a silent retry would fold in an id no reviewer ever authorised.
- * There are TWO retry loops between the lane and the vendor:
+ * Two retry loops exist in the tree, and they do NOT both sit on this path:
  *
  *   1. the SDK's own (`new Anthropic({ maxRetries })`, `new OpenAI({ maxRetries })`)
- *   2. `callWithRetry` in `src/extraction/eicr-extraction-session.js`, which
- *      wraps every provider call in its own attempt loop over 429/5xx
+ *      — this IS on the path. The lane drives Stage 6, which dispatches through
+ *      `client.messages.stream(...)` (`src/extraction/stage6-tool-loop.js:557`),
+ *      so the SDK's retry setting is the operative control and `maxRetries: 0`
+ *      at construction is what structurally enforces the one-call rule.
+ *   2. `callWithRetry` in `src/extraction/eicr-extraction-session.js` — this is
+ *      NOT on the path. Its only callers are `:2796` (legacy
+ *      `extractFromUtterance`) and `:4597` (orphan review); neither is reached
+ *      by the Stage-6 tool loop the lane drives.
  *
- * Disabling (1) leaves (2) running three attempts. So the lane clamps BOTH:
- * `maxRetries: 0` at construction, and the session's lane-only
- * `maxProviderAttempts: 1` option. That option is resolved ONCE at
- * construction (Research §Pitfall 4) and is absent everywhere else, so
+ * The lane clamps both anyway: `maxRetries: 0` (load-bearing) plus the session's
+ * lane-only `maxProviderAttempts: 1` (defence in depth, covering the legacy
+ * entry points should the lane ever reach them). That option is resolved ONCE
+ * at construction (Research §Pitfall 4) and is absent everywhere else, so
  * production retry behaviour is byte-identical.
  *
  * ## Provider identity is captured from ERRORS too
@@ -35,13 +41,16 @@
  * An errored call still consumed a vendor identity. If it carries a request
  * id, that id belongs in the attempt record — otherwise a rate-limited sample
  * would look like it never happened. The recorder therefore wraps
- * `messages.create` (the ONLY dispatch the session performs — verified by
- * grep: two call sites, both `client.messages.create`) and reads the id from
- * the success response AND from the thrown error, then classifies the error
- * into a kind that maps to an INVALID terminal. Semantic PASS/FAIL is a
- * statement about the MODEL; an infrastructure failure is a statement about
- * the lane, and conflating them would let a bad afternoon on the vendor's side
- * masquerade as a regression.
+ * `messages.create` and reads the id from the success response AND from the
+ * thrown error, then classifies the error into a kind that maps to an INVALID
+ * terminal. Semantic PASS/FAIL is a statement about the MODEL; an
+ * infrastructure failure is a statement about the lane, and conflating them
+ * would let a bad afternoon on the vendor's side masquerade as a regression.
+ *
+ * `messages.create` is NOT the dispatch Stage 6 uses, so on a live run this
+ * recorder observes nothing — see the note on `wrapRecordingClient` for why
+ * that is deliberate and why it is safe (the recorder feeds no decision; the
+ * ids that reach the attempt record come from `round_usage` rows).
  */
 
 import fs from 'node:fs';
@@ -241,35 +250,59 @@ export function wrapRecordingClient(client, { provider, recorder }) {
   // chain, so every unwrapped member reaches the caller and `this` still
   // resolves to the SDK's own internals.
   const wrappedMessages = Object.create(messages);
-  wrappedMessages.create = async function create(...args) {
-    try {
-      const response = await messages.create.apply(messages, args);
-      recorder.record({
-        provider,
-        callId: extractProviderCallId(response),
-        ok: true,
-      });
-      return response;
-    } catch (err) {
-      recorder.record({
-        provider,
-        callId: extractProviderCallId(err),
-        ok: false,
-        errorKind: classifyProviderError(err),
-      });
-      throw err;
-    }
+  // Return the SDK's OWN promise object, never an awaited copy. `messages.create`
+  // returns an `APIPromise` (a Promise subclass carrying `.withResponse()` and
+  // `.asResponse()`); an `async` wrapper would flatten that to a native Promise
+  // and silently drop both. That matters because the SDK re-enters this method:
+  // `MessageStream._createMessage` does `messages.create({...}, {...}).withResponse()`
+  // (`@anthropic-ai/sdk/lib/MessageStream.js`), so a flattened return made every
+  // live round throw `messages.create(...).withResponse is not a function` —
+  // AFTER the vendor request had already fired and been paid for.
+  //
+  // Recording is therefore a DETACHED observation rather than an await: it cannot
+  // alter the returned object, its identity, or its timing. Attaching an extra
+  // `.then` is safe because `APIPromise.parse()` memoises into `parsedPromise`,
+  // so the body is parsed exactly once and every consumer sees the same value.
+  // Handlers are attached BEFORE the caller awaits, so the record is always
+  // written before the caller resumes — the ordering the pins rely on.
+  wrappedMessages.create = function create(...args) {
+    const pending = messages.create.apply(messages, args);
+    pending
+      .then(
+        (response) => {
+          recorder.record({ provider, callId: extractProviderCallId(response), ok: true });
+        },
+        (err) => {
+          recorder.record({
+            provider,
+            callId: extractProviderCallId(err),
+            ok: false,
+            errorKind: classifyProviderError(err),
+          });
+        }
+      )
+      .catch(() => {});
+    return pending;
   };
-  // Only `create` is recorded, and the live Stage-6 path uses `stream` — so on a
-  // live run the recorder observes NOTHING. That is tolerable ONLY because the
-  // recorder feeds no decision: the provider ids that reach the attempt record
-  // come from the `round_usage` rows (`scripts/model-ab/lib/lane-driver.mjs`),
-  // written by `src/extraction/round-usage-attribution.js` on the streaming path
-  // itself. The recorder is an unconsumed observability stub. Wrapping `stream`
-  // is deliberately NOT done here: its provider id only becomes available when
-  // the stream resolves, so recording at call time could only fabricate an `ok`
-  // verdict for a call that may still fail — and a fabricated verdict is exactly
-  // what this lane exists to make impossible.
+  // Pin `stream` to the REAL resource so the SDK's internals never run with `this`
+  // bound to this wrapper. Prototype delegation alone would leave `stream()` calling
+  // `MessageStream.createMessage(this, ...)` with `this === wrappedMessages`, routing
+  // the stream's internal `create` back through the recorder above. That would record
+  // `ok: true` the moment response headers arrive — for a call that can still fail
+  // part-way through iterating the stream. A verdict asserted before the call has
+  // finished is a FABRICATED verdict, and fabricated verdicts are precisely what this
+  // lane exists to make impossible, so the honest choice is to observe nothing here.
+  //
+  // The consequence, stated plainly: the live Stage-6 path dispatches through
+  // `client.messages.stream(...)` (`src/extraction/stage6-tool-loop.js`), so on a live
+  // run the recorder observes NOTHING. That is tolerable ONLY because the recorder
+  // feeds no decision — `providerCallRecorder` has exactly one reference in the tree,
+  // its own construction. The provider ids that actually reach the attempt record come
+  // from the `round_usage` rows (`scripts/model-ab/lib/lane-driver.mjs`), written by
+  // `src/extraction/round-usage-attribution.js` on the streaming path itself.
+  if (typeof messages.stream === 'function') {
+    wrappedMessages.stream = (...args) => messages.stream(...args);
+  }
   const wrapped = Object.create(client);
   wrapped.messages = wrappedMessages;
   return wrapped;

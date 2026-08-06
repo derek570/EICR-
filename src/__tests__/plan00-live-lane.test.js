@@ -509,19 +509,38 @@ describe('3 — provider call-id capture', () => {
     const streamCalls = [];
     const createCalls = [];
 
+    // `messages.create` returns an APIPromise — a Promise subclass carrying
+    // `.withResponse()`. Modelling that is the point: an `async` wrapper flattens
+    // it to a native Promise and drops the method, which is invisible to any fake
+    // that returns a bare value.
+    const makeApiPromise = (value) => {
+      const pending = Promise.resolve(value);
+      pending.withResponse = async () => ({
+        data: await pending,
+        response: { headers: new Map([['request-id', 'req_stream']]) },
+      });
+      return pending;
+    };
+
     class MessagesResource {
       constructor(parent) {
         this._client = parent;
       }
-      async create(args) {
+      create(args) {
         // Reads `this._client` so a broken `this` fails loudly rather than
         // silently returning a wrong-shaped result.
         createCalls.push({ args, viaClient: this._client.tag });
-        return { id: 'msg_proto' };
+        return makeApiPromise({ id: args.stream === true ? 'msg_stream_body' : 'msg_proto' });
       }
       stream(args) {
         streamCalls.push({ args, viaClient: this._client.tag });
-        return { kind: 'MessageStream' };
+        // EXACTLY what `@anthropic-ai/sdk`'s `MessageStream._createMessage` does:
+        // re-enter `create` THROUGH `this` and immediately call `.withResponse()`.
+        // A fake whose `stream` returns a canned object cannot catch either the
+        // dropped-`withResponse` break or the recorder re-entrancy below.
+        return this.create({ ...args, stream: true })
+          .withResponse()
+          .then(({ data }) => data);
       }
     }
     class FakeSdk {
@@ -540,17 +559,32 @@ describe('3 — provider call-id capture', () => {
 
     const wrapped = wrapRecordingClient(client, { provider: 'anthropic', recorder });
 
-    // The dispatch method Stage 6 actually calls must survive wrapping.
+    // The dispatch method Stage 6 actually calls must survive wrapping AND still
+    // complete — including the `create(...).withResponse()` hop inside it.
     expect(typeof wrapped.messages.stream).toBe('function');
-    expect(wrapped.messages.stream({ model: 'm' })).toEqual({ kind: 'MessageStream' });
+    await expect(wrapped.messages.stream({ model: 'm' })).resolves.toEqual({
+      id: 'msg_stream_body',
+    });
     expect(streamCalls).toEqual([{ args: { model: 'm' }, viaClient: 'real-client' }]);
 
-    // …and so must the rest of the client's prototype surface.
+    // The stream ran entirely on the REAL resource, so the recorder observed
+    // NOTHING. This is the honesty invariant: recording a stream at header-receipt
+    // time would assert `ok` for a call that can still fail mid-iteration.
+    expect(recorder.ids()).toEqual([]);
+    expect(recorder.callCount).toBe(0);
+
+    // …and the rest of the client's prototype surface survives too.
     expect(typeof wrapped.baseURL).toBe('function');
 
-    // `create` is still instrumented, and still runs against the REAL resource.
-    await expect(wrapped.messages.create({ model: 'm' })).resolves.toEqual({ id: 'msg_proto' });
-    expect(createCalls).toEqual([{ args: { model: 'm' }, viaClient: 'real-client' }]);
+    // A DIRECT `create` is still instrumented, still runs against the REAL
+    // resource, and still returns the SDK's own promise object un-flattened.
+    const pending = wrapped.messages.create({ model: 'm' });
+    expect(typeof pending.withResponse).toBe('function');
+    await expect(pending).resolves.toEqual({ id: 'msg_proto' });
+    expect(createCalls).toEqual([
+      { args: { model: 'm', stream: true }, viaClient: 'real-client' },
+      { args: { model: 'm' }, viaClient: 'real-client' },
+    ]);
     expect(recorder.ids()).toEqual(['msg_proto']);
 
     // The underlying client is never mutated (the wrapper is a separate object).
