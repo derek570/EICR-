@@ -65,7 +65,11 @@
  */
 
 import logger from '../logger.js';
-import { MUTATION_OBSERVER, getMutationObserver } from './plan00-semantic-capture.js';
+import {
+  MUTATION_OBSERVER,
+  EVIDENCE_TURN_ID,
+  getMutationObserver,
+} from './plan00-semantic-capture.js';
 // Plan 00B-2 C2 — evaluation-only sibling per-turn observer Symbols + the
 // entry-stashed context Symbol. Dormant single-Symbol lookups everywhere.
 import {
@@ -2094,6 +2098,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         configurable: true,
       });
     }
+
+    // 2026-08-06 — carry the RECEIPT-SCOPE turn id on the frame. `utteranceId`
+    // above is deliberately the response epoch (the ANSWERING utterance, so
+    // the iOS chime watchdog disarms on these confirmations); the mutation
+    // observer's receipts are scoped under the LOOP-OPENING
+    // `options.extractionTurnId`. The delivery binder needs the latter, and
+    // conflating the two unmatched every ask-bearing turn. Non-enumerable ⇒
+    // never serialised, zero wire change.
+    Object.defineProperty(result, EVIDENCE_TURN_ID, {
+      value: typeof options.extractionTurnId === 'string' ? options.extractionTurnId : null,
+      enumerable: false,
+      configurable: true,
+    });
 
     // P5 (2026-07-23) — emit clear→write collapse telemetry (live path).
     emitClearWriteCollapseTelemetry(log, session, turnId, result);

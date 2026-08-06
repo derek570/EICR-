@@ -65,7 +65,11 @@ import {
   EVALUATION_CONTEXT,
   PLAN00_ROUND_USAGE_SINK,
 } from './plan00-lifecycle-hooks.js';
-import { attachMutationObserver, getMutationObserver } from './plan00-semantic-capture.js';
+import {
+  attachMutationObserver,
+  getMutationObserver,
+  EVIDENCE_TURN_ID,
+} from './plan00-semantic-capture.js';
 import {
   PLAN00_ASK_EMIT_OBSERVER,
   PLAN00_DELIVERY_EMIT_OBSERVER,
@@ -1598,15 +1602,27 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptOrdinal 
     // NEVER derived from the observer's open-turn state at send time
     // (mini-review r1 finding 5 — that invented `{turn:null, ordinal:0}`
     // keys). Every operation-backed unit binds through the canonical
-    // receipt resolver instead; `result.utterance_id` is the same value the
-    // harness minted as the receipts' extraction_turn_id (its explicit
-    // fallback), so a buffered older result binds to its OWN turn's
-    // receipts even when a newer same-slot write has since accumulated
-    // (mini-review r1 finding 4).
+    // receipt resolver instead, keyed by the turn id the frame CARRIES, so a
+    // buffered older result binds to its OWN turn's receipts even when a
+    // newer same-slot write has since accumulated (mini-review r1 finding 4).
+    //
+    // 2026-08-06 — that carried id is `EVIDENCE_TURN_ID`, NOT
+    // `result.utterance_id`. The original comment here asserted the two were
+    // the same value; they diverge on every turn that answers an ask, because
+    // `advanceResponseEpoch` moves `result.utterance_id` to the ANSWERING
+    // utterance while the receipts stay scoped under the loop-opening
+    // `extractionTurnId`. The binder then matched zero receipts and latched
+    // the session `confirmation_delivery_binding_unmatched` — a false
+    // ineligibility on correct audio and a correct write. `utterance_id`
+    // remains the fallback for frames that lost the Symbol across a
+    // serialisation boundary (S3 / rehydration), which is exactly the
+    // pre-fix behaviour and never worse.
     const resultTurnId =
-      typeof result?.utterance_id === 'string' && result.utterance_id.length > 0
-        ? result.utterance_id
-        : null;
+      typeof result?.[EVIDENCE_TURN_ID] === 'string' && result[EVIDENCE_TURN_ID].length > 0
+        ? result[EVIDENCE_TURN_ID]
+        : typeof result?.utterance_id === 'string' && result.utterance_id.length > 0
+          ? result.utterance_id
+          : null;
     const stageMirrorTerminal = (text) => {
       const lineage = `${mirrorDelivery.kind}:${mirrorDelivery.token}`;
       // One unit per claim lineage — the same result surfaces the terminal
