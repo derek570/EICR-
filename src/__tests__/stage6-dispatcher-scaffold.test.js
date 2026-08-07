@@ -132,7 +132,19 @@ describe('createWriteDispatcher()', () => {
     expect(typeof result.content).toBe('string');
     expect(JSON.parse(result.content)).toMatchObject({ ok: true });
 
-    expect(logger.info).toHaveBeenCalledTimes(1);
+    // 2026-08-07 — two rows per known-tool dispatch since field-test
+    // observability added a sibling `stage6_tool_call_raw_input` row (the
+    // schema-locked `stage6_tool_call`/input_summary contract is untouched).
+    expect(logger.info).toHaveBeenCalledTimes(2);
+    expect(logger.info).toHaveBeenCalledWith(
+      'stage6_tool_call_raw_input',
+      expect.objectContaining({
+        tool: 'record_reading',
+        tool_use_id: 'tu_x',
+        round: 1,
+        raw_input: expect.objectContaining({ field: 'wiring_type', circuit: 3, value: 'A' }),
+      })
+    );
     expect(logger.info).toHaveBeenCalledWith(
       'stage6_tool_call',
       expect.objectContaining({
@@ -202,7 +214,12 @@ describe('createWriteDispatcher()', () => {
       {}
     );
     await d({ tool_call_id: 'tu_3', name: 'create_circuit', input: { circuit_ref: 7 } }, {});
-    const rounds = logger.info.mock.calls.map((c) => c[1].round);
+    // 2026-08-07 — filter to the stage6_tool_call row specifically; each
+    // dispatch now also logs a sibling stage6_tool_call_raw_input row at the
+    // same round, so the unfiltered mock.calls array is twice as long.
+    const rounds = logger.info.mock.calls
+      .filter((c) => c[0] === 'stage6_tool_call')
+      .map((c) => c[1].round);
     expect(rounds).toEqual([1, 2, 3]);
   });
 });

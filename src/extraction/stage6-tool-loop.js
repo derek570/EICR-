@@ -571,6 +571,23 @@ export async function runToolLoop({
       throw attachBillableUsage(err);
     }
     stopReason = stop_reason;
+    // 2026-08-07 (Derek, field-test observability) — OpenAI-only in practice:
+    // buildAnthropicContent only sets summary_text when the adapter requested
+    // reasoning.summary (openai-responses-adapter.js); Anthropic content
+    // blocks never carry this key, so the filter is a no-op there. Logged
+    // once per round with full session/turn context, separate from the
+    // encrypted continuity blob which stays opaque by design and can never
+    // be made readable.
+    for (const block of Array.isArray(assistantMsg?.content) ? assistantMsg.content : []) {
+      if (block?.type === 'reasoning' && block.summary_text) {
+        logger?.info?.('stage6.reasoning_summary', {
+          sessionId: ctx?.sessionId,
+          turnId: ctx?.turnId,
+          round: rounds,
+          summary_text: block.summary_text,
+        });
+      }
+    }
     // Phase 0 — round-level stream complete time (post-finalize).
     const roundStreamCompleteNs = process.hrtime.bigint();
     actualStopReasonPerRound.push(stop_reason);

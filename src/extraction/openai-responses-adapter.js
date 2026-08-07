@@ -292,10 +292,23 @@ function buildAnthropicContent(resp) {
   const blocks = [];
   for (const item of resp?.output ?? []) {
     if (item.type === 'reasoning') {
+      // 2026-08-07 (Derek, field-test observability) — additive field, read
+      // from the SAME item that carries encrypted_content, never from it.
+      // toResponsesInput's echo-back path only ever reads `id` and
+      // `encrypted_content` off this block (reconstructs `summary: []`
+      // unconditionally), so this is inert on the continuity round-trip —
+      // it exists purely for the caller in stage6-tool-loop.js to log.
+      const summaryText = Array.isArray(item.summary)
+        ? item.summary
+            .map((s) => (typeof s?.text === 'string' ? s.text : ''))
+            .filter(Boolean)
+            .join('\n\n')
+        : '';
       blocks.push({
         type: 'reasoning',
         id: item.id,
         encrypted_content: item.encrypted_content ?? null,
+        summary_text: summaryText || null,
       });
     } else if (item.type === 'function_call') {
       let parsed = {};
@@ -527,6 +540,17 @@ function createStream(openai, streamArgs, options) {
       effort: String(
         reasoningEffortOverride ?? process.env.OPENAI_EXTRACT_REASONING_EFFORT ?? 'low'
       ).trim(),
+      // 2026-08-07 (Derek, field-test observability) — live-probed against
+      // gpt-5.6-luna before wiring this in: accepted with reasoning_effort
+      // 'low' and returns real human-readable text on the reasoning output
+      // item's `summary` array (never on `encrypted_content`, which stays
+      // opaque by OpenAI design and is unrelated to this). Requesting a
+      // summary does not change tool-call behaviour or reasoning_effort;
+      // it only adds this field to the response. buildAnthropicContent below
+      // reads it into `summary_text`; toResponsesInput's echo-back path
+      // already reconstructs `summary: []` regardless of what's read here,
+      // so round-tripping it back to OpenAI on the next turn is unaffected.
+      summary: 'auto',
     },
   };
   if (promptCacheMode === 'explicit') {

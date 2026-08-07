@@ -6572,6 +6572,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       logger.info('Extracting from transcript', {
         sessionId,
         textPreview: transcriptText.substring(0, 80),
+        // 2026-08-07 (Derek, field-test observability) — the 80-char preview
+        // above predates this need and is kept for existing log-scanning
+        // habits; fullTranscript is additive so nothing that greps for
+        // textPreview breaks. This is the actual model INPUT for a session,
+        // not free chatter, so unlike answer_user's leak-filtered OUTPUT
+        // text it is fine to log verbatim for a sole-user field test.
+        fullTranscript: transcriptText,
       });
       // r20 MAJOR remediation — normalise/validate regexResults ONCE at
       // ingress so both classifyOvertake() and runShadowHarness() see

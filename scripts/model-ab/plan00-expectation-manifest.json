@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "908c464f196895557339c62709a43984173e46241bc042221289a5d2d5abddaf",
+  "semantic_oracle_digest": "627549540cbbcae09d380ee0e20b08f1f85332f24a0877af354aa24ba96b2c73",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -517,11 +517,11 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "cf3ff58e03f5fdcfaeef9099cd44ae209cbae716e18e1686dd608d0e97eadbd1"
+      "sha256": "857ea6534744b5f00992a37dd2ac8fb805476c1d2b0995eb4b7d385d8ad7757b"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
-      "sha256": "566df7c59afdbf275e6847ec19090d42820813fcc47029ab1043c420726b81ea"
+      "sha256": "391d614c728693359a830b3b6ba8f361bd19e4b8fabf0081cc082657db87f0c3"
     },
     {
       "path": "src/extraction/eicr-extraction-session.js",
@@ -613,7 +613,7 @@
     },
     {
       "path": "src/extraction/stage6-tool-loop.js",
-      "sha256": "c2199f410acc9e63ebe16a4a987ce21bb2c9976d5039e987bf17e7d0e24a3287"
+      "sha256": "20cb16b8f05500898aecbcdb805cf510a2b42c6f7f116549d71244b56e667dbc"
     },
     {
       "path": "src/extraction/openai-tooluse-adapter.js",
@@ -621,7 +621,7 @@
     },
     {
       "path": "src/extraction/openai-responses-adapter.js",
-      "sha256": "b5deae876e36e390e50bd042c368aaeca8c8199360b6f9ac339e86b686440add"
+      "sha256": "5aacb884da01bba2253766511c868a0c3f61b906cce962c861e85dc88e2a9533"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json",
