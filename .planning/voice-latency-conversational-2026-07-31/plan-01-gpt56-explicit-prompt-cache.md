@@ -2,7 +2,7 @@
 
 Status: **DRAFT SUPPLEMENT — core explicit cache is live; retention/keep-warm work is not RP-reviewed or implemented**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
-Dependency: Plan 00 complete
+Dependency: none — core cache is already live. No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid.
 
 ## Outcome
 

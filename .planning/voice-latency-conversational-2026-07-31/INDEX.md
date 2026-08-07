@@ -26,15 +26,17 @@ The [umbrella reference](plan-00-gpt56-port-parity/PLAN-00-final.md) is permanen
 
 ## Remaining latency plans
 
+**2026-08-07 — the Plan 00C formal evidence-gate dependency was stripped from every plan below (Derek: sole user, doesn't need a machine-checked gate for a personal go/no-go).** Luna is already live in production. Each plan's dependency line now reads "no formal Plan 00 gate required — proceed once the informal Luna field test feels solid." Genuine engineering order between plans (02 → 03 → 05, and 05 → 06) is unchanged — that's real cross-plan sequencing, not gate ceremony, and stays.
+
 | Plan | Purpose | Dependency boundary |
 |---|---|---|
-| [01 — explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Core cache is live; evaluate retention before any 25-minute Terra re-warm | Supplement waits for Plan 00C live DONE |
-| [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | Play ElevenLabs PCM while chunks arrive | Behaviour-changing work waits for Plan 00C live DONE |
-| [03 — persistent ElevenLabs session](plan-03-elevenlabs-persistent-session.md) | Reuse the TTS transport and test synthesis tuning | After Plan 02 and Plan 00C live DONE |
-| [04 — Deepgram Flux eager EOT](plan-04-deepgram-flux-eager-eot.md) | Measure turn-final speculation without sending half utterances | Mutation-capable phase waits for its own gate and Plan 00C live DONE |
-| [05 — answer-user pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS without early playback | Plans 00C and 02; Plan 03 recommended |
-| [06 — conversational lane](plan-06-general-conversational-lane.md) | Preserve natural conversation while isolating certificate mutation | Plan 00C; Plan 05 recommended |
-| [07 — Loaded Barrel audit](plan-07-loaded-barrel-value-audit.md) | Measure parked speculative audio before any reactivation decision | Evidence only until Plan 00C live DONE |
+| [01 — explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Core cache is live; evaluate retention before any 25-minute Terra re-warm | None — small leftover supplement, mostly done |
+| [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | Play ElevenLabs PCM while chunks arrive | None — the one real build in this wave |
+| [03 — persistent ElevenLabs session](plan-03-elevenlabs-persistent-session.md) | Reuse the TTS transport and test synthesis tuning | After Plan 02 (real order) |
+| [04 — Deepgram Flux eager EOT](plan-04-deepgram-flux-eager-eot.md) | Measure turn-final speculation without sending half utterances | None, but its own internal safety gates (Phase 3 explicit go/no-go) stay — this plan carries real churn risk, see its safety classification |
+| [05 — answer-user pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS without early playback | After Plan 02 (real order); Plan 03 recommended |
+| [06 — conversational lane](plan-06-general-conversational-lane.md) | Preserve natural conversation while isolating certificate mutation | Plan 05 recommended; **this is a PRODUCT decision, not a latency fix — get Derek's explicit go/no-go before implementing** |
+| [07 — Loaded Barrel audit](plan-07-loaded-barrel-value-audit.md) | Measure parked speculative audio before any reactivation decision | None — telemetry already shipped, this is nearly a pure decision now |
 
 ## Shared success metric
 

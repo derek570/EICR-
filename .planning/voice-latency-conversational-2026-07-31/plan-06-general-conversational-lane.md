@@ -2,7 +2,7 @@
 
 Status: **DRAFT — not RP-reviewed**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
-Dependency: Plan 00; Plan 05 recommended for perceived latency
+Dependency: Plan 05 recommended for perceived latency. No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing). Separate from the gate: this is a PRODUCT decision, not a latency fix — get Derek's explicit go/no-go before implementing (see vault todo).
 
 ## Outcome
 

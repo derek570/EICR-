@@ -3,7 +3,7 @@
 Status: **DRAFT — Phase 1 shipped 2026-07-31; Phases 2–3 not RP-reviewed**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 iOS repo: `/Users/derekbeckley/Developer/CertMateUnified`
-Dependency: telemetry prerequisite shipped; Plan 00 before remaining behaviour/cohort code changes
+Dependency: telemetry prerequisite shipped (done). No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid.
 Timing: establish baseline before Plans 02–03 change the TTS waterfall
 
 ## Outcome
