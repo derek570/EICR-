@@ -173,6 +173,23 @@ export function createWriteDispatcher(session, logger, turnId, perTurnWrites, ex
         is_error: true,
       };
     }
+    // 2026-08-07 (Derek, field-test observability) — a SEPARATE log name
+    // from stage6_tool_call's schema-locked input_summary (never touch that
+    // contract; see stage6-dispatcher-logger.js's restrained-mode tests).
+    // input_summary deliberately excludes the actual value on a blanket PII
+    // rule; for a sole-user field test comparing Luna's real output against
+    // what was dictated, the value itself (an ohms reading, a defect code)
+    // isn't personal data, so it's logged here verbatim, once, at the single
+    // point every write-tool call passes through regardless of which
+    // dispatcher handles it.
+    logger.info('stage6_tool_call_raw_input', {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: call.name,
+      round,
+      raw_input: call.input ?? null,
+    });
     // Plan 00B §B2 — declare the semantic origin at the ONE producer
     // boundary every model-driven write flows through. calculate_* results
     // are explicit-intent computed writes ('calculator'); everything else

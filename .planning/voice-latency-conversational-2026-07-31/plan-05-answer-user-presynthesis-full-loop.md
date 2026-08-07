@@ -3,7 +3,7 @@
 Status: **DRAFT — not RP-reviewed**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 iOS repo: `/Users/derekbeckley/Developer/EICR_Automation/CertMateUnified`
-Dependencies: Plans 00 and 02; Plan 03 recommended
+Dependencies: Plan 02 (real engineering order); Plan 03 recommended. No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid.
 
 ## Outcome
 

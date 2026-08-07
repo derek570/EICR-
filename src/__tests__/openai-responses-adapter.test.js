@@ -372,7 +372,14 @@ describe('openai-responses-adapter — request/response translation', () => {
 
   test('buildAnthropicContent preserves reasoning-then-tool_use order', () => {
     const blocks = _internals.buildAnthropicContent(ROUND1_FINAL);
-    expect(blocks[0]).toEqual({ type: 'reasoning', id: 'rs_1', encrypted_content: 'enc_abc' });
+    // 2026-08-07 — summary_text added for field-test observability; ROUND1_FINAL's
+    // fixture reasoning item carries no `summary` array, so it resolves to null.
+    expect(blocks[0]).toEqual({
+      type: 'reasoning',
+      id: 'rs_1',
+      encrypted_content: 'enc_abc',
+      summary_text: null,
+    });
     expect(blocks[1]).toEqual({
       type: 'tool_use',
       id: 'call_xyz',
@@ -468,7 +475,10 @@ describe('openai-responses-adapter — request/response translation', () => {
       expect(openai.responses.stream).toHaveBeenCalledWith(
         expect.objectContaining({
           model: 'gpt-5.6-terra',
-          reasoning: { effort: 'low' },
+          // 2026-08-07 — summary:'auto' added for field-test observability
+          // (openai-responses-adapter.js); effort override still outranks
+          // the global policy, which is what this test actually pins.
+          reasoning: { effort: 'low', summary: 'auto' },
         }),
         undefined
       );
