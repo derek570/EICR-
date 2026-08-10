@@ -115,15 +115,31 @@ Two live rounds were spent on validator rejections of `board_id: 'current'` and 
 Mechanism verified in source:
 
 - `validateBoardScope` (`stage6-dispatch-validation.js:719-731`) rejects any supplied `board_id`
-  not string-equal to `currentBoardId`. There is no alias vocabulary.
+  not string-equal to the expected id. There is no alias vocabulary. Note the expected id is
+  `snapshot?.currentBoardId ?? getMainBoardId(snapshot)` (`:722`) — `currentBoardId` in practice,
+  but do not write the fallback out of the design.
 - `normaliseBoardScopeInput` (`stage6-multi-board-shape.js:121-140`) canonicalises exactly two
-  things: the empty string, and `'main'` under the three conjunctive conditions added 2026-08-06.
-  `'current'` is handled nowhere. `'*'` is passed through untouched (`:80-81`) because it is the
-  `set_field_for_all_circuits` broadcast — correct only on the tools exempt from
-  `validateBoardScope` (`:704-705`), and a guaranteed rejection anywhere else.
-- The tool schema (`stage6-tool-schemas.js:254`) says *"There is no board id 'main'"* — a fix for
-  the previous instance of this class, phrased as one blocked spelling rather than as the accepted
-  vocabulary.
+  things: the empty string (`:123-126`), and `'main'` under the three conjunctive conditions added
+  2026-08-06 (`:127-137`). `'current'` is handled nowhere.
+- `'*'` is untouched **by omission** — it simply matches neither branch. The docstring at `:80-81`
+  records that as deliberate (*"NOT a board id and is passed through untouched"*), but it is a
+  comment, not the mechanism. The mechanism is that the function has no third branch.
+- **The exempt surface is wider than the `'*'` case, and it constrains option (b).**
+  `validateBoardScope` exempts five tool families (`:701-710`), and the normaliser separately
+  refuses to touch `select_board`, `clear_board_reading` and `record_board_reading`
+  (`stage6-multi-board-shape.js:83-86`) precisely so an injected empty id keeps REJECTING rather
+  than silently retargeting a destructive write. **`mark_distribution_circuit` is the sharp
+  one:** its `board_id` names the *source* board of the distribution relationship, so it means
+  something different by the argument (`:708-710`). Any alias added to the shared normaliser is
+  applied to whatever flows through it — an alias meaning "the board I am on" is not obviously
+  correct for an argument meaning "the board this circuit comes from".
+- The tool schema (`stage6-tool-schemas.js:254`) already says *"There is no board id 'main'"*, and
+  already prefers omission — it opens *"PREFER OMITTING THIS"* and names the `wrong_board`
+  consequence. So the schema is not silent; it enumerates one blocked spelling and one blocked
+  category ("not a designation … and not a board TYPE") without ever stating what IS accepted
+  beyond "the EXACT board id copied from the BOARDS section". Whether `'current'` failed *despite*
+  that wording or *because* the wording is a list of prohibitions is the question option (a)
+  turns on, and it is not yet answered.
 
 **This is the same failure class as the 2026-08-06 field bug** — the model reaches for a natural
 word meaning "the board I am on", the validator rejects it, a round burns. That wave fixed one
@@ -136,8 +152,12 @@ spellings one field incident at a time. Two candidate mechanisms; pick one, do n
   section"). Cheapest, zero mutation risk, relies on model compliance.
 - **(b) Normaliser alias** — extend `normaliseBoardScopeInput` to canonicalise `'current'` the way
   `''` is canonicalised, to ABSENT, the one unscoped spelling every downstream reader already
-  agrees means `currentBoardId`. Deterministic, but widens a security-adjacent surface and must
-  inherit the `'main'` fix's conjunctive discipline.
+  agrees means `currentBoardId`. Deterministic, but the normaliser is **shared**, so the alias
+  lands on every tool that flows through it — including `mark_distribution_circuit`, whose
+  `board_id` means the *source* board. It must inherit the `'main'` fix's conjunctive discipline
+  and the existing refusal to touch `select_board` / `clear_board_reading` /
+  `record_board_reading`. If it cannot be scoped to destination-`board_id` tools only, that is an
+  argument for (a), not a detail to paper over.
   **`'*'` must NOT be aliased on gated tools** — a broadcast silently retargeted at one board would
   corrupt the certificate. Rejecting it is correct; it need only reject *audibly*, which the
   `wrong_board` partial-failure family (2026-08-06) already provides.
@@ -212,5 +232,12 @@ converges. This paragraph is not that row.
 - Does any §2.1 change make a rejection silent? Any path that turns `wrong_board` back into a
   silent drop re-creates the 2026-08-06 field bug and fails outright.
 - Can `'*'` reach a gated mutator as anything other than a rejection?
+- **`normaliseBoardScopeInput` is shared.** Under option (b), enumerate every tool whose input
+  reaches it and say what `'current'` would mean for each — specifically
+  `mark_distribution_circuit`, where `board_id` is the *source* board, not the destination.
+  An alias that is right for a write is not automatically right for a relationship argument.
+- Is the §2.1 problem even a prompt problem? The schema already opens *"PREFER OMITTING THIS"*.
+  If the model read that and still sent `'current'`, option (a) is proposing more of what already
+  failed — say so rather than shipping another sentence.
 - Are gains here separable from 08C, Loaded Barrel, Plan 02 and Plan 03, or would a combined deploy
   make all of them unattributable?
