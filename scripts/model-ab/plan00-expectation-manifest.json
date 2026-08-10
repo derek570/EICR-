@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "6ca77f3236f4bcbc7eddb95e58492736948d6217a0436d0a6302600dedb1cf2b",
+  "semantic_oracle_digest": "1f9966e542832119efd5a4dc5094dd2996c6628059c19dd326f9b03534317c20",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -613,7 +613,7 @@
     },
     {
       "path": "src/extraction/stage6-tool-loop.js",
-      "sha256": "a7848ca50aad042d6018ed6b12f08b9dd696df7cbe1e265ba7abdda4b633d9bc"
+      "sha256": "769b046bea7940073f1c701c32a1a625432b18474de82ccce03f2209c5c45464"
     },
     {
       "path": "src/extraction/openai-tooluse-adapter.js",

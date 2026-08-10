@@ -470,14 +470,22 @@ export async function runToolLoop({
     // bindings no matter which exit path calls it.
     //
     // firstToolUseNs: the first content_block_start of type tool_use, which is
-    //   the ONLY honest first-content marker on this transport. It originates
-    //   from a real provider `response.output_item.added`, whereas the
-    //   Responses adapter yields a synthetic `message_start` BEFORE it reads
-    //   any provider SSE and deliberately suppresses reasoning/message/text
-    //   events — so a "first event of any kind" stamp would record ~0 ms every
-    //   round: a precise, confident, meaningless number. An end_turn round
-    //   emits no tool call and so keeps a null here; its interior stays
-    //   opaque, which is an accepted limitation of this plan.
+    //   the ONLY honest first-content marker on the STREAMING Responses
+    //   transport this plan targets. There it originates from a real provider
+    //   `response.output_item.added`, whereas the Responses adapter yields a
+    //   synthetic `message_start` BEFORE it reads any provider SSE and
+    //   deliberately suppresses reasoning/message/text events — so a "first
+    //   event of any kind" stamp would record ~0 ms every round: a precise,
+    //   confident, meaningless number. An end_turn round emits no tool call
+    //   and so keeps a null here; its interior stays opaque, which is an
+    //   accepted limitation of this plan.
+    //   CAVEAT — the loop also accepts the BUFFERED chat-completions adapter
+    //   (`OPENAI_EXTRACT_API=chat_completions`), which synthesises its
+    //   content_block_start only once the whole response has arrived
+    //   (openai-tooluse-adapter.js). On that transport this stamp approximates
+    //   response COMPLETION, not first emission, so read it together with
+    //   round_usage[].api_transport rather than comparing the two transports
+    //   as if the number meant the same thing on both.
     // blockingAskUserDispatched: whether this round's dispatch parked on a
     //   human answering an ask_user (one observed round reported
     //   dispatch_ms = 10,427 ms of inspector reaction time).
@@ -783,7 +791,10 @@ export async function runToolLoop({
       terminalReason = terminalReason ?? 'end_turn';
       // Phase 0 telemetry: record per-round timing. No dispatcher runs on this
       // path, so the finaliser's default (dispatch_complete = stream_complete,
-      // dispatch_ms = 0) reproduces the pre-08A row byte-for-byte.
+      // dispatch_ms = 0) leaves every PRE-EXISTING field of this row exactly as
+      // it was before 08A. The row itself is wider — every row now also carries
+      // first_tool_use_ns and blocking_ask_user_dispatched — so this is
+      // "no existing value changed", not "byte-identical output".
       finaliseRoundTiming();
       toolCallCountPerRound.push(0);
       toolErrorCountPerRound.push(0);
