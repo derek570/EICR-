@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "627549540cbbcae09d380ee0e20b08f1f85332f24a0877af354aa24ba96b2c73",
+  "semantic_oracle_digest": "6ca77f3236f4bcbc7eddb95e58492736948d6217a0436d0a6302600dedb1cf2b",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -609,11 +609,11 @@
     },
     {
       "path": "src/extraction/round-usage-attribution.js",
-      "sha256": "6db7d36cffe091a9f4bb21715580d7f003cb3bc80a396862da9a0b9cb619715d"
+      "sha256": "2b9fe0b053c4a74d9c6a52e80a9b779b637bc3e32e1061f1a8378817b8988c56"
     },
     {
       "path": "src/extraction/stage6-tool-loop.js",
-      "sha256": "20cb16b8f05500898aecbcdb805cf510a2b42c6f7f116549d71244b56e667dbc"
+      "sha256": "a7848ca50aad042d6018ed6b12f08b9dd696df7cbe1e265ba7abdda4b633d9bc"
     },
     {
       "path": "src/extraction/openai-tooluse-adapter.js",
@@ -621,7 +621,7 @@
     },
     {
       "path": "src/extraction/openai-responses-adapter.js",
-      "sha256": "5aacb884da01bba2253766511c868a0c3f61b906cce962c861e85dc88e2a9533"
+      "sha256": "85bec9305065b2e5f897de422853f845248c33d164f63d198b35f0849150e6e0"
     },
     {
       "path": "tests/fixtures/test-contracts/plan00-evidence-contract/schema-v1.json",
