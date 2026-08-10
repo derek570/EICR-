@@ -17,6 +17,22 @@ import {
 } from '../extraction/ccu-cv-pitch.js';
 
 /**
+ * mulberry32 — a deterministic 32-bit PRNG, inlined so the white-noise test
+ * below produces the SAME signal on every run and in every environment.
+ * Dependency-free on purpose: pulling a seedable-RNG package into the tree to
+ * fix one flaky assertion would be a worse trade than eight lines here.
+ */
+function mulberry32(seed) {
+  let a = seed | 0;
+  return function next() {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
  * Build a synthetic image with vertical bars at known pitch (px). Each bar
  * is a single dark column on a light background — gives clean Sobel-X
  * peaks at every bar boundary.
@@ -66,11 +82,34 @@ describe('ccu-cv-pitch internals', () => {
   });
 
   test('autocorrPeak returns low normCorr on white noise', () => {
+    // SEEDED, deliberately — this test used `Math.random()` and failed ~1 run
+    // in 73. The property under test is sound ("noise must not be mistaken for
+    // periodicity"), but the threshold sat INSIDE the statistic's natural
+    // spread: over 3000 unseeded trials of the real autocorrPeak, normCorr had
+    // p50 0.135 / p90 0.168 / p99 0.207 / max 0.255 against a `< 0.2` bound —
+    // i.e. 0.2 is about the 98.6th percentile, so 1.37% of runs failed on an
+    // unlucky draw alone. That is not hypothetical: it turned the whole backend
+    // suite red on `main` (run 31405672026, received 0.2128) and skipped the
+    // production ECS deploy behind it.
+    //
+    // Seeding keeps the assertion exactly as strong — these are still five
+    // independent white-noise vectors, and a regression that made autocorrPeak
+    // find structure in noise still fails all five — while making the outcome a
+    // property of the code rather than of the draw. Do NOT restore
+    // `Math.random()`: it buys no extra coverage (the seeds are arbitrary) and
+    // reintroduces a deploy-blocking flake.
+    //
+    // Measured values at these seeds: 0.1476 / 0.1215 / 0.1476 / 0.1206 /
+    // 0.1171 — worst case 26% below the bound. If a future change pushes any of
+    // them near 0.2, that is a real signal about autocorrPeak, not noise.
     const N = 500;
-    const sig = new Float32Array(N);
-    for (let i = 0; i < N; i++) sig[i] = Math.random() - 0.5;
-    const { normCorr } = autocorrPeak(sig, 40, 200);
-    expect(normCorr).toBeLessThan(0.2);
+    for (const seed of [1, 7, 42, 1337, 20260810]) {
+      const rand = mulberry32(seed);
+      const sig = new Float32Array(N);
+      for (let i = 0; i < N; i++) sig[i] = rand() - 0.5;
+      const { normCorr } = autocorrPeak(sig, 40, 200);
+      expect({ seed, normCorr: normCorr < 0.2 }).toEqual({ seed, normCorr: true });
+    }
   });
 
   test('sobelXColumnSum produces expected length', () => {
