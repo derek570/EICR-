@@ -41,9 +41,16 @@ is exactly the gap Plan 08 was created to own. Treat it as a reason to keep 03/0
 
 | Order | Plan | Why it earns a cycle |
 |---|---|---|
-| 1 | [08 — Stage-6 round efficiency](plan-08-stage6-round-efficiency.md) | Model round-count is the unowned dominant latency term; also the largest token/cost lever. Analysis first, plan only if the data supports it. |
-| 2 | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | The one genuine latency build in the original wave. Full dual-reviewer loop (capability handshake + exactly-once ACK = shared concurrent state). |
+| 1 | [08 — Stage-6 round efficiency](plan-08-stage6-round-efficiency.md) | **AUTHORED 2026-08-10.** Telemetry settled it: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. Phase 1 is instrumentation and ships alone; we currently cannot see inside a round. |
+| 2 | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | The one genuine latency build in the original wave. Full dual-reviewer loop (capability handshake + exactly-once ACK = shared concurrent state). **Re-argue after 08 Phase 1** — see the caveat below. |
 | 3 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Explicit GO. Own `/rp`; will not converge in 2–4 rounds — history, echo re-ingestion and cost-loop surfaces are all real. |
+
+**Why Plan 02 may be worth less than the wave assumed.** Incremental TTS pays only for time the
+model spends *streaming*. Nothing currently measures whether a Luna round is front-loaded
+reasoning silence or steady streaming — `stream_ms` is start→complete with no first-token stamp
+(`stage6-tool-loop.js:1093-1098`). If the round is mostly silence, there is little to overlap and
+Plan 02's ceiling is low. Plan 08 Phase 1 adds that stamp. **Do not open Plan 02's `/rp` before
+reading it** — that is the substantive reason for the 08-before-02 order, not just sequencing.
 
 ### Tier C — held, reassess after 02
 
