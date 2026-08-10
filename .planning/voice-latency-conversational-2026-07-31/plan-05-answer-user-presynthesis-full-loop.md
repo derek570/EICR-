@@ -1,6 +1,6 @@
 # Plan 05 — pre-synthesise `answer_user` while retaining the full Luna loop
 
-Status: **DRAFT — not RP-reviewed**
+Status: **TIER C — DEFERRED (2026-08-10).** A new prefetch cache plus wire surface, for a modest saving on question turns — a minority of turns for a single user. Revisit only if plans 08/02 land and the answer-turn TTS tail is still the thing that hurts.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 iOS repo: `/Users/derekbeckley/Developer/EICR_Automation/CertMateUnified`
 Dependencies: Plan 02 (real engineering order); Plan 03 recommended. No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid.

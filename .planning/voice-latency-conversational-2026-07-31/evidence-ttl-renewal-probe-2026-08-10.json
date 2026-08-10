@@ -1,0 +1,83 @@
+{
+  "run_id": "1daa79f24224",
+  "model": "gpt-5.6-luna",
+  "prefix_tokens_target": 35000,
+  "read_at_min": 25,
+  "check_at_min": 50,
+  "key_digest": {
+    "test": "f2cdb38d1e4d",
+    "control": "c1c41b70caeb"
+  },
+  "started_at": "2026-08-10T13:54:08.084Z",
+  "phases": [
+    {
+      "arm": "test",
+      "phase": "write",
+      "at": "2026-08-10T13:54:09.176Z",
+      "elapsed_ms": 1090,
+      "model": "gpt-5.6-luna",
+      "service_tier": "default",
+      "input_tokens": 28187,
+      "cached_tokens": 0,
+      "cache_write_tokens": 28173,
+      "output_tokens": 5,
+      "warm": false
+    },
+    {
+      "arm": "control",
+      "phase": "write",
+      "at": "2026-08-10T13:54:10.132Z",
+      "elapsed_ms": 955,
+      "model": "gpt-5.6-luna",
+      "service_tier": "default",
+      "input_tokens": 28187,
+      "cached_tokens": 0,
+      "cache_write_tokens": 28173,
+      "output_tokens": 5,
+      "warm": false
+    },
+    {
+      "arm": "test",
+      "phase": "read",
+      "at": "2026-08-10T14:19:12.909Z",
+      "elapsed_ms": 2780,
+      "model": "gpt-5.6-luna",
+      "service_tier": "default",
+      "input_tokens": 28187,
+      "cached_tokens": 28173,
+      "cache_write_tokens": 0,
+      "output_tokens": 5,
+      "warm": true
+    },
+    {
+      "arm": "test",
+      "phase": "check",
+      "at": "2026-08-10T14:44:14.726Z",
+      "elapsed_ms": 1818,
+      "model": "gpt-5.6-luna",
+      "service_tier": "default",
+      "input_tokens": 28187,
+      "cached_tokens": 28173,
+      "cache_write_tokens": 0,
+      "output_tokens": 6,
+      "warm": true
+    },
+    {
+      "arm": "control",
+      "phase": "check",
+      "at": "2026-08-10T14:44:16.168Z",
+      "elapsed_ms": 1439,
+      "model": "gpt-5.6-luna",
+      "service_tier": "default",
+      "input_tokens": 28187,
+      "cached_tokens": 0,
+      "cache_write_tokens": 28173,
+      "output_tokens": 6,
+      "warm": false
+    }
+  ],
+  "verdict": "RENEWS",
+  "verdict_meaning": "A read renewed the TTL. A read-based keep-alive is viable; size it against OBSERVED Terra gaps in real field sessions before building it (Plan 01 §5 fork 2).",
+  "note": "Synthetic filler only. No prompt text, inspection data or credentials recorded.",
+  "finished_at": "2026-08-10T14:44:16.170Z"
+}

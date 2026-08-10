@@ -1,6 +1,16 @@
 # Plan 06 — broaden `answer_user` into a safe conversational lane
 
-Status: **DRAFT — not RP-reviewed**
+Status: **TIER B — GO GIVEN (Derek, 2026-08-10). Own `/rp`, runs after Plans 08 and 02.**
+
+> The product go/no-go this plan waited on has been given. It remains a **product** change,
+> not a latency fix: judge it on usefulness, cost and distraction in a hands-free inspection,
+> and do **not** measure it against the wave's shared mouth-stop-to-audio metric.
+>
+> Expect this one to take more `/rp` rounds than the rest of the wave. Conversation history,
+> acoustic echo re-ingestion of the assistant's own answer, and the ambient-chitchat cost
+> loop are each real surfaces with real failure modes — that is inherent difficulty, not
+> document bloat, and splitting will not make it converge faster. The rest of the wave's
+> token discipline still applies: this plan keeps the full dual-reviewer loop.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 Dependency: Plan 05 recommended for perceived latency. No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing). Separate from the gate: this is a PRODUCT decision, not a latency fix — get Derek's explicit go/no-go before implementing (see vault todo).
 

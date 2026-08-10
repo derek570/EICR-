@@ -1,10 +1,24 @@
 # Plan 04 — cautious Deepgram Flux Eager End-of-Turn
 
-Status: **DRAFT — not RP-reviewed**
+Status: **TIER C — HELD (2026-08-10). Phase 2 only if revived; Phase 1 cohort mandate cut; Phase 3 dark**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 iOS repo: `/Users/derekbeckley/Developer/EICR_Automation/CertMateUnified`
 Dependency: none. No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid. This plan's OWN internal safety gates (below) are unaffected — Phase 3 still requires its separate explicit go/no-go.
 Safety classification: high risk; shadow evidence before any LLM speculation
+
+> **2026-08-10 re-scope.** Held behind plans 08, 02 and 06. When revived, the useful part is
+> **Phase 2 only** — using the eager event to warm the backend session and the ElevenLabs
+> connection *without sending any transcript content*. That captures part of the eager lead
+> with none of the split-utterance hazard, and its value depends on Plan 03's persistent
+> connection existing, so it cannot be evaluated before 03.
+>
+> **Phase 1's cohort mandate is cut.** Do not build a telemetry cohort to compute stable
+> p50/p95 across network and utterance-length splits for a single user. If Phase 2 is
+> revived, log eager-vs-final exact-match and `TurnResumed` rates from ordinary field use and
+> read them; that is enough to decide whether Phase 2 has a lead worth taking.
+>
+> **Phase 3 remains dark and is not authorised by anything in this document.** The
+> non-negotiable hazard section below is safety, not ceremony — it stays verbatim.
 
 ## Outcome
 
