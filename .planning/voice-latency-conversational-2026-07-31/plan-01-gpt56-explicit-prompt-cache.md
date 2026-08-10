@@ -1,6 +1,6 @@
 # Plan 01 — explicit GPT-5.6 prompt caching
 
-Status: **TIER A (2026-08-10) — core cache shipped; one retention probe + a decision remain**
+Status: **CLOSED 2026-08-10 — core cache shipped; keep-alive NOT built (verdict below)**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 Dependency: none. No formal Plan 00 evidence gate (dropped 2026-08-07 for sole-user field testing).
 
@@ -107,6 +107,57 @@ the verdict comes back `RENEWS` and the timer is going to be built.
   active, and must never enter the tool loop, mutate session state, emit a client event,
   trigger TTS, or race a live Luna/Terra turn.
 - **`INCONCLUSIVE` / `ANOMALOUS`** → rerun before concluding anything.
+
+## VERDICT 2026-08-10 — `RENEWS`, and the keep-alive is still NOT built
+
+The probe returned **`RENEWS`** with the control arm doing its job. At T+50 the test arm —
+read once at T+25 — came back `cached_tokens: 28173, warm: true`, while the never-read control
+had gone cold and paid a fresh `cache_write_tokens: 28173`. Same prefix, same model, same
+minute; the read is the only difference. That also brackets the base TTL to **[25, 50) minutes**
+(test was warm at T+25, control was cold at T+50).
+
+So the mechanism works. The plan's own `RENEWS` branch then requires observed field gaps to
+justify building it, and the field telemetry refuses on **three independent grounds** — in
+strength order:
+
+**1. The timer cannot prevent the cold writes that actually happen.** Every observed cold write
+is either the session-opening write or a mid-session *key rotation*. A keep-alive constrained to
+"run only while a recording session is active" cannot pre-warm a session that has not started;
+and a rotation is caused by the prefix CONTENT changing, so refreshing the OLD key does nothing.
+Session `D6A34400` rotated `c622ea3d81ae → 2578bf202870` at turn 3, 46 s in, and paid a second
+full 35,298-token write. That is **documented behaviour, not a defect** — the stable prefix
+carries preamble + CIRCUIT SCHEDULE + BOARDS (`eicr-extraction-session.js:3740-3754`), which
+change on an iOS jobState push or `add_board`, and `:3425-3427` explicitly accepts the re-write
+because reads bill at 0.1×.
+
+**2. The gap it defends did not occur once.** Across 4 sessions / 28 turns / 65 rounds, the
+largest inter-turn gap is **1.6 minutes** against a ≥25-minute TTL. Zero gaps exceeded 25 min.
+Also: **zero Terra turns** — all 65 rounds were `gpt-5.6-luna` / `turn_kind: reading`. The
+keep-alive was designed for a model that did not fire.
+
+**3. The prize is cost-only, and the latency value is ≈ 0.** Comparing at *matched* round index
+(all misses are `round_idx 0`, so the raw comparison is confounded by loop position exactly the
+way Plan 07's was):
+
+| round 0 | n | `stream_ms` p50 | range |
+|---|---|---|---|
+| cache HIT | 24 | 3763 ms | 1485–9037 |
+| cache MISS (34,794-token cold prefill) | 4 | **3674 ms** | 2873–5455 |
+
+The cold prefill is **89 ms faster**, and its entire range sits inside the warm range. The probe
+agrees in direction (warm 1818/2780 ms vs cold 955/1090/1439 ms). n=4 is small and this is not a
+claim that caching *hurts* — it is the honest claim that **no prefill-latency win is detectable
+above the noise**, so the cache is a cost optimisation and must be argued as one.
+
+**Reopen only if** a real inspection shows Terra observation turns more than 25 minutes apart
+*with no prefix rotation in between*. The evidence base here is four short sessions (longest span
+9.0 min), so a genuinely long installation walk is the scenario that could overturn ground 2 —
+but it cannot overturn grounds 1 or 3.
+
+> **Corroboration for Plan 08A.** Round 0 costs ~3.8 s and emits ~101 output tokens, and its
+> prefill is free. The time is therefore *thinking*, not prompt ingestion — which is precisely
+> what 08A's `reasoning_tokens` and `started_ns → first_tool_use_ns` split exist to expose.
+> Reached independently of 08A, by reading shipped telemetry.
 
 ## Acceptance
 

@@ -29,14 +29,26 @@ loop costs more than doing them.
 | Item | Work | State (2026-08-10) |
 |---|---|---|
 | iOS TTS watchdog | `AlertManager.swift` had no playback timeout on any path. A ~32 s clip for a 3-word phrase hung the app silently (2026-08-07 field session). Must land before further extended field sessions. | **DONE** — `CertMateUnified` `fix/tts-playback-watchdog-2026-08-10`, builds clean. Duration-derived budget, generation-fenced, cancelled at `completeQueueHead`. |
-| Plan 01 §5 | Probe `prompt_cache_retention:"24h"`; if retention holds, close the 25-minute Terra keep-alive proposal permanently. | **RE-AIMED** — `"24h"` is documented as **deprecated for GPT-5.6 and later**, so that fork is unavailable, not merely unproven. Only the read-renews-TTL question survives; `scripts/model-ab/cache-ttl-renewal-probe.mjs` (two-arm, control included) is running. |
+| Plan 01 §5 | Probe `prompt_cache_retention:"24h"`; if retention holds, close the 25-minute Terra keep-alive proposal permanently. | **DONE — keep-alive NOT built.** `"24h"` is deprecated for GPT-5.6+, so fork 1 is unavailable. Fork 2 probed `RENEWS` (control-proven; base TTL bracketed to **[25, 50) min**) — but it is still refused on three grounds: a session-scoped timer cannot prevent the *only* cold writes that occur (session-open + content-driven key rotation); the largest observed inter-turn gap is **1.6 min** against a ≥25-min TTL, with **zero Terra turns** in 65 rounds; and at matched round index a cold 34,794-token prefill is **89 ms faster** than a warm one, so the prize is cost-only. |
 | Plan 03 §3 | ElevenLabs synthesis tuning (`auto_mode`, `style`, normalization, speaker boost). Config-only, ear-tested, one variable at a time. | **MEASURED** — whole-vendor budget is ≈215 ms (66 ms handshake + 147 ms synthesis). Best arm saves 35 ms and is the riskiest; `auto_mode` is *worse* (+18 ms). Recommendation: change nothing. Ear test outstanding. |
 | Plan 07 | Read shipped Loaded Barrel telemetry, record keep/narrow/retire. Build nothing. | **DONE — KEEP UNCHANGED.** Within-turn over 23 turns: the barrel removes ≈200–300 ms (non-loop residual p50 **204 ms** on hits vs **502 ms** on misses) and hits **78 %** of turns. The "hits are 35 % slower" between-groups read was confounded — the model loop is **96.2 %** of perceived latency, so raw comparison mostly compares turn difficulty. Phases 2–3 CUT. |
 
-**What Tier A already told us about the wave.** The vendor half of the latency budget is
-≈215 ms end-to-end and the entire tuning-plus-pooling prize is ≤ ~100 ms. That is direct
-evidence that the dictate→read-back latency lives upstream of Deepgram and ElevenLabs — which
-is exactly the gap Plan 08 was created to own. Treat it as a reason to keep 03/04/05 held.
+**Tier A is COMPLETE (2026-08-10), and it converged on one answer.** Four independent
+measurements all point the same way — the latency is inside the model round, and everything
+around it is already cheap:
+
+| Measured | Result |
+|---|---|
+| Whole vendor budget (Plan 03) | ≈**215 ms** (66 ms handshake + 147 ms synthesis); best tuning arm saves 35 ms |
+| Loaded Barrel (Plan 07) | already hides ~298 ms of that on **78 %** of turns |
+| Cold 34,794-token prefill (Plan 01) | **free** — 89 ms *faster* than warm at matched round index |
+| Model loop share of perceived latency (Plan 07) | **96.2 %** at p50 |
+
+So the dictate→read-back latency is neither the vendor nor prompt ingestion. It is the model
+**thinking**: round 0 spends ~3.8 s to emit ~101 output tokens, over a prefix that costs nothing
+to load. That is exactly the gap Plan 08 was created to own, and it is now evidenced from three
+directions rather than assumed. It is also the reason 03/04/05 stay held — they optimise the
+≈215 ms that Plan 07 shows is already largely hidden.
 
 ### Tier B — worth the full `/rp` → `/ep` cycle
 
@@ -106,7 +118,7 @@ The [umbrella reference](plan-00-gpt56-port-parity/PLAN-00-final.md) is permanen
 
 | Plan | Purpose | Tier / dependency boundary |
 |---|---|---|
-| [01 — explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Core cache is live; §5 evaluates 24 h retention so the 25-minute Terra re-warm can be closed | **Tier A** — probe + decision, no build |
+| [01 — explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Core cache is live; §5 evaluated retention and the Terra re-warm | **CLOSED** — keep-alive refused; cache is cost-only, not latency |
 | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | Play ElevenLabs PCM while chunks arrive | **Tier B**, after 08 |
 | [03 — persistent ElevenLabs session](plan-03-elevenlabs-persistent-session.md) | §3 tuning is Tier A (config-only); §1–2 pooling is held | **Split** — §3 Tier A, §1–2 Tier C after 02 |
 | [04 — Deepgram Flux eager EOT](plan-04-deepgram-flux-eager-eot.md) | Phase 2 no-text connection preparation only | **Tier C** — Phase 1 cohort mandate cut; Phase 3 stays dark, still needs its own explicit go/no-go |
