@@ -1,6 +1,55 @@
 # Plan 03 — persistent ElevenLabs session and synthesis tuning
 
-Status: **SPLIT (2026-08-10) — §3 synthesis tuning is TIER A (config-only, do now); §1–2 connection pooling is TIER C, held until Plan 02's numbers show vendor setup is still material.** Keep the two independently flagged, as the plan already requires, so their effects and rollbacks stay attributable.
+Status: **MEASURED 2026-08-10 — the whole plan is worth ≤ ~100 ms. §3 benchmark run (results below, ear test outstanding); §1–2 pooling now firmly TIER C and probably never.** Keep the two independently flagged, as the plan already requires, so their effects and rollbacks stay attributable.
+
+## Measured 2026-08-10 — read this before doing any work here
+
+`scripts/model-ab/tts-settings-bench.mjs` (added 2026-08-10) benchmarked the production
+single-context frame sequence against the live vendor, 7 field-shaped confirmation lines,
+`expandForTTS`-expanded, medians over 3–5 repeats per cell.
+
+**Total ElevenLabs contribution to perceived latency is ≈ 215 ms**, split:
+
+| Segment | Median | Owned by |
+|---|---|---|
+| WS handshake (DNS+TCP+TLS+upgrade) | **≈ 66 ms** | §1–2 pooling |
+| BOS → first audio byte | **≈ 147 ms** | §3 tuning |
+| → cold total to first audible byte | **≈ 215 ms** | |
+
+Per-variant, one variable per arm, delta vs baseline on first-audio-byte:
+
+| Variant | Δ vs baseline | Note |
+|---|---|---|
+| `normalization_off` | **−35 ms** | fastest — and the highest pronunciation risk |
+| `pcm_16000` | −12 ms | not shippable alone; clients expect the negotiated rate |
+| `style: 0` | −2 ms | noise |
+| `use_speaker_boost: false` | −2 ms | noise |
+| `auto_mode: true` | **+18 ms (WORSE)** | contradicts the vendor's framing of it as a latency lever |
+
+### What this means
+
+- **The best available tuning win is 35 ms, on the one arm most likely to mispronounce
+  electrical values.** Against a dictate→read-back loop measured in seconds, that is noise.
+  §3 is not where the latency is.
+- **`auto_mode` is a regression here, not a lever.** The plan listed it first among the
+  vendor's documented latency options; measured, it costs 18 ms. Do not adopt it, and do not
+  let a future reviewer reinstate it on the strength of vendor documentation alone.
+- **Pooling (§1–2) has a hard ceiling of ≈ 66 ms** and would cost a connection owner, a
+  session-scoped pool, context routing, reconnect generations, capacity limits and
+  cross-session isolation proofs — the largest and most concurrency-dangerous body of work in
+  this plan, for the smallest measured prize in the wave. It stays TIER C. Revive it only if
+  Plan 02's client-side numbers show handshake time is somehow much larger in the field than
+  from a dev machine, and even then weigh it against Plan 08.
+- Read this alongside the wave INDEX: it is direct evidence that the latency is upstream of
+  the speech vendors, which is what Plan 08 exists to attack.
+
+### Outstanding — the ear test (Derek)
+
+Latency alone must not select a setting; the plan's own rule is that "a faster setting that
+misreads electrical values fails". The bench emits 42 WAV clips, a **blind** listening sheet
+(opaque `clip-NNN` labels) and a separate answer key. Given a 35 ms ceiling the honest
+recommendation is **change nothing** — but the clips exist if you want to confirm
+`normalization_off` by ear before it is closed for good.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 Dependencies: production activation after Plan 02 (real engineering order — reuses Plan 02's transport). No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid.
 
