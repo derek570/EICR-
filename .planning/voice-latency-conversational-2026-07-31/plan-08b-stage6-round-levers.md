@@ -123,9 +123,15 @@ Those tokens go nowhere:
 - **Never remembered.** Next-turn history is `JSON.stringify(toolUseBlock.input)`
   (`eicr-extraction-session.js:2874`) — the *tool call's arguments*, not the closing prose.
 - **Not needed for the write.** The write is dispatched in the preceding round.
-- **Not needed for the audio.** Loaded Barrel has already synthesised and parked it; Plan 07
-  measured the head start at p50 **1596 ms**, which is the terminal round's 1712 ms. Two
-  independent measurements of the same gap.
+- **Not needed for the audio.** Loaded Barrel has already synthesised and parked it. This is the
+  premise the whole section rests on, so it is measured directly rather than inferred: on **18 of
+  18** turns where both timestamps exist, the audio-ready stamp **precedes** loop completion —
+  no exceptions, no turns in the other direction. Median lead **1596 ms**, range **843 ms to
+  12,628 ms**. That median independently reproduces the terminal round's p50 of 1712 ms from a
+  different pair of clocks, and the 843 ms floor matters more than the median: even the *worst*
+  measured turn had the audio parked and waiting for most of a second. The 12.6 s outlier is not
+  evidence of a better win — it is a slow turn, and it belongs to the ~9 % barrel tail queued
+  separately.
 
 So its only function is to signal *"I have nothing more to do"* — and the inspector pays ~1.9 s of
 silence to hear it, with the audio sitting ready and the reading already committed.
