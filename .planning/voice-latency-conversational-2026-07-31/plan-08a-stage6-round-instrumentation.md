@@ -251,6 +251,8 @@ Files:
 - Sync the converged plan back to its tracked path, and carry the sibling correction with it:
   **08B §1.4 has been updated** in the same wave directory to read the front-loaded-silence result
   off `started_ns → first_tool_use_ns` rather than the dropped `first_token_ns`.
+  *(Done. That section has since moved: 08B was split on 2026-08-10 and §1.1–1.4 now live in
+  [08C](plan-08c-per-round-cost.md), which carries the correction verbatim.)*
 
 ```bash
 npm test -- --runInBand src/__tests__/stage6-tool-loop.test.js

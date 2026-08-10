@@ -14,9 +14,11 @@ mode that made Plan 00 feel like wasted effort. Three changes, all approved 2026
 1. **Plans 01, 04 and 07 are trimmed to decision criteria.** Their measurement designs are
    replaced by "read the telemetry that already shipped, then decide". No new cohort
    apparatus is to be built for any of them.
-2. **Execution order is now `Tier A → 08A → 08B → 02 → 06`**, with 03/04/05 reassessed after 02
-   lands. Plan 08 is NEW and runs BEFORE plan 02; it was split into 08A/08B on 2026-08-10
-   because every 08B lever is selected by data 08A produces.
+2. **Execution order is now `Tier A → 08A → 08B → 06`**, with 02 demoted (see below) and
+   03/04/05 reassessed afterwards. Plan 08 is NEW; it was split twice on 2026-08-10 — first into
+   08A/08B because every lever is selected by data 08A produces, then again into 08B/**08C** once
+   it was clear that only *half* the levers were 08A-gated. 08B is reviewable today; **08C is
+   parked on a field session** and takes whatever slot the data arrives in.
 3. **Plan 06 has an explicit GO** (Derek, 2026-08-10) and gets its own `/rp`. It remains a
    PRODUCT change, judged on usefulness/cost/distraction — not a latency plan, and not
    measured against the shared latency metric below.
@@ -54,8 +56,9 @@ directions rather than assumed. It is also the reason 03/04/05 stay held — the
 
 | Order | Plan | Why it earns a cycle |
 |---|---|---|
-| 1 | [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | **SHIPPED 2026-08-10.** Telemetry settled where the latency is: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. But we could not see *inside* a round. Three additive fields (`reasoning_tokens`, `first_tool_use_ns`, `blocking_ask_user_dispatched`) plus a timing row on all seven post-completion exits, zero behaviour change. **Needs one ordinary field session on the deployed build to yield §1's data.** |
-| 2 | [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | **PARTIALLY UNBLOCKED 2026-08-10.** Plan 07's verdict is in, and it favours §2. New **§2.0 is the wave's largest measured lever** — every turn ends with a no-tool `end_turn` round costing p50 1712 ms / **24 % of perceived latency**, emitting a median of **4** tokens that are never spoken (`bundler_only` ×28), never enter history (`eicr-extraction-session.js:2874`), and gate audio that is already synthesised and parked. Measured from shipped telemetry, so it needs **no 08A data**. §1 still 08A-gated. Full dual-reviewer loop. |
+| 1 | [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | **SHIPPED 2026-08-10.** Telemetry settled where the latency is: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. But we could not see *inside* a round. Three additive fields (`reasoning_tokens`, `first_tool_use_ns`, `blocking_ask_user_dispatched`) plus a timing row on all seven post-completion exits, zero behaviour change. Live on `eicr-backend:388`. **The three new fields exist and are empty until one ordinary field session runs on that build — that session is what unparks 08C.** |
+| 2 | [08B — round-count levers](plan-08b-stage6-round-levers.md) | **READY TO REFINE 2026-08-10 — the 08A-gated half was split out into 08C, so this plan is now wholly reviewable.** Plan 07's verdict is in and it favours it. **§2.0 is the wave's largest measured lever** — every turn ends with a no-tool `end_turn` round costing p50 1712 ms / **24 % of perceived latency**, emitting a median of **4** tokens that are never spoken (`bundler_only` ×28), never enter history (`eicr-extraction-session.js:2874`), and gate audio that is already synthesised and parked (measured: audio-ready precedes loop completion **18/18**, median lead 1596 ms, floor 843 ms). §2.1 is the `board_id` vocabulary gap, verified in source. Both measured from shipped telemetry, so this plan needs **no 08A data**. Full dual-reviewer loop. |
+| — | [08C — per-round cost levers](plan-08c-per-round-cost.md) | **PARKED — not schedulable; blocked on one ordinary field session on `eicr-backend:388` or later.** Split out of 08B on 2026-08-10: its four items (reasoning effort, `VOICE_LATENCY_ROUND1_MODEL`, emitted-token attribution, cached-prefix latency) plus the `SNAPSHOT_RECENT_CIRCUITS` question are all of the form *"if 08A's data shows X, then Y"*. Refining them before the data exists pays full reviewer cost every round to re-raise one finding. **Do not open its `/rp` until that session exists**; the plan states the three checks to run on the data first. |
 | 3 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Explicit GO. Own `/rp`; will not converge in 2–4 rounds — history, echo re-ingestion and cost-loop surfaces are all real. |
 | — | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | **DEMOTED to Tier C 2026-08-10** by Plan 07's verdict — see below. |
 
@@ -119,14 +122,15 @@ The [umbrella reference](plan-00-gpt56-port-parity/PLAN-00-final.md) is permanen
 | Plan | Purpose | Tier / dependency boundary |
 |---|---|---|
 | [01 — explicit prompt caching](plan-01-gpt56-explicit-prompt-cache.md) | Core cache is live; §5 evaluated retention and the Terra re-warm | **CLOSED** — keep-alive refused; cache is cost-only, not latency |
-| [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | Play ElevenLabs PCM while chunks arrive | **Tier B**, after 08 |
+| [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | Play ElevenLabs PCM while chunks arrive | **Tier C — DEMOTED 2026-08-10** by Plan 07's verdict (worth ~32 ms amortised); must argue its way back in |
 | [03 — persistent ElevenLabs session](plan-03-elevenlabs-persistent-session.md) | §3 tuning is Tier A (config-only); §1–2 pooling is held | **Split** — §3 Tier A, §1–2 Tier C after 02 |
 | [04 — Deepgram Flux eager EOT](plan-04-deepgram-flux-eager-eot.md) | Phase 2 no-text connection preparation only | **Tier C** — Phase 1 cohort mandate cut; Phase 3 stays dark, still needs its own explicit go/no-go |
 | [05 — answer-user pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS without early playback | **Tier C** — deferred |
 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Preserve natural conversation while isolating certificate mutation | **Tier B**, own `/rp`. **GO given 2026-08-10.** Still a PRODUCT change, not a latency fix |
 | [07 — Loaded Barrel audit](plan-07-loaded-barrel-value-audit.md) | Decide keep/narrow/retire from telemetry that already shipped | **Tier A** — decision only, build nothing |
-| [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | Additive round telemetry: reasoning tokens, first-`tool_use` stamp, `ask_user` wait marking, timing on all seven post-completion paths | **SHIPPED 2026-08-10** — zero behaviour change; one ordinary field session on the deployed build now yields 08B §1's data |
-| [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | Cut per-round stream time and the multi-round tail | **§2.0 READY** (measured from shipped telemetry, needs no 08A data); §1 still awaits an 08A-instrumented field session |
+| [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | Additive round telemetry: reasoning tokens, first-`tool_use` stamp, `ask_user` wait marking, timing on all seven post-completion paths | **SHIPPED 2026-08-10** — zero behaviour change; one ordinary field session on the deployed build now yields 08C's data |
+| [08B — round-count levers](plan-08b-stage6-round-levers.md) | Cut the number of provider round-trips per turn: the discarded terminal round (§2.0) and validator-rejection rounds (§2.1) | **Tier B, READY** — both items measured from shipped telemetry; needs no 08A data |
+| [08C — per-round cost levers](plan-08c-per-round-cost.md) | Cut the cost of each round: reasoning effort, round-1 model, prompt snapshot size | **Tier B, PARKED** — every item is 08A-gated; needs one ordinary field session on `eicr-backend:388`+ |
 
 ## Shared success metric
 
