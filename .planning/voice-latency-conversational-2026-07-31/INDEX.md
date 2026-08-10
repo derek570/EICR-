@@ -54,7 +54,7 @@ directions rather than assumed. It is also the reason 03/04/05 stay held — the
 
 | Order | Plan | Why it earns a cycle |
 |---|---|---|
-| 1 | [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | **AUTHORED 2026-08-10.** Telemetry settled where the latency is: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. But we cannot see *inside* a round. Three additive fields, zero behaviour change. **Small-plan lane** (Codex-only, cap 5). |
+| 1 | [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | **SHIPPED 2026-08-10.** Telemetry settled where the latency is: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. But we could not see *inside* a round. Three additive fields (`reasoning_tokens`, `first_tool_use_ns`, `blocking_ask_user_dispatched`) plus a timing row on all seven post-completion exits, zero behaviour change. **Needs one ordinary field session on the deployed build to yield §1's data.** |
 | 2 | [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | **PARTIALLY UNBLOCKED 2026-08-10.** Plan 07's verdict is in, and it favours §2. New **§2.0 is the wave's largest measured lever** — every turn ends with a no-tool `end_turn` round costing p50 1712 ms / **24 % of perceived latency**, emitting a median of **4** tokens that are never spoken (`bundler_only` ×28), never enter history (`eicr-extraction-session.js:2874`), and gate audio that is already synthesised and parked. Measured from shipped telemetry, so it needs **no 08A data**. §1 still 08A-gated. Full dual-reviewer loop. |
 | 3 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Explicit GO. Own `/rp`; will not converge in 2–4 rounds — history, echo re-ingestion and cost-loop surfaces are all real. |
 | — | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | **DEMOTED to Tier C 2026-08-10** by Plan 07's verdict — see below. |
@@ -125,8 +125,8 @@ The [umbrella reference](plan-00-gpt56-port-parity/PLAN-00-final.md) is permanen
 | [05 — answer-user pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS without early playback | **Tier C** — deferred |
 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Preserve natural conversation while isolating certificate mutation | **Tier B**, own `/rp`. **GO given 2026-08-10.** Still a PRODUCT change, not a latency fix |
 | [07 — Loaded Barrel audit](plan-07-loaded-barrel-value-audit.md) | Decide keep/narrow/retire from telemetry that already shipped | **Tier A** — decision only, build nothing |
-| [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | Additive round telemetry: reasoning tokens, first-`tool_use` stamp, `ask_user` wait marking, timing on all seven post-completion paths | **Tier B, runs FIRST** — small-plan lane, zero behaviour change |
-| [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | Cut per-round stream time and the multi-round tail | **HELD** — needs 08A field data + Plan 07 verdict |
+| [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | Additive round telemetry: reasoning tokens, first-`tool_use` stamp, `ask_user` wait marking, timing on all seven post-completion paths | **SHIPPED 2026-08-10** — zero behaviour change; one ordinary field session on the deployed build now yields 08B §1's data |
+| [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | Cut per-round stream time and the multi-round tail | **§2.0 READY** (measured from shipped telemetry, needs no 08A data); §1 still awaits an 08A-instrumented field session |
 
 ## Shared success metric
 
