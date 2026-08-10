@@ -1,6 +1,6 @@
 # Plan 02 — incremental ElevenLabs playback on iOS
 
-Status: **DRAFT — not RP-reviewed**
+Status: **TIER B — the one genuine latency build in this wave. Runs AFTER Plan 08 (2026-08-10).** Full dual-reviewer `/rp` loop: the capability handshake and exactly-once playback ACK are shared concurrent state, so the small-plan lane does not apply. Fold the iOS TTS watchdog fix into this work if it has not already shipped as a Tier A item — both live in `AlertManager.swift`'s playback path.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 iOS repo: `/Users/derekbeckley/Developer/EICR_Automation/CertMateUnified`
 Dependency: none. No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid.

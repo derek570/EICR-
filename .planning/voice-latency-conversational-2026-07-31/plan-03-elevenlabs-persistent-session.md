@@ -1,6 +1,6 @@
 # Plan 03 — persistent ElevenLabs session and synthesis tuning
 
-Status: **DRAFT — not RP-reviewed**
+Status: **SPLIT (2026-08-10) — §3 synthesis tuning is TIER A (config-only, do now); §1–2 connection pooling is TIER C, held until Plan 02's numbers show vendor setup is still material.** Keep the two independently flagged, as the plan already requires, so their effects and rollbacks stay attributable.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 Dependencies: production activation after Plan 02 (real engineering order — reuses Plan 02's transport). No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid.
 
