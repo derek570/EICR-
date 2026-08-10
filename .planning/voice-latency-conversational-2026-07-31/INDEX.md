@@ -49,9 +49,9 @@ is exactly the gap Plan 08 was created to own. Treat it as a reason to keep 03/0
 
 **Why Plan 02 may be worth less than the wave assumed.** Incremental TTS pays only for time the
 model spends *streaming*. Nothing currently measures whether a Luna round is front-loaded
-reasoning silence or steady streaming — `stream_ms` is start→complete with no first-token stamp
+reasoning silence or steady streaming — `stream_ms` is start→complete with nothing in between
 (`stage6-tool-loop.js:1093-1098`). If the round is mostly silence, there is little to overlap and
-Plan 02's ceiling is low. Plan 08A adds that stamp. **Do not open Plan 02's `/rp` before
+Plan 02's ceiling is low. Plan 08A adds a first-`tool_use` stamp that splits the round in two. **Do not open Plan 02's `/rp` before
 reading it** — that is the substantive reason for the 08-before-02 order, not just sequencing.
 
 ### Tier C — held, reassess after 02
@@ -107,7 +107,7 @@ The [umbrella reference](plan-00-gpt56-port-parity/PLAN-00-final.md) is permanen
 | [05 — answer-user pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS without early playback | **Tier C** — deferred |
 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Preserve natural conversation while isolating certificate mutation | **Tier B**, own `/rp`. **GO given 2026-08-10.** Still a PRODUCT change, not a latency fix |
 | [07 — Loaded Barrel audit](plan-07-loaded-barrel-value-audit.md) | Decide keep/narrow/retire from telemetry that already shipped | **Tier A** — decision only, build nothing |
-| [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | Additive round telemetry: reasoning tokens, first-token stamp, `ask_user` wait split | **Tier B, runs FIRST** — small-plan lane, zero behaviour change |
+| [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | Additive round telemetry: reasoning tokens, first-`tool_use` stamp, `ask_user` wait marking, timing on all seven post-completion paths | **Tier B, runs FIRST** — small-plan lane, zero behaviour change |
 | [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | Cut per-round stream time and the multi-round tail | **HELD** — needs 08A field data + Plan 07 verdict |
 
 ## Shared success metric

@@ -82,9 +82,15 @@ split is what makes them attributable.
 ### 1.4 Does a 35 k cached prefix still cost latency?
 
 Cache hit rate is 100 % and cost is solved, but a cached prefix is not a free prefill. If 08A's
-`first_token_ns` shows a large fixed floor on every round independent of output size, this becomes
-real. It is explicitly **not** a cost question — Plan 01 closed that — and must not be allowed to
-re-open one.
+`started_ns → first_tool_use_ns` span shows a large fixed floor on tool-emitting rounds independent
+of output size, this becomes real. End-turn-only rounds stay opaque under 08A's stated limitation.
+It is explicitly **not** a cost question — Plan 01 closed that — and must not be allowed to re-open
+one.
+
+> Corrected 2026-08-10 at 08A review round 2: this section previously referenced a `first_token_ns`
+> field. 08A **dropped** that field — the Responses adapter yields a synthetic `message_start`
+> before reading provider SSE (`openai-responses-adapter.js:353`), so a first-event stamp would have
+> read ≈0 ms every round. `first_tool_use_ns` is the honest marker.
 
 ## §2 — Round count
 
