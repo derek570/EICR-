@@ -427,7 +427,19 @@ function mapUsage(usage) {
   const cacheWrite = usage?.input_tokens_details?.cache_write_tokens || 0;
   return {
     input_tokens: Math.max(total - cached - cacheWrite, 0),
+    // `output_tokens` keeps its existing meaning and value EXACTLY — it is
+    // what CostTracker bills on, and the Anthropic-shaped contract is read in
+    // several places. Reasoning is reported ALONGSIDE it, never subtracted.
     output_tokens: usage?.output_tokens || 0,
+    // Plan 08A — reasoning time is folded invisibly into `output_tokens` on
+    // the wire, so a round that spends 3 s thinking and 0.2 s emitting is
+    // indistinguishable from one that streamed steadily for 3.2 s. What
+    // fraction of a 3.22 s p50 round is reasoning is the single number that
+    // selects between 08B's levers. `?? null`, never `|| 0`: a
+    // provider-reported 0 is a real measurement and must survive as 0, while
+    // an unreported value must be an explicit null so JSON.stringify carries
+    // it to CloudWatch rather than dropping the key silently.
+    reasoning_tokens: usage?.output_tokens_details?.reasoning_tokens ?? null,
     cache_creation_input_tokens: cacheWrite,
     cache_read_input_tokens: cached,
   };

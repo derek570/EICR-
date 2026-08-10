@@ -197,6 +197,15 @@ export function attributeRoundUsage({
     cache_read_input_tokens: usage?.cache_read_input_tokens || 0,
     cache_write_input_tokens: usage?.cache_creation_input_tokens || 0,
     output_tokens: usage?.output_tokens || 0,
+    // Plan 08A — this function returns an explicit ALLOWLIST: every field is
+    // copied by name and anything unnamed is dropped, so surfacing
+    // reasoning_tokens in the adapter alone would have been a silent no-op.
+    // `?? null` preserves a provider-reported 0 and makes an unreported value
+    // an explicit JSON null (an `undefined` property vanishes from the
+    // CloudWatch row entirely). Transports that do not report reasoning —
+    // Anthropic, and OpenAI chat-completions — attribute null, which is the
+    // honest answer for them rather than a fabricated 0.
+    reasoning_tokens: usage?.reasoning_tokens ?? null,
     // Legacy aliases retained for existing cache telemetry consumers.
     input_tokens: usage?.input_tokens || 0,
     cache_creation_input_tokens: usage?.cache_creation_input_tokens || 0,

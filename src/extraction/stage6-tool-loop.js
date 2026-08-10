@@ -464,6 +464,36 @@ export async function runToolLoop({
     // Phase 0 (single-round latency sprint) — capture started/stream_complete/
     // dispatch_complete timestamps per round for emitTurnCoreSummary.
     const roundStartedNs = process.hrtime.bigint();
+    // Plan 08A — per-round instrumentation state. All three are declared here,
+    // at the top of the round body, so each iteration starts clean and the
+    // finaliser (declared once the stream completes) closes over initialised
+    // bindings no matter which exit path calls it.
+    //
+    // firstToolUseNs: the first content_block_start of type tool_use, which is
+    //   the ONLY honest first-content marker on the STREAMING Responses
+    //   transport this plan targets. There it originates from a real provider
+    //   `response.output_item.added`, whereas the Responses adapter yields a
+    //   synthetic `message_start` BEFORE it reads any provider SSE and
+    //   deliberately suppresses reasoning/message/text events — so a "first
+    //   event of any kind" stamp would record ~0 ms every round: a precise,
+    //   confident, meaningless number. An end_turn round emits no tool call
+    //   and so keeps a null here; its interior stays opaque, which is an
+    //   accepted limitation of this plan.
+    //   CAVEAT — the loop also accepts the BUFFERED chat-completions adapter
+    //   (`OPENAI_EXTRACT_API=chat_completions`), which synthesises its
+    //   content_block_start only once the whole response has arrived
+    //   (openai-tooluse-adapter.js). On that transport this stamp approximates
+    //   response COMPLETION, not first emission, so read it together with
+    //   round_usage[].api_transport rather than comparing the two transports
+    //   as if the number meant the same thing on both.
+    // blockingAskUserDispatched: whether this round's dispatch parked on a
+    //   human answering an ask_user (one observed round reported
+    //   dispatch_ms = 10,427 ms of inspector reaction time).
+    // roundTimingFinalised: idempotency latch — exactly one timing row per
+    //   completed provider response, from whichever exit path fires first.
+    let firstToolUseNs = null;
+    let blockingAskUserDispatched = false;
+    let roundTimingFinalised = false;
     // 2026-05-28 mid-stream emit follow-up: round-1 model override. The
     // dominant short-utterance turn shape (single record_reading on a
     // ~120-token output) is bottlenecked by Sonnet 4.6's ~2.7-3.0 s
@@ -556,6 +586,17 @@ export async function runToolLoop({
     try {
       stream = client.messages.stream(streamArgs, signal ? { signal } : undefined);
       for await (const ev of stream) {
+        // Plan 08A — stamp the first genuine provider tool_use event, before
+        // handing it to the assembler so the mark is not influenced by
+        // assembler work. Guarded on `=== null` so it records the FIRST such
+        // event in the round, not the last.
+        if (
+          firstToolUseNs === null &&
+          ev?.type === 'content_block_start' &&
+          ev?.content_block?.type === 'tool_use'
+        ) {
+          firstToolUseNs = process.hrtime.bigint();
+        }
         asm.handle(ev);
       }
       ({ records, stop_reason } = asm.finalize());
@@ -590,6 +631,64 @@ export async function runToolLoop({
     }
     // Phase 0 — round-level stream complete time (post-finalize).
     const roundStreamCompleteNs = process.hrtime.bigint();
+    // Plan 08A — the single timing finaliser. The provider response is
+    // COMPLETE from here on (finalMessage() has resolved and the attributed
+    // usage row is appended just below), so every path that leaves the round
+    // beyond this point is a round we have already paid for and can measure.
+    // Seven such paths exist; before this plan only two emitted a timing row,
+    // and the five that did not are by construction the pathological turns —
+    // cap-outs, cancellations and protocol violations. Two of them are what a
+    // BARGE-IN produces, which is precisely the interaction this wave is
+    // trying to make feel fast, so a series that omits them is biased exactly
+    // where it most needs to be honest.
+    //
+    // Deliberately synchronous, non-awaiting and non-throwing: a telemetry
+    // bug must never be able to convert a paid-for round into a failed turn.
+    // The latch makes it per-round idempotent, so a path that finalises and
+    // then falls through to another cannot double-count.
+    const finaliseRoundTiming = (dispatchCompleteNs) => {
+      if (roundTimingFinalised) return null;
+      roundTimingFinalised = true;
+      try {
+        const completeNs =
+          typeof dispatchCompleteNs === 'bigint' ? dispatchCompleteNs : roundStreamCompleteNs;
+        const timing = {
+          round_idx: rounds - 1,
+          started_ns: roundStartedNs.toString(),
+          stream_complete_ns: roundStreamCompleteNs.toString(),
+          dispatch_complete_ns: completeNs.toString(),
+          // Decimal STRING, never a raw BigInt, exactly like every other _ns
+          // field here: production logging serialises metadata with
+          // JSON.stringify (src/logger.js), which throws
+          // "Do not know how to serialize a BigInt". This field is populated
+          // on the COMMON path — any tool-emitting round — so a BigInt would
+          // take down live turns, not just edge cases.
+          first_tool_use_ns: firstToolUseNs === null ? null : firstToolUseNs.toString(),
+          stream_ms: Number((roundStreamCompleteNs - roundStartedNs) / 1000000n),
+          dispatch_ms: Number((completeNs - roundStreamCompleteNs) / 1000000n),
+          // Labels the rounds whose dispatch parked on a human rather than on
+          // server work, so a latency series can split or exclude them while
+          // still RETAINING them. Marked, never dropped — dropping ask rounds
+          // would hide the slowest turns and let 08B claim an improvement it
+          // did not make.
+          blocking_ask_user_dispatched: blockingAskUserDispatched,
+        };
+        roundTimings.push(timing);
+        // Attach to this round's own usage row only. The round_idx match is a
+        // cheap guard against ever decorating a previous round's row.
+        const lastUsage = roundUsage.at(-1);
+        if (lastUsage && lastUsage.round_idx === rounds - 1) lastUsage.timing = timing;
+        return timing;
+      } catch (err) {
+        logger?.warn?.('stage6.round_timing_finalise_error', {
+          sessionId: ctx?.sessionId,
+          turnId: ctx?.turnId,
+          round: rounds,
+          error: err?.message || String(err),
+        });
+        return null;
+      }
+    };
     actualStopReasonPerRound.push(stop_reason);
     // Per-round tool name + count summary (toolCallCountPerRound /
     // toolErrorCountPerRound populated AFTER the dispatch loop; this is
@@ -690,17 +789,13 @@ export async function runToolLoop({
     // anything other than tool_use as "we are done").
     if (stop_reason !== 'tool_use') {
       terminalReason = terminalReason ?? 'end_turn';
-      // Phase 0 telemetry: record per-round timing (dispatch_complete = stream_complete on no-dispatch).
-      const timing = {
-        round_idx: rounds - 1,
-        started_ns: roundStartedNs.toString(),
-        stream_complete_ns: roundStreamCompleteNs.toString(),
-        dispatch_complete_ns: roundStreamCompleteNs.toString(),
-        stream_ms: Number((roundStreamCompleteNs - roundStartedNs) / 1000000n),
-        dispatch_ms: 0,
-      };
-      roundTimings.push(timing);
-      roundUsage.at(-1).timing = timing;
+      // Phase 0 telemetry: record per-round timing. No dispatcher runs on this
+      // path, so the finaliser's default (dispatch_complete = stream_complete,
+      // dispatch_ms = 0) leaves every PRE-EXISTING field of this row exactly as
+      // it was before 08A. The row itself is wider — every row now also carries
+      // first_tool_use_ns and blocking_ask_user_dispatched — so this is
+      // "no existing value changed", not "byte-identical output".
+      finaliseRoundTiming();
       toolCallCountPerRound.push(0);
       toolErrorCountPerRound.push(0);
       break;
@@ -763,6 +858,11 @@ export async function runToolLoop({
           rounds,
           reason: 'tool_use_stop_reason_with_no_tool_use_blocks_at_cap',
         });
+        // Plan 08A — before 08A this abort left the round's usage row with a
+        // null `timing`, so a cap-hit turn was invisible in the latency
+        // percentiles that only read `round_usage[].timing`. No dispatcher runs
+        // in the cap branch, so the default (dispatch_ms = 0) is the truth.
+        finaliseRoundTiming();
         aborted = true;
         break;
       }
@@ -774,6 +874,10 @@ export async function runToolLoop({
         rounds,
         pending_tool_uses: abortResults.length,
       });
+      // Plan 08A — same reasoning as the invariant break above: the cap round
+      // is real model time and must appear in the timing series. Held calls are
+      // answered with synthetic aborts, never dispatched, so dispatch_ms = 0.
+      finaliseRoundTiming();
       break;
     }
 
@@ -913,8 +1017,21 @@ export async function runToolLoop({
       try {
         throwIfStage6Cancelled(signal);
       } catch (error) {
+        // Plan 08A — finalise BEFORE attachBillableUsage so the round the
+        // caller is billed for carries its own timing. Earlier records in this
+        // same round may already have dispatched, so the elapsed dispatch time
+        // is real and is stamped here rather than defaulted to 0.
+        finaliseRoundTiming(process.hrtime.bigint());
         throw attachBillableUsage(error);
       }
+      // Plan 08A — mark BEFORE the await, and only for a call that is actually
+      // being dispatched: assembler-error records `continue` above and cap-held
+      // calls never reach this branch at all. `ask_user` is the exact tool name
+      // (stage6-tool-schemas.js). This is a LABEL on the round, not a
+      // redefinition — `dispatch_ms` keeps measuring exactly what it did
+      // before, and a consumer that wants ask-free percentiles now has the
+      // field it needs to exclude the human-blocking rounds itself.
+      if (rec.name === 'ask_user') blockingAskUserDispatched = true;
       try {
         const res = await dispatcher(
           { tool_call_id: rec.tool_call_id, name: rec.name, input: rec.input },
@@ -1009,7 +1126,13 @@ export async function runToolLoop({
         // dispatcher_error tool_result and swallowed: rethrow it unchanged so
         // the shadow-harness cancellation-finalization path can run. Test the
         // discriminator BEFORE the generic recovery below.
-        if (isStage6FatalControlFlowError(err)) throw attachBillableUsage(err);
+        if (isStage6FatalControlFlowError(err)) {
+          // Plan 08A — finalise BEFORE attachBillableUsage, for the same reason
+          // as the pre-dispatch cancel above: `error.billableUsage.round_usage`
+          // must carry the timing of the round that was actually paid for.
+          finaliseRoundTiming(process.hrtime.bigint());
+          throw attachBillableUsage(err);
+        }
         const duration_ms = Date.now() - started;
         logger?.error?.('stage6.tool_call', {
           sessionId: ctx?.sessionId,
@@ -1078,6 +1201,10 @@ export async function runToolLoop({
         rounds,
         reason: 'tool_use_stop_reason_with_no_tool_use_blocks',
       });
+      // Plan 08A — the dispatch loop above DID run before this invariant
+      // tripped, so the elapsed dispatch time is real and is stamped rather
+      // than defaulted.
+      finaliseRoundTiming(process.hrtime.bigint());
       aborted = true;
       break;
     }
@@ -1086,18 +1213,8 @@ export async function runToolLoop({
 
     // Phase 0 telemetry — capture per-round dispatch completion + counts.
     const roundDispatchCompleteNs = process.hrtime.bigint();
-    const roundIdx = rounds - 1;
     const toolErrorCount = toolResults.filter((tr) => tr.is_error === true).length;
-    const timing = {
-      round_idx: roundIdx,
-      started_ns: roundStartedNs.toString(),
-      stream_complete_ns: roundStreamCompleteNs.toString(),
-      dispatch_complete_ns: roundDispatchCompleteNs.toString(),
-      stream_ms: Number((roundStreamCompleteNs - roundStartedNs) / 1000000n),
-      dispatch_ms: Number((roundDispatchCompleteNs - roundStreamCompleteNs) / 1000000n),
-    };
-    roundTimings.push(timing);
-    roundUsage.at(-1).timing = timing;
+    finaliseRoundTiming(roundDispatchCompleteNs);
     toolCallCountPerRound.push(records.length);
     toolErrorCountPerRound.push(toolErrorCount);
   }

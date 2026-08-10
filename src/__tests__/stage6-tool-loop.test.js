@@ -1645,3 +1645,440 @@ describe('stage6-tool-loop — F7 Item 3 cancellation signal', () => {
     expect(caught).toBeInstanceOf(ExtractionCancelledError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 08A — per-round instrumentation.
+//
+// Three additive telemetry surfaces, one describe block:
+//   * reasoning_tokens end-to-end through the round-usage allowlist
+//   * first_tool_use_ns (think-time vs emit-time split)
+//   * a timing row on ALL SEVEN post-completion exits, + the ask_user label
+//
+// The load-bearing property throughout is that these are additive: no
+// behaviour changes, `dispatch_ms` keeps its old meaning, and every `_ns`
+// field is a decimal STRING because production serialises telemetry metadata
+// with JSON.stringify (src/logger.js), which throws on BigInt.
+// ---------------------------------------------------------------------------
+
+/** Attach Anthropic-shaped usage to a fixture round (message_start + delta). */
+function withUsage(events, { input = 10, output = 5, reasoning } = {}) {
+  const copy = events.map((e) => ({ ...e }));
+  copy[0] = {
+    ...copy[0],
+    message: {
+      ...copy[0].message,
+      usage: { input_tokens: input, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    },
+  };
+  const deltaIdx = copy.findIndex((e) => e.type === 'message_delta');
+  const usage = { output_tokens: output };
+  if (reasoning !== undefined) usage.reasoning_tokens = reasoning;
+  copy[deltaIdx] = { ...copy[deltaIdx], usage };
+  return copy;
+}
+
+/** A round that claims stop_reason:'tool_use' but streams ZERO tool_use blocks. */
+function toolUseStopWithNoBlocks() {
+  return [
+    { type: 'message_start', message: { id: 'msg_empty', role: 'assistant', content: [] } },
+    { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+    { type: 'message_stop' },
+  ];
+}
+
+/** Every `_ns` field is a decimal string or null — never a BigInt. */
+function assertNsFieldsSerialisable(timing) {
+  for (const key of ['started_ns', 'stream_complete_ns', 'dispatch_complete_ns']) {
+    expect(typeof timing[key]).toBe('string');
+    expect(timing[key]).toMatch(/^\d+$/);
+  }
+  expect(timing.first_tool_use_ns === null || /^\d+$/.test(timing.first_tool_use_ns)).toBe(true);
+}
+
+describe('stage6-tool-loop — Plan 08A reasoning_tokens attribution', () => {
+  test('a provider-reported reasoning_tokens reaches round_usage unchanged', async () => {
+    const client = mockClient([withUsage(endTurnRound('ok'), { output: 101, reasoning: 87 })]);
+    const result = await runToolLoop({
+      client,
+      model: 'gpt-5.6-luna',
+      provider: 'openai',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    expect(result.round_usage[0].reasoning_tokens).toBe(87);
+    // output_tokens keeps its existing meaning and value EXACTLY — reasoning is
+    // surfaced ALONGSIDE it, never subtracted from it, or every CostTracker
+    // input silently changes.
+    expect(result.round_usage[0].output_tokens).toBe(101);
+  });
+
+  test('a provider-reported 0 stays 0 — it is a real measurement, not a missing one', async () => {
+    const client = mockClient([withUsage(endTurnRound('ok'), { output: 4, reasoning: 0 })]);
+    const result = await runToolLoop({
+      client,
+      model: 'gpt-5.6-luna',
+      provider: 'openai',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    expect(result.round_usage[0].reasoning_tokens).toBe(0);
+    expect(result.round_usage[0].reasoning_tokens).not.toBeNull();
+  });
+
+  test('an unreported reasoning_tokens attributes null, never a fabricated 0', async () => {
+    // Anthropic never reports reasoning tokens; null is the honest answer and
+    // an explicit null SURVIVES JSON.stringify, where undefined would vanish
+    // from the CloudWatch row entirely.
+    const client = mockClient([withUsage(endTurnRound('ok'), { output: 5 })]);
+    const result = await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    expect(result.round_usage[0].reasoning_tokens).toBeNull();
+    expect('reasoning_tokens' in result.round_usage[0]).toBe(true);
+    expect(JSON.parse(JSON.stringify(result.round_usage[0])).reasoning_tokens).toBeNull();
+  });
+});
+
+describe('stage6-tool-loop — Plan 08A first_tool_use_ns', () => {
+  test('a no-tool round emits null; a tool-emitting round emits a decimal string', async () => {
+    const client = mockClient([
+      toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]),
+      endTurnRound('ok'),
+    ]);
+    const result = await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    const [tooling, terminal] = result.round_timings;
+    expect(typeof tooling.first_tool_use_ns).toBe('string');
+    expect(tooling.first_tool_use_ns).toMatch(/^\d+$/);
+    // The stamp is taken during the stream, so it must fall inside the round.
+    expect(BigInt(tooling.first_tool_use_ns)).toBeGreaterThanOrEqual(BigInt(tooling.started_ns));
+    expect(BigInt(tooling.first_tool_use_ns)).toBeLessThanOrEqual(
+      BigInt(tooling.stream_complete_ns)
+    );
+    // The terminal round streams text only — no honest first-content marker.
+    expect(terminal.first_tool_use_ns).toBeNull();
+  });
+
+  test('the stamp is the FIRST tool_use block of the round, not the last', async () => {
+    const client = mockClient([
+      toolUseRound([
+        { id: 'toolu_1', name: 'record_reading', input: { field: 'a' } },
+        { id: 'toolu_2', name: 'record_reading', input: { field: 'b' } },
+        { id: 'toolu_3', name: 'record_reading', input: { field: 'c' } },
+      ]),
+      endTurnRound('ok'),
+    ]);
+    const result = await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    // Luna batches up to four calls per round; if the stamp tracked the LAST
+    // block it would absorb the emit time of the whole batch and the
+    // think-time/emit-time split 08B needs would be meaningless.
+    const [batched] = result.round_timings;
+    expect(typeof batched.first_tool_use_ns).toBe('string');
+    expect(BigInt(batched.first_tool_use_ns)).toBeLessThan(BigInt(batched.stream_complete_ns));
+  });
+});
+
+describe('stage6-tool-loop — Plan 08A timing rows on all seven exits', () => {
+  const baseArgs = () => ({
+    model: 'claude-sonnet-4-6',
+    system: 's',
+    messages: [{ role: 'user', content: 'go' }],
+    tools: TOOL_SCHEMAS,
+    ctx: baseCtx(),
+    logger: makeLogger(),
+  });
+
+  test('path 1 — end_turn: one row, dispatch_complete === stream_complete, dispatch_ms 0', async () => {
+    const result = await runToolLoop({
+      ...baseArgs(),
+      client: mockClient([endTurnRound('done')]),
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+    });
+
+    expect(result.round_timings).toHaveLength(1);
+    expect(result.round_timings).toHaveLength(result.rounds);
+    const [row] = result.round_timings;
+    // Byte-for-byte the pre-08A shape on this path: no dispatcher runs, so
+    // dispatch_complete defaults to stream_complete and dispatch_ms is 0.
+    expect(row.dispatch_complete_ns).toBe(row.stream_complete_ns);
+    expect(row.dispatch_ms).toBe(0);
+    expect(row.round_idx).toBe(0);
+    expect(row.blocking_ask_user_dispatched).toBe(false);
+    assertNsFieldsSerialisable(row);
+  });
+
+  test('path 2 — cap reached with a tool_use stop_reason but no tool_use blocks', async () => {
+    const result = await runToolLoop({
+      ...baseArgs(),
+      client: mockClient([toolUseStopWithNoBlocks()]),
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      maxRounds: 1,
+    });
+
+    expect(result.aborted).toBe(true);
+    // Before 08A this protocol violation left the paid-for round with a null
+    // timing — invisible in every percentile computed from round_usage.
+    expect(result.round_timings).toHaveLength(1);
+    expect(result.round_timings[0].round_idx).toBe(0);
+    expect(result.round_timings[0].dispatch_ms).toBe(0);
+    expect(result.round_usage[0].timing).toBe(result.round_timings[0]);
+    assertNsFieldsSerialisable(result.round_timings[0]);
+  });
+
+  test('path 3 — cap hit: every round measured, and held calls are never labelled as dispatched', async () => {
+    const result = await runToolLoop({
+      ...baseArgs(),
+      client: mockClient([
+        toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]),
+        toolUseRound([{ id: 'toolu_2', name: 'ask_user', input: { question: 'which circuit?' } }]),
+      ]),
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      maxRounds: 2,
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.round_timings).toHaveLength(2);
+    expect(result.round_timings.map((t) => t.round_idx)).toEqual([0, 1]);
+    // The cap round's ask_user was answered with a synthetic abort, never
+    // dispatched — so the round did NOT park on a human and must not claim to.
+    expect(result.round_timings[1].blocking_ask_user_dispatched).toBe(false);
+    expect(result.round_timings[1].dispatch_ms).toBe(0);
+  });
+
+  test('path 4 — cancelled before dispatch: the billed round carries its own timing', async () => {
+    const ac = new AbortController();
+    const events = toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]);
+    const client = {
+      messages: {
+        stream() {
+          const base = mockStream(events);
+          return {
+            async *[Symbol.asyncIterator]() {
+              for await (const ev of base) yield ev;
+              // Abort AFTER the stream completes: the round is paid for, but
+              // the pre-dispatch guard rejects before any tool runs. This is
+              // what a barge-in produces.
+              ac.abort(new ExtractionCancelledError('barge-in'));
+            },
+            finalMessage: () => base.finalMessage(),
+          };
+        },
+      },
+    };
+
+    let caught;
+    try {
+      await runToolLoop({
+        ...baseArgs(),
+        client,
+        dispatcher: jest.fn(NOOP_DISPATCHER),
+        signal: ac.signal,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ExtractionCancelledError);
+    // Finalisation runs BEFORE attachBillableUsage, so the round the caller is
+    // billed for is the round the caller can measure.
+    expect(caught.billableUsage.round_usage).toHaveLength(1);
+    expect(caught.billableUsage.round_usage[0].timing).not.toBeNull();
+    expect(caught.billableUsage.round_usage[0].timing.round_idx).toBe(0);
+    assertNsFieldsSerialisable(caught.billableUsage.round_usage[0].timing);
+  });
+
+  test('path 5 — a fatal dispatcher error rethrows with the round timed exactly once', async () => {
+    const dispatcher = jest.fn(async () => {
+      throw new ExtractionCancelledError('cancelled mid-dispatch');
+    });
+
+    let caught;
+    try {
+      await runToolLoop({
+        ...baseArgs(),
+        client: mockClient([
+          toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]),
+        ]),
+        dispatcher,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ExtractionCancelledError);
+    const rows = caught.billableUsage.round_usage;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].timing).not.toBeNull();
+    // Dispatch time genuinely elapsed here, so it is stamped rather than
+    // defaulted — dispatch_complete moves past stream_complete.
+    expect(BigInt(rows[0].timing.dispatch_complete_ns)).toBeGreaterThanOrEqual(
+      BigInt(rows[0].timing.stream_complete_ns)
+    );
+    expect(rows[0].timing.dispatch_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  test('path 6 — tool_use stop_reason with no tool_use blocks below the cap', async () => {
+    const result = await runToolLoop({
+      ...baseArgs(),
+      client: mockClient([toolUseStopWithNoBlocks()]),
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.rounds).toBe(1);
+    expect(result.round_timings).toHaveLength(1);
+    assertNsFieldsSerialisable(result.round_timings[0]);
+  });
+
+  test('path 7 — normal continuation: one row per round, indices in order, no duplicates', async () => {
+    const result = await runToolLoop({
+      ...baseArgs(),
+      client: mockClient([
+        toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]),
+        toolUseRound([{ id: 'toolu_2', name: 'record_reading', input: { field: 'y' } }]),
+        endTurnRound('ok'),
+      ]),
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+    });
+
+    expect(result.rounds).toBe(3);
+    expect(result.round_timings).toHaveLength(3);
+    expect(result.round_timings.map((t) => t.round_idx)).toEqual([0, 1, 2]);
+    // Each round's usage row points at ITS OWN timing row, never a neighbour's.
+    result.round_usage.forEach((u, i) => {
+      expect(u.timing).toBe(result.round_timings[i]);
+      expect(u.timing.round_idx).toBe(u.round_idx);
+    });
+  });
+});
+
+describe('stage6-tool-loop — Plan 08A blocking_ask_user_dispatched', () => {
+  test('a dispatched ask_user labels its own round and only its own round', async () => {
+    const client = mockClient([
+      toolUseRound([{ id: 'toolu_1', name: 'ask_user', input: { question: 'which circuit?' } }]),
+      toolUseRound([{ id: 'toolu_2', name: 'record_reading', input: { field: 'x' } }]),
+      endTurnRound('ok'),
+    ]);
+    const result = await runToolLoop({
+      client,
+      model: 'claude-sonnet-4-6',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    // The flag is per-round state, so it must NOT leak forward into the
+    // write-only round or the terminal round — those are server work.
+    expect(result.round_timings.map((t) => t.blocking_ask_user_dispatched)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+  });
+
+  test('ask rounds are labelled, never dropped', async () => {
+    const result = await runToolLoop({
+      client: mockClient([
+        toolUseRound([{ id: 'toolu_1', name: 'ask_user', input: { question: 'q?' } }]),
+        endTurnRound('ok'),
+      ]),
+      model: 'claude-sonnet-4-6',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    // Dropping ask rounds would hide the slowest turns and let a later plan
+    // claim an improvement it did not make.
+    expect(result.round_timings).toHaveLength(result.rounds);
+    expect(result.round_timings[0].blocking_ask_user_dispatched).toBe(true);
+    expect(result.round_timings[0]).toHaveProperty('dispatch_ms');
+  });
+});
+
+describe('stage6-tool-loop — Plan 08A production serialisation', () => {
+  test('both emitted round arrays survive JSON.stringify with null, 0 and a decimal string', async () => {
+    const client = mockClient([
+      // Round 0: tool_use (first_tool_use_ns = decimal string) + reasoning 0.
+      withUsage(toolUseRound([{ id: 'toolu_1', name: 'record_reading', input: { field: 'x' } }]), {
+        output: 40,
+        reasoning: 0,
+      }),
+      // Round 1: text-only terminal (first_tool_use_ns = null) + reasoning 12.
+      withUsage(endTurnRound('ok'), { output: 4, reasoning: 12 }),
+    ]);
+    const result = await runToolLoop({
+      client,
+      model: 'gpt-5.6-luna',
+      provider: 'openai',
+      system: 's',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: TOOL_SCHEMAS,
+      dispatcher: jest.fn(NOOP_DISPATCHER),
+      ctx: baseCtx(),
+      logger: makeLogger(),
+    });
+
+    // This is the exact operation src/logger.js performs on telemetry
+    // metadata. A BigInt anywhere in either array throws
+    // "Do not know how to serialize a BigInt" and takes the live turn down.
+    expect(() => JSON.stringify(result.round_timings)).not.toThrow();
+    expect(() => JSON.stringify(result.round_usage)).not.toThrow();
+
+    const timings = JSON.parse(JSON.stringify(result.round_timings));
+    const usage = JSON.parse(JSON.stringify(result.round_usage));
+
+    // The three values the round-trip has to preserve distinctly.
+    expect(timings[1].first_tool_use_ns).toBeNull();
+    expect(typeof timings[0].first_tool_use_ns).toBe('string');
+    expect(usage[0].reasoning_tokens).toBe(0);
+    expect(usage[1].reasoning_tokens).toBe(12);
+
+    timings.forEach(assertNsFieldsSerialisable);
+    usage.forEach((row) => assertNsFieldsSerialisable(row.timing));
+  });
+});

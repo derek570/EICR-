@@ -392,15 +392,56 @@ describe('openai-responses-adapter — request/response translation', () => {
     expect(_internals.mapUsage(ROUND1_FINAL.usage)).toEqual({
       input_tokens: 3,
       output_tokens: 55,
+      reasoning_tokens: 25,
       cache_creation_input_tokens: 2062,
       cache_read_input_tokens: 0,
     });
     expect(_internals.mapUsage(ROUND2_FINAL.usage)).toEqual({
       input_tokens: 3,
       output_tokens: 10,
+      reasoning_tokens: 0,
       cache_creation_input_tokens: 15,
       cache_read_input_tokens: 2047,
     });
+  });
+
+  test('mapUsage: reasoning_tokens is surfaced ALONGSIDE output_tokens, never subtracted from it', () => {
+    // Plan 08A. `output_tokens` is the Responses API's INCLUSIVE total —
+    // reasoning time is folded into it invisibly, which is why round 0 can cost
+    // ~3.8 s for ~101 "output" tokens. Surfacing the reasoning share is the
+    // whole point, but every CostTracker input is computed from
+    // `output_tokens`, so its value must not move by a single token.
+    const usage = {
+      input_tokens: 100,
+      output_tokens: 55,
+      output_tokens_details: { reasoning_tokens: 25 },
+    };
+    expect(_internals.mapUsage(usage).output_tokens).toBe(55);
+    expect(_internals.mapUsage(usage).reasoning_tokens).toBe(25);
+  });
+
+  test('mapUsage: a reported 0 stays 0; an unreported value is null, never a fabricated 0', () => {
+    // A provider-reported 0 is a real measurement (a round that did no
+    // thinking) and must be distinguishable from "this transport does not
+    // report reasoning at all" — `|| 0` would collapse the two and make the
+    // 08B analysis claim a zero-reasoning round that never happened.
+    expect(_internals.mapUsage({ input_tokens: 1, output_tokens: 2 }).reasoning_tokens).toBeNull();
+    expect(
+      _internals.mapUsage({ input_tokens: 1, output_tokens: 2, output_tokens_details: {} })
+        .reasoning_tokens
+    ).toBeNull();
+    expect(
+      _internals.mapUsage({
+        input_tokens: 1,
+        output_tokens: 2,
+        output_tokens_details: { reasoning_tokens: 0 },
+      }).reasoning_tokens
+    ).toBe(0);
+    // Survives the JSON.stringify src/logger.js performs on metadata.
+    expect(
+      JSON.parse(JSON.stringify(_internals.mapUsage({ input_tokens: 1, output_tokens: 2 })))
+        .reasoning_tokens
+    ).toBeNull();
   });
 
   test('final-message translation preserves actual model and served Fast tier for billing', () => {
@@ -693,6 +734,53 @@ describe('openai-responses-adapter — drives the REAL runToolLoop across two ro
     expect(reasoningIdx).toBeLessThan(functionCallIdx);
     expect(functionCallIdx).toBeLessThan(outputIdx);
     expect(round2Payload.input[reasoningIdx].encrypted_content).toBe('enc_abc');
+  });
+
+  test('Plan 08A: reasoning_tokens survives the WHOLE path — adapter → tool loop → round_usage', async () => {
+    // The regression this locks: `attributeRoundUsage` is an explicit
+    // ALLOWLIST that copies fields BY NAME and drops everything unnamed, so
+    // surfacing reasoning_tokens in the adapter alone was a silent no-op. Only
+    // an end-to-end assertion catches a future re-break — an adapter-level
+    // unit test would still pass with the allowlist entry deleted.
+    const { client } = buildTestAdapter([
+      { events: ROUND1_STREAM_EVENTS, final: ROUND1_FINAL },
+      { events: ROUND2_STREAM_EVENTS, final: ROUND2_FINAL },
+    ]);
+    const out = await runToolLoop({
+      client,
+      model: 'gpt-5.6-luna',
+      provider: 'openai',
+      openAIServiceTier: 'fast',
+      system: 'SYS',
+      messages: [{ role: 'user', content: 'Zs on circuit 4 is 0.63' }],
+      tools: [
+        {
+          name: 'record_reading',
+          description: 'record a reading',
+          input_schema: { type: 'object', properties: {} },
+        },
+      ],
+      dispatcher: async (call) => ({
+        tool_use_id: call.tool_call_id,
+        content: '{}',
+        is_error: false,
+      }),
+      ctx: { sessionId: 's1', turnId: 't1' },
+    });
+
+    // Round 1 reasoned (25 of its 55 output tokens); round 2 did not (0).
+    // Both are REPORTED values, so neither may normalise to null.
+    expect(out.round_usage.map((r) => r.reasoning_tokens)).toEqual([25, 0]);
+    // …and the billed totals are untouched by the new field.
+    expect(out.round_usage.map((r) => r.output_tokens)).toEqual([55, 10]);
+
+    // The same end-to-end path proves first_tool_use_ns against the REAL
+    // translator, whose synthetic message_start precedes the provider SSE:
+    // only the function_call item becomes a content_block_start, so a
+    // tool-emitting round stamps and a message-only round stays null.
+    expect(out.round_timings[0].first_tool_use_ns).toMatch(/^\d+$/);
+    expect(out.round_timings[1].first_tool_use_ns).toBeNull();
+    expect(() => JSON.stringify(out.round_usage)).not.toThrow();
   });
 
   test('DECISIVE: onToolUseStreamed fires from the LIVE event translation, before finalResponse() is ever called', async () => {
