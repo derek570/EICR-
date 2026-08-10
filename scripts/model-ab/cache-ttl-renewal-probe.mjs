@@ -121,13 +121,34 @@ const nowIso = () => new Date().toISOString();
  * One probe request. Uses the same explicit-breakpoint shape the production
  * adapter sends (src/extraction/openai-responses-adapter.js) so the result
  * describes the caching path we actually use, not a different one.
+ *
+ * The `prompt_cache_breakpoint` marker on the stable block is LOAD-BEARING and
+ * must not be dropped. `prompt_cache_options: {mode:'explicit'}` means "cache
+ * exactly what I mark and nothing else" — so with no breakpoint declared it
+ * caches NOTHING, silently, while still returning a perfectly well-formed
+ * response. Measured 2026-08-10: without the marker both arms reported
+ * cached=0/write=0 on every call including the write phase, which the probe
+ * then classified as ANOMALOUS ("already cold") when in truth no cache had
+ * ever been created. Implicit mode (the option omitted entirely) caches the
+ * whole prefix automatically and hid the distinction. Production gets this
+ * right via toExplicitSystemInput() — the block role is `developer`, not
+ * `system`, and the marker sits on the last stable block.
  */
 async function probe(client, { arm, phase, stablePrefix, cacheKey }) {
   const startedAt = Date.now();
   const res = await client.responses.create({
     model: MODEL,
     input: [
-      { role: 'system', content: [{ type: 'input_text', text: stablePrefix }] },
+      {
+        role: 'developer',
+        content: [
+          {
+            type: 'input_text',
+            text: stablePrefix,
+            prompt_cache_breakpoint: { mode: 'explicit' },
+          },
+        ],
+      },
       // Volatile tail: sits AFTER the breakpoint, exactly as in production, and
       // is varied per phase so no phase can be served from a whole-request cache.
       { role: 'user', content: [{ type: 'input_text', text: `Reply with OK. (${phase})` }] },
@@ -241,6 +262,28 @@ async function main() {
       })
     );
     flush();
+  }
+  // Fail fast if the write did not actually create a cache entry. Without this
+  // the run sleeps ~50 minutes and then reports a confident NO_RENEW/ANOMALOUS
+  // verdict about a cache that never existed — which is exactly what happened
+  // on 2026-08-10 when the probe omitted `prompt_cache_breakpoint`. A write
+  // phase that caches nothing is a broken probe, not a result.
+  const writes = report.phases.filter((p) => p.phase === 'write');
+  const unwritten = writes.filter((p) => p.cache_write_tokens < PREFIX_TOKENS / 2);
+  if (unwritten.length > 0) {
+    report.verdict = 'PROBE_BROKEN';
+    report.verdict_meaning =
+      `Write phase cached nothing (${unwritten
+        .map((p) => `${p.arm}: write=${p.cache_write_tokens}`)
+        .join(', ')}). No cache entry was created, so there is nothing whose ` +
+      'TTL could be measured. Do NOT interpret this as a retention result. ' +
+      'Check that the request still carries prompt_cache_breakpoint on the ' +
+      'stable block and that the prefix clears the provider minimum.';
+    flush();
+    console.error(`[T+0] ABORT — ${report.verdict_meaning}`);
+    console.log(JSON.stringify(report, null, 2));
+    process.exitCode = 1;
+    return;
   }
   console.error(`[T+0] both arms written (run ${runId})`);
 
