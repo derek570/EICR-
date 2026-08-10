@@ -14,8 +14,9 @@ mode that made Plan 00 feel like wasted effort. Three changes, all approved 2026
 1. **Plans 01, 04 and 07 are trimmed to decision criteria.** Their measurement designs are
    replaced by "read the telemetry that already shipped, then decide". No new cohort
    apparatus is to be built for any of them.
-2. **Execution order is now `Tier A → 08 → 02 → 06`**, with 03/04/05 reassessed after 02
-   lands. Plan 08 is NEW and runs BEFORE plan 02.
+2. **Execution order is now `Tier A → 08A → 08B → 02 → 06`**, with 03/04/05 reassessed after 02
+   lands. Plan 08 is NEW and runs BEFORE plan 02; it was split into 08A/08B on 2026-08-10
+   because every 08B lever is selected by data 08A produces.
 3. **Plan 06 has an explicit GO** (Derek, 2026-08-10) and gets its own `/rp`. It remains a
    PRODUCT change, judged on usefulness/cost/distraction — not a latency plan, and not
    measured against the shared latency metric below.
@@ -41,15 +42,16 @@ is exactly the gap Plan 08 was created to own. Treat it as a reason to keep 03/0
 
 | Order | Plan | Why it earns a cycle |
 |---|---|---|
-| 1 | [08 — Stage-6 round efficiency](plan-08-stage6-round-efficiency.md) | **AUTHORED 2026-08-10.** Telemetry settled it: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. Phase 1 is instrumentation and ships alone; we currently cannot see inside a round. |
-| 2 | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | The one genuine latency build in the original wave. Full dual-reviewer loop (capability handshake + exactly-once ACK = shared concurrent state). **Re-argue after 08 Phase 1** — see the caveat below. |
-| 3 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Explicit GO. Own `/rp`; will not converge in 2–4 rounds — history, echo re-ingestion and cost-loop surfaces are all real. |
+| 1 | [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | **AUTHORED 2026-08-10.** Telemetry settled where the latency is: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. But we cannot see *inside* a round. Three additive fields, zero behaviour change. **Small-plan lane** (Codex-only, cap 5). |
+| 2 | [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | **HELD.** Every lever is selected by 08A's data and by Plan 07's verdict. Full dual-reviewer loop when unblocked. |
+| 3 | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | The one genuine latency build in the original wave. Full dual-reviewer loop (capability handshake + exactly-once ACK = shared concurrent state). **Re-argue after 08A** — see the caveat below. |
+| 4 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Explicit GO. Own `/rp`; will not converge in 2–4 rounds — history, echo re-ingestion and cost-loop surfaces are all real. |
 
 **Why Plan 02 may be worth less than the wave assumed.** Incremental TTS pays only for time the
 model spends *streaming*. Nothing currently measures whether a Luna round is front-loaded
 reasoning silence or steady streaming — `stream_ms` is start→complete with no first-token stamp
 (`stage6-tool-loop.js:1093-1098`). If the round is mostly silence, there is little to overlap and
-Plan 02's ceiling is low. Plan 08 Phase 1 adds that stamp. **Do not open Plan 02's `/rp` before
+Plan 02's ceiling is low. Plan 08A adds that stamp. **Do not open Plan 02's `/rp` before
 reading it** — that is the substantive reason for the 08-before-02 order, not just sequencing.
 
 ### Tier C — held, reassess after 02
@@ -105,7 +107,8 @@ The [umbrella reference](plan-00-gpt56-port-parity/PLAN-00-final.md) is permanen
 | [05 — answer-user pre-synthesis](plan-05-answer-user-presynthesis-full-loop.md) | Overlap answer TTS without early playback | **Tier C** — deferred |
 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Preserve natural conversation while isolating certificate mutation | **Tier B**, own `/rp`. **GO given 2026-08-10.** Still a PRODUCT change, not a latency fix |
 | [07 — Loaded Barrel audit](plan-07-loaded-barrel-value-audit.md) | Decide keep/narrow/retire from telemetry that already shipped | **Tier A** — decision only, build nothing |
-| [08 — Stage-6 round efficiency](plan-08-stage6-round-efficiency.md) | Reduce Luna round-count and per-round prompt cost | **Tier B, runs FIRST** — analysis before authoring |
+| [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | Additive round telemetry: reasoning tokens, first-token stamp, `ask_user` wait split | **Tier B, runs FIRST** — small-plan lane, zero behaviour change |
+| [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | Cut per-round stream time and the multi-round tail | **HELD** — needs 08A field data + Plan 07 verdict |
 
 ## Shared success metric
 
