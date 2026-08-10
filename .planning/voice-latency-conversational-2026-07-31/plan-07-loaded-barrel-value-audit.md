@@ -1,14 +1,90 @@
 # Plan 07 — prove the value of the live, parked-audio Loaded Barrel
 
-Status: **DRAFT — Phase 1 shipped 2026-07-31; Phases 2–3 not RP-reviewed**
+Status: **CLOSED 2026-08-10 — verdict: KEEP UNCHANGED.** Phase 1 shipped 2026-07-31.
+**Phases 2–3 are CUT** (Derek's 2026-08-10 re-scope: read the telemetry that already shipped, decide,
+build nothing). No cohort assignment, no A/B flag, no new apparatus was built — and none should be.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 iOS repo: `/Users/derekbeckley/Developer/CertMateUnified`
-Dependency: telemetry prerequisite shipped (done). No formal Plan 00 evidence-gate DONE required (2026-08-07, Derek: the gate was dropped for sole-user field testing); proceed once the informal Luna field test feels solid.
-Timing: establish baseline before Plans 02–03 change the TTS waterfall
 
-## Outcome
+## VERDICT (2026-08-10) — KEEP UNCHANGED
 
-Measure whether the current safe form of Loaded Barrel materially reduces mouth-stop-to-audio latency under Luna, then make an evidence-backed keep, narrow or retire decision. Keep the full Luna loop and post-loop canonical validation. Do not restore mid-turn preview playback or round-one early termination.
+Loaded Barrel is doing what it was built to do. It removes **≈ 200–300 ms** from perceived latency at
+p50, hits on **78 %** of turns, and costs nothing at the correctness surface (audio is parked, never
+played before canonical validation). Narrowing it to `single_call` would give that back for nothing;
+retiring it would cost it outright. **Keep it exactly as it is.**
+
+### How the earlier contradiction resolved
+
+Two readings of the same shipped telemetry disagreed. The between-groups read said hits were ~35 %
+*slower* (p50 5240 ms vs canonical 3890 ms) and pointed at retirement. The within-turn read said a
+hit was why one turn's 12.4 s round-sum produced 3.97 s of perceived latency.
+
+**The between-groups read was confounded, and this is the mechanism.** Perceived latency is
+dominated by the model loop — measured here at **96.2 %** of perceived latency at p50, independently
+reproducing the 0.91–0.97 ratio that Plan 08A was written from. So comparing raw latency between hit
+and non-hit turns mostly compares *how hard the turns were*, not what the barrel did. It is the wrong
+denominator.
+
+### The measurement that settles it
+
+23 turns from the four Luna field sessions of 2026-08-06/07, joined through the shipped
+correlation-id evidence chain. The honest statistic is the **non-loop residual** — everything in
+perceived latency that is *not* the model loop:
+
+```
+non_loop_ms = perceived_latency_ms − Σ stream_ms − Σ dispatch_ms(ask-wait excluded)
+```
+
+This contains **no imputed value**, which matters because `vendor_ms` had to be imputed for all 18
+hit turns (a hit has no canonical vendor span to measure). Any verdict read off `A/B` directly would
+have been partly circular.
+
+| Group | n | non-loop residual, p50 |
+|---|---|---|
+| `loaded_barrel_hit` | 18 | **204.0 ms** |
+| `legacy_confirmation` | 5 | **501.9 ms** |
+| **difference** | | **297.9 ms** |
+
+Measured canonical vendor time on the five legacy turns: **p50 211 ms** — which is what the barrel
+should be able to hide, and is independently consistent with Plan 03 §3's separately measured
+**≈215 ms** whole-vendor budget (66 ms handshake + 147 ms synthesis). Three independent routes to
+the same number is the reason to believe it.
+
+The barrel's head start is **not** the constraint: p50 1,596 ms, max 12,628 ms before loop
+completion, against ~215 ms of vendor work to hide. **It starts roughly 7× earlier than it needs
+to.** The binding constraint is that speech may not begin until the write is canonically confirmed —
+so the barrel can only ever cash in the vendor time, never the head start.
+
+### Caveats, stated rather than buried
+
+- **n = 23 turns, and the comparison group is 5.** Enough to resolve a contradiction and size an
+  effect; not enough to certify 297.9 ms to three significant figures. Read it as "roughly the
+  vendor budget", which is what the three independent measurements agree on.
+- **Means are meaningless here and were not used.** Several turns have a *negative* non-loop
+  residual (min −10,110 ms) because a barrel firing up to 12.6 s before loop completion lets audio
+  play while the loop continues — perceived latency legitimately ends before the model loop does.
+  p50 is the only defensible statistic on this shape.
+- `vendor_ms` is imputed on hits by construction. The verdict deliberately does not rest on it.
+
+## Consequences for the rest of the wave
+
+This verdict prices two other plans, because **the barrel has already taken the vendor win on 78 % of
+turns**:
+
+- **Plan 02 (iOS incremental TTS) should be demoted to Tier C.** Incremental playback buys the
+  synthesis tail — at most Plan 03's measured 147 ms — and buys **exactly zero on a hit**, because
+  the audio is already synthesised and parked ~1.6 s early. Amortised: `147 ms × 22 % ≈ 32 ms`,
+  against a 6.4 s p50. That is ~0.5 %, in exchange for an iOS build carrying a capability handshake
+  and an exactly-once ACK — which is precisely why it was scoped for the full dual-reviewer loop.
+  **Recommend dropping it from Tier B.** Plan 08A's `pre_tool_use_ms` split can still overturn this
+  if it shows something unexpected, but the burden has moved: 02 now has to argue its way back in.
+- **Plan 03 §1–2 (ElevenLabs connection pooling) stays held, with a stronger reason.** Pooling
+  attacks the 66 ms handshake, which the barrel already hides on 78 % of turns.
+
+Neither conclusion depends on Plan 08A. Both are consistent with Tier A's finding that the entire
+vendor half of the budget is ≈215 ms against a 6.76 s p50.
+
+## What is live now (unchanged by this verdict)
 
 ## What is live now
 
@@ -68,7 +144,14 @@ Implemented files:
 
 No synthesis eligibility, cache matching, playback ordering, TTS wording, Luna loop, or conversation behaviour changed.
 
-## Phase 2 — controlled value measurement
+## Phase 2 — controlled value measurement — **CUT, NOT BUILT**
+
+> **CUT 2026-08-10.** This is the cohort machinery Derek's re-scope removed from the wave. The
+> keep/narrow/retire question was answered from telemetry that had already shipped, at a cost of one
+> analysis pass — a session-latched cohort flag would have frozen behaviour across field sessions to
+> re-derive a number three independent measurements already agree on. **Do not build this.** The
+> section is retained below only so the reasoning is legible if the question is ever reopened with a
+> genuinely larger sample.
 
 Use a source-controlled, session-latched cohort assignment so a session never changes behaviour mid-job. Compare matched fixtures/field turns with Loaded Barrel on and off while keeping Luna Fast, Deepgram settings, TTS model and client build constant.
 
@@ -85,7 +168,14 @@ Report:
 
 Use at least the current field-replay confirmations plus real sessions. RP must choose the sample count after looking at field volume; do not infer a population result from the current two sessions.
 
-## Phase 3 — narrow improvements only if supported
+## Phase 3 — narrow improvements only if supported — **NOT TRIGGERED**
+
+> **Not triggered 2026-08-10.** Phase 3 was conditional on the evidence supporting a narrow. It does
+> not: the barrel hits 78 % of turns and its head start already exceeds the vendor time it hides by
+> ~7×, so restricting eligibility or skipping late-round candidates would trade a measured saving for
+> nothing. The one item here that remains independently worth doing is the stale
+> `midStreamEmittedSlots` / `VOICE_MID_STREAM_FILTER` scaffolding removal — that is dead-code hygiene,
+> not a Loaded Barrel change, and needs its own small plan.
 
 Possible changes are evidence-dependent and independently flagged:
 

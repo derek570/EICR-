@@ -31,7 +31,7 @@ loop costs more than doing them.
 | iOS TTS watchdog | `AlertManager.swift` had no playback timeout on any path. A ~32 s clip for a 3-word phrase hung the app silently (2026-08-07 field session). Must land before further extended field sessions. | **DONE** — `CertMateUnified` `fix/tts-playback-watchdog-2026-08-10`, builds clean. Duration-derived budget, generation-fenced, cancelled at `completeQueueHead`. |
 | Plan 01 §5 | Probe `prompt_cache_retention:"24h"`; if retention holds, close the 25-minute Terra keep-alive proposal permanently. | **RE-AIMED** — `"24h"` is documented as **deprecated for GPT-5.6 and later**, so that fork is unavailable, not merely unproven. Only the read-renews-TTL question survives; `scripts/model-ab/cache-ttl-renewal-probe.mjs` (two-arm, control included) is running. |
 | Plan 03 §3 | ElevenLabs synthesis tuning (`auto_mode`, `style`, normalization, speaker boost). Config-only, ear-tested, one variable at a time. | **MEASURED** — whole-vendor budget is ≈215 ms (66 ms handshake + 147 ms synthesis). Best arm saves 35 ms and is the riskiest; `auto_mode` is *worse* (+18 ms). Recommendation: change nothing. Ear test outstanding. |
-| Plan 07 | Read shipped Loaded Barrel telemetry, record keep/narrow/retire. Build nothing. | In progress — telemetry analysis running. |
+| Plan 07 | Read shipped Loaded Barrel telemetry, record keep/narrow/retire. Build nothing. | **DONE — KEEP UNCHANGED.** Within-turn over 23 turns: the barrel removes ≈200–300 ms (non-loop residual p50 **204 ms** on hits vs **502 ms** on misses) and hits **78 %** of turns. The "hits are 35 % slower" between-groups read was confounded — the model loop is **96.2 %** of perceived latency, so raw comparison mostly compares turn difficulty. Phases 2–3 CUT. |
 
 **What Tier A already told us about the wave.** The vendor half of the latency budget is
 ≈215 ms end-to-end and the entire tuning-plus-pooling prize is ≤ ~100 ms. That is direct
@@ -44,14 +44,20 @@ is exactly the gap Plan 08 was created to own. Treat it as a reason to keep 03/0
 |---|---|---|
 | 1 | [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | **AUTHORED 2026-08-10.** Telemetry settled where the latency is: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. But we cannot see *inside* a round. Three additive fields, zero behaviour change. **Small-plan lane** (Codex-only, cap 5). |
 | 2 | [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | **HELD.** Every lever is selected by 08A's data and by Plan 07's verdict. Full dual-reviewer loop when unblocked. |
-| 3 | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | The one genuine latency build in the original wave. Full dual-reviewer loop (capability handshake + exactly-once ACK = shared concurrent state). **Re-argue after 08A** — see the caveat below. |
-| 4 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Explicit GO. Own `/rp`; will not converge in 2–4 rounds — history, echo re-ingestion and cost-loop surfaces are all real. |
+| 3 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Explicit GO. Own `/rp`; will not converge in 2–4 rounds — history, echo re-ingestion and cost-loop surfaces are all real. |
+| — | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | **DEMOTED to Tier C 2026-08-10** by Plan 07's verdict — see below. |
 
-**Why Plan 02 may be worth less than the wave assumed.** Incremental TTS pays only for time the
-model spends *streaming*. Nothing currently measures whether a Luna round is front-loaded
-reasoning silence or steady streaming — `stream_ms` is start→complete with nothing in between
-(`stage6-tool-loop.js:1093-1098`). If the round is mostly silence, there is little to overlap and
-Plan 02's ceiling is low. Plan 08A adds a first-`tool_use` stamp that splits the round in two. **Do not open Plan 02's `/rp` before
+**Plan 02 is worth ~32 ms and has been demoted.** Incremental playback buys the synthesis tail —
+Plan 03 measured that at 147 ms — and buys **exactly zero on a Loaded Barrel hit**, because the audio
+is already synthesised and parked ~1.6 s before the loop completes. Plan 07 measured the hit rate at
+**78 %**, so the amortised prize is `147 ms × 22 % ≈ 32 ms` against a 6.4 s p50: about **0.5 %**, in
+exchange for an iOS build carrying a capability handshake and an exactly-once ACK. That is why it was
+scoped for the full dual-reviewer loop, and it no longer earns one.
+
+This was the "re-argue after 08A" caveat, and it resolved **earlier than expected and without 08A** —
+Plan 07's within-turn data answered it directly, because Loaded Barrel already demonstrates what
+overlapping the vendor is worth. 08A's `pre_tool_use_ms` split can still overturn this, but the
+burden has moved: Plan 02 must now argue its way back in. **Do not open Plan 02's `/rp` before
 reading it** — that is the substantive reason for the 08-before-02 order, not just sequencing.
 
 ### Tier C — held, reassess after 02
