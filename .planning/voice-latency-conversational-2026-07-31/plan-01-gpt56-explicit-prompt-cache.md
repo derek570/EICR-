@@ -38,36 +38,75 @@ Rate-limit work is a separate problem and must not be conflated with cache savin
 
 ## The one open question — Terra retention
 
-`prompt_cache_options.ttl` is omitted, so the documented default minimum lifetime is
-30 minutes, and OpenAI does **not** document an ordinary cache read as renewing that
-lifetime. A separate `prompt_cache_retention` policy exists whose `"24h"` setting can keep
-an eligible prefix active for up to 24 hours.
+### Step 1 — CLOSED 2026-08-10 by the vendor documentation, not by a probe
 
-The original plan proposed a 25-minute forced Terra re-warm timer. **That proposal is a
-hypothesis, and an expensive one:** the Terra stable prefix is 35,276 tokens, so one forced
-rewrite costs ≈ `$0.08819` at `$2.50/M`. Two unconditional rewrites (≈ `$0.17638`) already
-exceed a complete cold-equivalent observation turn, and any rewrite followed by no Terra use
-wastes the full amount.
+`prompt_cache_retention: "24h"` **is not available to us.** OpenAI's prompt-caching guide
+states the field "is deprecated for GPT-5.6 models and later model families", and both
+`gpt-5.6-luna` and `gpt-5.6-terra` are in that family. The same page pins the replacement:
+"All breakpoints use the request-wide `prompt_cache_options.ttl`, which currently defaults to
+`30m` and is the only supported value", and "a cached prefix remains eligible for reuse for at
+least 30 minutes, but OpenAI may retain it longer."
+
+So the plan's preferred fork — *24-hour retention holds, stop here* — is not merely unproven,
+it is **unavailable**. Probing for it would have spent an API call to be told the field is
+deprecated. Documentation that names our exact model family is the stronger and cheaper
+answer, and it is recorded here in place of the probe.
+
+Two secondary facts confirmed while checking: cache writes on GPT-5.6+ bill at 1.25× the
+uncached input rate, and `src/extraction/cost-tracker.js:55-66` already models exactly that
+(Terra `input: 2.0` / `cacheWrite: 2.5`). The `$0.08819` figure below is therefore correct
+as written and is not understating the write premium.
+
+### Step 2 — the only surviving question: does a READ renew the 30-minute lifetime?
+
+This is what decides the 25-minute re-warm timer, and the economics are one-sided enough that
+the answer is the whole decision:
+
+- **If a read renews** → a keep-alive is a *read*. Terra reads bill at `$0.20/M`, so
+  refreshing the 35,276-token stable prefix costs ≈ `$0.0071` per tick, ≈ `$0.017/hour`. It
+  needs to prevent one cold Terra turn per hour to break even (cold write ≈ `$0.08819`
+  at `$2.50/M` vs ≈ `$0.0071` warm — a `$0.0811` swing). Plausibly worth building.
+- **If a read does not renew** → a keep-alive must be a *write*: ≈ `$0.08819` every 30
+  minutes, ≈ `$0.212/hour`, paid whether or not Terra is used again. That is **strictly
+  dominated** by simply paying the cold write on the next real Terra turn, which costs the
+  same and only when a turn actually happens. In that world the timer can never pay for
+  itself and must be closed permanently.
+
+The docs are silent on renewal, so this one is genuinely empirical.
 
 ### Do this
 
-1. Probe `prompt_cache_retention: "24h"` against the live Terra request shape and stable
-   cache key. Non-production, under `scripts/model-ab/`. Log only model/tier, usage buckets,
-   request hash and timings — never prompt text or keys.
-2. Run one controlled same-key sequence across the 30-minute boundary and read the provider
-   cache-read/cache-write tokens. This settles whether a read renews the lifetime; until
-   token telemetry shows it, a 25-minute read **may not be called a keep-alive**.
+Run `scripts/model-ab/cache-ttl-renewal-probe.mjs` (added 2026-08-10). Non-production;
+synthetic filler only; logs model/tier, usage buckets, timings and a truncated key digest —
+never prompt text, inspection data or keys. It runs two independent cache keys:
+
+| Arm | T+0 | T+25 | T+50 |
+|---|---|---|---|
+| TEST | write | **read** | check |
+| CONTROL | write | — | check |
+
+The control arm is the point: a warm TEST at T+50 proves nothing on its own, because the
+vendor explicitly reserves the right to retain a prefix past the 30-minute floor. Only
+*TEST warm + CONTROL cold* isolates renewal. Both-warm is `INCONCLUSIVE` — rerun with a
+larger `--check-at`, do not read it as a pass.
+
+It probes `gpt-5.6-luna` by default: the behaviour is a platform property of the GPT-5.6
+family and Luna bills the same shape at ~1/10th of Terra's rate, so the probe costs ≈ `$0.02`
+instead of ≈ `$0.20`. **The Luna→Terra generalisation is an assumption** — pass
+`--model gpt-5.6-terra` to confirm it on the model that actually motivated the question if
+the verdict comes back `RENEWS` and the timer is going to be built.
 
 ### Then decide
 
-- **If 24-hour retention holds** → close the 25-minute timer proposal as unnecessary and
-  record that outcome. This is the expected and preferred result. Stop here.
-- **If retention does not hold** → do *not* implement the timer on that basis alone. Compute
-  projected savings from **observed** Terra intervals in real field sessions, not a synthetic
-  always-active workload, and only proceed if they exceed the `$0.08819`-per-rewrite cost.
-  Any such re-warm stays default-off behind a source-controlled flag, may run only while a
-  recording session is active, and must never enter the tool loop, mutate session state,
-  emit a client event, trigger TTS, or race a live Luna/Terra turn.
+- **`NO_RENEW`** → close the 25-minute timer proposal permanently and record it. Given the
+  cost asymmetry above this is the outcome that needs no further work.
+- **`RENEWS`** → still do *not* implement on that basis alone. Compute projected savings from
+  **observed** Terra gaps in real field sessions, not a synthetic always-active workload, and
+  only proceed if they exceed the `$0.08819`-per-cold-turn they avoid. Any such re-warm stays
+  default-off behind a source-controlled flag, may run only while a recording session is
+  active, and must never enter the tool loop, mutate session state, emit a client event,
+  trigger TTS, or race a live Luna/Terra turn.
+- **`INCONCLUSIVE` / `ANOMALOUS`** → rerun before concluding anything.
 
 ## Acceptance
 
