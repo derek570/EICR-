@@ -55,7 +55,7 @@ directions rather than assumed. It is also the reason 03/04/05 stay held — the
 | Order | Plan | Why it earns a cycle |
 |---|---|---|
 | 1 | [08A — see inside a model round](plan-08a-stage6-round-instrumentation.md) | **AUTHORED 2026-08-10.** Telemetry settled where the latency is: summed round `stream_ms` ÷ perceived latency is **0.91–0.97** — model rounds are ~90 %+ of the loop, TTS is 3–9 %. But we cannot see *inside* a round. Three additive fields, zero behaviour change. **Small-plan lane** (Codex-only, cap 5). |
-| 2 | [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | **HELD.** Every lever is selected by 08A's data and by Plan 07's verdict. Full dual-reviewer loop when unblocked. |
+| 2 | [08B — round-efficiency levers](plan-08b-stage6-round-levers.md) | **PARTIALLY UNBLOCKED 2026-08-10.** Plan 07's verdict is in, and it favours §2. New **§2.0 is the wave's largest measured lever** — every turn ends with a no-tool `end_turn` round costing p50 1712 ms / **24 % of perceived latency**, emitting a median of **4** tokens that are never spoken (`bundler_only` ×28), never enter history (`eicr-extraction-session.js:2874`), and gate audio that is already synthesised and parked. Measured from shipped telemetry, so it needs **no 08A data**. §1 still 08A-gated. Full dual-reviewer loop. |
 | 3 | [06 — conversational lane](plan-06-general-conversational-lane.md) | Explicit GO. Own `/rp`; will not converge in 2–4 rounds — history, echo re-ingestion and cost-loop surfaces are all real. |
 | — | [02 — iOS incremental TTS](plan-02-ios-incremental-tts-streaming.md) | **DEMOTED to Tier C 2026-08-10** by Plan 07's verdict — see below. |
 

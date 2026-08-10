@@ -1,15 +1,18 @@
 # Plan 08B — Stage-6 round-efficiency levers
 
-Status: **HELD (2026-08-10). Do not open `/rp` on this yet.**
+Status: **PARTIALLY UNBLOCKED (2026-08-10) — §2.0 is ready to review now; §1 still waits on 08A.**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
-Blocked on **both**:
 
-1. **[08A](plan-08a-stage6-round-instrumentation.md) shipped, deployed, and one field session run
-   on it.** Every lever below is selected by data 08A produces. Reviewing them now would spend
-   rounds arguing about unmeasured quantities.
-2. **[Plan 07](plan-07-loaded-barrel-value-audit.md)'s keep/narrow/retire verdict.** If Loaded
-   Barrel genuinely hides round 2 from the inspector, §2 below is worth materially less than the
-   round histogram suggests.
+1. ~~**[08A](plan-08a-stage6-round-instrumentation.md) shipped, deployed, and one field session
+   run on it.**~~ Still true for **§1** — per-round stream time cannot be attacked without seeing
+   inside a round. **Not** true for §2.0, which was measured from already-shipped telemetry.
+2. ~~**[Plan 07](plan-07-loaded-barrel-value-audit.md)'s keep/narrow/retire verdict.**~~
+   **DELIVERED 2026-08-10: KEEP UNCHANGED.** It resolves *in favour* of §2, not against it. The
+   worry was that Loaded Barrel already hides the extra rounds; it does not. The barrel removes
+   ≈298 ms and — decisively — its parked audio **cannot be advertised until the loop returns**
+   (`stage6-shadow-harness.js:1489-1492`: the audio is *"ready and waiting, just not advertised"*;
+   iOS learns of it via the canonical confirmation POST that `runLiveMode` emits *post*-`runToolLoop`).
+   Barrel and round count are therefore **additive**, not overlapping.
 
 Split from a single Plan 08 on 2026-08-10 so 08A could ship immediately instead of waiting behind
 a review of levers nobody could yet choose between.
@@ -26,10 +29,14 @@ From four live Luna field sessions (2026-08-06/07), perceived latency is near en
 
 Round histogram (28 turns): 2 ×21 (75 %), 3 ×5 (18 %), 4 ×2 (7 %).
 
-Two levers, **unequal in value**:
+Three levers, **unequal in value**. The ordering below was **corrected on 2026-08-10** — the
+original framing said round count was a 25 % tail lever, which missed that *every* turn carries a
+terminal round:
 
-- **§1 per-round stream time attacks 100 % of turns** — the whole p50 story.
-- **§2 round count attacks the 25 % tail** — most of the p95 story.
+- **§2.0 the discarded terminal round attacks 100 % of turns** — 24 % of perceived latency,
+  measured, and the largest single lever found anywhere in this wave.
+- **§1 per-round stream time attacks 100 % of turns** — the rest of the p50 story. Still 08A-gated.
+- **§2.1–2.2 extra tool rounds attack the 25 % tail** — most of the p95 story.
 
 ## §1 — Per-round stream time
 
@@ -93,6 +100,56 @@ one.
 > read ≈0 ms every round. `first_tool_use_ns` is the honest marker.
 
 ## §2 — Round count
+
+### 2.0 The terminal round is discarded, and the inspector waits for it — **LEAD LEVER**
+
+**Added 2026-08-10 from shipped telemetry (28 turns / 65 rounds, 4 live Luna sessions). Needs no
+08A data.** This is the largest measured lever in the wave, by roughly an order of magnitude.
+
+Every turn ends with an `end_turn` round that calls no tool. Measured:
+
+| | |
+|---|---|
+| Turns ending in a no-tool `end_turn` round | **28 / 28 (100 %)** |
+| Its `stream_ms` | p50 **1712 ms**, mean **1931 ms** |
+| Share of all model-loop time | **28.0 %** (54.1 s of 193.4 s) |
+| Share of perceived turn latency | **24 %** (mean turn 8124 ms) |
+| Output tokens it produced, across all 28 turns | **208 total** (p50 **4** per round) |
+
+Those tokens go nowhere:
+
+- **Never spoken.** All 28 turns are `path_classification: bundler_only` — the spoken confirmation
+  is server-authored by the bundler. The model is mute by design.
+- **Never remembered.** Next-turn history is `JSON.stringify(toolUseBlock.input)`
+  (`eicr-extraction-session.js:2874`) — the *tool call's arguments*, not the closing prose.
+- **Not needed for the write.** The write is dispatched in the preceding round.
+- **Not needed for the audio.** Loaded Barrel has already synthesised and parked it; Plan 07
+  measured the head start at p50 **1596 ms**, which is the terminal round's 1712 ms. Two
+  independent measurements of the same gap.
+
+So its only function is to signal *"I have nothing more to do"* — and the inspector pays ~1.9 s of
+silence to hear it, with the audio sitting ready and the reading already committed.
+
+**Why this is not simply deletable, and what the plan must therefore decide.** The loop cannot know
+in advance that the model is finished: **9 / 28 turns (32 %) did emit further tool calls** after
+round 0, and Luna is not merely failing to batch — it emitted up to **4 tool calls in one round**,
+so multi-round turns are genuine sequencing (e.g. `inspect_session_state` → `record_reading`), not
+an artefact. Blindly stopping after the first tool round would truncate a third of turns. Three
+candidate mechanisms, to be chosen in review, **not** pre-judged here:
+
+1. **Terminal-by-contract** — the server ends the turn without another provider round when the
+   dispatched tool set is known-terminal and nothing is pending. Cheapest; needs an explicit,
+   defensible terminal set.
+2. **Model-declared completion** — an optional `turn_complete` on the write tools; absent ⇒
+   today's behaviour, so it fails safe. Cheap, but note the precedent that a model's self-report
+   is not automatically trustworthy (CLAUDE.md is explicit about `confidence`).
+3. **Speculative release** — emit the confirmation as soon as the write commits and let the
+   termination round continue in the background, applying any late tool call as its own turn.
+   Biggest win, biggest blast radius; must be argued against "read back exactly once".
+
+**Non-negotiable in every option:** the audio-first invariants hold — every applied reading is
+spoken exactly once, nothing speculative is spoken or written, and barge-in stays safe. A design
+that speaks earlier by speaking twice is a regression, not a win.
 
 ### 2.1 The `board_id` vocabulary gap — verified, same class as the shipped `'main'` fix
 
