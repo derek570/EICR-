@@ -4,8 +4,8 @@ Status: **§2.1's code SHIPPED BY HAND 2026-08-11** (three commits; `/rp` hit th
 without converging — a process failure, not an unresolved-risk signal; see INDEX.md for the full
 account). **§2.0 (the terminal round) split fully out into [Plan 08D](plan-08d-terminal-round-release.md),
 which closed docs-only 2026-08-11 with no runtime mechanism** (session `8B9B2BDD`,
-`eicr-backend:393`). **This plan now owns only §2.1, whose implementation is complete** — nothing
-in this file awaits further refinement.
+`eicr-backend:393`). **This plan now owns only §2.1, whose code has already shipped** — see the
+note at the top of §2.1 below for what landed; nothing here is queued for a future `/rp`.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 
 **Section numbers are deliberately unchanged by the split** — §2.0 and §2.1 keep the names they are
@@ -71,17 +71,22 @@ terminal round:
 
 This section split into its own plan after round 2 of this plan's own `/rp`, when two independent
 reviewers produced six BLOCKERs against the release mechanism proposed here — the *fourth* attempt
-at this lever — while §2.1 below drew zero findings from either reviewer. [Plan 08D](plan-08d-terminal-round-release.md)
-carries the full measurement, precedent record, and mechanism history (the three candidates
-originally sketched here were never implemented — they were superseded by 08D's own, more
-thorough treatment of the same territory, which also failed review); it **closed docs-only
-2026-08-11** (session `8B9B2BDD`, `eicr-backend:393`) — ships no runtime early-release mechanism,
-since the current transport has no trustworthy pre-completion no-tool signal and every proposed
-mechanism shape has now failed in production or review — and the shrink/eliminate-round lever
-transferred to [08C](plan-08c-per-round-cost.md), which now carries 08D's replication gate and
-acceptance preconditions verbatim. **This plan owns only §2.1 below.**
+at this lever — while §2.1 below drew zero findings from either reviewer. The three candidate
+mechanisms originally sketched here were never implemented; they were superseded, before any
+attempt, by 08D's own more thorough review of the same territory. [Plan 08D](plan-08d-terminal-round-release.md)
+carries the full measurement, precedent record, and mechanism history, and it **closed docs-only
+2026-08-11** (session `8B9B2BDD`, `eicr-backend:393`): the current transport has no trustworthy
+pre-completion no-tool signal, every mechanism actually proposed and reviewed there has since
+failed in production or review, and 08D ships no runtime early-release mechanism. The
+shrink/eliminate-round lever transferred to [08C](plan-08c-per-round-cost.md), which now carries
+08D's replication gate and acceptance preconditions verbatim. **This plan owns only §2.1 below.**
 
 ## §2.1 — The `board_id` vocabulary gap — verified, same class as the shipped `'main'` fix
+
+**Code shipped by hand 2026-08-11** — see `docs/reference/changelog.md`'s 2026-08-11 `board_id`
+entry for exactly what landed. The proposal text below (including the still-open (a)/(b) choice
+and the reviewer pressure points) is retained as the design record this implementation came from,
+not as a still-pending decision.
 
 Two live rounds were spent on validator rejections of `board_id: 'current'` and `board_id: '*'`.
 Mechanism verified in source:
@@ -196,8 +201,8 @@ converges. This paragraph is not that row.
 - §2.0's mechanism-choice pressure points (the audio-already-parked premise, whether a candidate
   mechanism speaks a confirmation twice, the "known-terminal tool set" question) moved to 08D with
   the section and are now moot: 08D closed docs-only 2026-08-11 with no runtime mechanism, so
-  there is no candidate to pressure-test here. See 08D §3/§5 for the full record of what was
-  proposed and why each attempt failed.
+  there is no candidate to pressure-test here. See 08D §3/§5 for the full record of every
+  mechanism actually proposed and reviewed there, and why each one failed.
 - Does any §2.1 change make a rejection silent? Any path that turns `wrong_board` back into a
   silent drop re-creates the 2026-08-06 field bug and fails outright.
 - Can `'*'` reach a gated mutator as anything other than a rejection?

@@ -270,9 +270,9 @@ self-reference — these bullets were authored anticipating exactly this transfe
 >   failure is at least audible as a long silence. Re-read 08C §1.1 against any terminal-round
 >   mechanism 08C selects before probing effort below `'low'`.
 
-(§5 point 3 above is 08D §5's round-2 finding on the barrel-miss cohort; "08C §1.1" and "this
-plan"/"08C selects" above are 08D's own self-references, since these bullets already anticipated
-landing here — they are §1.1 of *this* document.)
+(§5 point 3 above is 08D §5's round-2 finding on the barrel-miss cohort; "08C §1.1" and "08C
+selects" above are 08D's own self-references — these bullets already anticipated landing here,
+since "08C §1.1" is §1.1 of *this* document.)
 
 **Non-negotiable invariants (08D §9), verbatim, binding whatever this plan eventually ships:**
 
