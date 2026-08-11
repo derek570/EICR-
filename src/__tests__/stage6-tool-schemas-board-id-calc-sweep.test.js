@@ -44,6 +44,34 @@ describe('board_id schema thread-through (calc + sweep tools)', () => {
     const tool = getToolByName('set_field_for_all_circuits');
     expect(tool.input_schema.properties.board_id.description).toMatch(/\*/);
   });
+
+  // -------------------------------------------------------------------------
+  // Plan 08B (2026-08-11) — the CALCULATORS reject '*', and their schema
+  // descriptions have to say so. `validateCalculateBoardTarget` has returned
+  // `board_id_star_unsupported` since the F/U-4 wave, but nothing model-facing
+  // admitted it: the prompt identified the sole '*' acceptor only positionally
+  // ("on the last"), and these two descriptions were silent. A model reading
+  // the schema had no way to know the wildcard it may use on one bulk tool is
+  // refused on the neighbouring two.
+  //
+  // Deliberately NOT the /\*/ idiom used by the sibling test above. Now that
+  // these descriptions mention '*' precisely in order to forbid it, a bare
+  // star match is satisfied by the prohibition as readily as by a permission
+  // and has stopped discriminating. Assert the prohibition wording instead.
+  // -------------------------------------------------------------------------
+  const STAR_REJECTORS = ['calculate_zs', 'calculate_r1_plus_r2'];
+
+  test.each(STAR_REJECTORS)(
+    '%s.board_id description states the "*" wildcard is not accepted',
+    (toolName) => {
+      const tool = getToolByName(toolName);
+      const description = tool.input_schema.properties.board_id.description;
+      expect(description).toMatch(/"\*"\s+wildcard is NOT accepted/);
+      // And it must point at the tool that DOES take it, so the model has a
+      // route rather than just a refusal.
+      expect(description).toContain('set_field_for_all_circuits');
+    }
+  );
 });
 
 // ---------------------------------------------------------------------------

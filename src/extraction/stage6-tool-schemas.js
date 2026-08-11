@@ -906,13 +906,15 @@ const calculateZs = makeTool({
       description:
         'Calculate for every circuit with the required inputs ("calculate Zs for all available circuits"). Mutually exclusive with circuit_ref and circuit_refs. Default false.',
     },
-    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id (see
-    // record_reading for rationale). Scopes the calculation to circuits
-    // on the named board; defaults to currentBoardId.
+    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id. Scopes
+    // the calculation to circuits on the named board; defaults to
+    // currentBoardId. The circuit mutators' board_id was deleted by Plan
+    // 08B (2026-08-11); the calculators keep theirs because a cross-board
+    // calc is a legitimate read-mostly operation.
     board_id: {
       type: 'string',
       description:
-        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main". The "*" wildcard is NOT accepted on this tool — only set_field_for_all_circuits accepts "*". Passing "*" here is rejected and calculates nothing.',
     },
   },
   required: ['all'],
@@ -958,13 +960,15 @@ const calculateR1PlusR2 = makeTool({
       description:
         'Calculate for every circuit with the required inputs for the chosen method. Mutually exclusive with circuit_ref and circuit_refs. Default false.',
     },
-    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id (see
-    // record_reading for rationale). Scopes the calculation to circuits
-    // on the named board; defaults to currentBoardId.
+    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id. Scopes
+    // the calculation to circuits on the named board; defaults to
+    // currentBoardId. Same rationale as calculate_zs: the circuit mutators
+    // lost their board_id in Plan 08B (2026-08-11), the calculators keep
+    // theirs for legitimate read-mostly cross-board calcs.
     board_id: {
       type: 'string',
       description:
-        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main". The "*" wildcard is NOT accepted on this tool — only set_field_for_all_circuits accepts "*". Passing "*" here is rejected and calculates nothing.',
     },
   },
   required: ['method', 'all'],
