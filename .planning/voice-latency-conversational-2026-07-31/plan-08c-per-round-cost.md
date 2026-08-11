@@ -227,39 +227,52 @@ terminal round's shrink/eliminate-round lever, its replication gate, and the acc
 preconditions the combined 08B plan originally carried for this lever all transfer here in full,
 per 08D §7 deliverable 3.
 
-**Replication gate (08D §2, owner-confirmed 2026-08-11):** the single session is sufficient for
-08D's no-runtime closure. Any *future* behaviour-changing terminal-round optimisation **under
-this plan** may be implemented dark, but must not be **activated** — nor claim a latency saving —
-until at least one independent ordinary field session on a compatible revision reproduces the
-qualitative TTFT-dominated terminal-round shape (session `8B9B2BDD`, `eicr-backend:393`, 12
-turns). Exact 17 % / 34 % replication is NOT required; what is required is that all observed
-thinking-terminal rounds remain correct and audible.
+**Replication gate — quoted verbatim from 08D §2** (the self-references to "08C" below are 08D's
+own wording; 08D §2's closing sentence explicitly names this transfer: *"This gate transfers into
+08C's acceptance section as part of §7's deliverables"*):
 
-**Four acceptance preconditions (08D §8), verbatim:**
+> **Replication gate — decided (round 1), ✅ owner-confirmed 2026-08-11:** the single session is
+> sufficient for THIS plan's no-runtime closure (§7). Any *future* behaviour-changing
+> terminal-round optimisation (e.g. under 08C) may be implemented dark, but must not be
+> **activated** — nor claim a latency saving — until at least one independent ordinary field
+> session on a compatible revision reproduces the qualitative TTFT-dominated terminal-round shape.
+> Exact 17 % / 34 % replication is NOT required; what is required is that all observed
+> thinking-terminal rounds remain correct and audible. This gate transfers into 08C's acceptance
+> section as part of §7's deliverables.
 
-- **A nanosecond audio-ready stamp exists and is populated before any saving is claimed.**
-  `audible_first_byte_ms` is null on 100 % of turns today. **Do not implement it from the combined
-  plan's original recipe — that recipe was wrong** (round-2 BLOCKER #4): the field is a hardcoded
-  `null` literal at `stage6-shadow-harness.js:4285-4286`, not an unpopulated allowlist entry, so
-  adding it to `attributeRoundUsage`'s allowlist would change nothing while looking correct. The
-  real sites are `recordOutcome`'s `meta` in `loaded-barrel-speculator.js:~1010` and the harness
-  literal itself.
-- **Barrel HIT and MISS cohorts reported separately, never blended.** The mechanism differs (serve
-  parked audio vs start synthesis earlier) and so does the win. Authoritative miss-rate: **22 %**
-  (Plan 07's doubly-reconfirmed 78/22; an earlier 08B round-1 sample read 37 % — superseded) — and
-  08B's round 2 established the MISS cohort may get *nothing* from this lever through the current
-  wire path, so blending the two would manufacture a saving that does not exist for roughly a
-  fifth of turns.
-- **Plan 06 (conversational lane, `.planning/voice-latency-conversational-2026-07-31/plan-06-general-conversational-lane.md`)
-  has a GO and touches the same tool loop.** 06 changes what the
-  model is expected to *say*; this lever changes when the human stops waiting for it. **Re-read 06
-  before this plan selects or details a terminal-round mechanism, not after** — and whichever ships
-  second re-baselines against the first, not against the pre-08B numbers.
-- **The §1.1 interaction is SHARPER here, not moot.** A reasoning model with reasoning turned
-  down may fail to cleanly `end_turn`; under a release-before-loop-return design it then burns round
-  cap and cost *after* the inspector has been released and moved on. Today that failure is at least
-  audible as a long silence. Re-read §1.1 against any terminal-round mechanism this plan selects
-  before probing effort below `'low'`.
+("THIS plan" above refers to 08D, whose no-runtime closure needed only the single session
+`8B9B2BDD` / `eicr-backend:393`, 12 turns; the activation bar the quote states binds *this* plan.)
+
+**Four acceptance preconditions — quoted verbatim from 08D §8** (again, "08C" below is 08D's own
+self-reference — these bullets were authored anticipating exactly this transfer):
+
+> - **A nanosecond audio-ready stamp exists and is populated before any saving is claimed.**
+>   `audible_first_byte_ms` is null on 100 % of turns today. **Do not implement it from the
+>   combined plan's original recipe — that recipe was wrong** (round-2 BLOCKER #4): the field is a
+>   hardcoded `null` literal at `stage6-shadow-harness.js:4285-4286`, not an unpopulated allowlist
+>   entry, so adding it to `attributeRoundUsage`'s allowlist would change nothing while looking
+>   correct. The real sites are `recordOutcome`'s `meta` in `loaded-barrel-speculator.js:~1010`
+>   and the harness literal itself.
+> - **Barrel HIT and MISS cohorts reported separately, never blended.** The mechanism differs
+>   (serve parked audio vs start synthesis earlier) and so does the win. Authoritative miss-rate:
+>   **22 %** (Plan 07's doubly-reconfirmed 78/22; an earlier 08B round-1 sample read 37 % —
+>   superseded, see §5 point 3) — and 08B's round 2 established the MISS cohort may get *nothing*
+>   from this lever through the current wire path, so blending the two would manufacture a saving
+>   that does not exist for roughly a fifth of turns.
+> - **Plan 06 (conversational lane, `.planning/voice-latency-conversational-2026-07-31/plan-06-general-conversational-lane.md`)
+>   has a GO and touches the same tool loop.** 06 changes what the
+>   model is expected to *say*; this lever changes when the human stops waiting for it. **Re-read
+>   06 before 08C selects or details a terminal-round mechanism, not after** — and whichever ships
+>   second re-baselines against the first, not against the pre-08B numbers.
+> - **The 08C §1.1 interaction is SHARPER here, not moot.** A reasoning model with reasoning
+>   turned down may fail to cleanly `end_turn`; under a release-before-loop-return design it then
+>   burns round cap and cost *after* the inspector has been released and moved on. Today that
+>   failure is at least audible as a long silence. Re-read 08C §1.1 against any terminal-round
+>   mechanism 08C selects before probing effort below `'low'`.
+
+(§5 point 3 above is 08D §5's round-2 finding on the barrel-miss cohort; "08C §1.1" and "this
+plan"/"08C selects" above are 08D's own self-references, since these bullets already anticipated
+landing here — they are §1.1 of *this* document.)
 
 **Non-negotiable invariants (08D §9), verbatim, binding whatever this plan eventually ships:**
 

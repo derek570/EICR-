@@ -1,10 +1,11 @@
 # Plan 08B — Round-count levers
 
-Status: **READY TO REFINE — 08B now owns only §2.1 (2026-08-11).** §2.0 (the terminal round) split
-fully out into [Plan 08D](plan-08d-terminal-round-release.md), which closed docs-only 2026-08-11
-with no runtime mechanism (session `8B9B2BDD`, `eicr-backend:393`). Every remaining item is
-evidenced from telemetry that has already shipped or from a verified source read. **Needs no 08A
-data.**
+Status: **§2.1's code SHIPPED BY HAND 2026-08-11** (three commits; `/rp` hit the round-20 cap
+without converging — a process failure, not an unresolved-risk signal; see INDEX.md for the full
+account). **§2.0 (the terminal round) split fully out into [Plan 08D](plan-08d-terminal-round-release.md),
+which closed docs-only 2026-08-11 with no runtime mechanism** (session `8B9B2BDD`,
+`eicr-backend:393`). **This plan now owns only §2.1, whose implementation is complete** — nothing
+in this file awaits further refinement.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 
 **Section numbers are deliberately unchanged by the split** — §2.0 and §2.1 keep the names they are
@@ -68,25 +69,17 @@ terminal round:
 
 ## §2.0 — The terminal round is discarded, and the inspector waits for it — **MOVED to Plan 08D, CLOSED**
 
-**This section split out into its own plan** after round 2 of this plan's own `/rp`, when two
-independent reviewers produced six BLOCKERs against the release mechanism proposed here — the
-*fourth* attempt at this lever — while §2.1 below drew zero findings from either reviewer.
-[Plan 08D](plan-08d-terminal-round-release.md) carries the full measurement (28 turns / 65 rounds,
-100 % of turns end in a discarded no-tool `end_turn` round, 24–34 % of perceived latency
-depending on denominator), the field measurement that resolved 08D's own open fork (session
-`8B9B2BDD`, `eicr-backend:393`: the typical terminal round is round-trip floor — 4 discarded
-tokens, 0 reasoning, dead time by construction), and the five reverted/failed mechanism precedents
-(the three candidates originally sketched here plus one further reviewed and killed by six
-round-2 BLOCKERs, plus 08D's own "safe door" variant, disproven at the transport level: the
-Responses adapter surfaces only `function_call` events, so terminality is knowable only
-retrospectively).
-
-**08D closed docs-only on 2026-08-11: it ships no runtime early-release mechanism.** The current
-transport has no trustworthy pre-completion no-tool signal, and every proposed mechanism shape has
-now failed in production or review. The exploitable work — shrinking or eliminating the terminal
-round itself, rather than releasing around it — transferred to
-[08C](plan-08c-per-round-cost.md), which now carries 08D's replication gate and acceptance
-preconditions verbatim. **This plan owns only §2.1 below.**
+This section split into its own plan after round 2 of this plan's own `/rp`, when two independent
+reviewers produced six BLOCKERs against the release mechanism proposed here — the *fourth* attempt
+at this lever — while §2.1 below drew zero findings from either reviewer. [Plan 08D](plan-08d-terminal-round-release.md)
+carries the full measurement, precedent record, and mechanism history (the three candidates
+originally sketched here were never implemented — they were superseded by 08D's own, more
+thorough treatment of the same territory, which also failed review); it **closed docs-only
+2026-08-11** (session `8B9B2BDD`, `eicr-backend:393`) — ships no runtime early-release mechanism,
+since the current transport has no trustworthy pre-completion no-tool signal and every proposed
+mechanism shape has now failed in production or review — and the shrink/eliminate-round lever
+transferred to [08C](plan-08c-per-round-cost.md), which now carries 08D's replication gate and
+acceptance preconditions verbatim. **This plan owns only §2.1 below.**
 
 ## §2.1 — The `board_id` vocabulary gap — verified, same class as the shipped `'main'` fix
 

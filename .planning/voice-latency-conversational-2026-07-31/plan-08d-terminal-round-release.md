@@ -1,7 +1,9 @@
 # Plan 08D — The discarded terminal round, and releasing the inspector from it
 
-Status: **UNPARKED 2026-08-11 — the park condition is discharged by measured field evidence
-(12 turns, session `8B9B2BDD`, `eicr-backend:393`; see §2). In /rp refinement.**
+Status: **CLOSED docs-only 2026-08-11 — the park condition was discharged by measured field
+evidence (12 turns, session `8B9B2BDD`, `eicr-backend:393`; see §2), and the refine cycle
+converged on a no-runtime-mechanism closure (§7): 08D ships nothing to `src/`/`web`/iOS; the
+terminal round's shrink/eliminate-round lever transfers to 08C.**
 Review lane: **full dual-reviewer loop — internal Sonnet high (`certmate-plan-reviewer`), external
 Codex `gpt-5.6-sol` high. Do not downgrade: a lesser reviewer model has twice scored 0/9 on known
 findings in this codebase.**
