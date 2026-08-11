@@ -12,7 +12,8 @@ Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 already referenced by elsewhere (INDEX.md, the 08A execution log). Do not renumber them to close
 the gap left by the removed §1.
 
-Split three times on 2026-08-10 (the third split landed 2026-08-11, when 08D itself closed):
+Split three times, all on 2026-08-10 (08D, the plan the third split produced, went on to close
+docs-only the following day, 2026-08-11):
 
 1. Out of a single Plan 08, so [08A](plan-08a-stage6-round-instrumentation.md) could ship
    immediately instead of waiting behind a review of levers nobody could yet choose between.
@@ -158,7 +159,7 @@ wasted on validator rejections. They **multiply**, so:
 - Nothing else crosses the seam. No wire contract, no client half, and no deliverable is orphaned
   between the two plans — §2.1 is a server-side validator concern; 08C's original scope was config
   and prompt-size only, but it has since also inherited 08D's shrink/eliminate-terminal-round
-  lever (§7 deliverable 3), which may touch round count as well as cost.
+  lever (08D §7 deliverable 3), which may touch round count as well as cost.
 
 ## What this plan is NOT
 

@@ -187,8 +187,11 @@ that makes the prefix bigger) are the same question asked from two directions. S
 apart would have been the wrong seam — one plan would propose growing the prompt while the other
 priced the cost of a grown prompt, and neither would own the contradiction.
 
-**Given up by the split, and therefore stated here.** 08B reduces the *number* of rounds; this plan
-reduces the *cost of each*. They multiply, so:
+**Given up by the split, and therefore stated here.** 08B (now §2.1 only) reduces provider
+round-trips wasted on validator rejections; this plan's original scope reduces the *cost of each*
+round — and, since 08D's docs-only closure, this plan also owns the transferred
+shrink/eliminate-terminal-round lever, which may touch round *count* as well as cost, depending on
+what mechanism it eventually selects. They multiply, so:
 
 - **Neither plan's win may be claimed from a deploy containing both.** Whichever ships second must
   re-baseline against the first, not against the pre-08B numbers. 08B's Seam section carries the
@@ -213,10 +216,13 @@ reduces the *cost of each*. They multiply, so:
 
 ## Web companion
 
-Backend-only and wire-neutral throughout — reasoning effort, round-1 model choice and prompt
-snapshot size are all invisible to both clients. No web companion required, and no parity-ledger
-row. If any item mutates into something client-visible during refinement, that assessment must be
-redone rather than inherited from this line.
+This plan's **original** scope (reasoning effort, round-1 model choice, prompt snapshot size) is
+backend-only and wire-neutral throughout — all invisible to both clients. No web companion
+required for that scope, and no parity-ledger row. **The inherited terminal-round lever is NOT
+covered by that claim** — 08D §9 (transferred verbatim above) explicitly warns that a corrective
+follow-up after an early release would very likely need a new wire shape, which is a MANDATORY
+Web-companion trigger. Whether any given terminal-round mechanism this plan selects is
+wire-neutral must be assessed when that mechanism is chosen, not assumed from this line.
 
 ## Acceptance
 
@@ -278,7 +284,7 @@ since "08C §1.1" is §1.1 of *this* document.)
 08C alongside the preconditions above; it binds any future terminal-round measurement this plan
 performs, not only 08D's own):
 
-> **Honesty limit:** same-slot overwrite corrections (a later `record_reading` /
+> **Honesty limit (carried into 08C per §7 deliverable 3):** same-slot overwrite corrections (a later `record_reading` /
 > `record_board_reading` / calculator write silently rewriting an earlier same-turn write to the
 > same field) are **not recoverable from this telemetry** — `tool_names_per_round` records tool
 > identity, not which slot a given call targeted, and `stage6_tool_call.round` is a
