@@ -72,18 +72,41 @@ function validateBody(body) {
   if (typeof body.sessionId !== 'string' || !body.sessionId) return 'sessionId required';
   if (typeof body.source !== 'string' || !SOURCE_ENUM.has(body.source)) return 'source invalid';
 
-  // Voice-latency plan 2026-06-03 Tier 1.3 fast-path correlation rule:
-  // turnId is REQUIRED for bundler / local_fallback; allowed empty when
-  // source === 'fast_tts' AND a non-empty correlation_id is present
-  // (the backend resolves to a turn via voice-latency-turn-summary's
-  // correlationToTurn index). This decouples ACK arrival from server-minted
-  // turnId timing — fast-path ACKs can fire BEFORE runLiveMode has minted
-  // the turn.
-  const hasFastPathCorrelation =
-    body.source === 'fast_tts' &&
-    typeof body.correlation_id === 'string' &&
-    body.correlation_id.length > 0;
-  if (!hasFastPathCorrelation) {
+  // Correlation rule: turnId is REQUIRED unless a non-empty correlation_id
+  // is present, in which case it may be empty/absent for ANY source.
+  //
+  // Originally (voice-latency plan 2026-06-03 Tier 1.3) this exemption was
+  // additionally gated on `source === 'fast_tts'`, because the regex fast
+  // path was then the only known producer of a turnId-less ACK — its POST
+  // can fire BEFORE runLiveMode has minted the turn.
+  //
+  // ASK-PATH TTS is a second such producer, and the narrow gate made it
+  // invisible. Questions synthesised through the /api/keys ElevenLabs proxy
+  // play via AlertManager's direct AVAudioPlayer branch, which has no
+  // `loadedBarrelContext` and therefore no turnId — but the response DOES
+  // carry X-Voice-Latency-Correlation-Id. Under the old predicate those
+  // clips could only ever 400, so every question the inspector actually
+  // heard was absent from the audibility ledger: a clip that plays and a
+  // clip that never synthesises looked identical server-side. That is the
+  // exact ambiguity the audio-first invariants are measured against, so the
+  // blind spot mattered more than the missing turn attribution.
+  //
+  // Widening is safe because correlation_id — not turnId — is the key the
+  // handler below actually resolves on: `recordOutcome(correlation_id,
+  // 'playback_started', …)` needs no turn at all, and `recordPlaybackAck`
+  // already normalises a missing turnId to '' on every path. The validator
+  // was strictly stricter than the code behind it.
+  //
+  // Deliberate consequence, NOT an oversight: these ACKs reach the
+  // correlation ledger only, not turn_audio_summary. `recordPlaybackAck`
+  // early-returns on an unresolvable turnId, and no index can resolve one
+  // here — correlationToTurn is populated solely from the regex fast path's
+  // `fastPathCorrelationIdByTurn`, which never contains a keys.js-minted
+  // `vl_confirmation_*` id. Do not "fix" that by widening
+  // isFastPathWithCorrelation; the lookup would simply miss.
+  const hasCorrelationId =
+    typeof body.correlation_id === 'string' && body.correlation_id.length > 0;
+  if (!hasCorrelationId) {
     if (typeof body.turnId !== 'string' || !body.turnId) return 'turnId required';
   } else if (body.turnId !== undefined && typeof body.turnId !== 'string') {
     return 'turnId invalid';
