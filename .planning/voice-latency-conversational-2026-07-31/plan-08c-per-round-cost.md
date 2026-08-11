@@ -1,39 +1,64 @@
 # Plan 08C — Per-round cost levers
 
-Status: **UNPARKED 2026-08-11 — the blocking field session has run (session `8B9B2BDD`,
-`eicr-backend:393`, past the `:388+` revision gate below). Its three-item unblocking checklist
-still needs independent confirmation before this plan's `/rp` opens — see below.**
+Status: **/rp-OPENING GATE DISCHARGED 2026-08-11 — the three-item checklist below was
+independently confirmed against session `8B9B2BDD`'s CloudWatch telemetry (12
+`voice_latency.turn_core_summary` rows, log group `/ecs/eicr/eicr-backend`, task log stream
+`ecs/eicr-backend/ce6745e5…`). One correction: the session ran on **`eicr-backend:392`, not
+`:393`** as previously recorded here and in the changelog — the log stream was created
+05:55:03 UTC, two minutes after `:392`'s registration (05:53:10 UTC) and 1 h 41 m before
+`:393`'s (07:36:41 UTC), and all 12 turns ran 06:09:07–06:13:08 UTC on that task. `:392 ≥ :388`,
+so the revision gate PASSES unchanged; every future reference to this session should say `:392`.**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 
-**Do not open this plan's `/rp` until the checklist below is independently confirmed against
-session `8B9B2BDD`.** Every item below is a hypothesis of the form *"if 08A's data shows X, then
-Y"*, and 08A's data now exists — but confirming the checklist (revision, `api_transport` split,
-`round_idx` keying) is a precondition for trusting it, not a formality. This is a `/rp`-opening
-gate, not a re-park: with the checklist confirmed, 08C also inherits 08D's closure (§7
-deliverable 3 of [Plan 08D](plan-08d-terminal-round-release.md)) — 08D ships no runtime
-early-release mechanism, and the terminal round's shrink/eliminate-round lever now belongs
-entirely to this plan. See the "Inherited from 08D" subsection under Acceptance below.
+With the checklist confirmed, 08C also inherits 08D's closure (§7 deliverable 3 of
+[Plan 08D](plan-08d-terminal-round-release.md)) — 08D ships no runtime early-release mechanism,
+and the terminal round's shrink/eliminate-round lever now belongs entirely to this plan. See the
+"Inherited from 08D" subsection under Acceptance below.
 
 Split out of [Plan 08B](plan-08b-stage6-round-levers.md) on 2026-08-10 so 08B's §2.0/§2.1 could be
 refined immediately instead of waiting behind four items nobody can yet evaluate. See § Seam below
 for what the split deliberately keeps together and what it gives up.
 
-## Unblocking condition — precise, so it is checkable
+## Unblocking condition — CONFIRMED 2026-08-11 (independent re-derivation from CloudWatch)
 
-One ordinary dictation walk on a build at **`eicr-backend:388` or later**. No special script and no
-protocol; an ordinary session is exactly the right shape. Then confirm, before trusting any of it:
+One ordinary dictation walk on a build at **`eicr-backend:388` or later**. Session `8B9B2BDD`
+(full id `8B9B2BDD-22FB-45B0-91A9-C2C83CDA16AD`) satisfies it. Each item below carries its
+confirmation, derived directly from the 12 `voice_latency.turn_core_summary` rows — not from
+08D's analysis:
 
-1. **The revision is right.** A session on `:387` or earlier simply has no `reasoning_tokens` /
-   `first_tool_use_ns` keys. That reads as *"the field didn't populate"* when it actually means
-   *"the build predates the field"* — an easy and expensive misreading.
-2. **Split on `round_usage[].api_transport` before computing anything.** The streaming Responses
-   adapter and the buffered chat-completions adapter mean different things by `first_tool_use_ns`:
-   a first-emission stamp on one, an approximate response-*completion* stamp on the other. Pooling
-   them reads a transport artefact as a model regression.
-3. **Do not zip the per-round arrays by position.** `toolCallCountPerRound` /
-   `toolErrorCountPerRound` are not in lockstep with `actualStopReasonPerRound`
-   (`stage6-tool-loop.js`). They were already out of lockstep before 08A, so nothing is broken —
-   but 08A's timing rows carry `round_idx` deliberately. Key on that.
+1. **The revision is right — ✅ CONFIRMED, with a label correction.** The session ran on
+   **`:392`** (not `:393` — see Status for the log-stream/registration timeline). `:392 ≥ :388`,
+   and the 08A keys (`reasoning_tokens`, `first_tool_use_ns`, `blocking_ask_user_dispatched`,
+   `round_usage[].api_transport`) are present AND populated on all 26 rounds of all 12 turns —
+   the "build predates the field" misreading cannot apply.
+2. **Split on `round_usage[].api_transport` before computing anything — ✅ CONFIRMED, single
+   stratum.** All 26 rounds report `api_transport: "responses"` (provider `openai`, model
+   `gpt-5.6-luna` requested-fast/billed-priority, `reasoning_effort: "low"`). Every
+   `first_tool_use_ns` in this corpus is therefore a streaming first-emission stamp; the buffered
+   chat-completions caveat is real but unexercised in this session — no pooling occurred and none
+   was possible.
+3. **Do not zip the per-round arrays by position — ✅ CONFIRMED, keyed on `round_idx`.** Both
+   `round_timings[]` and `round_usage[]` carry explicit `round_idx`, contiguous `0..rounds-1` on
+   every turn; all joins in the confirmation were keyed on it. Integrity cross-check:
+   `first_tool_use_ns` is non-null **iff** the round dispatched ≥ 1 tool call — 26/26 rounds
+   consistent.
+
+**Confirmed headline numbers** (baseline: post-08B code on `:392`; n = 12 turns / 26 rounds; all
+`turn_kind: "reading"`; every turn multi-round and terminating `end_turn`; single session, so all
+ratios stay provisional under the replication gate below):
+
+- **Terminal round:** 10/12 turns show `reasoning_tokens: 0`, **exactly 4 output tokens**, 0 tool
+  calls; terminal `stream_ms` p50 **1,267 ms** (min 789, max 3,477) — a round-trip floor, not
+  generation. **2/12 (17 %) genuinely think** (turn 3: 11 reasoning / 17 output tokens; turn 9:
+  29 / 35) — the provisional thinking-terminal ratio reproduces exactly.
+- **Round 0:** `stream_ms` p50 2,651 ms (min 1,249, max 3,943); `reasoning_tokens` 0–69.
+- **§1.4's measure now has a first number:** `started_ns → first_tool_use_ns` on tool-emitting
+  rounds is p50 **2,460 ms** (n = 14, min 1,087, max 3,065).
+- **`blocking_ask_user_dispatched` labels correctly:** turns 5/9/10 round 0 dispatched `ask_user`
+  and carry 8.3–12.9 s of human wait in `dispatch_ms`; every non-ask round's `dispatch_ms` is
+  ≤ 4 ms (n = 23). No conclusion in this plan rests on an ask-inflated `dispatch_ms`.
+- **Cache:** turn 1 round 0 wrote the 35,129-token prefix; every subsequent round read it
+  (`cache_read_input_tokens: 35129`, `fresh_input_tokens` 14–326).
 
 ## The target
 
@@ -323,10 +348,11 @@ performs, not only 08D's own):
 ## Reviewer pressure points
 
 - **Is 08A's data actually in hand, and has the three-item checklist been independently confirmed
-  against it?** Session `8B9B2BDD` (`:393`) discharged the field-session precondition, but the
-  checklist (revision `:388+`, `api_transport` split, `round_idx` keying) is a separate,
-  still-open confirmation step (see Status). If a claim here has been promoted from hypothesis to
-  fact on the strength of a docstring rather than a measurement, that is the finding.
+  against it?** Yes, as of 2026-08-11: session `8B9B2BDD` (`:392` — the `:393` label was wrong)
+  discharged the field-session precondition and the checklist (revision `:388+`, `api_transport`
+  split, `round_idx` keying) was independently re-derived from CloudWatch — see the Unblocking
+  section for the numbers. If a claim here has been promoted from hypothesis to fact on the
+  strength of a docstring rather than a measurement, that is still the finding.
 - Was the data split on `api_transport` before any distribution was computed?
 - Does any effort below `'low'` degrade `end_turn` termination on **multi-round** shapes?
 - Does `CIRCUIT_ORDER=ascending` preserve the cache prefix in practice, and does its token growth
