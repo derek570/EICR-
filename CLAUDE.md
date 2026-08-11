@@ -133,7 +133,7 @@ iOS TestFlight: `~/Developer/EICR_Automation/CertMateUnified/deploy-testflight.s
 ### Check Status
 
 ```bash
-aws ecs describe-services --cluster eicr-cluster-production --services eicr-frontend eicr-backend --region eu-west-2 --query "services[*].{Service:serviceName,Running:runningCount,Status:deployments[0].rolloutState}" --output table
+aws ecs describe-services --cluster eicr-cluster-production --services eicr-pwa eicr-backend --region eu-west-2 --query "services[*].{Service:serviceName,Running:runningCount,Status:deployments[0].rolloutState}" --output table
 aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m
 gh run list --limit 5
 ```

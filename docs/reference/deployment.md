@@ -56,7 +56,7 @@ The observation-tier model router is ACTIVE for Derek's sole-tester field trial:
 ### Check Cloud Status
 ```bash
 # Service status (both frontend and backend)
-aws ecs describe-services --cluster eicr-cluster-production --services eicr-frontend eicr-backend --region eu-west-2 --query "services[*].{Service:serviceName,Running:runningCount,Status:deployments[0].rolloutState}" --output table
+aws ecs describe-services --cluster eicr-cluster-production --services eicr-pwa eicr-backend --region eu-west-2 --query "services[*].{Service:serviceName,Running:runningCount,Status:deployments[0].rolloutState}" --output table
 
 # View frontend logs
 aws logs tail /ecs/eicr/eicr-frontend --region eu-west-2 --since 10m

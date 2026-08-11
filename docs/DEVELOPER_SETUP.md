@@ -432,7 +432,7 @@ Changes go live in approximately 2 minutes.
 ```bash
 aws ecs describe-services \
   --cluster eicr-cluster-production \
-  --services eicr-frontend eicr-backend \
+  --services eicr-pwa eicr-backend \
   --region eu-west-2 \
   --query "services[*].{Service:serviceName,Running:runningCount,Status:deployments[0].rolloutState}" \
   --output table
