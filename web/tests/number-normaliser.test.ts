@@ -374,6 +374,41 @@ describe('NumberNormaliser', () => {
     expect(normalise('Second three is a hob.')).toBe('circuit 3 is a hob.');
   });
 
+  // MARK: - "second circuit" is a genuine ordinal, never doubled (2026-08-11)
+  //
+  // Regression net for the silence Derek hit 2026-08-11. The rewrite used to
+  // fire here and produce "circuit circuit is lights.", which the pre-LLM gate
+  // counts as 2 distinct content words (Set-deduped) instead of 3 — below the
+  // forward threshold, so the utterance was dropped as `low_content` and the
+  // inspector heard nothing. These pin BOTH halves: the duplicate is never
+  // manufactured, and the surrounding rewrite still works everywhere else.
+
+  it('secondFollowedByCircuitPreservedAsOrdinal', () => {
+    // Casing is preserved verbatim when the rewrite does NOT fire — the
+    // rewritten branch is what lowercases (it substitutes the literal
+    // "circuit"). That asymmetry is the tell that the guard took effect.
+    expect(normalise('Second circuit is lights.')).toBe('Second circuit is lights.');
+  });
+
+  it('secondFollowedByPluralCircuitsPreserved', () => {
+    expect(normalise('the second circuits are dead')).toBe('the second circuits are dead');
+  });
+
+  it('secondCircuitNeverProducesDoubledWord', () => {
+    // The precise defect: a duplicated content word. Asserted directly so a
+    // future rewrite of this rule cannot reintroduce it under a passing
+    // expectation elsewhere.
+    expect(normalise('Second circuit is lights.')).not.toContain('circuit circuit');
+  });
+
+  it('secondStillRewrittenWhenCircuitIsNotAdjacent', () => {
+    // The guard must be narrow: a "circuit" LATER in the utterance is not the
+    // adjacent evidence the rule keys on, so the rewrite must still fire.
+    expect(normalise('Second one feeds the circuit board')).toBe(
+      'circuit 1 feeds the circuit board'
+    );
+  });
+
   // MARK: - BS Code Handling (2026-04-30, session 9FC3A6F1)
 
   it('spelledBsCodeWithZeroWord', () => {

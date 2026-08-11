@@ -139,9 +139,21 @@ const DEFAULT_UNIT_NORMALISATION: Record<string, string> = {
 
 /** 0pre0. Flux's "circuit"→"second" mishearing. Rewrites bare "second" →
  *  "circuit". MUST run first so downstream passes see the rewritten text.
- *  See Swift line 131 docblock for the trade-off rationale (session 9FC3A6F1
- *  2026-04-30: 6+ instances in 207 seconds). */
-const MISHEARED_CIRCUIT_PATTERN = /\bsecond\b/gi;
+ *  See the Swift docblock for the trade-off rationale (session 9FC3A6F1
+ *  2026-04-30: 6+ instances in 207 seconds).
+ *
+ *  `(?!\s+circuits?\b)` (2026-08-11) — the Swift twin used to list
+ *  "second circuit" → "circuit circuit" as an accepted trade-off ("gibberish,
+ *  no regex match, harmless"). The harm was mispriced: the pre-LLM gate
+ *  forwards on `hasWeakTrigger && distinctContentWords >= 3` counted into a
+ *  **Set**, so the manufactured duplicate collapses 3 → 2 and the utterance is
+ *  dropped as `low_content` — the model never sees it and the user hears
+ *  nothing. The guard is also the correct reading: this rewrite exists to
+ *  restore a "circuit" that Flux replaced, so a literal "circuit" already
+ *  following proves nothing was replaced there and the "second" is a genuine
+ *  ordinal. MUST stay in sync with the Swift twin
+ *  (`NumberNormaliser.mishearedCircuitPattern`). */
+const MISHEARED_CIRCUIT_PATTERN = /\bsecond\b(?!\s+circuits?\b)/gi;
 
 /** 0pre0b. Flux letter-splitting "a b s [e n]" → "BS" / "BS EN". The trailing
  *  negative lookahead `(?![a-z])` instead of `\b` is required because `\b`
