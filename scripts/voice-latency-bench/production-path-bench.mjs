@@ -320,6 +320,12 @@ Usage:
   --reps=<n>         Repetitions per (fixture, arm) pair. Default 10.
   --output=<path>    Required. JSON evidence array destination.
   --block-seed=<n>   Seed for reproducible block-order shuffle. Default 42.
+  --turn-pace-ms=<n> Minimum ms between consecutive turn STARTS (default 0 =
+                     unpaced). Use ~23000 against the org's 200k-TPM
+                     gpt-5.6-luna limit: each 2-round turn books ~72k
+                     estimated tokens (the ~35k cached prefix counts, even on
+                     cache reads), so unpaced runs 429 on nearly every turn.
+                     The sleep sits outside all measured spans.
   --dry-run          Clamp to 1 fixture / 1 arm / 1 rep. Still real API calls.
   --verbose          Echo captured log-row names to stderr.
   --help             This text.
@@ -330,7 +336,7 @@ else both are fetched from AWS Secrets Manager eicr/api-keys (needs AWS creds).
 }
 
 function parseArgs(argv) {
-  const out = { fixtures: [], arms: [], reps: 10, output: null, blockSeed: 42, dryRun: false, verbose: false, help: false };
+  const out = { fixtures: [], arms: [], reps: 10, output: null, blockSeed: 42, dryRun: false, verbose: false, help: false, turnPaceMs: 0 };
   for (const raw of argv) {
     if (raw === '--help' || raw === '-h') {
       out.help = true;
@@ -354,6 +360,7 @@ function parseArgs(argv) {
     else if (key === 'reps') out.reps = parseInt(value, 10);
     else if (key === 'output') out.output = value;
     else if (key === 'block-seed') out.blockSeed = parseInt(value, 10);
+    else if (key === 'turn-pace-ms') out.turnPaceMs = parseInt(value, 10);
     else throw new Error(`unrecognised flag: --${key}`);
   }
   return out;
@@ -565,7 +572,7 @@ function findEmittedAudibleFrame(toolCallRow, wsFramesThisTurn) {
 // ---------------------------------------------------------------------------
 // One (fixture, arm) repetition
 // ---------------------------------------------------------------------------
-async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modules, envMeta, verbose }) {
+async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modules, envMeta, verbose, turnPaceMs = 0 }) {
   const { EICRExtractionSession, runShadowHarness, createPendingAsksRegistry, activeSessions, projectLogger } =
     modules;
 
@@ -656,6 +663,7 @@ async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modul
     .sort((a, b) => (a.at_ms ?? 0) - (b.at_ms ?? 0));
 
   let turnIndex = 0;
+  let lastTurnStartMs = null;
 
   async function runOneTurn(transcriptText, regexResults = []) {
     turnIndex += 1;
@@ -685,6 +693,27 @@ async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modul
       signal = controller.signal;
       setTimeout(() => controller.abort(), fixture.cancellation.abort_after_ms ?? 300);
     }
+
+    // TPM pacing (--turn-pace-ms): the org's gpt-5.6-luna limit is 200k
+    // tokens/min and the rate limiter counts the FULL estimated input —
+    // including the ~35k cached prefix, on cache READS too — so each 2-round
+    // turn books ~72k estimated tokens. Unpaced back-to-back turns exhaust
+    // the budget in seconds and every subsequent turn dies as a
+    // stage6_live_error 429 (observed on this runner's first full run:
+    // 12/13 repetitions produced ZERO usable rounds). Sleeping so that
+    // consecutive turn STARTS are >= turnPaceMs apart keeps the sustained
+    // rate under the limit; the sleep sits entirely OUTSIDE the measured
+    // spans (round_timings are stamped inside the harness), so pacing does
+    // not contaminate the latency comparison.
+    if (turnPaceMs > 0 && lastTurnStartMs !== null) {
+      const sinceLast = performance.now() - lastTurnStartMs;
+      const waitMs = turnPaceMs - sinceLast;
+      if (waitMs > 0) {
+        if (verbose) process.stderr.write(`    pacing: sleeping ${Math.round(waitMs)}ms\n`);
+        await new Promise((res) => setTimeout(res, waitMs));
+      }
+    }
+    lastTurnStartMs = performance.now();
 
     const wallStart = performance.now();
     let result = null;
@@ -968,20 +997,46 @@ async function main() {
       const order = seededShuffle(armNames, rng);
       process.stderr.write(`  block ${blockIdx} order: ${order.join(', ')}\n`);
       for (const armName of order) {
-        process.stderr.write(`    running arm=${armName} rep_index_in_block=${blockIdx}...\n`);
-        const rep = await runRepetition({
-          fixture,
-          armName,
-          blockId,
-          repIndexInBlock: blockIdx,
-          modules,
-          envMeta,
-          verbose: args.verbose,
-        });
+        // Rep-level rate-limit retry: a rep in which ANY turn died on a
+        // provider rate limit is POISONED evidence — the failed turn applied
+        // nothing, so the session state that later turns saw diverges from
+        // what the fixture defines, and its round data is missing entirely.
+        // Partial retry of individual turns is NOT safe (a 429 on a terminal
+        // round after round 0 dispatched writes would double-apply on
+        // re-run), so the whole rep is discarded and re-run from a fresh
+        // session. Capped; on exhaustion the last attempt is kept and
+        // honestly marked so downstream analysis can exclude it.
+        const MAX_REP_ATTEMPTS = 3;
+        let rep = null;
+        for (let attempt = 1; attempt <= MAX_REP_ATTEMPTS; attempt++) {
+          process.stderr.write(`    running arm=${armName} rep_index_in_block=${blockIdx} (attempt ${attempt})...\n`);
+          rep = await runRepetition({
+            fixture,
+            armName,
+            blockId,
+            repIndexInBlock: blockIdx,
+            modules,
+            envMeta,
+            verbose: args.verbose,
+            turnPaceMs: args.turnPaceMs,
+          });
+          const rateLimited = rep.turns.some(
+            (t) => t.live_error && /rate limit|429|tokens per min|TPM/i.test(String(t.live_error.error ?? ''))
+          );
+          rep.rate_limited = rateLimited;
+          rep.rep_attempt = attempt;
+          if (!rateLimited) break;
+          if (attempt < MAX_REP_ATTEMPTS) {
+            process.stderr.write(`    ✗ arm=${armName} hit a provider rate limit — discarding rep, sleeping 75s, retrying...\n`);
+            await new Promise((res) => setTimeout(res, 75_000));
+          } else {
+            process.stderr.write(`    ✗ arm=${armName} still rate-limited after ${MAX_REP_ATTEMPTS} attempts — keeping last attempt, marked rate_limited:true\n`);
+          }
+        }
         results.push(rep);
         flush();
         process.stderr.write(
-          `    ✓ arm=${armName} total_rounds=${rep.total_rounds} total_stream_ms=${rep.total_stream_ms} turns=${rep.turns.length}\n`
+          `    ✓ arm=${armName} total_rounds=${rep.total_rounds} total_stream_ms=${rep.total_stream_ms} turns=${rep.turns.length}${rep.rate_limited ? ' [RATE-LIMITED — EXCLUDE]' : ''}\n`
         );
       }
     }
