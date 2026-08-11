@@ -45,12 +45,29 @@ inside the round that we could not see — which is exactly what 08A was built t
 
 ### 1.1 Reasoning effort
 
-`reasoning.effort` resolves to `'low'` (`openai-responses-adapter.js:540-542`), and
+`reasoning.effort` resolves to `'low'` (`openai-responses-adapter.js:545-554`), and
 `OPENAI_EXTRACT_REASONING_EFFORT` is **unset** in `ecs/task-def-backend.json` — so `'low'` is a
 default that fell out, not a considered choice.
 
 If 08A shows reasoning tokens dominate output tokens, this is the largest lever in the plan and
 costs one env var.
+
+**Corrected 2026-08-10 (08B round-1 cross-check): it is not one env var, and the adapter is not the
+authority.** The adapter's `?? process.env.OPENAI_EXTRACT_REASONING_EFFORT ?? 'low'` is a *fallback
+for callers that thread nothing* (the cache-keepalive `create()` path). The live authority is
+`resolveOpenAIReasoningEffort` (`stage6-shadow-harness.js:338-349`), threaded at `:1640`. It
+resolves three ways, and a change aimed at one leaves the others untouched:
+
+| Path | Source | Default |
+|---|---|---|
+| Responses, ordinary turn | `OPENAI_EXTRACT_REASONING_EFFORT` | `'low'` |
+| Responses, **observation** turn | `OPENAI_OBSERVATION_REASONING_EFFORT` | `'low'` |
+| **chat_completions** (any turn) | `OPENAI_EXTRACT_REASONING_EFFORT` | `'none'` |
+
+So: the ordinary-turn conclusion stands, observation turns need the *second* variable, and the
+chat-completions path is pinned to `'none'` by design — function tools plus any non-`'none'` effort
+draw an HTTP 400 there (`openai-responses-adapter.js:9-12`). Any probe must state which of the
+three it moved, and 08A's `api_transport` split is what makes that checkable.
 
 **Hazard, recorded so nobody rediscovers it the hard way.** The adapter docstring
 (`openai-responses-adapter.js:9-18`) documents that forcing `reasoning='none'` on the Chat
@@ -64,14 +81,15 @@ and require clean `end_turn` on **multi-round** shapes — not just the trivial 
 termination degrades at all, stop. The shipped `'low'` is then correct and should be recorded as
 a considered choice rather than left as an unexamined default.
 
-> **Interaction with 08B §2.0.** Both touch termination. 08B may remove the terminal round
-> entirely; this item makes the model worse at deciding it is done. If 08B §2.0 ships first, re-read
+> **Interaction with Plan 08D.** Both touch termination. 08D (the terminal-round release, parked)
+> may remove the terminal round entirely; this item makes the model worse at deciding it is done.
+> The section was 08B §2.0 until 08B's round-2 split moved it to 08D. If 08D ships first, re-read
 > this item before probing — the hazard above may become either moot or considerably sharper,
-> and which one it is depends on which mechanism 08B chose.
+> and which one it is depends on which mechanism 08D chose.
 
 ### 1.2 `VOICE_LATENCY_ROUND1_MODEL` — shipped, wired, currently empty
 
-`stage6-tool-loop.js:431` and `:481-488` implement a live-read round-1 model override; the task def
+`stage6-tool-loop.js:431` and `:511-518` implement a live-read round-1 model override; the task def
 sets it to `""` (`ecs/task-def-backend.json:49`). It was built 2026-05-28 for Sonnet 4.6 → Haiku,
 on the same diagnosis this plan reaches for Luna: round 1 is the dominant cost.
 
@@ -82,7 +100,9 @@ Constraints already enforced in code, which bound what may be proposed:
   **deliberately**: OpenAI's encrypted reasoning blocks would otherwise reach an SDK that cannot
   read them. Do not design a path around this fence.
 - Observation-tier turns pass `allowRound1ModelOverride: false`
-  (`stage6-shadow-harness.js:1645-1647`), pinning a deliberate Terra escalation across all rounds.
+  (`stage6-shadow-harness.js:1708`, `allowRound1ModelOverride: !round1OverrideLocked` — the lock is
+  *declared* around `:1645`, but `:1645-1647` is the comment, not the argument), pinning a
+  deliberate Terra escalation across all rounds.
 
 The open question is narrow and empirical: **is there a same-provider model materially faster than
 Luna Fast at emitting one correct `record_reading`?** Luna is already the fast tier. If the answer
@@ -90,7 +110,7 @@ is no, say so and close the item.
 
 ### 1.3 Output size is not a lever; actual tokens are
 
-`max_output_tokens` is `max((max_tokens||4096) * 4, 8192)` (`:532`) — a **ceiling, not a cost**.
+`max_output_tokens` is `max((max_tokens||4096) * 4, 8192)` (`:544`) — a **ceiling, not a cost**.
 It must not be presented as a latency lever. *Emitted* tokens are, and 08A's `reasoning_tokens`
 split is what makes them attributable.
 
@@ -166,8 +186,8 @@ reduces the *cost of each*. They multiply, so:
   re-baseline against the first, not against the pre-08B numbers. 08B's Seam section carries the
   matching note, and both plans' Acceptance sections require naming which baseline each number is
   against.
-- **08B §2.0 may remove the terminal round; §1.1 may make termination less reliable.** That
-  interaction is flagged inline in §1.1 and must be re-read, not assumed stale, whenever 08B ships.
+- **08D may remove the terminal round; §1.1 may make termination less reliable.** That
+  interaction is flagged inline in §1.1 and must be re-read, not assumed stale, whenever 08D ships.
 
 ## What this plan is NOT
 
