@@ -219,7 +219,7 @@ what mechanism it eventually selects. They multiply, so:
 This plan's **original** scope (reasoning effort, round-1 model choice, prompt snapshot size) is
 backend-only and wire-neutral throughout — all invisible to both clients. No web companion
 required for that scope, and no parity-ledger row. **The inherited terminal-round lever is NOT
-covered by that claim** — 08D §9 (transferred verbatim above) explicitly warns that a corrective
+covered by that claim** — 08D §9 (quoted verbatim under Acceptance below) explicitly warns that a corrective
 follow-up after an early release would very likely need a new wire shape, which is a MANDATORY
 Web-companion trigger. Whether any given terminal-round mechanism this plan selects is
 wire-neutral must be assessed when that mechanism is chosen, not assumed from this line.
