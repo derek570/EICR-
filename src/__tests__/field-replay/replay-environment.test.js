@@ -91,6 +91,31 @@ describe('load + restore semantics', () => {
     }
   });
 
+  test('OPENAI_EXTRACT_REASONING_EFFORT/OPENAI_EXTRACT_API are DELETED so code defaults apply, cleanup restores', () => {
+    const preSeed = {
+      OPENAI_EXTRACT_REASONING_EFFORT: 'medium',
+      OPENAI_EXTRACT_API: 'chat_completions',
+    };
+    const before = {};
+    for (const [k, v] of Object.entries(preSeed)) {
+      before[k] = process.env[k];
+      process.env[k] = v;
+    }
+    const restore = loadReplayEnvironment({ lane: 'recorded' });
+    try {
+      expect(process.env.OPENAI_EXTRACT_REASONING_EFFORT).toBeUndefined();
+      expect(process.env.OPENAI_EXTRACT_API).toBeUndefined();
+    } finally {
+      restore();
+    }
+    expect(process.env.OPENAI_EXTRACT_REASONING_EFFORT).toBe(preSeed.OPENAI_EXTRACT_REASONING_EFFORT);
+    expect(process.env.OPENAI_EXTRACT_API).toBe(preSeed.OPENAI_EXTRACT_API);
+    for (const [k, v] of Object.entries(before)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
   test('recorded lane clears vendor secrets; live lane leaves selected-provider keys alone', () => {
     const prevAnthropic = process.env.ANTHROPIC_API_KEY;
     const prevOpenAI = process.env.OPENAI_API_KEY;

@@ -32,7 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const REPLAY_ENV_INVENTORY_VERSION = 6;
+export const REPLAY_ENV_INVENTORY_VERSION = 7;
 
 /** Vars PINNED from ecs/task-def-backend.json (value read live from the
  *  task-def at load time so the drift test enforces itself). */
@@ -93,6 +93,16 @@ export const DELETED_SO_DEFAULTS_APPLY = Object.freeze([
   'SONNET_CACHE_TTL',
   'SONNET_SESSION_TTL_MS',
   'SONNET_SESSION_MAX_ENTRIES',
+  // Reclassified from EXCLUDED_NOT_IN_REPLAY_CLOSURE.openai_trial
+  // (2026-08-11): SONNET_EXTRACT_MODEL=gpt-5.6-luna is now the PRODUCTION
+  // route (pinned above), not an experimental trial — neither var is set in
+  // ecs/task-def-backend.json, so a stale developer-shell value would
+  // silently leak into an unpinned field-replay run undetected by the
+  // closure guard. Deleted so the code's own defaults apply ('low' on the
+  // Responses adapter, 'none' on the Chat Completions adapter, and
+  // 'responses' API mode).
+  'OPENAI_EXTRACT_REASONING_EFFORT',
+  'OPENAI_EXTRACT_API',
 ]);
 
 /** The SOLE deliberate override: Loaded Barrel OFF in BOTH lanes (v1
@@ -124,12 +134,13 @@ export const EXCLUDED_NOT_IN_REPLAY_CLOSURE = Object.freeze({
   infra: ['LOG_FILE', 'LOG_LEVEL', 'S3_BUCKET', 'STAGE0_BENCH', 'PORT', 'REDIS_URL',
     'DATABASE_TYPE', 'STORAGE_TYPE', 'USE_AWS_SECRETS', 'AWS_REGION'],
   // OpenAI default extraction-provider trial (openai-tooluse-adapter.js /
-  // openai-responses-adapter.js). Reachable ONLY when SONNET_EXTRACT_MODEL is
-  // a `gpt-*` model AND OPENAI_API_KEY is set — the OpenAI-backed tool-call
-  // loop. The provider API/ordinary-route effort knobs remain outside the
-  // deterministic recorded closure; the Terra observation tier/effort are
-  // production-pinned above because that route is now active.
-  openai_trial: ['OPENAI_EXTRACT_REASONING_EFFORT', 'OPENAI_EXTRACT_API'],
+  // openai-responses-adapter.js). Formerly held OPENAI_EXTRACT_REASONING_EFFORT
+  // and OPENAI_EXTRACT_API under a "trial path" rationale; both moved to
+  // DELETED_SO_DEFAULTS_APPLY (2026-08-11) once SONNET_EXTRACT_MODEL=gpt-5.6-luna
+  // became the production route rather than a trial — see that bucket's
+  // comment. No variables remain in this bucket; kept as an empty array (not
+  // removed) because classifiedVariables() below spreads it unconditionally.
+  openai_trial: [],
 });
 
 /** Read the task-def env table (single container definition). */
