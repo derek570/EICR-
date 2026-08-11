@@ -1,12 +1,18 @@
 # Plan 08C — Per-round cost levers
 
-Status: **PARKED — blocked on one ordinary field session running on `eicr-backend:388`.**
+Status: **UNPARKED 2026-08-11 — the blocking field session has run (session `8B9B2BDD`,
+`eicr-backend:393`, past the `:388+` revision gate below). Its three-item unblocking checklist
+still needs independent confirmation before this plan's `/rp` opens — see below.**
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 
-**Do not open this plan's `/rp` before that session exists.** Every item below is a hypothesis of
-the form *"if 08A's data shows X, then Y"*. With no data, a reviewer can only keep re-raising the
-same finding — that the conclusions rest on measurements that do not exist — and each round pays
-full token cost to do it.
+**Do not open this plan's `/rp` until the checklist below is independently confirmed against
+session `8B9B2BDD`.** Every item below is a hypothesis of the form *"if 08A's data shows X, then
+Y"*, and 08A's data now exists — but confirming the checklist (revision, `api_transport` split,
+`round_idx` keying) is a precondition for trusting it, not a formality. This is a `/rp`-opening
+gate, not a re-park: with the checklist confirmed, 08C also inherits 08D's closure (§7
+deliverable 3 of [Plan 08D](plan-08d-terminal-round-release.md)) — 08D ships no runtime
+early-release mechanism, and the terminal round's shrink/eliminate-round lever now belongs
+entirely to this plan. See the "Inherited from 08D" subsection under Acceptance below.
 
 Split out of [Plan 08B](plan-08b-stage6-round-levers.md) on 2026-08-10 so 08B's §2.0/§2.1 could be
 refined immediately instead of waiting behind four items nobody can yet evaluate. See § Seam below
@@ -81,11 +87,13 @@ and require clean `end_turn` on **multi-round** shapes — not just the trivial 
 termination degrades at all, stop. The shipped `'low'` is then correct and should be recorded as
 a considered choice rather than left as an unexamined default.
 
-> **Interaction with Plan 08D.** Both touch termination. 08D (the terminal-round release, parked)
-> may remove the terminal round entirely; this item makes the model worse at deciding it is done.
-> The section was 08B §2.0 until 08B's round-2 split moved it to 08D. If 08D ships first, re-read
-> this item before probing — the hazard above may become either moot or considerably sharper,
-> and which one it is depends on which mechanism 08D chose.
+> **Interaction with Plan 08D — settled 2026-08-11.** Both touch termination, and this item makes
+> the model worse at deciding it is done. [Plan 08D](plan-08d-terminal-round-release.md) closed
+> docs-only: it ships **no** runtime early-release mechanism (the transport has no trustworthy
+> pre-completion no-tool signal, and four prior mechanism shapes already died in production or
+> review), so the terminal round is **not** being removed by 08D. The hazard above therefore
+> stays exactly as sharp as it reads — any effort-below-`'low'` probe under this item still owns
+> the full termination risk, undiluted by a since-abandoned 08D mechanism.
 
 ### 1.2 `VOICE_LATENCY_ROUND1_MODEL` — shipped, wired, currently empty
 
@@ -186,8 +194,10 @@ reduces the *cost of each*. They multiply, so:
   re-baseline against the first, not against the pre-08B numbers. 08B's Seam section carries the
   matching note, and both plans' Acceptance sections require naming which baseline each number is
   against.
-- **08D may remove the terminal round; §1.1 may make termination less reliable.** That
-  interaction is flagged inline in §1.1 and must be re-read, not assumed stale, whenever 08D ships.
+- **08D closed docs-only and ships no runtime mechanism (2026-08-11); §1.1's termination hazard is
+  therefore undiluted, not moot.** The terminal round is not being removed by 08D — the
+  shrink/eliminate-round lever transfers to this plan in full. §1.1's inline note carries the
+  settled interaction; nothing here is still pending 08D.
 
 ## What this plan is NOT
 
@@ -210,6 +220,63 @@ redone rather than inherited from this line.
 
 ## Acceptance
 
+### Inherited from 08D (§7 deliverable 3 — transferred verbatim on 08D's docs-only closure, 2026-08-11)
+
+[Plan 08D](plan-08d-terminal-round-release.md) closed with no runtime early-release mechanism; the
+terminal round's shrink/eliminate-round lever, its replication gate, and the acceptance
+preconditions the combined 08B plan originally carried for this lever all transfer here in full,
+per 08D §7 deliverable 3.
+
+**Replication gate (08D §2, owner-confirmed 2026-08-11):** the single session is sufficient for
+08D's no-runtime closure. Any *future* behaviour-changing terminal-round optimisation **under
+this plan** may be implemented dark, but must not be **activated** — nor claim a latency saving —
+until at least one independent ordinary field session on a compatible revision reproduces the
+qualitative TTFT-dominated terminal-round shape (session `8B9B2BDD`, `eicr-backend:393`, 12
+turns). Exact 17 % / 34 % replication is NOT required; what is required is that all observed
+thinking-terminal rounds remain correct and audible.
+
+**Four acceptance preconditions (08D §8), verbatim:**
+
+- **A nanosecond audio-ready stamp exists and is populated before any saving is claimed.**
+  `audible_first_byte_ms` is null on 100 % of turns today. **Do not implement it from the combined
+  plan's original recipe — that recipe was wrong** (round-2 BLOCKER #4): the field is a hardcoded
+  `null` literal at `stage6-shadow-harness.js:4285-4286`, not an unpopulated allowlist entry, so
+  adding it to `attributeRoundUsage`'s allowlist would change nothing while looking correct. The
+  real sites are `recordOutcome`'s `meta` in `loaded-barrel-speculator.js:~1010` and the harness
+  literal itself.
+- **Barrel HIT and MISS cohorts reported separately, never blended.** The mechanism differs (serve
+  parked audio vs start synthesis earlier) and so does the win. Authoritative miss-rate: **22 %**
+  (Plan 07's doubly-reconfirmed 78/22; an earlier 08B round-1 sample read 37 % — superseded) — and
+  08B's round 2 established the MISS cohort may get *nothing* from this lever through the current
+  wire path, so blending the two would manufacture a saving that does not exist for roughly a
+  fifth of turns.
+- **Plan 06 (conversational lane, `.planning/voice-latency-conversational-2026-07-31/plan-06-general-conversational-lane.md`)
+  has a GO and touches the same tool loop.** 06 changes what the
+  model is expected to *say*; this lever changes when the human stops waiting for it. **Re-read 06
+  before this plan selects or details a terminal-round mechanism, not after** — and whichever ships
+  second re-baselines against the first, not against the pre-08B numbers.
+- **The §1.1 interaction is SHARPER here, not moot.** A reasoning model with reasoning turned
+  down may fail to cleanly `end_turn`; under a release-before-loop-return design it then burns round
+  cap and cost *after* the inspector has been released and moved on. Today that failure is at least
+  audible as a long silence. Re-read §1.1 against any terminal-round mechanism this plan selects
+  before probing effort below `'low'`.
+
+**Non-negotiable invariants (08D §9), verbatim, binding whatever this plan eventually ships:**
+
+> The audio-first invariants hold: every applied dictated reading is spoken **exactly once** — not
+> zero, not twice; structurally complete readings are written regardless of self-reported
+> confidence; speculative and cancelled work is never spoken or written; every rejection stays
+> audible. **Every forwarded turn for which the processing chime fired receives exactly one
+> audible terminal response — including no-write, no-op, rejection, timeout, cancellation,
+> cap-hit, reconnect, and thinking-terminal paths; no early release or terminal-round optimisation
+> may ever cancel or suppress that fallback.** A design that speaks earlier by speaking twice is a
+> regression wearing a latency plan's clothes. A corrective follow-up arriving after release would
+> have to be spoken as an **explicit correction** that references and supersedes what was already
+> said — which is very likely a **new wire shape**, and therefore a MANDATORY Web-companion
+> trigger, not a backend-only change.
+
+### This plan's own acceptance
+
 - Each lever flagged and rollback-able **independently**, so its effect stays attributable — the
   same rule Plan 03 imposes on connection reuse versus voice settings, for the same reason.
 - Report p50/p75/p95 with sample counts, split by reading versus question and by round count.
@@ -224,9 +291,11 @@ redone rather than inherited from this line.
 
 ## Reviewer pressure points
 
-- **Is 08A's data actually in hand?** This plan is parked precisely because it usually is not. If a
-  claim here has been promoted from hypothesis to fact on the strength of a docstring rather than a
-  measurement, that is the finding.
+- **Is 08A's data actually in hand, and has the three-item checklist been independently confirmed
+  against it?** Session `8B9B2BDD` (`:393`) discharged the field-session precondition, but the
+  checklist (revision `:388+`, `api_transport` split, `round_idx` keying) is a separate,
+  still-open confirmation step (see Status). If a claim here has been promoted from hypothesis to
+  fact on the strength of a docstring rather than a measurement, that is the finding.
 - Was the data split on `api_transport` before any distribution was computed?
 - Does any effort below `'low'` degrade `end_turn` termination on **multi-round** shapes?
 - Does `CIRCUIT_ORDER=ascending` preserve the cache prefix in practice, and does its token growth
