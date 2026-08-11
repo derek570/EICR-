@@ -1,0 +1,99 @@
+name: correction_flow
+suite: bench-08c-a
+description: |
+  Correction-path fixture for plan 08C-A: 9 circuits, straightforward
+  dictation for the first few, then an explicit spoken correction
+  ("actually, circuit 3's Zs is 0.8, not 0.7") exercising the
+  last-write-wins overwrite path (see the existing baseline/value_correction.yaml
+  scenario for the established convention this mirrors), followed by more
+  ordinary dictation. Exercises whether a correction turn's round count /
+  token cost differs by circuitOrder/snapshotRecentCircuits arm — a
+  correction targets an ALREADY-WRITTEN circuit, so if that circuit has
+  been evicted from the recent window the model has to work from the
+  "N earlier circuits stored server-side" summary rather than full detail
+  when deciding whether/how to overwrite it.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Kitchen sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Lounge sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Ground floor lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 5
+      board_id: main
+      designation: Electric shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 6
+      board_id: main
+      designation: Upstairs sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 7
+      board_id: main
+      designation: Garage sockets
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 8
+      board_id: main
+      designation: Outside lights
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 9
+      board_id: main
+      designation: Boiler
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one Zs zero point four one."
+    isFinal: true
+  - at_ms: 1000
+    text: "Circuit two R1 plus R2 zero point three six."
+    isFinal: true
+  - at_ms: 2000
+    text: "Circuit three Zs zero point seven."
+    isFinal: true
+  - at_ms: 3000
+    text: "Circuit four R1 plus R2 zero point five two."
+    isFinal: true
+  - at_ms: 4000
+    text: "Circuit five Zs zero point four nine."
+    isFinal: true
+  # Explicit spoken correction: circuit 3's Zs was 0.7 (turn 3), now 0.8.
+  - at_ms: 5000
+    text: "Actually, circuit three's Zs is zero point eight, not zero point seven."
+    isFinal: true
+  - at_ms: 6000
+    text: "Circuit six R1 plus R2 zero point three one."
+    isFinal: true
+  - at_ms: 7000
+    text: "Circuit seven Zs zero point six two."
+    isFinal: true
+  - at_ms: 8000
+    text: "Circuit eight R1 plus R2 zero point four four."
+    isFinal: true
+  - at_ms: 9000
+    text: "Circuit nine Zs zero point five five."
+    isFinal: true

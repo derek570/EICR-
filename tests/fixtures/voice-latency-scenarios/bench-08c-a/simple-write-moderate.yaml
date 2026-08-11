@@ -1,0 +1,118 @@
+name: simple_write_moderate
+suite: bench-08c-a
+description: |
+  Baseline "normal workflow" fixture for plan 08C-A: a moderate-sized
+  domestic board (12 circuits), one reading dictated per circuit, straight
+  through, no corrections, no ambiguity, no asks. This is the fixture the
+  arm comparison should look "boring" on — round counts and per-turn token
+  cost should track circuit count roughly linearly for all three arms,
+  since nothing here exercises eviction (12 circuits never grows past the
+  window_6 arm's override, though it does exceed the recent_3 default
+  partway through — that is expected and is itself part of the signal:
+  does an ordinary, correction-free session already show a recent_3 vs
+  window_6/ascending gap once >3 circuits have been touched?).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Kitchen sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Lounge sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Ground floor lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: First floor lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 5
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 6
+      board_id: main
+      designation: Electric shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 7
+      board_id: main
+      designation: Immersion heater
+      ocpd_rating_a: 16
+      ocpd_type: B
+    - number: 8
+      board_id: main
+      designation: Upstairs sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 9
+      board_id: main
+      designation: Garage sockets
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 10
+      board_id: main
+      designation: Outside lights
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 11
+      board_id: main
+      designation: Boiler
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 12
+      board_id: main
+      designation: Smoke detectors
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Circuit one Zs zero point four five."
+    isFinal: true
+  - at_ms: 1000
+    text: "Circuit two R1 plus R2 zero point three two."
+    isFinal: true
+  - at_ms: 2000
+    text: "Circuit three insulation resistance live earth 200 megohms."
+    isFinal: true
+  - at_ms: 3000
+    text: "Circuit four polarity confirmed."
+    isFinal: true
+  - at_ms: 4000
+    text: "Circuit five Zs zero point five eight."
+    isFinal: true
+  - at_ms: 5000
+    text: "Circuit six R1 plus R2 zero point six one."
+    isFinal: true
+  - at_ms: 6000
+    text: "Circuit seven Zs zero point three nine."
+    isFinal: true
+  - at_ms: 7000
+    text: "Circuit eight R1 plus R2 zero point four eight."
+    isFinal: true
+  - at_ms: 8000
+    text: "Circuit nine Zs zero point five one."
+    isFinal: true
+  - at_ms: 9000
+    text: "Circuit ten polarity confirmed."
+    isFinal: true
+  - at_ms: 10000
+    text: "Circuit eleven Zs zero point three four."
+    isFinal: true
+  - at_ms: 11000
+    text: "Circuit twelve R1 plus R2 zero point two seven."
+    isFinal: true

@@ -1,0 +1,95 @@
+name: cancellation_cap
+suite: bench-08c-a
+description: |
+  Runner-CAPABILITY coverage fixture (per plan 08C-A item 1): exercises the
+  REAL production cancellation path — an AbortSignal fired mid-turn, threaded
+  through runShadowHarness -> runLiveMode -> runToolLoop -> the live SDK
+  stream call (`client.messages.stream(streamArgs, signal ? {signal} :
+  undefined)`, src/extraction/stage6-tool-loop.js) — rather than a forced
+  8-round LOOP_CAP hit (unreliable/expensive to provoke deterministically
+  against a real model; the cancellation path is the one the codebase's own
+  test documents: src/__tests__/stage6-live-cancellation.test.js, F7 Item 3
+  "runLiveMode does NOT rethrow a silent abort — it FINALIZES the already-
+  applied perTurnWrites"). production-path-bench.mjs's fixture-level
+  `cancellation: {turn_index, abort_after_ms}` block creates an
+  AbortController for the named turn and calls `.abort()` after
+  `abort_after_ms` — the resulting turn's `round_timings`/`round_usage` are
+  expected to be EMPTY (emitTurnCoreSummary is skipped entirely on a
+  cancelled generation), which is itself the evidence this fixture exists to
+  produce: a cap/cancellation turn is invisible to the per-round telemetry,
+  not a zero-cost turn.
+
+  A broadcast-style "all circuits" instruction on a 10-circuit board gives
+  the model enough work to still be mid-stream when the 300ms abort timer
+  fires (typical TTFT+completion for a non-trivial multi-write turn is
+  well over 300ms — see the certmate-latency-campaign skill's recorded
+  baselines).
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Kitchen sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Lounge sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: Ground floor lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: First floor lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 5
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 6
+      board_id: main
+      designation: Electric shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 7
+      board_id: main
+      designation: Upstairs sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 8
+      board_id: main
+      designation: Garage sockets
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 9
+      board_id: main
+      designation: Outside lights
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 10
+      board_id: main
+      designation: Boiler
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Polarity confirmed for all circuits."
+    isFinal: true
+
+# Runner extension (not part of SCHEMA.md's baseline vocabulary): abort the
+# named 1-indexed turn's generation `abort_after_ms` after the runShadowHarness
+# call for that turn begins.
+cancellation:
+  turn_index: 1
+  abort_after_ms: 300
