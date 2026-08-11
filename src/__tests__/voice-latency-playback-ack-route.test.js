@@ -91,12 +91,69 @@ describe('POST /api/voice-latency/playback-ack', () => {
     expect(res.body.error).toMatch(/sessionId/);
   });
 
-  test('400 on missing turnId', async () => {
+  test('400 on missing turnId when no correlation_id offers an alternative identity', async () => {
     const res = await request(buildApp())
       .post('/api/voice-latency/playback-ack')
       .send(validBody({ turnId: '' }));
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/turnId/);
+  });
+
+  // Ask-path blind spot: questions play through AlertManager's direct
+  // AVAudioPlayer branch with no loaded-barrel context, so they have no
+  // turnId — only the /api/keys-minted correlation id. The turnId exemption
+  // used to additionally require `source === 'fast_tts'`, so every ask the
+  // inspector actually heard 400'd and never reached the audibility ledger.
+  // These pin the widened rule: correlation_id is sufficient for ANY source.
+  test.each(['bundler', 'local_fallback', 'fast_tts'])(
+    '204 on turnId-less %s ACK carrying a correlation_id',
+    async (source) => {
+      const res = await request(buildApp())
+        .post('/api/voice-latency/playback-ack')
+        .send(validBody({ turnId: '', source, correlation_id: 'vl_confirmation_ask-1' }));
+      expect(res.status).toBe(204);
+    }
+  );
+
+  test('204 when turnId is omitted entirely but a correlation_id is present', async () => {
+    const body = validBody({ source: 'bundler', correlation_id: 'vl_confirmation_ask-2' });
+    delete body.turnId;
+    const res = await request(buildApp()).post('/api/voice-latency/playback-ack').send(body);
+    expect(res.status).toBe(204);
+  });
+
+  test('a turnId-less ask ACK still reaches the audibility ledger, with a null turnId', async () => {
+    const infoSpy = jest.spyOn(logger, 'info').mockImplementation(() => {});
+    const res = await request(buildApp())
+      .post('/api/voice-latency/playback-ack')
+      .send(
+        validBody({
+          turnId: '',
+          source: 'bundler',
+          correlation_id: 'vl_confirmation_ask-3',
+        })
+      );
+    expect(res.status).toBe(204);
+    expect(infoSpy).toHaveBeenCalledWith(
+      'voice_latency.outcome',
+      expect.objectContaining({
+        correlation_id: 'vl_confirmation_ask-3',
+        outcome: 'playback_started',
+        acked_by_ios: true,
+        meta: expect.objectContaining({ turnId: null }),
+      })
+    );
+    infoSpy.mockRestore();
+  });
+
+  test.each([
+    ['an empty-string correlation_id', ''],
+    ['a non-string correlation_id', 12345],
+  ])('400 on a turnId-less ACK with %s', async (_label, correlation_id) => {
+    const res = await request(buildApp())
+      .post('/api/voice-latency/playback-ack')
+      .send(validBody({ turnId: '', correlation_id }));
+    expect(res.status).toBe(400);
   });
 
   test('400 on invalid source', async () => {

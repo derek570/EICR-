@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "1f9966e542832119efd5a4dc5094dd2996c6628059c19dd326f9b03534317c20",
+  "semantic_oracle_digest": "98e0a5cfdf0f16ad118be3309fc3054063f0a6fe93e978a418deebcf1635c597",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -553,7 +553,7 @@
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",
-      "sha256": "216b7be4cb9095abd324dfc5c8a09be37db684ca7c5b5996f9f8b6cc2140cf4c"
+      "sha256": "5b2732c95e4f6398689d73a3fd0318ad29116f8adaba48f830e7e6530e3fd8b8"
     },
     {
       "path": "scripts/model-ab/lib/mutation-classification.mjs",
