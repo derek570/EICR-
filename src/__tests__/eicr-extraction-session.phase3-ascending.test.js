@@ -186,3 +186,48 @@ describe('recentCircuitOrder — array still maintained under ascending', () => 
     expect(s.recentCircuitOrder).toEqual([3, 1, 5]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 08C-A — snapshotRecentCircuits constructor-latched benchmark seam
+// ---------------------------------------------------------------------------
+//
+// Lets a 3-arm latency benchmark (recent_3 / ascending / window_6) drive the
+// SAME production renderer with a wider recent-circuit window than the
+// frozen SNAPSHOT_RECENT_CIRCUITS default, without restarting the process or
+// flipping a module-level constant. Deliberately an OPTION rather than an
+// env read (unlike _resolveCircuitOrder above) — this is a benchmark/test
+// -only knob and must NOT be settable via a mid-session-mutable env var.
+describe('snapshotRecentCircuits — constructor-latched override', () => {
+  test('no option → defaults byte-identically to the frozen module constant (3)', () => {
+    const s = makeSession();
+    expect(s.snapshotRecentCircuits).toBe(3);
+  });
+
+  test('options.snapshotRecentCircuits: 6 → session.snapshotRecentCircuits is 6', () => {
+    const s = makeSession({ snapshotRecentCircuits: 6 });
+    expect(s.snapshotRecentCircuits).toBe(6);
+  });
+
+  test('snapshotRecentCircuits only accepts a positive integer — 0/-1/NaN/string/null/undefined all fall back to 3', () => {
+    for (const bad of [0, -1, 1.5, 'six', null, undefined, NaN]) {
+      const s = makeSession({ snapshotRecentCircuits: bad });
+      expect(s.snapshotRecentCircuits).toBe(3);
+    }
+  });
+
+  test('renderer actually renders up to the overridden window — 6 circuits detailed, only the oldest summarised', () => {
+    const s = makeSession({ snapshotRecentCircuits: 6 });
+    // 7 circuits, recency order 7..1 (seedCircuits: LAST entry is most
+    // recent, so circuit 1 is most-recent and circuit 7 is oldest). Window
+    // is 6, so only circuit 7 (the oldest) should be pushed into the
+    // "stored server-side" summary line — a byte-identical scenario would
+    // summarise 4 circuits (4,5,6,7) under the production default of 3.
+    seedCircuits(s, [7, 6, 5, 4, 3, 2, 1]);
+    const text = s.buildStateSnapshotMessage();
+    for (const num of [1, 2, 3, 4, 5, 6]) {
+      expect(text).toMatch(new RegExp(`^${num}:\\{`, 'm'));
+    }
+    expect(text).not.toMatch(/^7:\{/m);
+    expect(text).toMatch(/1 earlier circuits? \(7\) stored server-side/);
+  });
+});

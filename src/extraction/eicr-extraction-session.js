@@ -1281,6 +1281,21 @@ export class EICRExtractionSession {
     // the array is cheap); only the renderer's consumption differs.
     this.circuitOrder = this._resolveCircuitOrder(options.circuitOrder);
 
+    // Plan 08C-A latency-benchmark seam — constructor-latched override for
+    // the module-level SNAPSHOT_RECENT_CIRCUITS default. Deliberately an
+    // OPTION rather than an env read (mirrors _maxProviderAttempts below,
+    // NOT _resolveCircuitOrder above): this is a benchmark/test-only knob
+    // that must NOT be settable via a mid-session-mutable env var, so a
+    // 3-arm latency benchmark (recent_3 / ascending / window_6) can run all
+    // three arms through the same production code path in the same build
+    // without restarting the process or flipping a module-level constant.
+    // `undefined` (every production call site today) leaves both
+    // consumption sites byte-identical to the frozen module constant.
+    this.snapshotRecentCircuits =
+      Number.isInteger(options.snapshotRecentCircuits) && options.snapshotRecentCircuits > 0
+        ? options.snapshotRecentCircuits
+        : SNAPSHOT_RECENT_CIRCUITS;
+
     // A1 agentic-voice (2026-07-23) — ONE master flag VOICE_AGENTIC_ANSWERS,
     // read ONCE here and LATCHED. The conditional prompt render (below),
     // buildSessionTools (harness), and the pre-LLM gate's borderline-forward
@@ -1579,8 +1594,11 @@ export class EICRExtractionSession {
    * post-construction must NOT drift the mode).
    *
    *   recent_3 (default)  → today's rotating last-N window; the renderer
-   *                          slices `recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS)`
-   *                          and emits older circuits as the
+   *                          slices `recentCircuitOrder.slice(-this.snapshotRecentCircuits)`
+   *                          (constructor-latched from SNAPSHOT_RECENT_CIRCUITS
+   *                          unless a benchmark/test caller overrides it — see
+   *                          the Plan 08C-A comment above) and emits older
+   *                          circuits as the
    *                          "X earlier circuits (1,2) stored server-side"
    *                          summary line. Byte-identical to pre-Phase-3
    *                          main.
@@ -3886,7 +3904,7 @@ export class EICRExtractionSession {
     // by buildSystemBlocks where the token estimate is already
     // computed via CostTracker on the real API call).
     const tokenStatRefs = listCircuitRefsInBoard(this.stateSnapshot, parts.currentBoardId);
-    const recentCount = Math.min(this.recentCircuitOrder.length, SNAPSHOT_RECENT_CIRCUITS);
+    const recentCount = Math.min(this.recentCircuitOrder.length, this.snapshotRecentCircuits);
     const compactedCount = tokenStatRefs.length - recentCount;
     const estimate = Math.ceil(joined.length / 4);
     logger.info(
@@ -4304,7 +4322,7 @@ export class EICRExtractionSession {
       if (this.circuitOrder === 'ascending') {
         circuitsToRender = [...allNonSupply].sort((a, b) => a - b);
       } else {
-        const recentNums = this.recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS);
+        const recentNums = this.recentCircuitOrder.slice(-this.snapshotRecentCircuits);
         const olderNums = allNonSupply.filter((n) => !recentNums.includes(n)).sort((a, b) => a - b);
 
         if (olderNums.length > 0) {
