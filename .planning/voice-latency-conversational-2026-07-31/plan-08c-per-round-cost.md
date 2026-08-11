@@ -274,6 +274,18 @@ self-reference — these bullets were authored anticipating exactly this transfe
 selects" above are 08D's own self-references — these bullets already anticipated landing here,
 since "08C §1.1" is §1.1 of *this* document.)
 
+**Honesty limit — quoted verbatim from 08D §4** (08D §7 deliverable 1 required this to carry into
+08C alongside the preconditions above; it binds any future terminal-round measurement this plan
+performs, not only 08D's own):
+
+> **Honesty limit:** same-slot overwrite corrections (a later `record_reading` /
+> `record_board_reading` / calculator write silently rewriting an earlier same-turn write to the
+> same field) are **not recoverable from this telemetry** — `tool_names_per_round` records tool
+> identity, not which slot a given call targeted, and `stage6_tool_call.round` is a
+> per-dispatcher-closure call counter, not the loop round (`stage6-dispatchers.js:139,330`), so no
+> join against it can recover round-attributed slot detail. **No zero-event bound is claimed for
+> that category, on either corpus.**
+
 **Non-negotiable invariants (08D §9), verbatim, binding whatever this plan eventually ships:**
 
 > The audio-first invariants hold: every applied dictated reading is spoken **exactly once** — not

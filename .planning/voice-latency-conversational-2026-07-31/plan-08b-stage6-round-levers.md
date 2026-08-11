@@ -12,7 +12,7 @@ Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 already referenced by elsewhere (INDEX.md, the 08A execution log). Do not renumber them to close
 the gap left by the removed §1.
 
-Split twice on 2026-08-10:
+Split three times on 2026-08-10 (the third split landed 2026-08-11, when 08D itself closed):
 
 1. Out of a single Plan 08, so [08A](plan-08a-stage6-round-instrumentation.md) could ship
    immediately instead of waiting behind a review of levers nobody could yet choose between.
@@ -33,10 +33,12 @@ Split twice on 2026-08-10:
    production or review, and 08D ships no runtime early-release mechanism. The terminal round's
    shrink/eliminate-round lever transferred to 08C. **This plan now owns only §2.1.**
 
-**The seam is `how many rounds` versus `what each round costs`.** This plan reduces the *number* of
-provider round-trips per turn — loop termination and validator acceptance. 08C reduces the *cost of
-each* — reasoning effort, round-1 model, prompt snapshot size. Independently shippable, different
-risk profiles, different evidence.
+**The seam was `how many rounds` versus `what each round costs`.** This plan (now §2.1 only)
+reduces provider round-trips wasted on validator rejections. 08C originally reduced the *cost of
+each* round — reasoning effort, round-1 model, prompt snapshot size — and, since 08D's closure,
+also owns the transferred shrink/eliminate-terminal-round lever, which may touch either round
+count or round cost depending on what mechanism 08C eventually selects. Independently shippable
+from this plan, different risk profiles, different evidence.
 
 [Plan 07](plan-07-loaded-barrel-value-audit.md)'s verdict is in and it resolves **in favour** of
 this plan. The worry was that Loaded Barrel already hides the extra rounds; it does not. The barrel
@@ -144,7 +146,8 @@ silently dropped. That is the entire lesson of 2026-08-06 and this plan must not
 
 ## Seam — what the split gives up, stated so it is not lost
 
-08C reduces the cost of each round; this plan reduces how many there are. They **multiply**, so:
+08C originally reduced the cost of each round; this plan (now §2.1 only) reduces how many are
+wasted on validator rejections. They **multiply**, so:
 
 - **Neither plan's win may be claimed from a deploy containing both.** Whichever ships second
   re-baselines against the first, not against the pre-08B numbers. 08C carries the matching note.
@@ -153,8 +156,9 @@ silently dropped. That is the entire lesson of 2026-08-06 and this plan must not
   `end_turn`) is therefore undiluted by any since-abandoned §2.0 mechanism; it stays exactly as
   sharp as documented there, unchanged by this split.
 - Nothing else crosses the seam. No wire contract, no client half, and no deliverable is orphaned
-  between the two plans — §2.1 is a server-side validator concern, and 08C is entirely config and
-  prompt-size.
+  between the two plans — §2.1 is a server-side validator concern; 08C's original scope was config
+  and prompt-size only, but it has since also inherited 08D's shrink/eliminate-terminal-round
+  lever (§7 deliverable 3), which may touch round count as well as cost.
 
 ## What this plan is NOT
 
