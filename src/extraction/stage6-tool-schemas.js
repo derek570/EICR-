@@ -241,18 +241,6 @@ const recordReading = makeTool({
       description:
         'Identifier of the user turn this reading came from; used for dedup and correlation in logs.',
     },
-    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id. The
-    // dispatcher and validator have threaded this through into the
-    // flag-aware mutators since slice 5.2/5.3; exposing the schema field
-    // lets Sonnet route a reading to a specific board explicitly when the
-    // inspector says "circuit 4 on the main board" while currentBoardId is
-    // a sub-board. Defaults to currentBoardId when omitted — back-compat
-    // for every pre-Phase-6 session.
-    board_id: {
-      type: 'string',
-      description:
-        'PREFER OMITTING THIS. Defaults to currentBoardId, which is almost always right; the system prompt asks you to switch boards with select_board rather than pass an id here. If you do pass it, it must be the EXACT board id copied from the BOARDS section of the snapshot — not a designation ("the main board", "DB-2") and not a board TYPE. There is no board id "main". A value that disagrees with currentBoardId is REJECTED wrong_board and writes nothing.',
-    },
   },
   required: ['field', 'circuit', 'value', 'confidence', 'source_turn_id'],
 });
@@ -301,13 +289,6 @@ const clearReading = makeTool({
       enum: enumerations.clear_reading_reason,
       description:
         'Why the reading is being cleared. user_correction: inspector restated. misheard: transcript was wrong. wrong_circuit: value was written to the wrong circuit_ref.',
-    },
-    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id (see
-    // record_reading for rationale).
-    board_id: {
-      type: 'string',
-      description:
-        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
   },
   required: ['field', 'circuit', 'reason'],
@@ -425,13 +406,6 @@ const createCircuit = makeTool({
       anyOf: [{ type: 'number' }, { type: 'null' }],
       description: 'Live conductor cross-sectional area in mm^2. Null if unknown.',
     },
-    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id (see
-    // record_reading for rationale).
-    board_id: {
-      type: 'string',
-      description:
-        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
-    },
   },
   required: ['circuit_ref'],
 });
@@ -479,13 +453,6 @@ const renameCircuit = makeTool({
     cable_csa_mm2: {
       anyOf: [{ type: 'number' }, { type: 'null' }],
       description: 'New live conductor cross-sectional area in mm^2. Null to leave unchanged.',
-    },
-    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id (see
-    // record_reading for rationale).
-    board_id: {
-      type: 'string',
-      description:
-        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
     },
   },
   required: ['from_ref', 'circuit_ref'],
@@ -901,13 +868,6 @@ const deleteCircuit = makeTool({
       type: 'integer',
       description: 'Circuit reference number to delete. Must be >= 1 (supply at 0 is protected).',
     },
-    // 2026-05-07 multi-board sprint Phase 6.4 — optional board_id (see
-    // record_reading for rationale).
-    board_id: {
-      type: 'string',
-      description:
-        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
-    },
   },
   required: ['circuit_ref'],
 });
@@ -946,13 +906,15 @@ const calculateZs = makeTool({
       description:
         'Calculate for every circuit with the required inputs ("calculate Zs for all available circuits"). Mutually exclusive with circuit_ref and circuit_refs. Default false.',
     },
-    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id (see
-    // record_reading for rationale). Scopes the calculation to circuits
-    // on the named board; defaults to currentBoardId.
+    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id. Scopes
+    // the calculation to circuits on the named board; defaults to
+    // currentBoardId. The circuit mutators' board_id was deleted by Plan
+    // 08B (2026-08-11); the calculators keep theirs because a cross-board
+    // calc is a legitimate read-mostly operation.
     board_id: {
       type: 'string',
       description:
-        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main". The "*" wildcard is NOT accepted on this tool — only set_field_for_all_circuits accepts "*". Passing "*" here is rejected and calculates nothing.',
     },
   },
   required: ['all'],
@@ -998,13 +960,15 @@ const calculateR1PlusR2 = makeTool({
       description:
         'Calculate for every circuit with the required inputs for the chosen method. Mutually exclusive with circuit_ref and circuit_refs. Default false.',
     },
-    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id (see
-    // record_reading for rationale). Scopes the calculation to circuits
-    // on the named board; defaults to currentBoardId.
+    // 2026-05-07 multi-board sprint Phase 6.5 — optional board_id. Scopes
+    // the calculation to circuits on the named board; defaults to
+    // currentBoardId. Same rationale as calculate_zs: the circuit mutators
+    // lost their board_id in Plan 08B (2026-08-11), the calculators keep
+    // theirs for legitimate read-mostly cross-board calcs.
     board_id: {
       type: 'string',
       description:
-        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main".',
+        'Exact board id from the BOARDS section of the snapshot. Defaults to currentBoardId when omitted — prefer omitting. Not a designation and not a board TYPE; there is no board id "main". The "*" wildcard is NOT accepted on this tool — only set_field_for_all_circuits accepts "*". Passing "*" here is rejected and calculates nothing.',
     },
   },
   required: ['method', 'all'],

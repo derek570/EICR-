@@ -693,10 +693,17 @@ export function validateAskUser(input) {
  *
  * Tools gated by this validator: record_reading, clear_reading,
  * create_circuit, rename_circuit, delete_circuit, record_board_reading,
- * clear_board_reading (plan A1a — backstop only: the tool has no board_id
- * param, so this fires only for injected/off-schema calls; an empty-string
- * board_id deliberately returns wrong_board rather than being normalised
- * to the current board, which would permit a destructive retargeted clear).
+ * clear_board_reading. Since Plan 08B (2026-08-11) NONE of the seven
+ * declares a `board_id` param — record_board_reading / clear_board_reading
+ * never did (plan A1a), and the other five had theirs deleted — so this
+ * validator is a BACKSTOP for two shapes only: (a) off-schema calls, which
+ * remain possible because `strict: true` is off (Bug-E), and (b) writes the
+ * server itself authors with an explicit board id, notably the answer
+ * resolver's sub-board clarification writes. Those two are exactly why the
+ * gate must stay: removing a schema property removes an affordance, not an
+ * attack surface. An empty-string board_id deliberately returns wrong_board
+ * rather than being normalised to the current board, which would permit a
+ * destructive retargeted clear.
  *
  * Tools INTENTIONALLY exempt:
  *   - calculate_zs / calculate_r1_plus_r2 — Phase 6.5 explicitly threads
