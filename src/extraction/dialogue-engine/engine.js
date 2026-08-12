@@ -1164,7 +1164,16 @@ function canonicaliseSlotValue(slot, value) {
   }
 }
 
-function valuesCanonicallyEqual(slot, existingValue, candidateValue) {
+// Exported (Codex diff-review r2) so the dispatcher's ownership resolver
+// (stage6-dispatchers-script.js) can canonicalise-compare a per-turn prior
+// winner against a seed's value through the SAME slot parser the engine
+// itself uses, instead of a raw String() comparison that treats
+// representationally-different-but-semantically-equal values (e.g. a
+// record_reading's canonical "BS EN 61008" vs a Sonnet seed's raw "61008")
+// as different — which silently produced a double-speak (the bundler
+// confirms the record_reading value, then the resolver's false negative
+// leaves the seed script-owned, and it gets spoken again).
+export function valuesCanonicallyEqual(slot, existingValue, candidateValue) {
   const a = canonicaliseSlotValue(slot, existingValue);
   const b = canonicaliseSlotValue(slot, candidateValue);
   return a === b || String(a) === String(b);

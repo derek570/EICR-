@@ -121,6 +121,7 @@ jest.unstable_mockModule('../extraction/dialogue-engine/index.js', () => ({
   processRingContinuityTurn: ringWrapperSpy,
   processInsulationResistanceTurn: irWrapperSpy,
   processProtectiveDeviceTurn: pdWrapperSpy,
+  valuesCanonicallyEqual: (slot, a, b) => a === b || String(a) === String(b),
 }));
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');

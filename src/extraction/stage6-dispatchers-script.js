@@ -27,7 +27,11 @@
  * turn) without breaking the flow.
  */
 
-import { enterScriptByName, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index.js';
+import {
+  enterScriptByName,
+  ALL_DIALOGUE_SCHEMAS,
+  valuesCanonicallyEqual,
+} from './dialogue-engine/index.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import {
   getCircuitBucket,
@@ -120,9 +124,22 @@ export async function dispatchStartDialogueScript(call, ctx) {
   const ownershipResolver = canBackfill
     ? (field, circuitRef, canonicalValue) => {
         if (!Number.isInteger(circuitRef)) return null;
-        const slot = rawCircuitSlot(field, circuitRef, seededEffectiveBoardId);
-        if (!priorWinnerValues.has(slot)) return null;
-        return String(priorWinnerValues.get(slot)) === String(canonicalValue) ? 'bundler' : null;
+        const wireSlot = rawCircuitSlot(field, circuitRef, seededEffectiveBoardId);
+        if (!priorWinnerValues.has(wireSlot)) return null;
+        // Codex diff-review r2 — canonicalise through the SAME slot parser
+        // the engine uses, not a raw String() comparison. A per-turn prior
+        // winner from record_reading carries its FULLY CANONICAL form
+        // ("BS EN 61008"); a Sonnet start_dialogue_script seed for the same
+        // field often carries the RAW digits ("61008") — String()-unequal
+        // but semantically identical. The false negative left the seed
+        // script-owned even though the bundler already speaks the prior
+        // winner, producing a double-speak of the same value.
+        const schemaSlot = ALL_DIALOGUE_SCHEMAS.flatMap((s) => s.slots ?? []).find(
+          (s) => s.field === field
+        );
+        return valuesCanonicallyEqual(schemaSlot, priorWinnerValues.get(wireSlot), canonicalValue)
+          ? 'bundler'
+          : null;
       }
     : null;
 
