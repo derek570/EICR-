@@ -296,6 +296,45 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     expect(lastQuestion(ws)).toBe('RCD cancelled. Also got trip time 25.');
   });
 
+  // Codex diff-review r2 (silent-path lens, 2/3 cycle-2 lenses convergent) —
+  // a same-field correction dictated while the circuit is STILL unresolved
+  // must upsert the queued entry (superseded op abandoned), never silently
+  // drop the correction and keep speaking the stale first value.
+  test('a same-field correction while unresolved upserts the queue — the LATEST value drains and speaks, never the stale one', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'RCD trip time is 25 ms.',
+      now: 1000,
+    });
+    // Corrects the SAME field before the circuit resolves.
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Actually, trip time is 27 ms.',
+      now: 1500,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'circuit 5',
+      now: 2000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cancel',
+      now: 3000,
+    });
+    expect(lastQuestion(ws)).toBe('RCD cancelled. Also got trip time 27.');
+  });
+
   // (h) Sonnet-seeded trip time via tryEnterScriptFromWrites → ONE spoken
   // occurrence (bundler's — the triggering field arrived via record_reading
   // and is always bundler-owned, so finishScript never re-speaks it later).

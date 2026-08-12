@@ -3400,8 +3400,32 @@ function runActivePath({
             }
             continue;
           }
-          const alreadyQueued = state.pending_writes.some((existing) => existing.field === w.field);
-          if (alreadyQueued) continue;
+          // Codex diff-review r2 (silent-path lens, 2/3 cycle-2 lenses
+          // convergent with a cycle-1 finding this session had originally
+          // deferred citing the 361A638D replay fixture — re-checked: that
+          // fixture dictates each field ONLY ONCE while unresolved, so it
+          // pins the RE-ASK decision a few lines below, not this dedup).
+          // A same-field follow-up while unresolved is a genuine
+          // correction ("trip time 25" then "trip time 27" before the
+          // circuit resolves), not a defensive duplicate — silently
+          // dropping it is exactly id 117's class of bug. Upsert like the
+          // scope-conflict branch above: the superseded queued operation
+          // becomes abandoned, the newer dictation gets its own.
+          const idx = state.pending_writes.findIndex((existing) => existing.field === w.field);
+          if (idx >= 0) {
+            const superseded = state.pending_writes[idx][OPERATION_REF];
+            if (superseded) markAbandoned(superseded);
+            attachOperationRef(
+              w,
+              markDictated(state, w.field, w.value, {
+                schema,
+                source: 'runActivePath_unresolved_entry_queue',
+                circuit_ref: null,
+              })
+            );
+            state.pending_writes[idx] = w;
+            continue;
+          }
           attachOperationRef(
             w,
             markDictated(state, w.field, w.value, {
