@@ -72,3 +72,25 @@ describe('classifyDeclineReply — substantive replies do NOT classify as declin
     expect(classifyDeclineReply('   ')).toBeNull();
   });
 });
+
+// Group 3 (feedback id 114, 2026-08-12) — "doesn't matter" joins
+// DECLINE_PHRASE_RE (both apostrophe forms via the APOS fragment; "don't
+// worry" and "forget it/that" were already present).
+describe('classifyDeclineReply — "doesn\'t matter" family (id 114)', () => {
+  const declines = [
+    "Doesn't matter.",
+    'Doesn’t matter.', // curly apostrophe (U+2019)
+    'doesnt matter', // apostrophe dropped by STT
+    "No, doesn't matter.",
+    "doesn't matter, thanks",
+  ];
+  for (const reply of declines) {
+    test(`"${reply}" → decline`, () => {
+      expect(classifyDeclineReply(reply)).toBe('decline');
+    });
+  }
+
+  test('continuation is NOT a decline: "doesn\'t matter about that, Zs is next"', () => {
+    expect(classifyDeclineReply("doesn't matter about that, Zs is next")).toBeNull();
+  });
+});

@@ -362,6 +362,14 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // value or mint a new source turn on retry. The latch dies with the
   // dispatcher/generation, so a fresh utterance is never stranded.
   let multiDescriptionGenerationAbandoned = false;
+  // Group 3 (feedback id 114) — declined-pending fingerprints for THIS
+  // generation. Same dispatcher-instance lifecycle as the latch above:
+  // clears at turn completion, so a next-turn fresh utterance is unaffected.
+  const declinedPendingFingerprints = [];
+  const recordDeclinedPendingFingerprint = (identity) => {
+    const fp = buildDeclinedPendingFingerprint(identity ?? {});
+    if (fp) declinedPendingFingerprints.push(fp);
+  };
   return async function dispatchAskUser(call, ctx) {
     // F7 Item 3 — a cancellation can land while this ask sits in the gate
     // debounce delay (createAskGateWrapper fires the inner dispatcher on a
@@ -553,6 +561,83 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       }
     }
 
+    // Group 3 (feedback id 114) — initial pending-value eligibility/capture,
+    // HOISTED before the ask's Promise creation. Identity was previously
+    // extracted inside the Promise executor — too late to fingerprint a
+    // model retry of a declined pending operation. Semantics unchanged: the
+    // executor consumes these same values below.
+    const pendingValueEligible = isPendingValueAsk(input);
+    const capturedPendingValue = pendingValueEligible
+      ? extractPendingValue({
+          transcript: session.activeTurnTranscript,
+          question: input.question,
+        })
+      : null;
+    if (capturedPendingValue && logger?.info) {
+      logger.info('stage6.pending_value_captured', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        value: capturedPendingValue.value,
+        unit: capturedPendingValue.unit,
+        source: capturedPendingValue.source,
+      });
+    }
+
+    // Group 3 (feedback id 114) — declined-pending short-circuit. When this
+    // generation already recorded a whole-reply decline for the same pending
+    // operation, resolve the repeat ask DIRECTLY (the ~:477 direct-return
+    // precedent — multiDescriptionGenerationAbandoned): no timer, no
+    // pendingAsks.register, no pendingAsks.resolve (nothing is registered),
+    // no onAskAnswered, and never an emission-stamped ask-ledger entry — so
+    // the P4 net's ledger predicate (answered && emissionSeq != null && …)
+    // structurally cannot fire a SECOND ack for the suppressed repeat.
+    if (declinedPendingFingerprints.length > 0) {
+      const candidate = buildDeclinedPendingFingerprint({
+        field:
+          typeof input.context_field === 'string' && input.context_field !== 'none'
+            ? input.context_field
+            : (input.pending_write?.field ?? null),
+        value: input.pending_write?.value ?? capturedPendingValue?.value ?? null,
+        circuit: input.context_circuit ?? input.pending_write?.circuit ?? null,
+      });
+      if (
+        candidate &&
+        declinedPendingFingerprints.some((fp) => declinedFingerprintMatches(fp, candidate))
+      ) {
+        logger?.info?.('stage6.pending_value_reask_suppressed', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          field: candidate.field,
+          value: candidate.value,
+          circuit: candidate.circuit,
+        });
+        logAsk({
+          sessionId,
+          turnId,
+          mode,
+          tool_call_id: toolCallId,
+          question: input.question,
+          reason: input.reason,
+          context_field: input.context_field,
+          context_circuit: input.context_circuit,
+          answer_outcome: 'user_moved_on',
+          dispatcher_error: 'user_declined',
+          wait_duration_ms: 0,
+        });
+        return {
+          tool_use_id: toolCallId,
+          content: JSON.stringify({
+            answered: false,
+            reason: 'user_declined',
+            match_status: 'user_declined',
+          }),
+          is_error: false,
+        };
+      }
+    }
+
     // Step 3–4: live path — register + emit + await.
     //
     // Plan 03-12 r10 MAJOR remediation — wrap the Promise setup/await in
@@ -608,23 +693,9 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         // an eligible missing-field ask whose extraction deliberately
         // returned null (value absent/ambiguous) must still route a
         // field-name reply into the chain (shape 2 brokers the VALUE ask).
-        const pendingValueEligible = isPendingValueAsk(input);
-        const capturedPendingValue = pendingValueEligible
-          ? extractPendingValue({
-              transcript: session.activeTurnTranscript,
-              question: input.question,
-            })
-          : null;
-        if (capturedPendingValue && logger?.info) {
-          logger.info('stage6.pending_value_captured', {
-            sessionId,
-            turnId,
-            tool_call_id: toolCallId,
-            value: capturedPendingValue.value,
-            unit: capturedPendingValue.unit,
-            source: capturedPendingValue.source,
-          });
-        }
+        // Group 3 (id 114): `pendingValueEligible` / `capturedPendingValue`
+        // are hoisted above the Promise (declined-pending fingerprinting
+        // needs the identity pre-registration); consumed verbatim here.
         try {
           pendingAsks.register(toolCallId, {
             contextField: input.context_field,
@@ -1090,6 +1161,10 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       markMultiDescriptionMovedOn: () => {
         multiDescriptionGenerationAbandoned = true;
       },
+      // Group 3 (id 114) — invoked immediately on an initial or brokered
+      // whole-reply decline so a same-generation model retry of the same
+      // pending operation short-circuits pre-registration.
+      recordDeclinedPendingFingerprint,
     });
 
     // §D2 (field-feedback-2026-07-14) — echo the server-assigned
@@ -1223,6 +1298,9 @@ async function buildResolvedBody({
   // that doesn't supply it — staging then no-ops.
   stagePartialFailureNotice = null,
   markMultiDescriptionMovedOn = null,
+  // Group 3 (id 114) — declined-pending fingerprint recorder; threaded to
+  // resolvePendingValueFlow / runPendingValueChain via the args spread.
+  recordDeclinedPendingFingerprint = null,
 }) {
   // Non-answered outcomes (timeout / user_moved_on / shadow_mode / etc.)
   // never trigger resolution — there's no answer text to resolve.
@@ -1276,6 +1354,8 @@ async function buildResolvedBody({
       // PLAN-C P4c — thread the epoch ref so a pvr re-ask answered by a later
       // utterance advances it (resolvePendingValueFlow spreads it to the chain).
       responseEpochRef,
+      // Group 3 (id 114) — decline fingerprint recorder (initial + brokered).
+      recordDeclinedPendingFingerprint,
     });
     if (pvBody) return pvBody;
     // null → not engaged; fall through to the existing resolvers/legacy body.
@@ -2916,6 +2996,76 @@ function isPendingValueAsk(input) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Group 3 (feedback id 114, 2026-08-12) — declined-pending fingerprints.
+//
+// A whole-reply decline at a pending-value ask resolves the ask silently
+// (match_status:'user_declined'; the P4 answered-ask ack net is the SOLE
+// producer of the spoken ack). A silent tool_result plus a prompt line does
+// not structurally stop a later model round in the SAME generation from
+// re-asking for the same pending operation — these fingerprints are the
+// enforcement. The store is dispatcher-local (one dispatcher instance
+// belongs to one live model generation, same lifecycle as the
+// multi-description latch above), so it clears at turn completion and the
+// next fresh utterance is unaffected.
+// ---------------------------------------------------------------------------
+
+// Field keys in this flow are canonical SNAPSHOT keys (resolveFieldNameAnswer
+// emits `rcd_time_ms`); a model retry may carry the WIRE spelling
+// (`rcd_trip_time`, canonicalised downstream in sonnet-stream/bundler). Fold
+// the one known divergence so both representations fingerprint identically.
+function canonicaliseDeclinedField(field) {
+  if (typeof field !== 'string') return null;
+  const f = field.trim().toLowerCase();
+  if (!f || f === 'none') return null;
+  return f === 'rcd_trip_time' ? 'rcd_time_ms' : f;
+}
+
+// Values stringified + numerically normalised ("26" ≡ 26 ≡ "26.0"); sentinel
+// strings (">299", "LIM") compare lowercased-verbatim.
+function canonicaliseDeclinedValue(value) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? String(n) : s.toLowerCase();
+}
+
+function canonicaliseDeclinedCircuit(circuit) {
+  const n = Number(circuit);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+// Null when NO component is known — an empty fingerprint would match
+// everything via vacuous no-conflict.
+function buildDeclinedPendingFingerprint({ field, value, circuit } = {}) {
+  const fp = {
+    field: canonicaliseDeclinedField(field),
+    value: canonicaliseDeclinedValue(value),
+    circuit: canonicaliseDeclinedCircuit(circuit),
+  };
+  return fp.field == null && fp.value == null && fp.circuit == null ? null : fp;
+}
+
+// Match rule (minimum identity overlap): no conflicting KNOWN components
+// PLUS meaningful overlap — the same canonical field, or the same normalised
+// value with a compatible circuit scope (equal, or unknown on either side —
+// the inverted-shape retry never knows a circuit, so requiring a KNOWN equal
+// circuit would exempt the primary id-114 retry). Disjoint partial
+// fingerprints never match: a fingerprint knowing only {value:5} must not
+// suppress an unrelated ask knowing only {field:zs}. Inverted vs
+// pending_write representations stay equivalent because BOTH sides build
+// from the same canonical field/value/circuit triple.
+function declinedFingerprintMatches(fp, cand) {
+  if (!fp || !cand) return false;
+  if (fp.field != null && cand.field != null && fp.field !== cand.field) return false;
+  if (fp.value != null && cand.value != null && fp.value !== cand.value) return false;
+  if (fp.circuit != null && cand.circuit != null && fp.circuit !== cand.circuit) return false;
+  const sameField = fp.field != null && cand.field != null;
+  const sameValue = fp.value != null && cand.value != null;
+  return sameField || sameValue;
+}
+
 const PENDING_VALUE_APOLOGY =
   "Sorry, I couldn't place that reading — could you say the field and value together again?";
 
@@ -2933,7 +3083,7 @@ const PENDING_VALUE_APOLOGY =
 // Alternation fragment (no anchors) reused inside the whole-reply matcher.
 // `APOS` = optional straight OR curly apostrophe (STT/normalisers emit either).
 const APOS = "['’]?";
-const DECLINE_PHRASE_RE = `(?:don${APOS}t worry(?: about (?:it|that))?|not worried|leave (?:it|that|them)|skip (?:it|that|them)|never ?mind|forget (?:it|that)|no problem|don${APOS}t bother)`;
+const DECLINE_PHRASE_RE = `(?:don${APOS}t worry(?: about (?:it|that))?|not worried|leave (?:it|that|them)|skip (?:it|that|them)|never ?mind|forget (?:it|that)|no problem|don${APOS}t bother|doesn${APOS}t matter)`;
 // The WHOLE reply must be a bare negation, an allowlisted decline phrase, or a
 // leading bare-negation composed with one — with only punctuation/whitespace
 // and bounded politeness (please/just/thanks) between and around. Codex r1: the
@@ -2981,6 +3131,36 @@ async function resolvePendingValueFlow(args) {
       outcome.pendingValueEligible === true ||
       (typeof toolCallId === 'string' && toolCallId.startsWith('pvr-'));
     if (!eligible) return null;
+  }
+  // Group 3 (feedback id 114) — whole-reply decline at the INITIAL
+  // pending-value ask ("Don't worry."). Checked FIRST, before any chain
+  // resolution: drop the pending value and return the SILENT resolved
+  // tool_result — the chain itself never queues decline speech. The P4
+  // answered-ask ack net is the SOLE producer of the spoken ack (the
+  // dispatcher already computed declineClass at answer recording; this
+  // silent resolved body is exactly the silent-continuation condition it
+  // keys on). Adding a second producer here would double-ack. Placed AFTER
+  // the engagement gate so a decline at a NON-pending-value ask keeps its
+  // existing handling verbatim (truth-table row 4).
+  if (classifyDeclineReply(outcome.user_text) === 'decline') {
+    args.recordDeclinedPendingFingerprint?.({
+      field: null,
+      value: pendingValue?.value ?? null,
+      circuit: args.contextCircuit ?? null,
+    });
+    logger?.info?.('stage6.pending_value_declined', {
+      sessionId,
+      turnId,
+      tool_call_id: toolCallId,
+      site: 'initial',
+      value: pendingValue?.value ?? null,
+    });
+    return {
+      answered: true,
+      untrusted_user_text: outcome.user_text,
+      auto_resolved: false,
+      match_status: 'user_declined',
+    };
   }
   // Belt-and-braces overtake guard (the primary gate lives in the
   // sonnet-stream direct-answer handler, which re-injects): a structurally
@@ -3044,6 +3224,8 @@ async function runPendingValueChain(args) {
     // PLAN-C P4c — threaded from the dispatcher via resolvePendingValueFlow's
     // `...args` spread; passed to each broker so a pvr answer advances the epoch.
     responseEpochRef,
+    // Group 3 (id 114) — decline fingerprint recorder, same spread.
+    recordDeclinedPendingFingerprint,
   } = args;
   let fieldKey = args.fieldKey ?? null;
   let value = args.value ?? null;
@@ -3051,6 +3233,32 @@ async function runPendingValueChain(args) {
   let circuit = Number.isInteger(contextCircuit) ? contextCircuit : null;
   const asked = { field: 0, value: 0, circuit: 0 };
   const brokered = [];
+
+  // Group 3 (feedback id 114) — whole-reply decline at ANY brokered outcome:
+  // the chain terminates resolved-declined, never advances to a further
+  // broker or the terminal apology. SILENT by contract — the P4 net (which
+  // the pvr broker's own onAskAnswered fire feeds with the decline class) is
+  // the sole spoken-ack producer; queueing speech here would double-ack.
+  // The fingerprint uses the chain's CURRENT evolving field/value/circuit.
+  const declineBody = (site, replyText) => {
+    recordDeclinedPendingFingerprint?.({ field: fieldKey, value, circuit });
+    logger?.info?.('stage6.pending_value_declined', {
+      sessionId,
+      turnId,
+      tool_call_id: toolCallId,
+      site,
+      field: fieldKey,
+      value,
+      circuit,
+      reply_preview: String(replyText ?? '').slice(0, 40),
+    });
+    return {
+      answered: true,
+      untrusted_user_text: outcome.user_text,
+      auto_resolved: false,
+      match_status: 'user_declined',
+    };
+  };
   // Plan 00B-2 C2.3 — replacement lineage: every pvr re-ask replaces its
   // IMMEDIATE predecessor in the chain (the initial ask for the first
   // broker; each broker's own id thereafter), never always the initial id.
@@ -3135,6 +3343,11 @@ async function runPendingValueChain(args) {
         if (!circOutcome.answered) {
           if (String(circOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
           return movedOn(circOutcome.reason);
+        }
+        // Group 3 (id 114) — decline at the brokered CIRCUIT ask, checked
+        // FIRST (extractCircuitRef would null-parse it into the apology).
+        if (classifyDeclineReply(circOutcome.user_text) === 'decline') {
+          return declineBody('circuit_ask', circOutcome.user_text);
         }
         const parsed = extractCircuitRef(String(circOutcome.user_text ?? '').toLowerCase());
         if (parsed == null) return terminalApology();
@@ -3223,6 +3436,11 @@ async function runPendingValueChain(args) {
         if (String(fieldOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
         return movedOn(fieldOutcome.reason);
       }
+      // Group 3 (id 114) — decline at the brokered FIELD ask, checked FIRST
+      // (a decline is not a field name; pre-fix it fell to the apology).
+      if (classifyDeclineReply(fieldOutcome.user_text) === 'decline') {
+        return declineBody('field_ask', fieldOutcome.user_text);
+      }
       const resolved = resolveFieldNameAnswer(fieldOutcome.user_text);
       if (!resolved) return terminalApology();
       fieldKey = resolved;
@@ -3261,6 +3479,14 @@ async function runPendingValueChain(args) {
       if (!valueOutcome.answered) {
         if (String(valueOutcome.reason ?? '').startsWith('broker_')) return terminalApology();
         return movedOn(valueOutcome.reason);
+      }
+      // Group 3 (id 114) — decline at the brokered VALUE ask, checked FIRST.
+      // Order is load-bearing: "don't worry"/"doesn't matter" are now also
+      // CANCEL_PHRASES, so resolveValueAnswer below would otherwise return
+      // 'cancel' → movedOn — silent, no ack. The decline body keeps the P4
+      // net's exactly-once spoken acknowledgment.
+      if (classifyDeclineReply(valueOutcome.user_text) === 'decline') {
+        return declineBody('value_ask', valueOutcome.user_text);
       }
       if (circuit != null) {
         // Route through the EXISTING numeric value-resolver path so

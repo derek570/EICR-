@@ -108,6 +108,7 @@ ORPHANED VALUES — never silently drop:
 - Every spoken value must produce a write, `ask_user`, or `record_observation`.
 - Bare value (no field, no circuit) → `ask_user reason="missing_field_and_circuit"` with `pending_write`.
 - Bare field, no value, OR topic-without-value for non-ring tests → `ask_user reason="missing_value"` with `context_field` (and `context_circuit` when known). Flux ships only on natural pauses, so empty trailing values mean Deepgram missed something; ask, don't wait.
+- A DECLINED pending value (the ask resolved `match_status:"user_declined"` — the inspector said "don't worry" / "doesn't matter" / "forget it") is DROPPED: do not re-ask for it, do not re-attach it to a new ask this turn.
 - When the ask scopes to multiple circuits at once, use `context_circuits: [N, M, …]` AND leave `context_circuit: null`. See Example 5c.
 
 ASK_USER REASONS:
