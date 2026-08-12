@@ -570,3 +570,428 @@ describe('§A4 — regressions: flows that must NOT engage', () => {
     expect(body.untrusted_user_text).toBe(reply);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group 3 (feedback id 114, 2026-08-12) — the pending-value DECLINE branch.
+//
+// "Don't worry." (twice) was treated as a failed field-name answer → brokered
+// re-ask → terminal apology → model re-ask → fresh chain. The chain now
+// terminates resolved-declined at the initial ask AND at every brokered
+// outcome, SILENTLY (the P4 answered-ask ack net is the sole spoken-ack
+// producer), and a generation-scoped declined-pending fingerprint
+// short-circuits same-generation model retries pre-registration.
+//
+// These are the pre-drain unit tests: session.pendingVoicePrompts is asserted
+// EMPTY (the chain must never queue decline speech; the apology is the
+// pre-fix bug). The exactly-one-spoken-ack observable lives in the
+// production-ingress suite (stage6-pending-value-decline-ingress.test.js).
+// ---------------------------------------------------------------------------
+
+describe('group 3 — whole-reply decline resolves the chain silently (id 114)', () => {
+  const expectSilentDecline = (env, session, autoResolveWrite, ws, declineText = null) => {
+    const body = JSON.parse(env.content);
+    expect(body).toMatchObject({
+      answered: true,
+      auto_resolved: false,
+      match_status: 'user_declined',
+    });
+    // The body carries the utterance that actually DECLINED — for a
+    // brokered decline that is the broker's reply, never the initial ask's
+    // earlier substantive answer (ep-diff-review cycle 1).
+    if (declineText !== null) expect(body.untrusted_user_text).toBe(declineText);
+    // Dropped, not dispatched — and never deletes anything either.
+    expect(autoResolveWrite).not.toHaveBeenCalled();
+    // The chain queued NO speech of its own (no apology, no ack — P4 owns
+    // the ack). This is the transient-queue assertion, pre-drain.
+    expect(session.pendingVoicePrompts ?? []).toHaveLength(0);
+    // No FURTHER broker ask after the decline.
+    return ws.sent.filter(
+      (f) => f.type === 'ask_user_started' && String(f.tool_call_id).startsWith('pvr-')
+    );
+  };
+
+  test('decline at the INITIAL pending-value ask ("Don\'t worry.") → user_declined, no broker, no apology, no write', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite,
+    });
+    const p = dispatcher({ tool_call_id: 'toolu_d1', name: 'ask_user', input: noneAsk() }, {});
+    await tick();
+    pendingAsks.resolve('toolu_d1', { answered: true, user_text: "Don't worry." });
+    const env = await p;
+    const brokered = expectSilentDecline(env, session, autoResolveWrite, ws);
+    expect(brokered).toHaveLength(0);
+  });
+
+  test('decline at the brokered FIELD ask → chain terminates resolved-declined, never the apology', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite,
+    });
+    const p = dispatcher({ tool_call_id: 'toolu_d2', name: 'ask_user', input: noneAsk() }, {});
+    await tick();
+    pendingAsks.resolve('toolu_d2', { answered: true, user_text: 'erm the auto feature thing' });
+    await tick();
+    const started = ws.sent.filter(
+      (f) => f.type === 'ask_user_started' && String(f.tool_call_id).startsWith('pvr-')
+    );
+    expect(started).toHaveLength(1);
+    pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: "Don't worry." });
+    const env = await p;
+    const brokered = expectSilentDecline(env, session, autoResolveWrite, ws, "Don't worry.");
+    expect(brokered).toHaveLength(1); // only the pre-decline field ask
+  });
+
+  test('decline at the brokered VALUE ask ("Doesn\'t matter.") → declined, NOT the cancel/moved-on path', async () => {
+    // No capturable value anywhere → shape 2 (value ask) after the field
+    // resolves. "Doesn't matter" is ALSO a CANCEL_PHRASE now; the chain's
+    // decline check must win so the P4 ack (not silence) covers the turn.
+    const session = buildSession({ activeTurnTranscript: null });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite,
+    });
+    const p = dispatcher(
+      {
+        tool_call_id: 'toolu_d3',
+        name: 'ask_user',
+        input: noneAsk({ question: 'Which reading was that for?' }),
+      },
+      {}
+    );
+    await tick();
+    pendingAsks.resolve('toolu_d3', { answered: true, user_text: 'RCD trip time.' });
+    await tick();
+    const started = ws.sent.filter(
+      (f) => f.type === 'ask_user_started' && String(f.tool_call_id).startsWith('pvr-')
+    );
+    expect(started).toHaveLength(1);
+    expect(started[0].expected_answer_shape).toBe('number');
+    pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: "Doesn't matter." });
+    const env = await p;
+    expectSilentDecline(env, session, autoResolveWrite, ws, "Doesn't matter.");
+    const body = JSON.parse(env.content);
+    expect(body.match_status).toBe('user_declined'); // never pending_value_unresolved
+  });
+
+  test('decline at the brokered CIRCUIT ask → declined, captured value dropped', async () => {
+    const session = buildSession({ activeTurnTranscript: 'trip time 26 milliseconds somewhere' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite,
+    });
+    const p = dispatcher(
+      { tool_call_id: 'toolu_d4', name: 'ask_user', input: noneAsk({ context_circuit: null }) },
+      {}
+    );
+    await tick();
+    pendingAsks.resolve('toolu_d4', { answered: true, user_text: 'RCD trip time' });
+    await tick();
+    const started = ws.sent.filter(
+      (f) => f.type === 'ask_user_started' && String(f.tool_call_id).startsWith('pvr-')
+    );
+    expect(started).toHaveLength(1);
+    expect(started[0].expected_answer_shape).toBe('circuit_ref');
+    pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: "Don't worry." });
+    const env = await p;
+    expectSilentDecline(env, session, autoResolveWrite, ws);
+  });
+
+  test('decline phrase + substantive continuation is NOT a decline (whole-reply anchoring)', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite,
+    });
+    const p = dispatcher({ tool_call_id: 'toolu_d5', name: 'ask_user', input: noneAsk() }, {});
+    await tick();
+    // A continuation-bearing reply is NOT declined — the chain processes it
+    // normally (here: the sentence resolves no field name, so shape 1
+    // brokers the ordinary FIELD ask instead of terminating declined).
+    pendingAsks.resolve('toolu_d5', {
+      answered: true,
+      user_text: "don't worry about the RCD yet, next is the sockets reading",
+    });
+    await tick();
+    const started = ws.sent.filter(
+      (f) => f.type === 'ask_user_started' && String(f.tool_call_id).startsWith('pvr-')
+    );
+    expect(started).toHaveLength(1); // brokered — NOT short-circuited as a decline
+    pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: 'RCD trip time' });
+    const env = await p;
+    const body = JSON.parse(env.content);
+    expect(body.match_status).toBe('pending_value_resolved');
+    expect(autoResolveWrite).toHaveBeenCalledWith(
+      expect.objectContaining({ field: 'rcd_time_ms', circuit: 2, value: '26' }),
+      expect.anything()
+    );
+  });
+});
+
+describe('group 3 — declined-pending fingerprint short-circuits same-generation retries (id 114)', () => {
+  async function declineInitial(dispatcher, pendingAsks, toolCallId = 'toolu_fp1') {
+    const p = dispatcher({ tool_call_id: toolCallId, name: 'ask_user', input: noneAsk() }, {});
+    await tick();
+    pendingAsks.resolve(toolCallId, { answered: true, user_text: "Don't worry." });
+    return p;
+  }
+
+  test('model retries the same ask in the SAME generation → suppressed pre-registration: no emit, no registry entry, no onAskAnswered', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const logger = noopLogger();
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const onAskAnswered = jest.fn();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, logger, 't', pendingAsks, ws, {
+      autoResolveWrite,
+      onAskAnswered,
+    });
+    await declineInitial(dispatcher, pendingAsks);
+    expect(onAskAnswered).toHaveBeenCalledTimes(1);
+    const askFramesBefore = ws.sent.filter((f) => f.type === 'ask_user_started').length;
+
+    // The retry: same inverted shape, same transcript-captured value.
+    const env2 = await dispatcher(
+      { tool_call_id: 'toolu_fp2', name: 'ask_user', input: noneAsk() },
+      {}
+    );
+    const body2 = JSON.parse(env2.content);
+    expect(body2).toMatchObject({
+      answered: false,
+      reason: 'user_declined',
+      match_status: 'user_declined',
+    });
+    // Structurally cannot double-ack: no new emission, no registration, no
+    // resolution-time observer call for the suppressed repeat.
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started')).toHaveLength(askFramesBefore);
+    expect(Array.from(pendingAsks.entries())).toHaveLength(0);
+    expect(onAskAnswered).toHaveBeenCalledTimes(1);
+    // The canonical ask row logs user_moved_on with the user_declined diag.
+    const suppressed = logger.info.mock.calls.filter(
+      ([ev]) => ev === 'stage6.pending_value_reask_suppressed'
+    );
+    expect(suppressed).toHaveLength(1);
+    const askRows = logger.info.mock.calls.filter(
+      ([ev, row]) => ev === 'stage6.ask_user' && row.tool_call_id === 'toolu_fp2'
+    );
+    expect(askRows).toHaveLength(1);
+    expect(askRows[0][1]).toMatchObject({
+      answer_outcome: 'user_moved_on',
+      dispatcher_error: 'user_declined',
+    });
+  });
+
+  test('pending_write representation of the same operation ALSO matches (numeric normalisation included)', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite: jest.fn().mockResolvedValue({ ok: true }),
+    });
+    await declineInitial(dispatcher, pendingAsks);
+    // Retry re-shaped as a fully-formed pending_write ask; value '26.0'
+    // normalises to the fingerprint's '26'.
+    const env2 = await dispatcher(
+      {
+        tool_call_id: 'toolu_fp3',
+        name: 'ask_user',
+        input: {
+          question: 'Which circuit is that 26 for?',
+          reason: 'missing_context',
+          context_field: 'rcd_time_ms',
+          // The retry carries the SAME known circuit scope as the declined
+          // operation — under the strict value-AND-circuit arm, a scope-less
+          // retry of a scoped decline is NOT the same operation (see the
+          // circuit-knowledge test below).
+          context_circuit: 2,
+          expected_answer_shape: 'circuit_ref',
+          pending_write: {
+            tool: 'record_reading',
+            field: 'rcd_time_ms',
+            value: '26.0',
+            confidence: 0.9,
+            source_turn_id: 't-retry',
+          },
+        },
+      },
+      {}
+    );
+    expect(JSON.parse(env2.content).match_status).toBe('user_declined');
+  });
+
+  test('a reformatted equivalent ask matches after a FIELD-known decline (same canonical field, different reason/shape)', async () => {
+    // Decline at the brokered VALUE ask records fp {field: rcd_time_ms,
+    // circuit: 2}. (The wire spelling `rcd_trip_time` is enum-blocked at
+    // validateAskUser today, so the canonicaliser's alias fold is
+    // defence-in-depth; the representable reformat is reason/shape drift.)
+    const session = buildSession({ activeTurnTranscript: null });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite: jest.fn().mockResolvedValue({ ok: true }),
+    });
+    const p = dispatcher(
+      {
+        tool_call_id: 'toolu_fa1',
+        name: 'ask_user',
+        input: noneAsk({ question: 'Which reading was that for?' }),
+      },
+      {}
+    );
+    await tick();
+    pendingAsks.resolve('toolu_fa1', { answered: true, user_text: 'RCD trip time.' });
+    await tick();
+    const started = ws.sent.filter(
+      (f) => f.type === 'ask_user_started' && String(f.tool_call_id).startsWith('pvr-')
+    );
+    pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: "Don't worry." });
+    await p;
+    // Retry: an ordinary field-known VALUE ask about the SAME field.
+    const env2 = await dispatcher(
+      {
+        tool_call_id: 'toolu_fa2',
+        name: 'ask_user',
+        input: noneAsk({
+          context_field: 'rcd_time_ms',
+          reason: 'missing_value',
+          expected_answer_shape: 'number',
+        }),
+      },
+      {}
+    );
+    expect(JSON.parse(env2.content).match_status).toBe('user_declined');
+  });
+
+  test('conflicting known components do NOT match — a different value registers normally', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite: jest.fn().mockResolvedValue({ ok: true }),
+    });
+    await declineInitial(dispatcher, pendingAsks);
+    const askFramesBefore = ws.sent.filter((f) => f.type === 'ask_user_started').length;
+    // A genuinely different operation: different value, different field.
+    const p2 = dispatcher(
+      {
+        tool_call_id: 'toolu_cf1',
+        name: 'ask_user',
+        input: {
+          question: 'Which circuit is that 0.3 for?',
+          reason: 'missing_context',
+          context_field: 'measured_zs_ohm',
+          context_circuit: null,
+          expected_answer_shape: 'circuit_ref',
+          pending_write: {
+            tool: 'record_reading',
+            field: 'measured_zs_ohm',
+            value: '0.3',
+            confidence: 0.9,
+            source_turn_id: 't-diff',
+          },
+        },
+      },
+      {}
+    );
+    await tick();
+    // NOT suppressed: it registered and emitted.
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started').length).toBe(askFramesBefore + 1);
+    pendingAsks.resolve('toolu_cf1', { answered: false, reason: 'timeout' });
+    await p2;
+  });
+
+  test('circuit-knowledge mismatch does NOT match — a scoped decline never suppresses a scope-less value ask (cycle-1 fix)', async () => {
+    // fp {value:26, circuit:2}; retry knows the value but NOT the circuit.
+    // Under the strict value-AND-circuit arm these are different operations
+    // — the retry registers normally.
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite: jest.fn().mockResolvedValue({ ok: true }),
+    });
+    await declineInitial(dispatcher, pendingAsks);
+    const askFramesBefore = ws.sent.filter((f) => f.type === 'ask_user_started').length;
+    const p2 = dispatcher(
+      {
+        tool_call_id: 'toolu_ck1',
+        name: 'ask_user',
+        input: {
+          question: 'Which circuit is that 26 for?',
+          reason: 'missing_context',
+          context_field: 'rcd_time_ms',
+          context_circuit: null,
+          expected_answer_shape: 'circuit_ref',
+          pending_write: {
+            tool: 'record_reading',
+            field: 'rcd_time_ms',
+            value: '26',
+            confidence: 0.9,
+            source_turn_id: 't-ck',
+          },
+        },
+      },
+      {}
+    );
+    await tick();
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started').length).toBe(askFramesBefore + 1);
+    pendingAsks.resolve('toolu_ck1', { answered: false, reason: 'timeout' });
+    await p2;
+  });
+
+  test('disjoint partial fingerprints do NOT match — {value:26} never suppresses a field-only ask', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite: jest.fn().mockResolvedValue({ ok: true }),
+    });
+    await declineInitial(dispatcher, pendingAsks);
+    const askFramesBefore = ws.sent.filter((f) => f.type === 'ask_user_started').length;
+    // Knows only a FIELD (no value, no pending_write) — no overlap with
+    // the {value:26, circuit:2} fingerprint.
+    const p2 = dispatcher(
+      {
+        tool_call_id: 'toolu_dj1',
+        name: 'ask_user',
+        input: noneAsk({ context_field: 'measured_zs_ohm', reason: 'missing_value' }),
+      },
+      {}
+    );
+    await tick();
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started').length).toBe(askFramesBefore + 1);
+    pendingAsks.resolve('toolu_dj1', { answered: false, reason: 'timeout' });
+    await p2;
+  });
+
+  test('next-turn fresh utterance is unaffected — a NEW dispatcher instance carries no fingerprints', async () => {
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const opts = { autoResolveWrite: jest.fn().mockResolvedValue({ ok: true }) };
+    const dispatcher1 = createAskDispatcher(session, noopLogger(), 't1', pendingAsks, ws, opts);
+    await declineInitial(dispatcher1, pendingAsks);
+    // The next turn builds a FRESH dispatcher (per-generation instance).
+    const dispatcher2 = createAskDispatcher(session, noopLogger(), 't2', pendingAsks, ws, opts);
+    const askFramesBefore = ws.sent.filter((f) => f.type === 'ask_user_started').length;
+    const p2 = dispatcher2({ tool_call_id: 'toolu_nt1', name: 'ask_user', input: noneAsk() }, {});
+    await tick();
+    // Registers + emits normally — the decline died with its generation.
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started').length).toBe(askFramesBefore + 1);
+    pendingAsks.resolve('toolu_nt1', { answered: false, reason: 'timeout' });
+    await p2;
+  });
+});

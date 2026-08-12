@@ -2411,6 +2411,114 @@ describe('findCircuitsByDesignation — filler-stripped user text resolves', () 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Feedback id 116 (2026-08-12) — pass-2 morphological fold table.
+// "Upstairs lights" vs designation "Upstairs Lighting" has no substring
+// relation in either direction; the closed fold table bridges it. Pass 1
+// (the substring test) is byte-for-byte unchanged and always wins first.
+// ---------------------------------------------------------------------------
+describe('findCircuitsByDesignation — pass-2 morphological folding (id 116)', () => {
+  test('the id-116 verbatim shape: "Upstairs lights." matches designation "Upstairs Lighting"', () => {
+    const session = buildSession({
+      1: { circuit_designation: 'Cooker' },
+      3: { circuit_designation: 'Upstairs Lighting' },
+    });
+    const r = findCircuitsByDesignation(session, 'Upstairs lights.');
+    expect(r.matched).toBe(3);
+    expect(r.matchedDesignation).toBe('upstairs lighting');
+    // Pass-2 match carries the raw span of the matched user text.
+    expect(r.matchedUserSpan).toEqual({ start: 0, end: 'Upstairs lights'.length });
+  });
+
+  test('pass-1 partial-token plural NOT in the fold table still resolves ("cookers" ⊂ substring)', () => {
+    // "cookers" contains "cooker" as a character substring — pass 1 owns
+    // this today and must keep owning it (the fold table doesn't know
+    // "cookers"; replacing the substring test would regress this).
+    const session = buildSession({ 5: { circuit_designation: 'Cooker' } });
+    const r = findCircuitsByDesignation(session, 'the cookers');
+    expect(r.matched).toBe(5);
+    // Pass-1 match → NO span (the literal designation search still works).
+    expect(r.matchedUserSpan).toBeNull();
+  });
+
+  test('folding never merges DISTINCT designations (kitchen sockets vs kitchen lights)', () => {
+    const session = buildSession({
+      2: { circuit_designation: 'Kitchen Sockets' },
+      3: { circuit_designation: 'Kitchen Lights' },
+    });
+    const r = findCircuitsByDesignation(session, 'kitchen socket');
+    expect(r.matched).toBe(2);
+  });
+
+  test('"Lights" with two Lighting circuits → 2 candidates, no arbitrary pick', () => {
+    const session = buildSession({
+      3: { circuit_designation: 'Upstairs Lighting' },
+      4: { circuit_designation: 'Downstairs Lighting' },
+    });
+    const r = findCircuitsByDesignation(session, 'the lights');
+    expect(r.matched).toBeNull();
+    expect(r.candidates).toEqual([3, 4]);
+    expect(r.matchedUserSpan).toBeNull();
+  });
+
+  test('singular words ending in s/es are unchanged (house, mains — no naïve strip)', () => {
+    const session = buildSession({
+      6: { circuit_designation: 'House Alarm' },
+      7: { circuit_designation: 'Mains Smoke Detectors' },
+    });
+    expect(findCircuitsByDesignation(session, 'house alarm').matched).toBe(6);
+    // "hous alarm" must NOT match anything (a naïve s-strip would mangle it).
+    expect(findCircuitsByDesignation(session, 'hous alarm').matched).toBeNull();
+  });
+
+  test('hyphenated / punctuated designations fold at the token level', () => {
+    const session = buildSession({ 8: { circuit_designation: 'Up-stairs Lighting' } });
+    const r = findCircuitsByDesignation(session, 'up stairs lights');
+    expect(r.matched).toBe(8);
+  });
+
+  test('longer-sentence containment still matches via pass 2 with the correct span', () => {
+    const session = buildSession({ 3: { circuit_designation: 'Upstairs Lighting' } });
+    const text = 'It is the upstairs lights, tested at 500';
+    const r = findCircuitsByDesignation(session, text);
+    expect(r.matched).toBe(3);
+    const start = text.indexOf('upstairs');
+    expect(r.matchedUserSpan).toEqual({ start, end: start + 'upstairs lights'.length });
+  });
+
+  test('zero-match stays zero-match (fold table cannot invent a bridge)', () => {
+    const session = buildSession({ 3: { circuit_designation: 'Upstairs Lighting' } });
+    expect(findCircuitsByDesignation(session, 'garage supply').matched).toBeNull();
+    expect(findCircuitsByDesignation(session, 'garage supply').candidates).toEqual([]);
+  });
+
+  test('restrictToRefs narrows pass 2 exactly like pass 1', () => {
+    const session = buildSession({
+      3: { circuit_designation: 'Upstairs Lighting' },
+      4: { circuit_designation: 'Downstairs Lighting' },
+    });
+    const r = findCircuitsByDesignation(session, 'the upstairs lights', { restrictToRefs: [4] });
+    expect(r.matched).toBeNull();
+    const r2 = findCircuitsByDesignation(session, 'the upstairs lights', { restrictToRefs: [3] });
+    expect(r2.matched).toBe(3);
+  });
+
+  test('slash-separated designation folds at the token level ("Kitchen/Diner Lighting")', () => {
+    const session = buildSession({ 11: { circuit_designation: 'Kitchen/Diner Lighting' } });
+    const r = findCircuitsByDesignation(session, 'kitchen diner lights');
+    expect(r.matched).toBe(11);
+  });
+
+  test('heater/heating and socket/sockets fold-table entries each resolve', () => {
+    const session = buildSession({
+      9: { circuit_designation: 'Water Heating' },
+      10: { circuit_designation: 'Garage Socket' },
+    });
+    expect(findCircuitsByDesignation(session, 'water heater').matched).toBe(9);
+    expect(findCircuitsByDesignation(session, 'garage sockets').matched).toBe(10);
+  });
+});
+
 describe('engine — designation resolution + clean echo (F1AC26FB #3)', () => {
   test('IR queued readings drain onto circuit matched via "For the sockets."', () => {
     const ws = new FakeWS();

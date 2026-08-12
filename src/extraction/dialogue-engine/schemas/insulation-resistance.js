@@ -173,6 +173,212 @@ const slots = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Compound entry extractor (feedback id 123, 2026-08-12).
+//
+// The field shape "Installation resistance for the garage socket is greater
+// than 299 live to live and live to earth" is VALUE first with two conjunct
+// TRAILING labels — neither slot namedExtractor (LABEL→bridge→VALUE) can
+// match it, so the loop re-asked both legs and the re-answers lost the `>`
+// sentinel. This extractor certifies BOTH legs with the SAME value, and is
+// consulted by runEntry ONLY when extractNamedFieldValues returned neither
+// IR slot (different per-leg values keep going through the per-label
+// extractors, which own that shape).
+//
+// Matching is LABEL-PAIR-FIRST, not value-first: a value-first search
+// selects the EARLIEST eligible number, so "IR for circuit 2 is greater
+// than 299 live to live and live to earth" could capture the 2 (the circuit
+// ordinal sits before the real value and escapes any gap-only guard;
+// numeric designations create the same hazard). Deterministic enumerated
+// forms only — no edit-distance fuzz (banned), enumerated connectors only
+// ("and", "&").
+// ---------------------------------------------------------------------------
+
+// The two label vocabularies, reused from the slot namedExtractors above —
+// keep in lockstep with them per this file's own comment.
+const LL_LABEL_SRC = 'live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l';
+const LE_LABEL_SRC = 'live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e';
+
+// Trailing label pair: both orderings, joined by an enumerated connector.
+// Plus the "both" phrasing — accepted ONLY as end-of-clause "both" or
+// explicit "both readings"/"both tests", NEVER "both circuits". Global flag:
+// the extractor enumerates ALL pair mentions and keeps the RIGHTMOST one
+// that is genuinely trailing (ep-diff-review cycle 1: a first-match search
+// let an earlier incidental pair mention preempt a valid final clause).
+const LABEL_PAIR_RE = new RegExp(
+  `\\b(?:(?:${LL_LABEL_SRC})\\s*,?\\s*(?:and|&)\\s*(?:${LE_LABEL_SRC})` +
+    `|(?:${LE_LABEL_SRC})\\s*,?\\s*(?:and|&)\\s*(?:${LL_LABEL_SRC})` +
+    `|both(?:\\s+(?:readings|tests))?(?!\\s+circuits?\\b))\\b`,
+  'gi'
+);
+
+// Clause boundaries for the bounded same-clause prefix. The family's
+// [^.?!]{0,40} convention is NOT sufficient on its own — `\r`/`\n`/`;` and
+// contrast tokens also terminate eligibility (a value beyond "but"/
+// "whereas"/"however"/"except" is not the labels' value).
+const CLAUSE_BOUNDARY_RE = /[.?!;\r\n]|\b(?:but|whereas|however|except)\b/gi;
+
+// A single megaohms-value candidate inside the prefix. Sentinel and
+// greater-than forms come first (most specific), bare numerics last.
+const COMPOUND_CANDIDATE_RE = new RegExp(
+  `(?:>\\s*|(?:greater\\s+(?:than|then)|more\\s+than|over|above)\\s+)(?:\\d+(?:\\.\\d+)?|\\.\\d+)` +
+    `|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?` +
+    `|\\b(?:lim|limb|limp|limitation)\\b` +
+    `|\\d+(?:\\.\\d+)?|\\.\\d+`,
+  'gi'
+);
+
+// Explicit megaohm unit immediately after a bare number → qualified (b).
+// `mΩ` carries its OWN delimiter lookahead (ep-diff-review cycle 1): a
+// shared trailing `\b` can never match after `Ω` — both `Ω` and whitespace
+// are non-word characters, so `250 MΩ` would silently fail qualification.
+const MEGAOHM_UNIT_AFTER_RE =
+  /^\s*(?:m(?:ega)?\s*[- ]?\s*ohms?\b|m[ΩΩ](?![\p{L}\p{N}])|milli\s*grams?\b|millies?\b|megs?\b)/iu;
+
+// Megaohm forms stripped from a candidate's suffix BEFORE the conflicting-
+// unit scan, so "250 megaohms" never reads as a bare "ohms" conflict.
+const MEGAOHM_FORMS_STRIP_RE = /m(?:ega)?\s*[- ]?\s*ohms?|m[ΩΩ]|milli\s*grams?|millies?|megs?/giu;
+
+// Conflicting unit ANYWHERE between the candidate and the label pair →
+// candidate rejected (ep-diff-review cycle 1: an immediate-suffix-only check
+// missed non-adjacent units). volts, amps, milliseconds, milliamps, and
+// ohms/kilohms WITHOUT mega-qualification: "…was tested at 500 volts, live
+// to live and live to earth" has exactly one bare candidate and would
+// otherwise certify BOTH IR fields as 500 MΩ.
+// Symbolic Ω forms need no word boundaries (Ω is a non-word character, so
+// `\b` can never anchor beside it — same class as the MΩ delimiter fix);
+// megaohm forms are stripped before this scan, so any surviving Ω is
+// non-mega by construction (ep-diff-review cycle 2).
+const CONFLICTING_UNIT_SCAN_RE =
+  // Both Greek capital omega (U+03A9) AND the canonically-equivalent OHM
+  // SIGN (U+2126) — no input normalisation runs before this scan (cycle 3).
+  /\b(?:volts?|v|amps?|amperes?|milli\s*seconds?|ms|milli\s*amps?|ma|(?:kilo\s*|k\s*)?ohms?)\b|(?:k(?:ilo)?\s*)?[ΩΩ]/i;
+
+// Closed connector set joining a bare number to the IR subject → (c).
+const CONNECTOR_BEFORE_RE = /\b(?:is|was|reads|measures|equals)[\s,]{0,3}$/i;
+
+// The IR subject anchor required for connector qualification (ep-diff-review
+// cycle 1): "(c) a bare number joined to the IR SUBJECT by the closed
+// connector set" — the connector alone proved nothing about WHAT is 299.
+// Same head-word vocabulary as this schema's own triggers.
+const IR_SUBJECT_RE =
+  /\b(?:insulation|installation|insurance)\s+(?:resistance|res(?:istance|istence|istense)?)\b|\bi\s*r\b/i;
+
+/**
+ * `schema.compoundEntryExtractor(text)` — returns exactly TWO
+ * `{field, value}` entries (same parsed value for both IR legs) or `[]`.
+ * MUST receive the RAW entry text: the ordinary and scope-conflict paths
+ * mask circuit spans before named extraction, and masked text would erase
+ * the `circuit N` evidence the scope guard below needs.
+ */
+function compoundEntryExtractor(text) {
+  if (typeof text !== 'string' || !text) return [];
+
+  // 1. Locate the TRAILING label pair: enumerate every pair mention and
+  //    keep the RIGHTMOST one that is genuinely trailing — nothing
+  //    substantive may follow it in the same clause ("…299 but live to
+  //    earth and live to live were not tested" must never certify);
+  //    punctuation/whitespace to a clause boundary or end-of-string is
+  //    fine. Rightmost-passing so an earlier incidental mention ("For both
+  //    readings, …") cannot preempt a valid final clause.
+  let pair = null;
+  LABEL_PAIR_RE.lastIndex = 0;
+  let pm;
+  while ((pm = LABEL_PAIR_RE.exec(text)) !== null) {
+    const trailing = text.slice(pm.index + pm[0].length);
+    if (/^[\s,]*(?:$|[.?!;\r\n])/.test(trailing)) {
+      pair = { index: pm.index, length: pm[0].length };
+    }
+  }
+  if (!pair) return [];
+  const pairStart = pair.index;
+  const pairEnd = pair.index + pair.length;
+
+  // 2. Bounded same-clause PREFIX: walk back from the pair to the nearest
+  //    clause boundary (incl. `;`, CR/LF, and contrast tokens), then keep
+  //    at most 40 chars (the family's gap convention).
+  const before = text.slice(0, pairStart);
+  let clauseStart = 0;
+  CLAUSE_BOUNDARY_RE.lastIndex = 0;
+  let bm;
+  while ((bm = CLAUSE_BOUNDARY_RE.exec(before)) !== null) {
+    clauseStart = bm.index + bm[0].length;
+  }
+  const clauseSpan = before.slice(clauseStart);
+  const prefixDrop = Math.max(0, clauseSpan.length - 40);
+  const prefix = clauseSpan.slice(prefixDrop);
+  if (!prefix.trim()) return [];
+
+  // 4 (checked early — cheapest guard): scope guard over the WHOLE span
+  // from the preceding clause boundary through the label-pair end, not
+  // merely the value-to-label gap. `\bcircuit\s*\d{1,3}\b` is the SOLE
+  // scope marker, matching the codebase's only existing convention for
+  // this guard class (maskCircuitSpans in helpers/extraction.js).
+  const wholeSpan = clauseSpan + text.slice(pairStart, pairEnd);
+  if (/\bcircuit\s*\d{1,3}\b/i.test(wholeSpan)) return [];
+
+  // 3. Enumerate candidates in the prefix; retain only IR-QUALIFIED ones.
+  const qualified = [];
+  COMPOUND_CANDIDATE_RE.lastIndex = 0;
+  let m;
+  while ((m = COMPOUND_CANDIDATE_RE.exec(prefix)) !== null) {
+    const candText = m[0];
+    const candEnd = m.index + candText.length;
+    const restAfter = prefix.slice(candEnd);
+    // Negative/signed reading → the WHOLE extraction fails (ep-diff-review
+    // cycles 2+3): the candidate regex is unsigned, so "-1" / "minus 1" /
+    // "1 - 2" would otherwise tail-match a positive digit run; a `continue`
+    // could strip one candidate from an ambiguous multi-value expression
+    // and leave exactly one to certify. Digit-leading candidates only — a
+    // dash before "greater"/"infinite" is punctuation, not a sign. Sign
+    // class covers hyphen, Unicode minus, and en/em dashes.
+    if (
+      /^[\d.]/.test(candText) &&
+      /(?:[-−–—]|\b(?:minus|negative))\s*$/i.test(prefix.slice(0, m.index))
+    ) {
+      return [];
+    }
+    // Conflicting unit ANYWHERE between the candidate and the label pair →
+    // rejected outright (megaohm forms stripped first so they never read as
+    // bare "ohms").
+    if (CONFLICTING_UNIT_SCAN_RE.test(restAfter.replace(MEGAOHM_FORMS_STRIP_RE, ' '))) continue;
+    // (a) greater-than / saturation / LIM sentinel forms: every bare
+    // numeric candidate starts with a digit or '.', every sentinel/gt form
+    // does not.
+    const isSentinelOrGt = !/^[\d.]/.test(candText);
+    if (isSentinelOrGt) {
+      // (a) greater-than / saturation / LIM sentinel forms.
+      qualified.push(candText);
+      continue;
+    }
+    // Bare number: (b) explicit megaohm unit, or (c) closed-connector join
+    // to the IR SUBJECT — the connector must join the number to an IR
+    // mention in the same clause, not to an arbitrary noun ("the garage
+    // socket is 299" proves nothing about WHAT is 299).
+    if (MEGAOHM_UNIT_AFTER_RE.test(restAfter)) {
+      qualified.push(candText);
+      continue;
+    }
+    if (
+      CONNECTOR_BEFORE_RE.test(prefix.slice(0, m.index)) &&
+      IR_SUBJECT_RE.test(clauseSpan.slice(0, prefixDrop + m.index))
+    ) {
+      qualified.push(candText);
+      continue;
+    }
+    // Unqualified bare number — ignored (never certifies, never blocks).
+  }
+
+  // Accept ONLY when exactly one qualified candidate remains.
+  if (qualified.length !== 1) return [];
+  const value = parseMegaohms(qualified[0]);
+  if (value === null || value === undefined) return [];
+  return [
+    { field: 'ir_live_live_mohm', value },
+    { field: 'ir_live_earth_mohm', value },
+  ];
+}
+
 const triggers = [
   // Leading-circuit patterns (feedback id 98 companion, 2026-07-27): a
   // circuit stated BEFORE the trigger ("Circuit 4, insulation resistance
@@ -245,6 +451,11 @@ export const insulationResistanceSchema = {
   hardTimeoutMs: 180_000,
   toolCallIdPrefix: 'srv-irs',
   extractionSource: 'ir_script',
+  // Feedback id 123 (2026-08-12): compound value-first entry — consulted by
+  // runEntry on the ordinary + scope-conflict extraction paths ONLY when
+  // extractNamedFieldValues returned neither IR slot, with the RAW entry
+  // text (masked text would erase the scope guard's evidence).
+  compoundEntryExtractor,
   logEventPrefix: 'stage6.insulation_resistance_script',
   whichCircuitQuestion: 'Which circuit is the insulation resistance for?',
   // Capture a single composite IR figure at entry — "the IR for the

@@ -2285,3 +2285,126 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(isMultiDescriptionAnswerText('skip', MULTI_DESCRIPTION_CIRCUITS)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group 3 (feedback id 114, 2026-08-12) — decline vocabulary in
+// CANCEL_PHRASES: "don't worry" and "doesn't matter", BOTH apostrophe
+// spellings (stripPunct preserves internal apostrophes; Deepgram transcripts
+// carry curly U+2019). Widening CANCEL_PHRASES deliberately changes
+// cancellation behaviour beyond the pending-value chain — this matrix covers
+// every consulting family, plus the whole-reply anchoring guarantee (a
+// substantive continuation BEGINNING with the phrase is never cancelled).
+// ---------------------------------------------------------------------------
+
+describe('group 3 — decline vocabulary across every CANCEL_PHRASES family (id 114)', () => {
+  const DECLINE_REPLIES = [
+    "don't worry",
+    'don’t worry', // curly apostrophe (U+2019)
+    "doesn't matter",
+    'doesn’t matter',
+    "Don't worry.", // trailing punctuation via stripPunct
+  ];
+  const CONTINUATION = "don't worry about the RCD yet, next is the kitchen reading";
+
+  // Lazy imports for the two families not already imported at the top.
+  let resolveValueAnswer;
+  let resolveBoardIdAnswer;
+  beforeAll(async () => {
+    ({ resolveValueAnswer, resolveBoardIdAnswer } =
+      await import('../extraction/stage6-answer-resolver.js'));
+  });
+
+  const BOARDS = [{ id: 'main', board_type: 'main' }];
+
+  test.each(DECLINE_REPLIES)('resolveCircuitAnswer: "%s" cancels', (reply) => {
+    const r = resolveCircuitAnswer({
+      userText: reply,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).toBe('cancel');
+  });
+
+  test.each(DECLINE_REPLIES)('resolveValueAnswer: "%s" cancels', (reply) => {
+    const r = resolveValueAnswer({
+      userText: reply,
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 2,
+      contextCircuits: null,
+      sourceTurnId: 't1',
+      contextBoardId: null,
+    });
+    expect(r.kind).toBe('cancel');
+  });
+
+  test.each(DECLINE_REPLIES)('resolveBoardIdAnswer: "%s" cancels', (reply) => {
+    const r = resolveBoardIdAnswer({
+      userText: reply,
+      contextField: 'feeds_board_id',
+      boards: BOARDS,
+    });
+    expect(r.kind).toBe('cancel');
+  });
+
+  test.each(DECLINE_REPLIES)('resolveMultiDescriptionFollowup: "%s" cancels', (reply) => {
+    const r = resolveMultiDescriptionFollowup({
+      userText: reply,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).toBe('cancel');
+  });
+
+  test.each(DECLINE_REPLIES)('isMultiDescriptionAnswerText: "%s" is consumable', (reply) => {
+    expect(isMultiDescriptionAnswerText(reply, TWO_CIRCUITS)).toBe(true);
+  });
+
+  // Whole-reply anchoring: exact-string matching means a substantive
+  // continuation beginning with the phrase is NOT a cancellation in ANY
+  // family.
+  test('resolveCircuitAnswer: continuation is not cancelled', () => {
+    const r = resolveCircuitAnswer({
+      userText: CONTINUATION,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).not.toBe('cancel');
+  });
+
+  test('resolveValueAnswer: continuation is not cancelled', () => {
+    const r = resolveValueAnswer({
+      userText: CONTINUATION,
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 2,
+      contextCircuits: null,
+      sourceTurnId: 't1',
+      contextBoardId: null,
+    });
+    expect(r.kind).not.toBe('cancel');
+  });
+
+  test('resolveBoardIdAnswer: continuation is not cancelled', () => {
+    const r = resolveBoardIdAnswer({
+      userText: CONTINUATION,
+      contextField: 'feeds_board_id',
+      boards: BOARDS,
+    });
+    expect(r.kind).not.toBe('cancel');
+  });
+
+  test('resolveMultiDescriptionFollowup: continuation is not cancelled', () => {
+    const r = resolveMultiDescriptionFollowup({
+      userText: CONTINUATION,
+      pendingWrite: SAMPLE_PENDING,
+      availableCircuits: TWO_CIRCUITS,
+    });
+    expect(r.kind).not.toBe('cancel');
+  });
+
+  test('isMultiDescriptionAnswerText: continuation is not consumable as a cancel', () => {
+    // The continuation carries no census ref, no known designation, and no
+    // target-bearing correction for TWO_CIRCUITS — filler must not consume
+    // the pending clarification.
+    expect(isMultiDescriptionAnswerText(CONTINUATION, TWO_CIRCUITS)).toBe(false);
+  });
+});

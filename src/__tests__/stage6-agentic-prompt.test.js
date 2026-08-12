@@ -487,8 +487,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // recovery (select_board THEN re-issue with NO board_id) is made
       // mandatory. Shared region, so both renders grow; measured 24364 and cap
       // retains ~100-token headroom.
+      // 2026-08-12 (PLAN-A group 3, feedback id 114): one additive ORPHANED
+      // VALUES line — a declined pending value (match_status:"user_declined")
+      // is dropped, never re-asked. Shared region; measured 24489 and cap
+      // retains ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(24464);
+      expect(estimate).toBeLessThanOrEqual(24589);
     });
   });
 
@@ -1243,8 +1247,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // "main" exemplar removed and two-step wrong_board recovery made
       // mandatory (see the Group 1 combined-cap comment). Measured 19115; cap
       // 19215 leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-08-12 (PLAN-A group 3, feedback id 114): one additive declined-
+      // pending-value line (see the Group 1 combined-cap comment). Measured
+      // 19239; cap 19339 leaves ~100-token headroom (measured + ~100, P8
+      // precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(19215);
+      expect(estimate).toBeLessThanOrEqual(19339);
     });
   });
 

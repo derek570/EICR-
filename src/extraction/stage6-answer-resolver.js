@@ -268,6 +268,17 @@ const CANCEL_PHRASES = [
   'no',
   'none',
   'pass',
+  // Group 3 (feedback id 114, 2026-08-12) — decline vocabulary. BOTH
+  // straight- and curly-apostrophe (U+2019) spellings: stripPunct preserves
+  // internal apostrophes and Deepgram transcripts carry the curly form, so
+  // "don’t worry" would otherwise miss every consulting family. Matching
+  // stays exact whole-string (after stripPunct + lowercase) — a substantive
+  // continuation BEGINNING with a phrase ("don't worry about the RCD yet,
+  // next is...") is deliberately NOT cancelled. "forget it" already above.
+  "don't worry",
+  'don’t worry',
+  "doesn't matter",
+  'doesn’t matter',
 ];
 
 // ---------------------------------------------------------------------------

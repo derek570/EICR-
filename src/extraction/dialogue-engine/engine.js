@@ -697,6 +697,26 @@ function maskCircuitResolution(replyText, meta) {
     return maskCircuitSpans(masked);
   }
   if (meta.kind === 'designation') {
+    // id 116 (2026-08-12): a pass-2 (fold-table) designation match carries
+    // the RAW span of the user text that matched ("Upstairs lights" against
+    // designation "Upstairs Lighting" — the stored designation string is NOT
+    // findable in the reply). Consume the span BEFORE the literal search:
+    // without it we'd fall to the mask-the-entire-reply branch and a
+    // co-dictated voltage ("Upstairs lights, tested at 500") would be lost.
+    if (
+      meta.matchedUserSpan &&
+      Number.isInteger(meta.matchedUserSpan.start) &&
+      Number.isInteger(meta.matchedUserSpan.end) &&
+      meta.matchedUserSpan.start >= 0 &&
+      meta.matchedUserSpan.end > meta.matchedUserSpan.start &&
+      meta.matchedUserSpan.end <= replyText.length
+    ) {
+      const masked =
+        replyText.slice(0, meta.matchedUserSpan.start) +
+        ' '.repeat(meta.matchedUserSpan.end - meta.matchedUserSpan.start) +
+        replyText.slice(meta.matchedUserSpan.end);
+      return maskCircuitSpans(masked);
+    }
     if (typeof meta.matchedDesignation === 'string' && meta.matchedDesignation) {
       // Whitespace-TOLERANT span search (mini-review c1): the resolver
       // compares whitespace-collapsed strings, so the raw reply may hold the
@@ -1277,6 +1297,15 @@ function runEntry({
     // the marker-carrying writes (see CONFLICT_OVERWRITE).
     conflictState.scope_conflict_origin = true;
     const queued = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
+    // Compound value-first entry (feedback id 123, 2026-08-12): consulted
+    // ONLY when named extraction found neither slot (for IR the only slots
+    // with namedExtractors are L-L/L-E, so length 0 ⟺ neither IR slot).
+    // Receives the RAW text — this path masks circuit spans before named
+    // extraction, and masked text would erase the evidence the extractor's
+    // scope guard needs to refuse "…for circuit 2…" shapes.
+    if (queued.length === 0 && typeof schema.compoundEntryExtractor === 'function') {
+      queued.push(...schema.compoundEntryExtractor(text));
+    }
     for (const w of queued) {
       w[CONFLICT_OVERWRITE] = true;
       conflictState.pending_writes.push(w);
@@ -1339,6 +1368,13 @@ function runEntry({
   // `circuit N` span, so masking can only remove corruption.
   const maskedEntryText = maskCircuitSpans(text);
   const volunteered = extractNamedFieldValues(maskedEntryText, schema.slots);
+  // Compound value-first entry (feedback id 123, 2026-08-12): same
+  // consultation rule as the scope-conflict branch above — only on a
+  // neither-slot named result, and on the RAW text so the extractor's
+  // whole-span circuit scope guard sees the evidence masking would erase.
+  if (volunteered.length === 0 && typeof schema.compoundEntryExtractor === 'function') {
+    volunteered.push(...schema.compoundEntryExtractor(text));
+  }
 
   // Handover-to-Sonnet bail. See session 87856B72 (2026-05-26): the
   // RCD trigger /\bRCD\b/ matched on "RCD triptan for upstairs
@@ -2621,6 +2657,12 @@ function runActivePath({
         circuitResolutionMeta = {
           kind: 'designation',
           matchedDesignation: lookup.matchedDesignation,
+          // id 116: raw-offset span of the user text that established a
+          // pass-2 (fold-table) match — null on pass-1 matches. The mask
+          // branch consumes this BEFORE its literal-designation search,
+          // because a morphologically-folded designation is not literally
+          // findable in the reply.
+          matchedUserSpan: lookup.matchedUserSpan ?? null,
         };
         logger?.info?.(`${schema.logEventPrefix}_designation_match`, {
           sessionId,
@@ -3158,8 +3200,19 @@ function runActivePath({
         // RAW reply + masked (mini-review r1) — mirrors the entry loop; the
         // annotation must not defeat the leading patterns or feed extraction.
         const freshVolunteered = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+        // id 123 companion (ep-diff-review cycle 1): a COMPOUND restatement
+        // is a fresh reading too — without this the legacy finish below
+        // would swallow the correction silently. Circuit-masked for the
+        // same reason as the guard above: the reply's own circuit token is
+        // the consumed resolution, and this predicate only routes to the
+        // finish+reprocess escape (the model then owns the fresh text) —
+        // it never writes directly.
+        const freshCompound =
+          typeof schema.compoundEntryExtractor === 'function'
+            ? schema.compoundEntryExtractor(maskCircuitSpans(reply))
+            : [];
         const freshEntry = detectEntry(reply, schema).matched;
-        if (freshVolunteered.length > 0 || freshEntry) {
+        if (freshVolunteered.length > 0 || freshCompound.length > 0 || freshEntry) {
           const readingSlots = schema.slots.filter((s) => !s.exclusiveWhenExpected);
           const readingsCaptured =
             readingSlots.length > 0 &&
@@ -3239,7 +3292,21 @@ function runActivePath({
       let value;
       if (circuitResolvedThisTurn) {
         const resolutionMasked = maskCircuitResolution(reply, circuitResolutionMeta);
-        if (extractNamedFieldValues(resolutionMasked, schema.slots).length > 0) {
+        // id 123 companion (ep-diff-review cycle 1, Codex-sanctioned plan
+        // deviation WITHIN the original Audio-First intent): a COMPOUND IR
+        // restatement co-dictated with the circuit answer ("circuit 7,
+        // greater than 250 L-L and L-E") is a fresh reading, exactly like a
+        // NAMED one — parseVoltage would otherwise grab its magnitude and
+        // certify it as the test voltage. Route it through the same M4
+        // escape hatch. The masked text is deliberate on THIS path: the
+        // blanked circuit span IS the consumed resolution, and firing leads
+        // only to reprocessing (never a direct write), so masking cannot
+        // cause a wrong write.
+        if (
+          extractNamedFieldValues(resolutionMasked, schema.slots).length > 0 ||
+          (typeof schema.compoundEntryExtractor === 'function' &&
+            schema.compoundEntryExtractor(resolutionMasked).length > 0)
+        ) {
           return handleVoltageNoParse();
         }
         value = currentSlot.parser(resolutionMasked);

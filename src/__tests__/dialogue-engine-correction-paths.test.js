@@ -803,6 +803,107 @@ describe('group C — IR voltage ask + exactly-once wire emit (id 105)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Feedback id 116 (2026-08-12) — pass-2 morphological designation match +
+// matchedUserSpan masking. A pass-2 matched designation ("Upstairs lights"
+// against "Upstairs Lighting") is NOT literally findable in the reply; the
+// mask branch must consume the raw user-text span instead of falling to the
+// mask-the-ENTIRE-reply branch, which would drop a co-dictated voltage and
+// force a re-ask (the id-105 regression guard).
+// ---------------------------------------------------------------------------
+
+describe('id 116 — pass-2 designation answer keeps a co-dictated voltage parseable', () => {
+  function volunteerBoth(ws, session, now = 1000) {
+    irTurn(ws, session, 'Insulation resistance. Live to live 200, live to earth 200.', now);
+    const whichCircuit = askFrames(ws).find((f) =>
+      (f.question ?? '').includes('Which circuit is the insulation resistance for?')
+    );
+    expect(whichCircuit).toBeTruthy();
+    ws.sent = [];
+  }
+
+  function expectResolvedWithVoltage(ws, session, ref) {
+    expect(session.stateSnapshot.circuits[ref].ir_test_voltage_v).toBe('500');
+    const frames = extractionFrames(ws);
+    expect(frames).toHaveLength(1);
+    const fields = readingsOf(frames[0]).map((r) => `${r.field}=${r.value}`);
+    expect(fields).toEqual(expect.arrayContaining(['ir_test_voltage=500']));
+    expect(readingsOf(frames[0]).every((r) => r.circuit === ref)).toBe(true);
+    expect(session.dialogueScriptState).toBeFalsy();
+  }
+
+  test('the id-116 shape: "Upstairs lights, tested at 500" vs "Upstairs Lighting" → circuit resolves AND voltage 500 written', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: 'Upstairs Lighting' } });
+    volunteerBoth(ws, session);
+    irTurn(ws, session, 'Upstairs lights, tested at 500', 2000, 'Upstairs lights, tested at 500');
+    expectResolvedWithVoltage(ws, session, 7);
+  });
+
+  test('leading filler variant: "for the upstairs lights, tested at 500"', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: 'Upstairs Lighting' } });
+    volunteerBoth(ws, session);
+    const answer = 'for the upstairs lights, tested at 500';
+    irTurn(ws, session, answer, 2000, answer);
+    expectResolvedWithVoltage(ws, session, 7);
+  });
+
+  test('doubled-whitespace variant: "upstairs  lights, tested at 500" (raw-offset fidelity)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: 'Upstairs Lighting' } });
+    volunteerBoth(ws, session);
+    const answer = 'upstairs  lights, tested at 500';
+    irTurn(ws, session, answer, 2000, answer);
+    expectResolvedWithVoltage(ws, session, 7);
+  });
+
+  test('hyphenation variant: "kitchen diner lights, tested at 500" vs designation "Kitchen-Diner Lighting"', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 9: { circuit_designation: 'Kitchen-Diner Lighting' } });
+    volunteerBoth(ws, session);
+    const answer = 'kitchen diner lights, tested at 500';
+    irTurn(ws, session, answer, 2000, answer);
+    expectResolvedWithVoltage(ws, session, 9);
+  });
+
+  test('punctuation before the voltage clause: "Upstairs lights. Tested at 500."', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: 'Upstairs Lighting' } });
+    volunteerBoth(ws, session);
+    const answer = 'Upstairs lights. Tested at 500.';
+    irTurn(ws, session, answer, 2000, answer);
+    expectResolvedWithVoltage(ws, session, 7);
+  });
+
+  test('pass-2 designation answer WITHOUT a voltage → normal voltage ask (no silent finish)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 7: { circuit_designation: 'Upstairs Lighting' } });
+    volunteerBoth(ws, session);
+    irTurn(ws, session, 'Upstairs lights.', 2000, 'Upstairs lights.');
+    expect(session.dialogueScriptState?.circuit_ref).toBe(7);
+    expect(askFrames(ws).some((f) => (f.question ?? '').includes('test voltage'))).toBe(true);
+    // Drained LL/LE landed on circuit 7 in one frame; voltage not yet written.
+    const frames = extractionFrames(ws);
+    expect(frames).toHaveLength(1);
+    expect(readingsOf(frames[0]).every((r) => r.circuit === 7)).toBe(true);
+    expect(session.stateSnapshot.circuits[7].ir_test_voltage_v).toBeUndefined();
+  });
+
+  test('ambiguous pass-2 match ("the lights" with two Lighting circuits) → disambiguation ask, never an arbitrary pick', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      3: { circuit_designation: 'Upstairs Lighting' },
+      4: { circuit_designation: 'Downstairs Lighting' },
+    });
+    volunteerBoth(ws, session);
+    irTurn(ws, session, 'the lights', 2000, 'the lights');
+    expect(session.dialogueScriptState?.circuit_ref).toBeNull();
+    expect(session.stateSnapshot.circuits[3].ir_test_voltage_v).toBeUndefined();
+    expect(session.stateSnapshot.circuits[4].ir_test_voltage_v).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Risk pins (§8)
 // ---------------------------------------------------------------------------
 
