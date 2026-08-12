@@ -9,6 +9,7 @@
 
 import {
   processProtectiveDeviceTurn,
+  processRingContinuityTurn,
   enterScriptByName,
   tryEnterScriptFromWrites,
   ALL_DIALOGUE_SCHEMAS,
@@ -999,5 +1000,69 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     expect(ops[0].disposition).toBe('rejected');
     // Never read back — no frame names the rejected value.
     expect(ws.sent.some((m) => /ten thousand/.test(m.question ?? ''))).toBe(false);
+  });
+
+  // Codex diff-review r4 (final convergence check) — transitionToConfirmation
+  // marked EVERY matching operation for a field covered, not just the
+  // LATEST. The confirmation message renders only the CURRENT value, so an
+  // earlier same-field correction made before reaching confirmation was
+  // wrongly marked covered too and never reached any later read-back.
+  test('a mid-collection R1 correction is covered by its LATEST operation in the ring confirmation, not silently dropped', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 13.',
+      now: 1000,
+    });
+    // R1 dictated as 0.43 (bare-value answer to "What are the lives?").
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '0.43',
+      now: 1500,
+    });
+    // Corrected to 0.44 before Rn/R2 are collected.
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Actually the lives are 0.44.',
+      now: 1800,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '0.43',
+      now: 2000,
+    });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '0.78',
+      now: 3000,
+    });
+    // Confirmation names the CURRENT (corrected) R1 value.
+    const confirm = ws.sent.filter((m) => m?.type === 'ask_user_started').at(-1);
+    expect(confirm.question).toContain('R1 0.44');
+    ws.sent.length = 0;
+    // Cancel immediately — the SUPERSEDED 0.43 R1 operation must still
+    // reach a read-back somewhere (never silently dropped), and the
+    // CURRENT 0.44 must never be duplicated.
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'never mind',
+      now: 4000,
+    });
+    const cancelText = ws.sent.filter((m) => m?.type === 'ask_user_started').at(-1)?.question ?? '';
+    expect(cancelText).toMatch(/0\.43/);
+    expect((cancelText.match(/0\.44/g) ?? []).length).toBe(0);
   });
 });

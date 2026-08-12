@@ -1604,6 +1604,25 @@ function transitionToConfirmation({
   // re-speaks a value this confirmation prompt already named.
   if (canDeliver) {
     const ops = Array.isArray(state.operations) ? state.operations : [];
+    // Codex diff-review r4 (final convergence check) — LATEST op per
+    // field, not every matching one. This message renders only each
+    // field's CURRENT value (`state.values`); marking an EARLIER, already-
+    // superseded same-field operation covered too meant a genuine repeated
+    // correction (e.g. ring R1 dictated 0.43, corrected to 0.44 before the
+    // confirmation) silently lost its earlier reading — it was marked
+    // covered here even though this message never actually named it, so
+    // no later terminal-sink exit ever spoke it either. Same "latest,
+    // circuit-scoped" principle as finishScript's findCoveringOp.
+    const latestByField = new Map();
+    for (const op of ops) {
+      if (
+        (op.disposition !== 'applied' && op.disposition !== 'satisfied_existing') ||
+        op.effective_circuit_ref !== state.circuit_ref
+      ) {
+        continue;
+      }
+      latestByField.set(op.field, op);
+    }
     for (const op of ops) {
       if (
         (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
@@ -1614,7 +1633,8 @@ function transitionToConfirmation({
         // DIFFERENT circuit must never be marked covered by THIS circuit's
         // confirmation message just because the field name matches.
         op.effective_circuit_ref === state.circuit_ref &&
-        state.values[op.field] !== undefined
+        state.values[op.field] !== undefined &&
+        latestByField.get(op.field) === op
       ) {
         op.covered_by = 'confirmation';
       }
