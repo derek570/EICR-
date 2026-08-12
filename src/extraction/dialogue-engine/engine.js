@@ -4838,17 +4838,22 @@ function finishScript({
     // never become the crumb target — a later bare "No, 0.47" would
     // otherwise correct a reading the inspector never actually re-said this
     // episode.
-    let lastReadingField = null;
+    // Codex diff-review r2 — track the OPERATION, not just its field name.
+    // A cross-circuit REPLACEMENT can carry an operation whose
+    // effective_circuit_ref differs from this finish's (current) circuit_ref;
+    // stamping the breadcrumb with the outer circuit_ref regardless would
+    // point a later "No, <value>" correction at the WRONG circuit.
+    let lastReadingOp = null;
     for (const op of operations) {
       if (op.disposition === 'applied' && fields.includes(op.field)) {
-        lastReadingField = op.field;
+        lastReadingOp = op;
       }
     }
-    if (lastReadingField) {
+    if (lastReadingOp) {
       session.dialogueCorrectionBreadcrumb = {
         schemaName: schema.name,
-        circuit_ref,
-        field: lastReadingField,
+        circuit_ref: lastReadingOp.effective_circuit_ref ?? circuit_ref,
+        field: lastReadingOp.field,
         boardId: session.stateSnapshot?.currentBoardId ?? null,
         at: now,
       };
@@ -5173,6 +5178,15 @@ export function enterScriptByName({
   const appliedWrites = [];
   const wireWrites = [];
   let pivotTo = null;
+  // Codex diff-review r2 — a `pending_writes` array can (rarely) name the
+  // SAME field twice in one call. The dispatcher's prior-winner projection
+  // is frozen BEFORE this call runs, so it cannot see the first copy's own
+  // write; without this, the second copy would fall through to the
+  // canonical-EQUAL-with-no-winner branch and be marked script-owned even
+  // though the resolver's guaranteed post-call backfill covers it exactly
+  // like the first copy — producing a genuine double-speak (bundler AND
+  // script both confirming the same value).
+  const writtenThisLoopFields = new Set();
   for (const w of validWrites) {
     // PLAN A2 §A2.2 — Sonnet start_dialogue_script pending_writes: mark at
     // validation, BEFORE the seeded-value skip.
@@ -5211,9 +5225,15 @@ export function enterScriptByName({
     if (resolvedCircuitRef !== null && state.values[w.field] !== undefined) {
       if (valuesCanonicallyEqual(slot, state.values[w.field], w.value)) {
         // canonical-EQUAL seed with NO winner (start_dialogue_script-only)
-        // → nobody else speaks it this turn → script-owned.
+        // → nobody else speaks it this turn → script-owned. UNLESS an
+        // earlier write in THIS SAME pending_writes array already applied
+        // this exact field — that earlier write's bundler-owned guarantee
+        // (a resolver being present) covers this duplicate too.
         const satisfiedOp = markSatisfiedExisting(op, state.values[w.field], resolvedCircuitRef);
-        satisfiedOp.spoken_owner = 'script';
+        satisfiedOp.spoken_owner =
+          writtenThisLoopFields.has(w.field) && typeof ownershipResolver === 'function'
+            ? 'bundler'
+            : 'script';
         continue;
       }
       // canonical-DIFFERENT → fall through and overwrite.
@@ -5236,6 +5256,7 @@ export function enterScriptByName({
       // means the guarantee holds). A direct/test/legacy caller with no
       // resolver has no such guarantee, so the seed stays script-owned.
       writtenOp.spoken_owner = typeof ownershipResolver === 'function' ? 'bundler' : 'script';
+      writtenThisLoopFields.add(w.field);
       appliedWrites.push({ field: w.field, value: r.effectiveValue });
       wireWrites.push({ field: w.field, value: r.effectiveValue });
       for (const mw of r.mirrorWrites) wireWrites.push({ ...mw, auto_resolved: true });
