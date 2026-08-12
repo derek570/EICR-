@@ -49,6 +49,7 @@ import {
 } from './recording/apply-regex-match';
 import { TranscriptFieldMatcher, detectPostcodeHint } from './recording/transcript-field-matcher';
 import { FieldSourceTracker } from './recording/field-source-tracker';
+import { buildJobStateForWire } from './recording/installation-wire-shape';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { shouldForward } from './recording/transcript-gate';
 import {
@@ -1048,7 +1049,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const session = sonnetRef.current;
       if (!session) return;
       try {
-        session.sendJobStateUpdate(jobRef.current);
+        // Plan E (feedback id 125) — normalise installation_details to the
+        // frozen wire contract (client_postcode -> clientPostcode etc.)
+        // before it crosses the wire; the internal job object itself keeps
+        // its canonical snake_case shape everywhere else in the app.
+        session.sendJobStateUpdate(buildJobStateForWire(jobRef.current));
         pipelineLog('sonnet_job_state_pushed', {
           circuits: Array.isArray(jobRef.current.circuits) ? jobRef.current.circuits.length : 0,
           boards: Array.isArray(jobRef.current.boards) ? jobRef.current.boards.length : 0,
@@ -3249,7 +3254,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       sessionId,
       jobId,
       certificateType,
-      jobState: jobRef.current,
+      // Plan E (feedback id 125) — same wire normalisation as the mid-session
+      // job_state_update push above, applied here too so the FIRST snapshot
+      // the backend seeds from (session_start) already carries the site
+      // postcode/town/county family the model needs for direct-mirror
+      // commands and to protect against the postcode-lookup overwrite.
+      jobState: buildJobStateForWire(jobRef.current),
     });
     sonnetRef.current = session;
     // Wire the diagnostic sink so deep modules (tts.ts, elevenlabs-tts.ts)
