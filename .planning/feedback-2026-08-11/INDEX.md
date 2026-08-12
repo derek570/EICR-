@@ -14,7 +14,8 @@ vocabulary) were checked and are unrelated to all 13.
 
 | Plan | Feedback ids | Root cause (one line) | Repos | TestFlight? |
 |---|---|---|---|---|
-| [PLAN-A](PLAN-A.md) — dialogue-engine script & ask lifecycle | 114, 116, 117, 123 | No decline branch in pending-value chain; substring-only designation matching; unconditional completion ceremony; missing value-first compound IR parser | backend only | no |
+| [PLAN-A](PLAN-A.md) — dialogue-engine entry, resolution & decline | 114, 116, 123 | No decline branch in pending-value chain; substring-only designation matching; missing value-first compound IR parser | backend only | no |
+| [PLAN-A2](PLAN-A2.md) — completion-ceremony provenance (split from PLAN-A at its round 7 — the pre-authorised churn seam fired) | 117 | Unconditional completion ceremony + missing terminal read-backs; per-run provenance ledger design (premise twice-validated) | backend only | no |
 | [PLAN-B](PLAN-B.md) — fast-path TTS exactly-once | 118, 119 | Slot identity board-inconsistent + turn-less marker → double, then silent, then false apology | iOS + backend companion | yes |
 | [PLAN-C](PLAN-C.md) — retire the Sleeping tier | 120 | Auto-sleep (sleeping tier) still live, 18 cycles/session; + wake-during-close race destroys the replay buffer | iOS + web + docs | yes |
 | [PLAN-D](PLAN-D.md) — audible-channel integrity | 121, 122, 124 | No `language_code` on ElevenLabs (French clip); confirmations toggle off with zero telemetry and zero audible cue | backend + iOS + web | yes |
@@ -50,7 +51,8 @@ PRs merge, per deploy-testflight.md.
 ## Integration notes across seams
 
 - Spoken-string hygiene: PLAN-A (decline ack), PLAN-B (duplicate re-speak + orphan-net rewording),
-  PLAN-D (toggle cues), PLAN-F (skip disclosure) ALL add spoken lines — every new string must be
+  PLAN-D (toggle cues), PLAN-E (expanded postcode/locality confirmation), PLAN-F (skip
+  disclosure) ALL add spoken lines — every new string must be
   distinct from every existing apology/notice family (client 30s text-keyed dedupe) AND from each
   other. Round-1 reviewers: sweep the rendered-notice inventory across all six finals.
 - Session-start telemetry rows: PLAN-C and PLAN-D both add iOS session-start flag logging — one
@@ -63,6 +65,15 @@ PRs merge, per deploy-testflight.md.
 - The 08C wave (latency benchmarking) is still executing in a parallel worktree — its files
   (`scripts/voice-latency-bench/*`, analyzer) don't overlap this wave, but the same
   full-suite-between-merges rule applies to sequencing against its merges.
+
+## Wave close-out owner
+
+The wave coordinator (the session that runs the final TestFlight/web delivery step) OWNS the
+`voice_feedback` triage close-out — it is part of finishing the wave, not an optional follow-up:
+after each plan's deploy is confirmed, PATCH its feedback ids to `actioned` with a review_note
+naming the PR(s); after the whole wave, verify ids 78 + 114–125 all read `actioned`. Separately
+reconcile ids 1–113 from prior shipped waves (`actioned`; 111 → `reviewed`, positive) — that
+follow-up has now been missed twice and every row in the table is still `open`.
 
 ## Follow-ups (not in any plan — queue separately)
 
@@ -81,3 +92,8 @@ PRs merge, per deploy-testflight.md.
   tool" (PLAN-F fixes); check for siblings citing pre-set_field_for_all_circuits state.
 - **Web fast-TTS path** (WS3b item 4, long-open): PLAN-B's correlation echo lands the wire
   groundwork; the web fast path itself remains its own future plan.
+- **Web dead Restart-pause pattern** (found in PLAN-C round 2): the three
+  `stop()→setTimeout(pause)` Restart handlers in `recording-context.tsx` (~:417-420/:522/:572)
+  are no-ops as pause callers today (`pause()`'s active-state guard fires after `stop()`) —
+  either fix them to invoke the intended start/restart operation or delete the dead calls;
+  small standalone change, excluded from PLAN-C's coverage deliberately.
