@@ -54,6 +54,10 @@ function askFrames(ws) {
   return ws.sent.filter((f) => f.type === 'ask_user_started');
 }
 
+function extractionFrames(ws) {
+  return ws.sent.filter((f) => f.type === 'extraction');
+}
+
 // ---------------------------------------------------------------------------
 // Unit level — the extractor itself
 // ---------------------------------------------------------------------------
@@ -103,6 +107,22 @@ describe('compoundEntryExtractor — positive shapes', () => {
     ]);
   });
 
+  test('MΩ spelling qualifies (b) — the unit has its own delimiter, not a shared word boundary', () => {
+    expect(extractor('The garage socket, 250 MΩ live to live and live to earth')).toEqual([
+      { field: 'ir_live_live_mohm', value: '250' },
+      { field: 'ir_live_earth_mohm', value: '250' },
+    ]);
+  });
+
+  test('an earlier incidental pair mention does not preempt a valid TRAILING pair (rightmost selection)', () => {
+    expect(
+      extractor('For both readings, the insulation resistance is greater than 299 L-L and L-E')
+    ).toEqual([
+      { field: 'ir_live_live_mohm', value: '>299' },
+      { field: 'ir_live_earth_mohm', value: '>299' },
+    ]);
+  });
+
   test('bare number joined by a closed connector qualifies (c)', () => {
     expect(extractor('IR for the garage socket is 299 live to live and live to earth')).toEqual([
       { field: 'ir_live_live_mohm', value: '299' },
@@ -137,6 +157,11 @@ describe('compoundEntryExtractor — negative shapes → []', () => {
     'L-L 200 and L-E 150',
     // No qualified candidate at all.
     'live to live and live to earth',
+    // Conflicting unit NON-adjacent to the candidate (whole-suffix scan).
+    'Insulation resistance was 500 read in volts, live to live and live to earth',
+    // Connector without an IR SUBJECT — "the garage socket is 299" proves
+    // nothing about WHAT is 299.
+    'The garage socket is 299 live to live and live to earth',
   ];
 
   test.each(negatives)('%s → []', (text) => {
@@ -265,12 +290,36 @@ describe('id 123 — scope-conflict entry path', () => {
       'Circuit 4, insulation resistance for circuit 7 is 299; live to live and live to earth',
     ],
     [
+      'newline',
+      'Circuit 4, insulation resistance for circuit 7 is 299\nlive to live and live to earth',
+    ],
+    [
+      'contrast clause',
+      'Circuit 4, insulation resistance for circuit 7 is 299 but live to earth and live to live were not tested',
+    ],
+    [
       'same-clause circuit marker',
       'Circuit 4, insulation resistance for circuit 7 is greater than 299 live to live and live to earth',
     ],
     [
+      'same-clause circuit marker, short form',
+      'Circuit 4, insulation resistance for circuit 7 is greater than 299 L-L and L-E',
+    ],
+    [
+      'both circuits',
+      'Circuit 4, insulation resistance for circuit 7 is greater than 299 for both circuits',
+    ],
+    [
       'conflicting unit (volts)',
       'Circuit 4, insulation resistance for circuit 7. Tested at 500 volts, live to live and live to earth.',
+    ],
+    [
+      'non-IR value (ms)',
+      'Circuit 4, insulation resistance for circuit 7. Trip time 27 ms, L-L and L-E.',
+    ],
+    [
+      'numeric designation (naked number never certifies)',
+      'Circuit 4, insulation resistance for circuit 7. The 56 socket 299 live to live and live to earth.',
     ],
   ];
 
@@ -283,5 +332,53 @@ describe('id 123 — scope-conflict entry path', () => {
     expect(state.pending_writes).toHaveLength(0);
     expect(session.stateSnapshot.circuits[4].ir_live_live_mohm).toBeUndefined();
     expect(session.stateSnapshot.circuits[7].ir_live_live_mohm).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ep-diff-review cycle 1 — Codex-sanctioned plan deviation (WITHIN the
+// original Audio-First intent: "structurally complete readings written and
+// read back"): a COMPOUND IR restatement co-dictated with the circuit
+// answer is a fresh reading, exactly like a NAMED one — parseVoltage must
+// never certify its magnitude as the test voltage.
+// ---------------------------------------------------------------------------
+
+describe('id 123 — compound restatement on the circuit-resolution turn (M4 escape)', () => {
+  test('"circuit 7, greater than 250 live to live and live to earth" is a fresh COMPOUND reading — never written as test voltage', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 4: {}, 7: {} });
+    // Volunteer both legs via the compound shape on a scope conflict, so
+    // the queued values await the circuit answer.
+    irTurn(
+      ws,
+      session,
+      'Circuit 4, insulation resistance for circuit 7. Greater than 299 live to live and live to earth.',
+      1000
+    );
+    expect(session.dialogueScriptState?.pending_writes).toHaveLength(2);
+    ws.sent = [];
+    const out = irTurn(
+      ws,
+      session,
+      'circuit 7, greater than 250 live to live and live to earth',
+      2000,
+      'circuit 7, greater than 250 live to live and live to earth'
+    );
+    // 250 is NEVER the voltage — neither written to the snapshot nor
+    // wire-emitted as ir_test_voltage.
+    expect(session.stateSnapshot.circuits[7].ir_test_voltage_v).toBeUndefined();
+    expect(session.stateSnapshot.circuits[4].ir_test_voltage_v).toBeUndefined();
+    for (const frame of extractionFrames(ws)) {
+      expect(
+        (frame.result?.readings ?? []).some(
+          (r) => r.field === 'ir_test_voltage' && String(r.value).includes('250')
+        )
+      ).toBe(false);
+    }
+    // The M4 escape finished the prior episode audibly and handed the fresh
+    // compound reading onward (reprocess found no entry -> model owns it).
+    const finish = askFrames(ws).find((f) => (f.question ?? '').startsWith('Got it.'));
+    expect(finish).toBeTruthy();
+    expect(out.handled === false || out.fallthrough === true).toBe(true);
   });
 });

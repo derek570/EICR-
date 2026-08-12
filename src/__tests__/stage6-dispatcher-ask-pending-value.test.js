@@ -588,13 +588,17 @@ describe('§A4 — regressions: flows that must NOT engage', () => {
 // ---------------------------------------------------------------------------
 
 describe('group 3 — whole-reply decline resolves the chain silently (id 114)', () => {
-  const expectSilentDecline = (env, session, autoResolveWrite, ws) => {
+  const expectSilentDecline = (env, session, autoResolveWrite, ws, declineText = null) => {
     const body = JSON.parse(env.content);
     expect(body).toMatchObject({
       answered: true,
       auto_resolved: false,
       match_status: 'user_declined',
     });
+    // The body carries the utterance that actually DECLINED — for a
+    // brokered decline that is the broker's reply, never the initial ask's
+    // earlier substantive answer (ep-diff-review cycle 1).
+    if (declineText !== null) expect(body.untrusted_user_text).toBe(declineText);
     // Dropped, not dispatched — and never deletes anything either.
     expect(autoResolveWrite).not.toHaveBeenCalled();
     // The chain queued NO speech of its own (no apology, no ack — P4 owns
@@ -640,7 +644,7 @@ describe('group 3 — whole-reply decline resolves the chain silently (id 114)',
     expect(started).toHaveLength(1);
     pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: "Don't worry." });
     const env = await p;
-    const brokered = expectSilentDecline(env, session, autoResolveWrite, ws);
+    const brokered = expectSilentDecline(env, session, autoResolveWrite, ws, "Don't worry.");
     expect(brokered).toHaveLength(1); // only the pre-decline field ask
   });
 
@@ -673,7 +677,7 @@ describe('group 3 — whole-reply decline resolves the chain silently (id 114)',
     expect(started[0].expected_answer_shape).toBe('number');
     pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: "Doesn't matter." });
     const env = await p;
-    expectSilentDecline(env, session, autoResolveWrite, ws);
+    expectSilentDecline(env, session, autoResolveWrite, ws, "Doesn't matter.");
     const body = JSON.parse(env.content);
     expect(body.match_status).toBe('user_declined'); // never pending_value_unresolved
   });
@@ -808,7 +812,11 @@ describe('group 3 — declined-pending fingerprint short-circuits same-generatio
           question: 'Which circuit is that 26 for?',
           reason: 'missing_context',
           context_field: 'rcd_time_ms',
-          context_circuit: null,
+          // The retry carries the SAME known circuit scope as the declined
+          // operation — under the strict value-AND-circuit arm, a scope-less
+          // retry of a scoped decline is NOT the same operation (see the
+          // circuit-knowledge test below).
+          context_circuit: 2,
           expected_answer_shape: 'circuit_ref',
           pending_write: {
             tool: 'record_reading',
@@ -902,6 +910,45 @@ describe('group 3 — declined-pending fingerprint short-circuits same-generatio
     // NOT suppressed: it registered and emitted.
     expect(ws.sent.filter((f) => f.type === 'ask_user_started').length).toBe(askFramesBefore + 1);
     pendingAsks.resolve('toolu_cf1', { answered: false, reason: 'timeout' });
+    await p2;
+  });
+
+  test('circuit-knowledge mismatch does NOT match — a scoped decline never suppresses a scope-less value ask (cycle-1 fix)', async () => {
+    // fp {value:26, circuit:2}; retry knows the value but NOT the circuit.
+    // Under the strict value-AND-circuit arm these are different operations
+    // — the retry registers normally.
+    const session = buildSession({ activeTurnTranscript: 'blah 26 milliseconds' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const dispatcher = createAskDispatcher(session, noopLogger(), 't', pendingAsks, ws, {
+      autoResolveWrite: jest.fn().mockResolvedValue({ ok: true }),
+    });
+    await declineInitial(dispatcher, pendingAsks);
+    const askFramesBefore = ws.sent.filter((f) => f.type === 'ask_user_started').length;
+    const p2 = dispatcher(
+      {
+        tool_call_id: 'toolu_ck1',
+        name: 'ask_user',
+        input: {
+          question: 'Which circuit is that 26 for?',
+          reason: 'missing_context',
+          context_field: 'rcd_time_ms',
+          context_circuit: null,
+          expected_answer_shape: 'circuit_ref',
+          pending_write: {
+            tool: 'record_reading',
+            field: 'rcd_time_ms',
+            value: '26',
+            confidence: 0.9,
+            source_turn_id: 't-ck',
+          },
+        },
+      },
+      {}
+    );
+    await tick();
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started').length).toBe(askFramesBefore + 1);
+    pendingAsks.resolve('toolu_ck1', { answered: false, reason: 'timeout' });
     await p2;
   });
 

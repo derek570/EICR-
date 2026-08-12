@@ -2503,6 +2503,12 @@ describe('findCircuitsByDesignation — pass-2 morphological folding (id 116)', 
     expect(r2.matched).toBe(3);
   });
 
+  test('slash-separated designation folds at the token level ("Kitchen/Diner Lighting")', () => {
+    const session = buildSession({ 11: { circuit_designation: 'Kitchen/Diner Lighting' } });
+    const r = findCircuitsByDesignation(session, 'kitchen diner lights');
+    expect(r.matched).toBe(11);
+  });
+
   test('heater/heating and socket/sockets fold-table entries each resolve', () => {
     const session = buildSession({
       9: { circuit_designation: 'Water Heating' },

@@ -108,34 +108,20 @@ const PASS2_LEADING_FILLER = new Set(['for', 'on', 'in', 'the', 'a', 'an']);
 
 /**
  * Tokenise text into `{folded, start, end}` records with RAW offsets into
- * the original string. Splits on whitespace AND hyphen/dash characters
- * (hyphen folding at the token level), trims leading/trailing punctuation
- * per token, lowercases. Records whose token folds away entirely are
- * dropped — again dropping records, never rewriting, so offsets survive.
+ * the original string. Tokens are maximal runs of Unicode letters/digits,
+ * so EVERY punctuation separator folds at the token level — hyphens,
+ * slashes, periods alike ("kitchen-sockets", "Kitchen/Diner" each tokenise
+ * as two records; ep-diff-review cycle 1: the earlier whitespace+hyphen
+ * splitter kept internal punctuation like `/` inside tokens, defeating the
+ * fold). Match indices ARE the raw offsets, so nothing is rewritten.
  */
 function tokeniseWithOffsets(text) {
   const records = [];
   if (typeof text !== 'string' || !text) return records;
-  // Split boundaries: whitespace, ASCII hyphen, and the U+2010–U+2015
-  // unicode hyphen/dash block ("kitchen-sockets" tokenises as two records).
-  const re = /[^\s\-‐-―]+/g;
+  const re = /[\p{L}\p{N}]+/gu;
   let m;
   while ((m = re.exec(text)) !== null) {
-    let tok = m[0];
-    let start = m.index;
-    let end = m.index + tok.length;
-    const lead = tok.match(/^[^\p{L}\p{N}]+/u);
-    if (lead) {
-      start += lead[0].length;
-      tok = tok.slice(lead[0].length);
-    }
-    const trail = tok.match(/[^\p{L}\p{N}]+$/u);
-    if (trail) {
-      end -= trail[0].length;
-      tok = tok.slice(0, tok.length - trail[0].length);
-    }
-    if (!tok) continue;
-    records.push({ folded: tok.toLowerCase(), start, end });
+    records.push({ folded: m[0].toLowerCase(), start: m.index, end: m.index + m[0].length });
   }
   return records;
 }

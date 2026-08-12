@@ -3048,10 +3048,15 @@ function buildDeclinedPendingFingerprint({ field, value, circuit } = {}) {
 }
 
 // Match rule (minimum identity overlap): no conflicting KNOWN components
-// PLUS meaningful overlap — the same canonical field, or the same normalised
-// value with a compatible circuit scope (equal, or unknown on either side —
-// the inverted-shape retry never knows a circuit, so requiring a KNOWN equal
-// circuit would exempt the primary id-114 retry). Disjoint partial
+// PLUS meaningful overlap — the same canonical field, OR the same normalised
+// value AND the same circuit scope. "Same circuit" compares knowledge
+// states: two knowns must be equal, and unknown === unknown (the
+// inverted-shape retry never knows a circuit on either side — requiring a
+// KNOWN equal circuit would exempt the primary id-114 retry). A KNOWN
+// circuit on one side and unknown on the other is NOT the same operation
+// under the value arm (ep-diff-review cycle 1, all three lenses): a
+// declined {value:26, circuit:2} must not suppress a later legitimately
+// different value-only ask about 26 elsewhere. Disjoint partial
 // fingerprints never match: a fingerprint knowing only {value:5} must not
 // suppress an unrelated ask knowing only {field:zs}. Inverted vs
 // pending_write representations stay equivalent because BOTH sides build
@@ -3063,7 +3068,9 @@ function declinedFingerprintMatches(fp, cand) {
   if (fp.circuit != null && cand.circuit != null && fp.circuit !== cand.circuit) return false;
   const sameField = fp.field != null && cand.field != null;
   const sameValue = fp.value != null && cand.value != null;
-  return sameField || sameValue;
+  const sameCircuitKnowledge =
+    fp.circuit === cand.circuit || (fp.circuit != null && cand.circuit != null);
+  return sameField || (sameValue && sameCircuitKnowledge);
 }
 
 const PENDING_VALUE_APOLOGY =
@@ -3254,7 +3261,11 @@ async function runPendingValueChain(args) {
     });
     return {
       answered: true,
-      untrusted_user_text: outcome.user_text,
+      // The BROKERED decline utterance, not the initial ask's answer — the
+      // model must see the text that actually declined ("Don't worry."),
+      // never a contradictory pairing of match_status:'user_declined' with
+      // the earlier substantive reply (ep-diff-review cycle 1).
+      untrusted_user_text: replyText,
       auto_resolved: false,
       match_status: 'user_declined',
     };
