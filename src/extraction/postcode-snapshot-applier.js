@@ -69,6 +69,29 @@ const UK_REGION_DRIFT = new Set(
   ].map((s) => s.toLowerCase())
 );
 
+/**
+ * Plan E (feedback id 125, E4) — read the EFFECTIVE post-apply site/client
+ * town+county from the snapshot for folding into the postcode confirmation
+ * read-back. Deliberately NOT the raw lookup output: an E1-seeded (or
+ * otherwise pre-existing) non-empty value survives `shouldOverride` above
+ * and must speak AS STORED, which can differ from what this turn's lookup
+ * itself returned (e.g. lookup says "Earley", the stored/preserved value
+ * stays "Lower Earley"). Returns null when both fields are empty so the
+ * caller appends nothing (postcode-only utterance stays postcode-only).
+ */
+export function resolveEffectiveLocalityTail(snapshot, family) {
+  const circ0 = snapshot?.circuits?.[0];
+  if (!circ0 || typeof circ0 !== 'object') return null;
+  const townField = family === 'client' ? 'client_town' : 'town';
+  const countyField = family === 'client' ? 'client_county' : 'county';
+  const town = typeof circ0[townField] === 'string' ? circ0[townField].trim() : '';
+  const county = typeof circ0[countyField] === 'string' ? circ0[countyField].trim() : '';
+  const parts = [];
+  if (town) parts.push(town);
+  if (county) parts.push(county);
+  return parts.length > 0 ? parts.join(', ') : null;
+}
+
 function isDriftValue(value) {
   if (typeof value !== 'string') return false;
   const norm = value.trim().toLowerCase();

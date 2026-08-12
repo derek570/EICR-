@@ -38,7 +38,10 @@ import {
   applyWrapPolicy,
 } from './stage6-snapshot-user-text.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
-import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import {
+  applyPostcodeLookupToSnapshot,
+  resolveEffectiveLocalityTail,
+} from './postcode-snapshot-applier.js';
 import {
   buildPostcodeLookupNote,
   canonicalisePostcodeHint,
@@ -3200,6 +3203,28 @@ export class EICRExtractionSession {
             source_turn_id: reading.source_turn_id ?? null,
             derived: true,
           });
+        }
+      }
+    }
+
+    // Plan E (feedback id 125, E4) — legacy JSON-prose path: fold the
+    // EFFECTIVE post-apply locality into any postcode/client_postcode
+    // confirmation this response already carries. `result.confirmations`
+    // is composed by the model's own prose-JSON output (long before this
+    // point); the postcode-lookup apply loop directly above is what makes
+    // the snapshot's town/county authoritative, so this fold MUST run
+    // after it — a late-bind mutation of the already-built confirmation
+    // text, not a fresh confirmation object (one utterance, exactly-once).
+    if (result.confirmations.length > 0) {
+      for (const conf of result.confirmations) {
+        if (conf?.field !== 'postcode' && conf?.field !== 'client_postcode') continue;
+        if (typeof conf.text !== 'string' || !conf.text) continue;
+        const family = conf.field === 'client_postcode' ? 'client' : 'site';
+        const tail = resolveEffectiveLocalityTail(this.stateSnapshot, family);
+        if (!tail) continue;
+        conf.text = `${conf.text}, ${tail}`;
+        if (typeof conf.expanded_text === 'string' && conf.expanded_text) {
+          conf.expanded_text = `${conf.expanded_text}, ${tail}`;
         }
       }
     }

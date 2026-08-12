@@ -2083,6 +2083,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // byte-identical; the capability + classification boundary is the
       // wire-compat line.
       hasBoardClearV1,
+      // Plan E (feedback id 125, E4) — the postcode confirmation's audible
+      // locality clause reads the EFFECTIVE post-apply snapshot, not the raw
+      // lookup output. Postcode-lookup application (stage6-dispatchers-
+      // board.js) runs synchronously inside the tool loop, strictly BEFORE
+      // this post-loop bundle call, so session.stateSnapshot already carries
+      // whatever this turn wrote/preserved by the time the bundler reads it.
+      stateSnapshot: session.stateSnapshot,
     });
     if (addressMirrorDirectFollowup) {
       Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {

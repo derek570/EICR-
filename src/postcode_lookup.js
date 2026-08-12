@@ -39,10 +39,18 @@ export async function lookupPostcode(postcode) {
     }
 
     const result = {
-      // For town, prefer admin_ward, then parish, then admin_district
-      town: data.result.admin_ward || data.result.parish || data.result.admin_district || "",
-      // For county, prefer admin_county, then region
-      county: data.result.admin_county || data.result.region || "",
+      // Plan E (feedback id 125) — admin_ward is an ELECTORAL WARD, not a
+      // town (it silently overwrote a correct "Lower Earley" with the ward
+      // "Hawkedon" in the field session that triggered this fix). Prefer
+      // parish, then admin_district; never admin_ward.
+      town: data.result.parish || data.result.admin_district || "",
+      // Plan E — `region` yields "South East" for ~40% of England (every
+      // unitary authority, which has no admin_county) — the exact drift
+      // value the postcode-snapshot-applier's UK_REGION_DRIFT set exists to
+      // correct downstream; reading it here re-manufactures the drift at
+      // the source. Blank-on-unknown beats wrong: no ceremonial-county
+      // table this wave (RESOLVED — see PLAN-E E3).
+      county: data.result.admin_county || "",
       // Use the formatted postcode from the API
       postcode: data.result.postcode || postcode,
     };

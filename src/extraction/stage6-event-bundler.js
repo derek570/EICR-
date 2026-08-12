@@ -67,6 +67,7 @@ import { expandForTTS } from './tts-text-expander.js';
 // the correction aloud. Import is the KEY only; impedance-clamp.js is a leaf
 // module (its sole import is stage6-multi-board-shape.js) so there is no cycle.
 import { IMPEDANCE_CLAMP_CORRECTION } from './impedance-clamp.js';
+import { resolveEffectiveLocalityTail } from './postcode-snapshot-applier.js';
 
 export const BUNDLER_PHASE = 2;
 
@@ -538,6 +539,17 @@ function synthesiseConfirmations(
     const resolver = boardScope?.sectionDedupeOperationOf;
     return typeof resolver === 'function' ? (resolver(r) ?? null) : null;
   };
+  // Plan E (feedback id 125, E4) — fold the audible locality (town/county)
+  // into the postcode confirmation's EXISTING text, reading the EFFECTIVE
+  // post-apply snapshot rather than the raw lookup output (a seeded/
+  // preserved value speaks as stored — see resolveEffectiveLocalityTail).
+  // Board readings ONLY: postcode/client_postcode are always global-scope
+  // board-level writes, never circuit-scoped.
+  const localityTailOf = (r) => {
+    if (r?.field !== 'postcode' && r?.field !== 'client_postcode') return null;
+    const family = r.field === 'client_postcode' ? 'client' : 'site';
+    return resolveEffectiveLocalityTail(boardScope?.stateSnapshot, family);
+  };
   // F/U-1 (2026-07-19) — identity Set of projected reading objects that came
   // from a calculator write (::calc:: source). These speak with "calculated
   // as" phrasing so the inspector can ear-distinguish a derived value from a
@@ -720,9 +732,16 @@ function synthesiseConfirmations(
       correction: correctionOf(r),
     });
     if (!text) continue;
+    // Plan E — append the effective locality clause AFTER the base text is
+    // built (never a standalone confirmation object — one utterance,
+    // exactly-once). `dedupe_token` (stamped below on the wire entry) is
+    // computed from field/scope/turnId/ordinal, not from text, so the
+    // longer string does not disturb the client dedupe identity.
+    const localityTail = localityTailOf(r);
+    const finalText = localityTail ? `${text}, ${localityTail}` : text;
     const entry = {
-      text,
-      expanded_text: expandForTTS(text),
+      text: finalText,
+      expanded_text: expandForTTS(finalText),
       field: r.field,
       circuit: null,
     };
@@ -1563,6 +1582,13 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // still measured against ITS board rather than the session's.
         effectiveBoardOf: (r) => effectiveBoardByReading.get(r) ?? null,
         sectionDedupeOperationOf: (r) => sectionDedupeOperationByReading.get(r) ?? null,
+        // Plan E (E4) — threaded through to localityTailOf inside
+        // synthesiseConfirmations. Omitted (undefined) on any caller that
+        // doesn't pass it (test fixtures, the shadow-mode call site);
+        // resolveEffectiveLocalityTail's snapshot guard returns null on a
+        // missing snapshot, so the postcode confirmation just carries no
+        // locality clause rather than throwing.
+        stateSnapshot: options.stateSnapshot ?? null,
       }
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
