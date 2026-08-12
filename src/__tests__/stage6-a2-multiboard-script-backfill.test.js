@@ -16,6 +16,15 @@
  * is the one authoritative answer to "is this effective slot occupied?" — the
  * journal module's own docstring already names this backfill as one of its
  * consumers.
+ *
+ * PLAN A2 (feedback-2026-08-11 wave, feedback id 117) refined the SAME-slot
+ * case: dedupe is now VALUE-aware, not unconditional. An EQUAL same-turn
+ * script value is deduped (no phantom re-write). A DIFFERENT same-turn
+ * script value is a genuine dictated correction and overwrites the earlier
+ * winner — id 117's whole thesis is that a canonical-DIFFERENT dictated
+ * value must never be silently discarded, and an unconditional same-slot
+ * defer was exactly that discard, just via a same-turn Sonnet double-call
+ * instead of a cross-turn dictation.
  */
 
 import { jest } from '@jest/globals';
@@ -119,10 +128,31 @@ describe('A2-multiboard — script backfill precedence is per EFFECTIVE slot', (
     expect(r1.find((x) => x.value === '0.85').board_id).toBe('main');
   });
 
-  test('the SAME effective slot is still deduped — the defensive guard is intact', async () => {
-    // Same field, same ref, same board, no `select_board` in between. The
-    // backfill must still yield to the earlier `record_reading` rather than
-    // overwriting it with the script's copy.
+  test('the SAME effective slot, EQUAL value — deduped, no phantom re-write', async () => {
+    // Same field, same ref, same board, no `select_board` in between, and
+    // the script's copy happens to be the SAME reading. No genuine
+    // correction is present, so the earlier record_reading stays the one
+    // and only winner.
+    const s = session('main');
+    const p = createPerTurnWrites();
+
+    await unscopedWrite(s, p, 'w1', '0.42');
+    await seedScript(s, p, '0.42');
+
+    const r1 = r1Of(bundle(p));
+    expect(r1).toHaveLength(1);
+    expect(r1[0].value).toBe('0.42');
+  });
+
+  test('the SAME effective slot, DIFFERENT value — PLAN A2 (id 117): a genuine correction overwrites, never silently discarded', async () => {
+    // PLAN A2 (feedback-2026-08-11 wave, feedback id 117) superseded this
+    // test's earlier "defensive dedupe always wins" expectation: a DIFFERING
+    // same-turn script value is a genuine dictated correction, not
+    // necessarily a defensive duplicate, and id 117's whole thesis is that a
+    // canonical-DIFFERENT dictated value must never be silently discarded.
+    // The script's write overwrites the stale earlier record_reading and
+    // becomes the latest (bundler-spoken) winner — Codex diff-review r1,
+    // 3/3 independent lenses.
     const s = session('main');
     const p = createPerTurnWrites();
 
@@ -131,7 +161,7 @@ describe('A2-multiboard — script backfill precedence is per EFFECTIVE slot', (
 
     const r1 = r1Of(bundle(p));
     expect(r1).toHaveLength(1);
-    expect(r1[0].value).toBe('0.42');
+    expect(r1[0].value).toBe('0.85');
   });
 
   test('the Map key and the wire bytes are unchanged for a single-board turn', async () => {

@@ -192,4 +192,18 @@ export const rcboSchema = {
     const ma = values.rcd_operating_current_ma ?? '?';
     return `Got it. ${bs}, type ${curve}, ${rating} amps, ${ka} kA, RCD type ${rcdType}, ${ma} mA.`;
   },
+  // PLAN A2 (feedback id 117) — the value-bearing fields `finishMessage`
+  // actually speaks. `rcd_bs_en` is included even though finishMessage never
+  // names it separately: its value is spoken via `ocpd_bs_en` (the
+  // unconditional mirror keeps both fields equal by convention), so treating
+  // it as covered stops the terminal-sink rule from doubling the BS number.
+  finishCoveredFields: [
+    'ocpd_bs_en',
+    'rcd_bs_en',
+    'ocpd_type',
+    'ocpd_rating_a',
+    'ocpd_breaking_capacity_ka',
+    'rcd_type',
+    'rcd_operating_current_ma',
+  ],
 };

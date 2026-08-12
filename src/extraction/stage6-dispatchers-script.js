@@ -27,7 +27,11 @@
  * turn) without breaking the flow.
  */
 
-import { enterScriptByName, ALL_DIALOGUE_SCHEMAS } from './dialogue-engine/index.js';
+import {
+  enterScriptByName,
+  ALL_DIALOGUE_SCHEMAS,
+  valuesCanonicallyEqual,
+} from './dialogue-engine/index.js';
 import { logToolCall } from './stage6-dispatcher-logger.js';
 import {
   getCircuitBucket,
@@ -88,6 +92,57 @@ export async function dispatchStartDialogueScript(call, ctx) {
   // Fall back to ctx.ws for tests / future plumbing.
   const targetWs = ws ?? session.activeWs ?? null;
 
+  // PLAN A2 §A2.4 (feedback id 117) — project THIS turn's per-field winners
+  // BEFORE calling enterScriptByName, and pass an ownership resolver into the
+  // engine. Timing is the crux: enterScriptByName can emit finishScript and
+  // clear state SYNCHRONOUSLY when every slot is already filled — a post-hoc
+  // ownership check (the existing backfill below) runs too late to inform
+  // that immediate-finish speech.
+  const seededEffectiveBoardId =
+    input.board_id ??
+    session.stateSnapshot?.currentBoardId ??
+    getMainBoardId(session.stateSnapshot);
+  // Codex diff-review r1 (3/3 lenses) — only construct a resolver when this
+  // dispatcher can ACTUALLY perform the guaranteed post-call backfill
+  // (perTurnWrites.readings is a live Map); otherwise pass null so
+  // enterScriptByName's APPLIED-seed branch correctly falls back to
+  // script-owned instead of promising a bundler confirmation that will
+  // never arrive (a seed marked 'bundler' with no backfill is a genuine
+  // silent-drop — finishScript suppresses it, and nothing else ever speaks
+  // it).
+  const canBackfill = !!(perTurnWrites && perTurnWrites.readings instanceof Map);
+  const priorWinnerValues = canBackfill
+    ? new Map(projectReadingWinners(perTurnWrites).map((w) => [w.slot, w.value?.value]))
+    : new Map();
+  // (field, circuitRef, canonicalValue) => 'bundler' | null. Consulted for a
+  // canonical-EQUAL seed to decide whether an EQUAL prior per-turn winner
+  // means the bundler already speaks this value this turn. A DIFFERING
+  // prior winner returns null — the engine's own canonicalise-compare then
+  // treats it as a genuine correction and overwrites, never silently
+  // discards it (Codex diff-review r1: an earlier "any prior winner always
+  // wins" draft broke this — a valid later correction was silently lost).
+  const ownershipResolver = canBackfill
+    ? (field, circuitRef, canonicalValue) => {
+        if (!Number.isInteger(circuitRef)) return null;
+        const wireSlot = rawCircuitSlot(field, circuitRef, seededEffectiveBoardId);
+        if (!priorWinnerValues.has(wireSlot)) return null;
+        // Codex diff-review r2 — canonicalise through the SAME slot parser
+        // the engine uses, not a raw String() comparison. A per-turn prior
+        // winner from record_reading carries its FULLY CANONICAL form
+        // ("BS EN 61008"); a Sonnet start_dialogue_script seed for the same
+        // field often carries the RAW digits ("61008") — String()-unequal
+        // but semantically identical. The false negative left the seed
+        // script-owned even though the bundler already speaks the prior
+        // winner, producing a double-speak of the same value.
+        const schemaSlot = ALL_DIALOGUE_SCHEMAS.flatMap((s) => s.slots ?? []).find(
+          (s) => s.field === field
+        );
+        return valuesCanonicallyEqual(schemaSlot, priorWinnerValues.get(wireSlot), canonicalValue)
+          ? 'bundler'
+          : null;
+      }
+    : null;
+
   const result = enterScriptByName({
     session,
     sessionId: session.sessionId,
@@ -111,6 +166,8 @@ export async function dispatchStartDialogueScript(call, ctx) {
     // here so the frame carries the arming utterance's id and the client chime
     // watchdog disarms on the spoken question. Null on test paths / no live turn.
     responseEpoch: session.activeResponseEpochRef?.current ?? null,
+    // PLAN A2 §A2.4 — dispatcher-resolved speech ownership.
+    ownershipResolver,
   });
 
   if (!result.ok) {
@@ -174,10 +231,9 @@ export async function dispatchStartDialogueScript(call, ctx) {
     // key off. Raw input.board_id still feeds encodeReadingKey + the value's
     // enumerable boardId unchanged; only the non-enumerable slot marker uses
     // the effective id.
-    const seededEffectiveBoardId =
-      input.board_id ??
-      session.stateSnapshot?.currentBoardId ??
-      getMainBoardId(session.stateSnapshot);
+    // (seededEffectiveBoardId is computed once, above, before the
+    // enterScriptByName call — PLAN A2 §A2.4 reuses that same value here so
+    // the pre-call resolver and this post-call backfill agree on scope.)
     // A2-multiboard (2026-07-28) — the precedence check below is keyed on the
     // EFFECTIVE slot, not the raw Map key.
     //
@@ -197,19 +253,31 @@ export async function dispatchStartDialogueScript(call, ctx) {
     // The raw `key` is still what feeds encodeReadingKey/recordReadingWrite, so
     // the Map key and the entry's enumerable `boardId` — and therefore the wire
     // bytes — are unchanged.
-    const occupiedSlots = new Set(projectReadingWinners(perTurnWrites).map((w) => w.slot));
+    // PLAN A2 §A2.4 (feedback id 117) — a Map, not a Set: "guarantees every
+    // newly-applied seed becomes the latest per-turn winner before bundling
+    // (including replacing an occupied winner whose value differs)". A2.3's
+    // engine-side rewrite means a seed CAN now overwrite a stale snapshot
+    // value even when the field was already occupied — that overwrite must
+    // become the new winner, or the bundler would speak the STALE occupant
+    // while the finish text (per §A2.4) stays silent on the assumption the
+    // bundler already owns it.
+    const occupiedSlots = new Map(
+      projectReadingWinners(perTurnWrites).map((w) => [w.slot, w.value?.value])
+    );
     for (const fieldName of result.seeded_writes) {
       const writtenValue = bucket?.[fieldName];
       if (writtenValue === undefined || writtenValue === null || writtenValue === '') continue;
       const key = encodeReadingKey(fieldName, result.circuit_ref, input.board_id);
-      // Skip if record_reading or another tool already wrote this slot
-      // earlier in the same turn (Sonnet rarely double-emits but be
-      // defensive — last-write-wins via Map.set would otherwise
-      // overwrite the more-recent value). "This slot" is the EFFECTIVE one —
-      // see the note above the Set.
+      // "This slot" is the EFFECTIVE one — see the note above the Map.
       const slot = rawCircuitSlot(fieldName, result.circuit_ref, seededEffectiveBoardId);
-      if (occupiedSlots.has(slot)) continue;
-      occupiedSlots.add(slot);
+      const occupiedValue = occupiedSlots.get(slot);
+      if (occupiedValue !== undefined) {
+        if (String(occupiedValue) === String(writtenValue)) continue; // already the latest winner
+        // else: the script's write differs from the current occupant — fall
+        // through and REPLACE it (recordReadingWrite below is a Map.set, so
+        // this naturally becomes the newest entry for the slot).
+      }
+      occupiedSlots.set(slot, writtenValue);
       const entry = attachEffectiveSlot(
         {
           value: writtenValue,

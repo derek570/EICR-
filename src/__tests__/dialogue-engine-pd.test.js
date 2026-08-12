@@ -329,7 +329,12 @@ describe('RCD walk-through', () => {
         now: 2000,
       });
       expect(ws.sent.at(-1).reason).toBe('info');
-      expect(ws.sent.at(-1).question).toBe("Okay, I'll come back to that later.");
+      // PLAN A2 (feedback id 117) — the dictated trip_time was never read
+      // back before this fix; the terminal-sink rule appends its read-back
+      // to the defer ack.
+      expect(ws.sent.at(-1).question).toBe(
+        "Okay, I'll come back to that later. Also got trip time 25."
+      );
       // Script state cleared.
       expect(session.dialogueScriptState).toBeFalsy();
       // trip_time still on the snapshot — defer doesn't roll back writes.

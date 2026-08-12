@@ -147,6 +147,7 @@ jest.unstable_mockModule('../extraction/dialogue-engine/index.js', () => ({
   processRingContinuityTurn: ringWrapperSpy,
   processInsulationResistanceTurn: irWrapperSpy,
   processProtectiveDeviceTurn: pdWrapperSpy,
+  valuesCanonicallyEqual: (slot, a, b) => a === b || String(a) === String(b),
 }));
 
 // ── Dynamic imports AFTER mocks ─────────────────────────────────────────────
@@ -156,9 +157,8 @@ const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.
 // REAL helpers — the whole point is to exercise the genuine anchor + parser.
 const { normalise } = await import('../extraction/transcript-normalise.js');
 const { hasReadingFieldAnchor } = await import('../extraction/reading-transcript-anchor.js');
-const { parseBareMegaohmsWithUnit } = await import(
-  '../extraction/dialogue-engine/parsers/megaohms.js'
-);
+const { parseBareMegaohmsWithUnit } =
+  await import('../extraction/dialogue-engine/parsers/megaohms.js');
 
 // ── Harness helpers (lifted from ask-routing.test.js) ────────────────────────
 

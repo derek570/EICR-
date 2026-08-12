@@ -819,7 +819,13 @@ describe('engine — ring continuity', () => {
     // control frame (no `.question`), so look up the cancel TTS by
     // type rather than positional `at(-1)`.
     const cancelAsk = [...ws.sent].reverse().find((m) => m?.type === 'ask_user_started');
-    expect(cancelAsk?.question).toBe('Ring continuity cancelled. 1 of 3 saved.');
+    // PLAN A2 (feedback id 117) — the dictated "lives 0.43" was never read
+    // back before cancel (no confirmation reached), so the terminal-sink
+    // rule appends its read-back to the cancel message — audio-first: a
+    // dictated value must be spoken exactly once, not silently dropped.
+    expect(cancelAsk?.question).toBe(
+      'Ring continuity cancelled. 1 of 3 saved. Also got lives 0.43.'
+    );
     expect(session.dialogueScriptState).toBeNull();
     // R1 was preserved on the snapshot (cancel preserves writes).
     expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('0.43');
@@ -1217,7 +1223,12 @@ describe('engine — insulation resistance', () => {
     // Phase 6.3 — same cancel_pending_tts trailer as the ring test
     // above; find the cancel TTS by type, not position.
     const cancelAsk = [...ws.sent].reverse().find((m) => m?.type === 'ask_user_started');
-    expect(cancelAsk?.question).toBe('Insulation resistance cancelled. 1 of 2 saved.');
+    // PLAN A2 (feedback id 117) — "200" was dictated as live-to-live this
+    // turn and never read back before cancel; the terminal-sink rule
+    // appends its read-back to the cancel message.
+    expect(cancelAsk?.question).toBe(
+      'Insulation resistance cancelled. 1 of 2 saved. Also got live-to-live 200.'
+    );
   });
 });
 
