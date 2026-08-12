@@ -1297,6 +1297,15 @@ function runEntry({
     // the marker-carrying writes (see CONFLICT_OVERWRITE).
     conflictState.scope_conflict_origin = true;
     const queued = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
+    // Compound value-first entry (feedback id 123, 2026-08-12): consulted
+    // ONLY when named extraction found neither slot (for IR the only slots
+    // with namedExtractors are L-L/L-E, so length 0 ⟺ neither IR slot).
+    // Receives the RAW text — this path masks circuit spans before named
+    // extraction, and masked text would erase the evidence the extractor's
+    // scope guard needs to refuse "…for circuit 2…" shapes.
+    if (queued.length === 0 && typeof schema.compoundEntryExtractor === 'function') {
+      queued.push(...schema.compoundEntryExtractor(text));
+    }
     for (const w of queued) {
       w[CONFLICT_OVERWRITE] = true;
       conflictState.pending_writes.push(w);
@@ -1359,6 +1368,13 @@ function runEntry({
   // `circuit N` span, so masking can only remove corruption.
   const maskedEntryText = maskCircuitSpans(text);
   const volunteered = extractNamedFieldValues(maskedEntryText, schema.slots);
+  // Compound value-first entry (feedback id 123, 2026-08-12): same
+  // consultation rule as the scope-conflict branch above — only on a
+  // neither-slot named result, and on the RAW text so the extractor's
+  // whole-span circuit scope guard sees the evidence masking would erase.
+  if (volunteered.length === 0 && typeof schema.compoundEntryExtractor === 'function') {
+    volunteered.push(...schema.compoundEntryExtractor(text));
+  }
 
   // Handover-to-Sonnet bail. See session 87856B72 (2026-05-26): the
   // RCD trigger /\bRCD\b/ matched on "RCD triptan for upstairs

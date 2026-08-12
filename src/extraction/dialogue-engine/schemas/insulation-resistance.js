@@ -173,6 +173,158 @@ const slots = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Compound entry extractor (feedback id 123, 2026-08-12).
+//
+// The field shape "Installation resistance for the garage socket is greater
+// than 299 live to live and live to earth" is VALUE first with two conjunct
+// TRAILING labels — neither slot namedExtractor (LABEL→bridge→VALUE) can
+// match it, so the loop re-asked both legs and the re-answers lost the `>`
+// sentinel. This extractor certifies BOTH legs with the SAME value, and is
+// consulted by runEntry ONLY when extractNamedFieldValues returned neither
+// IR slot (different per-leg values keep going through the per-label
+// extractors, which own that shape).
+//
+// Matching is LABEL-PAIR-FIRST, not value-first: a value-first search
+// selects the EARLIEST eligible number, so "IR for circuit 2 is greater
+// than 299 live to live and live to earth" could capture the 2 (the circuit
+// ordinal sits before the real value and escapes any gap-only guard;
+// numeric designations create the same hazard). Deterministic enumerated
+// forms only — no edit-distance fuzz (banned), enumerated connectors only
+// ("and", "&").
+// ---------------------------------------------------------------------------
+
+// The two label vocabularies, reused from the slot namedExtractors above —
+// keep in lockstep with them per this file's own comment.
+const LL_LABEL_SRC = 'live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l';
+const LE_LABEL_SRC = 'live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e';
+
+// Trailing label pair: both orderings, joined by an enumerated connector.
+// Plus the "both" phrasing — accepted ONLY as end-of-clause "both" or
+// explicit "both readings"/"both tests", NEVER "both circuits".
+const LABEL_PAIR_RE = new RegExp(
+  `\\b(?:(?:${LL_LABEL_SRC})\\s*,?\\s*(?:and|&)\\s*(?:${LE_LABEL_SRC})` +
+    `|(?:${LE_LABEL_SRC})\\s*,?\\s*(?:and|&)\\s*(?:${LL_LABEL_SRC})` +
+    `|both(?:\\s+(?:readings|tests))?(?!\\s+circuits?\\b))\\b`,
+  'i'
+);
+
+// Clause boundaries for the bounded same-clause prefix. The family's
+// [^.?!]{0,40} convention is NOT sufficient on its own — `\r`/`\n`/`;` and
+// contrast tokens also terminate eligibility (a value beyond "but"/
+// "whereas"/"however"/"except" is not the labels' value).
+const CLAUSE_BOUNDARY_RE = /[.?!;\r\n]|\b(?:but|whereas|however|except)\b/gi;
+
+// A single megaohms-value candidate inside the prefix. Sentinel and
+// greater-than forms come first (most specific), bare numerics last.
+const COMPOUND_CANDIDATE_RE = new RegExp(
+  `(?:>\\s*|(?:greater\\s+(?:than|then)|more\\s+than|over|above)\\s+)(?:\\d+(?:\\.\\d+)?|\\.\\d+)` +
+    `|infinite|infinity|off\\s*scale|out\\s*of\\s*range|\\bo\\s*l\\b|max(?:ed)?(?:\\s+out)?` +
+    `|\\b(?:lim|limb|limp|limitation)\\b` +
+    `|\\d+(?:\\.\\d+)?|\\.\\d+`,
+  'gi'
+);
+
+// Explicit megaohm unit immediately after a bare number → qualified (b).
+const MEGAOHM_UNIT_AFTER_RE =
+  /^\s*(?:m(?:ega)?\s*[- ]?\s*ohms?|mΩ|milli\s*grams?|millies?|megs?)\b/i;
+
+// Conflicting unit immediately after ANY candidate → candidate rejected.
+// volts, amps, milliseconds, milliamps, and ohms/kilohms WITHOUT
+// mega-qualification: "…was tested at 500 volts, live to live and live to
+// earth" has exactly one bare candidate and would otherwise certify BOTH IR
+// fields as 500 MΩ.
+const CONFLICTING_UNIT_AFTER_RE =
+  /^\s*(?:volts?\b|v\b|amps?\b|amperes?\b|milli\s*seconds?\b|ms\b|milli\s*amps?\b|ma\b|(?:kilo\s*|k\s*)ohms?\b|ohms?\b)/i;
+
+// Closed connector set joining a bare number to the IR subject → (c).
+const CONNECTOR_BEFORE_RE = /\b(?:is|was|reads|measures|equals)[\s,]{0,3}$/i;
+
+/**
+ * `schema.compoundEntryExtractor(text)` — returns exactly TWO
+ * `{field, value}` entries (same parsed value for both IR legs) or `[]`.
+ * MUST receive the RAW entry text: the ordinary and scope-conflict paths
+ * mask circuit spans before named extraction, and masked text would erase
+ * the `circuit N` evidence the scope guard below needs.
+ */
+function compoundEntryExtractor(text) {
+  if (typeof text !== 'string' || !text) return [];
+
+  // 1. Locate the trailing label pair.
+  const pair = text.match(LABEL_PAIR_RE);
+  if (!pair) return [];
+  const pairStart = pair.index;
+  const pairEnd = pair.index + pair[0].length;
+  // Trailing means trailing: nothing substantive may follow the pair in the
+  // same clause ("…299 but live to earth and live to live were not tested"
+  // must never certify). Punctuation/whitespace to a clause boundary or
+  // end-of-string is fine.
+  const after = text.slice(pairEnd);
+  if (!/^[\s,]*(?:$|[.?!;\r\n])/.test(after)) return [];
+
+  // 2. Bounded same-clause PREFIX: walk back from the pair to the nearest
+  //    clause boundary (incl. `;`, CR/LF, and contrast tokens), then keep
+  //    at most 40 chars (the family's gap convention).
+  const before = text.slice(0, pairStart);
+  let clauseStart = 0;
+  CLAUSE_BOUNDARY_RE.lastIndex = 0;
+  let bm;
+  while ((bm = CLAUSE_BOUNDARY_RE.exec(before)) !== null) {
+    clauseStart = bm.index + bm[0].length;
+  }
+  const clauseSpan = before.slice(clauseStart);
+  const prefix = clauseSpan.slice(Math.max(0, clauseSpan.length - 40));
+  if (!prefix.trim()) return [];
+
+  // 4 (checked early — cheapest guard): scope guard over the WHOLE span
+  // from the preceding clause boundary through the label-pair end, not
+  // merely the value-to-label gap. `\bcircuit\s*\d{1,3}\b` is the SOLE
+  // scope marker, matching the codebase's only existing convention for
+  // this guard class (maskCircuitSpans in helpers/extraction.js).
+  const wholeSpan = before.slice(clauseStart) + text.slice(pairStart, pairEnd);
+  if (/\bcircuit\s*\d{1,3}\b/i.test(wholeSpan)) return [];
+
+  // 3. Enumerate candidates in the prefix; retain only IR-QUALIFIED ones.
+  const qualified = [];
+  COMPOUND_CANDIDATE_RE.lastIndex = 0;
+  let m;
+  while ((m = COMPOUND_CANDIDATE_RE.exec(prefix)) !== null) {
+    const candText = m[0];
+    const candEnd = m.index + candText.length;
+    const restAfter = prefix.slice(candEnd);
+    // Conflicting unit right after the candidate → rejected outright.
+    if (CONFLICTING_UNIT_AFTER_RE.test(restAfter)) continue;
+    // (a) greater-than / saturation / LIM sentinel forms: every bare
+    // numeric candidate starts with a digit or '.', every sentinel/gt form
+    // does not.
+    const isSentinelOrGt = !/^[\d.]/.test(candText);
+    if (isSentinelOrGt) {
+      // (a) greater-than / saturation / LIM sentinel forms.
+      qualified.push(candText);
+      continue;
+    }
+    // Bare number: (b) explicit megaohm unit, or (c) closed-connector join.
+    if (MEGAOHM_UNIT_AFTER_RE.test(restAfter)) {
+      qualified.push(candText);
+      continue;
+    }
+    if (CONNECTOR_BEFORE_RE.test(prefix.slice(0, m.index))) {
+      qualified.push(candText);
+      continue;
+    }
+    // Unqualified bare number — ignored (never certifies, never blocks).
+  }
+
+  // Accept ONLY when exactly one qualified candidate remains.
+  if (qualified.length !== 1) return [];
+  const value = parseMegaohms(qualified[0]);
+  if (value === null || value === undefined) return [];
+  return [
+    { field: 'ir_live_live_mohm', value },
+    { field: 'ir_live_earth_mohm', value },
+  ];
+}
+
 const triggers = [
   // Leading-circuit patterns (feedback id 98 companion, 2026-07-27): a
   // circuit stated BEFORE the trigger ("Circuit 4, insulation resistance
@@ -245,6 +397,11 @@ export const insulationResistanceSchema = {
   hardTimeoutMs: 180_000,
   toolCallIdPrefix: 'srv-irs',
   extractionSource: 'ir_script',
+  // Feedback id 123 (2026-08-12): compound value-first entry — consulted by
+  // runEntry on the ordinary + scope-conflict extraction paths ONLY when
+  // extractNamedFieldValues returned neither IR slot, with the RAW entry
+  // text (masked text would erase the scope guard's evidence).
+  compoundEntryExtractor,
   logEventPrefix: 'stage6.insulation_resistance_script',
   whichCircuitQuestion: 'Which circuit is the insulation resistance for?',
   // Capture a single composite IR figure at entry — "the IR for the
