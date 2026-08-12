@@ -245,8 +245,12 @@ const MEGAOHM_FORMS_STRIP_RE = /m(?:ega)?\s*[- ]?\s*ohms?|mΩ|milli\s*grams?|mil
 // ohms/kilohms WITHOUT mega-qualification: "…was tested at 500 volts, live
 // to live and live to earth" has exactly one bare candidate and would
 // otherwise certify BOTH IR fields as 500 MΩ.
+// Symbolic Ω forms need no word boundaries (Ω is a non-word character, so
+// `\b` can never anchor beside it — same class as the MΩ delimiter fix);
+// megaohm forms are stripped before this scan, so any surviving Ω is
+// non-mega by construction (ep-diff-review cycle 2).
 const CONFLICTING_UNIT_SCAN_RE =
-  /\b(?:volts?|v|amps?|amperes?|milli\s*seconds?|ms|milli\s*amps?|ma|(?:kilo\s*|k\s*)?ohms?)\b/i;
+  /\b(?:volts?|v|amps?|amperes?|milli\s*seconds?|ms|milli\s*amps?|ma|(?:kilo\s*|k\s*)?ohms?)\b|(?:k(?:ilo)?\s*)?Ω/i;
 
 // Closed connector set joining a bare number to the IR subject → (c).
 const CONNECTOR_BEFORE_RE = /\b(?:is|was|reads|measures|equals)[\s,]{0,3}$/i;
@@ -319,6 +323,11 @@ function compoundEntryExtractor(text) {
     const candText = m[0];
     const candEnd = m.index + candText.length;
     const restAfter = prefix.slice(candEnd);
+    // Negative reading → rejected outright (ep-diff-review cycle 2): the
+    // candidate regex is unsigned, so "-1" / "minus 1" would otherwise
+    // tail-match as a positive "1" and certify both legs. A negative IR
+    // reading is a meter/garble artefact — never silently rewritten.
+    if (/(?:-|−|\bminus|\bnegative)\s*$/i.test(prefix.slice(0, m.index))) continue;
     // Conflicting unit ANYWHERE between the candidate and the label pair →
     // rejected outright (megaohm forms stripped first so they never read as
     // bare "ohms").

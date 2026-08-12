@@ -162,6 +162,15 @@ describe('compoundEntryExtractor — negative shapes → []', () => {
     // Connector without an IR SUBJECT — "the garage socket is 299" proves
     // nothing about WHAT is 299.
     'The garage socket is 299 live to live and live to earth',
+    // Symbolic non-mega ohm units conflict (cycle 2): kΩ / Ω readings are
+    // never IR megaohm certifications.
+    'Insulation resistance is 500 kΩ live to live and live to earth',
+    'Insulation resistance is 500 Ω live to live and live to earth',
+    // Negative readings never certify (cycle 2): the unsigned candidate
+    // regex must not tail-match "-1" / "minus 1" as a positive 1.
+    'IR is -1 megaohms live to live and live to earth',
+    'IR is minus 1 megaohm live to live and live to earth',
+    'IR is greater than -1 megaohms live to live and live to earth',
   ];
 
   test.each(negatives)('%s → []', (text) => {
@@ -320,6 +329,14 @@ describe('id 123 — scope-conflict entry path', () => {
     [
       'numeric designation (naked number never certifies)',
       'Circuit 4, insulation resistance for circuit 7. The 56 socket 299 live to live and live to earth.',
+    ],
+    [
+      'symbolic kilohm unit',
+      'Circuit 4, insulation resistance for circuit 7. IR is 500 kΩ live to live and live to earth.',
+    ],
+    [
+      'negative reading',
+      'Circuit 4, insulation resistance for circuit 7. IR is -1 megaohms live to live and live to earth.',
     ],
   ];
 
