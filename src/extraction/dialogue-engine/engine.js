@@ -175,6 +175,25 @@ export function processDialogueTurn(ctx) {
       return { handled: false };
     }
     if (state.active && !state.bulkApplyPending) {
+      // Codex diff-review r2 (silent-path lens) — cross-wrapper isolation.
+      // Production calls all three domain wrappers (ring, IR, protective-
+      // device) on EVERY turn in sequence (sonnet-stream.js), each with its
+      // own narrow `schemas` list. Without this check, a broadcast-intent
+      // utterance while e.g. RCD is active would hit the RING wrapper
+      // FIRST: `state.active` is true (SOME script is active) but
+      // `state.schemaName` ('rcd') isn't in ring's schemas list, so
+      // `preFilterSchema` is undefined — yet the code below still cleared
+      // the ACTIVE RCD state via `clearScriptState`, skipping
+      // `renderTerminalReadback` (gated on `preFilterSchema`) entirely and
+      // silently discarding any uncovered dictated operation. This mirrors
+      // the SAME isolation the active-path handler already applies at
+      // ~line 310 ("Don't touch its state — return handled:false... The
+      // legacy two-wrapper call pattern in sonnet-stream.js depends on this
+      // isolation") — that established pattern was simply missing here.
+      const preFilterSchema = schemas.find((s) => s.name === state.schemaName);
+      if (!preFilterSchema) {
+        return { handled: false };
+      }
       // P1 ring-script-hardening — canonical position 0: NARROW
       // destructive-broadcast exemption during awaiting_confirmation.
       // "Clear the ring readings for ALL circuits" is a delete intent that
@@ -186,7 +205,6 @@ export function processDialogueTurn(ctx) {
       // all-circuits scope. Non-matching broadcast replies keep today's
       // pre-filter behaviour (clear + fall through to Sonnet's
       // set_field_for_all_circuits).
-      const preFilterSchema = schemas.find((s) => s.name === state.schemaName);
       const destructiveBroadcastBypass =
         state.awaiting_confirmation === true &&
         preFilterSchema?.confirmationClearIntentPattern &&

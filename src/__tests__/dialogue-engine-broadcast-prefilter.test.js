@@ -271,6 +271,87 @@ describe('pre-filter — active-script abort', () => {
     // are preserved — only the in-memory script state is discarded.
     expect(session.stateSnapshot.circuits[3].ocpd_bs_en).toBeDefined();
   });
+
+  // Codex diff-review r2 (silent-path lens) — production calls all three
+  // domain wrappers (ring, IR, protective-device) in sequence on EVERY
+  // turn (sonnet-stream.js), each with its own narrow `schemas` list. A
+  // wrapper that doesn't own the currently-active schema must NOT touch
+  // its state — mirroring the isolation the active-path handler already
+  // applies. Before this fix, the RING wrapper's broadcast pre-filter had
+  // no such check: `state.active` was true (RCD active) but RCD wasn't in
+  // ring's schemas list, so it silently cleared the active RCD episode
+  // with zero read-back — a total, silent loss of dictated readings.
+  test('a wrapper that does not own the active schema never touches it on a broadcast utterance', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+
+    // Drive RCD to mid-flow via the protective-device wrapper: dictate BS,
+    // leaving type/current unfilled (script stays active).
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'RCD on circuit 5.',
+      now: 1000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61008',
+      now: 2000,
+    });
+    expect(session.dialogueScriptState.active).toBe(true);
+    expect(session.dialogueScriptState.schemaName).toBe('rcd');
+
+    // The RING wrapper (schemas: [ringContinuitySchema] only) processes a
+    // broadcast-intent utterance meant for something else entirely. It
+    // must decline (handled:false) WITHOUT touching the active RCD state.
+    ws.sent.length = 0;
+    const ringOut = processDialogueTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'ring continuity for all circuits',
+      schemas: [ringContinuitySchema],
+      now: 3000,
+    });
+    expect(ringOut).toEqual({ handled: false });
+    expect(ws.sent).toHaveLength(0);
+    // The RCD episode — and its dictated BS number — survives untouched.
+    expect(session.dialogueScriptState).toBeTruthy();
+    expect(session.dialogueScriptState.active).toBe(true);
+    expect(session.dialogueScriptState.schemaName).toBe('rcd');
+    expect(session.dialogueScriptState.values.rcd_bs_en).toBe('BS EN 61008');
+
+    // The IR wrapper likewise declines without touching it.
+    const irOut = processDialogueTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'insulation resistance for all circuits',
+      schemas: [insulationResistanceSchema],
+      now: 3500,
+    });
+    expect(irOut).toEqual({ handled: false });
+    expect(session.dialogueScriptState.active).toBe(true);
+    expect(session.dialogueScriptState.schemaName).toBe('rcd');
+
+    // Only the OWNING wrapper (protective-device, RCD included) may act on
+    // the broadcast utterance — and it still correctly reads back the
+    // dictated BS number before aborting.
+    const pdOut = processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'actually for all circuits use type B',
+      now: 4000,
+    });
+    expect(pdOut).toEqual({ handled: false });
+    expect(session.dialogueScriptState).toBeFalsy();
+    expect(ws.sent).toHaveLength(1);
+    expect(ws.sent[0].question).toBe('Also got BS number BS EN 61008.');
+  });
 });
 
 describe('pre-filter — bulkApplyPending preservation (RCD regression guard)', () => {
