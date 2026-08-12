@@ -411,7 +411,13 @@ describe('RCD bulk-apply integration', () => {
       transcriptText: 'fill later',
       now: 2000,
     });
-    expect(ws.sent.at(-1).question).toBe("Okay, I'll come back to that later.");
+    // PLAN A2 (feedback id 117) — this IS the id-117 motivating scenario:
+    // the dictated trip_time was never read back before this fix (a
+    // finishMessage-shaped ceremony bug). The terminal-sink rule now
+    // appends its read-back to the defer ack.
+    expect(ws.sent.at(-1).question).toBe(
+      "Okay, I'll come back to that later. Also got trip time 25."
+    );
     expect(session.stateSnapshot.circuits[1].rcd_trip_time).toBe('25');
     expect(session.stateSnapshot.circuits[1].rcd_bs_en).toBeUndefined();
     expect(session.dialogueScriptState).toBeFalsy();
