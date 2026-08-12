@@ -697,6 +697,26 @@ function maskCircuitResolution(replyText, meta) {
     return maskCircuitSpans(masked);
   }
   if (meta.kind === 'designation') {
+    // id 116 (2026-08-12): a pass-2 (fold-table) designation match carries
+    // the RAW span of the user text that matched ("Upstairs lights" against
+    // designation "Upstairs Lighting" — the stored designation string is NOT
+    // findable in the reply). Consume the span BEFORE the literal search:
+    // without it we'd fall to the mask-the-entire-reply branch and a
+    // co-dictated voltage ("Upstairs lights, tested at 500") would be lost.
+    if (
+      meta.matchedUserSpan &&
+      Number.isInteger(meta.matchedUserSpan.start) &&
+      Number.isInteger(meta.matchedUserSpan.end) &&
+      meta.matchedUserSpan.start >= 0 &&
+      meta.matchedUserSpan.end > meta.matchedUserSpan.start &&
+      meta.matchedUserSpan.end <= replyText.length
+    ) {
+      const masked =
+        replyText.slice(0, meta.matchedUserSpan.start) +
+        ' '.repeat(meta.matchedUserSpan.end - meta.matchedUserSpan.start) +
+        replyText.slice(meta.matchedUserSpan.end);
+      return maskCircuitSpans(masked);
+    }
     if (typeof meta.matchedDesignation === 'string' && meta.matchedDesignation) {
       // Whitespace-TOLERANT span search (mini-review c1): the resolver
       // compares whitespace-collapsed strings, so the raw reply may hold the
@@ -2621,6 +2641,12 @@ function runActivePath({
         circuitResolutionMeta = {
           kind: 'designation',
           matchedDesignation: lookup.matchedDesignation,
+          // id 116: raw-offset span of the user text that established a
+          // pass-2 (fold-table) match — null on pass-1 matches. The mask
+          // branch consumes this BEFORE its literal-designation search,
+          // because a morphologically-folded designation is not literally
+          // findable in the reply.
+          matchedUserSpan: lookup.matchedUserSpan ?? null,
         };
         logger?.info?.(`${schema.logEventPrefix}_designation_match`, {
           sessionId,

@@ -81,6 +81,87 @@ export function stripDesignationFiller(text) {
 }
 
 /**
+ * Feedback id 116 (2026-08-12) — pass-2 morphological fold table.
+ *
+ * A CLOSED token-equivalence map listing every accepted form explicitly.
+ * This is deterministic enumerated normalisation, NOT edit-distance fuzz —
+ * the fuzzy-transcript-correction ban (certmate-research-methodology)
+ * stays intact. Generic `s`/`es` suffix stripping is deliberately NOT
+ * implemented: a naïve strip mangles singular tokens ("house", "mains").
+ * Add entries only with a test each.
+ */
+const DESIGNATION_FOLD_TABLE = new Map([
+  ['light', 'light'],
+  ['lights', 'light'],
+  ['lighting', 'light'],
+  ['socket', 'socket'],
+  ['sockets', 'socket'],
+  ['heater', 'heater'],
+  ['heating', 'heater'],
+]);
+
+// Leading filler tokens dropped from the USER token sequence in pass 2 —
+// the token-level analogue of `stripDesignationFiller`'s single leading
+// phrase. Dropping RECORDS (never rewriting the string) is what keeps raw
+// offsets intact for `matchedUserSpan`.
+const PASS2_LEADING_FILLER = new Set(['for', 'on', 'in', 'the', 'a', 'an']);
+
+/**
+ * Tokenise text into `{folded, start, end}` records with RAW offsets into
+ * the original string. Splits on whitespace AND hyphen/dash characters
+ * (hyphen folding at the token level), trims leading/trailing punctuation
+ * per token, lowercases. Records whose token folds away entirely are
+ * dropped — again dropping records, never rewriting, so offsets survive.
+ */
+function tokeniseWithOffsets(text) {
+  const records = [];
+  if (typeof text !== 'string' || !text) return records;
+  // Split boundaries: whitespace, ASCII hyphen, and the U+2010–U+2015
+  // unicode hyphen/dash block ("kitchen-sockets" tokenises as two records).
+  const re = /[^\s\-‐-―]+/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    let tok = m[0];
+    let start = m.index;
+    let end = m.index + tok.length;
+    const lead = tok.match(/^[^\p{L}\p{N}]+/u);
+    if (lead) {
+      start += lead[0].length;
+      tok = tok.slice(lead[0].length);
+    }
+    const trail = tok.match(/[^\p{L}\p{N}]+$/u);
+    if (trail) {
+      end -= trail[0].length;
+      tok = tok.slice(0, tok.length - trail[0].length);
+    }
+    if (!tok) continue;
+    records.push({ folded: tok.toLowerCase(), start, end });
+  }
+  return records;
+}
+
+/** Map a folded token through the closed equivalence table (identity when absent). */
+function foldToken(folded) {
+  return DESIGNATION_FOLD_TABLE.get(folded) ?? folded;
+}
+
+/**
+ * Contiguous token-sequence containment: does `needle` appear as a
+ * contiguous run inside `haystack` (comparing table-folded tokens)?
+ * Returns the start index of the first run, or -1.
+ */
+function findTokenRun(haystackFolded, needleFolded) {
+  if (needleFolded.length === 0 || needleFolded.length > haystackFolded.length) return -1;
+  outer: for (let i = 0; i + needleFolded.length <= haystackFolded.length; i++) {
+    for (let j = 0; j < needleFolded.length; j++) {
+      if (haystackFolded[i + j] !== needleFolded[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+/**
  * Look up circuits whose designation matches a transcript fragment.
  *
  * Returns `{ matched, candidates, sharedDesignation }`:
@@ -141,6 +222,10 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
 
   const matches = [];
   const designationsByRef = new Map();
+  // Eligible (ref, normDes) pairs collected during the pass-1 walk so
+  // pass 2 (the id-116 fold-table pass) can re-scan the SAME set without
+  // re-deriving the board-scoping / restrict / type-check rules.
+  const eligible = [];
 
   if (Array.isArray(snapshot.circuits)) {
     // Array-shape — walk verbatim (legacy fixture compat).
@@ -153,6 +238,7 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
       if (typeof designation !== 'string' || !designation.trim()) continue;
       const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
       if (!normDes) continue;
+      eligible.push({ ref, normDes });
       if (normalised.includes(normDes) || normDes.includes(normalised)) {
         matches.push(ref);
         designationsByRef.set(ref, normDes);
@@ -171,9 +257,60 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
       if (typeof designation !== 'string' || !designation.trim()) continue;
       const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
       if (!normDes) continue;
+      eligible.push({ ref, normDes });
       if (normalised.includes(normDes) || normDes.includes(normalised)) {
         matches.push(ref);
         designationsByRef.set(ref, normDes);
+      }
+    }
+  }
+
+  // Pass 2 (feedback id 116, 2026-08-12) — fold-table token-sequence pass,
+  // consulted ONLY when pass 1 (the normalisation + bidirectional substring
+  // test above, byte-for-byte the pre-116 behaviour) yielded ZERO
+  // candidates. "Upstairs lights" vs designation "Upstairs Lighting" has no
+  // substring relation in either direction, but folds to the same token
+  // sequence. Tokenises the ORIGINAL caller text so raw offsets survive
+  // into `matchedUserSpan` (consumed by the engine's designation-mask
+  // branch — a pass-2 matched designation is NOT literally findable in the
+  // reply, and without the span the mask would blank the ENTIRE reply and
+  // drop a co-dictated voltage).
+  const spansByRef = new Map();
+  if (matches.length === 0 && eligible.length > 0) {
+    let userRecords = tokeniseWithOffsets(text);
+    // Drop LEADING filler records (token-level analogue of
+    // stripDesignationFiller — drop records, never rewrite).
+    while (userRecords.length > 0 && PASS2_LEADING_FILLER.has(userRecords[0].folded)) {
+      userRecords = userRecords.slice(1);
+    }
+    const userFolded = userRecords.map((r) => foldToken(r.folded));
+    if (userFolded.length > 0) {
+      for (const { ref, normDes } of eligible) {
+        if (designationsByRef.has(ref)) continue;
+        const desFolded = tokeniseWithOffsets(normDes).map((r) => foldToken(r.folded));
+        if (desFolded.length === 0) continue;
+        // Token-SEQUENCE containment in both directions (mirrors pass 1's
+        // bidirectional substring semantics at token granularity).
+        const runIdx = findTokenRun(userFolded, desFolded);
+        if (runIdx !== -1) {
+          // Designation ⊂ user text: span = the matched contiguous run's
+          // raw extent in the original text.
+          matches.push(ref);
+          designationsByRef.set(ref, normDes);
+          spansByRef.set(ref, {
+            start: userRecords[runIdx].start,
+            end: userRecords[runIdx + desFolded.length - 1].end,
+          });
+        } else if (findTokenRun(desFolded, userFolded) !== -1) {
+          // User text ⊂ designation: the whole (filler-dropped) reply IS
+          // the resolution text.
+          matches.push(ref);
+          designationsByRef.set(ref, normDes);
+          spansByRef.set(ref, {
+            start: userRecords[0].start,
+            end: userRecords[userRecords.length - 1].end,
+          });
+        }
       }
     }
   }
@@ -208,6 +345,13 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
     // voltage parseable while the resolution text itself cannot be misread.
     matchedDesignation:
       candidates.length === 1 ? (designationsByRef.get(candidates[0]) ?? null) : null,
+    // Feedback id 116 (2026-08-12) — raw-offset span of the user text that
+    // established a UNIQUE pass-2 (fold-table) match; null for pass-1
+    // matches (their matchedDesignation is literally findable in the reply,
+    // so the mask branch's existing literal search still works) and for
+    // zero/ambiguous outcomes. `{start, end}` indexes into the ORIGINAL
+    // `text` argument.
+    matchedUserSpan: candidates.length === 1 ? (spansByRef.get(candidates[0]) ?? null) : null,
   };
 }
 
