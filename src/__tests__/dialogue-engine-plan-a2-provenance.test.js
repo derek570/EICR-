@@ -796,4 +796,122 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     // "circuit N" qualifier prefix is expected.
     expect(finish).not.toMatch(/circuit 5 trip time/);
   });
+
+  // Codex diff-review r2 (edge-interactions lens) — a REPLACEMENT site (e.g.
+  // the active-path different-entry scope conflict) carries the full
+  // `state.operations` list across a CIRCUIT CHANGE. `finishScript`'s
+  // coverage check and `askNextOrFinish`'s bulk-apply ceremony gate must
+  // both require `effective_circuit_ref === state.circuit_ref` — otherwise a
+  // stale operation from the OLD circuit can wrongly satisfy coverage for
+  // the NEW circuit's snapshot-only (never-dictated-this-run) value.
+  test("a carried operation from a DIFFERENT circuit never satisfies this circuit's finish coverage or bulk-ask gate", () => {
+    const ws = new FakeWS();
+    const scratchSession = buildSession({ 5: {} });
+    // Circuit 5, a throwaway session: dictate ONLY the BS number, capture
+    // the resulting 'applied' operation object (effective_circuit_ref: 5).
+    const seeded = enterScriptByName({
+      session: scratchSession,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'rcd',
+      circuit_ref: 5,
+      pending_writes: [{ field: 'rcd_bs_en', value: '60898' }],
+      ws: new FakeWS(),
+      logger: null,
+      now: 1000,
+    });
+    expect(seeded.ok).toBe(true);
+    const staleCircuit5Op = scratchSession.dialogueScriptState.operations[0];
+    expect(staleCircuit5Op.effective_circuit_ref).toBe(5);
+    // Real session, circuit 6: BS is snapshot-filled (so the walkthrough
+    // never asks for it), type/current are missing so the walkthrough
+    // genuinely asks for and dictates both this run. A fresh entry puts the
+    // engine into a well-defined active state awaiting 'rcd_type' first.
+    // THEN append the foreign circuit-5 operation to `state.operations` —
+    // simulating exactly what a REPLACEMENT site's
+    // `state.operations = priorOperations` produces — without disturbing
+    // any of the engine's own slot-tracking state.
+    const session = buildSession({ 6: { rcd_bs_en: '60898' } });
+    const entered = enterScriptByName({
+      session,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'rcd',
+      circuit_ref: 6,
+      pending_writes: [],
+      ws,
+      logger: null,
+      now: 1000,
+    });
+    expect(entered.ok).toBe(true);
+    expect(session.dialogueScriptState.operations).toHaveLength(0);
+    session.dialogueScriptState.operations.push(staleCircuit5Op);
+    ws.sent = [];
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'AC',
+      now: 2000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '30',
+      now: 3000,
+    });
+    // The bulk-apply prompt legitimately fires here (type/current WERE
+    // genuinely dictated for circuit 6 this run) — decline it to reach the
+    // finish text, the same shape as test (b).
+    expect(lastQuestion(ws)).toMatch(/Apply these RCD details/);
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'no',
+      now: 4000,
+    });
+    // The stale circuit-5 operation must never satisfy finishScript's
+    // coverage for circuit 6's bs_en — that would misattribute a
+    // snapshot-only value as dictated this run and speak the byte-identical
+    // verbatim legacy summary as if BS had been said. It must NOT match
+    // test (b)'s all-covered verbatim shape.
+    const finish = lastQuestion(ws);
+    expect(finish).not.toBe('Got it. BS EN 60898, type AC, 30 mA.');
+    expect(finish).not.toMatch(/^Got it\./);
+    expect(session.stateSnapshot.circuits[6].rcd_type).toBe('AC');
+    expect(session.stateSnapshot.circuits[6].rcd_operating_current_ma).toBe('30');
+  });
+
+  // Codex diff-review r2 — §(w)'s "a validation-REJECTED operation →
+  // `rejected`, no read-back" requires an actual ledger entry for a KNOWN
+  // schema field the normaliser refuses (invalid/out-of-range/off-ladder),
+  // not just the separate `dropped_fields` return-envelope channel.
+  test('a known-field invalid seeded value is recorded rejected in the ledger and produces no read-back', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: { rcd_bs_en: '60898', rcd_type: 'AC' } });
+    const result = enterScriptByName({
+      session,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'rcd',
+      circuit_ref: 5,
+      // Not a valid RCD operating current — off-ladder / out of range.
+      pending_writes: [{ field: 'rcd_operating_current_ma', value: 'ten thousand' }],
+      ws,
+      logger: null,
+      now: 1000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.dropped_fields).toEqual(['rcd_operating_current_ma']);
+    expect(result.seeded_writes ?? []).toEqual([]);
+    const ops = session.dialogueScriptState.operations.filter(
+      (op) => op.field === 'rcd_operating_current_ma'
+    );
+    expect(ops).toHaveLength(1);
+    expect(ops[0].disposition).toBe('rejected');
+    // Never read back — no frame names the rejected value.
+    expect(ws.sent.some((m) => /ten thousand/.test(m.question ?? ''))).toBe(false);
+  });
 });

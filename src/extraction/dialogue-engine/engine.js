@@ -1182,7 +1182,7 @@ function computeUncoveredReadback(state, schema, siteLabel) {
   const latestByFieldCircuit = new Map();
   for (const op of ops) {
     if (op.disposition !== 'applied' && op.disposition !== 'satisfied_existing') continue;
-    const key = `${op.field} ${op.effective_circuit_ref ?? ''}`;
+    const key = `${op.field}::${op.effective_circuit_ref ?? ''}`;
     latestByFieldCircuit.set(key, op);
   }
   const uncovered = ops.filter((op) => {
@@ -1193,7 +1193,7 @@ function computeUncoveredReadback(state, schema, siteLabel) {
     ) {
       return false;
     }
-    const key = `${op.field} ${op.effective_circuit_ref ?? ''}`;
+    const key = `${op.field}::${op.effective_circuit_ref ?? ''}`;
     return latestByFieldCircuit.get(key) === op;
   });
   if (uncovered.length === 0) return null;
@@ -4423,12 +4423,18 @@ function askNextOrFinish({
     // snapshot-filled (nothing dictated this run) — that is exactly the id
     // 117 ceremony bug. Fire only when at least one dictated operation
     // (applied or satisfied_existing) intersects postCompletionAsk.fields.
+    // Codex diff-review r2 — circuit-scoped: a REPLACEMENT site (the ring
+    // confirmation circuit-switch) carries `state.operations` across a
+    // circuit change, so an unscoped check let a DIFFERENT circuit's stale
+    // dictated operation wrongly fire this ask for a circuit whose own
+    // device slots were never dictated this run.
     const dictatedIntersectsBulkAsk =
       Array.isArray(state.operations) &&
       Array.isArray(schema.postCompletionAsk?.fields) &&
       state.operations.some(
         (op) =>
           (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
+          op.effective_circuit_ref === state.circuit_ref &&
           schema.postCompletionAsk.fields.includes(op.field)
       );
     if (schema.postCompletionAsk && !state.bulkApplyPending && dictatedIntersectsBulkAsk) {
@@ -4723,11 +4729,17 @@ function finishScript({
   // PARTIAL dictation (e.g. only BS said this run; type/current still
   // snapshot-only) through as "all covered" — reopening id 117's exact bug
   // for every field that was never checked.
+  // Codex diff-review r2 — circuit-scoped: a REPLACEMENT site carries
+  // `state.operations` across a circuit change (e.g. the ring confirmation
+  // circuit-switch), so an unscoped check let a stale operation from a
+  // DIFFERENT circuit satisfy coverage here and speak the CURRENT circuit's
+  // never-dictated, snapshot-only value as if it had been said this run.
   const scriptOwnedDictatedFields = new Set();
   for (const op of operations) {
     if (
       (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
-      op.spoken_owner !== 'bundler'
+      op.spoken_owner !== 'bundler' &&
+      op.effective_circuit_ref === circuit_ref
     ) {
       scriptOwnedDictatedFields.add(op.field);
     }
@@ -4923,16 +4935,22 @@ export function enterScriptByName({
   // server-driven entry emits. The dispatcher (stage6-dispatchers-script.js)
   // threads responseEpochRef.current from the live shadow-harness turn.
   responseEpoch = null,
-  // PLAN A2 §A2.4 (feedback id 117) — dispatcher-resolved prior-winner
-  // lookup: (field, circuit_ref) => the value a per-turn winner ALREADY
-  // holds for this exact slot this turn, or `undefined` when none exists.
-  // A same-turn prior winner is authoritative REGARDLESS of whether it
-  // equals the seed's own value (the bundler already speaks it, and this
-  // mirrors the dispatcher backfill's own defensive same-turn dedupe);
-  // absent a prior winner, a canonical-EQUAL seed is script-owned and a
-  // canonical-DIFFERENT one overwrites a genuinely stale snapshot value.
-  // null/undefined-returning when the caller has no per-turn-writes context
-  // (test paths / legacy callers) — every seed is then script-owned.
+  // PLAN A2 §A2.4 (feedback id 117) — dispatcher-resolved ownership verdict:
+  // (field, circuit_ref, canonicalValue) => 'bundler' | null. The caller
+  // (stage6-dispatchers-script.js) does the canonical comparison itself,
+  // since it alone holds the prior winner's value — it returns 'bundler'
+  // ONLY when a same-turn prior winner's value is canonical-EQUAL to this
+  // seed (the bundler already speaks that exact value this turn, no
+  // rewrite needed); a canonical-DIFFERENT prior winner is NOT authoritative
+  // — the resolver returns null and the seed falls through to the normal
+  // canonicalise-compare-against-snapshot rule below, overwriting it and
+  // becoming the latest (bundler-backfilled) winner. Codex diff-review r1,
+  // 3/3 lenses: an earlier "any prior winner wins unconditionally" draft
+  // silently discarded a genuinely different same-turn correction — id
+  // 117's exact bug class, just via a same-turn double-call instead of a
+  // cross-turn dictation. null/undefined-returning when the caller has no
+  // per-turn-writes context (test paths / legacy callers) — every seed is
+  // then script-owned.
   ownershipResolver = null,
 }) {
   if (!session) return { ok: false, error: { code: 'no_session' } };
@@ -5054,6 +5072,13 @@ export function enterScriptByName({
   const slotFields = schema.slots.map((s) => s.field);
   const validWrites = [];
   const droppedFields = [];
+  // Codex diff-review r2 — §(w)'s "a validation-REJECTED operation →
+  // `rejected`, no read-back" requires an actual ledger entry, not just the
+  // `dropped_fields` envelope. Only a KNOWN schema field can get one (an
+  // unrecognised/hallucinated field name or an empty value has no slot to
+  // attach a rejection to); tracked here and marked once `initScriptState`
+  // below has created `state.operations`.
+  const rejectedKnownFieldWrites = [];
   if (Array.isArray(pending_writes)) {
     for (const w of pending_writes) {
       if (
@@ -5084,6 +5109,7 @@ export function enterScriptByName({
       );
       if (!norm.ok) {
         droppedFields.push(w.field);
+        rejectedKnownFieldWrites.push({ field: w.field, value: w.value });
         continue;
       }
       // `correction` rides the local entry so the provenance survives to
@@ -5106,6 +5132,18 @@ export function enterScriptByName({
   // partial fill is honoured (mirrors runEntry's skip-already-filled).
   initScriptState(session, schema, resolvedCircuitRef, now);
   const state = session.dialogueScriptState;
+  // Codex diff-review r2 — record the ledger's `rejected` disposition for
+  // every KNOWN-field write the normaliser refused (invalid/out-of-range/
+  // off-ladder), now that `state.operations` exists to hold it.
+  for (const w of rejectedKnownFieldWrites) {
+    markRejected(
+      markDictated(state, w.field, w.value, {
+        schema,
+        source: 'sonnet_start_dialogue_script',
+        circuit_ref: resolvedCircuitRef,
+      })
+    );
+  }
   if (resolvedCircuitRef !== null) {
     const existingValues = readExistingValues(session, resolvedCircuitRef, slotFields);
     for (const [f, v] of Object.entries(existingValues)) {

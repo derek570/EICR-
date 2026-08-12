@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "9d2046da47079c0bca672cb65fff21cba985329be03b376a94eee5bf89dbd954",
+  "semantic_oracle_digest": "e3a2cf06e2992f1bd298082e375fea94c96bd2316bba558b28155cd6ce6a9854",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -537,7 +537,7 @@
     },
     {
       "path": "src/extraction/dialogue-engine/engine.js",
-      "sha256": "58f73ff75e13af48d8f1e75d1476a9945fc4d399d659534e7edb9dc034f143a6"
+      "sha256": "10054ef92b3b7e758858dcb2c988f5348da7598ea0f358e3cca1721f0214a0bb"
     },
     {
       "path": "src/extraction/dialogue-engine/helpers/snapshot-write.js",
