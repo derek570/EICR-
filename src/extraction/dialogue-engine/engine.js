@@ -4782,14 +4782,24 @@ function finishScript({
   // circuit-switch), so an unscoped check let a stale operation from a
   // DIFFERENT circuit satisfy coverage here and speak the CURRENT circuit's
   // never-dictated, snapshot-only value as if it had been said this run.
+  // Codex diff-review r3 — LATEST op per field, not any historical one. A
+  // field can carry an OLDER script-owned operation (e.g. a canonical-
+  // equal-no-winner seed) followed by a NEWER bundler-owned correction
+  // (e.g. a genuinely different same-turn write, backed by a resolver).
+  // Crediting the field from the stale older op made allCoveredScriptOwned
+  // true even though the CURRENT state is bundler-owned — the legacy
+  // finish text then spoke the latest value a second time, on top of the
+  // bundler's own confirmation. `findCoveringOp` already implements
+  // latest-wins + circuit-scoping; reuse it here instead of scanning ALL
+  // operations unconditionally.
+  const distinctDictatedFields = new Set(
+    operations.filter((op) => op.effective_circuit_ref === circuit_ref).map((op) => op.field)
+  );
   const scriptOwnedDictatedFields = new Set();
-  for (const op of operations) {
-    if (
-      (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
-      op.spoken_owner !== 'bundler' &&
-      op.effective_circuit_ref === circuit_ref
-    ) {
-      scriptOwnedDictatedFields.add(op.field);
+  for (const field of distinctDictatedFields) {
+    const latest = findCoveringOp(field);
+    if (latest && latest.spoken_owner !== 'bundler') {
+      scriptOwnedDictatedFields.add(field);
     }
   }
   const mirrorCoveredFields = new Set();
@@ -4891,16 +4901,27 @@ function finishScript({
     // effective_circuit_ref differs from this finish's (current) circuit_ref;
     // stamping the breadcrumb with the outer circuit_ref regardless would
     // point a later "No, <value>" correction at the WRONG circuit.
+    // Codex diff-review r3 — restrict to the CURRENT circuit outright,
+    // rather than falling back to a carried operation's own (different)
+    // circuit. A positive finish on a snapshot-complete circuit that never
+    // wrote anything itself speaks no specific value about THIS circuit; a
+    // carried older-circuit operation is not what the inspector just heard,
+    // so a bare "No, <value>" immediately after must not silently redirect
+    // to that other circuit — install no breadcrumb instead.
     let lastReadingOp = null;
     for (const op of operations) {
-      if (op.disposition === 'applied' && fields.includes(op.field)) {
+      if (
+        op.disposition === 'applied' &&
+        fields.includes(op.field) &&
+        op.effective_circuit_ref === circuit_ref
+      ) {
         lastReadingOp = op;
       }
     }
     if (lastReadingOp) {
       session.dialogueCorrectionBreadcrumb = {
         schemaName: schema.name,
-        circuit_ref: lastReadingOp.effective_circuit_ref ?? circuit_ref,
+        circuit_ref,
         field: lastReadingOp.field,
         boardId: session.stateSnapshot?.currentBoardId ?? null,
         at: now,
@@ -5256,8 +5277,18 @@ export function enterScriptByName({
     // null, or no resolver at all) falls through to the normal
     // canonicalise-compare-against-snapshot rule below, and a genuinely
     // different value always overwrites — never silently discarded.
+    // Codex diff-review r3 (2/3 lenses convergent) — the resolver is a
+    // FROZEN pre-call snapshot of this turn's prior winners. Once an
+    // earlier entry in THIS SAME pending_writes array has already written
+    // this field, consulting the resolver again compares the CURRENT entry
+    // against the STALE pre-call winner, not against what this loop just
+    // wrote — a later entry whose value happens to match that stale
+    // pre-call winner would be wrongly treated as "already spoken" and
+    // silently dropped, even though it's actually the newest correction
+    // superseding an intervening write from this very call.
     const priorWinnerOwnsIt =
       resolvedCircuitRef !== null &&
+      !writtenThisLoopFields.has(w.field) &&
       typeof ownershipResolver === 'function' &&
       ownershipResolver(w.field, resolvedCircuitRef, w.value) === 'bundler';
     if (priorWinnerOwnsIt) {

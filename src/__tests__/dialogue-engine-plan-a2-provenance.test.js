@@ -706,6 +706,46 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     expect(ws.sent.filter((m) => m?.type === 'ask_user_started')).toHaveLength(0);
   });
 
+  // Codex diff-review r3 (2/3 lenses convergent) — the ownership resolver
+  // is a FROZEN pre-call snapshot. Two entries for the SAME field in one
+  // pending_writes array, where the SECOND happens to match the frozen
+  // prior winner's value, must not let the resolver silently discard the
+  // second (latest) write as "already bundler-owned" — it's actually a
+  // genuine correction superseding what THIS loop just wrote first.
+  test('a later duplicate matching the frozen prior winner still overwrites an intervening same-loop write', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      5: { rcd_type: 'AC', rcd_operating_current_ma: '30' },
+    });
+    const result = enterScriptByName({
+      session,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'rcd',
+      circuit_ref: 5,
+      // B then A, where the resolver's frozen prior winner is A (60898) —
+      // simulating an earlier-in-the-turn record_reading of 60898, then two
+      // start_dialogue_script seeds: first a genuinely different write
+      // (61008), then a later write that happens to equal the frozen prior
+      // winner (60898). The 60898 write is the LATEST dictation and must
+      // win — not be silently dropped because it matches the stale
+      // pre-call resolver snapshot.
+      pending_writes: [
+        { field: 'rcd_bs_en', value: '61008' },
+        { field: 'rcd_bs_en', value: '60898' },
+      ],
+      ws,
+      logger: null,
+      now: 1000,
+      ownershipResolver: (field, circuitRef, canonicalValue) =>
+        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === '60898' ? 'bundler' : null,
+    });
+    expect(result.ok).toBe(true);
+    // The LATEST dictated value (60898) must be what's actually stored —
+    // not silently discarded in favour of the intervening 61008 write.
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('60898');
+  });
+
   // (l) two same-field dictations → TWO operations, each spoken per its own
   // coverage (plan's literal test (l); Codex diff-review r2, 2/3 lenses
   // convergent — reverses r1's "latest-only" draft). The finish text covers
