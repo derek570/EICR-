@@ -3200,8 +3200,19 @@ function runActivePath({
         // RAW reply + masked (mini-review r1) — mirrors the entry loop; the
         // annotation must not defeat the leading patterns or feed extraction.
         const freshVolunteered = extractNamedFieldValues(maskCircuitSpans(reply), schema.slots);
+        // id 123 companion (ep-diff-review cycle 1): a COMPOUND restatement
+        // is a fresh reading too — without this the legacy finish below
+        // would swallow the correction silently. Circuit-masked for the
+        // same reason as the guard above: the reply's own circuit token is
+        // the consumed resolution, and this predicate only routes to the
+        // finish+reprocess escape (the model then owns the fresh text) —
+        // it never writes directly.
+        const freshCompound =
+          typeof schema.compoundEntryExtractor === 'function'
+            ? schema.compoundEntryExtractor(maskCircuitSpans(reply))
+            : [];
         const freshEntry = detectEntry(reply, schema).matched;
-        if (freshVolunteered.length > 0 || freshEntry) {
+        if (freshVolunteered.length > 0 || freshCompound.length > 0 || freshEntry) {
           const readingSlots = schema.slots.filter((s) => !s.exclusiveWhenExpected);
           const readingsCaptured =
             readingSlots.length > 0 &&
@@ -3281,7 +3292,21 @@ function runActivePath({
       let value;
       if (circuitResolvedThisTurn) {
         const resolutionMasked = maskCircuitResolution(reply, circuitResolutionMeta);
-        if (extractNamedFieldValues(resolutionMasked, schema.slots).length > 0) {
+        // id 123 companion (ep-diff-review cycle 1, Codex-sanctioned plan
+        // deviation WITHIN the original Audio-First intent): a COMPOUND IR
+        // restatement co-dictated with the circuit answer ("circuit 7,
+        // greater than 250 L-L and L-E") is a fresh reading, exactly like a
+        // NAMED one — parseVoltage would otherwise grab its magnitude and
+        // certify it as the test voltage. Route it through the same M4
+        // escape hatch. The masked text is deliberate on THIS path: the
+        // blanked circuit span IS the consumed resolution, and firing leads
+        // only to reprocessing (never a direct write), so masking cannot
+        // cause a wrong write.
+        if (
+          extractNamedFieldValues(resolutionMasked, schema.slots).length > 0 ||
+          (typeof schema.compoundEntryExtractor === 'function' &&
+            schema.compoundEntryExtractor(resolutionMasked).length > 0)
+        ) {
           return handleVoltageNoParse();
         }
         value = currentSlot.parser(resolutionMasked);
