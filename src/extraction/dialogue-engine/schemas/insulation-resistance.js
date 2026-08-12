@@ -233,11 +233,11 @@ const COMPOUND_CANDIDATE_RE = new RegExp(
 // shared trailing `\b` can never match after `Ω` — both `Ω` and whitespace
 // are non-word characters, so `250 MΩ` would silently fail qualification.
 const MEGAOHM_UNIT_AFTER_RE =
-  /^\s*(?:m(?:ega)?\s*[- ]?\s*ohms?\b|mΩ(?![\p{L}\p{N}])|milli\s*grams?\b|millies?\b|megs?\b)/iu;
+  /^\s*(?:m(?:ega)?\s*[- ]?\s*ohms?\b|m[ΩΩ](?![\p{L}\p{N}])|milli\s*grams?\b|millies?\b|megs?\b)/iu;
 
 // Megaohm forms stripped from a candidate's suffix BEFORE the conflicting-
 // unit scan, so "250 megaohms" never reads as a bare "ohms" conflict.
-const MEGAOHM_FORMS_STRIP_RE = /m(?:ega)?\s*[- ]?\s*ohms?|mΩ|milli\s*grams?|millies?|megs?/giu;
+const MEGAOHM_FORMS_STRIP_RE = /m(?:ega)?\s*[- ]?\s*ohms?|m[ΩΩ]|milli\s*grams?|millies?|megs?/giu;
 
 // Conflicting unit ANYWHERE between the candidate and the label pair →
 // candidate rejected (ep-diff-review cycle 1: an immediate-suffix-only check
@@ -250,7 +250,9 @@ const MEGAOHM_FORMS_STRIP_RE = /m(?:ega)?\s*[- ]?\s*ohms?|mΩ|milli\s*grams?|mil
 // megaohm forms are stripped before this scan, so any surviving Ω is
 // non-mega by construction (ep-diff-review cycle 2).
 const CONFLICTING_UNIT_SCAN_RE =
-  /\b(?:volts?|v|amps?|amperes?|milli\s*seconds?|ms|milli\s*amps?|ma|(?:kilo\s*|k\s*)?ohms?)\b|(?:k(?:ilo)?\s*)?Ω/i;
+  // Both Greek capital omega (U+03A9) AND the canonically-equivalent OHM
+  // SIGN (U+2126) — no input normalisation runs before this scan (cycle 3).
+  /\b(?:volts?|v|amps?|amperes?|milli\s*seconds?|ms|milli\s*amps?|ma|(?:kilo\s*|k\s*)?ohms?)\b|(?:k(?:ilo)?\s*)?[ΩΩ]/i;
 
 // Closed connector set joining a bare number to the IR subject → (c).
 const CONNECTOR_BEFORE_RE = /\b(?:is|was|reads|measures|equals)[\s,]{0,3}$/i;
@@ -323,11 +325,19 @@ function compoundEntryExtractor(text) {
     const candText = m[0];
     const candEnd = m.index + candText.length;
     const restAfter = prefix.slice(candEnd);
-    // Negative reading → rejected outright (ep-diff-review cycle 2): the
-    // candidate regex is unsigned, so "-1" / "minus 1" would otherwise
-    // tail-match as a positive "1" and certify both legs. A negative IR
-    // reading is a meter/garble artefact — never silently rewritten.
-    if (/(?:-|−|\bminus|\bnegative)\s*$/i.test(prefix.slice(0, m.index))) continue;
+    // Negative/signed reading → the WHOLE extraction fails (ep-diff-review
+    // cycles 2+3): the candidate regex is unsigned, so "-1" / "minus 1" /
+    // "1 - 2" would otherwise tail-match a positive digit run; a `continue`
+    // could strip one candidate from an ambiguous multi-value expression
+    // and leave exactly one to certify. Digit-leading candidates only — a
+    // dash before "greater"/"infinite" is punctuation, not a sign. Sign
+    // class covers hyphen, Unicode minus, and en/em dashes.
+    if (
+      /^[\d.]/.test(candText) &&
+      /(?:[-−–—]|\b(?:minus|negative))\s*$/i.test(prefix.slice(0, m.index))
+    ) {
+      return [];
+    }
     // Conflicting unit ANYWHERE between the candidate and the label pair →
     // rejected outright (megaohm forms stripped first so they never read as
     // bare "ohms").

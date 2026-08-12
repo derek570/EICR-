@@ -171,6 +171,13 @@ describe('compoundEntryExtractor — negative shapes → []', () => {
     'IR is -1 megaohms live to live and live to earth',
     'IR is minus 1 megaohm live to live and live to earth',
     'IR is greater than -1 megaohms live to live and live to earth',
+    // Cycle 3: OHM SIGN U+2126 (vs Greek omega U+03A9) conflicts too, and a
+    // signed multi-value expression fails the WHOLE extraction — stripping
+    // one candidate must never leave exactly one to certify.
+    'Insulation resistance is 500 Ω live to live and live to earth',
+    'Insulation resistance is 500 kΩ live to live and live to earth',
+    'IR reads 1 - 2 megaohms live to live and live to earth',
+    'IR is –1 megaohms live to live and live to earth',
   ];
 
   test.each(negatives)('%s → []', (text) => {
