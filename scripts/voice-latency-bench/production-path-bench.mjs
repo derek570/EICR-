@@ -857,6 +857,19 @@ async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modul
   await new Promise((res) => setTimeout(res, 50));
   projectLogger.remove(transport);
   activeSessions.delete(sessionId);
+  // MANDATORY teardown — session.stop() clears the cache-keepalive timer
+  // (cacheKeepaliveHandle re-arms itself every CACHE_KEEPALIVE_MS while
+  // isActive). Without this, every completed rep's session keeps firing a
+  // ~36k-estimated-token keepalive create() roughly every 4 minutes for the
+  // rest of the process lifetime: observed live on this bench's second full
+  // run — 355 parasitic keepalives ≈ up to ~99k tokens/min of org TPM drain
+  // by rep 11, which is what was 429-poisoning later blocks despite correct
+  // turn pacing.
+  try {
+    session.stop();
+  } catch (err) {
+    process.stderr.write(`    warn: session.stop() failed (${err.message}) — keepalive timer may leak\n`);
+  }
 
   const totalRounds = turns.reduce((sum, t) => sum + t.round_timings.length, 0);
   const totalStreamMs = turns.reduce(
