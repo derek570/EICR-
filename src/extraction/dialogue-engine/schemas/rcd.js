@@ -340,4 +340,11 @@ export const rcdSchema = {
     fields: ['rcd_bs_en', 'rcd_type', 'rcd_operating_current_ma'],
     fieldsLabel: 'RCD',
   },
+  // PLAN A2 (feedback id 117) — the value-bearing fields `finishMessage`
+  // actually speaks. Deliberately EXCLUDES `rcd_trip_time`: finishMessage
+  // never names it, so a trip-time dictation is always "uncovered" and
+  // picked up by the terminal-sink read-back instead — exactly the id-117
+  // fix (the trip-time correction got no read-back at all while
+  // finishMessage read back BS/type/mA the inspector never said).
+  finishCoveredFields: ['rcd_bs_en', 'rcd_type', 'rcd_operating_current_ma'],
 };
