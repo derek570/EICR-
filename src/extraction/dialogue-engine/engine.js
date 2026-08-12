@@ -1172,30 +1172,27 @@ function valuesCanonicallyEqual(slot, existingValue, candidateValue) {
  */
 function computeUncoveredReadback(state, schema, siteLabel) {
   const ops = Array.isArray(state?.operations) ? state.operations : [];
-  // Codex diff-review r1 — a repeated same-field dictation (a correction
-  // dictated twice before any terminal exit) leaves TWO 'applied' operation
-  // records; only the LATEST one per (field, circuit) reflects what's
-  // actually in the snapshot. An earlier, superseded one must never be
-  // individually read back (it would speak a stale value the snapshot no
-  // longer holds — never a genuine "also got", just noise/confusion) or
-  // silently double the current value if both were eligible.
-  const latestByFieldCircuit = new Map();
-  for (const op of ops) {
-    if (op.disposition !== 'applied' && op.disposition !== 'satisfied_existing') continue;
-    const key = `${op.field}::${op.effective_circuit_ref ?? ''}`;
-    latestByFieldCircuit.set(key, op);
-  }
-  const uncovered = ops.filter((op) => {
-    if (
-      (op.disposition !== 'applied' && op.disposition !== 'satisfied_existing') ||
-      op.spoken_owner === 'bundler' ||
-      op.covered_by != null
-    ) {
-      return false;
-    }
-    const key = `${op.field}::${op.effective_circuit_ref ?? ''}`;
-    return latestByFieldCircuit.get(key) === op;
-  });
+  // Codex diff-review r1 (round 1) tried excluding a superseded same-
+  // (field,circuit) APPLIED operation from ever being spoken. Codex
+  // diff-review r2 (cycle 2, 2/3 independent lenses convergent) reversed
+  // this: the plan's own test (l) — "two same-field dictations -> two
+  // operations, each spoken per its own coverage" — and its refine-log
+  // round 2 rationale ("per-operation coverage, not field-level;
+  // superseded QUEUED ops -> abandoned") deliberately distinguish a
+  // superseded QUEUED write (which never landed, correctly abandoned and
+  // silent) from two genuinely APPLIED writes (both landed on the snapshot
+  // at some point this run and both get their own read-back). Coverage
+  // here is per-OPERATION, not per-field — `findCoveringOp`/
+  // `transitionToConfirmation` already mark only the LATEST matching
+  // operation `covered_by` (since that's the one whose value the legacy
+  // finish/confirmation text actually renders); an earlier, uncovered
+  // APPLIED operation is not excluded, it is simply also spoken here.
+  const uncovered = ops.filter(
+    (op) =>
+      (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
+      op.spoken_owner !== 'bundler' &&
+      op.covered_by == null
+  );
   if (uncovered.length === 0) return null;
   // Codex diff-review r1 (edge-interactions lens) — a REPLACEMENT site
   // (runPivot, scope-conflict clear+reinit) carries operations across a

@@ -667,10 +667,15 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     expect(ws.sent.filter((m) => m?.type === 'ask_user_started')).toHaveLength(0);
   });
 
-  // (l) two same-field dictations → two operations; the finish text covers
-  // the LATEST (the value it actually renders), never double-speaking it
-  // while silently dropping the correction (Codex diff-review r1).
-  test('a repeated same-field correction is covered by its LATEST operation, never double-spoken', () => {
+  // (l) two same-field dictations → TWO operations, each spoken per its own
+  // coverage (plan's literal test (l); Codex diff-review r2, 2/3 lenses
+  // convergent — reverses r1's "latest-only" draft). The finish text covers
+  // the LATEST (the value it actually renders, script-owned); the earlier,
+  // genuinely-APPLIED (never-abandoned) correction is a distinct dictated
+  // reading and is separately named via the terminal-sink append — a
+  // superseded QUEUED write is what goes silently `abandoned`, not a
+  // superseded APPLIED one.
+  test('a repeated same-field correction: both APPLIED dictations are spoken, the latest via the finish text and the earlier via the appended read-back', () => {
     const ws = new FakeWS();
     const session = buildSession({ 5: {} });
     processProtectiveDeviceTurn({
@@ -718,12 +723,14 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     });
     // Stored value is the CORRECTED one.
     expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('BS EN 60898');
-    // Spoken exactly once, and it's the corrected value — never the stale
-    // 61008, never doubled.
+    // The finish text covers the latest (script-owned, current) value ONCE;
+    // the earlier correction is a distinct genuinely-dictated reading and
+    // is separately named via the terminal-sink append — neither is
+    // doubled, and neither is silently dropped.
     const finish = lastQuestion(ws);
-    expect(finish).toBe('Got it. BS EN 60898, type AC, 30 mA.');
+    expect(finish).toBe('Got it. BS EN 60898, type AC, 30 mA. Also got BS number BS EN 61008.');
     expect((finish.match(/60898/g) ?? []).length).toBe(1);
-    expect(finish).not.toMatch(/61008/);
+    expect((finish.match(/61008/g) ?? []).length).toBe(1);
   });
 
   // Cross-circuit provenance (Codex diff-review r1, edge-interactions lens)
