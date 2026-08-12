@@ -577,11 +577,35 @@ export function normaliseInstallationIngest(installation) {
   if (installation.town !== undefined) out.town = installation.town;
   if (installation.county !== undefined) out.county = installation.county;
   if (installation.clientAddress !== undefined) out.client_address = installation.clientAddress;
-  if (installation.clientPostcode !== undefined)
-    out.client_postcode = installation.clientPostcode;
+  if (installation.clientPostcode !== undefined) out.client_postcode = installation.clientPostcode;
   if (installation.clientTown !== undefined) out.client_town = installation.clientTown;
   if (installation.clientCounty !== undefined) out.client_county = installation.clientCounty;
   return out;
+}
+
+/**
+ * Plan E (feedback id 125, E4) — legacy JSON-prose path's locality fold.
+ * Extracted to a pure function (mutates `confirmations` in place) so it is
+ * independently testable without exercising the full extractFromUtterance
+ * Anthropic call. Mirrors the live production bundler's fold
+ * (stage6-event-bundler.js synthesiseConfirmations) but operates as a
+ * LATE-BIND mutation of already-composed confirmation text, since the
+ * legacy path builds `result.confirmations` from the model's own prose
+ * output before the postcode-lookup apply step runs.
+ */
+export function foldLocalityIntoLegacyConfirmations(confirmations, stateSnapshot) {
+  if (!Array.isArray(confirmations) || confirmations.length === 0) return;
+  for (const conf of confirmations) {
+    if (conf?.field !== 'postcode' && conf?.field !== 'client_postcode') continue;
+    if (typeof conf.text !== 'string' || !conf.text) continue;
+    const family = conf.field === 'client_postcode' ? 'client' : 'site';
+    const tail = resolveEffectiveLocalityTail(stateSnapshot, family);
+    if (!tail) continue;
+    conf.text = `${conf.text}, ${tail}`;
+    if (typeof conf.expanded_text === 'string' && conf.expanded_text) {
+      conf.expanded_text = `${conf.expanded_text}, ${tail}`;
+    }
+  }
 }
 
 export function normaliseSupplyIngest(supply) {
@@ -3215,19 +3239,7 @@ export class EICRExtractionSession {
     // the snapshot's town/county authoritative, so this fold MUST run
     // after it — a late-bind mutation of the already-built confirmation
     // text, not a fresh confirmation object (one utterance, exactly-once).
-    if (result.confirmations.length > 0) {
-      for (const conf of result.confirmations) {
-        if (conf?.field !== 'postcode' && conf?.field !== 'client_postcode') continue;
-        if (typeof conf.text !== 'string' || !conf.text) continue;
-        const family = conf.field === 'client_postcode' ? 'client' : 'site';
-        const tail = resolveEffectiveLocalityTail(this.stateSnapshot, family);
-        if (!tail) continue;
-        conf.text = `${conf.text}, ${tail}`;
-        if (typeof conf.expanded_text === 'string' && conf.expanded_text) {
-          conf.expanded_text = `${conf.expanded_text}, ${tail}`;
-        }
-      }
-    }
+    foldLocalityIntoLegacyConfirmations(result.confirmations, this.stateSnapshot);
 
     // Track token costs (model id from response so per-model rates apply
     // correctly when the tiered router escalated this turn to a different

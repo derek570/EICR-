@@ -197,6 +197,49 @@ writes as `derived:true`, and therefore produce no address-copy read-backs.
 That provenance survives board/circuit projection and the additive wire field,
 so clients can apply a derived non-empty correction without synthesising their
 generic local correction confirmation when Voice confirmations are disabled.
+
+**Installation snapshot seeding + postcode mapping (Plan E, 2026-08-12,
+feedback id 125).** The 2026-08-01 single-authority design above never fed
+the snapshot the job's EXISTING installation address — `_seedStateFromJobState`
+gated its whole body on `jobState.circuits`, and neither ingestion site read
+the installation bucket at all (`installation` on iOS, `installation_details`
+snake_case on web). `selectInstallationContainer` (`eicr-extraction-session.js`)
+now merges all three bucket-key spellings per field, iOS-first precedence,
+same pattern as `selectSupplyContainer`. SEED (session start) writes all 8
+address-family keys unconditionally into the empty target; MID-SESSION MERGE
+is fill-EMPTY-ONLY (the 8 keys stay out of `FACT_FIELDS`) so a stale client
+push can fill a gap but never clobbers a fresher dictated correction. This
+restores the direct-mirror command's source ("use the installation address for
+the client too" now finds the address) and — because a non-empty seeded town
+blocks the lookup's override check — protects against the second bug below.
+
+`postcode_lookup.js`'s town/county mapping was itself wrong: town preferred
+`admin_ward` (an ELECTORAL WARD, not a town — it silently overwrote a correct
+"Lower Earley" with the ward "Hawkedon" in the field session that surfaced
+this), and county fell back to `region` (yields "South East" for every UK
+unitary authority — the exact drift value `UK_REGION_DRIFT` in
+`postcode-snapshot-applier.js` exists to correct downstream, manufactured
+again at the source). Fixed: town ← `parish || admin_district` (never
+`admin_ward`); county ← `admin_county` only, blank when null (no ceremonial
+postcode-area→county table); `region` is never read by the mapping — a
+source-level rule, not an output filter (filtering the lookup's own output
+through `UK_REGION_DRIFT` would blank legitimate towns like "London").
+`UK_REGION_DRIFT` itself is unchanged — it still replaces already-stored
+drift values in the applier.
+
+The derived town/county writes stay excluded from confirmation candidacy by
+design (Audio-First's "derived, not dictated" exception), so a wrong mapping
+was previously silent. The postcode confirmation now speaks the EFFECTIVE
+post-apply snapshot town/county appended to the existing read-back (e.g.
+"RG6 3EY, Earley") — never the raw lookup output, since a seeded/preserved
+value must speak as stored. One utterance, exactly-once; the postcode
+operation's `dedupe_token` is unaffected (computed from field/scope/turnId/
+ordinal, never from text). Both egress seams carry the fold: the live
+production bundler (`stage6-event-bundler.js`, reading a `stateSnapshot`
+option threaded from the `runLiveMode` call site) and the legacy JSON-prose
+path (`foldLocalityIntoLegacyConfirmations`, a late-bind mutation of
+`result.confirmations` run after the lookup-apply step, since that path
+composes its confirmations from the model's own prose before the apply runs).
 The inspector instead hears the surviving dictated-source confirmation or one
 short acknowledgement. Neither client owns a mirror latch, question, or copy.
 Merely writing a source field is not evidence that it will be heard: current
