@@ -251,9 +251,13 @@ describe('pre-filter — active-script abort', () => {
     expect(out).toEqual({ handled: false });
     // State cleared so Sonnet sees a clean slate next turn.
     expect(session.dialogueScriptState).toBeFalsy();
-    // No new WS payload (Stage 6 will route to Sonnet and Sonnet emits
-    // its own writes).
-    expect(ws.sent).toHaveLength(0);
+    // PLAN A2 (feedback id 117) — the dictated BS number was never read
+    // back before this abort (OCPD has no confirmation/finish path here —
+    // the script is aborted, not finished); the terminal-sink rule speaks
+    // it as one standalone frame. Stage 6 still separately routes to
+    // Sonnet, which emits its own writes for the NEW broadcast values.
+    expect(ws.sent).toHaveLength(1);
+    expect(ws.sent[0].question).toBe('Also got BS number BS EN 60898.');
     // Abort log marker present with state diagnostics.
     const aborted = logger.events.find((e) => e.name === 'dialogue_broadcast_aborted_mid_script');
     expect(aborted).toBeTruthy();
@@ -348,7 +352,12 @@ describe('pre-filter — bulkApplyPending preservation (RCD regression guard)', 
     });
     // Confirmation TTS, script cleared.
     const last = ws.sent.at(-1);
-    expect(last.question).toBe('Applied RCD to all circuits.');
+    // PLAN A2 (feedback id 117) — the bulk confirm text only names the
+    // field group + circuit scope; the terminal-sink rule appends the
+    // genuinely dictated BS/type/mA values.
+    expect(last.question).toBe(
+      'Applied RCD to all circuits. Also got: BS number BS EN 61008, type AC, operating current 30.'
+    );
     expect(session.dialogueScriptState).toBeFalsy();
   });
 
@@ -377,7 +386,9 @@ describe('pre-filter — bulkApplyPending preservation (RCD regression guard)', 
     expect(
       logger.events.find((e) => e.name === 'dialogue_broadcast_aborted_mid_script')
     ).toBeUndefined();
-    expect(ws.sent.at(-1).question).toBe('Applied RCD to all circuits.');
+    expect(ws.sent.at(-1).question).toBe(
+      'Applied RCD to all circuits. Also got: BS number BS EN 61008, type AC, operating current 30.'
+    );
   });
 });
 

@@ -98,19 +98,33 @@ export async function dispatchStartDialogueScript(call, ctx) {
     input.board_id ??
     session.stateSnapshot?.currentBoardId ??
     getMainBoardId(session.stateSnapshot);
-  const priorWinnerValues =
-    perTurnWrites && perTurnWrites.readings instanceof Map
-      ? new Map(projectReadingWinners(perTurnWrites).map((w) => [w.slot, w.value?.value]))
-      : new Map();
-  // (field, circuitRef) => the prior per-turn winner's value, or `undefined`
-  // when no such winner exists. A plain existence/value lookup — the engine
-  // decides what to DO with it (defer unconditionally to a same-turn prior
-  // winner; canonicalise-compare only when none exists).
-  const ownershipResolver = (field, circuitRef) => {
-    if (!Number.isInteger(circuitRef)) return undefined;
-    const slot = rawCircuitSlot(field, circuitRef, seededEffectiveBoardId);
-    return priorWinnerValues.get(slot);
-  };
+  // Codex diff-review r1 (3/3 lenses) — only construct a resolver when this
+  // dispatcher can ACTUALLY perform the guaranteed post-call backfill
+  // (perTurnWrites.readings is a live Map); otherwise pass null so
+  // enterScriptByName's APPLIED-seed branch correctly falls back to
+  // script-owned instead of promising a bundler confirmation that will
+  // never arrive (a seed marked 'bundler' with no backfill is a genuine
+  // silent-drop — finishScript suppresses it, and nothing else ever speaks
+  // it).
+  const canBackfill = !!(perTurnWrites && perTurnWrites.readings instanceof Map);
+  const priorWinnerValues = canBackfill
+    ? new Map(projectReadingWinners(perTurnWrites).map((w) => [w.slot, w.value?.value]))
+    : new Map();
+  // (field, circuitRef, canonicalValue) => 'bundler' | null. Consulted for a
+  // canonical-EQUAL seed to decide whether an EQUAL prior per-turn winner
+  // means the bundler already speaks this value this turn. A DIFFERING
+  // prior winner returns null — the engine's own canonicalise-compare then
+  // treats it as a genuine correction and overwrites, never silently
+  // discards it (Codex diff-review r1: an earlier "any prior winner always
+  // wins" draft broke this — a valid later correction was silently lost).
+  const ownershipResolver = canBackfill
+    ? (field, circuitRef, canonicalValue) => {
+        if (!Number.isInteger(circuitRef)) return null;
+        const slot = rawCircuitSlot(field, circuitRef, seededEffectiveBoardId);
+        if (!priorWinnerValues.has(slot)) return null;
+        return String(priorWinnerValues.get(slot)) === String(canonicalValue) ? 'bundler' : null;
+      }
+    : null;
 
   const result = enterScriptByName({
     session,

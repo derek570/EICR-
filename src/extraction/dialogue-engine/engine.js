@@ -233,6 +233,29 @@ export function processDialogueTurn(ctx) {
             : 0,
           textPreview: text.slice(0, 80),
         });
+        // PLAN A2 §A2.5 site table (L236-class) — TERMINAL: the model owns
+        // this turn's audibility, but any uncovered EARLIER dictation still
+        // needs its read-back before the silent clear. Any still-queued
+        // pending write is explicitly discarded here (per the comment
+        // above) and becomes abandoned, never spoken.
+        if (Array.isArray(state.pending_writes)) {
+          for (const w of state.pending_writes) {
+            const op = w[OPERATION_REF];
+            if (op) markAbandoned(op);
+          }
+        }
+        if (preFilterSchema) {
+          renderTerminalReadback({
+            ws,
+            session,
+            sessionId,
+            schema: preFilterSchema,
+            logger,
+            now,
+            responseEpoch,
+            siteLabel: 'broadcast_aborted_mid_script',
+          });
+        }
         clearScriptState(session);
         return { handled: false };
       }
@@ -258,6 +281,26 @@ export function processDialogueTurn(ctx) {
         sessionId,
         ms_since_paused: now - (state.paused_at ?? 0),
         ambiguous_bare_value: state.ambiguous_bare_value?.value ?? null,
+      });
+      // PLAN A2 §A2.5 site table (L262-class) — TERMINAL: the paused episode
+      // is discarded; any still-queued pending write becomes abandoned, and
+      // any uncovered applied/satisfied_existing operation is read back
+      // before the silent clear.
+      if (Array.isArray(state.pending_writes)) {
+        for (const w of state.pending_writes) {
+          const op = w[OPERATION_REF];
+          if (op) markAbandoned(op);
+        }
+      }
+      renderTerminalReadback({
+        ws,
+        session,
+        sessionId,
+        schema,
+        logger,
+        now,
+        responseEpoch,
+        siteLabel: 'paused_hard_timeout',
       });
       clearScriptState(session);
     }
@@ -294,6 +337,28 @@ export function processDialogueTurn(ctx) {
         if (schema.confirmation?.buildMessage) {
           sendScriptPurge(ws, schema, sessionId);
         }
+        // PLAN A2 §A2.5 site table (L297-class) — TERMINAL: a hard timeout
+        // discards the episode; any still-queued pending write becomes
+        // abandoned, and any uncovered dictation is read back before the
+        // silent clear (the model owns the FOLLOW-UP turn's audibility, but
+        // nothing else will ever speak an already-dictated value from the
+        // now-abandoned episode).
+        if (Array.isArray(state.pending_writes)) {
+          for (const w of state.pending_writes) {
+            const op = w[OPERATION_REF];
+            if (op) markAbandoned(op);
+          }
+        }
+        renderTerminalReadback({
+          ws,
+          session,
+          sessionId,
+          schema,
+          logger,
+          now,
+          responseEpoch,
+          siteLabel: 'active_hard_timeout',
+        });
         clearScriptState(session);
         // Fall through to entry detection below.
       } else {
@@ -1000,9 +1065,21 @@ function nextDialogueOperationId() {
  * `circuit_ref: null` is valid — a queued (circuit-unresolved) dictation
  * starts circuit-less and gets its circuit bound at drain time.
  */
-function markDictated(state, field, value, { source = null, circuit_ref = null } = {}) {
+function markDictated(
+  state,
+  field,
+  value,
+  { source = null, circuit_ref = null, schema = null } = {}
+) {
   if (!state) return null;
   if (!Array.isArray(state.operations)) state.operations = [];
+  // Codex diff-review r1 (edge-interactions lens) — capture the spoken
+  // LABEL at dictation time, from the ORIGINATING schema. A REPLACEMENT
+  // (runPivot) carries this operation into a state whose CURRENT schema
+  // may not even declare this field as a slot (e.g. rcd_trip_time after an
+  // RCD->RCBO pivot) — re-resolving the label against the current schema
+  // at speech time would silently fall back to the raw field name.
+  const label = schema?.slots?.find((s) => s.field === field)?.label ?? null;
   const op = {
     operation_id: nextDialogueOperationId(),
     field,
@@ -1011,6 +1088,7 @@ function markDictated(state, field, value, { source = null, circuit_ref = null }
     effective_circuit_ref: circuit_ref,
     source,
     origin_schema_slot: field,
+    label,
     spoken_owner: null,
     disposition: 'queued',
     covered_by: null,
@@ -1094,18 +1172,49 @@ function valuesCanonicallyEqual(slot, existingValue, candidateValue) {
  */
 function computeUncoveredReadback(state, schema, siteLabel) {
   const ops = Array.isArray(state?.operations) ? state.operations : [];
-  const uncovered = ops.filter(
-    (op) =>
-      (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
-      op.spoken_owner !== 'bundler' &&
-      op.covered_by == null
-  );
+  // Codex diff-review r1 — a repeated same-field dictation (a correction
+  // dictated twice before any terminal exit) leaves TWO 'applied' operation
+  // records; only the LATEST one per (field, circuit) reflects what's
+  // actually in the snapshot. An earlier, superseded one must never be
+  // individually read back (it would speak a stale value the snapshot no
+  // longer holds — never a genuine "also got", just noise/confusion) or
+  // silently double the current value if both were eligible.
+  const latestByFieldCircuit = new Map();
+  for (const op of ops) {
+    if (op.disposition !== 'applied' && op.disposition !== 'satisfied_existing') continue;
+    const key = `${op.field} ${op.effective_circuit_ref ?? ''}`;
+    latestByFieldCircuit.set(key, op);
+  }
+  const uncovered = ops.filter((op) => {
+    if (
+      (op.disposition !== 'applied' && op.disposition !== 'satisfied_existing') ||
+      op.spoken_owner === 'bundler' ||
+      op.covered_by != null
+    ) {
+      return false;
+    }
+    const key = `${op.field} ${op.effective_circuit_ref ?? ''}`;
+    return latestByFieldCircuit.get(key) === op;
+  });
   if (uncovered.length === 0) return null;
+  // Codex diff-review r1 (edge-interactions lens) — a REPLACEMENT site
+  // (runPivot, scope-conflict clear+reinit) carries operations across a
+  // circuit change; an uncovered operation from a DIFFERENT circuit than
+  // the one this state is now scoped to must be attributed by circuit, or
+  // the read-back would be ambiguous about which circuit it names.
+  const currentCircuitRef = state.circuit_ref ?? null;
   const parts = uncovered.map((op) => {
+    // Prefer the label captured at dictation time (survives a schema
+    // REPLACEMENT where the field is no longer one of the CURRENT
+    // schema's slots); fall back to a live lookup for older/legacy
+    // operations that predate the label capture, then the raw field name.
     const slot = schema?.slots?.find((s) => s.field === op.field);
-    const label = slot?.label ?? op.field;
+    const label = op.label ?? slot?.label ?? op.field;
     const value = op.written_value ?? op.dictated_value;
-    return `${label} ${value}`;
+    const opCircuit = op.effective_circuit_ref ?? null;
+    const circuitPrefix =
+      opCircuit !== null && opCircuit !== currentCircuitRef ? `circuit ${opCircuit} ` : '';
+    return `${circuitPrefix}${label} ${value}`;
   });
   const text = parts.length === 1 ? `Also got ${parts[0]}.` : `Also got: ${parts.join(', ')}.`;
   for (const op of uncovered) op.covered_by = siteLabel;
@@ -1476,6 +1585,11 @@ function transitionToConfirmation({
         (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
         op.spoken_owner !== 'bundler' &&
         op.covered_by == null &&
+        // Codex diff-review r1 — circuit-scoped: an operation carried
+        // across a REPLACEMENT (runPivot / scope-conflict reinit) from a
+        // DIFFERENT circuit must never be marked covered by THIS circuit's
+        // confirmation message just because the field name matches.
+        op.effective_circuit_ref === state.circuit_ref &&
         state.values[op.field] !== undefined
       ) {
         op.covered_by = 'confirmation';
@@ -1550,6 +1664,7 @@ function runEntry({
       attachOperationRef(
         w,
         markDictated(conflictState, w.field, w.value, {
+          schema,
           source: 'runEntry_scope_conflict_queue',
           circuit_ref: null,
         })
@@ -1688,6 +1803,7 @@ function runEntry({
     // PLAN A2 (§A2.2 direct-parse-apply row) — mark the dictation BEFORE any
     // seeded-value skip decision, at parse time.
     const op = markDictated(state, w.field, w.value, {
+      schema,
       source: 'runEntry_volunteered',
       circuit_ref: circuitRef,
     });
@@ -1968,6 +2084,7 @@ function runActivePath({
           // (ambiguous_bare_value); it becomes a known-field dictation only
           // HERE, where the inspector's routing answer resolves it to a slot.
           const op = markDictated(state, verdict.field, bare.value, {
+            schema,
             source: 'ir_bare_disambiguation',
             circuit_ref: state.circuit_ref,
           });
@@ -2212,6 +2329,18 @@ function runActivePath({
       state.circuit_ref === null && Array.isArray(state.pending_writes)
         ? state.pending_writes.filter((pw) => !queued.some((q) => q.field === pw.field))
         : [];
+    // PLAN A2 §A2.1 — a queued write the conflict utterance RESTATES (same
+    // field, now superseded by `queued`) is dropped from priorPending; its
+    // operation becomes abandoned rather than being silently orphaned at
+    // disposition 'queued' forever.
+    if (state.circuit_ref === null && Array.isArray(state.pending_writes)) {
+      for (const pw of state.pending_writes) {
+        if (queued.some((q) => q.field === pw.field)) {
+          const op = pw[OPERATION_REF];
+          if (op) markAbandoned(op);
+        }
+      }
+    }
     logger?.info?.(`${schema.logEventPrefix}_different_entry_scope_conflict`, {
       sessionId,
       from_ref: state.circuit_ref,
@@ -2242,6 +2371,7 @@ function runActivePath({
       attachOperationRef(
         w,
         markDictated(conflictState, w.field, w.value, {
+          schema,
           source: 'runActivePath_scope_conflict_queue',
           circuit_ref: null,
         })
@@ -2685,6 +2815,7 @@ function runActivePath({
         // then bind the write (this branch is an explicit overwrite/amend, no
         // seeded-value skip applies here).
         const op = markDictated(state, w.field, w.value, {
+          schema,
           source: 'confirmation_5b_named_amend',
           circuit_ref: state.circuit_ref,
         });
@@ -2738,6 +2869,7 @@ function runActivePath({
           // consumed. Mark at parse (this branch is a correction/write, no
           // seeded-value skip applies).
           const op = markDictated(state, slot.field, parsed, {
+            schema,
             source: 'confirmation_5c_pending_slot',
             circuit_ref: state.circuit_ref,
           });
@@ -2814,6 +2946,7 @@ function runActivePath({
           // paired with a newly-selected field, commonly with NO pending slot
           // outstanding. Mark at parse.
           const op = markDictated(state, retainedSlot.field, retainedParsed, {
+            schema,
             source: 'confirmation_5d_retained_value',
             circuit_ref: state.circuit_ref,
           });
@@ -3091,6 +3224,7 @@ function runActivePath({
             attachOperationRef(
               w,
               markDictated(state, w.field, w.value, {
+                schema,
                 source: 'runActivePath_same_reply_upsert',
                 circuit_ref: null,
               })
@@ -3100,6 +3234,7 @@ function runActivePath({
             attachOperationRef(
               w,
               markDictated(state, w.field, w.value, {
+                schema,
                 source: 'runActivePath_same_reply_upsert',
                 circuit_ref: null,
               })
@@ -3231,6 +3366,7 @@ function runActivePath({
               attachOperationRef(
                 w,
                 markDictated(state, w.field, w.value, {
+                  schema,
                   source: 'runActivePath_unresolved_follow_up_upsert',
                   circuit_ref: null,
                 })
@@ -3240,6 +3376,7 @@ function runActivePath({
               attachOperationRef(
                 w,
                 markDictated(state, w.field, w.value, {
+                  schema,
                   source: 'runActivePath_unresolved_follow_up_upsert',
                   circuit_ref: null,
                 })
@@ -3253,6 +3390,7 @@ function runActivePath({
           attachOperationRef(
             w,
             markDictated(state, w.field, w.value, {
+              schema,
               source: 'runActivePath_unresolved_entry_queue',
               circuit_ref: null,
             })
@@ -3614,6 +3752,7 @@ function runActivePath({
         // currentSlot is by construction not-yet-filled, so no seeded-value
         // skip applies here.
         const op = markDictated(state, currentSlot.field, v, {
+          schema,
           source: 'exclusive_slot',
           circuit_ref: state.circuit_ref,
         });
@@ -3967,6 +4106,7 @@ function runActivePath({
     // PLAN A2 §A2.2 — direct parse→apply (step-7 named). Mark at parse,
     // BEFORE the seeded-value skip decision.
     const op = markDictated(state, w.field, w.value, {
+      schema,
       source: 'step7_named',
       circuit_ref: state.circuit_ref,
     });
@@ -4051,12 +4191,18 @@ function runActivePath({
         allowed_count: currentSlot.allowedValues.length,
         textPreview: text.slice(0, 80),
       });
+      // PLAN A2 §A2.1 — a genuinely dictated value that fails validation is
+      // a rejected operation (never read back), not a non-event.
+      markRejected(
+        markDictated(state, currentSlot.field, bareValue, { source: 'step8_bare', schema })
+      );
       // Fall through with bareValue cleared — engine re-asks the same
       // slot on the next turn (no write, no pivot).
     } else if (bareValue !== null && bareValue !== undefined) {
       // PLAN A2 §A2.2 — direct parse→apply (step-8 bare); currentSlot is by
       // construction not-yet-filled, so no seeded-value skip applies here.
       const op = markDictated(state, currentSlot.field, bareValue, {
+        schema,
         source: 'step8_bare',
         circuit_ref: state.circuit_ref,
       });
@@ -4448,20 +4594,15 @@ function handleBulkApplyReply({
     const confirm = formatBulkApplyConfirm(parse.scope, parse, fieldsLabel);
     if (confirm) {
       // PLAN A2 §A2.5 site table (L3868-class) — TERMINAL, appended to the
-      // bulk-apply confirm (one combined message). fieldsToPropagate are
-      // already named by the confirm text just built; mark them covered
-      // FIRST so the uncovered-readback computation below doesn't try to
-      // re-speak them. Anything else the run dictated (e.g. RCD trip time,
-      // never in postCompletionAsk.fields) still needs its read-back.
-      for (const field of fieldsToPropagate) {
-        const op = state.operations?.find(
-          (o) =>
-            o.field === field &&
-            (o.disposition === 'applied' || o.disposition === 'satisfied_existing') &&
-            o.covered_by == null
-        );
-        if (op) op.covered_by = 'bulk_apply_done';
-      }
+      // bulk-apply confirm (one combined message). Codex diff-review r1:
+      // formatBulkApplyConfirm names only the field-GROUP label and circuit
+      // scope ("Applied RCD to all circuits.") — it never names the actual
+      // dictated VALUES, so fieldsToPropagate must NOT be pre-marked
+      // covered here (that silently suppressed the one place BS/type/mA
+      // would ever be spoken on the bulk-accept path, since finishScript is
+      // deliberately skipped below). Every genuinely dictated field —
+      // including the propagated device fields and anything else like RCD
+      // trip time — is named via the normal uncovered-operations computation.
       const bulkReadback = computeUncoveredReadback(state, schema, 'bulk_apply_done');
       const bulkDonePayload = buildScriptInfo({
         toolCallIdPrefix: schema.toolCallIdPrefix,
@@ -4539,12 +4680,26 @@ function finishScript({
     ? schema.finishCoveredFields
     : Object.keys(values ?? {});
   const operations = Array.isArray(state.operations) ? state.operations : [];
-  const findCoveringOp = (field) =>
-    operations.find(
-      (op) =>
+  // Codex diff-review r1 — the LATEST matching operation, not the first: a
+  // repeated same-field dictation (a correction dictated twice before
+  // finish) must cover the operation whose value actually ended up in
+  // `values[field]` (the one the legacy text renders), not an earlier,
+  // superseded one — else the corrected value gets spoken TWICE (once via
+  // the legacy summary, once via the uncovered-readback append) while the
+  // stale one is silently forgotten.
+  const findCoveringOp = (field) => {
+    for (let i = operations.length - 1; i >= 0; i -= 1) {
+      const op = operations[i];
+      if (
         op.field === field &&
-        (op.disposition === 'applied' || op.disposition === 'satisfied_existing')
-    );
+        (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
+        op.effective_circuit_ref === circuit_ref
+      ) {
+        return op;
+      }
+    }
+    return undefined;
+  };
   // Operation-aware gating is OPT-IN via `schema.finishCoveredFields` (RCD/
   // RCBO — id 117's exact class, where finishScript IS the first and only
   // device-summary readback: a field with no covering operation at all,
@@ -4559,10 +4714,42 @@ function finishScript({
   // them, so finishScript's text here is a positive-finish ACKNOWLEDGMENT,
   // not a competing summary.
   const opGatingOptIn = Array.isArray(schema.finishCoveredFields);
+  // Codex diff-review r1 (§A2.4/A2.5 correctness) — a field is "covered"
+  // for the verbatim-summary check when EITHER it has its own script-owned
+  // dictated operation, OR it is the declared mirror TARGET of another
+  // field that does (mirrors are the by-design silent exception — they
+  // never get their own operation). Checking only fields that HAPPEN to
+  // have an operation, and treating an ABSENT one as vacuously fine, let a
+  // PARTIAL dictation (e.g. only BS said this run; type/current still
+  // snapshot-only) through as "all covered" — reopening id 117's exact bug
+  // for every field that was never checked.
+  const scriptOwnedDictatedFields = new Set();
+  for (const op of operations) {
+    if (
+      (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
+      op.spoken_owner !== 'bundler'
+    ) {
+      scriptOwnedDictatedFields.add(op.field);
+    }
+  }
+  const mirrorCoveredFields = new Set();
+  for (const field of scriptOwnedDictatedFields) {
+    const slot = schema.slots?.find((s) => s.field === field);
+    const dictatedValue = findCoveringOp(field)?.written_value;
+    for (const derivation of slot?.derivations ?? []) {
+      // Only credit an UNCONDITIONAL mirror, or one whose value condition
+      // the dictated value actually satisfies — a value-gated mirror that
+      // never fired must never be treated as covering its target.
+      if (derivation.value !== undefined && derivation.value !== dictatedValue) continue;
+      for (const m of derivation.mirrors ?? []) mirrorCoveredFields.add(m);
+    }
+  }
   const coveredOps = finishCoveredFields.map((f) => findCoveringOp(f)).filter(Boolean);
   const allCoveredScriptOwned =
     !opGatingOptIn ||
-    (coveredOps.length > 0 && coveredOps.every((op) => op.spoken_owner !== 'bundler'));
+    finishCoveredFields.every(
+      (f) => scriptOwnedDictatedFields.has(f) || mirrorCoveredFields.has(f)
+    );
   // Mark BEFORE computing the uncovered set below, so the device-summary
   // fields (when spoken) are excluded from it — else they'd double.
   if (allCoveredScriptOwned) {
@@ -4632,9 +4819,18 @@ function finishScript({
   if (schema.correctionBreadcrumb) {
     const cb = schema.correctionBreadcrumb;
     const fields = Array.isArray(cb.fields) ? cb.fields : [];
+    // PLAN A2 §A2.2 (feedback id 117) — "finishScript's correction breadcrumb
+    // derives from written operations intersected with the breadcrumb's
+    // fields — never from seeded values." A field that only ever held a
+    // snapshot-pre-existing value (no 'applied' operation this run) must
+    // never become the crumb target — a later bare "No, 0.47" would
+    // otherwise correct a reading the inspector never actually re-said this
+    // episode.
     let lastReadingField = null;
-    for (const f of fields) {
-      if (values[f] !== undefined) lastReadingField = f;
+    for (const op of operations) {
+      if (op.disposition === 'applied' && fields.includes(op.field)) {
+        lastReadingField = op.field;
+      }
     }
     if (lastReadingField) {
       session.dialogueCorrectionBreadcrumb = {
@@ -4943,36 +5139,41 @@ export function enterScriptByName({
     // PLAN A2 §A2.2 — Sonnet start_dialogue_script pending_writes: mark at
     // validation, BEFORE the seeded-value skip.
     const op = markDictated(state, w.field, w.value, {
+      schema,
       source: 'sonnet_start_dialogue_script',
       circuit_ref: resolvedCircuitRef,
     });
     const slot = resolvedCircuitRef !== null ? schema.slots.find((s) => s.field === w.field) : null;
-    // PLAN A2 §A2.4 — a PRIOR per-turn winner (a record_reading, or an
-    // earlier seed, THIS turn) is authoritative for this slot regardless of
-    // whether it equals the candidate: this mirrors the dispatcher
-    // backfill's own defensive same-turn dedupe (stage6-a2-multiboard —
-    // "the SAME effective slot is still deduped"), and prevents a
-    // same-turn double-tool-call collision from being treated as a genuine
-    // correction. Bundler-owned — the bundler already speaks the winner.
-    const priorWinnerValue =
-      resolvedCircuitRef !== null && typeof ownershipResolver === 'function'
-        ? ownershipResolver(w.field, resolvedCircuitRef)
-        : undefined;
-    if (priorWinnerValue !== undefined) {
-      const satisfiedOp = markSatisfiedExisting(op, priorWinnerValue, resolvedCircuitRef);
+    // PLAN A2 §A2.4 — ownership triad (Codex diff-review r1, 3/3 lenses
+    // convergent: reverted from an earlier "any prior winner wins
+    // unconditionally" draft, which silently discarded a genuinely
+    // DIFFERENT same-turn correction — exactly id 117's class of bug, just
+    // manifesting via a same-turn Sonnet double-call instead of a cross-
+    // turn dictation). The resolver ITSELF does the canonical comparison
+    // (it has the prior winner's value in scope) and returns the VERDICT
+    // 'bundler' | null — canonical-EQUAL → the bundler already speaks this
+    // value this turn, no write, bundler-owned. Anything else (verdict
+    // null, or no resolver at all) falls through to the normal
+    // canonicalise-compare-against-snapshot rule below, and a genuinely
+    // different value always overwrites — never silently discarded.
+    const priorWinnerOwnsIt =
+      resolvedCircuitRef !== null &&
+      typeof ownershipResolver === 'function' &&
+      ownershipResolver(w.field, resolvedCircuitRef, w.value) === 'bundler';
+    if (priorWinnerOwnsIt) {
+      const satisfiedOp = markSatisfiedExisting(op, w.value, resolvedCircuitRef);
       satisfiedOp.spoken_owner = 'bundler';
       continue;
     }
     // PLAN A2 §A2.3 — the skip at "state.values[w.field] !== undefined" is
     // rewritten to the canonical-equal/different rule: a literal
     // mark-ordering-only implementation would discard a DIFFERENT
-    // Sonnet-forwarded value from a genuinely STALE snapshot (no per-turn
-    // winner covers it — the value predates this turn) while the ledger
-    // records it dictated and the finish speech claims it.
+    // Sonnet-forwarded value from the snapshot while the ledger records it
+    // dictated and the finish speech claims it.
     if (resolvedCircuitRef !== null && state.values[w.field] !== undefined) {
       if (valuesCanonicallyEqual(slot, state.values[w.field], w.value)) {
-        // canonical-EQUAL, no per-turn winner → nobody else speaks it this
-        // turn → script-owned.
+        // canonical-EQUAL seed with NO winner (start_dialogue_script-only)
+        // → nobody else speaks it this turn → script-owned.
         const satisfiedOp = markSatisfiedExisting(op, state.values[w.field], resolvedCircuitRef);
         satisfiedOp.spoken_owner = 'script';
         continue;
@@ -4989,12 +5190,13 @@ export function enterScriptByName({
         recordValueCorrection(state, w.field, w.correction);
       }
       const writtenOp = markWritten(op, r.effectiveValue, resolvedCircuitRef);
-      // PLAN A2 §A2.4 — APPLIED seed: the guarantee ("the dispatcher's
-      // post-call backfill makes this the latest per-turn winner") only
-      // holds for the caller that actually PERFORMS that backfill —
-      // signalled by passing a non-null ownershipResolver. A direct/test/
-      // legacy caller with no resolver has no such guarantee, so the seed
-      // stays script-owned (finishScript must still speak it).
+      // PLAN A2 §A2.4 — APPLIED seed (guaranteed backfilled as the latest
+      // winner): the guarantee only holds for a caller that actually
+      // PERFORMS that backfill — signalled by a non-null ownershipResolver
+      // (the dispatcher gates this to null when it has no perTurnWrites
+      // context to backfill into, so a resolver's mere presence always
+      // means the guarantee holds). A direct/test/legacy caller with no
+      // resolver has no such guarantee, so the seed stays script-owned.
       writtenOp.spoken_owner = typeof ownershipResolver === 'function' ? 'bundler' : 'script';
       appliedWrites.push({ field: w.field, value: r.effectiveValue });
       wireWrites.push({ field: w.field, value: r.effectiveValue });
@@ -5403,6 +5605,7 @@ export function tryResumePausedScript({
       // known field here (the only-empty-slot auto-assign), so this is where
       // the dictation becomes trackable.
       const bareOp = markDictated(state, targetField, bare.value, {
+        schema,
         source: 'ir_bare_auto_assign',
         circuit_ref: matchedRef,
       });
@@ -5687,6 +5890,7 @@ export function tryEnterScriptFromWrites({
       // read from the snapshot" — every OTHER field seeded below from
       // `existing` is the by-design silent mirror/snapshot exception).
       const triggerOp = markDictated(state, matchedField, existing[matchedField], {
+        schema,
         source: 'sonnet_record_reading_trigger',
         circuit_ref: circuitRef,
       });

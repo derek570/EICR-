@@ -153,8 +153,16 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       transcriptText: 'all',
       now: 5000,
     });
-    expect(lastQuestion(ws)).toMatch(/^Applied RCD to all circuits\./);
-    expect(lastQuestion(ws)).toMatch(/Also got trip time 25\.$/);
+    // Codex diff-review r1 — the bulk confirm text ("Applied RCD to all
+    // circuits.") only names the field GROUP + circuit scope, never the
+    // actual dictated values (formatBulkApplyConfirm has no per-value
+    // template): BS/type/current are genuinely never spoken anywhere else
+    // either (finishScript is deliberately skipped on the bulk-accept
+    // path), so ALL of them — not just trip time — must be named via the
+    // terminal-sink append.
+    expect(lastQuestion(ws)).toBe(
+      'Applied RCD to all circuits. Also got: trip time 25, BS number BS EN 61008, type AC, operating current 30.'
+    );
     // Only ONE frame named the trip time.
     expect(ws.sent.filter((m) => /trip time 25/.test(m?.question ?? '')).length).toBe(1);
   });
@@ -503,8 +511,8 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       const session = buildSession({
         5: { rcd_bs_en: '61008', rcd_type: 'AC', rcd_operating_current_ma: '30' },
       });
-      const resolver = (field, circuitRef) =>
-        field === 'rcd_bs_en' && circuitRef === 5 ? '61008' : undefined;
+      const resolver = (field, circuitRef, canonicalValue) =>
+        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === '61008' ? 'bundler' : null;
       const result = enterScriptByName({
         session,
         sessionId: SESSION_ID,
@@ -540,9 +548,14 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
         ownershipResolver: () => undefined,
       });
       expect(result.ok).toBe(true);
-      // satisfied_existing never re-writes — the finish text carries the
-      // ORIGINAL raw seeded form.
-      expect(lastQuestion(ws)).toBe('Got it. 61008, type AC, 30 mA.');
+      // Codex diff-review r1 — type/current are snapshot-only (never
+      // dictated this run, no covering operation), so the legacy verbatim
+      // summary is correctly SUPPRESSED (the "ALL summarised fields
+      // script-owned" rule requires every finish-covered field to have an
+      // operation, not just the ones that happen to). Only the genuinely
+      // dictated BS number is spoken — satisfied_existing never re-writes,
+      // so it carries the ORIGINAL raw seeded form.
+      expect(lastQuestion(ws)).toBe('Also got BS number 61008.');
     });
 
     test('APPLIED seed (no prior winner, genuinely new) -> bundler-owned when a resolver is present (guaranteed backfill)', () => {
@@ -582,32 +595,205 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
         now: 1000,
       });
       expect(result.ok).toBe(true);
-      expect(lastQuestion(ws)).toBe('Got it. 61008, type AC, 30 mA.');
+      // Codex diff-review r1 — same partial-dictation reasoning as the
+      // canonical-equal case above: type/current are snapshot-only, so the
+      // legacy verbatim summary is suppressed; only the genuinely dictated
+      // (freshly written) BS number is spoken.
+      expect(lastQuestion(ws)).toBe('Also got BS number 61008.');
     });
   });
 
-  // (u)/A2-multiboard defensive guard — a SAME-turn prior winner is
-  // authoritative regardless of value equality; the seed never overwrites
-  // it (mirrors stage6-a2-multiboard-script-backfill.test.js's own
-  // invariant, verified here at the engine layer).
-  test('a same-turn prior winner is never overwritten by a differing seed', () => {
+  // Ownership triad, DIFFERENT-prior-winner leg (Codex diff-review r1, 3/3
+  // lenses convergent) — a prior per-turn winner is compared CANONICALLY,
+  // not deferred to unconditionally: a genuinely different seed still
+  // overwrites and becomes the latest (bundler-owned) winner. An earlier
+  // draft treated ANY prior winner as authoritative regardless of value,
+  // silently discarding a valid correction — exactly id 117's class of bug.
+  test('a DIFFERENT same-turn prior winner is overwritten by the seed, becomes the new bundler-owned winner', () => {
     const ws = new FakeWS();
-    const session = buildSession({ 5: { ring_r1_ohm: '0.42' } });
+    // All OTHER RCD slots pre-filled so this seed triggers IMMEDIATE finish
+    // — isolates the ownership question from step-driven walkthrough asks.
+    const session = buildSession({
+      5: { rcd_bs_en: '61008', rcd_type: 'AC', rcd_operating_current_ma: '30' },
+    });
     const result = enterScriptByName({
       session,
       sessionId: SESSION_ID,
       schemas: ALL_DIALOGUE_SCHEMAS,
-      schemaName: 'ring_continuity',
+      schemaName: 'rcd',
       circuit_ref: 5,
-      pending_writes: [{ field: 'ring_r1_ohm', value: '0.85' }],
+      // 60898 (not 61009 — that value triggers RCD's own RCBO-pivot
+      // derivation, an unrelated mechanism this test must not exercise).
+      pending_writes: [{ field: 'rcd_bs_en', value: '60898' }],
       ws,
       logger: null,
       now: 1000,
-      ownershipResolver: (field, circuitRef) =>
-        field === 'ring_r1_ohm' && circuitRef === 5 ? '0.42' : undefined,
+      ownershipResolver: (field, circuitRef, canonicalValue) =>
+        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === '61008' ? 'bundler' : null,
     });
     expect(result.ok).toBe(true);
-    // The snapshot value is UNTOUCHED — the prior winner wins.
-    expect(session.stateSnapshot.circuits[5].ring_r1_ohm).toBe('0.42');
+    expect(result.seeded_writes).toEqual(['rcd_bs_en']);
+    // The seed's genuinely different value overwrites the stale winner.
+    // (pending_writes-sourced BS values pass through normaliseDialogueSlotWrite
+    // unparsed — raw form, not the "BS EN …" canonical form text dictation
+    // produces via the slot parser; matches the sibling NO-prior-winner test.)
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('60898');
+    // Bundler-owned (guaranteed backfilled) — the engine speaks NOTHING.
+    expect(ws.sent.filter((m) => m?.type === 'ask_user_started')).toHaveLength(0);
+  });
+
+  // The EQUAL leg of the same triad — an equal prior winner is bundler-
+  // owned and the seed never re-writes (no phantom write op).
+  test('an EQUAL same-turn prior winner is bundler-owned, seed does not re-write', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      5: { rcd_bs_en: '61008', rcd_type: 'AC', rcd_operating_current_ma: '30' },
+    });
+    const result = enterScriptByName({
+      session,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'rcd',
+      circuit_ref: 5,
+      pending_writes: [{ field: 'rcd_bs_en', value: '61008' }],
+      ws,
+      logger: null,
+      now: 1000,
+      ownershipResolver: (field, circuitRef, canonicalValue) =>
+        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === '61008' ? 'bundler' : null,
+    });
+    expect(result.ok).toBe(true);
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('61008');
+    expect(ws.sent.filter((m) => m?.type === 'ask_user_started')).toHaveLength(0);
+  });
+
+  // (l) two same-field dictations → two operations; the finish text covers
+  // the LATEST (the value it actually renders), never double-speaking it
+  // while silently dropping the correction (Codex diff-review r1).
+  test('a repeated same-field correction is covered by its LATEST operation, never double-spoken', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'RCD on circuit 5.',
+      now: 1000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61008',
+      now: 2000,
+    });
+    // Corrects the SAME field before finishing.
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'actually BS EN 60898',
+      now: 2500,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'AC',
+      now: 3000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '30',
+      now: 4000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'no',
+      now: 5000,
+    });
+    // Stored value is the CORRECTED one.
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('BS EN 60898');
+    // Spoken exactly once, and it's the corrected value — never the stale
+    // 61008, never doubled.
+    const finish = lastQuestion(ws);
+    expect(finish).toBe('Got it. BS EN 60898, type AC, 30 mA.');
+    expect((finish.match(/60898/g) ?? []).length).toBe(1);
+    expect(finish).not.toMatch(/61008/);
+  });
+
+  // Cross-circuit provenance (Codex diff-review r1, edge-interactions lens)
+  // — an operation carried across a pivot REPLACEMENT from the source
+  // schema's circuit must still render with the correct circuit context,
+  // never silently mis-attributed to whatever circuit happens to be
+  // current when it's finally spoken.
+  test('a pivoted-away operation survives the schema change and reads back correctly after finish', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    // RCD entry with a trip-time volunteered value, then BS EN 61009 pivots
+    // RCD -> RCBO mid-walkthrough. The trip-time operation must survive the
+    // pivot (runPivot carries state.operations across) and still be spoken
+    // at the eventual RCBO finish (RCBO's finishCoveredFields excludes
+    // rcd_trip_time, so it stays "uncovered" until the terminal-sink append).
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'RCD trip time for circuit 5 is 25 ms.',
+      now: 1000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61009',
+      now: 2000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'B',
+      now: 3000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '32',
+      now: 4000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '6',
+      now: 5000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'AC',
+      now: 6000,
+    });
+    const out = processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '30',
+      now: 7000,
+    });
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    const finish = lastQuestion(ws);
+    expect(finish).toMatch(/^Got it\./);
+    expect(finish).toMatch(/Also got trip time 25\.$/);
+    // Same circuit throughout (no cross-circuit pivot here), so no
+    // "circuit N" qualifier prefix is expected.
+    expect(finish).not.toMatch(/circuit 5 trip time/);
   });
 });
