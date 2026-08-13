@@ -441,7 +441,13 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
     expect(b.kind).toBe('pending_uncommitted');
   });
 
-  test('failed correlation is skipped (no entry at all); pending WITH a committed identity gets its own entry', () => {
+  test('Codex diff-review C2 (2026-08-13): a failed correlation gets its OWN explicit entry, never silently absorbed by a sibling pending entry', () => {
+    // Pre-C2 this test asserted the failed correlation contributed NO entry
+    // at all (a bare `continue`) — which was exactly the bug: a turn with
+    // ANY OTHER represented correlation (here, 'cid-pending') looked "fully
+    // handled" to the caller and the failed correlation's own dictated
+    // reading was silently dropped, worse than before Plan B existed. C2
+    // makes every attempted correlation surface an explicit outcome.
     identity.markFastAttemptFailed(SESS, 'cid-failed');
     identity.markFastAttemptPending('cid-pending', {
       sessionId: SESS,
@@ -463,16 +469,33 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
     const outcomes = identity.resolveFastLedgerOutcomeForTurn(
       new Set(['cid-failed', 'cid-pending'])
     );
-    expect(outcomes).toHaveLength(1);
-    expect(outcomes[0].kind).toBe('pending');
-    expect(outcomes[0].correlationId).toBe('cid-pending');
-    expect(outcomes[0].identity.canonicalValue).toBe('0.62');
+    expect(outcomes).toHaveLength(2);
+    const failed = outcomes.find((o) => o.correlationId === 'cid-failed');
+    const pending = outcomes.find((o) => o.correlationId === 'cid-pending');
+    expect(failed).toEqual({ correlationId: 'cid-failed', kind: 'failed' });
+    expect(pending.kind).toBe('pending');
+    expect(pending.identity.canonicalValue).toBe('0.62');
   });
 
-  test('all failed → null (falls through to existing behaviour)', () => {
+  test('Codex diff-review C2 (2026-08-13): all failed → an explicit failed entry per correlation, never null', () => {
+    // Pre-C2: `null` here meant the caller fell through to the ordinary
+    // duplicate/orphan-prompt path for the WHOLE turn — which happened to
+    // be correct behaviour for the all-failed case, but only BY ACCIDENT
+    // of both correlations being silently dropped. Post-C2 the array is
+    // explicit so a MIXED set (one failed, one NOT failed) can no longer
+    // silently drop the failed one's own reading — see the mixed-state
+    // test above and stage6-orphan-net-fast-path-duplicate.test.js's C2
+    // coverage for the caller-side accounting.
     identity.markFastAttemptFailed(SESS, 'cid-a');
     identity.markFastAttemptFailed(SESS, 'cid-b');
-    expect(identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a', 'cid-b']))).toBeNull();
+    const outcomes = identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a', 'cid-b']));
+    expect(outcomes).toEqual(
+      expect.arrayContaining([
+        { correlationId: 'cid-a', kind: 'failed' },
+        { correlationId: 'cid-b', kind: 'failed' },
+      ])
+    );
+    expect(outcomes).toHaveLength(2);
   });
 
   test('pending with NO committed identity yet (race) → pending_uncommitted with the raw pre-commit record, never null/absent', () => {
@@ -540,16 +563,52 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
     expect(committed.identity.canonicalValue).toBe('0.35');
   });
 
-  test('unresolved race (no ledger entry at all for an attempted correlation id) defaults to pending, not absence', () => {
-    // 'cid-ghost' was never marked pending/failed/committed at all — the plan's
-    // explicit default is "pending, not absence" whenever a correlation id was
-    // attempted (per fastPathCorrelationIdByTurn) but the ledger hasn't heard
-    // from it yet. Since we have no identity to attach, the net effect is null
-    // (never fabricate a placeholder) — but it must NOT be treated the same as
-    // an explicit 'failed' mark in a mixed set (an explicit failure elsewhere
-    // must not mask the ghost's "still pending" status if it later resolves).
+  test('Codex diff-review C2/C4 (2026-08-13): unresolved race (no ledger entry at all for an attempted correlation id) defaults to a "pending_unrecorded" ENTRY, never absence', () => {
+    // 'cid-ghost' was never marked pending/failed/committed at all — this is
+    // the genuine WS-before-HTTP race: the transcript-carried correlation
+    // set can name a correlationId before the fast-tts route's own
+    // `markFastAttemptPending` call has run server-side. The plan's
+    // explicit default is "pending, not absence" whenever a correlation id
+    // was attempted but the ledger hasn't heard from it yet.
+    //
+    // Codex diff-review C4 (2026-08-13) — this test PRE-C2 asserted
+    // `resolveFastLedgerOutcomeForTurn(...)` returns `null` for this exact
+    // case, i.e. the OPPOSITE of the "pending, not absence" default its own
+    // comment described: a bare `getFastAttemptState` returning `null` is
+    // correct (this module truly knows nothing about the state), but the
+    // TURN-LEVEL outcome must still be an explicit, accounted-for entry
+    // (`kind: 'pending_unrecorded'`) — not `null`, which the caller reads
+    // as "nothing attempted this turn at all" and would silently drop the
+    // reading exactly like the C2 mixed-state bug. Fixed on BOTH sides: the
+    // module now returns the explicit entry, and this test now asserts it.
     expect(identity.getFastAttemptState('cid-ghost')).toBeNull();
-    expect(identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-ghost']))).toBeNull();
+    const outcomes = identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-ghost']));
+    expect(outcomes).toEqual([{ correlationId: 'cid-ghost', kind: 'pending_unrecorded' }]);
+  });
+
+  test('Codex diff-review C4 (2026-08-13): a genuinely NEVER-attempted correlation id (not in the input Set at all) contributes nothing — distinct from an attempted-but-unrecorded one', () => {
+    // Distinguishes "attempted per the transcript-carried set, but this
+    // module never saw markFastAttemptPending" (pending_unrecorded, tested
+    // above) from "not attempted this turn at all" (simply absent from the
+    // `correlationIds` Set the caller passes in) — the latter never reaches
+    // this function's per-cid loop at all, so it cannot appear in the
+    // output array. Asserting this keeps the two "never saw a record" paths
+    // from being conflated: one is a real race this module must account
+    // for, the other is simply not this turn's business.
+    identity.markFastAttemptPending('cid-other-turn', {
+      sessionId: SESS,
+      turnId: 'some-other-turn',
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      boardId: null,
+      rawValue: '0.30',
+    });
+    // 'cid-other-turn' has a real record, but THIS turn only attempted
+    // 'cid-ghost' — 'cid-other-turn' must not appear in the outcome array
+    // just because a record for it happens to exist in the module.
+    const outcomes = identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-ghost']));
+    expect(outcomes).toEqual([{ correlationId: 'cid-ghost', kind: 'pending_unrecorded' }]);
+    expect(outcomes.some((o) => o.correlationId === 'cid-other-turn')).toBe(false);
   });
 });
 
@@ -613,9 +672,17 @@ describe('session-scoped reads (F5)', () => {
   test("resolveFastLedgerOutcomeForTurn: a playback_started record from a DIFFERENT session never suppresses this session's turn", () => {
     identity.markFastAttemptPending(CID, { sessionId: SESS, turnId: TURN, field: 'x' });
     identity.markFastAttemptPlaybackStarted(SESS, CID);
-    // Called with the OTHER session's id — the record belongs to SESS, so it
-    // must be invisible, not a false 'suppress'.
-    expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), OTHER_SESS)).toBeNull();
+    // Called with the OTHER session's id — the record belongs to SESS, so
+    // F5 treats it as not-found. Codex diff-review C2 (2026-08-13): this
+    // must NOT resolve as a false 'suppress' for OTHER_SESS — but nor is it
+    // `null` any more (pre-C2 shape). From OTHER_SESS's own ledger
+    // perspective this correlation genuinely has no record at all, which is
+    // exactly the 'pending_unrecorded' case — no data leaks across the
+    // session boundary (no state/identity from SESS's real record is
+    // visible), it's simply accounted for as unrecorded.
+    expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), OTHER_SESS)).toEqual([
+      { correlationId: CID, kind: 'pending_unrecorded' },
+    ]);
     // Called with the correct session id still suppresses (F8: array shape).
     expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), SESS)).toEqual([
       { correlationId: CID, kind: 'suppress' },
@@ -631,8 +698,13 @@ describe('session-scoped reads (F5)', () => {
       boardId: null,
       rawValue: '0.62',
     });
-    // Never committed — stays 'pending'.
-    expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), OTHER_SESS)).toBeNull();
+    // Never committed — stays 'pending'. C2: OTHER_SESS sees no record of
+    // its own for CID, so it resolves to 'pending_unrecorded' (accounted
+    // for, but carrying none of SESS's real field/circuit/rawValue data) —
+    // not the pre-C2 `null`.
+    expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), OTHER_SESS)).toEqual([
+      { correlationId: CID, kind: 'pending_unrecorded' },
+    ]);
     const own = identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), SESS);
     expect(own).toHaveLength(1);
     expect(own[0].kind).toBe('pending_uncommitted');

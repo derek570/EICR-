@@ -476,11 +476,10 @@ export function resolveFastAttemptSlotIdentities(correlationIds, sessionId) {
 
 /**
  * B3.1 — resolve the orphan-net precedence outcome for a turn's attempted
- * correlation ids. Returns an ARRAY, one entry per attempted correlation id
- * that isn't `failed` (a `failed` correlation contributes NO entry — same
- * as before), or `null` when the array would be empty (every attempted
- * correlation failed, or none was attempted / has any ledger record at
- * all). Each entry is one of:
+ * correlation ids. Returns an ARRAY with EXACTLY one entry per attempted
+ * correlation id (Codex diff-review cycle 2 finding C2, 2026-08-13 — see
+ * the [DEVIATION] note below), or `null` only when `correlationIds` itself
+ * is empty/absent. Each entry is one of:
  *   - `{correlationId, kind: 'suppress'}` — this correlation reached
  *     'playback_started'; the user already heard THIS clip. No second line
  *     for it — but this does NOT affect any sibling entry.
@@ -498,6 +497,28 @@ export function resolveFastAttemptSlotIdentities(correlationIds, sessionId) {
  *     caller is responsible for clamping `rawValue` before building a
  *     spoken confirmation from it (this module has no clamp helper and
  *     deliberately doesn't grow one just for this fallback).
+ *   - `{correlationId, kind: 'pending_unrecorded'}` — Codex diff-review C2
+ *     (2026-08-13): this module has NO record at all for this cid — not
+ *     even a `markFastAttemptPending` mark. This is the genuine
+ *     WS-before-HTTP race: the transcript-carried correlation set (built
+ *     from `regex_fast_correlation_id` on the wire) can list a
+ *     correlationId before the fast-tts route's own `markFastAttemptPending`
+ *     call has actually run server-side. Per the plan's explicit "pending,
+ *     not absence" default, this is STILL an attempted correlation the
+ *     caller must account for — it just carries no identity data at all
+ *     (the caller falls back to a turn-level re-parse; see
+ *     stage6-shadow-harness.js's `resolveZeroToolCallDuplicateOutcome`).
+ *   - `{correlationId, kind: 'failed'}` — Codex diff-review C2 (2026-08-13):
+ *     this correlation's fast-TTS attempt definitively failed
+ *     (`markFastAttemptFailed` ran). Previously this contributed NO entry
+ *     at all (a bare `continue`), which meant a turn with ANY OTHER
+ *     represented correlation (e.g. a sibling that reached
+ *     'playback_started') looked "fully handled" to the caller and the
+ *     failed correlation's own dictated reading was silently dropped —
+ *     worse than before Plan B existed. Now every failed correlation gets
+ *     an explicit entry so the caller can positively account for it
+ *     (falling through to the ordinary duplicate/orphan-prompt path)
+ *     instead of just not seeing it.
  *
  * [DEVIATION] F8 (Codex diff-review, 2026-08-13, sanctioned) — this used to
  * collapse the ENTIRE turn's attempted correlation set to ONE outcome: the
@@ -514,16 +535,31 @@ export function resolveFastAttemptSlotIdentities(correlationIds, sessionId) {
  * accounted for independently — hence the array shape, judged in-intent by
  * the orchestrating session rather than a literal-plan requirement.
  *
+ * [DEVIATION] C2 (Codex diff-review cycle 2, 2026-08-13, sanctioned) — F8's
+ * array already gave every attempted correlation its own slot, but TWO
+ * cases still silently contributed nothing: a `failed` correlation (bare
+ * `continue`) and a correlation with NO ledger record at all (fell through
+ * every branch, contributed nothing). Both are now explicit entries
+ * (`kind: 'failed'` / `kind: 'pending_unrecorded'`) so a MIXED-state turn
+ * (one correlation suppressed/pending, a sibling failed/unrecorded) can
+ * never look "fully handled" to the caller while one reading goes
+ * completely unaccounted for.
+ *
  * @param {Set<string>|null|undefined} correlationIds
  * @param {string|null} [sessionId] — F5: threaded through to every per-cid lookup below.
- * @returns {Array<{correlationId: string, kind: 'suppress'}|{correlationId: string, kind: 'pending', identity: FastAttemptRecord}|{correlationId: string, kind: 'pending_uncommitted', rawRecord: FastAttemptRecord}>|null}
+ * @returns {Array<{correlationId: string, kind: 'suppress'}|{correlationId: string, kind: 'pending', identity: FastAttemptRecord}|{correlationId: string, kind: 'pending_uncommitted', rawRecord: FastAttemptRecord}|{correlationId: string, kind: 'pending_unrecorded'}|{correlationId: string, kind: 'failed'}>|null}
  */
 export function resolveFastLedgerOutcomeForTurn(correlationIds, sessionId) {
   if (!correlationIds || correlationIds.size === 0) return null;
   const outcomes = [];
   for (const cid of correlationIds) {
     const state = getFastAttemptState(cid, sessionId);
-    if (state === 'failed') continue;
+    if (state === 'failed') {
+      // C2 — explicit entry, no longer a silent `continue`. See the
+      // 'failed' case in this function's own doc comment above.
+      outcomes.push({ correlationId: cid, kind: 'failed' });
+      continue;
+    }
     if (state === 'playback_started') {
       outcomes.push({ correlationId: cid, kind: 'suppress' });
       continue;
@@ -543,11 +579,16 @@ export function resolveFastLedgerOutcomeForTurn(correlationIds, sessionId) {
     const rawRecord = getFastAttemptRecord(cid, sessionId);
     if (rawRecord) {
       outcomes.push({ correlationId: cid, kind: 'pending_uncommitted', rawRecord });
+      continue;
     }
-    // else: genuinely no ledger record at all for this cid (never
-    // attempted, or expired) — contributes nothing, same as before.
+    // C2 — genuinely no ledger record at all for this cid: the
+    // WS-before-HTTP race (the transcript-carried correlation set named
+    // this cid before the route's own `markFastAttemptPending` ran) OR a
+    // TTL-expired record. Still an explicit, accounted-for entry — never a
+    // silent drop.
+    outcomes.push({ correlationId: cid, kind: 'pending_unrecorded' });
   }
-  return outcomes.length > 0 ? outcomes : null;
+  return outcomes;
 }
 
 /**

@@ -719,6 +719,176 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     expect(confs[0].dedupe_token).toBe(`duplicate_${SESSION_ID}-turn-1`);
   });
 
+  // Codex diff-review cycle 2 (C2, 2026-08-13) — the MIXED-state bug: a
+  // `failed` correlation (or one whose HTTP POST never reached the backend
+  // at all, so no ledger record exists yet — the WS-transcript-before-HTTP-
+  // POST race) used to contribute NO entry. If ANY sibling correlation in
+  // the same turn WAS represented (e.g. a suppress), the caller treated the
+  // whole turn as "handled" and never fell through to the ordinary
+  // duplicate/apology check for the OMITTED correlation's own reading —
+  // that reading went completely silent, worse than before Plan B existed.
+  describe('Codex diff-review C2 — mixed fast-ledger states never silently drop a sibling reading', () => {
+    test('one playback_started + one with NO ledger record at all (WS-before-HTTP race): the played one produces no confirmation AND the unrecorded one still gets SOME accounting — here, the ordinary orphan prompt (no exactDuplicateTuple to match)', async () => {
+      fastIdentity.markFastAttemptPending('cid-played', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '0.62',
+      });
+      fastIdentity.commitAcceptedIdentity('cid-played', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '0.62',
+        comparisonText: 'Circuit 4, Zs 0.62',
+      });
+      fastIdentity.markFastAttemptPlaybackStarted(SESSION_ID, 'cid-played');
+      // 'cid-unrecorded' is NEVER marked pending/failed/committed at all —
+      // simulates the transcript-carried correlation set naming a
+      // correlationId before the fast-tts route's own
+      // markFastAttemptPending has run server-side.
+
+      // Empty session state → the transcript can never reparse to an exact
+      // duplicate, so 'cid-unrecorded' has NOTHING to fall back to except
+      // the ordinary orphan-prompt path.
+      const session = makeSession({});
+      const opts = baseOpts({ regexFastCorrelationId: ['cid-played', 'cid-unrecorded'] });
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      // The played correlation produced no "Already got" confirmation of
+      // its own.
+      const alreadyGotConfs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      expect(alreadyGotConfs).toHaveLength(0);
+      // The unrecorded one's own reading is NOT silently dropped — it still
+      // reaches the ordinary orphan prompt (falls through, per C2's
+      // "falls through to the ordinary duplicate check" clause).
+      const orphanPrompt = (result.confirmations ?? []).find((c) =>
+        /(catch|repeat|say it)/i.test(c.text || '')
+      );
+      expect(orphanPrompt).toBeDefined();
+      // The pre-C2 bug would have suppressed this entirely — the log row
+      // must show the fast-ledger branch fired (confirmationCount 0, from
+      // the suppress) AND the generic orphan-prompt row also fired for the
+      // unaddressed reading.
+      const ledgerRow = opts.logger.info.mock.calls.find(
+        ([ev]) => ev === 'stage6.orphan_duplicate_or_pending_outcome'
+      );
+      expect(ledgerRow).toBeDefined();
+      expect(ledgerRow[1].confirmationCount).toBe(0);
+      const orphanRow = opts.logger.info.mock.calls.find(
+        ([ev]) => ev === 'stage6.orphan_prompt_emitted'
+      );
+      expect(orphanRow).toBeDefined();
+      expect(orphanRow[1].cause).toBe('fast_ledger_unaddressed_failure');
+    });
+
+    test("one pending+committed + one failed: the pending one gets its correlation-stamped fallback AND the failed one's own reading still reaches the ordinary orphan prompt (no exactDuplicateTuple to match)", async () => {
+      fastIdentity.markFastAttemptPending('cid-pending', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '0.62',
+      });
+      fastIdentity.commitAcceptedIdentity('cid-pending', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '0.62',
+        comparisonText: 'Circuit 4, Zs 0.62',
+      });
+      fastIdentity.markFastAttemptFailed(SESSION_ID, 'cid-failed');
+
+      // Empty session state → no exactDuplicateTuple match for the failed
+      // correlation's own reading.
+      const session = makeSession({});
+      const opts = baseOpts({ regexFastCorrelationId: ['cid-pending', 'cid-failed'] });
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      // The pending correlation still gets its stamped "Already got"
+      // fallback — unaffected by the sibling failure.
+      const alreadyGotConfs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      expect(alreadyGotConfs).toHaveLength(1);
+      expect(alreadyGotConfs[0]).toMatchObject({
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        fast_correlation_id: 'cid-pending',
+      });
+      // The failed correlation's own reading is NOT silently absorbed by
+      // its sibling's fallback — it still reaches the ordinary orphan
+      // prompt, spoken ALONGSIDE the pending fallback above.
+      const orphanPrompt = (result.confirmations ?? []).find((c) =>
+        /(catch|repeat|say it)/i.test(c.text || '')
+      );
+      expect(orphanPrompt).toBeDefined();
+      expect(result.confirmations).toHaveLength(2);
+    });
+
+    test('one pending+committed + one failed, but the transcript DOES reparse to an exact duplicate of stored data: the failed one\'s reading gets the ordinary UNSTAMPED "Already got" (not a second apology)', async () => {
+      fastIdentity.markFastAttemptPending('cid-pending', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '0.62',
+      });
+      fastIdentity.commitAcceptedIdentity('cid-pending', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '0.62',
+        comparisonText: 'Circuit 4, Zs 0.62',
+      });
+      fastIdentity.markFastAttemptFailed(SESSION_ID, 'cid-failed');
+
+      // Seed a stored value the transcript's re-parse WILL exactly match —
+      // this is the "falls through to the ordinary duplicate check" branch
+      // succeeding rather than degrading to the generic apology.
+      const session = makeSession({ 2: { rcd_time_ms: '24' } });
+      const opts = baseOpts({ regexFastCorrelationId: ['cid-pending', 'cid-failed'] });
+      const result = await runShadowHarness(
+        session,
+        'RCD trip time for circuit 2 is 24 ms',
+        [],
+        opts
+      );
+
+      const alreadyGotConfs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      // TWO distinct "Already got" lines: the pending fallback (stamped,
+      // measured_zs_ohm) and the failed correlation's own reading resolved
+      // via the exact-duplicate tuple (unstamped, rcd_time_ms) — never
+      // coalesced into one another since they're genuinely different
+      // readings, and no generic apology fires since the failed reading WAS
+      // accounted for.
+      expect(alreadyGotConfs).toHaveLength(2);
+      const stamped = alreadyGotConfs.find((c) => c.fast_correlation_id === 'cid-pending');
+      const unstamped = alreadyGotConfs.find((c) => c.fast_correlation_id === undefined);
+      expect(stamped).toMatchObject({ field: 'measured_zs_ohm', circuit: 4 });
+      expect(unstamped).toMatchObject({ field: 'rcd_time_ms', circuit: 2 });
+      expect(unstamped.dedupe_token).toBe(`duplicate_${SESSION_ID}-turn-1`);
+      const orphanPrompt = (result.confirmations ?? []).find((c) =>
+        /(catch|repeat|say it)/i.test(c.text || '')
+      );
+      expect(orphanPrompt).toBeUndefined();
+    });
+  });
+
   test('allRejected turns are completely untouched by the fast-ledger precedence chain', async () => {
     fastIdentity.markFastAttemptPending('cid-x', {
       sessionId: SESSION_ID,

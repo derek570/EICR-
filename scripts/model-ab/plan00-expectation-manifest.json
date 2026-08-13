@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "b8314131e05eefbd03ae8ab698008ed682329d161334288955157ab20c5ebd28",
+  "semantic_oracle_digest": "0bd887279ce287ecb73ce1bf05be1216bf391d239cac4f237bcf8f3b3ac7ef0e",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "c8f41703fef2e49a25f936cc5bfc85000d5bf18a7ceef4b34f8da1b2a47184ea"
+      "sha256": "69ecdfb5a3c7a6049709d9398657fdd0b9280703bd11f2b8063efea2afd81a14"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
