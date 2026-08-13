@@ -42,7 +42,7 @@ jest.unstable_mockModule('../logger.js', () => ({
   default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 
-const { ElevenLabsStreamClient, contentTypeForFormat } =
+const { ElevenLabsStreamClient, contentTypeForFormat, synthWithLanguageFailOpen } =
   await import('../extraction/elevenlabs-stream-client.js');
 
 afterEach(() => FakeWS.reset());
@@ -239,5 +239,364 @@ describe('ElevenLabsStreamClient — fromConfig', () => {
     expect(a.multiContext).toBe(true);
     const b = ElevenLabsStreamClient.fromConfig({ apiKey: 'k', env: {} });
     expect(b.multiContext).toBe(false);
+  });
+});
+
+// D1 (feedback id 121) — language pin.
+describe('ElevenLabsStreamClient — language_code pin (D1)', () => {
+  test('omitted languageCode defaults to en on the WS URL', () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    expect(client.languageCode).toBe('en');
+    expect(client._buildUrl()).toContain('language_code=en');
+  });
+
+  test('explicit languageCode: null suppresses the param entirely', () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k', languageCode: null });
+    expect(client.languageCode).toBeNull();
+    expect(client._buildUrl()).not.toContain('language_code');
+  });
+
+  test('explicit languageCode overrides the default', () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k', languageCode: 'fr' });
+    expect(client._buildUrl()).toContain('language_code=fr');
+  });
+
+  test('multi-context URL also carries the pin by default', () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k', multiContext: true });
+    expect(client._buildUrl()).toContain('language_code=en');
+  });
+
+  test('vendor error frame rejection carries bytesReceived=0 when no audio arrived', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    const promise = client.synth('hello', { onAudio: () => {} });
+    setImmediate(() => {
+      const ws = FakeWS.instances[0];
+      ws.emit('open');
+      ws.emit('message', JSON.stringify({ error: 'invalid_language_code' }));
+    });
+    let caught;
+    try {
+      await promise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught.bytesReceived).toBe(0);
+    expect(caught.timings).toBeDefined();
+  });
+
+  test('vendor error frame AFTER audio carries bytesReceived>0 (not eligible for retry)', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    const promise = client.synth('hello', { onAudio: () => {} });
+    setImmediate(() => {
+      const ws = FakeWS.instances[0];
+      ws.emit('open');
+      ws.emit('message', JSON.stringify(audioFrame()));
+      ws.emit('message', JSON.stringify({ error: 'mid_stream_failure' }));
+    });
+    let caught;
+    try {
+      await promise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught.bytesReceived).toBe(3);
+  });
+
+  test('ws error event carries bytesReceived=0 before any audio', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    const promise = client.synth('hello', { onAudio: () => {} });
+    setImmediate(() => {
+      const ws = FakeWS.instances[0];
+      ws.emit('open');
+      ws.emit('error', new Error('handshake_rejected'));
+    });
+    let caught;
+    try {
+      await promise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught.bytesReceived).toBe(0);
+  });
+
+  test('ws close-before-final carries bytesReceived=0 before any audio', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    const promise = client.synth('hello', { onAudio: () => {} });
+    setImmediate(() => {
+      const ws = FakeWS.instances[0];
+      ws.emit('open');
+      ws.emit('close', 1006, Buffer.from('abnormal'));
+    });
+    let caught;
+    try {
+      await promise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught.bytesReceived).toBe(0);
+  });
+
+  test('timeout rejection does NOT carry bytesReceived (never retry-eligible)', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k', timeoutMs: 5 });
+    const promise = client.synth('hello', { onAudio: () => {} });
+    setImmediate(() => FakeWS.instances[0].emit('open'));
+    let caught;
+    try {
+      await promise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught.message).toMatch(/timeout/);
+    expect(caught.bytesReceived).toBeUndefined();
+  });
+
+  test('abort rejection does NOT carry bytesReceived (never retry-eligible)', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    const ctrl = new AbortController();
+    const promise = client.synth('hello', { onAudio: () => {}, signal: ctrl.signal });
+    setImmediate(() => {
+      FakeWS.instances[0].emit('open');
+      setTimeout(() => ctrl.abort(), 5);
+    });
+    let caught;
+    try {
+      await promise;
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught.bytesReceived).toBeUndefined();
+  });
+});
+
+// D1 — shared fail-open two-attempt retry helper.
+describe('synthWithLanguageFailOpen', () => {
+  test('attempt 1 succeeds: returns timings, the same client, attempts=1, and the URL carries the pin', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    const retryClientFactory = jest.fn();
+    const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+      onAudio: () => {},
+    });
+    setImmediate(() => {
+      const ws = FakeWS.instances[0];
+      ws.emit('open');
+      sendFrames(ws, [audioFrame(), finalFrame()], 1);
+    });
+    const result = await promise;
+    expect(result.attempts).toBe(1);
+    expect(result.client).toBe(client);
+    expect(FakeWS.instances[0].url).toContain('language_code=en');
+    expect(retryClientFactory).not.toHaveBeenCalled();
+  });
+
+  test('attempt 1 rejects zero-bytes attributable → retries with a SECOND instance whose URL lacks the param; exactly two instances/attempts', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    let retryClient;
+    const retryClientFactory = jest.fn(() => {
+      retryClient = new ElevenLabsStreamClient({ apiKey: 'k', languageCode: null });
+      return retryClient;
+    });
+    const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+      onAudio: () => {},
+    });
+
+    setImmediate(() => {
+      const ws1 = FakeWS.instances[0];
+      ws1.emit('open');
+      ws1.emit('message', JSON.stringify({ error: 'invalid_language_code' }));
+    });
+
+    // Drive the second attempt once it opens.
+    const driveSecond = setInterval(() => {
+      if (FakeWS.instances.length === 2) {
+        clearInterval(driveSecond);
+        const ws2 = FakeWS.instances[1];
+        ws2.emit('open');
+        sendFrames(ws2, [audioFrame(), finalFrame()], 1);
+      }
+    }, 1);
+
+    const result = await promise;
+    expect(result.attempts).toBe(2);
+    expect(result.client).toBe(retryClient);
+    expect(FakeWS.instances.length).toBe(2);
+    expect(FakeWS.instances[0].url).toContain('language_code=en');
+    expect(FakeWS.instances[1].url).not.toContain('language_code');
+    // A mock that merely rejects attempt one and lets a same-URL "attempt
+    // two" pass would be caught here: instance count AND URL are both
+    // asserted, not just the outcome.
+    expect(retryClientFactory).toHaveBeenCalledTimes(1);
+  });
+
+  test('second failure after retry is terminal (throws, does not retry again)', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    const retryClientFactory = jest.fn(
+      () => new ElevenLabsStreamClient({ apiKey: 'k', languageCode: null })
+    );
+    const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+      onAudio: () => {},
+    });
+
+    setImmediate(() => {
+      FakeWS.instances[0].emit('open');
+      FakeWS.instances[0].emit('message', JSON.stringify({ error: 'invalid_language_code' }));
+    });
+    const driveSecond = setInterval(() => {
+      if (FakeWS.instances.length === 2) {
+        clearInterval(driveSecond);
+        FakeWS.instances[1].emit('open');
+        FakeWS.instances[1].emit('message', JSON.stringify({ error: 'still_broken' }));
+      }
+    }, 1);
+
+    await expect(promise).rejects.toThrow(/still_broken/);
+    expect(FakeWS.instances.length).toBe(2);
+    expect(retryClientFactory).toHaveBeenCalledTimes(1);
+  });
+
+  test('post-first-audio-byte error never retries', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    const retryClientFactory = jest.fn();
+    const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+      onAudio: () => {},
+    });
+    setImmediate(() => {
+      const ws = FakeWS.instances[0];
+      ws.emit('open');
+      ws.emit('message', JSON.stringify(audioFrame()));
+      ws.emit('message', JSON.stringify({ error: 'mid_stream_failure' }));
+    });
+    await expect(promise).rejects.toThrow(/mid_stream_failure/);
+    expect(retryClientFactory).not.toHaveBeenCalled();
+    expect(FakeWS.instances.length).toBe(1);
+  });
+
+  test('timeout never retries (no bytesReceived on the error)', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k', timeoutMs: 5 });
+    const retryClientFactory = jest.fn();
+    const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+      onAudio: () => {},
+    });
+    setImmediate(() => FakeWS.instances[0].emit('open'));
+    await expect(promise).rejects.toThrow(/timeout/);
+    expect(retryClientFactory).not.toHaveBeenCalled();
+    expect(FakeWS.instances.length).toBe(1);
+  });
+
+  // Codex diff review r1 (all 3 lenses) — the streaming retry was eligible
+  // on ANY zero-bytes rejection, including auth/quota/rate-limit/DNS
+  // failures unrelated to language_code. Tightened with a deny-list of
+  // known-unrelated markers (isKnownUnrelatedFailure) — see the module's
+  // docblock for why a deny-list, not an allow-list.
+  describe('KNOWN unrelated failures never retry (deny-list)', () => {
+    test.each([
+      ['unauthorized', 'unauthorized: invalid credentials'],
+      ['invalid_api_key', 'invalid_api_key supplied'],
+      ['401', 'Unexpected server response: 401'],
+      ['403', 'Unexpected server response: 403'],
+      ['429', 'Unexpected server response: 429'],
+      ['rate limit', 'rate_limit exceeded, slow down'],
+      ['quota', 'quota_exceeded for this account'],
+      ['ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:443'],
+      ['ENOTFOUND', 'getaddrinfo ENOTFOUND api.elevenlabs.io'],
+      ['402', 'Unexpected server response: 402'],
+      ['payment_required', 'payment_required for this account'],
+      ['CERT_', 'unable to verify the first certificate CERT_HAS_EXPIRED'],
+      ['self-signed certificate', 'self signed certificate in certificate chain'],
+    ])('%s → no retry', async (_label, message) => {
+      const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+      const retryClientFactory = jest.fn();
+      const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+        onAudio: () => {},
+      });
+      setImmediate(() => {
+        const ws = FakeWS.instances[0];
+        ws.emit('open');
+        ws.emit('error', new Error(message));
+      });
+      await expect(promise).rejects.toThrow();
+      expect(retryClientFactory).not.toHaveBeenCalled();
+      expect(FakeWS.instances.length).toBe(1);
+    });
+
+    test('an UNKNOWN zero-bytes failure still retries (permissive default)', async () => {
+      const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+      const retryClientFactory = jest.fn(
+        () => new ElevenLabsStreamClient({ apiKey: 'k', languageCode: null })
+      );
+      const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+        onAudio: () => {},
+      });
+      setImmediate(() => {
+        FakeWS.instances[0].emit('open');
+        FakeWS.instances[0].emit('message', JSON.stringify({ error: 'invalid_language_code' }));
+      });
+      const driveSecond = setInterval(() => {
+        if (FakeWS.instances.length === 2) {
+          clearInterval(driveSecond);
+          FakeWS.instances[1].emit('open');
+          FakeWS.instances[1].emit('message', JSON.stringify({ isFinal: true }));
+        }
+      }, 1);
+      const result = await promise;
+      expect(result.attempts).toBe(2);
+      expect(retryClientFactory).toHaveBeenCalledTimes(1);
+    });
+
+    // Codex diff-review r5 IMPORTANT — the module's own docblock says this
+    // deny-list "deliberately does NOT deny-list... generic 'connection
+    // reset' markers close to a handshake" (a rejected language_code query
+    // param could plausibly surface as an abnormal close/reset rather than
+    // a parseable error body), but ECONNRESET had been added to the regex
+    // anyway, silently contradicting that stated intent. Proves the fix:
+    // ECONNRESET still retries.
+    test('ECONNRESET near a handshake still retries (matches the docblock, not a deny-list entry)', async () => {
+      const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+      const retryClientFactory = jest.fn(
+        () => new ElevenLabsStreamClient({ apiKey: 'k', languageCode: null })
+      );
+      const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+        onAudio: () => {},
+      });
+      setImmediate(() => {
+        FakeWS.instances[0].emit('open');
+        FakeWS.instances[0].emit('error', new Error('read ECONNRESET'));
+      });
+      const driveSecond = setInterval(() => {
+        if (FakeWS.instances.length === 2) {
+          clearInterval(driveSecond);
+          FakeWS.instances[1].emit('open');
+          FakeWS.instances[1].emit('message', JSON.stringify({ isFinal: true }));
+        }
+      }, 1);
+      const result = await promise;
+      expect(result.attempts).toBe(2);
+      expect(retryClientFactory).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  test('a failed retry attempt closes its own client (no leaked socket)', async () => {
+    const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+    let retryClient;
+    const retryClientFactory = jest.fn(() => {
+      retryClient = new ElevenLabsStreamClient({ apiKey: 'k', languageCode: null });
+      return retryClient;
+    });
+    const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+      onAudio: () => {},
+    });
+    setImmediate(() => {
+      FakeWS.instances[0].emit('open');
+      FakeWS.instances[0].emit('message', JSON.stringify({ error: 'invalid_language_code' }));
+    });
+    const driveSecond = setInterval(() => {
+      if (FakeWS.instances.length === 2) {
+        clearInterval(driveSecond);
+        // Raw transport error on the retry — the path that previously did
+        // NOT call ws.close() before rejecting.
+        FakeWS.instances[1].emit('error', new Error('some_unrelated_transport_hiccup'));
+      }
+    }, 1);
+    await expect(promise).rejects.toThrow(/some_unrelated_transport_hiccup/);
+    expect(FakeWS.instances[1].closed).toBe(true);
   });
 });

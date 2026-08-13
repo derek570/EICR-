@@ -82,10 +82,13 @@ import {
 } from './recording/vad-accumulator';
 import { useLiveFillStore } from './recording/live-fill-state';
 import {
+  CONFIRMATION_MODE_START_WARNING,
   cancelSpeech,
   confirmationToSentence,
   getConfirmationModeEnabled,
   getTtsAudioWindow,
+  handleModeStatusCueDiscard,
+  handleModeStatusCuePlaybackStarted,
   isDirectAudioActive,
   isTTSEcho,
   isWithinTtsWindow,
@@ -93,6 +96,7 @@ import {
   setTtsLifecycleObserver,
   speak as speakRaw,
   speakConfirmation,
+  speakConfirmationModeStatus,
   type SpeakOptions,
 } from './recording/tts';
 import {
@@ -101,6 +105,7 @@ import {
   setOnDiscarded as ttsQueueSetOnDiscarded,
   setOnPlaybackStarted as ttsQueueSetOnPlaybackStarted,
   setShouldDeferPlayback as ttsQueueSetShouldDeferPlayback,
+  type DiscardReason,
 } from './recording/tts-queue';
 import { ConfirmationDedupeStore } from './recording/confirmation-dedupe-store';
 import {
@@ -1306,7 +1311,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // failures (TTS unavailable / empty terminal). Address operations reserve a
   // durable delivery token plus, sometimes, an ordinary confirmation key; the
   // pair must be released together or a backend retry is silently suppressed.
-  const discardConfirmationReservation = React.useCallback((dedupeKey: string) => {
+  const discardConfirmationReservation = React.useCallback((dedupeKey: string, reason: DiscardReason) => {
+    // PLAN-D (ids 122, 124) — a mode-status cue (toggle-flip cue, the
+    // session-start warning) destroyed by preemptFlush()/overflow re-parks
+    // itself rather than being treated as an ordinary confirmation
+    // reservation to forget. See handleModeStatusCueDiscard's docblock for
+    // why this must run FIRST, why it's safe during a full reset, and why
+    // `reason` gates re-park vs retire.
+    if (handleModeStatusCueDiscard(dedupeKey, reason)) return;
     const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
     if (addressToken) {
       const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -2531,7 +2543,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             dedupeKey: deliveryDedupeKey,
           });
           if (!queued.enqueued) {
-            discardConfirmationReservation(deliveryDedupeKey);
+            discardConfirmationReservation(deliveryDedupeKey, 'not_queued');
           }
           continue;
         }
@@ -2626,6 +2638,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
     ttsQueueSetOnPlaybackStarted((dedupeKey) => {
+      // PLAN-D — a mode-status cue was actually heard; retire its re-park
+      // tracking entry (nothing left to protect it from).
+      if (handleModeStatusCuePlaybackStarted(dedupeKey)) return;
       const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
       if (addressToken) {
         const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -3149,7 +3164,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               dedupeKey,
             });
             if (!queued.enqueued) {
-              discardConfirmationReservation(dedupeKey);
+              discardConfirmationReservation(dedupeKey, 'not_queued');
             }
           } else {
             speakConfirmation(response.spoken_response, { force: true });
@@ -3788,6 +3803,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       }
       buildSleepManager();
       setState('active');
+      // PLAN-D (ids 122, 124) — one-shot warning when a NEW physical
+      // session starts with confirmations already off, so an inspector
+      // who forgot the toggle's state hears it named instead of getting
+      // silent read-backs for the whole session. Bound to THIS fresh-start
+      // path only — handleWake() (sleep/doze auto-resume) and resume()
+      // (manual pause-resume) must NOT re-speak it; neither call site
+      // reaches this branch, so "once per physical session" holds by
+      // construction. Routed through the dedicated mode-status path (not a
+      // bare speakConfirmation force:true call): survives a fast ask that
+      // arrives before this warning gets its turn (preemptFlush/overflow
+      // re-park it instead of silently discarding it).
+      if (!getConfirmationModeEnabled()) {
+        speakConfirmationModeStatus(CONFIRMATION_MODE_START_WARNING);
+      }
       beginTick();
     } catch (err) {
       if (sessionIdRef.current !== sessionId) {

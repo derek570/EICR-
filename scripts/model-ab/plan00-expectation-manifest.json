@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "8aa892cd942849360e5f1311a54071c3e31a5b6303ddaa6fbf4ab71a67d99805",
+  "semantic_oracle_digest": "4807106e3f773d1a1f2278c83aefcc70b8d5258df7ed076456a50e1213f16f6f",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -517,7 +517,7 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "857ea6534744b5f00992a37dd2ac8fb805476c1d2b0995eb4b7d385d8ad7757b"
+      "sha256": "d4eca0df3c64118a71bc42f1f4098f021786a0056ca41d39890d04f0b889e2d7"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -549,7 +549,7 @@
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",
-      "sha256": "7d006e8c2bab3f97f0726358b959f861b83a636b3181555886f5387b074c8d09"
+      "sha256": "2d1022c5b3f24fa009837a8ed68a328c5ab5d378961f66f850307622da0e5fe5"
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",

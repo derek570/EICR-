@@ -13,6 +13,7 @@ import {
   enqueueConfirmation,
   preemptFlush as ttsQueuePreemptFlush,
   reset as ttsQueueReset,
+  type DiscardReason,
   type QueuePlayControls,
 } from './tts-queue';
 import { clientDiagnostic } from './client-diagnostic';
@@ -86,6 +87,24 @@ const STORAGE_KEY = 'cm-confirmation-mode';
 const LEGACY_STORAGE_KEY = 'cm-voice-feedback';
 
 /**
+ * PLAN-D (feedback ids 122, 124) — one unified cue wording across BOTH
+ * clients (iOS speaks the identical strings). Spoken on EVERY toggle
+ * flip, in both directions — the prior web behaviour only spoke on
+ * ON, which this replaces ("Confirmations on." is retired). Speaking on
+ * the OFF-flip too is a deliberate reversal of this file's old
+ * rationale ("jarring, contradicts the preference just set"): for a
+ * hands-free product the OFF-flip is precisely the moment the inspector
+ * must hear one last utterance, or an accidental tap becomes
+ * indistinguishable from a silently broken pipeline (the id-122/124
+ * mechanism this plan fixes).
+ */
+export const CONFIRMATION_MODE_OFF_CUE = 'Voice read-backs off.';
+export const CONFIRMATION_MODE_ON_CUE = 'Voice read-backs on.';
+/** Session-start one-shot warning — spoken once per physical session
+ *  when the persisted preference is already off at start. */
+export const CONFIRMATION_MODE_START_WARNING = 'Heads up — voice read-backs are off.';
+
+/**
  * Returns true iff the runtime has the SpeechSynthesis API. Used by
  * callers that want to short-circuit (e.g. the Voice button in the
  * recording chrome hides itself when TTS is unavailable so inspectors
@@ -98,9 +117,19 @@ export function isTtsAvailable(): boolean {
 }
 
 /**
- * Read the persisted confirmation-mode preference. Defaults to `false`
- * when storage has no entry — matches iOS where the toggle is off until
- * the inspector explicitly enables it.
+ * Read the persisted confirmation-mode preference. Defaults to `true`
+ * when NEITHER storage key has ever been set — this NOW matches iOS's
+ * own default (iOS registers `confirmationModeEnabled: true` at
+ * `CertMateApp.swift:29-38` precisely so new users don't start silently
+ * muted). The PRIOR version of this function defaulted to `false` while
+ * a comment here claimed that "matches iOS" — that claim was FALSE
+ * (PLAN-D, feedback ids 122/124 — an entire 9-minute field session ran
+ * with confirmations off and no telemetry/cue surfaced it, and web's
+ * absent-default made that the DEFAULT experience for every new
+ * inspector, not an edge case). An EXPLICITLY stored `false` is always
+ * preserved as-is — this only changes the never-set case, so no
+ * deliberate user choice is discarded (that's the auto-revert
+ * alternative this plan explicitly rejects).
  *
  * Migration: if the new key is unset and the legacy `cm-voice-feedback`
  * key has a value, lift it across once and rewrite under the new key.
@@ -109,7 +138,7 @@ export function isTtsAvailable(): boolean {
  * confirmation-only scope is strictly narrower so there's no surprise.
  */
 export function getConfirmationModeEnabled(): boolean {
-  if (typeof window === 'undefined') return false;
+  if (typeof window === 'undefined') return true;
   try {
     const current = window.localStorage.getItem(STORAGE_KEY);
     if (current !== null) return current === 'true';
@@ -118,9 +147,9 @@ export function getConfirmationModeEnabled(): boolean {
       window.localStorage.setItem(STORAGE_KEY, legacy);
       return legacy === 'true';
     }
-    return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -830,19 +859,47 @@ export function speak(text: string, options?: SpeakOptions): void {
  * The injected FIFO player for a confirmation head. Replicates `dispatch()`'s
  * responsibilities so echo-suppression + ElevenLabs-primary/native-fallback +
  * the mic-feedback ttsWindow stay intact (bypassing `dispatch()` would drop
- * them): (1) registers the echo-suppression fingerprint; (2) routes to
- * ElevenLabs when available+session, else native; (3) on a pre-playback
- * ElevenLabs failure (reason !== 'aborted') falls back to native. The last-mile
- * deferral gate is applied by the queue via `controls.ready(prepared)` — the
- * player fetches, hands back the prepared audio, and the queue decides
- * play-now vs park. Guarantees exactly one terminal (`onEnd` OR `onError`) per
- * head so the pump advances even when a head is aborted.
+ * them): (1) routes to ElevenLabs when available+session, else native; (2) on
+ * a pre-playback ElevenLabs failure (reason !== 'aborted') falls back to
+ * native; (3) registers the echo-suppression fingerprint at the actual
+ * playback moment — inside the `play` callback handed to `controls.ready`,
+ * not at fetch-dispatch time — so a head that ends up deferred (direct audio
+ * active, or the last-mile `shouldDeferPlayback()` gate) is never marked
+ * "just heard" before any audio has played. The last-mile deferral gate is
+ * applied by the queue via `controls.ready(prepared)` — the player fetches,
+ * hands back the prepared audio, and the queue decides play-now vs park.
+ * Guarantees exactly one terminal (`onEnd` OR `onError`) per head so the pump
+ * advances even when a head is aborted.
  */
 function playConfirmationHead(text: string, controls: QueuePlayControls): void {
-  registerTtsFingerprint(text);
   const useElevenLabs = isElevenLabsAvailable() && Boolean(getActiveSessionId());
   if (!useElevenLabs) {
     playConfirmationNative(text, controls);
+    return;
+  }
+  // Codex diff-review r4/r5 BLOCKER — `prepareElevenLabs()` calls
+  // `cancelElevenLabs()` UNCONDITIONALLY at its own entry, before the fetch
+  // and therefore before the queue's own `shouldDeferPlayback()` last-mile
+  // gate (in `controls.ready`, below) ever runs. If a direct `speak()` ask
+  // currently owns the channel (`isDirectAudioActive()`), calling
+  // `prepareElevenLabs()` now would kill the ask's audio mid-play before
+  // this head has any chance to be deferred instead — the opposite of "defer
+  // behind an active ask rather than dropping". Hand the queue a LAZY
+  // prepared handle that does nothing but re-enter this function on resume
+  // — nothing is fetched yet, so nothing needs cancelling. The queue's own
+  // `ready`-time gate sees the identical `isDirectAudioActive()` state
+  // SYNCHRONOUSLY (no fetch has happened in between) and parks this as an
+  // ordinary `deferredHead`, exactly like a real post-fetch deferral. When
+  // `resumeIfDeferred()` later calls this lazy `play()`, the ask has ended,
+  // so the recursive call falls through to the real fetch below — which
+  // still gets its own last-mile check when THAT fetch completes.
+  if (isDirectAudioActive()) {
+    controls.ready({
+      play: () => playConfirmationHead(text, controls),
+      discard: () => {
+        /* nothing fetched yet — no cleanup needed */
+      },
+    });
     return;
   }
   // Canceller hard-aborts the in-flight fetch / stops playing ElevenLabs audio.
@@ -874,9 +931,29 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
         controls.onEnd();
       },
       onError: (reason) => {
-        // Only a MID-PLAYBACK error reaches here (pre-playback failures come
-        // through the onPrepared(null, reason) path below). Close the window
-        // and terminate the head so the pump advances.
+        // Codex diff-review r8 IMPORTANT — the old comment here claimed
+        // "only a mid-playback error reaches here (pre-playback failures
+        // come through the onPrepared(null, reason) path below)". That's
+        // incomplete: a PREPARED clip whose `audio.play()` itself rejects
+        // (e.g. the iOS Safari gesture grant expired between
+        // isElevenLabsAvailable()'s check and this exact call) never fires
+        // `onStart`, so it arrives HERE with `myStartMs` still null — a
+        // genuine pre-playback failure discovered one tick later than the
+        // onPrepared(null, reason) path, not a mid-playback one. Falling
+        // through to `controls.onError(reason)` unconditionally silently
+        // dropped the confirmation with no native fallback — a real "never
+        // heard" gap. Mirror `dispatchElevenLabs`'s own onError, which
+        // already makes exactly this `myStartMs`-null check and falls back
+        // to native instead (Audio-First invariant #1 — never zero).
+        if (myStartMs == null && reason !== 'aborted') {
+          playConfirmationNative(text, controls);
+          return;
+        }
+        // A genuine MID-PLAYBACK error (myStartMs set), or an abort/
+        // supersede (reason === 'aborted', terminal regardless of
+        // myStartMs — re-speaking after a supersede would fight whatever
+        // superseded it). Close the window and terminate the head so the
+        // pump advances.
         if (ttsWindow && myStartMs != null && ttsWindow.startMs === myStartMs) {
           ttsWindow = { startMs: myStartMs, endMs: Date.now() };
           notifyTtsLifecycle('end');
@@ -887,7 +964,23 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
     },
     (prepared, reason) => {
       if (prepared) {
-        controls.ready({ play: prepared.play, discard: prepared.discard });
+        // Codex diff-review r6/r7 — register the echo-suppression fingerprint
+        // right AT the actual playback moment (inside this wrapped `play`),
+        // not at fetch-dispatch time above. `controls.ready`'s last-mile gate
+        // (`shouldDeferPlayback()` — direct audio OR the inspector currently
+        // speaking, in production) can still defer AFTER this fetch completes;
+        // registering any earlier would mark the cue "just heard" for up to
+        // several seconds before any audio actually plays, letting a
+        // coincidentally-similar inspector utterance get wrongly suppressed
+        // as an echo of something never spoken. `play` fires exactly once,
+        // whether immediately or via a later `resumeIfDeferred()`.
+        controls.ready({
+          play: () => {
+            registerTtsFingerprint(text);
+            prepared.play();
+          },
+          discard: prepared.discard,
+        });
         return;
       }
       if (reason && reason !== 'aborted') {
@@ -904,7 +997,11 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
 /** Native (SpeechSynthesis) branch of the FIFO player. No async fetch, so the
  *  last-mile gate is expressed by delaying `dispatchNative` until the queue
  *  calls `prepared.play()`. `onStart` (from `utterance.onstart`) sets
- *  `startedPlayback` + the 'queue' owner — the iPhone/iPad-Safari default. */
+ *  `startedPlayback` + the 'queue' owner — the iPhone/iPad-Safari default.
+ *  Also serves as the ElevenLabs pre-playback-failure fallback (called
+ *  directly from `playConfirmationHead`), so registering the echo-
+ *  suppression fingerprint here — at the actual dispatch moment, inside
+ *  `play` — covers both callers without a separate registration site. */
 function playConfirmationNative(text: string, controls: QueuePlayControls): void {
   controls.registerCanceller(() => {
     try {
@@ -916,6 +1013,7 @@ function playConfirmationNative(text: string, controls: QueuePlayControls): void
   const myToken = Symbol('queue');
   controls.ready({
     play: () => {
+      registerTtsFingerprint(text);
       dispatchNative(text, {
         onStart: () => {
           activeAudioOwner = { owner: 'queue', token: myToken };
@@ -1003,6 +1101,169 @@ export function speakConfirmation(
   });
 }
 
+// ── Confirmation-mode status cues (PLAN-D D2, feedback ids 122/124) ─────────
+//
+// A bare `speakConfirmation(text, {force:true})` call (this file's first
+// cut) satisfies "bypasses dedupe" and "never resets the FIFO" — but NOT
+// "defers behind an active ask rather than dropping": `speak()`'s
+// `preemptFlush()` (a direct ask/alert taking the audio channel) and the
+// queue's own overflow drop-oldest both fire `onDiscarded` unconditionally
+// on every QUEUED item, and a bare `speakConfirmation` call passes no
+// `dedupeKey`, so the discard is silent and the cue is gone for good — an
+// inspector who flips the toggle right as the model asks a question would
+// never hear the flip confirmed. This block closes that gap with the
+// smallest mechanism that survives it: give the cue a dedupe key ONLY so
+// the discard hook can recognise and re-enqueue it (never for true
+// deduplication — each cue gets its own unique key, so back-to-back
+// identical cues are never collapsed).
+const MODE_STATUS_DEDUPE_PREFIX = 'mode-status:';
+let modeStatusKeyCounter = 0;
+/** dedupeKey → cue text, for cues currently enqueued (or already playing —
+ *  see `handleModeStatusCuePlaybackStarted`, which retires the entry once
+ *  the cue is actually heard). */
+const modeStatusCueTexts = new Map<string, string>();
+/** Bumped by `cancelSpeech({resetQueue:true})` (session teardown) — see
+ *  `handleModeStatusCueDiscard`'s docblock. A deferred re-park microtask
+ *  captures the generation at schedule time and checks it's unchanged
+ *  before actually enqueueing; `modeStatusCueTexts.clear()` alone cannot
+ *  cancel a microtask that was already scheduled (and therefore already
+ *  captured its text in a closure) before the clear ran. */
+let modeStatusGeneration = 0;
+
+function buildModeStatusDedupeKey(): string {
+  modeStatusKeyCounter += 1;
+  return `${MODE_STATUS_DEDUPE_PREFIX}${modeStatusKeyCounter}`;
+}
+
+function enqueueModeStatusCue(text: string): void {
+  const dedupeKey = buildModeStatusDedupeKey();
+  modeStatusCueTexts.set(dedupeKey, text);
+  const harnessPlayer = getRecordingTestServices()?.ttsConfirmationPlayer;
+  enqueueConfirmation({
+    text,
+    dedupeKey,
+    // Never evicted by queue-overflow pressure (only preemptFlush()/reset()
+    // can discard it) — overflow has no natural pacing the way a genuine
+    // ask does, so a re-parked cue re-evicted by the NEXT overflowing
+    // enqueue could thrash indefinitely under sustained queue pressure.
+    protected: true,
+    play: harnessPlayer
+      ? (t, controls) => {
+          registerTtsFingerprint(t);
+          harnessPlayer(t, controls);
+        }
+      : playConfirmationHead,
+  });
+}
+
+/**
+ * Dedicated speech path for the confirmations-toggle cues ("Voice
+ * read-backs on/off.") and the session-start warning. Contract, mirroring
+ * iOS's own dedicated mode-status path (`AlertManager.swift`, which solves
+ * the identical problem with its own park/flush mechanism):
+ *   - Ignores the confirmation-mode toggle entirely (must be audible
+ *     precisely when confirmations are OFF).
+ *   - Bypasses the confirmation dedupe/TTL layer (a rapid off→on→off
+ *     within 30s is heard three times, never collapsed).
+ *   - DEFERS behind an active ask / in-progress inspector speech rather
+ *     than dropping: enqueues via the same FIFO as ordinary confirmations
+ *     (`shouldDeferPlayback` already gates on `isDirectAudioActive()`), and
+ *     if a LATER ask's `preemptFlush()` or queue overflow destroys the
+ *     still-waiting item, `handleModeStatusCueDiscard` (wired into
+ *     recording-context's `onDiscarded` hook) re-enqueues it rather than
+ *     letting it vanish — so it plays as soon as the channel clears
+ *     instead of being lost. That re-park is reason-gated (see
+ *     `handleModeStatusCueDiscard`'s docblock): a genuine terminal
+ *     playback failure retires the cue instead of retrying forever.
+ *   - Never resets the FIFO itself (enqueues only; never calls
+ *     `preemptFlush()`/`reset()`).
+ */
+export function speakConfirmationModeStatus(text: string): void {
+  const trimmed = text?.trim();
+  if (!trimmed) return;
+  if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) return;
+  clientDiagnostic('tts_speak_mode_status_called', { textPreview: trimmed.slice(0, 80) });
+  enqueueModeStatusCue(trimmed);
+}
+
+/**
+ * Called from recording-context's `onDiscarded` hook. Returns true iff
+ * `dedupeKey` belongs to a mode-status cue destroyed by a queue-lifecycle
+ * event (preempt / overflow) — the caller should not also treat it as an
+ * ordinary confirmation reservation. The re-enqueue itself is DEFERRED to a
+ * microtask, never called synchronously from here — this is load-bearing,
+ * not cosmetic: `preemptFlush()` and `reset()` both fire `onDiscarded` for
+ * every queued item via a LIVE `for (const q of queue)` loop, iterating the
+ * SAME array `enqueueConfirmation` pushes into. A synchronous re-enqueue
+ * from inside that loop pushes a new item onto the array the loop is still
+ * iterating, so the iterator visits the freshly-pushed item too — which
+ * re-enqueues again, and again, cascading within one synchronous call
+ * (confirmed empirically: it took five recursive re-enqueues, each
+ * evicting the last via the `MAX_QUEUE_DEPTH` overflow-drop, before one
+ * `queue.shift()` happened to remove an index the live iterator hadn't
+ * reached yet and it accidentally terminated — not a mechanism to rely on).
+ * `queueMicrotask` runs the actual push after the enclosing loop (and, for
+ * `reset()`, `cancelSpeech`'s `modeStatusCueTexts.clear()`) has already
+ * completed, so by the time it fires there is no iteration in progress to
+ * re-enter.
+ *
+ * During a FULL queue reset (session teardown, `cancelSpeech({resetQueue:
+ * true})`), `cancelSpeech` clears `modeStatusCueTexts` BEFORE calling
+ * `reset()` — so this returns `false` (nothing scheduled) and the cue is
+ * allowed to die with the session rather than being resurrected into the
+ * next one.
+ *
+ * Codex diff-review r2 caught a race `modeStatusCueTexts.clear()` alone
+ * doesn't cover: if a re-park microtask is ALREADY SCHEDULED (this
+ * function already ran, already captured `text` in a closure) and THEN
+ * `cancelSpeech({resetQueue:true})` runs before that microtask fires,
+ * clearing the map does nothing to the already-scheduled callback — it
+ * would still enqueue the stale cue into the fresh, post-reset queue,
+ * resurrecting it into the next session. `modeStatusGeneration` closes
+ * this: captured at schedule time, checked before the deferred enqueue
+ * runs; `cancelSpeech` bumps it in the same place it clears the map.
+ *
+ * Codex diff-review r3 caught a second gap: re-parking unconditionally on
+ * EVERY discard — including `reason === 'playback_error'` (native AND
+ * ElevenLabs both failed before any audio played, e.g. a broken synth
+ * backend) — retries forever with no natural pacing, unlike a genuine
+ * queue-lifecycle discard (preempt/overflow/purge/reset), which only
+ * recurs when something else legitimately re-occupies the channel. Only
+ * `playback_error` retires instead of re-parking; every other reason still
+ * re-parks via the microtask mechanism above.
+ */
+export function handleModeStatusCueDiscard(dedupeKey: string, reason: DiscardReason): boolean {
+  const text = modeStatusCueTexts.get(dedupeKey);
+  if (text === undefined) return false;
+  modeStatusCueTexts.delete(dedupeKey);
+  if (reason === 'playback_error') {
+    clientDiagnostic('tts_mode_status_cue_abandoned', { reason });
+    return true;
+  }
+  const generationAtDiscard = modeStatusGeneration;
+  queueMicrotask(() => {
+    if (modeStatusGeneration !== generationAtDiscard) return; // torn down meanwhile
+    enqueueModeStatusCue(text);
+  });
+  return true;
+}
+
+/** Called from recording-context's `onPlaybackStarted` hook — the cue was
+ *  actually heard, so its re-park tracking entry is retired (nothing left
+ *  to protect; a later flip speaks as a genuinely new cue via
+ *  `speakConfirmationModeStatus`). Returns true iff this was a tracked
+ *  mode-status key, so the caller can skip its own (irrelevant) handling. */
+export function handleModeStatusCuePlaybackStarted(dedupeKey: string): boolean {
+  return modeStatusCueTexts.delete(dedupeKey);
+}
+
+/** Test-only. */
+export function __resetModeStatusCuesForTests(): void {
+  modeStatusCueTexts.clear();
+  modeStatusKeyCounter = 0;
+  modeStatusGeneration += 1;
+}
+
 /**
  * Test-only — wipe the TTS audio window so a fresh test reads `null`
  * from `getTtsAudioWindow()`. Production callers don't need this; the
@@ -1043,7 +1304,19 @@ export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
   if (!isTtsAvailable()) {
     // Still flush the queue on a full teardown so a stuck `busy` can't survive
     // into the next session (queue is normally empty in the SSR/no-synth case).
-    if (resetQueue) ttsQueueReset();
+    if (resetQueue) {
+      // PLAN-D — clear mode-status tracking BEFORE reset() fires discards,
+      // so handleModeStatusCueDiscard sees no match and does not re-park a
+      // cue into a session that's tearing down (see that function's
+      // docblock for why re-parking here would hang the tab). Also bump
+      // the generation so an ALREADY-SCHEDULED re-park microtask (from a
+      // discard that fired before this teardown) is a no-op too — clearing
+      // the map alone cannot cancel a microtask whose closure already
+      // captured the cue's text.
+      modeStatusCueTexts.clear();
+      modeStatusGeneration += 1;
+      ttsQueueReset();
+    }
     return;
   }
   const closeWindow = () => {
@@ -1054,6 +1327,11 @@ export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
   };
   if (resetQueue) {
     // FULL teardown — reset the queue FIRST (see docblock), then cancel direct.
+    // PLAN-D — clear mode-status tracking + bump the generation BEFORE
+    // reset() (see the no-isTtsAvailable() branch above for why ordering,
+    // and why the generation bump, are both load-bearing).
+    modeStatusCueTexts.clear();
+    modeStatusGeneration += 1;
     ttsQueueReset();
     try {
       window.speechSynthesis.cancel();

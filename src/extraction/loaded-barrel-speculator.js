@@ -83,7 +83,7 @@
  *     internal try/catch tight.
  */
 
-import { ElevenLabsStreamClient } from './elevenlabs-stream-client.js';
+import { ElevenLabsStreamClient, synthWithLanguageFailOpen } from './elevenlabs-stream-client.js';
 import {
   shouldGenerateConfirmation,
   buildConfirmationText,
@@ -147,11 +147,17 @@ function parseCircuit(circuitStr) {
 /**
  * Build the default ElevenLabs client factory. Tests inject an
  * alternative via `clientFactory` so they don't open real WSes.
+ *
+ * D1 (feedback id 121): `languageCode` is threaded through so the
+ * fail-open retry (see the `.synth()` call site) can build a SECOND
+ * instance with `languageCode: null` — omitted, it resolves to the
+ * client's own 'en' default, same as every other production caller.
  */
-function defaultClientFactory({ apiKey, outputFormat }) {
+function defaultClientFactory({ apiKey, outputFormat, languageCode }) {
   return new ElevenLabsStreamClient({
     apiKey,
     outputFormat: outputFormat || DEFAULT_OUTPUT_FORMAT,
+    languageCode,
     // Always single-shot (plan v10 §F1) — multi-context pooling is
     // intentionally out of scope so we don't introduce cross-turn
     // audio-bleed risk in v10.
@@ -984,15 +990,27 @@ export function createSpeculator({
     // Synth fires asynchronously — the speculator's onSnapshotPatch
     // returns immediately so runToolLoop's dispatch isn't blocked by
     // ElevenLabs latency. Errors logged + recorded; never thrown.
+    //
+    // D1 fail-open (id 121): attempt 1 is `client` (default
+    // language_code=en, per clientFactory above); on a zero-bytes
+    // attributable rejection this constructs a SECOND instance via
+    // clientFactory with languageCode: null and retries once — the
+    // speculative path gets the same compatibility contract as every
+    // other production caller. Correlation id + cost ledger are opened
+    // once, above, before this call, so a retry never double-bills.
     const audioChunks = [];
-    client
-      .synth(expandedText, {
+    synthWithLanguageFailOpen(
+      client,
+      () => clientFactory({ apiKey: resolvedApiKey, outputFormat, languageCode: null }),
+      expandedText,
+      {
         onAudio: (buf) => {
           if (buf && buf.length) audioChunks.push(buf);
         },
         signal: controller.signal,
-      })
-      .then((_timings) => {
+      }
+    )
+      .then(({ client: succeededClient }) => {
         pendingControllers.delete(controller);
         pendingByCorrelation.delete(correlationId);
         const mp3Buffer = Buffer.concat(audioChunks);
@@ -1049,15 +1067,19 @@ export function createSpeculator({
             reason: 'late_synth_completion_after_abort',
           });
         }
-        if (client && typeof client.close === 'function') {
+        if (succeededClient && typeof succeededClient.close === 'function') {
           try {
-            client.close();
+            succeededClient.close();
           } catch (_e) {
             /* ignore */
           }
         }
       })
       .catch((err) =>
+        // `client` here is always attempt 1 — the helper already closes it
+        // before starting a retry, and a failed retry's own instance
+        // self-closes on every reject path inside .synth(), so this is a
+        // belt-and-braces no-op, same as the pre-D1 behaviour.
         _onSynthError(correlationId, cacheKey, controller, resolvePromise, err, client)
       );
   }

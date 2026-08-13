@@ -1161,3 +1161,87 @@ describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
     expect(synths).toHaveLength(1);
   });
 });
+
+// D1 (feedback id 121) — the speculative pre-text synth shares
+// synthWithLanguageFailOpen with every other production caller. This
+// harness builds a factory that returns a DIFFERENT client per call so a
+// retry can be observed end-to-end (factory called twice, second call's
+// languageCode option is the disable sentinel, exactly one cost-ledger
+// open/close, cache ends up 'ready').
+describe('speculate — D1 fail-open retry', () => {
+  function makeRetryClientFactory({ mp3Payload = Buffer.from([9, 8, 7]) } = {}) {
+    const calls = [];
+    const factory = jest.fn((opts) => {
+      calls.push(opts);
+      const attempt = calls.length;
+      const client = {
+        modelId: 'eleven_flash_v2_5',
+        close: jest.fn(),
+        synth: jest.fn((text, synthOpts) => {
+          if (attempt === 1) {
+            const err = new Error('elevenlabs_error: invalid_language_code');
+            err.bytesReceived = 0;
+            return Promise.reject(err);
+          }
+          synthOpts.onAudio(mp3Payload);
+          return Promise.resolve({ firstAudioNs: 1n, isFinalNs: 2n });
+        }),
+      };
+      return client;
+    });
+    return { factory, calls };
+  }
+
+  test('attempt 1 rejects (zero bytes, attributable) → retries with languageCode:null → cache ready; factory called exactly twice', async () => {
+    const { factory, calls } = makeRetryClientFactory();
+    const spec = makeSpeculator({ factory });
+    const text = 'Circuit 1, zed S zero point five';
+
+    spec.onSnapshotPatch(
+      patchForAdded({ field: 'measured_zs_ohm', circuit: 1, boardId: null, value: '0.5' })
+    );
+    await flush();
+    await flush(); // one extra tick for the retry's own synth() promise to settle
+
+    expect(factory).toHaveBeenCalledTimes(2);
+    // First attempt: default pin (languageCode omitted → resolves to 'en'
+    // inside the client, but the CALLER — defaultClientFactory — is only
+    // ever asked for `languageCode: undefined` on attempt 1).
+    expect(calls[0].languageCode).toBeUndefined();
+    // Retry: explicit disable sentinel.
+    expect(calls[1].languageCode).toBeNull();
+
+    const key = buildCacheKey({
+      sessionId: 'S',
+      turnId: 'T1',
+      boardId: null,
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      expandedText: text,
+    });
+    expect(peek(key)?.state).toBe('ready');
+    expect(peek(key)?.mp3Buffer).toEqual(Buffer.from([9, 8, 7]));
+  });
+
+  test('cost ledger opens/closes exactly once across both attempts (no double-bill)', async () => {
+    const { factory } = makeRetryClientFactory();
+    const costTracker = new CostTracker();
+    const startedSpy = jest.spyOn(costTracker, 'recordElevenLabsSpeculativeStarted');
+    const spec = createSpeculator({
+      sessionId: 'S',
+      apiKey: 'test-key',
+      costTracker,
+      clientFactory: factory,
+    });
+
+    spec.onSnapshotPatch(
+      patchForAdded({ field: 'measured_zs_ohm', circuit: 1, boardId: null, value: '0.5' })
+    );
+    await flush();
+    await flush();
+
+    expect(factory).toHaveBeenCalledTimes(2);
+    // Opened once, before the first attempt — not once per attempt.
+    expect(startedSpy).toHaveBeenCalledTimes(1);
+  });
+});

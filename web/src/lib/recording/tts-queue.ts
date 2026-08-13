@@ -85,6 +85,16 @@ export interface QueuePlayControls {
 
 export type ConfirmationPlayFn = (text: string, controls: QueuePlayControls) => void;
 
+/** Why a never-played item was discarded. `onDiscarded` callers (PLAN-D's
+ *  mode-status re-park mechanism) branch on this: `overflow`/`preempt`/
+ *  `purge`/`reset`/`not_queued` are queue-LIFECYCLE events — the channel
+ *  itself is fine, just occupied or torn down, so retrying (re-parking) is
+ *  safe. `playback_error` is a genuine terminal failure (native AND
+ *  ElevenLabs both failed before any audio played) — re-parking that would
+ *  retry indefinitely against a persistently broken synth backend, so
+ *  callers must retire tracking instead. */
+export type DiscardReason = 'overflow' | 'preempt' | 'purge' | 'reset' | 'playback_error' | 'not_queued';
+
 export interface ConfirmationQueueItem {
   text: string;
   /** Prefix key for `cancel_pending_tts` purge. Confirmations set NONE today,
@@ -93,6 +103,15 @@ export interface ConfirmationQueueItem {
   /** Confirmation dedupe key. Un-recorded via `onDiscarded` iff the item is
    *  discarded before ever starting playback. */
   dedupeKey?: string;
+  /** Exempt this item from `MAX_QUEUE_DEPTH` overflow eviction — drop-oldest
+   *  looks for the oldest NON-protected item instead. For items whose loss
+   *  must never be silent (PLAN-D mode-status cues): overflow eviction has
+   *  no natural pacing (unlike `preemptFlush()`, which fires once per ask),
+   *  so a protected item repeatedly re-parked only to be evicted again by
+   *  the NEXT overflow-triggering enqueue can thrash. If every queued item
+   *  is protected, the queue is allowed to exceed `MAX_QUEUE_DEPTH` by one
+   *  rather than silently drop one. */
+  protected?: boolean;
   play: ConfirmationPlayFn;
   /** Optional per-item natural-completion hook (diagnostic; not correctness). */
   onEnd?: () => void;
@@ -123,7 +142,7 @@ let idCounter = 0;
 let shouldDeferPlayback: () => boolean = () => false;
 /** Un-record hook. Null until recording-context registers it; `reset()` clears
  *  it so a later tour (no session) runs against no callback. */
-let onDiscarded: ((dedupeKey: string) => void) | null = null;
+let onDiscarded: ((dedupeKey: string, reason: DiscardReason) => void) | null = null;
 /** Playback-start hook (§A1b, field-feedback-2026-07-14). Fired once per
  *  head, at the moment real audio begins, with the head's dedupeKey —
  *  recording-context converts the key's RESERVATION into its heard state
@@ -136,7 +155,7 @@ export function setShouldDeferPlayback(fn: () => boolean): void {
   shouldDeferPlayback = fn;
 }
 
-export function setOnDiscarded(fn: (dedupeKey: string) => void): void {
+export function setOnDiscarded(fn: (dedupeKey: string, reason: DiscardReason) => void): void {
   onDiscarded = fn;
 }
 
@@ -146,10 +165,10 @@ export function setOnPlaybackStarted(fn: (dedupeKey: string) => void): void {
 
 /** Fire the un-record hook synchronously for a never-played item. No-op when
  *  the item has no dedupeKey or no hook is registered (tour path). */
-function fireDiscarded(item: { dedupeKey?: string }): void {
+function fireDiscarded(item: { dedupeKey?: string }, reason: DiscardReason): void {
   if (item.dedupeKey && onDiscarded) {
     try {
-      onDiscarded(item.dedupeKey);
+      onDiscarded(item.dedupeKey, reason);
     } catch {
       /* swallow — a bad consumer must not wedge the queue */
     }
@@ -172,10 +191,15 @@ export function enqueueConfirmation(item: ConfirmationQueueItem): {
   // Drop-oldest overflow. Depth = current head (if any) + waiting queue.
   const inflight = (head ? 1 : 0) + queue.length;
   if (inflight >= MAX_QUEUE_DEPTH && queue.length > 0) {
-    const dropped = queue.shift();
-    if (dropped) {
+    // Oldest NON-protected item — see `protected` on ConfirmationQueueItem.
+    // If every queued item is protected, skip the drop entirely (the queue
+    // exceeds MAX_QUEUE_DEPTH by one for this push, rather than silently
+    // dropping something that must never go silent).
+    const dropIndex = queue.findIndex((q) => !q.protected);
+    if (dropIndex !== -1) {
+      const [dropped] = queue.splice(dropIndex, 1);
       discardedCount = 1;
-      fireDiscarded(dropped); // never played
+      fireDiscarded(dropped, 'overflow'); // never played
       clientDiagnostic('tts_queue_overflow', {
         droppedId: dropped.id,
         droppedDedupeKey: dropped.dedupeKey ?? null,
@@ -260,7 +284,7 @@ function completeHead(id: number, failed = false): void {
   if (id !== currentHeadId) return;
   const finished = head;
   if (failed && !startedPlayback && finished) {
-    fireDiscarded(finished);
+    fireDiscarded(finished, 'playback_error');
   }
   head = null;
   busy = false;
@@ -302,13 +326,13 @@ export function resumeIfDeferred(): void {
  * nothing plays); a mid-fetch/playing head is hard-cancelled via the
  * registered canceller. Returns whether it discarded (for preempt accounting).
  */
-function tearDownCurrentHeadManually(): { discarded: boolean } {
+function tearDownCurrentHeadManually(reason: DiscardReason): { discarded: boolean } {
   if (!head) return { discarded: false };
   const wasStarted = startedPlayback;
   const isDeferred = deferredHead != null && deferredHead.item.id === currentHeadId;
   let discarded = false;
   if (!wasStarted) {
-    fireDiscarded(head);
+    fireDiscarded(head, reason);
     discarded = true;
     if (!isDeferred) {
       clientDiagnostic('tts_queue_discarded_prefetch', { id: currentHeadId });
@@ -351,14 +375,14 @@ export function purge(prefix: string): void {
   for (const q of queue) {
     if (q.cancelKey && q.cancelKey.startsWith(prefix)) {
       purgedCount++;
-      fireDiscarded(q);
+      fireDiscarded(q, 'purge');
     } else {
       kept.push(q);
     }
   }
   queue = kept;
   if (head && head.cancelKey && head.cancelKey.startsWith(prefix)) {
-    tearDownCurrentHeadManually();
+    tearDownCurrentHeadManually('purge');
     purgedCount++;
   }
   if (purgedCount > 0) {
@@ -371,9 +395,20 @@ export function purge(prefix: string): void {
  * The `speak()`-preempt primitive (distinct from `reset` and `purge`). Used
  * mid-session when a direct `speak()` question/alert takes the audio channel
  * from a playing confirmation. Ordering is load-bearing:
- *   (1) EMPTY the queue FIRST — `onDiscarded` every still-queued item;
- *   (2) tear down the current head MANUALLY + UNGUARDED;
- *   (3) do NOT `pumpIfIdle()` (queue is empty, nothing restarts behind the
+ *   (1) Tear down the CURRENT head MANUALLY + UNGUARDED FIRST, THEN empty the
+ *       queue — `onDiscarded` fires for the head before any still-queued item.
+ *       Codex diff-review r6 BLOCKER: `onDiscarded` for a mode-status cue
+ *       (`handleModeStatusCueDiscard`) re-parks via a MICROTASK, and
+ *       microtasks run in the order they were SCHEDULED — so firing order
+ *       here determines re-park (and therefore eventual playback) order.
+ *       The head is chronologically the OLDEST pending cue (it was dequeued
+ *       first); firing it before the queue's newer items preserves that
+ *       chronological order across a preempt-then-re-park round trip. The
+ *       old queue-first ordering reversed a rapid off→then→on sequence into
+ *       on→then→off once both were re-parked, leaving the inspector hearing
+ *       the WRONG final toggle state — id-122/124 exists specifically to
+ *       make the audible state trustworthy, so this correctness matters.
+ *   (2) do NOT `pumpIfIdle()` (queue is empty, nothing restarts behind the
  *       question).
  * MUST NOT touch `shouldDeferPlayback` / `onDiscarded` — the session is still
  * live (the key difference from `reset()`). Returns the count of never-played
@@ -381,15 +416,15 @@ export function purge(prefix: string): void {
  */
 export function preemptFlush(): number {
   let discardedCount = 0;
+  if (head) {
+    const r = tearDownCurrentHeadManually('preempt');
+    if (r.discarded) discardedCount++;
+  }
   for (const q of queue) {
-    fireDiscarded(q); // every queued item is never-played
+    fireDiscarded(q, 'preempt'); // every queued item is never-played
     discardedCount++;
   }
   queue = [];
-  if (head) {
-    const r = tearDownCurrentHeadManually();
-    if (r.discarded) discardedCount++;
-  }
   clientDiagnostic('tts_queue_preempt_flush', { discardedCount });
   return discardedCount;
 }
@@ -404,11 +439,11 @@ export function preemptFlush(): number {
 export function reset(): void {
   let discarded = 0;
   for (const q of queue) {
-    fireDiscarded(q);
+    fireDiscarded(q, 'reset');
     discarded++;
   }
   queue = [];
-  if (head) tearDownCurrentHeadManually();
+  if (head) tearDownCurrentHeadManually('reset');
   clientDiagnostic('tts_queue_reset', { discardedQueued: discarded });
   shouldDeferPlayback = () => false;
   onDiscarded = null;

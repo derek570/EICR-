@@ -95,6 +95,8 @@ Current models used by the backend processing pipeline:
 
 **Note:** For recording, iOS fetches a short-lived Deepgram key and connects directly to Deepgram. Live structured extraction runs server-side via WebSocket; the current Luna trial uses OpenAI's Responses API. Batch processing and CCU photo analysis also call AI APIs from the backend.
 
+**TTS (spoken read-backs).** ElevenLabs `eleven_flash_v2_5`, pinned `language_code=en` on every production synthesis site (`src/extraction/elevenlabs-stream-client.js`, `src/routes/keys.js`, `src/extraction/loaded-barrel-speculator.js`, `src/routes/voice-latency-fast-tts.js`) since 2026-08-13 (PLAN-D, feedback id 121) — the model auto-detects language from text with no pin, and a short telegraphic confirmation ("Garage, circuit 3, 1 points") is composed entirely of valid French words, so detection could flip and speak a confirmation in French. A shared `synthWithLanguageFailOpen` helper retries once with the pin removed on a zero-audio-bytes vendor rejection, so a genuine `language_code` incompatibility degrades gracefully instead of failing every confirmation. `src/routes/voice-latency-bench.js` (the throwaway Stage-0 bench) is pinned but FAIL-CLOSED — no retry, since a bench failure should be loud.
+
 ### Observation-tier model routing flag
 
 | Env Var | Prod value | Meaning |

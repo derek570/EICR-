@@ -352,7 +352,7 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
       });
     }
 
-    const { ElevenLabsStreamClient, contentTypeForFormat } =
+    const { ElevenLabsStreamClient, contentTypeForFormat, synthWithLanguageFailOpen } =
       await import('../extraction/elevenlabs-stream-client.js');
     const { recordSpan, recordOutcome } = await import('../extraction/voice-latency-telemetry.js');
 
@@ -384,7 +384,18 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
           if (!res.writableEnded) res.write(buf);
         },
       };
-      const timings = await client.synth(text, opts);
+      // D1 fail-open (id 121): attempt 1 is `client` (default
+      // language_code=en); on a zero-bytes attributable rejection this
+      // retries once with a fresh instance and languageCode: null. The
+      // decrement/reject-with-error path below still fires exactly once,
+      // regardless of attempt count — the ledger was opened once, above
+      // this try block, by the caller's own reservation.
+      const { timings } = await synthWithLanguageFailOpen(
+        client,
+        () => new ElevenLabsStreamClient({ apiKey, outputFormat: FORCED_OUTPUT_FORMAT, languageCode: null }),
+        text,
+        opts
+      );
       terminal = 'completed';
       if (!res.writableEnded) res.end();
       ElevenLabsStreamClient.logSynthSpans(correlationId, timings, recordSpan);

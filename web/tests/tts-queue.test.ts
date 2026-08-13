@@ -181,7 +181,7 @@ describe('drop-oldest overflow (iOS AlertManager.swift:352-354)', () => {
     // The 7th enqueue drops the OLDEST QUEUED item (c2 → k2), NOT the newest.
     expect(seventh).toEqual({ enqueued: true, discardedCount: 1 });
     expect(onDiscarded).toHaveBeenCalledTimes(1);
-    expect(onDiscarded).toHaveBeenCalledWith('k2');
+    expect(onDiscarded).toHaveBeenCalledWith('k2', 'overflow');
   });
 });
 
@@ -192,7 +192,7 @@ describe('teardown fires onDiscarded only for never-played items', () => {
     enq('A', { dedupeKey: 'kA' });
     // No fetchDone → still fetching, never heard.
     preemptFlush();
-    expect(onDiscarded).toHaveBeenCalledWith('kA');
+    expect(onDiscarded).toHaveBeenCalledWith('kA', 'preempt');
     expect(recs[0].cancelled).toBe(true); // hard-abort the fetch
   });
 
@@ -227,7 +227,7 @@ describe('teardown fires onDiscarded only for never-played items', () => {
     expect(__hasDeferredHeadForTests()).toBe(true);
     preemptFlush();
     expect(onDiscarded).toHaveBeenCalledTimes(1);
-    expect(onDiscarded).toHaveBeenCalledWith('kA');
+    expect(onDiscarded).toHaveBeenCalledWith('kA', 'preempt');
     expect(recs[0].discardCount).toBe(1); // prepared.discard(), NOT a hard audio cancel
   });
 });
@@ -241,9 +241,9 @@ describe('purge(prefix)', () => {
     enq('C', { dedupeKey: 'kC', cancelKey: 'srv-y-1' }); // queued, does NOT match
     purge('srv-x-');
     // A (head, mid-fetch) + B (queued) discarded; C survives.
-    expect(onDiscarded).toHaveBeenCalledWith('kA');
-    expect(onDiscarded).toHaveBeenCalledWith('kB');
-    expect(onDiscarded).not.toHaveBeenCalledWith('kC');
+    expect(onDiscarded).toHaveBeenCalledWith('kA', 'purge');
+    expect(onDiscarded).toHaveBeenCalledWith('kB', 'purge');
+    expect(onDiscarded).not.toHaveBeenCalledWith('kC', 'purge');
     // C now pumps (non-matching item remained).
     expect(recs.some((r) => r.text === 'C')).toBe(true);
   });
@@ -257,8 +257,8 @@ describe('reset()', () => {
     enq('A', { dedupeKey: 'kA' });
     enq('B', { dedupeKey: 'kB' });
     reset();
-    expect(onDiscarded).toHaveBeenCalledWith('kA');
-    expect(onDiscarded).toHaveBeenCalledWith('kB');
+    expect(onDiscarded).toHaveBeenCalledWith('kA', 'reset');
+    expect(onDiscarded).toHaveBeenCalledWith('kB', 'reset');
     // Gate restored to default: a fresh enqueue plays immediately (never defers)
     // AND onDiscarded is cleared (no more callbacks).
     onDiscarded.mockClear();
@@ -290,7 +290,7 @@ describe('pump advances on terminal onEnd OR onError', () => {
     recs[0].controls.onError('synthesis failed');
 
     expect(onDiscarded).toHaveBeenCalledOnce();
-    expect(onDiscarded).toHaveBeenCalledWith('address_delivery_1');
+    expect(onDiscarded).toHaveBeenCalledWith('address_delivery_1', 'playback_error');
     expect(recs.map((rec) => rec.text)).toEqual(['A', 'B']);
   });
 
@@ -334,7 +334,7 @@ describe('discard-then-re-enqueue keeps a re-played key (no double read-back)', 
     fetchDone(recs[0]);
     enq('c7', { dedupeKey: 'k7' }); // drops k2
     expect(onDiscarded).toHaveBeenCalledTimes(1);
-    expect(onDiscarded).toHaveBeenCalledWith('k2');
+    expect(onDiscarded).toHaveBeenCalledWith('k2', 'overflow');
     // Re-enqueue a same-key item and let it play to natural end — no further
     // onDiscarded (its key stays recorded → not re-spoken again).
     onDiscarded.mockClear();
