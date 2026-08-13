@@ -327,4 +327,41 @@ describe('PLAN-C C2a — lighter-weight pause (full RecordingProvider)', () => {
     // (retained instance) — confirms neither call took the wrong branch.
     expect(harness.counts.sonnetConstructed - sonnetBefore).toBe(0);
   });
+
+  it('per-fix mini-review — a question deferred mid-utterance is spoken (not stranded) when pause() disconnects Deepgram before onUtteranceEnd can drain it', async () => {
+    const { harness, apiRef } = await mountAndStart();
+    const dg = harness.refs.deepgram!;
+
+    // Inspector mid-utterance: SpeechStarted + a real interim sets
+    // isInspectorSpeakingRef true and cancels the phantom-speech
+    // watchdog (the ONLY other path that would eventually drain a
+    // deferred prompt on its own).
+    await act(async () => {
+      dg.emitSpeechStarted();
+      dg.emitInterim('circuit four is');
+    });
+
+    // A question arrives while the inspector is still talking —
+    // shouldDeferPlayback defers it instead of talking over them.
+    await act(async () => {
+      harness.refs.sonnet!.emitQuestion({
+        question: 'Which circuit was that reading for?',
+        question_type: 'clarification',
+      });
+    });
+    expect(harness.tts.played).toHaveLength(0); // deferred, not spoken yet
+
+    // The inspector taps Pause BEFORE finishing the utterance — Deepgram
+    // disconnects, so the normal drain trigger (onUtteranceEnd) can
+    // never arrive for this deferred item.
+    await act(async () => {
+      apiRef.current!.pause();
+    });
+    expect(apiRef.current!.state).toBe('sleeping');
+
+    // The deferred question must be spoken now, not stranded until some
+    // unrelated future utterance (or forever).
+    expect(harness.tts.played.filter((p) => p.kind === 'direct')).toHaveLength(1);
+    expect(harness.tts.played[0].text).toContain('Which circuit');
+  });
 });

@@ -1591,9 +1591,27 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     deepgramRef.current = null;
     setDeepgramState('disconnected');
     setInterim('');
+    // Per-fix mini-review (Codex): setting isInspectorSpeakingRef false
+    // directly (as an earlier cut of this fix did) skips the drain this
+    // flag's OWN flip-to-false sites always pair with. If the inspector
+    // was captured mid-utterance (an interim already cancelled the 1.2s
+    // phantom-speech watchdog) when pause() fires, Deepgram disconnecting
+    // means `onUtteranceEnd` — the other site that flips this flag — can
+    // never arrive; a `deferredTtsRef` set moments earlier by
+    // `shouldDeferPlayback` would be stranded with no future drain path.
+    // `onInspectorStoppedSpeaking()` is the SAME idempotent helper both
+    // existing flip-to-false sites call — reusing it here (rather than
+    // only setting the ref) speaks any owed deferred prompt now instead
+    // of losing it, consistent with the repo's Audio-First MANDATORY
+    // invariant (never silently drop a dictated/owed reading).
+    if (speechConfirmTimerRef.current) {
+      clearTimeout(speechConfirmTimerRef.current);
+      speechConfirmTimerRef.current = null;
+    }
     isInspectorSpeakingRef.current = false;
+    onInspectorStoppedSpeaking();
     lastSpeechStartedTimeRef.current = null;
-  }, []);
+  }, [onInspectorStoppedSpeaking]);
 
   const teardownSonnet = React.useCallback(() => {
     sonnetRef.current?.disconnect();
