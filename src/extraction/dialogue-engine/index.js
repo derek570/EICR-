@@ -17,6 +17,7 @@ import {
   enterScriptByName,
   tryResumePausedScript,
   tryEnterScriptFromWrites,
+  valuesCanonicallyEqual,
 } from './engine.js';
 import { ringContinuitySchema } from './schemas/ring-continuity.js';
 import { insulationResistanceSchema } from './schemas/insulation-resistance.js';
@@ -24,7 +25,13 @@ import { ocpdSchema } from './schemas/ocpd.js';
 import { rcdSchema } from './schemas/rcd.js';
 import { rcboSchema } from './schemas/rcbo.js';
 
-export { processDialogueTurn, enterScriptByName, tryResumePausedScript, tryEnterScriptFromWrites };
+export {
+  processDialogueTurn,
+  enterScriptByName,
+  tryResumePausedScript,
+  tryEnterScriptFromWrites,
+  valuesCanonicallyEqual,
+};
 export { ringContinuitySchema, insulationResistanceSchema, ocpdSchema, rcdSchema, rcboSchema };
 
 /**

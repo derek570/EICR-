@@ -113,6 +113,23 @@ function normaliseEmits(sent) {
       // dialogue-engine-rcd-entry-guard.test.js owns the positive
       // assertion that the frame fires.
       .filter((envelope) => envelope?.type !== 'cancel_pending_tts')
+      // PLAN A2 (feedback id 117) adds the terminal-sink read-back — a
+      // dictated value never previously read back before a cancel/defer/
+      // topic-switch/circuit-switch exit is now named aloud, exactly once.
+      // The legacy scripts never implement this (they're deprecated/frozen
+      // per "Stage 6 only — legacy parity dropped, 2026-04-27") and never
+      // will, so this is a DOCUMENTED, INTENTIONAL divergence — same
+      // treatment as cancel_pending_tts above: drop any standalone
+      // terminal_readback frame, and strip an appended "Also got …" suffix
+      // back to the base text before comparing. Pin behaviour: the
+      // dialogue-engine(.test|-bulk-apply|-pd).test.js files own the
+      // positive assertions that the read-back actually fires.
+      .filter((envelope) => !envelope?.tool_call_id?.includes('-terminal_readback-'))
+      .map((envelope) => {
+        if (typeof envelope?.question !== 'string') return envelope;
+        const stripped = envelope.question.replace(/ Also got:? .*\.$/, '');
+        return stripped === envelope.question ? envelope : { ...envelope, question: stripped };
+      })
       .map((envelope) => {
         if (envelope?.type !== 'extraction') return envelope;
         const readings = envelope.result?.readings;

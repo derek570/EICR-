@@ -253,7 +253,12 @@ describe('RCD bulk-apply integration', () => {
     // Confirmation TTS emitted, script cleared.
     const last = ws.sent.at(-1);
     expect(last.reason).toBe('info');
-    expect(last.question).toBe('Applied RCD to all circuits.');
+    // PLAN A2 (feedback id 117) — the dictated BS/type/mA were never
+    // named by the bulk-confirm text itself (it only names the field
+    // group + circuit scope); the terminal-sink rule now appends them.
+    expect(last.question).toBe(
+      'Applied RCD to all circuits. Also got: BS number BS EN 61008, type AC, operating current 30.'
+    );
     expect(session.dialogueScriptState).toBeFalsy();
   });
 
@@ -277,7 +282,9 @@ describe('RCD bulk-apply integration', () => {
         rcd_operating_current_ma: '30',
       });
     }
-    expect(ws.sent.at(-1).question).toBe('Applied RCD to circuits 1 through 6.');
+    expect(ws.sent.at(-1).question).toBe(
+      'Applied RCD to circuits 1 through 6. Also got: BS number BS EN 61008, type AC, operating current 30.'
+    );
   });
 
   test('"no" → no bulk write, normal "Got it. ..." finish TTS', () => {
@@ -319,7 +326,9 @@ describe('RCD bulk-apply integration', () => {
     // said and is accurate to the final state (all three are now
     // populated — 1 was already done by the script, 3 and 5 just got
     // written).
-    expect(ws.sent.at(-1).question).toBe('Applied RCD to circuits 1, 3 and 5.');
+    expect(ws.sent.at(-1).question).toBe(
+      'Applied RCD to circuits 1, 3 and 5. Also got: BS number BS EN 61008, type AC, operating current 30.'
+    );
   });
 
   test('trip_time is NOT propagated by bulk apply', () => {
@@ -411,7 +420,13 @@ describe('RCD bulk-apply integration', () => {
       transcriptText: 'fill later',
       now: 2000,
     });
-    expect(ws.sent.at(-1).question).toBe("Okay, I'll come back to that later.");
+    // PLAN A2 (feedback id 117) — this IS the id-117 motivating scenario:
+    // the dictated trip_time was never read back before this fix (a
+    // finishMessage-shaped ceremony bug). The terminal-sink rule now
+    // appends its read-back to the defer ack.
+    expect(ws.sent.at(-1).question).toBe(
+      "Okay, I'll come back to that later. Also got trip time 25."
+    );
     expect(session.stateSnapshot.circuits[1].rcd_trip_time).toBe('25');
     expect(session.stateSnapshot.circuits[1].rcd_bs_en).toBeUndefined();
     expect(session.dialogueScriptState).toBeFalsy();
