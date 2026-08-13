@@ -61,6 +61,11 @@
  *
  * `getFastAttemptState` / `getFastAttemptRecord` (B3.1 reads) return
  * whatever is known regardless of commit stage.
+ *
+ * Every reader below also takes an OPTIONAL `sessionId` (Codex diff-review
+ * F5, 2026-08-13) and treats a session mismatch identically to "not found" —
+ * see `sessionMismatch`'s doc comment just above the readers for the exact
+ * (permissive) matching rule.
  */
 
 /**
@@ -107,6 +112,28 @@ function isExpired(record) {
 }
 
 /**
+ * Codex diff-review F5 (2026-08-13) — session-scoping guard, mirroring the
+ * EXACT permissive pattern `markFastAttemptPlaybackStarted` already used
+ * (only the two writers `markFastAttemptPlaybackStarted`/`markFastAttemptFailed`
+ * had this guard before F5; every READER — `resolveAcceptedIdentity`,
+ * `getFastAttemptState`, `getFastAttemptRecord`,
+ * `resolveFastAttemptSlotIdentities`, `resolveFastLedgerOutcomeForTurn` — had
+ * none, so a stale/foreign correlationId (client replay, a UUID collision
+ * with a HELD-open record from a different session) could resolve another
+ * session's identity/state on read). A mismatch is only declared when BOTH
+ * sides carry a non-empty sessionId and they differ — a record with no
+ * sessionId (defensive minimal records built without one) or a caller that
+ * doesn't pass one is treated as unscoped, same as the existing writer guard.
+ *
+ * @param {FastAttemptRecord|undefined|null} record
+ * @param {string|undefined|null} sessionId
+ * @returns {boolean}
+ */
+function sessionMismatch(record, sessionId) {
+  return Boolean(record?.sessionId && sessionId && record.sessionId !== sessionId);
+}
+
+/**
  * B3.1 step 1 — mark a fast-TTS attempt as pending. Called right after
  * `validateBody` succeeds in voice-latency-fast-tts.js, before any further
  * gate (eligibility, session lookup, capability, boardId) has a chance to
@@ -115,11 +142,30 @@ function isExpired(record) {
  * correlationId — correlation ids are client-minted UUIDv4s, so a genuine
  * collision would only ever be a stale replay of an ancient TTL-expired id.
  *
+ * Codex diff-review F5 (2026-08-13) — mirrors the downgrade guard
+ * `markFastAttemptFailed` already had: a STRAY call for a correlationId that
+ * has already progressed to 'playback_started', OR already been committed
+ * (`commitAcceptedIdentity` has run), is a no-op. Without this, a
+ * duplicate/delayed `markFastAttemptPending` invocation (e.g. a client retry
+ * reusing the same correlationId, or an out-of-order arrival at the route)
+ * would silently REGRESS an already-resolved record back to a bare
+ * 'pending' state with the OLDER un-clamped `rawValue` — un-doing
+ * `commitAcceptedIdentity`'s clamped `canonicalValue`/`comparisonText`, or
+ * even a genuine `playback_started` mark, mid-flight.
+ *
  * @param {string} correlationId
  * @param {{sessionId: string, turnId: string, field: string, circuit: number|null, boardId: string|null, rawValue: string|null}} fields
  */
 export function markFastAttemptPending(correlationId, fields) {
   if (typeof correlationId !== 'string' || !correlationId) return;
+  const existing = recordsByCorrelationId.get(correlationId);
+  if (
+    existing &&
+    !isExpired(existing) &&
+    (existing.state === 'playback_started' || existing.committed)
+  ) {
+    return;
+  }
   recordsByCorrelationId.set(correlationId, {
     sessionId: fields?.sessionId ?? null,
     turnId: fields?.turnId ?? null,
@@ -251,12 +297,14 @@ export function markFastAttemptPlaybackStarted(sessionId, correlationId) {
  * are not enough to make that claim safely.
  *
  * @param {string} correlationId
+ * @param {string|null} [sessionId] — F5: a mismatch is treated as not-found.
  * @returns {FastAttemptRecord|null}
  */
-export function resolveAcceptedIdentity(correlationId) {
+export function resolveAcceptedIdentity(correlationId, sessionId) {
   if (typeof correlationId !== 'string' || !correlationId) return null;
   const record = recordsByCorrelationId.get(correlationId);
   if (!record || isExpired(record) || !record.committed) return null;
+  if (sessionMismatch(record, sessionId)) return null;
   return record;
 }
 
@@ -272,12 +320,14 @@ export function resolveAcceptedIdentity(correlationId) {
  * `entry.fastPathCorrelationIdByTurn`, which the harness already does).
  *
  * @param {string} correlationId
+ * @param {string|null} [sessionId] — F5: a mismatch is treated as not-found.
  * @returns {'pending'|'playback_started'|'failed'|null}
  */
-export function getFastAttemptState(correlationId) {
+export function getFastAttemptState(correlationId, sessionId) {
   if (typeof correlationId !== 'string' || !correlationId) return null;
   const record = recordsByCorrelationId.get(correlationId);
   if (!record || isExpired(record)) return null;
+  if (sessionMismatch(record, sessionId)) return null;
   return record.state;
 }
 
@@ -290,12 +340,14 @@ export function getFastAttemptState(correlationId) {
  * stage6-shadow-harness.js's `resolveFastLedgerOutcomeForTurn`).
  *
  * @param {string} correlationId
+ * @param {string|null} [sessionId] — F5: a mismatch is treated as not-found.
  * @returns {FastAttemptRecord|null}
  */
-export function getFastAttemptRecord(correlationId) {
+export function getFastAttemptRecord(correlationId, sessionId) {
   if (typeof correlationId !== 'string' || !correlationId) return null;
   const record = recordsByCorrelationId.get(correlationId);
   if (!record || isExpired(record)) return null;
+  if (sessionMismatch(record, sessionId)) return null;
   return record;
 }
 
@@ -324,13 +376,14 @@ export function buildFastAttemptSlotKey({ field, circuit, boardId }) {
  * mid-turn (the HTTP fast request and the WS transcript are concurrent).
  *
  * @param {Set<string>|null|undefined} correlationIds
+ * @param {string|null} [sessionId] — F5: threaded through to `resolveAcceptedIdentity`.
  * @returns {Map<string, {correlationId: string, field: string, circuit: number|null, boardId: string|null, canonicalValue: string, comparisonText: string}>}
  */
-export function resolveFastAttemptSlotIdentities(correlationIds) {
+export function resolveFastAttemptSlotIdentities(correlationIds, sessionId) {
   const bySlotKey = new Map();
   if (!correlationIds || correlationIds.size === 0) return bySlotKey;
   for (const cid of correlationIds) {
-    const identity = resolveAcceptedIdentity(cid);
+    const identity = resolveAcceptedIdentity(cid, sessionId);
     if (!identity) continue;
     const slotKey = buildFastAttemptSlotKey({
       field: identity.field,
@@ -383,14 +436,15 @@ export function resolveFastAttemptSlotIdentities(correlationIds) {
  * the clamped value over a pending record's raw one.
  *
  * @param {Set<string>|null|undefined} correlationIds
+ * @param {string|null} [sessionId] — F5: threaded through to every per-cid lookup below.
  * @returns {{kind: 'suppress'}|{kind: 'pending', correlationId: string, identity: FastAttemptRecord}|{kind: 'pending_uncommitted', correlationId: string, rawRecord: FastAttemptRecord}|null}
  */
-export function resolveFastLedgerOutcomeForTurn(correlationIds) {
+export function resolveFastLedgerOutcomeForTurn(correlationIds, sessionId) {
   if (!correlationIds || correlationIds.size === 0) return null;
   let pendingWithIdentity = null;
   let pendingUncommitted = null;
   for (const cid of correlationIds) {
-    const state = getFastAttemptState(cid);
+    const state = getFastAttemptState(cid, sessionId);
     if (state === 'playback_started') {
       return { kind: 'suppress' };
     }
@@ -399,7 +453,7 @@ export function resolveFastLedgerOutcomeForTurn(correlationIds) {
     // "pending, not absence" default) — try to attach a committed identity
     // first; a committed identity anywhere in the set always wins.
     if (!pendingWithIdentity) {
-      const identity = resolveAcceptedIdentity(cid);
+      const identity = resolveAcceptedIdentity(cid, sessionId);
       if (identity) {
         pendingWithIdentity = { correlationId: cid, identity };
         continue;
@@ -412,7 +466,7 @@ export function resolveFastLedgerOutcomeForTurn(correlationIds) {
     // mirrors `pendingWithIdentity`'s own "first candidate wins" shape,
     // superseded immediately if a later cid in the set turns out committed.
     if (!pendingWithIdentity && !pendingUncommitted) {
-      const rawRecord = getFastAttemptRecord(cid);
+      const rawRecord = getFastAttemptRecord(cid, sessionId);
       if (rawRecord) {
         pendingUncommitted = { correlationId: cid, rawRecord };
       }

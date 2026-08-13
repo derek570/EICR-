@@ -906,7 +906,10 @@ export function resolveZeroToolCallDuplicateOutcome({
   correlationIds,
   exactDuplicateTuple,
 }) {
-  const fastLedgerOutcome = resolveFastLedgerOutcomeForTurn(correlationIds);
+  // F5 — session-scope the ledger lookup so a stale/foreign correlationId
+  // (client replay, a UUID collision with a record from a different
+  // session) can never resolve as this session's outcome.
+  const fastLedgerOutcome = resolveFastLedgerOutcomeForTurn(correlationIds, session?.sessionId);
   if (fastLedgerOutcome?.kind === 'suppress') {
     return { kind: 'suppress' };
   }
@@ -2304,8 +2307,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // accept mid-turn, during the Sonnet round-trip). Empty Map (not
       // undefined) when the turn attempted no fast-TTS candidates, so the
       // bundler's `instanceof Map` guard sees a real, cheap no-op.
+      // F5 — session-scoped so a stale/foreign correlationId never resolves
+      // this session's echo-stamp identity.
       fastAttemptBySlotKey: resolveFastAttemptSlotIdentities(
-        entry?.fastPathCorrelationIdByTurn?.get(turnId)
+        entry?.fastPathCorrelationIdByTurn?.get(turnId),
+        session?.sessionId
       ),
       // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
       // trip it on the /api/proxy/elevenlabs-tts POST body for cache
@@ -5262,8 +5268,10 @@ async function runShadowHarnessDispatch(
     // is near-always an empty Map: shadow mode never calls runLiveMode, so
     // shadowCapEntry.fastPathCorrelationIdByTurn is never populated for
     // shadow's own turnId by this code path.
+    // F5 — session-scoped, same as the live-mode call site above.
     fastAttemptBySlotKey: resolveFastAttemptSlotIdentities(
-      shadowCapEntry?.fastPathCorrelationIdByTurn?.get(turnId)
+      shadowCapEntry?.fastPathCorrelationIdByTurn?.get(turnId),
+      session?.sessionId
     ),
   });
 
