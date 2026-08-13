@@ -162,3 +162,76 @@ Silero VAD v3's LSTM state can get stuck at probability ~1.0 during silence. Wor
 ### Deployment Notes
 - `session-optimizer.sh` + `analyze-session.js` — on Mac, take effect next optimizer cycle.
 - iOS changes require Xcode rebuild + deploy to device.
+
+---
+
+## 2026-04-27 — Stage 4c: the Dozing tier removed, Sleeping tier survives
+
+- Commit `649c83a`. Flux rejected the KeepAlive JSON the Dozing tier relied
+  on, and silent-PCM ping triggered spurious EndOfTurn events — Dozing was
+  removed on both clients, collapsing the model to 2 tiers
+  (`active ──60s no FINAL──► sleeping`, `sleeping ──VAD wake──► active`).
+- The Sleeping tier (60s no-transcript timeout → full Deepgram disconnect,
+  wake via 384ms sustained speech + 3s ring-buffer replay) stayed live and
+  unquestioned for over three months — this is the gap the 2026-08-12 entry
+  below closes.
+
+## 2026-08-12 — feedback id 120: the Sleeping tier retired by default
+
+**What was asked.** Derek reported "still some sleeping or dozing going
+on… which I think we have completely retired now" and filed it as a bug —
+he believed Stage 4c (above) had retired ALL auto-sleep behaviour. He was
+half right: Dozing was gone, but Sleeping was not.
+
+**Findings — session CF052DF3 (2026-08-11, ~68 minutes).**
+- The Sleeping tier fired 18 times, pairwise-matched `connected →
+  disconnected` / `sleep_enter_sleeping` rows at 09:59:38 through 11:05:05.
+  ZERO non-sleep Deepgram closes in the session — `STREAM_PAUSED` /
+  `STREAM_RESUMED` + `tts_echo_pause_begin/end` are a DIFFERENT mechanism
+  (TTS echo-prevention gating; audio muted during TTS playback, WS stays
+  open) and were not conflated with sleep in this analysis.
+  35 of the 68 minutes were spent actually streaming; auto-sleep saved
+  Deepgram cost on the other 33 — measured at ≈$0.25/session, noise
+  against the session's model cost for a sole user.
+- **New finding: a WAKE-DURING-CLOSE RACE destroys the 3s ring-buffer
+  replay.** `reconnectDeepgramFromSleep`
+  (`RecordingSessionCoordinator.swift:544-553`) polls
+  `deepgramService.connectionState == .connected` before replaying. At
+  10:56:15.747 sleep-entry began closing the socket
+  (`DISCONNECTING "sending CloseStream"`) but the close never completed
+  (`close:1001 focused_mode_restore_failed`); at 10:56:19.427 the
+  inspector was already speaking and woke the session 3.7s after sleep
+  entry. The poll read the STALE `.connected` state from the old,
+  cancelled socket and replayed the drained 3s ring buffer + queued
+  frames into it — producing an 840-row `AUDIO_SEND_ERROR "Operation
+  canceled"` burst in ~140ms, with no re-replay on error. The truncated
+  "sockets is eleven." transcript that followed produced a spurious ask
+  and forced the inspector to repeat themselves. A second, smaller
+  instance of the same race hit 21 rows at 10:02:46. Full trace: PLAN-C's
+  `EVIDENCE.md` (feedback-2026-08-11 wave handoff), Report 1 addendum.
+
+**Decision: retire the Sleeping tier by default — stream continuously
+while recording.** This kills the entire failure class (clipped first
+words, reconnect dead-air, destroyed replay buffers, "please repeat"
+loops) structurally rather than patching the race. The machinery is
+**config-gated, not deleted**: a session-latched, default-off
+`autoSleepEnabled` flag (hidden — no Settings UI this wave; iOS
+UserDefaults / web `localStorage['autoSleepEnabled']`) can re-enable it if
+continuous-streaming cost ever matters for a battery/data-constrained
+user. Explicit lifecycle actions (Pause button, BFCache auto-pause,
+interruption recovery) were ALSO found to route through the same
+sleep/wake machinery even with the automatic timer off — these now use an
+iOS-parity lighter-weight pause (mic stop/reopen, Deepgram
+disconnect/reconnect, Sonnet session kept alive throughout) instead,
+unconditionally in both flag states. The wake-during-close race hardening
+itself (non-destructive drain with re-replay, close-in-flight
+invalidation) was deliberately left OUT of this wave — with explicit
+pause moved off the Sleeping tier, that race is now reachable only via
+the flag-ON automatic-timer path, which is off by default.
+
+**So the next "is sleep still a thing" investigation starts from the
+truth:** as of this entry, NEITHER Dozing NOR automatic Sleeping fire in
+production. Both clients stream continuously while recording. Only an
+explicit `autoSleepEnabled=true` override brings the 2-tier
+(`active`/`sleeping`) automatic timer back, and even then the
+wake-during-close race above is a known, un-hardened risk on that path.
