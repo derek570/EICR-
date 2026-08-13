@@ -57,6 +57,7 @@ const runShadowHarnessSpy = jest.fn(async (_session, text) => {
 jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
   mergeFastPathCorrelationIds: jest.fn(),
+  unmergeFastPathCorrelationIds: jest.fn(),
 }));
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');

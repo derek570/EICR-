@@ -123,6 +123,7 @@ const runShadowHarnessSpy = jest.fn(async () => ({
 jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
   mergeFastPathCorrelationIds: jest.fn(),
+  unmergeFastPathCorrelationIds: jest.fn(),
 }));
 
 jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({

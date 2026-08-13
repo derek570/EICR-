@@ -1391,13 +1391,26 @@ export function resolveZeroToolCallDuplicateOutcome({
  * `entry.activeTurnId` (set below) to identify which in-flight turn to seed —
  * without duplicating this coercion logic at each call site.
  *
+ * Codex diff-review cycle 4 (E2) — returns the Set of ids this call ACTUALLY
+ * newly inserted for `turnId` (i.e. ids that were not already present in that
+ * turn's tracking Set before this call). `sonnet-stream.js`'s ask-answer
+ * resolution sites merge onto `entry.activeTurnId` BEFORE attempting
+ * `pendingAsks.resolve(...)`; if that resolve races and loses (a concurrent
+ * timeout/answer already won), the transcript falls through to a NEW turn
+ * and the merge just performed is now stale — attributed to a turn the
+ * answer never actually belongs to. The caller uses this return value to
+ * roll back exactly what it just added via `unmergeFastPathCorrelationIds`,
+ * never touching ids that were already legitimately present (e.g. from the
+ * turn's own opening utterance).
+ *
  * @param {Object} entry - the activeSessions entry (getActiveSessionEntry result)
  * @param {string} turnId - the turn to seed (entry.activeTurnId for the
  *   ask-answer paths; the freshly-minted turnId for the normal seeding site)
  * @param {string|string[]|null|undefined} rawCid
+ * @returns {Set<string>} the ids newly inserted by this call (empty if none)
  */
 export function mergeFastPathCorrelationIds(entry, turnId, rawCid) {
-  if (!entry || typeof turnId !== 'string' || !turnId) return;
+  if (!entry || typeof turnId !== 'string' || !turnId) return new Set();
   const cids = new Set();
   if (typeof rawCid === 'string' && rawCid) {
     cids.add(rawCid);
@@ -1406,13 +1419,48 @@ export function mergeFastPathCorrelationIds(entry, turnId, rawCid) {
       if (typeof cid === 'string' && cid) cids.add(cid);
     }
   }
-  if (cids.size === 0 || !(entry.fastPathCorrelationIdByTurn instanceof Map)) return;
+  if (cids.size === 0 || !(entry.fastPathCorrelationIdByTurn instanceof Map)) return new Set();
   const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
+  const newlyInserted = new Set();
   if (existing instanceof Set) {
-    for (const cid of cids) existing.add(cid);
+    for (const cid of cids) {
+      if (!existing.has(cid)) {
+        existing.add(cid);
+        newlyInserted.add(cid);
+      }
+    }
   } else {
     entry.fastPathCorrelationIdByTurn.set(turnId, cids);
+    for (const cid of cids) newlyInserted.add(cid);
   }
+  return newlyInserted;
+}
+
+/**
+ * Codex diff-review cycle 4 (E2) — the rollback counterpart to
+ * `mergeFastPathCorrelationIds`. Removes ONLY `idsToRemove` from `turnId`'s
+ * tracking Set — never the whole Set, and never an id that was already
+ * present before the caller's own merge (that id may belong to a genuinely
+ * earlier, legitimate merge for the same turn, e.g. the turn's own opening
+ * utterance). A no-op on any malformed input — never throws, mirroring
+ * `mergeFastPathCorrelationIds`'s own defensiveness.
+ *
+ * @param {Object} entry - the activeSessions entry
+ * @param {string} turnId - the turn whose tracking Set to remove ids from
+ * @param {Set<string>|string[]|null|undefined} idsToRemove
+ */
+export function unmergeFastPathCorrelationIds(entry, turnId, idsToRemove) {
+  if (!entry || typeof turnId !== 'string' || !turnId) return;
+  if (!(entry.fastPathCorrelationIdByTurn instanceof Map)) return;
+  if (idsToRemove == null) return;
+  const ids = idsToRemove instanceof Set ? idsToRemove : new Set(idsToRemove);
+  if (ids.size === 0) return;
+  const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
+  if (!(existing instanceof Set)) return;
+  for (const cid of ids) existing.delete(cid);
+  // Never leave a stray empty Set sitting in the Map — matches the shape a
+  // turn that never had any correlation ids at all would have.
+  if (existing.size === 0) entry.fastPathCorrelationIdByTurn.delete(turnId);
 }
 
 async function runLiveMode(session, transcriptText, regexResults, options, log) {

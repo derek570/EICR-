@@ -31,7 +31,11 @@ import { sanitizeReadingFieldContract } from './reading-field-contract-sanitizer
 import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
-import { runShadowHarness, mergeFastPathCorrelationIds } from './stage6-shadow-harness.js';
+import {
+  runShadowHarness,
+  mergeFastPathCorrelationIds,
+  unmergeFastPathCorrelationIds,
+} from './stage6-shadow-harness.js';
 import {
   POSTCODE_HINT_STATE,
   lookupResolvedPostcodeHint,
@@ -5987,8 +5991,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           // runLiveMode call this ask belongs to) would otherwise never
           // learn the correlation id and the bundler's echo-stamp would
           // have nothing to match. Seed it here, before consuming.
-          mergeFastPathCorrelationIds(entry, entry.activeTurnId, msg.regex_fast_correlation_id);
-          entry.pendingAsks.resolve(preVerdict.toolCallId, {
+          const preErrNewlyMerged = mergeFastPathCorrelationIds(
+            entry,
+            entry.activeTurnId,
+            msg.regex_fast_correlation_id
+          );
+          const preErrResolved = entry.pendingAsks.resolve(preVerdict.toolCallId, {
             answered: false,
             reason: 'validation_error',
             // PLAN-C P4c — this transcript answered the ask (even invalidly),
@@ -5996,6 +6004,16 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             // responseEpochRef and residual speech disarms the client watchdog.
             response_utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
           });
+          // Codex diff-review cycle 4 (E2) — resolve() raced and lost (the
+          // ask was already resolved elsewhere, e.g. a concurrent timeout).
+          // entry.activeTurnId is stale for THIS answer — some OTHER
+          // resolution path owns whatever turn actually consumes it. Undo
+          // exactly the ids this call just added before this transcript is
+          // dropped, so the stale turn never carries a correlation that was
+          // never actually its own.
+          if (!preErrResolved) {
+            unmergeFastPathCorrelationIds(entry, entry.activeTurnId, preErrNewlyMerged);
+          }
           // id 93 — terminal ask-resolution disposition.
           consumeDestructiveToken('pre_queue_validation_error');
           return;
@@ -6030,7 +6048,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // above for the rationale: this transcript resolves the ask and
         // (on success) returns without ever reaching runLiveMode's own
         // seeding site, so seed the resumed turn's correlation set here.
-        mergeFastPathCorrelationIds(entry, entry.activeTurnId, msg.regex_fast_correlation_id);
+        const preOkNewlyMerged = mergeFastPathCorrelationIds(
+          entry,
+          entry.activeTurnId,
+          msg.regex_fast_correlation_id
+        );
         const preResolved = entry.pendingAsks.resolve(preVerdict.toolCallId, preResolvePayload);
         if (preResolved) {
           stampSeenTranscript();
@@ -6046,7 +6068,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           consumeDestructiveToken('pre_queue_answered');
           return; // consumed by the ask channel — never queued
         }
-        // Stale resolve (raced a timeout/direct frame) — queue as normal.
+        // Codex diff-review cycle 4 (E2) — stale resolve (raced a
+        // timeout/direct frame): this transcript falls through to the
+        // queue below and will reach a NEW turn, not the stale
+        // entry.activeTurnId this merge just seeded. Roll back exactly the
+        // ids this call added before falling through.
+        unmergeFastPathCorrelationIds(entry, entry.activeTurnId, preOkNewlyMerged);
+        // Queue as normal.
       } else if (preVerdict.kind === 'user_moved_on') {
         const hasRecordablePre = preQueueRegex.some(
           (r) =>
@@ -6729,7 +6757,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             // validation_error branch above: this transcript resolves the
             // ask and (on success below) returns without ever reaching
             // runLiveMode's own seeding site.
-            mergeFastPathCorrelationIds(entry, entry.activeTurnId, msg.regex_fast_correlation_id);
+            const overtakeErrNewlyMerged = mergeFastPathCorrelationIds(
+              entry,
+              entry.activeTurnId,
+              msg.regex_fast_correlation_id
+            );
             const resolvedValidationError = entry.pendingAsks.resolve(verdict.toolCallId, {
               answered: false,
               reason: 'validation_error',
@@ -6757,6 +6789,14 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               // its own pipeline). The validation_error resolve above
               // was a no-op (tool_call_id already gone), so no channel
               // received the bad text as an ask answer.
+              //
+              // Codex diff-review cycle 4 (E2) — entry.activeTurnId is
+              // stale for THIS answer (some other resolution path already
+              // won the race); this utterance is about to fall through to
+              // runShadowHarness as a NEW turn. Roll back exactly the ids
+              // this call added so the stale turn never carries a
+              // correlation that belongs to the new one.
+              unmergeFastPathCorrelationIds(entry, entry.activeTurnId, overtakeErrNewlyMerged);
               logger.warn('stage6.transcript_overtake_stale_resolve', {
                 sessionId,
                 tool_call_id: verdict.toolCallId,
@@ -6797,7 +6837,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             // Codex diff-review cycle 3 D1 — see the pre-queue answered
             // branch above: on success this transcript returns without
             // ever reaching runLiveMode's own seeding site.
-            mergeFastPathCorrelationIds(entry, entry.activeTurnId, msg.regex_fast_correlation_id);
+            const overtakeOkNewlyMerged = mergeFastPathCorrelationIds(
+              entry,
+              entry.activeTurnId,
+              msg.regex_fast_correlation_id
+            );
             const resolvedAnswer = entry.pendingAsks.resolve(verdict.toolCallId, resolvePayload);
 
             if (!resolvedAnswer) {
@@ -6818,6 +6862,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               // attribution is costlier than a second re-ask). Do NOT
               // reset lastRegexResults here — the harness is about to
               // use it; the normal post-harness reset handles cleanup.
+              //
+              // Codex diff-review cycle 4 (E2) — this utterance is about to
+              // fall through to runShadowHarness as a NEW turn; the merge
+              // above seeded the STALE entry.activeTurnId, not the turn
+              // this answer will actually open. Roll back exactly the ids
+              // this call added.
+              unmergeFastPathCorrelationIds(entry, entry.activeTurnId, overtakeOkNewlyMerged);
               logger.warn('stage6.transcript_overtake_stale_resolve', {
                 sessionId,
                 tool_call_id: verdict.toolCallId,

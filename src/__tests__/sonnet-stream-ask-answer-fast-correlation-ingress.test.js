@@ -90,7 +90,7 @@ const runShadowHarnessSpy = jest.fn(async () => ({
 // stage6-orphan-net-fast-path-duplicate.test.js (which imports the real,
 // unmocked module).
 function mergeFastPathCorrelationIdsMock(entry, turnId, rawCid) {
-  if (!entry || typeof turnId !== 'string' || !turnId) return;
+  if (!entry || typeof turnId !== 'string' || !turnId) return new Set();
   const cids = new Set();
   if (typeof rawCid === 'string' && rawCid) {
     cids.add(rawCid);
@@ -99,17 +99,41 @@ function mergeFastPathCorrelationIdsMock(entry, turnId, rawCid) {
       if (typeof cid === 'string' && cid) cids.add(cid);
     }
   }
-  if (cids.size === 0 || !(entry.fastPathCorrelationIdByTurn instanceof Map)) return;
+  if (cids.size === 0 || !(entry.fastPathCorrelationIdByTurn instanceof Map)) return new Set();
   const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
+  const newlyInserted = new Set();
   if (existing instanceof Set) {
-    for (const cid of cids) existing.add(cid);
+    for (const cid of cids) {
+      if (!existing.has(cid)) {
+        existing.add(cid);
+        newlyInserted.add(cid);
+      }
+    }
   } else {
     entry.fastPathCorrelationIdByTurn.set(turnId, cids);
+    for (const cid of cids) newlyInserted.add(cid);
   }
+  return newlyInserted;
+}
+// Codex diff-review cycle 4 (E2) — reimplemented verbatim (byte-identical to
+// stage6-shadow-harness.js's real implementation), same rationale as the
+// merge mock above: this file's E2 tests depend on the REAL rollback
+// behaviour actually removing ids from `entry.fastPathCorrelationIdByTurn`.
+function unmergeFastPathCorrelationIdsMock(entry, turnId, idsToRemove) {
+  if (!entry || typeof turnId !== 'string' || !turnId) return;
+  if (!(entry.fastPathCorrelationIdByTurn instanceof Map)) return;
+  if (idsToRemove == null) return;
+  const ids = idsToRemove instanceof Set ? idsToRemove : new Set(idsToRemove);
+  if (ids.size === 0) return;
+  const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
+  if (!(existing instanceof Set)) return;
+  for (const cid of ids) existing.delete(cid);
+  if (existing.size === 0) entry.fastPathCorrelationIdByTurn.delete(turnId);
 }
 jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
   mergeFastPathCorrelationIds: mergeFastPathCorrelationIdsMock,
+  unmergeFastPathCorrelationIds: unmergeFastPathCorrelationIdsMock,
 }));
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
@@ -328,5 +352,99 @@ describe('D1 — a transcript that ANSWERS an in-flight ask seeds fast-path corr
     const seeded = entry.fastPathCorrelationIdByTurn.get('turn-open-2');
     expect(seeded).toBeInstanceOf(Set);
     expect(seeded.has('cid-overtake-1')).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Codex diff-review cycle 4 (E2) — the ask-answer correlation merge does NOT
+// roll back when the ask resolution races and fails.
+//
+// D1's fix (above) merges the transcript's correlation id(s) onto
+// entry.activeTurnId's tracking Set BEFORE calling pendingAsks.resolve(...).
+// If resolve() returns false — a genuine race: the SAME ask was concurrently
+// answered elsewhere (a direct ask_user_answered frame) or timed out between
+// classifyOvertake's snapshot and this resolve() call — the transcript falls
+// through to open a NEW extraction turn instead of resuming the stale one.
+// Pre-E2, the merged correlation id(s) stayed attributed to the OLD
+// (now-stale) activeTurnId regardless: the old turn could later stamp/
+// suppress using fast audio that actually belongs to the new turn, and the
+// new turn would never see the correlation at all.
+//
+// Each test registers a REAL ask (so the real classifyOvertake — unmocked in
+// this file — finds it via `entries()`/`findByContext` and returns a genuine
+// 'answers' verdict), then overrides ONLY `entry.pendingAsks.resolve` to a
+// stub that returns false. `entries()`/`findByContext`/`size` are untouched
+// closures over the same registry Map, so classification behaves exactly as
+// a real race would look from sonnet-stream.js's point of view: the ask was
+// found and matched, but resolving it lost the race.
+// -----------------------------------------------------------------------------
+describe('E2 — the ask-answer merge rolls back when resolve() races and fails', () => {
+  test('pre-queue seam: resolve() returns false → the merge is rolled back, never left dangling on the stale entry.activeTurnId', async () => {
+    const { ws, entry } = await startLiveSession(wss, SESSION_ID);
+    entry.activeTurnId = 'turn-e2-preq';
+    entry.isExtracting = true;
+    // A sibling correlation already legitimately seeded onto this SAME turn
+    // (e.g. the turn's own opening utterance fast-dispatched a different
+    // reading) — the rollback must NEVER touch this.
+    entry.fastPathCorrelationIdByTurn.set('turn-e2-preq', new Set(['cid-sibling-legit']));
+    entry.pendingAsks.register('toolu_ask_e2_preq', {
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 4,
+      expectedAnswerShape: 'number',
+      resolve: jest.fn(),
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+    // Simulate the race: classification will still find + match this ask
+    // (entries()/findByContext are untouched), but resolving it loses.
+    entry.pendingAsks.resolve = jest.fn(() => false);
+
+    await ws._emit(
+      'message',
+      transcript('Zs on circuit 4 is 0.62.', 'utt-answer-race', {
+        regexResults: [{ field: 'measured_zs_ohm', circuit: 4, value: '0.62' }],
+        regex_fast_correlation_id: 'cid-preq-race',
+      })
+    );
+
+    // resolve() was attempted (classification matched) and lost the race.
+    expect(entry.pendingAsks.resolve).toHaveBeenCalled();
+
+    const seeded = entry.fastPathCorrelationIdByTurn.get('turn-e2-preq');
+    // The raced id must NOT be attributed to the stale turn.
+    expect(seeded?.has('cid-preq-race')).not.toBe(true);
+    // The pre-existing sibling id survives — rollback removes ONLY what this
+    // call added, never an earlier legitimate merge.
+    expect(seeded?.has('cid-sibling-legit')).toBe(true);
+  });
+
+  test('overtake seam: resolve() returns false → the merge is rolled back, never left dangling on the stale entry.activeTurnId', async () => {
+    const { ws, entry } = await startLiveSession(wss, SESSION_ID);
+    entry.activeTurnId = 'turn-e2-overtake';
+    entry.isExtracting = false;
+    entry.fastPathCorrelationIdByTurn.set('turn-e2-overtake', new Set(['cid-sibling-legit-2']));
+    entry.pendingAsks.register('toolu_ask_e2_overtake', {
+      contextField: 'r1_r2_ohm',
+      contextCircuit: 7,
+      expectedAnswerShape: 'number',
+      resolve: jest.fn(),
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+    entry.pendingAsks.resolve = jest.fn(() => false);
+
+    await ws._emit(
+      'message',
+      transcript('R1 plus R2 on circuit 7 is 0.85.', 'utt-answer-race-2', {
+        regexResults: [{ field: 'r1_r2_ohm', circuit: 7, value: '0.85' }],
+        regex_fast_correlation_id: 'cid-overtake-race',
+      })
+    );
+
+    expect(entry.pendingAsks.resolve).toHaveBeenCalled();
+
+    const seeded = entry.fastPathCorrelationIdByTurn.get('turn-e2-overtake');
+    expect(seeded?.has('cid-overtake-race')).not.toBe(true);
+    expect(seeded?.has('cid-sibling-legit-2')).toBe(true);
   });
 });

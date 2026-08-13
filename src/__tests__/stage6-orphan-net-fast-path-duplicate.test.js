@@ -67,6 +67,7 @@ const {
   runShadowHarness,
   findExactDuplicateAgainstSnapshot,
   mergeFastPathCorrelationIds,
+  unmergeFastPathCorrelationIds,
   CATCHALL_AUDIBILITY_PROMPTS,
 } = await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
@@ -216,6 +217,113 @@ describe('mergeFastPathCorrelationIds (unit level)', () => {
     const entry2 = makeEntry();
     mergeFastPathCorrelationIds(entry2, 'turn-1', [42, null, '']);
     expect(entry2.fastPathCorrelationIdByTurn.has('turn-1')).toBe(false);
+  });
+
+  // Codex diff-review cycle 4 (E2) — the return-value contract the rollback
+  // mechanism depends on: the CALLER needs to know exactly which ids THIS
+  // call newly inserted, so a later rollback never touches an id that was
+  // already legitimately present.
+  describe('[E2] return value — the set of NEWLY inserted ids', () => {
+    test('a brand-new turn: the return value equals everything passed in', () => {
+      const entry = makeEntry();
+      const inserted = mergeFastPathCorrelationIds(entry, 'turn-1', ['cid-a', 'cid-b']);
+      expect(inserted).toEqual(new Set(['cid-a', 'cid-b']));
+    });
+
+    test('merging into an existing Set: the return value contains ONLY the ids that were not already present', () => {
+      const entry = makeEntry(new Map([['turn-1', new Set(['cid-existing'])]]));
+      const inserted = mergeFastPathCorrelationIds(entry, 'turn-1', ['cid-existing', 'cid-new']);
+      expect(inserted).toEqual(new Set(['cid-new']));
+      // The pre-existing id is untouched in the Map itself.
+      expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(
+        new Set(['cid-existing', 'cid-new'])
+      );
+    });
+
+    test('re-merging an id already present this call: the return value is empty (nothing NEW inserted)', () => {
+      const entry = makeEntry(new Map([['turn-1', new Set(['cid-a'])]]));
+      const inserted = mergeFastPathCorrelationIds(entry, 'turn-1', 'cid-a');
+      expect(inserted.size).toBe(0);
+    });
+
+    test('every no-op path (null entry, empty turnId, empty/invalid rawCid) returns an empty Set, never undefined', () => {
+      expect(mergeFastPathCorrelationIds(null, 'turn-1', 'cid-a')).toEqual(new Set());
+      expect(mergeFastPathCorrelationIds(undefined, 'turn-1', 'cid-a')).toEqual(new Set());
+      const entry = makeEntry();
+      expect(mergeFastPathCorrelationIds(entry, null, 'cid-a')).toEqual(new Set());
+      expect(mergeFastPathCorrelationIds(entry, 'turn-1', null)).toEqual(new Set());
+      expect(mergeFastPathCorrelationIds(entry, 'turn-1', [42, null, ''])).toEqual(new Set());
+    });
+  });
+});
+
+// Codex diff-review cycle 4 (E2) — the rollback counterpart.
+describe('unmergeFastPathCorrelationIds (unit level)', () => {
+  function makeEntry(seed) {
+    return { fastPathCorrelationIdByTurn: seed ?? new Map() };
+  }
+
+  test('removes only the specified ids, leaving siblings untouched', () => {
+    const entry = makeEntry(new Map([['turn-1', new Set(['cid-a', 'cid-b', 'cid-c'])]]));
+    unmergeFastPathCorrelationIds(entry, 'turn-1', new Set(['cid-b']));
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(new Set(['cid-a', 'cid-c']));
+  });
+
+  test('accepts an array of ids to remove, not just a Set', () => {
+    const entry = makeEntry(new Map([['turn-1', new Set(['cid-a', 'cid-b', 'cid-c'])]]));
+    unmergeFastPathCorrelationIds(entry, 'turn-1', ['cid-a', 'cid-c']);
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(new Set(['cid-b']));
+  });
+
+  test('removing the LAST id for a turn deletes the Map entry entirely, matching a turn that never had any correlation ids', () => {
+    const entry = makeEntry(new Map([['turn-1', new Set(['cid-a'])]]));
+    unmergeFastPathCorrelationIds(entry, 'turn-1', new Set(['cid-a']));
+    expect(entry.fastPathCorrelationIdByTurn.has('turn-1')).toBe(false);
+  });
+
+  test('a different turnId is completely unaffected', () => {
+    const entry = makeEntry(
+      new Map([
+        ['turn-1', new Set(['cid-a'])],
+        ['turn-2', new Set(['cid-b'])],
+      ])
+    );
+    unmergeFastPathCorrelationIds(entry, 'turn-1', new Set(['cid-a']));
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-2')).toEqual(new Set(['cid-b']));
+  });
+
+  test('removing an id NOT present is a no-op — never throws, never touches siblings', () => {
+    const entry = makeEntry(new Map([['turn-1', new Set(['cid-a'])]]));
+    expect(() =>
+      unmergeFastPathCorrelationIds(entry, 'turn-1', new Set(['cid-never-there']))
+    ).not.toThrow();
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(new Set(['cid-a']));
+  });
+
+  test('every malformed-input path is a silent no-op — never throws', () => {
+    expect(() => unmergeFastPathCorrelationIds(null, 'turn-1', new Set(['x']))).not.toThrow();
+    expect(() => unmergeFastPathCorrelationIds(undefined, 'turn-1', new Set(['x']))).not.toThrow();
+    const entry = makeEntry();
+    expect(() => unmergeFastPathCorrelationIds(entry, null, new Set(['x']))).not.toThrow();
+    expect(() => unmergeFastPathCorrelationIds(entry, 'turn-1', null)).not.toThrow();
+    expect(() => unmergeFastPathCorrelationIds(entry, 'turn-1', undefined)).not.toThrow();
+    // turnId not present in the Map at all.
+    expect(() =>
+      unmergeFastPathCorrelationIds(entry, 'turn-never-seeded', new Set(['x']))
+    ).not.toThrow();
+  });
+
+  // The end-to-end contract E2 relies on: merge's own return value fed
+  // straight into unmerge exactly undoes what that ONE call added, even when
+  // an earlier call already seeded a sibling id onto the same turn.
+  test('round-trip with mergeFastPathCorrelationIds: unmerging the returned newly-inserted set restores the pre-call state exactly', () => {
+    const entry = makeEntry(new Map([['turn-1', new Set(['cid-earlier'])]]));
+    const inserted = mergeFastPathCorrelationIds(entry, 'turn-1', ['cid-new-1', 'cid-new-2']);
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(
+      new Set(['cid-earlier', 'cid-new-1', 'cid-new-2'])
+    );
+    unmergeFastPathCorrelationIds(entry, 'turn-1', inserted);
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(new Set(['cid-earlier']));
   });
 });
 
