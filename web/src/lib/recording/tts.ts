@@ -859,18 +859,21 @@ export function speak(text: string, options?: SpeakOptions): void {
  * The injected FIFO player for a confirmation head. Replicates `dispatch()`'s
  * responsibilities so echo-suppression + ElevenLabs-primary/native-fallback +
  * the mic-feedback ttsWindow stay intact (bypassing `dispatch()` would drop
- * them): (1) registers the echo-suppression fingerprint; (2) routes to
- * ElevenLabs when available+session, else native; (3) on a pre-playback
- * ElevenLabs failure (reason !== 'aborted') falls back to native. The last-mile
- * deferral gate is applied by the queue via `controls.ready(prepared)` — the
- * player fetches, hands back the prepared audio, and the queue decides
- * play-now vs park. Guarantees exactly one terminal (`onEnd` OR `onError`) per
- * head so the pump advances even when a head is aborted.
+ * them): (1) routes to ElevenLabs when available+session, else native; (2) on
+ * a pre-playback ElevenLabs failure (reason !== 'aborted') falls back to
+ * native; (3) registers the echo-suppression fingerprint at the actual
+ * playback moment — inside the `play` callback handed to `controls.ready`,
+ * not at fetch-dispatch time — so a head that ends up deferred (direct audio
+ * active, or the last-mile `shouldDeferPlayback()` gate) is never marked
+ * "just heard" before any audio has played. The last-mile deferral gate is
+ * applied by the queue via `controls.ready(prepared)` — the player fetches,
+ * hands back the prepared audio, and the queue decides play-now vs park.
+ * Guarantees exactly one terminal (`onEnd` OR `onError`) per head so the pump
+ * advances even when a head is aborted.
  */
 function playConfirmationHead(text: string, controls: QueuePlayControls): void {
   const useElevenLabs = isElevenLabsAvailable() && Boolean(getActiveSessionId());
   if (!useElevenLabs) {
-    registerTtsFingerprint(text);
     playConfirmationNative(text, controls);
     return;
   }
@@ -899,16 +902,6 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
     });
     return;
   }
-  // Codex diff-review r6 NIT — fingerprint registration moved out of this
-  // function's top (was: `registerTtsFingerprint(text)` unconditionally on
-  // entry) so it fires only at the point real audio is actually about to be
-  // requested. Registering it during the LAZY branch above would mark the
-  // cue as "just spoken" up to several seconds before any audio plays,
-  // letting a coincidentally-similar inspector utterance get wrongly
-  // suppressed as an echo of something that was never heard. The lazy
-  // handle's resume re-enters this function and reaches this exact line,
-  // so it still registers exactly once per REAL dispatch.
-  registerTtsFingerprint(text);
   // Canceller hard-aborts the in-flight fetch / stops playing ElevenLabs audio.
   controls.registerCanceller(() => {
     cancelElevenLabs();
@@ -951,7 +944,23 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
     },
     (prepared, reason) => {
       if (prepared) {
-        controls.ready({ play: prepared.play, discard: prepared.discard });
+        // Codex diff-review r6/r7 — register the echo-suppression fingerprint
+        // right AT the actual playback moment (inside this wrapped `play`),
+        // not at fetch-dispatch time above. `controls.ready`'s last-mile gate
+        // (`shouldDeferPlayback()` — direct audio OR the inspector currently
+        // speaking, in production) can still defer AFTER this fetch completes;
+        // registering any earlier would mark the cue "just heard" for up to
+        // several seconds before any audio actually plays, letting a
+        // coincidentally-similar inspector utterance get wrongly suppressed
+        // as an echo of something never spoken. `play` fires exactly once,
+        // whether immediately or via a later `resumeIfDeferred()`.
+        controls.ready({
+          play: () => {
+            registerTtsFingerprint(text);
+            prepared.play();
+          },
+          discard: prepared.discard,
+        });
         return;
       }
       if (reason && reason !== 'aborted') {
@@ -968,7 +977,11 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
 /** Native (SpeechSynthesis) branch of the FIFO player. No async fetch, so the
  *  last-mile gate is expressed by delaying `dispatchNative` until the queue
  *  calls `prepared.play()`. `onStart` (from `utterance.onstart`) sets
- *  `startedPlayback` + the 'queue' owner — the iPhone/iPad-Safari default. */
+ *  `startedPlayback` + the 'queue' owner — the iPhone/iPad-Safari default.
+ *  Also serves as the ElevenLabs pre-playback-failure fallback (called
+ *  directly from `playConfirmationHead`), so registering the echo-
+ *  suppression fingerprint here — at the actual dispatch moment, inside
+ *  `play` — covers both callers without a separate registration site. */
 function playConfirmationNative(text: string, controls: QueuePlayControls): void {
   controls.registerCanceller(() => {
     try {
@@ -980,6 +993,7 @@ function playConfirmationNative(text: string, controls: QueuePlayControls): void
   const myToken = Symbol('queue');
   controls.ready({
     play: () => {
+      registerTtsFingerprint(text);
       dispatchNative(text, {
         onStart: () => {
           activeAudioOwner = { owner: 'queue', token: myToken };

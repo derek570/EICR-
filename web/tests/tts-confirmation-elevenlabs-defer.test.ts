@@ -253,4 +253,41 @@ describe('confirmation FIFO — ElevenLabs deferral does not register a prematur
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(isTTSEcho('Voice read-backs off.')).toBe(true);
   });
+
+  // Codex diff-review r7 NIT — r6's fix only moved registration out of the
+  // `isDirectAudioActive()` LAZY branch (pre-fetch). It still registered
+  // right before `prepareElevenLabs()` starts the fetch — which is BEFORE
+  // the queue's own last-mile `shouldDeferPlayback()` gate (in
+  // `controls.ready`, checked once the fetch completes) has a chance to
+  // defer for an UNRELATED reason (in production: the inspector currently
+  // speaking, not a direct ask). This proves that residual case is closed
+  // too — using a generic `shouldDeferPlayback` override, not
+  // `isDirectAudioActive()`, so the fix is verified to be general rather
+  // than tied to the one specific defer trigger r6 already covered.
+  it('a confirmation deferred by the last-mile gate for an UNRELATED reason (fetch already completed) is not fingerprinted until it resumes', async () => {
+    setActiveSessionId('sess-fingerprint-2');
+    let deferring = false;
+    setShouldDeferPlayback(() => deferring);
+
+    server.use(
+      http.post(`${API_BASE}/api/proxy/elevenlabs-tts`, async () =>
+        new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
+      )
+    );
+
+    // Gate is already true when the confirmation is enqueued — no direct
+    // ask involved, so `isDirectAudioActive()` stays false throughout; this
+    // exercises the POST-fetch last-mile gate, not the pre-fetch lazy branch.
+    deferring = true;
+    speakConfirmation('Circuit 2 is now Kitchen Ring.');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Fetched and parked as deferredHead — must not be fingerprinted yet.
+    expect(isTTSEcho('Circuit 2 is now Kitchen Ring.')).toBe(false);
+
+    deferring = false;
+    resumeIfDeferred();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(isTTSEcho('Circuit 2 is now Kitchen Ring.')).toBe(true);
+  });
 });
