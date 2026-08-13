@@ -439,28 +439,40 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
     let identityCommitted = false;
     try {
       const opts = {
+        // Codex diff-review F6 (2026-08-13): `identityCommitted` used to
+        // flip to `true` unconditionally on the FIRST call, even when
+        // `res.writableEnded` was already true (so `res.write` was SKIPPED
+        // — no audio actually reached the wire) or `buf` was empty. Worse,
+        // if `commitAcceptedIdentity` itself threw, the flag was already
+        // `true` by then, so every later chunk in the same response gave up
+        // retrying the commit forever. Fixed: only flip the flag AFTER a
+        // REAL, non-empty write has gone out AND the commit itself
+        // succeeded — a throw leaves `identityCommitted` false so a later
+        // genuine chunk (D1's fail-open retry reuses this same callback)
+        // still gets a chance to commit the identity.
         onAudio: (buf) => {
-          if (!res.writableEnded) res.write(buf);
-          if (!identityCommitted) {
+          if (res.writableEnded) return;
+          if (!buf || buf.length === 0) return;
+          res.write(buf);
+          if (identityCommitted) return;
+          try {
+            commitAcceptedIdentity(correlationId, {
+              sessionId,
+              turnId,
+              field,
+              circuit: Number.isInteger(circuit) ? circuit : null,
+              boardId,
+              canonicalValue: fastClamp.value,
+              comparisonText: text,
+            });
             identityCommitted = true;
-            try {
-              commitAcceptedIdentity(correlationId, {
-                sessionId,
-                turnId,
-                field,
-                circuit: Number.isInteger(circuit) ? circuit : null,
-                boardId,
-                canonicalValue: fastClamp.value,
-                comparisonText: text,
-              });
-            } catch (err) {
-              logger.warn('voice_latency.fast_attempt_ledger_error', {
-                sessionId,
-                correlationId,
-                stage: 'commit',
-                error: err?.message || String(err),
-              });
-            }
+          } catch (err) {
+            logger.warn('voice_latency.fast_attempt_ledger_error', {
+              sessionId,
+              correlationId,
+              stage: 'commit',
+              error: err?.message || String(err),
+            });
           }
         },
       };

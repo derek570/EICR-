@@ -102,6 +102,11 @@ afterEach(() => {
 
 describe('happy path — one ElevenLabs chunk (default mock)', () => {
   beforeEach(() => {
+    // See the F6 "commit throw" describe below for why `resetModules()` is
+    // required here too: without it, a mock re-registered for a
+    // DYNAMICALLY-imported specifier doesn't take effect for a describe
+    // running after the first one to trigger that import in this file.
+    jest.resetModules();
     jest.unstable_mockModule('../extraction/elevenlabs-stream-client.js', () => ({
       ElevenLabsStreamClient: class {
         constructor(opts) {
@@ -166,6 +171,7 @@ describe('happy path — one ElevenLabs chunk (default mock)', () => {
 
 describe('multiple onAudio chunks — commit fires ONCE, not per chunk', () => {
   beforeEach(() => {
+    jest.resetModules();
     jest.unstable_mockModule('../extraction/elevenlabs-stream-client.js', () => ({
       ElevenLabsStreamClient: class {
         constructor(opts) {
@@ -197,8 +203,92 @@ describe('multiple onAudio chunks — commit fires ONCE, not per chunk', () => {
   });
 });
 
+describe('Codex diff-review F6 (2026-08-13) — an empty-buffer onAudio call never commits', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    jest.unstable_mockModule('../extraction/elevenlabs-stream-client.js', () => ({
+      ElevenLabsStreamClient: class {
+        constructor(opts) {
+          this.outputFormat = opts.outputFormat;
+        }
+        async synth(_text, opts) {
+          // An EMPTY buffer first (e.g. a keepalive/zero-length frame from
+          // the vendor) — must never trigger a commit — followed by a real
+          // chunk that must.
+          opts.onAudio(Buffer.alloc(0));
+          opts.onAudio(Buffer.from([0x49, 0x44, 0x33]));
+          return { firstAudioNs: 0n, lastAudioNs: 0n };
+        }
+        static logSynthSpans() {}
+      },
+      contentTypeForFormat: () => 'audio/mpeg',
+      synthWithLanguageFailOpen: jest.fn(async (client, _retry, text, opts) => ({
+        timings: await client.synth(text, opts),
+        client,
+        attempts: 1,
+      })),
+    }));
+  });
+
+  test('the empty-buffer call is skipped entirely; the later real chunk is the ONE commit', async () => {
+    seedSession();
+    const res = await postFastTts(basicBody());
+    expect(res.status).toBe(200);
+    expect(commitAcceptedIdentity).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Codex diff-review F6 (2026-08-13) — a commit throw does not permanently give up', () => {
+  beforeEach(() => {
+    // A dynamically-imported specifier (`../extraction/elevenlabs-stream-client.js`
+    // is `await import()`ed fresh INSIDE the route handler on every request)
+    // is cached by the module loader after its FIRST resolution within this
+    // test file's run — re-registering `jest.unstable_mockModule` for it in
+    // a later describe's `beforeEach` does NOT retroactively change what an
+    // earlier-resolved dynamic `import()` returns. `jest.resetModules()`
+    // clears that cache so THIS describe's distinct two-real-chunk mock
+    // actually takes effect (verified: without this, the route silently
+    // kept using whichever describe's mock resolved first in file order).
+    jest.resetModules();
+    jest.unstable_mockModule('../extraction/elevenlabs-stream-client.js', () => ({
+      ElevenLabsStreamClient: class {
+        constructor(opts) {
+          this.outputFormat = opts.outputFormat;
+        }
+        async synth(_text, opts) {
+          // TWO real (non-empty) chunks — the first hits a throwing
+          // commitAcceptedIdentity mock, the second must still retry.
+          opts.onAudio(Buffer.from([0x49]));
+          opts.onAudio(Buffer.from([0x44]));
+          return { firstAudioNs: 0n, lastAudioNs: 0n };
+        }
+        static logSynthSpans() {}
+      },
+      contentTypeForFormat: () => 'audio/mpeg',
+      synthWithLanguageFailOpen: jest.fn(async (client, _retry, text, opts) => ({
+        timings: await client.synth(text, opts),
+        client,
+        attempts: 1,
+      })),
+    }));
+  });
+
+  test('a commitAcceptedIdentity throw on the first real chunk lets a SECOND real chunk retry (and this time succeed)', async () => {
+    seedSession();
+    commitAcceptedIdentity.mockImplementationOnce(() => {
+      throw new Error('boom');
+    });
+    const res = await postFastTts(basicBody());
+    expect(res.status).toBe(200);
+    // First attempt threw (swallowed internally, `identityCommitted` stayed
+    // false); second attempt was ATTEMPTED and this time succeeded.
+    expect(commitAcceptedIdentity).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('reject paths — markFastAttemptFailed fires, commit never does', () => {
   beforeEach(() => {
+    jest.resetModules();
     jest.unstable_mockModule('../extraction/elevenlabs-stream-client.js', () => ({
       ElevenLabsStreamClient: class {
         async synth() {
