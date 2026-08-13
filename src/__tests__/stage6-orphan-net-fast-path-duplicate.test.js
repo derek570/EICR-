@@ -999,6 +999,125 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     });
   });
 
+  // Codex diff-review cycle 2 (C4, 2026-08-13) — the plan calls out this
+  // literal race: "the HTTP fast request and the WS transcript are
+  // concurrent" (fast-path-accepted-identity.js's own module doc comment).
+  // `entry.fastPathCorrelationIdByTurn` is seeded from the WS transcript at
+  // the TOP of `runLiveMode`, BEFORE the tool loop runs; `commitAcceptedIdentity`
+  // fires from the independent HTTP POST handler whenever ITS OWN first
+  // audio byte streams — there is no guaranteed order between the two
+  // relative to each other, only relative to the FIXED consumption point
+  // (`resolveFastAttemptSlotIdentities`/`resolveFastLedgerOutcomeForTurn`,
+  // both called "IMMEDIATELY BEFORE" bundling). Both orderings must resolve
+  // identically as long as the commit lands before that fixed point.
+  describe('Codex diff-review C4 — HTTP-first vs WS-first ordering resolves identically', () => {
+    test('HTTP-first: commitAcceptedIdentity completes BEFORE the WS transcript (and therefore the correlationId) ever reaches the harness', async () => {
+      // The fast-TTS route's onAudio callback has ALREADY committed the
+      // identity by the time the WS transcript carrying the SAME
+      // correlationId is processed — this is the ordering every OTHER test
+      // in this file already exercises implicitly (commit always runs
+      // before `runShadowHarness` is called), named explicitly here as the
+      // HTTP-first leg of the C4 contract.
+      fastIdentity.markFastAttemptPending('cid-http-first', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '0.62',
+      });
+      fastIdentity.commitAcceptedIdentity('cid-http-first', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '0.62',
+        comparisonText: 'Circuit 4, Zs 0.62',
+      });
+
+      // ONLY NOW does the WS transcript "arrive" — runShadowHarness seeds
+      // `entry.fastPathCorrelationIdByTurn` from `regexFastCorrelationId`
+      // at turn entry, well after the commit above already landed.
+      const session = makeSession({});
+      const opts = baseOpts({ regexFastCorrelationId: 'cid-http-first' });
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      const confs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      expect(confs).toHaveLength(1);
+      expect(confs[0]).toMatchObject({
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        fast_correlation_id: 'cid-http-first',
+      });
+    });
+
+    test('WS-first: the correlationId is seeded from the WS transcript BEFORE commitAcceptedIdentity fires (commit races in DURING the tool-loop window)', async () => {
+      // Only `markFastAttemptPending` has run before the turn starts — the
+      // fast route's own onAudio commit has NOT fired yet. The WS
+      // transcript reaches the harness (seeding
+      // `entry.fastPathCorrelationIdByTurn`) and the tool loop begins
+      // BEFORE the commit lands.
+      fastIdentity.markFastAttemptPending('cid-ws-first', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '0.62',
+      });
+
+      // Simulates the HTTP fast-tts route's onAudio callback landing MID-turn
+      // — during the "Sonnet round-trip" window the module doc comment
+      // describes — by committing the identity from inside the mocked tool
+      // loop, which runs strictly AFTER `entry.fastPathCorrelationIdByTurn`
+      // was already seeded (runLiveMode seeds it before invoking runToolLoop)
+      // but strictly BEFORE `resolveFastAttemptSlotIdentities`/
+      // `resolveFastLedgerOutcomeForTurn` are called (both resolved
+      // "immediately before bundling", i.e. after the tool loop resolves).
+      runToolLoopSpy.mockImplementationOnce(async () => {
+        fastIdentity.commitAcceptedIdentity('cid-ws-first', {
+          sessionId: SESSION_ID,
+          turnId: 'irrelevant',
+          field: 'measured_zs_ohm',
+          circuit: 4,
+          boardId: null,
+          canonicalValue: '0.62',
+          comparisonText: 'Circuit 4, Zs 0.62',
+        });
+        return {
+          stop_reason: 'end_turn',
+          rounds: 1,
+          tool_calls: [],
+          aborted: false,
+          messages_final: [],
+          usage: {},
+          terminal_reason: 'end_turn',
+        };
+      });
+
+      const session = makeSession({});
+      const opts = baseOpts({ regexFastCorrelationId: 'cid-ws-first' });
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      const confs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      // Identical outcome to the HTTP-first ordering above — the resolved
+      // identity is exactly as complete either way, since both orderings
+      // land before the fixed resolveFastLedgerOutcomeForTurn consumption
+      // point.
+      expect(confs).toHaveLength(1);
+      expect(confs[0]).toMatchObject({
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        fast_correlation_id: 'cid-ws-first',
+      });
+    });
+  });
+
   test('allRejected turns are completely untouched by the fast-ledger precedence chain', async () => {
     fastIdentity.markFastAttemptPending('cid-x', {
       sessionId: SESSION_ID,
