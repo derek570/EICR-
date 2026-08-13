@@ -108,6 +108,8 @@ import { emitTurnCoreSummary, startAudioFinalizer } from './voice-latency-turn-s
 import {
   resolveFastAttemptSlotIdentities,
   resolveFastLedgerOutcomeForTurn,
+  resolveAcceptedIdentity,
+  buildFastAttemptSlotKey,
 } from './fast-path-accepted-identity.js';
 import { getElevenLabsKey } from '../services/secrets.js';
 import {
@@ -898,6 +900,130 @@ export function buildAlreadyGotConfirmationText(
 }
 
 /**
+ * Codex diff-review M4 (2026-08-13, per-fix mini-review) — resolve the
+ * (field, circuit, boardId, value) identity a single fast-ledger outcome
+ * represents, for COALESCING purposes (see
+ * `resolveZeroToolCallDuplicateOutcome` below). Computed ONCE per outcome so
+ * the eventual confirmation-building pass never re-derives it:
+ *   - 'suppress' has no field/circuit/value of its own (F8 kept the entry
+ *     minimal) — resolved via the committed identity, since a
+ *     'playback_started' state can only be reached AFTER
+ *     `commitAcceptedIdentity` already ran (audio must have already
+ *     streamed). Returns `null` when no committed identity can be found
+ *     (defensive — should not happen structurally) so the caller treats it
+ *     as ungroupable rather than fabricating an identity.
+ *   - 'pending' already carries a committed identity on the outcome itself.
+ *   - 'pending_uncommitted' has only the raw pre-commit record; clamps the
+ *     raw value the same way the confirmation-building pass always did, so
+ *     grouping compares CLAMPED values (matching what would actually be
+ *     spoken), not raw candidate text.
+ *
+ * @param {{kind: string, correlationId: string, identity?: Object, rawRecord?: Object}} outcome
+ * @param {Object} session
+ * @returns {{field: string, circuit: number|null, boardId: string|null, value: string|null, correction: {original: string, corrected: string}|null}|null}
+ */
+function resolveOutcomeIdentityForCoalescing(outcome, session) {
+  if (outcome.kind === 'suppress') {
+    const identity = resolveAcceptedIdentity(outcome.correlationId, session?.sessionId);
+    if (!identity) return null;
+    return {
+      field: identity.field,
+      circuit: identity.circuit,
+      boardId: identity.boardId,
+      value: identity.canonicalValue,
+      correction: null,
+    };
+  }
+  if (outcome.kind === 'pending') {
+    const { identity } = outcome;
+    return {
+      field: identity.field,
+      circuit: identity.circuit,
+      boardId: identity.boardId,
+      value: identity.canonicalValue,
+      correction: null,
+    };
+  }
+  // outcome.kind === 'pending_uncommitted'
+  const { rawRecord } = outcome;
+  const rawBoardId = rawRecord.boardId ?? null;
+  const rawClamp = clampReadingForDispatch({
+    field: rawRecord.field,
+    value: rawRecord.rawValue,
+    earthing: resolveBoardAwareEarthing(session.stateSnapshot, rawBoardId),
+  });
+  return {
+    field: rawRecord.field,
+    circuit: rawRecord.circuit,
+    boardId: rawBoardId,
+    value: rawClamp.value,
+    correction: rawClamp.correction,
+  };
+}
+
+/**
+ * Codex diff-review M4 (2026-08-13, per-fix mini-review) — build the ONE
+ * fallback confirmation for a coalesced group's representative member,
+ * using the identity already resolved by `resolveOutcomeIdentityForCoalescing`
+ * (never recomputed). Mirrors the two per-kind confirmation shapes exactly
+ * as they were before coalescing (a 'pending' confirmation carries no
+ * `board_id` stamp; a 'pending_uncommitted' one does, omitted only when the
+ * resolved board is the session's main/default board) — M4 changes WHICH
+ * outcomes reach this builder, never the shape of what it builds.
+ *
+ * @param {{outcome: Object, resolved: Object|null}} member
+ * @param {Object} session
+ * @param {string} turnId
+ * @returns {Object|null}
+ */
+function buildFastLedgerFallbackConfirmation({ outcome, resolved }, session, turnId) {
+  if (!resolved) return null;
+  const { field, circuit, boardId, value, correction } = resolved;
+  if (outcome.kind === 'pending') {
+    const designation = session.stateSnapshot?.circuits?.[circuit]?.circuit_designation ?? null;
+    const text = buildAlreadyGotConfirmationText(field, value, circuit, designation);
+    if (!text) return null;
+    return {
+      text,
+      expanded_text: expandForTTS(text),
+      field,
+      circuit: Number.isInteger(circuit) ? circuit : null,
+      // B1.3-style echo stamp — lets iOS's B2 correlation state machine
+      // treat this exactly like any other fast-attempt-covered
+      // confirmation (parked under .fastPending; dropped on fast start,
+      // re-dispatched on fast failure/TTL).
+      fast_correlation_id: outcome.correlationId,
+      // F8 — collision-free per-correlation token (a session-permanent
+      // fieldful dedupe would otherwise swallow a SECOND identical
+      // pending-fallback within the SAME turn, not just a later one).
+      dedupe_token: `duplicate_${turnId}_${outcome.correlationId}`,
+      expects_ios_ack: false,
+    };
+  }
+  // outcome.kind === 'pending_uncommitted'
+  const circuitData = getCircuitBucket(session.stateSnapshot, circuit, boardId);
+  const designation = circuitData?.circuit_designation ?? null;
+  // M2 — forward the clamp correction so this fallback speaks "— I
+  // corrected 16 to 1.6" when the raw dictated value needed clamping.
+  const text = buildAlreadyGotConfirmationText(field, value, circuit, designation, {
+    correction,
+  });
+  if (!text) return null;
+  const mainBoardId = getMainBoardId(session.stateSnapshot);
+  const stampBoardId = boardId != null && boardId !== mainBoardId ? boardId : null;
+  return {
+    text,
+    expanded_text: expandForTTS(text),
+    field,
+    circuit: Number.isInteger(circuit) ? circuit : null,
+    ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
+    fast_correlation_id: outcome.correlationId,
+    dedupe_token: `duplicate_${turnId}_${outcome.correlationId}`,
+    expects_ios_ack: false,
+  };
+}
+
+/**
  * Plan B B3.1/B3.3 — resolve the orphan-net precedence outcome for this
  * turn, combining the fast-attempt ledger (B3.1) with the exact-duplicate
  * tuple (B3.2, computed by the caller from the SAME re-parse the recovery
@@ -931,13 +1057,32 @@ export function buildAlreadyGotConfirmationText(
  * correlation be accounted for independently, even though the plan's
  * literal precedence table didn't spell out the multi-correlation case.
  * `resolveFastLedgerOutcomeForTurn` now returns an ARRAY of per-correlation
- * outcomes; this function builds ZERO OR ONE confirmation per entry (a
- * `suppress` entry contributes nothing, but never cancels a SIBLING
- * `pending`/`pending_uncommitted` entry's fallback, and vice versa), each
- * carrying its OWN `fast_correlation_id` and a COLLISION-FREE
- * `dedupe_token` (`duplicate_<turnId>_<correlationId>` — the bare
- * `duplicate_<turnId>` token B3.2 uses below can't be reused here since
+ * outcomes; this function builds ZERO OR ONE confirmation per DISTINCT
+ * SEMANTIC READING (a `suppress` entry contributes nothing, but never
+ * cancels a SIBLING pending entry's fallback for a DIFFERENT reading, and
+ * vice versa), each carrying its OWN `fast_correlation_id` and a
+ * COLLISION-FREE `dedupe_token` (`duplicate_<turnId>_<correlationId>` — the
+ * bare `duplicate_<turnId>` token B3.2 uses below can't be reused here since
  * multiple confirmations in one turn need independently-dedupable tokens).
+ *
+ * [DEVIATION] M4 (Codex diff-review, per-fix mini-review, 2026-08-13,
+ * sanctioned) — F8's array gave every ATTEMPTED correlationId its own
+ * independent outcome, which is correct when they represent genuinely
+ * different dictated readings. But if TWO DISTINCT correlationIds resolve
+ * to the SAME semantic reading (same effective field+circuit+board+
+ * canonical value — e.g. iOS retries a fast dispatch with a freshly-minted
+ * correlationId for what is fundamentally the same dictated value), F8's
+ * per-correlationId `dedupe_token`s are deliberately DISTINCT (that was the
+ * whole point of the fix for the genuinely-different-readings case) — so
+ * the client could not collapse them, and the SAME reading could be spoken
+ * TWICE. Fixed by coalescing outcomes that share a (field, circuit,
+ * boardId, value) identity into ONE group before building confirmations
+ * (`resolveOutcomeIdentityForCoalescing` / `buildFastLedgerFallbackConfirmation`
+ * above): within a group, ANY `playback_started` member suppresses the
+ * WHOLE group; otherwise exactly ONE fallback is built, from any one member
+ * (they agree on value by construction of the group key). Distinct
+ * slot/value pairs remain fully independent, exactly as F8's own regression
+ * already covers.
  *
  * @param {{session: Object, turnId: string, correlationIds: Set<string>|null|undefined, exactDuplicateTuple: {field: string, circuit: number, value: string, boardId: string|null}|null}} args
  * @returns {{kind: 'confirmations', confirmations: Object[]}|null}
@@ -953,99 +1098,42 @@ export function resolveZeroToolCallDuplicateOutcome({
   // session) can never resolve as this session's outcome.
   const fastLedgerOutcomes = resolveFastLedgerOutcomeForTurn(correlationIds, session?.sessionId);
   if (fastLedgerOutcomes) {
-    // F8 — a non-null array means at least one correlation was attempted
-    // and didn't fail. Build zero-or-one confirmation PER ENTRY,
-    // independently; only fall through to B3.2 when the array itself is
-    // null (below) — never merely because every entry resolved to
-    // 'suppress'.
-    const confirmations = [];
+    // M4 — group outcomes by (field, circuit, boardId, value) BEFORE
+    // building confirmations. An outcome whose identity can't be resolved
+    // (only possible for a 'suppress' entry with no committed identity —
+    // see `resolveOutcomeIdentityForCoalescing`) gets its own unique
+    // synthetic key so it stays an isolated no-op, exactly as before M4.
+    // `Map` iteration order preserves each group's FIRST-occurrence
+    // position, matching F8's original per-outcome ordering for turns with
+    // no coalescing to do.
+    const groups = new Map();
+    let ungroupableSeq = 0;
     for (const outcome of fastLedgerOutcomes) {
-      if (outcome.kind === 'suppress') continue;
-      if (outcome.kind === 'pending') {
-        const { identity, correlationId } = outcome;
-        const designation =
-          session.stateSnapshot?.circuits?.[identity.circuit]?.circuit_designation ?? null;
-        const text = buildAlreadyGotConfirmationText(
-          identity.field,
-          identity.canonicalValue,
-          identity.circuit,
-          designation
-        );
-        // A genuinely empty/suppressed value (buildConfirmationText's own
-        // emptiness contract) contributes nothing for THIS entry — never a
-        // placeholder, and never suppresses a sibling entry.
-        if (!text) continue;
-        confirmations.push({
-          text,
-          expanded_text: expandForTTS(text),
-          field: identity.field,
-          circuit: Number.isInteger(identity.circuit) ? identity.circuit : null,
-          // B1.3-style echo stamp — lets iOS's B2 correlation state machine
-          // treat this exactly like any other fast-attempt-covered
-          // confirmation (parked under .fastPending; dropped on fast start,
-          // re-dispatched on fast failure/TTL).
-          fast_correlation_id: correlationId,
-          // F8 — collision-free per-correlation token (a session-permanent
-          // fieldful dedupe would otherwise swallow a SECOND identical
-          // pending-fallback within the SAME turn, not just a later one).
-          dedupe_token: `duplicate_${turnId}_${correlationId}`,
-          expects_ios_ack: false,
-        });
-        continue;
-      }
-      // outcome.kind === 'pending_uncommitted' — Codex diff-review F2
-      // (2026-08-13): the orphan-net decision fired BEFORE the fast route's
-      // first `onAudio` byte, so `commitAcceptedIdentity` never ran and
-      // there is no clamped canonicalValue/comparisonText yet. The ledger
-      // still knows THIS turn attempted a fast clip for a specific
-      // field/circuit — the plan's "pending, not absence" default requires
-      // a fallback confirmation here too, built from the raw (un-clamped)
-      // candidate value captured at `markFastAttemptPending` time. Clamped
-      // the same way `findExactDuplicateAgainstSnapshot` clamps its own
-      // re-parsed tuple — this module has no clamp helper of its own by
-      // design (see fast-path-accepted-identity.js's header doc).
-      const { rawRecord, correlationId } = outcome;
-      const rawBoardId = rawRecord.boardId ?? null;
-      const rawClamp = clampReadingForDispatch({
-        field: rawRecord.field,
-        value: rawRecord.rawValue,
-        earthing: resolveBoardAwareEarthing(session.stateSnapshot, rawBoardId),
-      });
-      const clampedRawValue = rawClamp.value;
-      const rawCircuitData = getCircuitBucket(session.stateSnapshot, rawRecord.circuit, rawBoardId);
-      const designation = rawCircuitData?.circuit_designation ?? null;
-      // M2 (Codex diff-review, per-fix mini-review, 2026-08-13) — forward the
-      // clamp correction so this fallback speaks "— I corrected 16 to 1.6"
-      // when the raw dictated value needed clamping, exactly like the fast
-      // route's own confirmation (and findExactDuplicateAgainstSnapshot's
-      // re-parsed tuple below) already do. Without this, a raw continuity
-      // value that gets clamped/corrected and then falls back to THIS as the
-      // only audible line would silently speak the corrected number with no
-      // indication anything changed.
-      const text = buildAlreadyGotConfirmationText(
-        rawRecord.field,
-        clampedRawValue,
-        rawRecord.circuit,
-        designation,
-        { correction: rawClamp.correction }
-      );
-      if (!text) continue;
-      const mainBoardId = getMainBoardId(session.stateSnapshot);
-      const stampBoardId = rawBoardId != null && rawBoardId !== mainBoardId ? rawBoardId : null;
-      confirmations.push({
-        text,
-        expanded_text: expandForTTS(text),
-        field: rawRecord.field,
-        circuit: Number.isInteger(rawRecord.circuit) ? rawRecord.circuit : null,
-        ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
-        // Same B1.3-style echo stamp as the committed-identity 'pending'
-        // branch above — iOS's B2 correlation state machine treats this
-        // identically (parked under .fastPending; dropped on fast start,
-        // re-dispatched on fast failure/TTL).
-        fast_correlation_id: correlationId,
-        dedupe_token: `duplicate_${turnId}_${correlationId}`,
-        expects_ios_ack: false,
-      });
+      const resolved = resolveOutcomeIdentityForCoalescing(outcome, session);
+      const groupKey =
+        resolved != null
+          ? `${buildFastAttemptSlotKey(resolved)}::${resolved.value ?? ''}`
+          : ` ungroupable::${ungroupableSeq++}`;
+      if (!groups.has(groupKey)) groups.set(groupKey, []);
+      groups.get(groupKey).push({ outcome, resolved });
+    }
+
+    const confirmations = [];
+    for (const members of groups.values()) {
+      // ANY playback_started member suppresses the WHOLE group — the user
+      // already heard this exact value via one of the (possibly several)
+      // correlationIds that resolved to it.
+      if (members.some((m) => m.outcome.kind === 'suppress')) continue;
+      // Prefer a committed ('pending') member as the group's representative
+      // — it already carries the clamped canonicalValue/comparisonText, so
+      // no re-clamp is needed. Falls back to the first (only possible kind
+      // left is 'pending_uncommitted').
+      const representative = members.find((m) => m.outcome.kind === 'pending') ?? members[0];
+      // A genuinely empty/suppressed value (buildConfirmationText's own
+      // emptiness contract) contributes nothing for THIS group — never a
+      // placeholder, and never suppresses a sibling group.
+      const confirmation = buildFastLedgerFallbackConfirmation(representative, session, turnId);
+      if (confirmation) confirmations.push(confirmation);
     }
     return { kind: 'confirmations', confirmations };
   }

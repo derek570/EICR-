@@ -24,9 +24,15 @@
  * built from partial data captured at `pending` time even before the fast
  * route's first `onAudio` byte has streamed (see `markFastAttemptPending`).
  *
- * Mirrors the TTL/lazy-sweep pattern in voice-latency-turn-summary.js
- * (`correlationToTurn`) — same 60s TTL convention, same sweep-on-threshold
- * shape, same `_resetForTests()`/`_peekStateForTests()` test-only exports.
+ * Mirrors the TTL/lazy-sweep MECHANISM in voice-latency-turn-summary.js
+ * (`correlationToTurn`) — same sweep-on-threshold shape, same
+ * `_resetForTests()`/`_peekStateForTests()` test-only exports — but
+ * DELIBERATELY DIVERGES on the TTL VALUE itself (Codex diff-review F9,
+ * 2026-08-13): `RECORD_TTL_MS` is 300_000ms (300s), not the 60s
+ * `CORRELATION_TURN_TTL_MS` convention, because a turn that legitimately
+ * waits on an ask or runs multiple extraction rounds can take up to
+ * ~3m15s (`sonnet-stream.js`'s `EXTRACTION_WATCHDOG_ABSOLUTE_MS`) — see
+ * `RECORD_TTL_MS`'s own doc comment below for the full derivation.
  *
  * Lifecycle:
  *   1. `markFastAttemptPending` — called by voice-latency-fast-tts.js right

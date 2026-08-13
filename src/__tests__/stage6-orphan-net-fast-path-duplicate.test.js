@@ -583,6 +583,122 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     expect(session.orphanContext == null).toBe(true);
   });
 
+  // Codex diff-review M4 (2026-08-13, per-fix mini-review): F8 gave every
+  // ATTEMPTED correlationId its own independent outcome — correct for
+  // genuinely different readings, but if TWO DISTINCT correlationIds
+  // resolve to the SAME semantic reading (e.g. iOS retries a fast dispatch
+  // with a freshly-minted correlationId for what is fundamentally the same
+  // dictated value), each independently produced its own fallback with its
+  // own dedupe_token — the client could not collapse them, so the SAME
+  // reading could be spoken TWICE. Outcomes are now coalesced by
+  // (field, circuit, boardId, value) before confirmations are built.
+  test('[M4] TWO correlationIds resolving to the SAME field/circuit/board/value (a retry) → exactly ONE confirmation, not two', async () => {
+    fastIdentity.markFastAttemptPending('cid-retry-a', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    fastIdentity.commitAcceptedIdentity('cid-retry-a', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      canonicalValue: '0.62',
+      comparisonText: 'Circuit 4, Zs 0.62',
+    });
+    // A second correlationId — iOS retried the same dispatch with a fresh
+    // client-minted UUID — resolving to the IDENTICAL field/circuit/board/
+    // value. Both stay 'pending' (neither played back).
+    fastIdentity.markFastAttemptPending('cid-retry-b', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    fastIdentity.commitAcceptedIdentity('cid-retry-b', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      canonicalValue: '0.62',
+      comparisonText: 'Circuit 4, Zs 0.62',
+    });
+
+    const session = makeSession({});
+    const opts = baseOpts({ regexFastCorrelationId: ['cid-retry-a', 'cid-retry-b'] });
+    const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+    const confs = (result.confirmations ?? []).filter((c) =>
+      /^Already got that —/.test(c.text || '')
+    );
+    expect(confs).toHaveLength(1);
+    expect(confs[0].text).toBe('Already got that — Circuit 4, Zs 0.62');
+    // Either correlationId is an acceptable representative — the important
+    // invariant is there is exactly ONE, not one-per-correlationId.
+    expect(['cid-retry-a', 'cid-retry-b']).toContain(confs[0].fast_correlation_id);
+  });
+
+  test('[M4] a playback_started correlation and a retry for the SAME reading → the WHOLE group is suppressed (zero confirmations), not one', async () => {
+    fastIdentity.markFastAttemptPending('cid-played-retry', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    fastIdentity.commitAcceptedIdentity('cid-played-retry', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      canonicalValue: '0.62',
+      comparisonText: 'Circuit 4, Zs 0.62',
+    });
+    fastIdentity.markFastAttemptPlaybackStarted(SESSION_ID, 'cid-played-retry');
+
+    // A SECOND correlationId for the SAME reading, still pending — the user
+    // already HEARD this exact value via the sibling's playback, so this
+    // must not speak a second "Already got" line either.
+    fastIdentity.markFastAttemptPending('cid-still-pending', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    fastIdentity.commitAcceptedIdentity('cid-still-pending', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      canonicalValue: '0.62',
+      comparisonText: 'Circuit 4, Zs 0.62',
+    });
+
+    const session = makeSession({});
+    const opts = baseOpts({
+      regexFastCorrelationId: ['cid-played-retry', 'cid-still-pending'],
+    });
+    const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+    const confs = (result.confirmations ?? []).filter((c) =>
+      /^Already got that —/.test(c.text || '')
+    );
+    expect(confs).toHaveLength(0);
+    expect(session.orphanContext == null).toBe(true);
+  });
+
   test('failed ledger state falls through to the exact-duplicate check (not suppress/pending)', async () => {
     fastIdentity.markFastAttemptFailed(SESSION_ID, 'cid-failed');
     const session = makeSession({ 2: { rcd_time_ms: '24' } });
