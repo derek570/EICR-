@@ -94,6 +94,22 @@ export interface SleepManagerConfig {
   /** Cooldown after entering sleep during which wake is suppressed.
    *  Default 2s — gives the AGC / mic envelope time to drain. */
   postSleepCooldownMs?: number;
+  /** PLAN-C (feedback id 120) — session-latched flag gating ONLY
+   *  automatic no-transcript timer creation and timer-triggered sleep
+   *  entry. Default false: the automatic state machine now collapses
+   *  to `active` indefinitely (streaming continuously while recording)
+   *  because the 60s auto-sleep tier caused post-wake dead air, slow
+   *  cold-start interims, and a wake-during-close race that destroyed
+   *  the 3s replay buffer (session CF052DF3 — see EVIDENCE.md). The
+   *  machinery stays behind this flag (not deleted) so it can be
+   *  re-enabled if continuous-streaming cost ever matters for a
+   *  battery/data-constrained user. Does NOT gate explicit user
+   *  actions (Pause button, BFCache auto-pause, interruption recovery)
+   *  — those route through the C2a lighter-weight pause in
+   *  recording-context.tsx unconditionally, in both flag states. iOS
+   *  counterpart: `autoSleepEnabled` (UserDefaults-backed, hidden, not
+   *  exposed in Settings this wave). */
+  autoSleepEnabled?: boolean;
 }
 
 const DEFAULTS: Required<SleepManagerConfig> = {
@@ -104,7 +120,32 @@ const DEFAULTS: Required<SleepManagerConfig> = {
   vadWakeThreshold: 0.8,
   wakeFramesRequired: 12,
   postSleepCooldownMs: 2000,
+  autoSleepEnabled: false,
 };
+
+/** localStorage key for the persisted `autoSleepEnabled` preference —
+ *  intentionally the SAME key name as iOS's UserDefaults key (the plan's
+ *  "mirrored on web via localStorage under the same key"), not
+ *  namespaced like `cm-confirmation-mode` — this flag has no Settings UI
+ *  this wave, so there's no in-product surface it could collide with. */
+const AUTO_SLEEP_STORAGE_KEY = 'autoSleepEnabled';
+
+/**
+ * Read the persisted `autoSleepEnabled` preference. Defaults to `false`
+ * (auto-sleep retired) when unset — mirrors iOS's
+ * `UserDefaults.standard.object(forKey: "autoSleepEnabled") as? Bool ??
+ * false`. No corresponding setter this wave: the flag is hidden (no
+ * Settings UI), re-enabled only via direct localStorage/UserDefaults
+ * access if continuous-streaming cost ever needs revisiting.
+ */
+export function getAutoSleepEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(AUTO_SLEEP_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 
 export class SleepManager {
   private state: SleepState = 'active';
@@ -274,8 +315,36 @@ export class SleepManager {
     return this.cfg.noTranscriptTimeoutSec;
   }
 
+  /** PLAN-C (id 120) — suspend the automatic timer WITHOUT touching
+   *  `state`. Used by recording-context.tsx's C2a lighter-weight pause
+   *  so a flag-ON automatic timer can't fire `enterSleeping()` mid-pause
+   *  (which would resurrect the full Deepgram/Sonnet teardown + replay
+   *  path the lighter-weight pause exists to avoid). No-op if
+   *  `autoSleepEnabled` is false — there is no timer to suspend. */
+  suspendTimer(): void {
+    this.clearNoTranscriptTimer();
+  }
+
+  /** PLAN-C (id 120) — re-arm the automatic timer per the
+   *  session-latched flag. Counterpart to `suspendTimer()`, called on
+   *  resume from the C2a lighter-weight pause. Safe to call
+   *  unconditionally: `armNoTranscriptTimer()` itself no-ops when
+   *  `autoSleepEnabled` is false. */
+  resumeTimer(): void {
+    if (this.state === 'active') this.armNoTranscriptTimer();
+  }
+
   private armNoTranscriptTimer() {
     this.clearNoTranscriptTimer();
+    // PLAN-C (id 120) — the Sleeping tier is retired by default. When
+    // `autoSleepEnabled` is false the automatic state machine collapses
+    // to `active` indefinitely: no timer is ever armed, so it can never
+    // fire `enterSleeping()`. Explicit lifecycle actions (Pause button,
+    // BFCache auto-pause, interruption recovery) are FLAG-INDEPENDENT —
+    // they no longer call through this class at all (see C2a in
+    // recording-context.tsx), so gating only the timer here is
+    // sufficient to satisfy "does not gate explicit user actions".
+    if (!this.cfg.autoSleepEnabled) return;
     if (this.isTtsActive) return; // suspended while TTS speaks
     const ms = this.currentTimeoutSec() * 1000;
     this.noTranscriptTimer = setTimeout(() => {

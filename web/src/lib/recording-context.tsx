@@ -72,7 +72,7 @@ import { isNonCircuitField } from './recording/non-circuit-fields';
 import { FeedbackCapture } from './recording/feedback-capture';
 import { normalise as normaliseTranscriptText } from './recording/number-normaliser';
 import { AudioRingBuffer } from './recording/audio-ring-buffer';
-import { SleepManager, type SleepState } from './recording/sleep-manager';
+import { SleepManager, getAutoSleepEnabled, type SleepState } from './recording/sleep-manager';
 import { SileroVAD } from './recording/silero-vad';
 import {
   createVadAccumulator,
@@ -1099,6 +1099,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // inspector spoke _just before_ VAD fired.
   const ringBufferRef = React.useRef<AudioRingBuffer | null>(null);
   const sleepManagerRef = React.useRef<SleepManager | null>(null);
+  // C2a (PLAN-C, id 120) — discriminator set by the lighter-weight pause
+  // path (`pause()`) and checked at the top of `resume()` so the two
+  // resume shapes don't collide: the lighter-weight pause never tears
+  // down Deepgram/Sonnet's SIBLING state the way a full auto-sleep does
+  // (Sonnet stays connected, mic is stopped not left running), so its
+  // resume must reopen the mic + Deepgram and call SonnetSession.resume()
+  // with NO ring-buffer replay — as opposed to the automatic-timer sleep
+  // path's full reconnect + drain(). Reset to false as soon as resume()
+  // consumes it so a later automatic sleep (flag ON) takes the other
+  // branch.
+  const pausedLightweightRef = React.useRef(false);
   // T20 — Silero v5 ONNX VAD wake gate. Loaded at session start, fed
   // 512-sample chunks (32ms @ 16kHz) by the accumulator below. When
   // `null`, the SleepManager falls back to its RMS path
@@ -1311,26 +1322,29 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // failures (TTS unavailable / empty terminal). Address operations reserve a
   // durable delivery token plus, sometimes, an ordinary confirmation key; the
   // pair must be released together or a backend retry is silently suppressed.
-  const discardConfirmationReservation = React.useCallback((dedupeKey: string, reason: DiscardReason) => {
-    // PLAN-D (ids 122, 124) — a mode-status cue (toggle-flip cue, the
-    // session-start warning) destroyed by preemptFlush()/overflow re-parks
-    // itself rather than being treated as an ordinary confirmation
-    // reservation to forget. See handleModeStatusCueDiscard's docblock for
-    // why this must run FIRST, why it's safe during a full reset, and why
-    // `reason` gates re-park vs retire.
-    if (handleModeStatusCueDiscard(dedupeKey, reason)) return;
-    const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
-    if (addressToken) {
-      const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
-      addressMirrorDeliveryStoreRef.current?.discard(addressToken);
-      if (reservation?.confirmationKey) {
-        confirmationDedupeStoreRef.current.forget(reservation.confirmationKey);
+  const discardConfirmationReservation = React.useCallback(
+    (dedupeKey: string, reason: DiscardReason) => {
+      // PLAN-D (ids 122, 124) — a mode-status cue (toggle-flip cue, the
+      // session-start warning) destroyed by preemptFlush()/overflow re-parks
+      // itself rather than being treated as an ordinary confirmation
+      // reservation to forget. See handleModeStatusCueDiscard's docblock for
+      // why this must run FIRST, why it's safe during a full reset, and why
+      // `reason` gates re-park vs retire.
+      if (handleModeStatusCueDiscard(dedupeKey, reason)) return;
+      const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
+      if (addressToken) {
+        const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
+        addressMirrorDeliveryStoreRef.current?.discard(addressToken);
+        if (reservation?.confirmationKey) {
+          confirmationDedupeStoreRef.current.forget(reservation.confirmationKey);
+        }
+        addressMirrorQueueReservationsRef.current.delete(dedupeKey);
+        return;
       }
-      addressMirrorQueueReservationsRef.current.delete(dedupeKey);
-      return;
-    }
-    confirmationDedupeStoreRef.current.forget(dedupeKey);
-  }, []);
+      confirmationDedupeStoreRef.current.forget(dedupeKey);
+    },
+    []
+  );
   // A4 (Wave 6) — voice feedback marker capture. iOS canon:
   // TranscriptProcessor.swift HEAD (state machine + 30s rolling window) +
   // DeepgramRecordingViewModel.performStopCleanup auto-close. The
@@ -3283,11 +3297,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setDiagnosticSink(session);
   }, [applyExtraction, discardConfirmationReservation, speakDirectPrompt]);
 
-  /** Open the mic stream and forward audio to Deepgram. Shared between
-   *  `start()` and `resume()`. Also owns the SleepManager + ring buffer
-   *  writes so Phase 4e wake/replay works without duplicating the mic
-   *  plumbing. */
-  const beginMicPipeline = React.useCallback(async () => {
+  /** Mic-only reopen — PLAN-C (id 120) C2a factored this out of
+   *  `beginMicPipeline` below so the lighter-weight-pause resume path
+   *  can reopen JUST the mic without `beginMicPipeline`'s trailing
+   *  `openSonnet()` call rebuilding the Sonnet session it deliberately
+   *  kept alive (a real bug caught by this plan's own test suite: the
+   *  first cut called `beginMicPipeline()` wholesale and silently
+   *  replaced `sonnetRef.current` on every lighter-weight resume).
+   *  Owns the ring buffer + SleepManager VAD wiring so Phase 4e
+   *  wake/replay keeps working unchanged for the automatic-timer path
+   *  below, which still calls this via `beginMicPipeline`. */
+  const beginMicOnly = React.useCallback(async () => {
     // Fresh ring buffer on every mic open — the previous session's tail
     // is irrelevant after a teardown. 3s @ 16kHz mirrors iOS.
     //
@@ -3378,17 +3398,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       },
     });
     micRef.current = handle;
+  }, [setState, clearTick, teardownDeepgram, teardownMic, teardownSleep]);
+
+  /** Open the mic stream, Deepgram, and Sonnet together. Shared between
+   *  `start()` and the automatic-timer full-sleep wake path (`resume()`'s
+   *  `else` branch, `handleWake`'s mic-died-while-sleeping fallback).
+   *  The C2a lighter-weight-pause resume path calls `beginMicOnly` +
+   *  `openDeepgram` + `sonnetRef.current.resume()` directly INSTEAD of
+   *  this, specifically to skip the `openSonnet()` call below (see
+   *  `beginMicOnly`'s docblock). */
+  const beginMicPipeline = React.useCallback(async () => {
+    await beginMicOnly();
     // Samples arrive at DeepgramService already resampled to 16kHz (see
-    // the onSamples callback above), so declare the source rate as 16k
-    // regardless of `handle.sampleRate`. Otherwise DeepgramService would
-    // resample a second time with a ratio based on the raw device rate
-    // and produce double-transformed audio.
+    // beginMicOnly's onSamples callback), so declare the source rate as
+    // 16k regardless of the mic handle's actual rate. Otherwise
+    // DeepgramService would resample a second time with a ratio based on
+    // the raw device rate and produce double-transformed audio.
     await openDeepgram(16000);
     // Sonnet session opens alongside Deepgram. Run sequentially so the
     // scoped Deepgram token fetch doesn't contend with the Sonnet
     // handshake on slow networks; both are cheap so this is fine.
     openSonnet();
-  }, [setState, clearTick, openDeepgram, openSonnet, teardownDeepgram, teardownMic, teardownSleep]);
+  }, [beginMicOnly, openDeepgram, openSonnet]);
 
   /** Auto-wake from doze/sleep. Invoked by the SleepManager when VAD
    *  spots speech — reopens whatever layers were torn down and drains
@@ -3515,38 +3546,51 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  Called once per session from `start()` — the manager survives the
    *  doze/wake cycles internally and only stops on `stop()`. */
   const buildSleepManager = React.useCallback(() => {
-    const mgr = new SleepManager({
-      onEnterSleeping: () => {
-        // Stage 4c collapsed model — direct active → sleeping after
-        // the 60s no-final timer (or via manual pause). Mirrors iOS
-        // SleepManager.swift:21–24. Tell Sonnet to pause cost
-        // tracking, fully disconnect Deepgram, and stop the elapsed-
-        // tick. The mic stream keeps running so the ring buffer
-        // still captures pre-wake audio for the replay on next
-        // speech.
-        //
-        // Ask backend to compact the Anthropic prompt cache BEFORE
-        // tearing down Sonnet — mirrors iOS at
-        // `RecordingSessionCoordinator.swift:394`. This collapses the
-        // multi-turn history into a smaller summary that survives
-        // Anthropic's 5-minute cache TTL, so the next wake-turn
-        // doesn't repay the full prompt cost. Best-effort; the
-        // backend's own 5-check + 60k-token guard rails decide
-        // whether to actually compact.
-        sonnetRef.current?.sendCompactRequest();
-        sonnetRef.current?.pause();
-        teardownDeepgram();
-        teardownSonnet();
-        clearTick();
-        setMicLevel(0);
-        setState('sleeping');
+    // PLAN-C (id 120) — read the flag ONCE per session (session-latched,
+    // mirroring iOS's `performStartRecording` read of
+    // `UserDefaults...autoSleepEnabled`). SleepManager stores it until
+    // `stop()` and never re-reads localStorage while re-arming, so a
+    // mid-session flip (devtools console) doesn't change behaviour
+    // until the NEXT recording starts.
+    const autoSleepEnabled = getAutoSleepEnabled();
+    const mgr = new SleepManager(
+      {
+        onEnterSleeping: () => {
+          // Stage 4c collapsed model — direct active → sleeping after
+          // the 60s no-final timer. Only reachable when `autoSleepEnabled`
+          // is true (PLAN-C, id 120) — manual pause no longer routes
+          // through here (see C2a's lighter-weight `pause()`). Mirrors
+          // iOS SleepManager.swift:21–24. Tell Sonnet to pause cost
+          // tracking, fully disconnect Deepgram, and stop the elapsed-
+          // tick. The mic stream keeps running so the ring buffer
+          // still captures pre-wake audio for the replay on next
+          // speech.
+          //
+          // Ask backend to compact the Anthropic prompt cache BEFORE
+          // tearing down Sonnet — mirrors iOS at
+          // `RecordingSessionCoordinator.swift:394`. This collapses the
+          // multi-turn history into a smaller summary that survives
+          // Anthropic's 5-minute cache TTL, so the next wake-turn
+          // doesn't repay the full prompt cost. Best-effort; the
+          // backend's own 5-check + 60k-token guard rails decide
+          // whether to actually compact.
+          sonnetRef.current?.sendCompactRequest();
+          sonnetRef.current?.pause();
+          teardownDeepgram();
+          teardownSonnet();
+          clearTick();
+          setMicLevel(0);
+          setState('sleeping');
+        },
+        onWake: (from) => {
+          void handleWake(from);
+        },
       },
-      onWake: (from) => {
-        void handleWake(from);
-      },
-    });
+      { autoSleepEnabled }
+    );
     sleepManagerRef.current = mgr;
     mgr.start();
+    return autoSleepEnabled;
   }, [setState, clearTick, handleWake, teardownDeepgram, teardownSonnet]);
 
   const start = React.useCallback(async () => {
@@ -3801,8 +3845,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         teardownSonnet();
         return;
       }
-      buildSleepManager();
+      const autoSleepEnabled = buildSleepManager();
       setState('active');
+      // PLAN-C (id 120) — one `session_start_flags` diagnostic per
+      // recording session, emitted AFTER sessionId + the diagnostic sink
+      // (openSonnet, inside beginMicPipeline above) are both established.
+      // Cannot live inside sleep-manager.ts: SleepManager has no
+      // diagnostic sink or session identity, and its `onStateChange`
+      // does not fire from `start()`. Shared shape with PLAN-D, which
+      // may have already emitted this same event for
+      // `confirmations_enabled` — this is the identical event, not a
+      // second one.
+      clientDiagnostic('session_start_flags', {
+        auto_sleep_enabled: autoSleepEnabled,
+        confirmations_enabled: getConfirmationModeEnabled(),
+      });
       // PLAN-D (ids 122, 124) — one-shot warning when a NEW physical
       // session starts with confirmations already off, so an inspector
       // who forgot the toggle's state hears it named instead of getting
@@ -3934,24 +3991,55 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     liveFill.reset();
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
-  /** Manual pause — the inspector tapped the Pause button. Routes
-   *  through the same doze handler the SleepManager would use when the
-   *  15s timer fires, so pause behaviour is consistent with automatic
-   *  sleep: Deepgram WS stays alive, Sonnet pauses, cost tracker stops,
-   *  and the mic keeps filling the ring buffer so resume can replay. */
+  /** Manual pause — the inspector tapped the Pause button (also reached
+   *  via BFCache pagehide/freeze auto-pause and the visibility-recovery
+   *  action, both of which call `lifecycleActionsRef.current?.pause()`).
+   *
+   *  C2a (PLAN-C, id 120) — lighter-weight pause, UNCONDITIONAL in both
+   *  `autoSleepEnabled` flag states. Historically this called
+   *  `SleepManager.enterSleeping()`, which fully tore down BOTH Deepgram
+   *  AND Sonnet (`sonnetRef.current?.pause()` ran, then
+   *  `teardownSonnet()` nulled the ref moments later — the pause() call
+   *  was a no-op) and forced every resume through the race-prone
+   *  ring-buffer-replay wake path — reachable via an ordinary
+   *  tap-Pause-then-speak even with auto-sleep entirely off. iOS parity:
+   *  `pauseRecording()` (~:8714) bypasses SleepManager entirely and
+   *  never tears down the Sonnet session. */
   const pause = React.useCallback(() => {
     // Synchronous guard via statusRef so pause()+pause() doesn't
-    // double-emit the sleep transition (and so a late resume() closure
+    // double-emit the pause transition (and so a late resume() closure
     // from a pre-stop session can't flip sleeping → active on a freshly
     // restarted session).
     if (statusRef.current !== 'active') return;
-    // Stage 4c collapse: manual pause is the same effect as the 60s
-    // timer firing. SleepManager owns the transition so the WS
-    // teardown + state mutation flow through onEnterSleeping
-    // identically to the auto-doze path. Mirrors iOS where pause is
-    // a thin wrapper over `enterSleeping()`.
-    sleepManagerRef.current?.enterSleeping();
-  }, []);
+    pausedLightweightRef.current = true;
+    // Suspend (don't destroy) the automatic sleep timer BEFORE anything
+    // else so a flag-ON 60s no-transcript timeout can't fire
+    // `enterSleeping()` mid-pause and resurrect the teardown/replay path
+    // this lighter-weight pause exists to eliminate (test 4b). Safe/no-op
+    // when the flag is off — there is no timer running.
+    sleepManagerRef.current?.suspendTimer();
+    // Stop and null the mic handle — iOS `pauseAudioCapture` parity.
+    // Under the OLD SleepManager-routed sleep the mic kept filling the
+    // ring buffer for replay; the lighter-weight pause has no replay, so
+    // there's nothing for a live mic to feed.
+    teardownMic();
+    ringBufferRef.current?.reset();
+    resetVadAccumulator(vadAccumulatorRef.current);
+    // Disconnect ONLY Deepgram.
+    teardownDeepgram();
+    // KEEP the Sonnet/server WS connected (iOS `sendPause` parity) —
+    // do NOT call teardownSonnet(). The existing `session_ack
+    // {status:paused}` backend frame is reused as-is via this call.
+    sonnetRef.current?.pause();
+    clearTick();
+    setMicLevel(0);
+    // Reuses the existing 'sleeping' status value — recording-chrome.tsx
+    // already renders it as the paused presentation (`isPaused = state
+    // === 'sleeping'`); introducing a distinct status value isn't
+    // needed for that UI contract and would touch every 'active' |
+    // 'sleeping' branch elsewhere in this file for no behavioural gain.
+    setState('sleeping');
+  }, [setState, clearTick, teardownMic, teardownDeepgram]);
 
   /** Manual resume — mirrors the wake path. If Deepgram was torn down
    *  (sleeping), reopen it; otherwise just unpause and replay the ring
@@ -3972,13 +4060,34 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // is silent in exactly the same way the very-first ask_user
     // would be without start()'s primeTts.
     primeTts();
-    const fromSleeping = true;
     // Snapshot sessionId so the late-resolving openDeepgram / beginMic
     // paths below can detect if a stop() raced them.
     const sessionId = sessionIdRef.current;
     setErrorMessage(null);
     try {
-      if (fromSleeping) {
+      if (pausedLightweightRef.current) {
+        // C2a — mirror of the lighter-weight pause: mic-only reopen
+        // (deliberately `beginMicOnly`, NOT `beginMicPipeline` — the
+        // latter's trailing `openSonnet()` would silently rebuild the
+        // Sonnet session this path exists to keep alive) + Deepgram
+        // reconnect + the EXISTING SonnetSession (never torn down, so
+        // `resume()` un-pauses it rather than rebuilding it). NO
+        // ring-buffer drain / replay — the buffer was reset (not
+        // filled) during the pause because the mic was stopped, so
+        // there is nothing captured to send.
+        pausedLightweightRef.current = false;
+        await beginMicOnly();
+        await openDeepgram(16000);
+        sonnetRef.current?.resume();
+        // Re-arm the automatic timer per the session-latched flag.
+        // SleepManager no-ops internally when autoSleepEnabled is
+        // false, so this call is safe unconditionally (test 4b).
+        sleepManagerRef.current?.resumeTimer();
+      } else {
+        // Automatic-timer-triggered full sleep (flag ON) — Deepgram +
+        // Sonnet were fully torn down by SleepManager's onEnterSleeping;
+        // reopen both and replay whatever the still-running ring buffer
+        // captured during sleep.
         const mic = micRef.current;
         if (!mic) {
           await beginMicPipeline();
@@ -3993,10 +4102,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             deepgramRef.current?.sendInt16PCM(replay);
           }
         }
-      } else {
-        const replay = ringBufferRef.current?.drain();
-        deepgramRef.current?.resume(replay);
-        sonnetRef.current?.resume();
       }
       // stop() ran while we awaited openDeepgram / beginMicPipeline —
       // drop the work on the floor. Otherwise we'd flip `idle → active`
@@ -4020,6 +4125,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     }
   }, [
     setState,
+    beginMicOnly,
     beginMicPipeline,
     beginTick,
     openDeepgram,

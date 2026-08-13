@@ -117,9 +117,12 @@ describe('SleepManager.processVadFrame', () => {
   });
 
   it('arms the post-wake-grace timer (90s) on wake', () => {
+    // PLAN-C (id 120) — automatic timer-driven sleep re-entry is gated
+    // on `autoSleepEnabled` (default false since the tier was retired);
+    // this test exercises exactly that timer, so opt in explicitly.
     const onWake = vi.fn();
     const onEnterSleeping = vi.fn();
-    const mgr = new SleepManager({ onWake, onEnterSleeping });
+    const mgr = new SleepManager({ onWake, onEnterSleeping }, { autoSleepEnabled: true });
     mgr.start();
     mgr.enterSleeping();
     vi.advanceTimersByTime(2_001);

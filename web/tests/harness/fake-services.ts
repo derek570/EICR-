@@ -74,6 +74,10 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   private readonly inner: DeepgramService;
   private ws: CaptiveWS | null = null;
   sentSampleBlocks = 0;
+  /** PLAN-C (id 120) — counts `sendInt16PCM` calls so C2a tests can
+   *  assert the lighter-weight-pause resume path sends NO ring-buffer
+   *  replay (only the automatic-timer full-sleep wake path replays). */
+  sentInt16PCMBlocks = 0;
 
   constructor(callbacks: DeepgramCallbacks, model: SttModel) {
     this.model = model;
@@ -107,6 +111,7 @@ export class FakeDeepgramService implements DeepgramServiceLike {
     this.inner.sendSamples(samples);
   }
   sendInt16PCM(pcm: Int16Array): void {
+    this.sentInt16PCMBlocks += 1;
     this.inner.sendInt16PCM(pcm);
   }
   get connectionState(): DeepgramConnectionState {
