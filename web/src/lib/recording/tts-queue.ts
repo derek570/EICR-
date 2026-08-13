@@ -93,6 +93,15 @@ export interface ConfirmationQueueItem {
   /** Confirmation dedupe key. Un-recorded via `onDiscarded` iff the item is
    *  discarded before ever starting playback. */
   dedupeKey?: string;
+  /** Exempt this item from `MAX_QUEUE_DEPTH` overflow eviction — drop-oldest
+   *  looks for the oldest NON-protected item instead. For items whose loss
+   *  must never be silent (PLAN-D mode-status cues): overflow eviction has
+   *  no natural pacing (unlike `preemptFlush()`, which fires once per ask),
+   *  so a protected item repeatedly re-parked only to be evicted again by
+   *  the NEXT overflow-triggering enqueue can thrash. If every queued item
+   *  is protected, the queue is allowed to exceed `MAX_QUEUE_DEPTH` by one
+   *  rather than silently drop one. */
+  protected?: boolean;
   play: ConfirmationPlayFn;
   /** Optional per-item natural-completion hook (diagnostic; not correctness). */
   onEnd?: () => void;
@@ -172,8 +181,13 @@ export function enqueueConfirmation(item: ConfirmationQueueItem): {
   // Drop-oldest overflow. Depth = current head (if any) + waiting queue.
   const inflight = (head ? 1 : 0) + queue.length;
   if (inflight >= MAX_QUEUE_DEPTH && queue.length > 0) {
-    const dropped = queue.shift();
-    if (dropped) {
+    // Oldest NON-protected item — see `protected` on ConfirmationQueueItem.
+    // If every queued item is protected, skip the drop entirely (the queue
+    // exceeds MAX_QUEUE_DEPTH by one for this push, rather than silently
+    // dropping something that must never go silent).
+    const dropIndex = queue.findIndex((q) => !q.protected);
+    if (dropIndex !== -1) {
+      const [dropped] = queue.splice(dropIndex, 1);
       discardedCount = 1;
       fireDiscarded(dropped); // never played
       clientDiagnostic('tts_queue_overflow', {

@@ -180,4 +180,65 @@ describe('speakConfirmationModeStatus — never resurrected across a session tea
     expect(shim.spoken[shim.spoken.length - 1].text).toBe('Circuit 2 is now Hallway Lighting.');
     expect(shim.spoken.some((u) => u.text === 'Voice read-backs off.')).toBe(false);
   });
+
+  // Codex diff-review r2 BLOCKER — modeStatusCueTexts.clear() alone cannot
+  // cancel a re-park microtask that was ALREADY SCHEDULED (its closure
+  // already captured the cue's text) before the teardown ran.
+  // modeStatusGeneration closes this gap.
+  it('a re-park microtask ALREADY SCHEDULED before teardown does not resurrect the cue either', async () => {
+    setConfirmationModeEnabled(true);
+    speakConfirmation('Circuit 1 is now Kitchen Ring.');
+    speakConfirmationModeStatus('Voice read-backs off.');
+    expect(shim.speak).toHaveBeenCalledTimes(1);
+
+    // Preempt — this is what SCHEDULES the re-park microtask (synchronously,
+    // inside preemptFlush()'s discard loop).
+    speak('Which circuit is this?');
+
+    // Teardown happens BEFORE the microtask has a chance to run.
+    expect(() => cancelSpeech({ resetQueue: true })).not.toThrow();
+
+    // NOW flush microtasks — the already-scheduled re-park callback fires,
+    // but must see the bumped generation and no-op.
+    await Promise.resolve();
+
+    speakConfirmation('Circuit 2 is now Hallway Lighting.');
+    expect(shim.spoken[shim.spoken.length - 1].text).toBe('Circuit 2 is now Hallway Lighting.');
+    expect(shim.spoken.some((u) => u.text === 'Voice read-backs off.')).toBe(false);
+  });
+});
+
+// Codex diff-review r2 BLOCKER — queue-overflow eviction has no natural
+// pacing (unlike preemptFlush(), which fires once per genuine ask), so a
+// re-parked cue re-evicted by the NEXT overflow-triggering enqueue could
+// thrash indefinitely under sustained queue pressure. Mode-status cues are
+// now `protected` and exempt from overflow eviction entirely.
+describe('speakConfirmationModeStatus — exempt from queue-overflow eviction', () => {
+  it('a mode-status cue survives overflow pressure that would evict an ordinary confirmation', () => {
+    setConfirmationModeEnabled(true);
+    // Occupy the head so everything else queues.
+    speakConfirmation('Head confirmation.');
+    expect(shim.speak).toHaveBeenCalledTimes(1);
+
+    speakConfirmationModeStatus('Voice read-backs off.');
+    // Fill the queue to MAX_QUEUE_DEPTH (6) with ordinary confirmations —
+    // depth = head(1) + queued items.
+    speakConfirmation('Confirmation A.');
+    speakConfirmation('Confirmation B.');
+    speakConfirmation('Confirmation C.');
+    speakConfirmation('Confirmation D.');
+    // This 6th enqueue (depth would be 7) triggers overflow — the mode-
+    // status cue must NOT be the one dropped.
+    speakConfirmation('Confirmation E.');
+
+    // Drain everything and collect what actually got spoken.
+    const spokenTexts: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const before = shim.spoken.length;
+      shim.completeLast();
+      if (shim.spoken.length === before) break;
+    }
+    for (const u of shim.spoken) spokenTexts.push(u.text);
+    expect(spokenTexts).toContain('Voice read-backs off.');
+  });
 });

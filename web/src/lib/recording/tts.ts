@@ -1052,6 +1052,13 @@ let modeStatusKeyCounter = 0;
  *  see `handleModeStatusCuePlaybackStarted`, which retires the entry once
  *  the cue is actually heard). */
 const modeStatusCueTexts = new Map<string, string>();
+/** Bumped by `cancelSpeech({resetQueue:true})` (session teardown) — see
+ *  `handleModeStatusCueDiscard`'s docblock. A deferred re-park microtask
+ *  captures the generation at schedule time and checks it's unchanged
+ *  before actually enqueueing; `modeStatusCueTexts.clear()` alone cannot
+ *  cancel a microtask that was already scheduled (and therefore already
+ *  captured its text in a closure) before the clear ran. */
+let modeStatusGeneration = 0;
 
 function buildModeStatusDedupeKey(): string {
   modeStatusKeyCounter += 1;
@@ -1065,6 +1072,11 @@ function enqueueModeStatusCue(text: string): void {
   enqueueConfirmation({
     text,
     dedupeKey,
+    // Never evicted by queue-overflow pressure (only preemptFlush()/reset()
+    // can discard it) — overflow has no natural pacing the way a genuine
+    // ask does, so a re-parked cue re-evicted by the NEXT overflowing
+    // enqueue could thrash indefinitely under sustained queue pressure.
+    protected: true,
     play: harnessPlayer
       ? (t, controls) => {
           registerTtsFingerprint(t);
@@ -1128,12 +1140,26 @@ export function speakConfirmationModeStatus(text: string): void {
  * `reset()` — so this returns `false` (nothing scheduled) and the cue is
  * allowed to die with the session rather than being resurrected into the
  * next one.
+ *
+ * Codex diff-review r2 caught a race `modeStatusCueTexts.clear()` alone
+ * doesn't cover: if a re-park microtask is ALREADY SCHEDULED (this
+ * function already ran, already captured `text` in a closure) and THEN
+ * `cancelSpeech({resetQueue:true})` runs before that microtask fires,
+ * clearing the map does nothing to the already-scheduled callback — it
+ * would still enqueue the stale cue into the fresh, post-reset queue,
+ * resurrecting it into the next session. `modeStatusGeneration` closes
+ * this: captured at schedule time, checked before the deferred enqueue
+ * runs; `cancelSpeech` bumps it in the same place it clears the map.
  */
 export function handleModeStatusCueDiscard(dedupeKey: string): boolean {
   const text = modeStatusCueTexts.get(dedupeKey);
   if (text === undefined) return false;
   modeStatusCueTexts.delete(dedupeKey);
-  queueMicrotask(() => enqueueModeStatusCue(text));
+  const generationAtDiscard = modeStatusGeneration;
+  queueMicrotask(() => {
+    if (modeStatusGeneration !== generationAtDiscard) return; // torn down meanwhile
+    enqueueModeStatusCue(text);
+  });
   return true;
 }
 
@@ -1150,6 +1176,7 @@ export function handleModeStatusCuePlaybackStarted(dedupeKey: string): boolean {
 export function __resetModeStatusCuesForTests(): void {
   modeStatusCueTexts.clear();
   modeStatusKeyCounter = 0;
+  modeStatusGeneration += 1;
 }
 
 /**
@@ -1196,8 +1223,13 @@ export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
       // PLAN-D — clear mode-status tracking BEFORE reset() fires discards,
       // so handleModeStatusCueDiscard sees no match and does not re-park a
       // cue into a session that's tearing down (see that function's
-      // docblock for why re-parking here would hang the tab).
+      // docblock for why re-parking here would hang the tab). Also bump
+      // the generation so an ALREADY-SCHEDULED re-park microtask (from a
+      // discard that fired before this teardown) is a no-op too — clearing
+      // the map alone cannot cancel a microtask whose closure already
+      // captured the cue's text.
       modeStatusCueTexts.clear();
+      modeStatusGeneration += 1;
       ttsQueueReset();
     }
     return;
@@ -1210,9 +1242,11 @@ export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
   };
   if (resetQueue) {
     // FULL teardown — reset the queue FIRST (see docblock), then cancel direct.
-    // PLAN-D — clear mode-status tracking BEFORE reset() (see the
-    // no-isTtsAvailable() branch above for why ordering is load-bearing).
+    // PLAN-D — clear mode-status tracking + bump the generation BEFORE
+    // reset() (see the no-isTtsAvailable() branch above for why ordering,
+    // and why the generation bump, are both load-bearing).
     modeStatusCueTexts.clear();
+    modeStatusGeneration += 1;
     ttsQueueReset();
     try {
       window.speechSynthesis.cancel();

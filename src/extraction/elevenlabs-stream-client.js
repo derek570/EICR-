@@ -368,8 +368,14 @@ export class ElevenLabsStreamClient {
 // deliberately permissive, since under-matching only costs one wasted
 // retry on a rare unrelated failure, while over-matching would exclude
 // the very failure class D1 exists to recover from.
+// Deliberately does NOT deny-list abnormal WS close codes (e.g. 1006) or
+// generic "connection reset" markers close to a handshake — a rejected
+// language_code query param is exactly the kind of failure that could
+// surface as an abnormal close rather than a parseable error body, so
+// excluding those would risk removing retry eligibility for the one
+// failure class D1 exists to recover from.
 const KNOWN_UNRELATED_FAILURE_RE =
-  /quota|unauthorized|invalid[_-]?api[_-]?key|rate[_-]?limit|too many requests|\b401\b|\b403\b|\b429\b|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN/i;
+  /quota|payment[_-]?required|unauthorized|invalid[_-]?api[_-]?key|rate[_-]?limit|too many requests|\b401\b|\b402\b|\b403\b|\b429\b|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|CERT_|UNABLE_TO_VERIFY_LEAF_SIGNATURE|self[_\s-]signed certificate/i;
 
 function isKnownUnrelatedFailure(err) {
   const message = typeof err?.message === 'string' ? err.message : '';

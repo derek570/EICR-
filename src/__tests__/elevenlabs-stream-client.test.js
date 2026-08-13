@@ -498,6 +498,11 @@ describe('synthWithLanguageFailOpen', () => {
       ['quota', 'quota_exceeded for this account'],
       ['ECONNREFUSED', 'connect ECONNREFUSED 127.0.0.1:443'],
       ['ENOTFOUND', 'getaddrinfo ENOTFOUND api.elevenlabs.io'],
+      ['402', 'Unexpected server response: 402'],
+      ['payment_required', 'payment_required for this account'],
+      ['ECONNRESET', 'read ECONNRESET'],
+      ['CERT_', 'unable to verify the first certificate CERT_HAS_EXPIRED'],
+      ['self-signed certificate', 'self signed certificate in certificate chain'],
     ])('%s → no retry', async (_label, message) => {
       const client = new ElevenLabsStreamClient({ apiKey: 'k' });
       const retryClientFactory = jest.fn();
