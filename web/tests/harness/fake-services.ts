@@ -334,7 +334,12 @@ export function buildHarnessServices(): {
    *  EXACTLY one mic/Deepgram reopen rather than merely a non-null ref
    *  (a duplicate reopen from a racing double-resume would otherwise be
    *  invisible — the second construction just overwrites `refs`). */
-  counts: { deepgramConstructed: number; sonnetConstructed: number; micStarted: number };
+  counts: {
+    deepgramConstructed: number;
+    sonnetConstructed: number;
+    micStarted: number;
+    micStopped: number;
+  };
   tts: FakeTtsPlayers;
   chimes: { count: number };
   diagnostics: Array<{ category: string; payload: Record<string, unknown> }>;
@@ -344,7 +349,7 @@ export function buildHarnessServices(): {
     deepgram: null,
     sonnet: null,
   };
-  const counts = { deepgramConstructed: 0, sonnetConstructed: 0, micStarted: 0 };
+  const counts = { deepgramConstructed: 0, sonnetConstructed: 0, micStarted: 0, micStopped: 0 };
   const tts = new FakeTtsPlayers();
   const chimes = { count: 0 };
   const diagnostics: Array<{ category: string; payload: Record<string, unknown> }> = [];
@@ -360,9 +365,19 @@ export function buildHarnessServices(): {
       refs.sonnet = new FakeSonnetSession(callbacks as FakeSonnetCallbacks);
       return refs.sonnet;
     },
-    micCaptureFactory: (opts) => {
+    micCaptureFactory: async (opts) => {
       counts.micStarted += 1;
-      return fakeMicCaptureFactory(opts);
+      const handle = await fakeMicCaptureFactory(opts);
+      // PLAN-C (id 120) C2a, cycle-2 re-review — count stop() so a test
+      // can prove pause() actually released the mic handle it was
+      // given, not merely that a fresh one was requested later.
+      return {
+        ...handle,
+        stop: () => {
+          counts.micStopped += 1;
+          handle.stop();
+        },
+      };
     },
     resolveSttModel: () => Promise.resolve('flux'),
     diagnosticTap: (category, payload) => {

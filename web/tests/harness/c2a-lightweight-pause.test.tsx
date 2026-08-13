@@ -118,6 +118,7 @@ describe('PLAN-C C2a — lighter-weight pause (full RecordingProvider)', () => {
     const sonnetBeforePause = harness.refs.sonnet!;
     const sonnetPauseSpy = vi.spyOn(sonnetBeforePause, 'pause');
     const sonnetResumeSpy = vi.spyOn(sonnetBeforePause, 'resume');
+    const micStoppedBefore = harness.counts.micStopped;
 
     await act(async () => {
       apiRef.current!.pause();
@@ -126,6 +127,10 @@ describe('PLAN-C C2a — lighter-weight pause (full RecordingProvider)', () => {
     // state, but Sonnet was never torn down.
     expect(apiRef.current!.state).toBe('sleeping');
     expect(sonnetPauseSpy).toHaveBeenCalledOnce();
+    // Mic stop/reopen observed — Codex diff-review r2: the original
+    // handle's own stop() was actually invoked, not merely replaced by a
+    // later fresh one (which a leaked handle would also satisfy).
+    expect(harness.counts.micStopped - micStoppedBefore).toBe(1);
     // Same Sonnet instance still wired — teardownSonnet() was NOT called
     // (a rebuild would have replaced harness.refs.sonnet with a new
     // FakeSonnetSession via sonnetSessionFactory).

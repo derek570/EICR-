@@ -3379,6 +3379,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  wake/replay keeps working unchanged for the automatic-timer path
    *  below, which still calls this via `beginMicPipeline`. */
   const beginMicOnly = React.useCallback(async () => {
+    // Codex diff-review r2 (cycle-2 re-review) — snapshot the session id
+    // BEFORE the mic-permission await below. If stop()+a fresh start()
+    // rotate the session while this call is still awaiting the mic
+    // factory (a stale lighter-weight resume racing a stop(), the same
+    // class the resumeInFlightRef/pausedLightweightRef fixes above
+    // target), publishing the STALE handle into the shared `micRef`
+    // would silently clobber the NEW session's real mic reference —
+    // orphaning the new session's actual capture (nothing left to call
+    // `.stop()` on it) while leaving THIS stale handle physically
+    // running forever (a genuine, unbounded battery/mic-indicator leak).
+    // Guarded below, right before publish.
+    const sessionId = sessionIdRef.current;
     // Fresh ring buffer on every mic open — the previous session's tail
     // is irrelevant after a teardown. 3s @ 16kHz mirrors iOS.
     //
@@ -3468,6 +3480,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         clearTick();
       },
     });
+    // Codex diff-review r2 — session rotated while awaiting mic
+    // permission. Stop the handle THIS call created (it belongs to
+    // nobody now) and do NOT publish it — the current `micRef` belongs
+    // to whichever session is live now, and must be left alone.
+    if (sessionIdRef.current !== sessionId) {
+      handle.stop();
+      return;
+    }
     micRef.current = handle;
   }, [setState, clearTick, teardownDeepgram, teardownMic, teardownSleep]);
 

@@ -2,7 +2,19 @@
  * VAD sleep/wake state machine — port of iOS `SleepManager.swift`
  * (Stage 4c collapsed 2-tier model, 2026-04-27).
  *
- *   active ──60s no FINAL──────────► sleeping
+ * PLAN-C (id 120, 2026-08-13) — the diagram below is now the LEGACY
+ * behaviour, live only when `autoSleepEnabled` is explicitly true
+ * (default false — see `SleepManagerConfig.autoSleepEnabled`'s
+ * docblock). With the flag off, the automatic state machine collapses
+ * to `active` indefinitely and this class's `enterSleeping()` is
+ * reachable ONLY via that automatic timer. `RecordingProvider`'s
+ * explicit manual pause (Pause button, BFCache auto-pause) does NOT
+ * call `enterSleeping()` at all — it uses the C2a lighter-weight pause
+ * in recording-context.tsx instead, unconditionally in both flag
+ * states. Do not reintroduce a call from the explicit pause path back
+ * into this class's automatic machinery.
+ *
+ *   active ──60s no FINAL──────────► sleeping   (autoSleepEnabled: true only)
  *   sleeping ──VAD wake (speech)───► active
  *
  * Pre-fix the PWA carried a 3-tier model (active → dozing → sleeping)
@@ -55,8 +67,12 @@
 export type SleepState = 'active' | 'sleeping';
 
 export interface SleepManagerCallbacks {
-  /** Fired when the no-transcript timer elapses in `active`, or when
-   *  the consumer calls `enterSleeping()` directly (manual pause).
+  /** Fired when the no-transcript timer elapses in `active` (only
+   *  possible with `autoSleepEnabled: true`), or when a consumer calls
+   *  `enterSleeping()` directly. PLAN-C (id 120): `RecordingProvider`'s
+   *  explicit manual pause does NOT call `enterSleeping()` — it uses the
+   *  C2a lighter-weight pause instead (recording-context.tsx), so this
+   *  fires ONLY on the automatic flag-ON timer path in production.
    *  iOS counterpart: `onEnterSleeping`. */
   onEnterSleeping?: () => void;
   /** Fired when the VAD wake heuristic detects sustained speech
@@ -257,9 +273,15 @@ export class SleepManager {
     if (this.state === 'active') this.armNoTranscriptTimer();
   }
 
-  /** Manual entry into sleeping (user tapped Pause). Same effect as
-   *  the no-transcript timer firing — full Deepgram disconnect, ring
-   *  buffer keeps recording for wake-replay. */
+  /** Direct entry into sleeping — same effect as the no-transcript
+   *  timer firing (full Deepgram disconnect, ring buffer keeps
+   *  recording for wake-replay). PLAN-C (id 120): despite the name and
+   *  the comment this replaces, `RecordingProvider`'s manual Pause
+   *  button does NOT call this — it uses the C2a lighter-weight pause
+   *  instead, unconditionally in both `autoSleepEnabled` states (see
+   *  recording-context.tsx `pause()`). This method's only production
+   *  caller is `armNoTranscriptTimer`'s own timer callback, i.e. it
+   *  fires only when the flag is on. */
   enterSleeping(): void {
     if (this.state === 'sleeping') return;
     this.clearNoTranscriptTimer();
