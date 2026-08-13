@@ -132,6 +132,20 @@ export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
   if (isObservationRecodeConfirmation(conf)) {
     return `observation_recode_${conf.dedupe_token}`;
   }
+  // Plan B B3.2 (feedback ids 118/119) — a `duplicate_<turnId>` token wins
+  // ahead of the §A1a allowlist check below. The backend's exact-duplicate
+  // re-speak ("Already got …") and its fast-ledger pending fallback can fire
+  // for ANY measured field, not just the six wire/client-enrolled text-op
+  // fields, and the allowlist route only works per-named-field. This is a
+  // structurally separate branch — NOT an allowlist addition — because
+  // measured-value fields deliberately IGNORE dedupe_token otherwise (the
+  // id-84 correction-swallow fix): adding to the allowlist per field would
+  // reopen that bug for each field added. Mirrors the identical branch in
+  // the backend's `src/extraction/ios-dedupe-key.js` (all three key
+  // builders) and iOS `buildConfirmationDedupeKey`.
+  if (conf.dedupe_token && conf.dedupe_token.startsWith('duplicate_')) {
+    return `${field}_${conf.dedupe_token}`;
+  }
   // §A1a — token precedence for the allowlisted text-op fields, in every
   // branch (single-circuit, multi-circuit AND degenerate). Empty-string
   // token treated as absent (mirrors the JS `opToken &&` falsiness in
