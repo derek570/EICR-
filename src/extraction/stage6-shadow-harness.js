@@ -3573,17 +3573,37 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // refusal would drain, count as speech-intent, and suppress
         // marker-② while the UNCOVERED rejection lost today's generic
         // fallback (the exact class branch 3 exists to prevent).
-        const orphanEmissionEligible =
-          ORPHAN_PROMPT_ENABLED &&
+        // Codex diff-review cycle 5 (G1): this is the shared CONTENT/STATE
+        // gate — it says nothing about the legacy generic-orphan-prompt
+        // kill switch. `orphanEmissionEligible` (below) is this predicate
+        // PLUS `ORPHAN_PROMPT_ENABLED`, and stays the gate for the
+        // allRejected class (unchanged, pre-Plan-B behaviour) and for the
+        // legacy generic-prompt emission calls further down. B3's
+        // exact-duplicate check and fast-ledger precedence chain
+        // (B3.1/B3.2/B3.3) are Plan-B mechanisms that were never supposed
+        // to live behind `ORPHAN_PROMPT_ENABLED` — that flag is a
+        // pre-existing, unrelated kill switch for the OLD generic
+        // orphan-prompt mechanism (same class of bug as cycle-1's F4, a
+        // different flag). They use `orphanContentEligible` instead so
+        // flipping VOICE_ORPHAN_PROMPT=false cannot silently disable
+        // "Already got", the playback_started suppress, the pending
+        // fast-ledger fallback, or D3's silence mitigation.
+        const orphanContentEligible =
           options.confirmationsEnabled === true &&
           producedNothing &&
           !isAnswerTurn &&
           (carriesValue || carriesObservation || chimeFired);
+        const orphanEmissionEligible = ORPHAN_PROMPT_ENABLED && orphanContentEligible;
         if (partialCoveragePending && !orphanEmissionEligible) {
           stampCoveredNoticesNonDraining();
           partialCoveragePending = false;
         }
-        if (orphanEmissionEligible) {
+        // allRejected keeps the exact pre-G1 gate (orphanEmissionEligible,
+        // i.e. flag-dependent) — that whole branch is the untouched legacy
+        // coverage-arbitration + #5a recovery path (stage6-honest-refusal-
+        // orphan-off.test.js pins this). Only the non-allRejected class
+        // (B3's home) is freed from the flag.
+        if (allRejected ? orphanEmissionEligible : orphanContentEligible) {
           // #5a apply-complete guard (PR #68) — before emitting a contentless
           // clarifying prompt, try a deterministic re-parse of transcriptText
           // (result is EMPTY here by definition of producedNothing). If it yields
@@ -3656,7 +3676,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                   value: dup.value,
                   textPreview: String(transcriptText || '').slice(0, 80),
                 });
-              } else if (ORPHAN_APPLY_COMPLETE_ENABLED) {
+              } else if (ORPHAN_PROMPT_ENABLED && ORPHAN_APPLY_COMPLETE_ENABLED) {
+                // G1: the #5a apply-complete WRITE for a genuinely NEW
+                // (non-duplicate) reading predates Plan B and was already
+                // nested inside the ORPHAN_PROMPT_ENABLED-gated block
+                // pre-Plan-B (git show fa3905b1 — same nesting). B3 only
+                // narrows the flag OUT of the duplicate check and the
+                // fast-ledger chain above/below; this write keeps its
+                // original flag dependency so a flag-off session behaves
+                // byte-identically for the "new reading, no ledger, no
+                // duplicate" case (silence — the final catch-all apology a
+                // few lines down is flag-gated too), not "widened".
                 recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
                 log.info?.('stage6.orphan_apply_complete', {
                   sessionId: session.sessionId,
@@ -3864,11 +3894,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                   turnId,
                   textPreview: String(transcriptText || '').slice(0, 80),
                 });
-              } else {
+              } else if (ORPHAN_PROMPT_ENABLED) {
+                // G1: this defensive-assertion fallback (structurally
+                // shouldn't fire per the comment above — kept as a belt for
+                // a future refactor) is the LEGACY generic-prompt mechanism,
+                // not part of B3's ledger chain — it stays behind the flag
+                // like every other emitGenericOrphanPrompt call site.
                 emitGenericOrphanPrompt('fast_ledger_unaddressed_failure');
               }
             }
-          } else if (!recovered) {
+          } else if (!recovered && ORPHAN_PROMPT_ENABLED) {
             // M1 Defect B: all-rejected turns get an "I couldn't action that"
             // message (the action WAS understood but rejected); the zero-tool-call
             // orphan case keeps the "didn't catch what that was for" wording.
