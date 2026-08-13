@@ -261,6 +261,86 @@ describe('markFastAttemptPlaybackStarted', () => {
   });
 });
 
+// Codex diff-review M3 (2026-08-13, per-fix mini-review) — F5 session-scoped
+// every READER but left every WRITER (other than the pre-existing
+// markFastAttemptPlaybackStarted guard) open to a cross-session
+// correlationId collision. These pin the symmetric writer-side guard: an
+// unexpired record belonging to a DIFFERENT non-null session is never
+// mutated by markFastAttemptPending, commitAcceptedIdentity, or
+// markFastAttemptFailed.
+describe('session-scoped writers (M3)', () => {
+  test('markFastAttemptPending: a correlationId whose existing record belongs to a DIFFERENT session is a no-op — the existing record is untouched', () => {
+    identity.markFastAttemptPending(CID, {
+      sessionId: SESS,
+      turnId: TURN,
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    identity.markFastAttemptPending(CID, {
+      sessionId: 'OTHER-SESSION',
+      turnId: 'other-turn',
+      field: 'r1_r2_ohm',
+      circuit: 9,
+      boardId: null,
+      rawValue: '99',
+    });
+    // The original SESS-owned record survives byte-identical — never
+    // overwritten by the foreign-session call.
+    expect(identity.getFastAttemptRecord(CID, SESS)).toMatchObject({
+      sessionId: SESS,
+      turnId: TURN,
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      rawValue: '0.62',
+    });
+  });
+
+  test('commitAcceptedIdentity: a correlationId whose existing pending record belongs to a DIFFERENT session does not adopt/merge — the pending record stays uncommitted and unchanged', () => {
+    identity.markFastAttemptPending(CID, {
+      sessionId: SESS,
+      turnId: TURN,
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    identity.commitAcceptedIdentity(CID, {
+      sessionId: 'OTHER-SESSION',
+      turnId: 'other-turn',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      canonicalValue: '0.62',
+      comparisonText: 'Circuit 4, Zs 0.62',
+    });
+    // Never committed under the foreign session's call — the original
+    // session's pending record is untouched, and no hybrid
+    // (SESS-sessionId + OTHER-SESSION-committed-data) record was created.
+    expect(identity.resolveAcceptedIdentity(CID, SESS)).toBeNull();
+    expect(identity.getFastAttemptRecord(CID, SESS)).toMatchObject({
+      sessionId: SESS,
+      committed: false,
+      state: 'pending',
+      rawValue: '0.62',
+    });
+  });
+
+  test('markFastAttemptFailed: a correlationId whose existing record belongs to a DIFFERENT session is a no-op', () => {
+    identity.markFastAttemptPending(CID, {
+      sessionId: SESS,
+      turnId: TURN,
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    identity.markFastAttemptFailed('OTHER-SESSION', CID);
+    expect(identity.getFastAttemptState(CID, SESS)).toBe('pending');
+  });
+});
+
 describe('TTL expiry', () => {
   test('getFastAttemptState/resolveAcceptedIdentity return null after the record expires', () => {
     jest.useFakeTimers();

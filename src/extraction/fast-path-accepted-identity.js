@@ -136,9 +136,8 @@ function isExpired(record) {
 /**
  * Codex diff-review F5 (2026-08-13) — session-scoping guard, mirroring the
  * EXACT permissive pattern `markFastAttemptPlaybackStarted` already used
- * (only the two writers `markFastAttemptPlaybackStarted`/`markFastAttemptFailed`
- * had this guard before F5; every READER — `resolveAcceptedIdentity`,
- * `getFastAttemptState`, `getFastAttemptRecord`,
+ * (that was the only site with this guard before F5; every READER —
+ * `resolveAcceptedIdentity`, `getFastAttemptState`, `getFastAttemptRecord`,
  * `resolveFastAttemptSlotIdentities`, `resolveFastLedgerOutcomeForTurn` — had
  * none, so a stale/foreign correlationId (client replay, a UUID collision
  * with a HELD-open record from a different session) could resolve another
@@ -146,6 +145,14 @@ function isExpired(record) {
  * sides carry a non-empty sessionId and they differ — a record with no
  * sessionId (defensive minimal records built without one) or a caller that
  * doesn't pass one is treated as unscoped, same as the existing writer guard.
+ *
+ * Codex diff-review M3 (2026-08-13, per-fix mini-review) — F5's own comment
+ * above (superseded here) claimed `markFastAttemptFailed` already had this
+ * guard before F5; it did not — it only ever checked `state ===
+ * 'playback_started'`, never the caller's `sessionId` against the record's.
+ * `markFastAttemptPending` and `commitAcceptedIdentity` had no session guard
+ * at all either. All three now use this same helper — see each function's
+ * own doc comment.
  *
  * @param {FastAttemptRecord|undefined|null} record
  * @param {string|undefined|null} sessionId
@@ -175,12 +182,25 @@ function sessionMismatch(record, sessionId) {
  * `commitAcceptedIdentity`'s clamped `canonicalValue`/`comparisonText`, or
  * even a genuine `playback_started` mark, mid-flight.
  *
+ * Codex diff-review M3 (2026-08-13, per-fix mini-review) — F5 session-scoped
+ * every READER but left every WRITER open to a cross-session correlationId
+ * collision. Symmetric with the read-side guard (and with
+ * `markFastAttemptPlaybackStarted`'s pre-existing guard below): an unexpired
+ * record belonging to a DIFFERENT non-null session is never mutated here,
+ * regardless of its state — a colliding correlationId (astronomically rare,
+ * client-minted UUIDv4s, but this module's own stated design principle is
+ * defense-in-depth) must never let one session's dictation overwrite
+ * another's ledger entry.
+ *
  * @param {string} correlationId
  * @param {{sessionId: string, turnId: string, field: string, circuit: number|null, boardId: string|null, rawValue: string|null}} fields
  */
 export function markFastAttemptPending(correlationId, fields) {
   if (typeof correlationId !== 'string' || !correlationId) return;
   const existing = recordsByCorrelationId.get(correlationId);
+  if (existing && !isExpired(existing) && sessionMismatch(existing, fields?.sessionId)) {
+    return;
+  }
   if (
     existing &&
     !isExpired(existing) &&
@@ -213,12 +233,28 @@ export function markFastAttemptPending(correlationId, fields) {
  * called without a prior `markFastAttemptPending` (defensive — should not
  * happen given both are called from the same route).
  *
+ * Codex diff-review M3 (2026-08-13, per-fix mini-review) — an existing
+ * record belonging to a DIFFERENT non-null session is never merged onto:
+ * merging would produce a hybrid record carrying one session's identity
+ * (sessionId/turnId/field/circuit/boardId from `base`) alongside another
+ * session's just-committed data (canonicalValue/comparisonText from
+ * `fields`) — internally inconsistent in exactly the way the whole
+ * accepted-identity ledger exists to prevent. No-op (skip entirely, same as
+ * the sibling writers) rather than fabricate a "properly scoped" record from
+ * `fields` alone that would silently clobber the foreign session's entry at
+ * this same correlationId — a colliding id is astronomically rare
+ * (client-minted UUIDv4s) and defense-in-depth here means refusing to act,
+ * not choosing which session's data wins.
+ *
  * @param {string} correlationId
  * @param {{sessionId: string, turnId: string, field: string, circuit: number|null, boardId: string|null, canonicalValue: string, comparisonText: string}} fields
  */
 export function commitAcceptedIdentity(correlationId, fields) {
   if (typeof correlationId !== 'string' || !correlationId) return;
   const existing = recordsByCorrelationId.get(correlationId);
+  if (existing && !isExpired(existing) && sessionMismatch(existing, fields?.sessionId)) {
+    return;
+  }
   const base =
     existing && !isExpired(existing)
       ? existing
@@ -254,12 +290,20 @@ export function commitAcceptedIdentity(correlationId, fields) {
  * 'failed' record if no prior 'pending' mark exists (e.g. the validateBody
  * failure path itself, which rejects before any pending mark is possible).
  *
+ * Codex diff-review M3 (2026-08-13, per-fix mini-review) — this writer took
+ * NO sessionId parameter validation at all before this fix: `sessionId` was
+ * accepted positionally and used unconditionally, whether or not it matched
+ * the stored record's own `sessionId`. Added the same session-scope guard
+ * every other writer now has — a mismatched sessionId is a no-op, mirroring
+ * `markFastAttemptPlaybackStarted`'s pre-existing guard.
+ *
  * @param {string} sessionId
  * @param {string} correlationId
  */
 export function markFastAttemptFailed(sessionId, correlationId) {
   if (typeof correlationId !== 'string' || !correlationId) return;
   const existing = recordsByCorrelationId.get(correlationId);
+  if (existing && !isExpired(existing) && sessionMismatch(existing, sessionId)) return;
   if (existing && !isExpired(existing) && existing.state === 'playback_started') return;
   if (existing && !isExpired(existing)) {
     recordsByCorrelationId.set(correlationId, {
