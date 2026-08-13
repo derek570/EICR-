@@ -145,13 +145,15 @@ afterEach(() => {
 });
 
 describe('findExactDuplicateAgainstSnapshot (read-only, unit level)', () => {
-  test('exact match returns the clamped tuple; performs NO write', () => {
+  test('exact match returns the clamped tuple (+ resolved boardId); performs NO write', () => {
     const session = makeSession({ 2: { rcd_time_ms: '24' } });
     const dup = findExactDuplicateAgainstSnapshot({
       session,
       tuple: { slotField: 'rcd_trip_time', circuit: 2, value: '24' },
     });
-    expect(dup).toEqual({ field: 'rcd_time_ms', circuit: 2, value: '24' });
+    // Codex diff-review F3 (2026-08-13) — the resolved effective board now
+    // rides along on the return value (single-board fixture → main).
+    expect(dup).toEqual({ field: 'rcd_time_ms', circuit: 2, value: '24', boardId: 'main' });
     // Unchanged — never mutated.
     expect(session.stateSnapshot.circuits[2]).toEqual({ rcd_time_ms: '24' });
   });
@@ -172,6 +174,44 @@ describe('findExactDuplicateAgainstSnapshot (read-only, unit level)', () => {
       tuple: { slotField: 'rcd_trip_time', circuit: 2, value: '24' },
     });
     expect(dup).toBeNull();
+  });
+
+  // Codex diff-review F3 (2026-08-13) — the PREVIOUS shape read
+  // `session.stateSnapshot.circuits[tuple.circuit]` directly with no board
+  // resolution at all: on a multi-board job the same circuit ref exists on
+  // every board, so a re-dictation of board B's circuit 2 could silently
+  // compare against board A's circuit 2's DIFFERENT stored value.
+  test('multi-board: resolves against the CURRENT board only, never a same-ref circuit on a different board', () => {
+    const session = makeSession({
+      2: { rcd_time_ms: '24' }, // main board's circuit 2
+      'sub-1::2': { rcd_time_ms: '99', circuit: 2, board_id: 'sub-1' }, // sub-board's circuit 2
+    });
+    session.stateSnapshot.boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'sub-1', board_type: 'sub' },
+    ];
+    // On the MAIN board (no currentBoardId set → resolves to main): a
+    // re-dictation of "24" matches main's stored value.
+    const mainDup = findExactDuplicateAgainstSnapshot({
+      session,
+      tuple: { slotField: 'rcd_trip_time', circuit: 2, value: '24' },
+    });
+    expect(mainDup).toEqual({ field: 'rcd_time_ms', circuit: 2, value: '24', boardId: 'main' });
+    // Re-dictating sub-1's OWN value ("99") while sub-1 is the CURRENT board
+    // matches sub-1's own stored value, not main's "24".
+    session.stateSnapshot.currentBoardId = 'sub-1';
+    const subDup = findExactDuplicateAgainstSnapshot({
+      session,
+      tuple: { slotField: 'rcd_trip_time', circuit: 2, value: '99' },
+    });
+    expect(subDup).toEqual({ field: 'rcd_time_ms', circuit: 2, value: '99', boardId: 'sub-1' });
+    // Re-dictating MAIN's value ("24") while sub-1 is current must NOT match
+    // — sub-1's own stored value is "99", a different value entirely.
+    const crossBoardMiss = findExactDuplicateAgainstSnapshot({
+      session,
+      tuple: { slotField: 'rcd_trip_time', circuit: 2, value: '24' },
+    });
+    expect(crossBoardMiss).toBeNull();
   });
 });
 
@@ -318,7 +358,17 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     expect(session.orphanContext == null).toBe(true);
   });
 
-  test('pending WITHOUT a committed identity yet (race) → falls through to the unchanged orphan prompt (never a placeholder)', async () => {
+  // Codex diff-review F2 (2026-08-13): PREVIOUSLY this raced-before-commit
+  // case fell through to the ordinary orphan prompt — silently defaulting
+  // to ABSENCE, exactly the outcome the plan's "pending, not absence" rule
+  // forbids (a real fast-TTS attempt is in flight; the transcript can
+  // legitimately beat ElevenLabs' first byte over the wire). Fixed: the
+  // ledger's raw (un-clamped) pre-commit record now still produces a
+  // correlation-stamped fallback confirmation, built the same way B3.2's
+  // "Already got" wording works, just sourced from the un-clamped candidate
+  // captured at markFastAttemptPending time instead of the clamped
+  // commitAcceptedIdentity value.
+  test('pending WITHOUT a committed identity yet (race) → correlation-stamped fallback confirmation (never an apology, never silence)', async () => {
     fastIdentity.markFastAttemptPending('cid-race', {
       sessionId: SESSION_ID,
       turnId: 'irrelevant',
@@ -327,20 +377,30 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
       boardId: null,
       rawValue: '0.62',
     });
-    // Never committed.
+    // Never committed — commitAcceptedIdentity (the fast route's first
+    // onAudio byte) has not run yet.
 
     const session = makeSession({});
     const opts = baseOpts({ regexFastCorrelationId: 'cid-race' });
     const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
 
-    const dupConfs = (result.confirmations ?? []).filter((c) =>
-      /^Already got that —/.test(c.text || '')
-    );
-    expect(dupConfs).toHaveLength(0);
     const orphanPrompt = (result.confirmations ?? []).find((c) =>
       /(catch|repeat|say it)/i.test(c.text || '')
     );
-    expect(orphanPrompt).toBeDefined();
+    expect(orphanPrompt).toBeUndefined();
+    const confs = (result.confirmations ?? []).filter((c) =>
+      /^Already got that —/.test(c.text || '')
+    );
+    expect(confs).toHaveLength(1);
+    expect(confs[0]).toMatchObject({
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      fast_correlation_id: 'cid-race',
+      dedupe_token: `duplicate_${SESSION_ID}-turn-1`,
+      expects_ios_ack: false,
+    });
+    expect(confs[0].text).toBe('Already got that — Circuit 4, Zs 0.62');
+    expect(session.orphanContext == null).toBe(true);
   });
 
   test('TWO consecutive pending-fast duplicate turns each speak ONE audible line, with DISTINCT dedupe_tokens', async () => {

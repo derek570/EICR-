@@ -226,7 +226,7 @@ function resolveHarnessDesignation(designations, boardId, circuitRef) {
 // ref), and the snapshot's circuit buckets are DUAL-SHAPE (main board under
 // bare numeric keys, sub-boards under `${board_id}::${ref}` composites), so
 // resolving the main board's id is required to key the legacy half correctly.
-import { getMainBoardId } from './stage6-multi-board-shape.js';
+import { getMainBoardId, getCircuitBucket } from './stage6-multi-board-shape.js';
 // Plan A1a — the net-0 drain selects mandatory-notice text AT THE DRAIN
 // (post-suppression) via the dispatcher module's exported selector, so the
 // rotation cursor advances exactly once per emitted notice. Safe import:
@@ -806,32 +806,52 @@ export function applyOrphanRecoveredReading({ session, result, tuple, turnId }) 
  * `applyOrphanRecoveredReading` (which WRITES): this function never mutates
  * `session.stateSnapshot`, never pushes a confirmation, and never sets
  * `session.orphanContext`. Applies the SAME clamp/normalisation the write
- * path uses (`clampReadingForDispatch`, `resolveBoardAwareEarthing` scoped
- * to the main board — matching `applyOrphanRecoveredReading`'s own
- * unscoped-write pattern) so the comparison is apples-to-apples with
- * whatever is already stored.
+ * path uses (`clampReadingForDispatch`), scoped to the CURRENT effective
+ * board — the same resolution ordinary `record_reading` dispatch applies to
+ * an unscoped write (`resolveEffectiveBoardId`, stage6-dispatchers-circuit.js)
+ * — so the comparison is apples-to-apples with whatever is already stored on
+ * THAT board, not whichever board happens to own the bare-numeric legacy key.
  *
- * Returns `{field, circuit, value}` (the CLAMPED value, ready to speak) when
- * the re-parsed tuple is an EXACT duplicate of the circuit's current stored
- * value for that field; `null` on any mismatch, ambiguity, or missing
- * current value — the caller falls through to existing behaviour on null.
+ * Codex diff-review F3 (2026-08-13): the re-parsed tuple carries no board
+ * scope at all (`reparseSingleCompleteReading` never resolves one — the
+ * dialogue-engine schema triggers only capture field/circuit/value). The
+ * PREVIOUS shape read `session.stateSnapshot.circuits[tuple.circuit]`
+ * directly and clamped with a HARDCODED `null` board — on a multi-board job
+ * the same circuit ref exists on every board, so a re-dictation of board B's
+ * circuit 2 could silently compare against board A's circuit 2's stored
+ * value, producing either a false "Already got" (swallowing a genuine
+ * correction) or a false miss. `getCircuitBucket` is the SAME dual-shape
+ * accessor `record_reading` dispatch reads through (main board's bare
+ * numeric keys vs a sub-board's `${boardId}::${ref}` composite key).
+ *
+ * Returns `{field, circuit, value, boardId}` (the CLAMPED value, ready to
+ * speak, plus the resolved effective board) when the re-parsed tuple is an
+ * EXACT duplicate of the circuit's current stored value for that field on
+ * THAT board; `null` on any mismatch, ambiguity, or missing current value —
+ * the caller falls through to existing behaviour on null.
  *
  * @param {{session: Object, tuple: {slotField: string, circuit: number, value: string}}} args
- * @returns {{field: string, circuit: number, value: string}|null}
+ * @returns {{field: string, circuit: number, value: string, boardId: string|null}|null}
  */
 export function findExactDuplicateAgainstSnapshot({ session, tuple }) {
   const stage6Field = ORPHAN_SLOT_TO_STAGE6_FIELD[tuple.slotField] ?? tuple.slotField;
+  const effectiveBoardId = resolveEffectiveBoardId(session, null);
   const dupClamp = clampReadingForDispatch({
     field: stage6Field,
     value: tuple.value,
-    earthing: resolveBoardAwareEarthing(session.stateSnapshot, null),
+    earthing: resolveBoardAwareEarthing(session.stateSnapshot, effectiveBoardId),
   });
   const clampedValue = dupClamp.value;
-  const circuitData = session.stateSnapshot?.circuits?.[tuple.circuit];
+  const circuitData = getCircuitBucket(session.stateSnapshot, tuple.circuit, effectiveBoardId);
   const currentValue = circuitData ? circuitData[stage6Field] : undefined;
   if (currentValue == null || clampedValue == null) return null;
   if (String(currentValue).trim() !== String(clampedValue).trim()) return null;
-  return { field: stage6Field, circuit: tuple.circuit, value: clampedValue };
+  return {
+    field: stage6Field,
+    circuit: tuple.circuit,
+    value: clampedValue,
+    boardId: effectiveBoardId,
+  };
 }
 
 /**
@@ -921,15 +941,78 @@ export function resolveZeroToolCallDuplicateOutcome({
         },
       };
     }
-    // Pending but no committed identity yet (race) — never fabricate a
-    // placeholder confirmation. Fall through to existing behaviour.
+    // Committed identity resolved to a genuinely empty/suppressed value
+    // (buildConfirmationText's own emptiness contract) — nothing to speak.
+    // Fall through to existing behaviour.
+    return null;
+  }
+  // Codex diff-review F2 (2026-08-13) — the orphan-net decision fired BEFORE
+  // the fast route's first `onAudio` byte, so `commitAcceptedIdentity` never
+  // ran and there is no clamped canonicalValue/comparisonText yet. The
+  // ledger still knows THIS turn attempted a fast clip for a specific
+  // field/circuit — the plan's "pending, not absence" default requires a
+  // fallback confirmation here too, built from the raw (un-clamped)
+  // candidate value captured at `markFastAttemptPending` time. Clamped the
+  // same way `findExactDuplicateAgainstSnapshot` clamps its own re-parsed
+  // tuple — this module has no clamp helper of its own by design (see
+  // fast-path-accepted-identity.js's header doc).
+  if (fastLedgerOutcome?.kind === 'pending_uncommitted') {
+    const { rawRecord, correlationId } = fastLedgerOutcome;
+    const rawBoardId = rawRecord.boardId ?? null;
+    const rawClamp = clampReadingForDispatch({
+      field: rawRecord.field,
+      value: rawRecord.rawValue,
+      earthing: resolveBoardAwareEarthing(session.stateSnapshot, rawBoardId),
+    });
+    const clampedRawValue = rawClamp.value;
+    const rawCircuitData = getCircuitBucket(session.stateSnapshot, rawRecord.circuit, rawBoardId);
+    const designation = rawCircuitData?.circuit_designation ?? null;
+    const text = buildAlreadyGotConfirmationText(
+      rawRecord.field,
+      clampedRawValue,
+      rawRecord.circuit,
+      designation
+    );
+    if (text) {
+      const mainBoardId = getMainBoardId(session.stateSnapshot);
+      const stampBoardId = rawBoardId != null && rawBoardId !== mainBoardId ? rawBoardId : null;
+      return {
+        kind: 'confirmation',
+        confirmation: {
+          text,
+          expanded_text: expandForTTS(text),
+          field: rawRecord.field,
+          circuit: Number.isInteger(rawRecord.circuit) ? rawRecord.circuit : null,
+          ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
+          // Same B1.3-style echo stamp as the committed-identity 'pending'
+          // branch above — iOS's B2 correlation state machine treats this
+          // identically (parked under .fastPending; dropped on fast start,
+          // re-dispatched on fast failure/TTL).
+          fast_correlation_id: correlationId,
+          dedupe_token: `duplicate_${turnId}`,
+          expects_ios_ack: false,
+        },
+      };
+    }
+    // Raw value clamped to nothing speakable — never fabricate a
+    // placeholder. Fall through to existing behaviour.
     return null;
   }
   // fastLedgerOutcome is null (every attempted correlation failed, or none
   // was attempted this turn) — try the exact-duplicate tuple instead.
   if (exactDuplicateTuple) {
-    const designation =
-      session.stateSnapshot?.circuits?.[exactDuplicateTuple.circuit]?.circuit_designation ?? null;
+    // Codex diff-review F3 — the designation lookup shares the SAME
+    // board-ambiguous bug findExactDuplicateAgainstSnapshot just fixed: a
+    // bare `circuits[ref]` index can resolve to the WRONG board's circuit on
+    // a multi-board job. `exactDuplicateTuple.boardId` now carries the
+    // resolved effective board (findExactDuplicateAgainstSnapshot), so look
+    // the designation up through the same dual-shape accessor.
+    const duplicateCircuitData = getCircuitBucket(
+      session.stateSnapshot,
+      exactDuplicateTuple.circuit,
+      exactDuplicateTuple.boardId ?? null
+    );
+    const designation = duplicateCircuitData?.circuit_designation ?? null;
     const text = buildAlreadyGotConfirmationText(
       exactDuplicateTuple.field,
       exactDuplicateTuple.value,
@@ -937,6 +1020,19 @@ export function resolveZeroToolCallDuplicateOutcome({
       designation
     );
     if (text) {
+      // F3 — stamp `board_id` on the confirmation the same way an ordinary
+      // reading does (see stage6-event-bundler.js's enrichment pass): OMIT
+      // it when the resolved board is the session's main/default board, so
+      // a legacy single-board turn stays byte-identical on the wire; INCLUDE
+      // it when the duplicate was resolved against a genuine sub-board, so
+      // iOS/web place the "Already got" line (and any highlight) on the
+      // right board's row instead of defaulting to whichever board is
+      // currently selected on the client.
+      const mainBoardId = getMainBoardId(session.stateSnapshot);
+      const stampBoardId =
+        exactDuplicateTuple.boardId != null && exactDuplicateTuple.boardId !== mainBoardId
+          ? exactDuplicateTuple.boardId
+          : null;
       return {
         kind: 'confirmation',
         confirmation: {
@@ -946,6 +1042,7 @@ export function resolveZeroToolCallDuplicateOutcome({
           circuit: Number.isInteger(exactDuplicateTuple.circuit)
             ? exactDuplicateTuple.circuit
             : null,
+          ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
           dedupe_token: `duplicate_${turnId}`,
           expects_ios_ack: false,
         },

@@ -358,18 +358,37 @@ export function resolveFastAttemptSlotIdentities(correlationIds) {
  *   - `{kind: 'pending', correlationId, identity}` when no correlation
  *     reached 'playback_started' but at least one is still 'pending' (or
  *     unresolved — treated as pending per the plan's default) AND has a
- *     COMMITTED accepted identity to build a real (non-placeholder)
- *     fallback confirmation from.
- *   - `null` when every attempted correlation failed, or a 'pending' one
- *     has no committed identity yet (never fabricate a placeholder
- *     confirmation — falls through to the caller's existing behaviour).
+ *     COMMITTED accepted identity (`resolveAcceptedIdentity`) to build a
+ *     real, CLAMPED fallback confirmation from.
+ *   - `{kind: 'pending_uncommitted', correlationId, rawRecord}` — Codex
+ *     diff-review F2 (2026-08-13): the SAME 'pending, not absence' default,
+ *     but for the race where the orphan-net decision fires BEFORE the fast
+ *     route's first `onAudio` byte (so `commitAcceptedIdentity` hasn't run
+ *     yet and `resolveAcceptedIdentity` returns null). Without this branch
+ *     the caller previously fell through to `null` — silently defaulting to
+ *     ABSENCE, exactly the outcome the plan's "pending, not absence" rule
+ *     forbids. `rawRecord` is the UN-CLAMPED `getFastAttemptRecord(cid)`
+ *     captured at `markFastAttemptPending` time (field/circuit/boardId/
+ *     rawValue) — the caller is responsible for clamping `rawValue` before
+ *     building a spoken confirmation from it (this module has no clamp
+ *     helper and deliberately doesn't grow one just for this fallback).
+ *   - `null` when every attempted correlation failed, or a genuinely
+ *     unattempted correlation id has no ledger record at all (never
+ *     fabricate a placeholder confirmation — falls through to the caller's
+ *     existing behaviour).
+ *
+ * Precedence when a turn attempts multiple correlations: a committed
+ * identity anywhere in the set wins over an uncommitted one, regardless of
+ * iteration order — matching `resolveAcceptedIdentity`'s own preference for
+ * the clamped value over a pending record's raw one.
  *
  * @param {Set<string>|null|undefined} correlationIds
- * @returns {{kind: 'suppress'}|{kind: 'pending', correlationId: string, identity: FastAttemptRecord}|null}
+ * @returns {{kind: 'suppress'}|{kind: 'pending', correlationId: string, identity: FastAttemptRecord}|{kind: 'pending_uncommitted', correlationId: string, rawRecord: FastAttemptRecord}|null}
  */
 export function resolveFastLedgerOutcomeForTurn(correlationIds) {
   if (!correlationIds || correlationIds.size === 0) return null;
   let pendingWithIdentity = null;
+  let pendingUncommitted = null;
   for (const cid of correlationIds) {
     const state = getFastAttemptState(cid);
     if (state === 'playback_started') {
@@ -377,16 +396,33 @@ export function resolveFastLedgerOutcomeForTurn(correlationIds) {
     }
     if (state === 'failed') continue;
     // state === 'pending' OR null (unresolved race — the plan's explicit
-    // "pending, not absence" default) — try to attach a committed identity.
+    // "pending, not absence" default) — try to attach a committed identity
+    // first; a committed identity anywhere in the set always wins.
     if (!pendingWithIdentity) {
       const identity = resolveAcceptedIdentity(cid);
       if (identity) {
         pendingWithIdentity = { correlationId: cid, identity };
+        continue;
+      }
+    }
+    // F2 — not committed (yet). Fall back to the raw pre-commit record so a
+    // decision firing before `commitAcceptedIdentity` still yields a
+    // 'pending'-flavoured outcome instead of silently treating the turn as
+    // though nothing was attempted. Only remembers the FIRST such record —
+    // mirrors `pendingWithIdentity`'s own "first candidate wins" shape,
+    // superseded immediately if a later cid in the set turns out committed.
+    if (!pendingWithIdentity && !pendingUncommitted) {
+      const rawRecord = getFastAttemptRecord(cid);
+      if (rawRecord) {
+        pendingUncommitted = { correlationId: cid, rawRecord };
       }
     }
   }
   if (pendingWithIdentity) {
     return { kind: 'pending', ...pendingWithIdentity };
+  }
+  if (pendingUncommitted) {
+    return { kind: 'pending_uncommitted', ...pendingUncommitted };
   }
   return null;
 }

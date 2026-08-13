@@ -11,7 +11,11 @@
  *   - resolveFastAttemptSlotIdentities builds the bundler-facing slotKey map
  *   - resolveFastLedgerOutcomeForTurn's precedence: playback_started wins
  *     over pending; failed is skipped; a pending state with NO committed
- *     identity yields null (never fabricate a placeholder)
+ *     identity yet (the pre-commit race) yields `pending_uncommitted` with
+ *     the raw record — the plan's "pending, not absence" default (Codex
+ *     diff-review F2, 2026-08-13) — never null/absent, and never a
+ *     fabricated placeholder; a genuinely unattempted correlation id (no
+ *     ledger record at all) still yields null
  */
 
 import { jest } from '@jest/globals';
@@ -260,7 +264,12 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
     expect(identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a', 'cid-b']))).toBeNull();
   });
 
-  test('pending with NO committed identity yet (race) → null, never a placeholder', () => {
+  test('pending with NO committed identity yet (race) → pending_uncommitted with the raw pre-commit record, never null/absent', () => {
+    // Codex diff-review F2 (2026-08-13): the plan's explicit "pending, not
+    // absence" default means this race must NOT resolve to null — the
+    // orphan-net decision fired before commitAcceptedIdentity (the fast
+    // route's first onAudio byte), but the ledger still knows a fast
+    // attempt is in flight for this field/circuit.
     identity.markFastAttemptPending('cid-a', {
       sessionId: SESS,
       turnId: TURN,
@@ -270,7 +279,50 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
       rawValue: '0.62',
     });
     // Never committed (onAudio hasn't fired yet).
-    expect(identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a']))).toBeNull();
+    const outcome = identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a']));
+    expect(outcome.kind).toBe('pending_uncommitted');
+    expect(outcome.correlationId).toBe('cid-a');
+    expect(outcome.rawRecord).toMatchObject({
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+      committed: false,
+    });
+  });
+
+  test('a committed identity elsewhere in the set wins over an earlier pending_uncommitted candidate, regardless of order', () => {
+    identity.markFastAttemptPending('cid-uncommitted', {
+      sessionId: SESS,
+      turnId: TURN,
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    identity.markFastAttemptPending('cid-committed', {
+      sessionId: SESS,
+      turnId: TURN,
+      field: 'r1_r2_ohm',
+      circuit: 5,
+      boardId: null,
+      rawValue: '0.35',
+    });
+    identity.commitAcceptedIdentity('cid-committed', {
+      sessionId: SESS,
+      turnId: TURN,
+      field: 'r1_r2_ohm',
+      circuit: 5,
+      boardId: null,
+      canonicalValue: '0.35',
+      comparisonText: 'Circuit 5, R1 plus R2 0.35',
+    });
+    // Set iteration order matches insertion order — 'cid-uncommitted' first.
+    const outcome = identity.resolveFastLedgerOutcomeForTurn(
+      new Set(['cid-uncommitted', 'cid-committed'])
+    );
+    expect(outcome.kind).toBe('pending');
+    expect(outcome.correlationId).toBe('cid-committed');
   });
 
   test('unresolved race (no ledger entry at all for an attempted correlation id) defaults to pending, not absence', () => {
