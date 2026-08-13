@@ -2037,7 +2037,7 @@ export function confirmationDebounceKey(c) {
   const circuits = Array.isArray(c.circuits) ? c.circuits.join(',') : '';
   const board = c.board_id ?? '';
   const value = c.value != null ? String(c.value) : (c.text ?? '');
-  return `${field} ${circuit} ${circuits} ${board} ${value}`;
+  return `${field}\u0000${circuit}\u0000${circuits}\u0000${board}\u0000${value}`;
 }
 
 export function applyConfirmationDebounce(newConfirmations, debounceState, options = {}) {
