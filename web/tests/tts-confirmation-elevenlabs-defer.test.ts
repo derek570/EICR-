@@ -31,15 +31,23 @@ import { http, HttpResponse } from 'msw';
 
 import { __resetElevenLabsForTests, setActiveSessionId } from '@/lib/recording/elevenlabs-tts';
 import {
+  __resetModeStatusCuesForTests,
   __resetTtsWindowForTests,
   cancelSpeech,
+  handleModeStatusCueDiscard,
+  handleModeStatusCuePlaybackStarted,
   isDirectAudioActive,
+  isTTSEcho,
   speak,
   speakConfirmation,
+  speakConfirmationModeStatus,
+  __resetTtsFingerprintsForTests,
 } from '@/lib/recording/tts';
 import {
   __resetForTests as __resetTtsQueueForTests,
   resumeIfDeferred,
+  setOnDiscarded,
+  setOnPlaybackStarted,
   setShouldDeferPlayback,
 } from '@/lib/recording/tts-queue';
 
@@ -97,6 +105,16 @@ beforeEach(() => {
   __resetElevenLabsForTests();
   __resetTtsWindowForTests();
   __resetTtsQueueForTests();
+  __resetModeStatusCuesForTests();
+  __resetTtsFingerprintsForTests();
+  // Mirror recording-context.tsx's production wiring: the queue's discard/
+  // playback-started hooks consult the mode-status cue handlers FIRST.
+  setOnDiscarded((dedupeKey, reason) => {
+    handleModeStatusCueDiscard(dedupeKey, reason);
+  });
+  setOnPlaybackStarted((dedupeKey) => {
+    handleModeStatusCuePlaybackStarted(dedupeKey);
+  });
 });
 
 afterEach(() => {
@@ -106,6 +124,8 @@ afterEach(() => {
   __resetElevenLabsForTests();
   __resetTtsWindowForTests();
   __resetTtsQueueForTests();
+  __resetModeStatusCuesForTests();
+  __resetTtsFingerprintsForTests();
 });
 
 describe('confirmation FIFO — ElevenLabs path defers behind an active direct ask', () => {
@@ -149,5 +169,88 @@ describe('confirmation FIFO — ElevenLabs path defers behind an active direct a
     // which re-enters playConfirmationHead and (this time) really fetches.
     resumeIfDeferred();
     await vi.waitFor(() => expect(fetchCount).toBe(2));
+  });
+
+  // Codex diff-review r6 BLOCKER — `preemptFlush()` used to discard the
+  // waiting QUEUE before the CURRENT (deferred) head. `onDiscarded` for a
+  // mode-status cue re-parks via a `queueMicrotask`, and microtasks run in
+  // scheduling order — so firing the queue first meant a later-queued cue's
+  // re-park microtask ran BEFORE the earlier head's, reversing playback
+  // order once both resumed. Fixed by tearing down the head first.
+  it('preempting a deferred head cue AND a queued cue re-parks them in original chronological order', async () => {
+    setActiveSessionId('sess-order-1');
+    setShouldDeferPlayback(() => isDirectAudioActive());
+
+    const fetchedTexts: string[] = [];
+    server.use(
+      http.post(`${API_BASE}/api/proxy/elevenlabs-tts`, async ({ request }) => {
+        const body = (await request.json()) as { text: string };
+        fetchedTexts.push(body.text);
+        return new HttpResponse(new ArrayBuffer(8), {
+          headers: { 'Content-Type': 'audio/mpeg' },
+        });
+      })
+    );
+
+    // First ask owns the channel.
+    speak('Which circuit is this?');
+    await vi.waitFor(() => expect(fetchedTexts).toEqual(['Which circuit is this?']));
+
+    // OFF becomes the deferred head; ON queues behind it. Neither has fetched.
+    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Voice read-backs on.');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchedTexts).toEqual(['Which circuit is this?']);
+
+    // A SECOND ask preempts both mode-status cues before either ever plays.
+    speak('Another question?');
+    await vi.waitFor(() =>
+      expect(fetchedTexts).toEqual(['Which circuit is this?', 'Another question?'])
+    );
+
+    // End the second ask.
+    cancelSpeech({ resetQueue: false });
+    expect(isDirectAudioActive()).toBe(false);
+
+    // Resume — the FIRST thing to actually fetch after the round trip must
+    // be OFF (it was chronologically first), not ON.
+    resumeIfDeferred();
+    await vi.waitFor(() => expect(fetchedTexts.length).toBe(3));
+    expect(fetchedTexts[2]).toBe('Voice read-backs off.');
+  });
+});
+
+describe('confirmation FIFO — ElevenLabs deferral does not register a premature echo fingerprint', () => {
+  // Codex diff-review r6 NIT — `registerTtsFingerprint(text)` used to fire
+  // unconditionally at the TOP of `playConfirmationHead`, including on the
+  // LAZY (not-yet-fetched) pass. That marked the cue's text as "just heard"
+  // up to several seconds before any audio actually played, so a genuinely
+  // spoken inspector utterance that happened to resemble the pending cue's
+  // text could be wrongly suppressed as an echo of something never heard.
+  it('a mode-status cue deferred behind an active ask is NOT fingerprinted until it actually resumes', async () => {
+    setActiveSessionId('sess-fingerprint-1');
+    setShouldDeferPlayback(() => isDirectAudioActive());
+
+    server.use(
+      http.post(`${API_BASE}/api/proxy/elevenlabs-tts`, async () =>
+        new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
+      )
+    );
+
+    speak('Which circuit is this?');
+    speakConfirmationModeStatus('Voice read-backs off.');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // Deferred, never fetched yet — must not be recognised as an echo of
+    // something that was never actually spoken.
+    expect(isTTSEcho('Voice read-backs off.')).toBe(false);
+
+    cancelSpeech({ resetQueue: false });
+    resumeIfDeferred();
+
+    // Now the real dispatch has fired — the fingerprint registers exactly
+    // at this point, not before.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(isTTSEcho('Voice read-backs off.')).toBe(true);
   });
 });

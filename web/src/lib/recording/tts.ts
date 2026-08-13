@@ -868,9 +868,9 @@ export function speak(text: string, options?: SpeakOptions): void {
  * head so the pump advances even when a head is aborted.
  */
 function playConfirmationHead(text: string, controls: QueuePlayControls): void {
-  registerTtsFingerprint(text);
   const useElevenLabs = isElevenLabsAvailable() && Boolean(getActiveSessionId());
   if (!useElevenLabs) {
+    registerTtsFingerprint(text);
     playConfirmationNative(text, controls);
     return;
   }
@@ -899,6 +899,16 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
     });
     return;
   }
+  // Codex diff-review r6 NIT — fingerprint registration moved out of this
+  // function's top (was: `registerTtsFingerprint(text)` unconditionally on
+  // entry) so it fires only at the point real audio is actually about to be
+  // requested. Registering it during the LAZY branch above would mark the
+  // cue as "just spoken" up to several seconds before any audio plays,
+  // letting a coincidentally-similar inspector utterance get wrongly
+  // suppressed as an echo of something that was never heard. The lazy
+  // handle's resume re-enters this function and reaches this exact line,
+  // so it still registers exactly once per REAL dispatch.
+  registerTtsFingerprint(text);
   // Canceller hard-aborts the in-flight fetch / stops playing ElevenLabs audio.
   controls.registerCanceller(() => {
     cancelElevenLabs();

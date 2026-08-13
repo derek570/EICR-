@@ -395,9 +395,20 @@ export function purge(prefix: string): void {
  * The `speak()`-preempt primitive (distinct from `reset` and `purge`). Used
  * mid-session when a direct `speak()` question/alert takes the audio channel
  * from a playing confirmation. Ordering is load-bearing:
- *   (1) EMPTY the queue FIRST — `onDiscarded` every still-queued item;
- *   (2) tear down the current head MANUALLY + UNGUARDED;
- *   (3) do NOT `pumpIfIdle()` (queue is empty, nothing restarts behind the
+ *   (1) Tear down the CURRENT head MANUALLY + UNGUARDED FIRST, THEN empty the
+ *       queue — `onDiscarded` fires for the head before any still-queued item.
+ *       Codex diff-review r6 BLOCKER: `onDiscarded` for a mode-status cue
+ *       (`handleModeStatusCueDiscard`) re-parks via a MICROTASK, and
+ *       microtasks run in the order they were SCHEDULED — so firing order
+ *       here determines re-park (and therefore eventual playback) order.
+ *       The head is chronologically the OLDEST pending cue (it was dequeued
+ *       first); firing it before the queue's newer items preserves that
+ *       chronological order across a preempt-then-re-park round trip. The
+ *       old queue-first ordering reversed a rapid off→then→on sequence into
+ *       on→then→off once both were re-parked, leaving the inspector hearing
+ *       the WRONG final toggle state — id-122/124 exists specifically to
+ *       make the audible state trustworthy, so this correctness matters.
+ *   (2) do NOT `pumpIfIdle()` (queue is empty, nothing restarts behind the
  *       question).
  * MUST NOT touch `shouldDeferPlayback` / `onDiscarded` — the session is still
  * live (the key difference from `reset()`). Returns the count of never-played
@@ -405,15 +416,15 @@ export function purge(prefix: string): void {
  */
 export function preemptFlush(): number {
   let discardedCount = 0;
+  if (head) {
+    const r = tearDownCurrentHeadManually('preempt');
+    if (r.discarded) discardedCount++;
+  }
   for (const q of queue) {
     fireDiscarded(q, 'preempt'); // every queued item is never-played
     discardedCount++;
   }
   queue = [];
-  if (head) {
-    const r = tearDownCurrentHeadManually('preempt');
-    if (r.discarded) discardedCount++;
-  }
   clientDiagnostic('tts_queue_preempt_flush', { discardedCount });
   return discardedCount;
 }
