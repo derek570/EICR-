@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "4807106e3f773d1a1f2278c83aefcc70b8d5258df7ed076456a50e1213f16f6f",
+  "semantic_oracle_digest": "431bacd22026074c5fe4da975694e4e7736ac81f9f6ed62d500e13d3c8167d0b",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "fc7feedbdb153c37ade88a89ee96d1a878b5a7c9a6401a9cf4d5cbeceaa9cacc"
+      "sha256": "0180b64509b4a300d075670be434138dbd99335ae1a8ecf34e895f14898669a1"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -549,11 +549,11 @@
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",
-      "sha256": "2d1022c5b3f24fa009837a8ed68a328c5ab5d378961f66f850307622da0e5fe5"
+      "sha256": "6299b42de09cb9e77cbc10f9d9e1fc952744484a8ff39ec9823bf7d5f4256c41"
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",
-      "sha256": "5b2732c95e4f6398689d73a3fd0318ad29116f8adaba48f830e7e6530e3fd8b8"
+      "sha256": "0ab7576ff64b107cf68422ebc46334f9b86763d6a00b453c6de64aa37ac17cff"
     },
     {
       "path": "scripts/model-ab/lib/mutation-classification.mjs",
