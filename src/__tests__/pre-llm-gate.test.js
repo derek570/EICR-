@@ -410,13 +410,17 @@ describe('PLAN_v4 — original-94 vocabulary preservation invariant', () => {
     expect(additions).toEqual(['afdd', 'cpc']);
   });
 
-  test('WEAK additions limited to the 2026-06-12 cert-identity dictation markers', () => {
+  test('WEAK additions limited to the 2026-06-12 cert-identity markers + 2026-08-11 extent/limitations vocabulary', () => {
     // 2026-06-12 field report (session 15B88D6B, voiceFeedbackId 20):
     // "Customer is Michael Johnson" carried no digit / strong / weak
     // trigger, so spoken corrections of client_name could never reach
     // Sonnet. These words mark certificate dictation; bare 'name' is
     // deliberately excluded so "Hello my name is ..." chitchat still
     // blocks. Mirrored in the iOS TranscriptGate weakTriggers.
+    // 2026-08-11 (feedback id 78, PLAN-F item 2): 'extent' / 'limitation' /
+    // 'limitations' added — the field utterance "Extent cover is..." had
+    // no trigger word in any tier for 13 months despite `extent` being
+    // fully voice-writable server-side.
     const additions = [..._internals.WEAK_TRIGGER_WORDS]
       .filter((w) => !ORIGINAL_TRIGGER_WORDS_FROM_2026_05_26.has(w))
       .sort();
@@ -424,7 +428,10 @@ describe('PLAN_v4 — original-94 vocabulary preservation invariant', () => {
       'address',
       'client',
       'customer',
+      'extent',
       'landlord',
+      'limitation',
+      'limitations',
       'occupier',
       'postcode',
       'tenant',
@@ -628,5 +635,41 @@ describe('shouldForwardToSonnet — cert-identity dictation markers (2026-06-12)
 
   test('"Can I use the toilet, please?" still blocks', () => {
     expect(shouldForwardToSonnet('Can I use the toilet, please?').forward).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-08-11 — extent / limitations gate vocabulary (feedback id 78, PLAN-F
+// item 2). "Extent cover is installing replacement consumer unit." died at
+// this gate for 13 months — no digit, no strong trigger, no weak trigger for
+// 'extent'/'limitation'/'limitations' — even though the `extent` field is
+// fully voice-writable server-side. Weak tier only (build-386 rule): the
+// standard 3-content-word threshold still applies, so short chitchat shapes
+// stay blocked.
+// ---------------------------------------------------------------------------
+describe('shouldForwardToSonnet — extent/limitations gate vocabulary (2026-08-11, id 78)', () => {
+  test('verbatim field utterance "Extent cover is installing replacement consumer unit." forwards via weak trigger', () => {
+    const r = shouldForwardToSonnet('Extent cover is installing replacement consumer unit.');
+    expect(r.forward).toBe(true);
+    expect(r.reason).toBe(GATE_REASONS.HAS_WEAK_TRIGGER);
+  });
+
+  test('"Extent: whole installation" (3 content words) forwards via the standard weak-trigger threshold', () => {
+    const r = shouldForwardToSonnet('Extent: whole installation');
+    expect(r.forward).toBe(true);
+    expect(r.reason).toBe(GATE_REASONS.HAS_WEAK_TRIGGER);
+    expect(r.distinctContentWords).toBe(3);
+  });
+
+  test('"Limitations are access to the loft." forwards via weak trigger', () => {
+    const r = shouldForwardToSonnet('Limitations are access to the loft.');
+    expect(r.forward).toBe(true);
+    expect(r.reason).toBe(GATE_REASONS.HAS_WEAK_TRIGGER);
+  });
+
+  test('chitchat negative — "To what extent?" (2 content words) still blocks', () => {
+    const r = shouldForwardToSonnet('To what extent?');
+    expect(r.forward).toBe(false);
+    expect(r.reason).toBe(GATE_REASONS.LOW_CONTENT);
   });
 });

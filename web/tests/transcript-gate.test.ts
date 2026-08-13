@@ -71,6 +71,20 @@ describe('TranscriptGate.shouldForward — PASS branches (iOS order)', () => {
     expect(shouldForward({ ...base, text: 'Customer is Michael' })).toBe(true);
     expect(shouldForward({ ...base, text: 'client is Smith' })).toBe(true);
   });
+
+  it('extent/limitations weak trigger forwards (2026-08-11, feedback id 78)', () => {
+    // Verbatim field utterance that died at this gate for 13 months.
+    expect(
+      shouldForward({
+        ...base,
+        text: 'Extent cover is installing replacement consumer unit.',
+      })
+    ).toBe(true);
+    // 3 distinct content words (extent, whole, installation) — the standard
+    // weak-trigger threshold, no identity-tier promotion needed.
+    expect(shouldForward({ ...base, text: 'Extent: whole installation' })).toBe(true);
+    expect(shouldForward({ ...base, text: 'Limitations are access to the loft.' })).toBe(true);
+  });
 });
 
 describe('TranscriptGate.shouldForward — REJECT branches', () => {
@@ -108,5 +122,9 @@ describe('TranscriptGate.shouldForward — REJECT branches', () => {
     // pattern test above only pins that the OBSERVATION regex itself
     // rejects verb forms. A verb form with too few content words blocks:
     expect(shouldForward({ ...base, text: 'observing now' })).toBe(false);
+  });
+
+  it('chitchat negative — "To what extent?" (2 content words) still blocks (2026-08-11, id 78)', () => {
+    expect(shouldForward({ ...base, text: 'To what extent?' })).toBe(false);
   });
 });
