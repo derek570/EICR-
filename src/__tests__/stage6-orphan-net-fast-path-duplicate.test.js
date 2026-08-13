@@ -63,8 +63,12 @@ jest.unstable_mockModule('../extraction/loaded-barrel-speculator.js', () => ({
   createSpeculator: createSpeculatorSpy,
 }));
 
-const { runShadowHarness, findExactDuplicateAgainstSnapshot, mergeFastPathCorrelationIds } =
-  await import('../extraction/stage6-shadow-harness.js');
+const {
+  runShadowHarness,
+  findExactDuplicateAgainstSnapshot,
+  mergeFastPathCorrelationIds,
+  CATCHALL_AUDIBILITY_PROMPTS,
+} = await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
 const fastIdentity = await import('../extraction/fast-path-accepted-identity.js');
 
@@ -1462,5 +1466,127 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
       ([ev]) => ev === 'stage6.orphan_exact_duplicate_detected'
     );
     expect(dupRow).toBeUndefined();
+  });
+});
+
+// Codex diff-review cycle 4 (E1) — B3's `playback_started`-only "no second
+// line" outcome and D3's `hadUnaddressedFailure` silence branch both
+// deliberately produce a turn with zero confirmations, for a reason that is
+// NOT "nothing happened". Without a turn-scoped exemption, the pre-existing
+// marker-② catch-all net (stage6-shadow-harness.js, gated on
+// `chimeObserved`) sees "zero confirmations this turn" and stacks its own
+// generic apology on top — defeating the whole point of the suppression
+// (a duplicate "already heard it" apology on top of a fast clip the
+// inspector already heard, or a confusing apology ahead of audio still in
+// flight). None of the tests above set `chimeObserved: true`, which is
+// exactly why this regression shipped through three full review cycles
+// unnoticed — marker-② never even evaluates without it.
+describe('Codex diff-review cycle 4 (E1) — B3/D3 deliberate silence exempts marker-② catch-all', () => {
+  test('(a) playback_started-only outcome ("no second line") + chimeObserved:true → NO catch-all apology stacks on top', async () => {
+    fastIdentity.markFastAttemptPending('cid-e1-played', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    fastIdentity.commitAcceptedIdentity('cid-e1-played', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      canonicalValue: '0.62',
+      comparisonText: 'Circuit 4, Zs 0.62',
+    });
+    fastIdentity.markFastAttemptPlaybackStarted(SESSION_ID, 'cid-e1-played');
+
+    const session = makeSession({});
+    const opts = baseOpts({ regexFastCorrelationId: 'cid-e1-played', chimeObserved: true });
+    const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+    // Pre-E1-fix this turn would have carried the pre-existing zero-
+    // confirmation outcome PLUS a stacked generic apology.
+    expect(result.confirmations ?? []).toHaveLength(0);
+    const catchall = (result.confirmations ?? []).filter((c) =>
+      CATCHALL_AUDIBILITY_PROMPTS.includes(c.text)
+    );
+    expect(catchall).toHaveLength(0);
+    const catchallRow = opts.logger.info.mock.calls.find(
+      ([ev]) => ev === 'stage6.catchall_audibility_fallback_emitted'
+    );
+    expect(catchallRow).toBeUndefined();
+  });
+
+  test('(b) D3 silence branch (correlation attempted, resolves to nothing usable) + chimeObserved:true → NO catch-all apology stacks either, D3 silence preserved', async () => {
+    fastIdentity.markFastAttemptFailed(SESSION_ID, 'cid-e1-failed');
+    // Empty session + a phrase that reparses to no tuple (same fixture the
+    // C2/D3 tests above use) — exactDuplicateTuple stays null, so the
+    // failed correlation has nothing to fall back on and
+    // hadUnaddressedFailure resolves true.
+    const session = makeSession({});
+    const opts = baseOpts({ regexFastCorrelationId: 'cid-e1-failed', chimeObserved: true });
+    const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+    expect(result.confirmations ?? []).toHaveLength(0);
+    const catchall = (result.confirmations ?? []).filter((c) =>
+      CATCHALL_AUDIBILITY_PROMPTS.includes(c.text)
+    );
+    expect(catchall).toHaveLength(0);
+    const catchallRow = opts.logger.info.mock.calls.find(
+      ([ev]) => ev === 'stage6.catchall_audibility_fallback_emitted'
+    );
+    expect(catchallRow).toBeUndefined();
+    // D3's own suppression row still fires — proving this specific branch
+    // (not some accidental other exemption) is what kept the turn silent.
+    const d3Row = opts.logger.info.mock.calls.find(
+      ([ev]) => ev === 'stage6.fast_ledger_unaddressed_failure_suppressed'
+    );
+    expect(d3Row).toBeDefined();
+  });
+
+  test('(c) control: a genuinely empty/broken turn with NO fast-ledger involvement at all + chimeObserved:true → the ordinary marker-② apology STILL fires', async () => {
+    // Proves the E1 exemption is scoped to B3/D3's own deliberate-silence
+    // branches and does not accidentally silence marker-② for its ORIGINAL
+    // purpose. Mirrors stage6-catchall-audibility-net.test.js's (a) fixture:
+    // a tool ran, didn't error, but emitted nothing audible — the class
+    // marker-② exists to catch.
+    runToolLoopSpy.mockImplementationOnce(async () => ({
+      stop_reason: 'end_turn',
+      rounds: 2,
+      tool_calls: [
+        {
+          tool_call_id: 'toolu_e1control',
+          name: 'calculate_zs',
+          input: { circuit_ref: 4, all: false },
+          result: {
+            tool_use_id: 'toolu_e1control',
+            is_error: false,
+            content: JSON.stringify({
+              ok: true,
+              computed: [],
+              skipped: [{ circuit_ref: 4, reason: 'no_r1_r2' }],
+            }),
+          },
+        },
+      ],
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const session = makeSession({ 4: { circuit_designation: 'Sockets' } });
+    const opts = baseOpts({ chimeObserved: true }); // no regexFastCorrelationId at all
+    const result = await runShadowHarness(session, 'Zs for circuit 4.', [], opts);
+
+    const catchall = (result.confirmations ?? []).filter((c) =>
+      CATCHALL_AUDIBILITY_PROMPTS.includes(c.text)
+    );
+    expect(catchall).toHaveLength(1);
+    const catchallRow = opts.logger.info.mock.calls.find(
+      ([ev]) => ev === 'stage6.catchall_audibility_fallback_emitted'
+    );
+    expect(catchallRow).toBeDefined();
   });
 });

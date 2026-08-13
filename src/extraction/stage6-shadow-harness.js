@@ -1451,6 +1451,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // (Pitfall #2 — cross-turn leak prevention from shadow harness).
   const perTurnWrites = createPerTurnWrites();
 
+  // Codex diff-review cycle 4 (E1) — turn-scoped latch. B3's `suppress`
+  // outcome (a fast clip already played — "no second line") and D3's
+  // `hadUnaddressedFailure` silence branch (a correlation was attempted but
+  // resolves to nothing usable — deliberately silent because a fast clip may
+  // still land) BOTH correctly produce zero confirmations for the turn for a
+  // REASON — not because "nothing happened". Without this latch, marker-②'s
+  // catch-all `noSpeechIntent` check below sees "zero confirmations this
+  // turn" and fires its own generic apology on top, defeating the whole
+  // point of the suppression (a duplicate "already heard it" apology, or a
+  // confusing apology ahead of audio that's still in flight). Set to true at
+  // the two sites below; read (never written) at marker-②.
+  let fastLedgerSuppressesCatchallThisTurn = false;
+
   // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4) + Phase 1
   // (Pivot 9, 12.2). Resolve the activeSessions entry once at the top so
   // we can seed `fastPathCorrelationIdByTurn` from
@@ -3683,6 +3696,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               if (!Array.isArray(result.confirmations)) result.confirmations = [];
               result.confirmations.push(confirmation);
             }
+            // Codex diff-review cycle 4 (E1) — a fast-ledger outcome that
+            // resolved to ZERO confirmations with no unaddressed failure
+            // means every attempted correlation was `suppress`
+            // (playback_started — the user already heard the fast clip, "no
+            // second line"). That is deliberate silence, not "nothing
+            // happened" — latch it so marker-② below does not apologise on
+            // top of audio the inspector already heard.
+            if (
+              zeroToolCallOutcome.confirmations.length === 0 &&
+              !zeroToolCallOutcome.hadUnaddressedFailure
+            ) {
+              fastLedgerSuppressesCatchallThisTurn = true;
+            }
             // NEITHER sub-case sets session.orphanContext ON ITS OWN: a
             // duplicate/pending-fallback outcome is not "the model failed to
             // understand", so there is nothing to re-inject into the next
@@ -3737,6 +3763,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             if (zeroToolCallOutcome.hadUnaddressedFailure) {
               const attemptedThisTurn = entry?.fastPathCorrelationIdByTurn?.get(turnId);
               if (attemptedThisTurn instanceof Set && attemptedThisTurn.size > 0) {
+                // Codex diff-review cycle 4 (E1) — D3's deliberate silence
+                // (a correlation was attempted but resolves to nothing
+                // usable, and the fast-TTS HTTP POST may still be in
+                // flight) must also exempt marker-②, for the identical
+                // reason D3 itself exists: speaking now risks a confusing
+                // apology moments before real audio lands.
+                fastLedgerSuppressesCatchallThisTurn = true;
                 log.info?.('stage6.fast_ledger_unaddressed_failure_suppressed', {
                   sessionId: session.sessionId,
                   turnId,
@@ -4613,6 +4646,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     //      invite a duplicate re-dictation). Readings/observations counts are
     //      deliberately NOT audibility — successful writes are UI state, not
     //      speech (counting them is exactly what preserved beep-then-silence).
+    //   5. NOT `fastLedgerSuppressesCatchallThisTurn` (Codex diff-review
+    //      cycle 4, E1) — B3's `playback_started`-only "no second line"
+    //      outcome and D3's `hadUnaddressedFailure` silence branch both
+    //      deliberately produce zero confirmations for a reason that is NOT
+    //      "nothing happened"; without this exemption marker-② would stack
+    //      a generic apology on top of a fast clip the inspector already
+    //      heard, or ahead of one still in flight — defeating the whole
+    //      point of the suppression.
     //
     // F/U-1 (2026-07-19) — the former predicate 5 (designed-silent exemption
     // for a FULLY-computed calculator success, with its outcome parser +
@@ -4644,7 +4685,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // speech-intent: a chimed turn with an answer draws no apology
           // (mutual exclusion), exactly as audible confirmations, emitted
           // asks and queued prompts already count.
-          !isAudibleText(result.spoken_response);
+          !isAudibleText(result.spoken_response) &&
+          // E1 — see predicate 5 above.
+          !fastLedgerSuppressesCatchallThisTurn;
         if (noSpeechIntent) {
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
           // F/U-2/3 (2026-07-19, Codex r1) — SPECIFIC-FIRST branch: when a
