@@ -166,22 +166,26 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, optio
       if (observer) observer.clearOriginFrame();
     }
   };
-  // Plan E — Codex diff-review finding: `lookup.town && ...` treated a
+  // Plan E — Codex diff-review finding: `lookup.county && ...` treated a
   // valid-but-blank lookup value identically to "no lookup data", so a
   // stored drift value could never be cleared when the (now-correct)
-  // mapping legitimately returns blank. Gate on key PRESENCE for the
-  // drift-clear case, but only actually write an empty value when there's
-  // something to clear (`isDriftValue`) — an empty-to-empty write would be
-  // a harmless but noisy no-op (spurious derived board-reading + log line)
-  // on every lookup against an already-empty field.
-  // Per-fix mini-review NIT: require the lookup value to actually be a
-  // string (not just an own key) before writing it through — a malformed
-  // caller passing `{town: null}` must not write `null` into the snapshot.
-  if (
-    typeof lookup.town === 'string' &&
-    shouldOverride(circ0[townField]) &&
-    (lookup.town || isDriftValue(circ0[townField]))
-  ) {
+  // mapping legitimately returns blank for a unitary authority (E3's
+  // confirmed real-world regression). Gate on the value actually being a
+  // string for the drift-clear case, but only write an empty value when
+  // there's something to clear (`isDriftValue`) — an empty-to-empty write
+  // would be a harmless but noisy no-op (spurious derived board-reading +
+  // log line) on every lookup against an already-empty field.
+  //
+  // COUNTY ONLY (cycle-2 re-review finding): town is deliberately NOT
+  // symmetric here. UK_REGION_DRIFT includes values that can also be
+  // legitimate real TOWN names (e.g. "london"), so extending blank-clear
+  // to town risks erasing a correct manually-set/dictated town that merely
+  // happens to collide with a region name — a materially different, more
+  // destructive outcome than the confirmed county regression this fix
+  // targets. Town's original truthy-gated behaviour (a NON-empty new value
+  // can still replace town drift, as before) is unchanged; only an empty
+  // lookup county gets this new drift-clear-to-blank capability.
+  if (lookup.town && shouldOverride(circ0[townField])) {
     writeDerived(townField, lookup.town);
     changes.push({ field: townField, value: lookup.town });
   }

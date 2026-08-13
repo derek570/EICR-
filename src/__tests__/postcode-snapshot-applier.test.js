@@ -106,6 +106,37 @@ describe('applyPostcodeLookupToSnapshot', () => {
     expect(changes).toEqual([]);
   });
 
+  // Cycle-2 re-review finding: town is deliberately NOT symmetric with
+  // county's blank-clear-drift capability — UK_REGION_DRIFT contains values
+  // that can also be real town names ("london"), so extending blank-clear
+  // to town risks erasing a correct town that merely collides with a
+  // region name. Only county gets the new behaviour; town keeps its
+  // original truthy-gated guard (a non-empty new value can still replace
+  // town drift, exactly as before this plan).
+  test('a valid lookup with an EMPTY town does NOT clear a stored town drift value (town/county asymmetry)', () => {
+    const snapshot = buildSnapshot({ town: 'London', county: 'Berkshire' });
+    const changes = applyPostcodeLookupToSnapshot(
+      snapshot,
+      { valid: true, postcode: 'RG6 3EY', town: '', county: 'Berkshire' },
+      'sess_test'
+    );
+    // Even though "london" IS in UK_REGION_DRIFT, an empty lookup town must
+    // never clear it — only a non-empty replacement can.
+    expect(snapshot.circuits[0].town).toBe('London');
+    expect(changes).toEqual([]);
+  });
+
+  test('a valid lookup with a NON-EMPTY town still replaces town drift, unchanged from before this plan', () => {
+    const snapshot = buildSnapshot({ town: 'London', county: 'Berkshire' });
+    const changes = applyPostcodeLookupToSnapshot(
+      snapshot,
+      { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: 'Berkshire' },
+      'sess_test'
+    );
+    expect(snapshot.circuits[0].town).toBe('Earley');
+    expect(changes).toEqual([{ field: 'town', value: 'Earley' }]);
+  });
+
   test('preserves manually-set real town/county', () => {
     const snapshot = buildSnapshot({ town: 'Wokingham', county: 'Berkshire' });
     applyPostcodeLookupToSnapshot(
