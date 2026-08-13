@@ -446,8 +446,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // session_resume rebind against a backend that thinks the
       // session was abruptly disconnected.
       if (e.persisted) {
-        wasActiveBeforeHideRef.current = statusRef.current;
+        // Codex diff-review r2 (cycle-2 re-review) — the unconditional
+        // assignment below used to run BEFORE the active-check, so a
+        // recovery-toast marker of 'active' this handler had ALREADY
+        // recorded could be silently overwritten by a same-cycle
+        // onFreeze() firing after pause() already flipped statusRef to
+        // 'sleeping' (pagehide+freeze can both fire for one BFCache
+        // entry). Only write when genuinely active — this and onFreeze
+        // below now agree, so whichever of the two fires first "wins"
+        // and the second is a no-op rather than an eraser.
         if (statusRef.current === 'active') {
+          wasActiveBeforeHideRef.current = 'active';
           lifecycleActionsRef.current?.pause();
         }
       }
@@ -504,8 +513,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // Parallel #69 — pause if active so session_pause lands BEFORE
       // the renderer is suspended. Practically Chromium-only; iPad
       // Safari routes through onHide(persisted=true) instead.
-      wasActiveBeforeHideRef.current = statusRef.current;
+      // Codex diff-review r2 (cycle-2 re-review) — mirrors onHide's fix
+      // above: only write when genuinely active, so this can't erase an
+      // 'active' marker onHide already recorded for the same BFCache
+      // freeze if both fire in sequence.
       if (statusRef.current === 'active') {
+        wasActiveBeforeHideRef.current = 'active';
         lifecycleActionsRef.current?.pause();
       }
     };
@@ -4059,7 +4072,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // choke point every session boundary passes through) rather than at
     // every `start()` call site.
     pausedLightweightRef.current = false;
-    resumeInFlightRef.current = false;
+    // Deliberately NOT resetting resumeInFlightRef here (Codex mini-review
+    // r1, cycle-2 re-review, self-caught before re-submitting): unlike
+    // pausedLightweightRef (a plain flag read once at the top of resume(),
+    // before any await — no async lifetime), resumeInFlightRef is claimed
+    // and released within ONE resume() call's own async lifetime via a
+    // `finally`. Resetting it here would OPEN the exact ABA race the
+    // finally-block release is designed to prevent: stop() firing while a
+    // resume() is still awaiting its mic/Deepgram open would clear the
+    // flag early, letting a subsequent pause()+resume() in a FRESH session
+    // start concurrently — and when the ORIGINAL (stale) resume() finally
+    // resolves, its `finally` would then clear the NEW resume()'s claim,
+    // or its session-mismatch cleanup could tear down the NEW session's
+    // live Deepgram/Sonnet refs. Leaving the flag alone here is safe: the
+    // original resume()'s own `finally` releases it as soon as its await
+    // chain settles (success or error) regardless of how the state moved
+    // around it, and a genuinely hung await is an unrelated failure mode
+    // this ref cannot fix.
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
   /** Manual pause — the inspector tapped the Pause button (also reached
