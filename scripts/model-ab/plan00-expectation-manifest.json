@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "0e99b00b5a367a9eac10e7bbf91c025f5d18aee032438a46e5c3ae92035683fa",
+  "semantic_oracle_digest": "54be30f9b030c6df6c133320f6ee061f52f7ad914488c5b5864924f413ccd7f6",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -549,7 +549,7 @@
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",
-      "sha256": "6ab65caae3f78e6c14ba6301002e57c03a22e88b340ad96b02ccd6dad6923cd4"
+      "sha256": "7e0f8e45d63a50d1169403c477879f463a36128e54bc5cb144d8509fd067a754"
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",

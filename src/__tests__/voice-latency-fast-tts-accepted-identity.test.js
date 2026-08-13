@@ -169,6 +169,74 @@ describe('happy path — one ElevenLabs chunk (default mock)', () => {
   });
 });
 
+describe('Codex diff-review M1 (2026-08-13, per-fix mini-review) — null/omitted wire boardId resolves to the session main board on commit', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    jest.unstable_mockModule('../extraction/elevenlabs-stream-client.js', () => ({
+      ElevenLabsStreamClient: class {
+        constructor(opts) {
+          this.outputFormat = opts.outputFormat;
+        }
+        async synth(_text, opts) {
+          opts.onAudio(Buffer.from([0x49, 0x44, 0x33]));
+          return { firstAudioNs: 0n, lastAudioNs: 0n };
+        }
+        static logSynthSpans() {}
+      },
+      contentTypeForFormat: () => 'audio/mpeg',
+      synthWithLanguageFailOpen: jest.fn(async (client, _retry, text, opts) => ({
+        timings: await client.synth(text, opts),
+        client,
+        attempts: 1,
+      })),
+    }));
+  });
+
+  test('candidate.boardId omitted — commit resolves boardId to the session main board, not raw null', async () => {
+    // seedSession's default stateSnapshot has an EMPTY boards array, so
+    // getMainBoardId falls all the way through to DEFAULT_MAIN_BOARD_ID
+    // ('main') — the same fallback stage6-shadow-harness.js already uses
+    // elsewhere for single/default-board attribution. This mirrors the
+    // exact case F1 left asymmetric: the bundler's `effectiveBoardOf` can
+    // resolve an ordinary bare-`board_id` write to this same 'main' id,
+    // so the identity commit must use it too or the slot-key join misses.
+    seedSession();
+    const res = await postFastTts(
+      basicBody({ candidate: { field: 'measured_zs_ohm', circuit: 1, value: '0.62' } })
+    );
+    expect(res.status).toBe(200);
+    expect(commitAcceptedIdentity).toHaveBeenCalledWith(
+      'cid-abc-123',
+      expect.objectContaining({ boardId: 'main' })
+    );
+  });
+
+  test('candidate.boardId explicitly populated with a known board — commit uses it unchanged (F1 regression stays intact)', async () => {
+    // Seed a session whose ONLY board is the sub-board being posted for.
+    activeSessions.set('SESS', {
+      userId: 'test-user',
+      session: {
+        sessionId: 'SESS',
+        stateSnapshot: { boards: [{ id: 'sub-1', board_type: 'sub' }] },
+        loadedBarrelSpeculator: { abortBySlot: jest.fn() },
+      },
+      voiceLatency: { flags: { regexFastTts: true }, capabilities: { hasRegexFastV2: true } },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+    });
+    const res = await postFastTts(
+      basicBody({
+        candidate: { field: 'measured_zs_ohm', circuit: 1, value: '0.62', boardId: 'sub-1' },
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(commitAcceptedIdentity).toHaveBeenCalledWith(
+      'cid-abc-123',
+      expect.objectContaining({ boardId: 'sub-1' })
+    );
+  });
+});
+
 describe('multiple onAudio chunks — commit fires ONCE, not per chunk', () => {
   beforeEach(() => {
     jest.resetModules();

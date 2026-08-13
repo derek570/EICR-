@@ -74,9 +74,15 @@
  * @property {string} turnId
  * @property {string} field
  * @property {number|null} circuit
- * @property {string|null} boardId — the WIRE boardId as received (unresolved
- *   — never the dispatcher-effective board), matching how the fast route
- *   itself treats `candidate.boardId`.
+ * @property {string|null} boardId — at `markFastAttemptPending` time, the
+ *   WIRE boardId exactly as received (unresolved). At `commitAcceptedIdentity`
+ *   time (M1, Codex diff-review mini-review, 2026-08-13), the route resolves a
+ *   null/omitted wire boardId to the session's main-board fallback
+ *   (`getMainBoardId`) BEFORE committing, so the slot-key join in
+ *   `resolveFastAttemptSlotIdentities`/`buildFastAttemptSlotKey` matches the
+ *   bundler's `effectiveBoardOf` resolution for the same ordinary
+ *   (bare-`board_id`) write — see voice-latency-fast-tts.js's
+ *   `resolveIdentityBoardId`.
  * @property {string|null} rawValue — candidate.value, un-clamped, captured at
  *   `markFastAttemptPending`.
  * @property {string|null} canonicalValue — fastClamp.value, set at

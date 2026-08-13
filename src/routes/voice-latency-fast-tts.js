@@ -68,6 +68,7 @@ import {
   resolveBoardAwareEarthing,
 } from '../extraction/impedance-clamp.js';
 import { isRegexFastEligible } from '../extraction/regex-fast-eligibility.js';
+import { getMainBoardId } from '../extraction/stage6-multi-board-shape.js';
 import { getActiveSessionEntry, getVoiceLatencyForSession } from '../extraction/active-sessions.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
 import { decrementExpectedAcksByCorrelation } from '../extraction/voice-latency-turn-summary.js';
@@ -124,6 +125,34 @@ function validateBody(body) {
 function buildSlotKey({ field, circuit, boardId }) {
   const normBoardId = typeof boardId === 'string' && boardId.length > 0 ? boardId : '';
   return `${field}::${circuit ?? 'null'}::${normBoardId}`;
+}
+
+/**
+ * Codex diff-review M1 (2026-08-13, mini-review of the F1-F9 fix hunks) —
+ * resolve the boardId this route COMMITS as the accepted identity, not
+ * necessarily the raw wire `candidate.boardId`. `candidate.boardId` is
+ * schema-legal null/omitted (validateBody only requires it be a string
+ * WHEN present), but the bundler's own `effectiveBoardOf` (see F1's fix in
+ * stage6-event-bundler.js) resolves an ordinary write with no wire
+ * `board_id` to the session's dispatcher-attributed board — which on a
+ * single/default-board session is `getMainBoardId(snapshot)`, the same
+ * namespace-routing fallback `stage6-shadow-harness.js` already uses for
+ * the exact-duplicate/pending-uncommitted board stamping. Committing the
+ * raw null here while the bundler later resolves a non-null board for the
+ * SAME reading would make `fastSlotKeyOf`'s join fail in the reverse
+ * direction from the bug F1 fixed. `getMainBoardId` always returns a
+ * string (defaults to `DEFAULT_MAIN_BOARD_ID` when the snapshot has no
+ * boards at all), so this fallback is always available — there is no
+ * "genuinely ambiguous, leave it null" case in this codebase's current
+ * board model.
+ *
+ * @param {string|null} rawBoardId
+ * @param {object|null|undefined} stateSnapshot
+ * @returns {string|null}
+ */
+function resolveIdentityBoardId(rawBoardId, stateSnapshot) {
+  if (typeof rawBoardId === 'string' && rawBoardId) return rawBoardId;
+  return getMainBoardId(stateSnapshot);
 }
 
 /**
@@ -461,7 +490,12 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
               turnId,
               field,
               circuit: Number.isInteger(circuit) ? circuit : null,
-              boardId,
+              // M1 — resolve a null/omitted wire boardId to the session's
+              // main-board fallback so this identity's slot-key joins the
+              // bundler's effectiveBoardOf resolution for the SAME ordinary
+              // (bare board_id) write, rather than only matching when iOS
+              // happens to have populated boardId itself.
+              boardId: resolveIdentityBoardId(boardId, entry?.session?.stateSnapshot),
               canonicalValue: fastClamp.value,
               comparisonText: text,
             });
