@@ -407,6 +407,40 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     expect(session.orphanContext == null).toBe(true);
   });
 
+  // Codex diff-review M2 (2026-08-13, per-fix mini-review): the
+  // pending_uncommitted fallback above (F2) clamps the raw rawValue via
+  // clampReadingForDispatch but PREVIOUSLY dropped the resulting
+  // correction on the floor when building the spoken text — if this
+  // fallback is the ONLY audible line for a reading that needed a
+  // decimal-slip clamp (e.g. "16" -> "1.6" on a continuity field), the
+  // inspector would hear the corrected number with no "I corrected 16 to
+  // 1.6" clause, silently misleading them into thinking the number they
+  // said is what got recorded.
+  test('pending WITHOUT a committed identity, raw value needs a clamp correction — fallback speaks the correction clause', async () => {
+    fastIdentity.markFastAttemptPending('cid-clamp-race', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'r1_r2_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '16',
+    });
+    // Never committed — commitAcceptedIdentity (the fast route's first
+    // onAudio byte) has not run yet.
+
+    const session = makeSession({});
+    const opts = baseOpts({ regexFastCorrelationId: 'cid-clamp-race' });
+    const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+    const confs = (result.confirmations ?? []).filter((c) =>
+      /^Already got that —/.test(c.text || '')
+    );
+    expect(confs).toHaveLength(1);
+    expect(confs[0].text).toBe(
+      'Already got that — Circuit 4, R1 plus R2 recorded as 1.6 — I corrected 16 to 1.6'
+    );
+  });
+
   test('TWO consecutive pending-fast duplicate turns each speak ONE audible line, with DISTINCT dedupe_tokens', async () => {
     fastIdentity.markFastAttemptPending('cid-a', {
       sessionId: SESSION_ID,

@@ -867,14 +867,32 @@ export function findExactDuplicateAgainstSnapshot({ session, tuple }) {
  * other. Returns null when the underlying text would be null (suppressed
  * field, empty value) — same emptiness contract as buildConfirmationText.
  *
+ * Codex diff-review M2 (2026-08-13, per-fix mini-review) — accepts and
+ * forwards an optional `options` object (mirroring buildConfirmationText's
+ * own trailing param) so a caller that clamp-corrected the raw value it is
+ * about to speak (e.g. the pending_uncommitted fallback below, whose
+ * rawValue may need the SAME decimal-slip clamp the fast route itself
+ * applies) can still speak the correction clause. Without this, a
+ * pending-uncommitted fallback that is the ONLY audible line for a clamped
+ * reading would speak the corrected number with no indication a correction
+ * happened — silently misleading, since the inspector would reasonably
+ * assume the number they said is what got recorded.
+ *
  * @param {string} field
  * @param {string} value
  * @param {number|null} circuit
  * @param {string|null} designation
+ * @param {{correction?: {original: string, corrected: string}|null}} [options]
  * @returns {string|null}
  */
-export function buildAlreadyGotConfirmationText(field, value, circuit, designation = null) {
-  const base = buildConfirmationText(field, value, circuit, designation, {});
+export function buildAlreadyGotConfirmationText(
+  field,
+  value,
+  circuit,
+  designation = null,
+  options = {}
+) {
+  const base = buildConfirmationText(field, value, circuit, designation, options);
   if (!base) return null;
   return `Already got that — ${base}`;
 }
@@ -996,11 +1014,20 @@ export function resolveZeroToolCallDuplicateOutcome({
       const clampedRawValue = rawClamp.value;
       const rawCircuitData = getCircuitBucket(session.stateSnapshot, rawRecord.circuit, rawBoardId);
       const designation = rawCircuitData?.circuit_designation ?? null;
+      // M2 (Codex diff-review, per-fix mini-review, 2026-08-13) — forward the
+      // clamp correction so this fallback speaks "— I corrected 16 to 1.6"
+      // when the raw dictated value needed clamping, exactly like the fast
+      // route's own confirmation (and findExactDuplicateAgainstSnapshot's
+      // re-parsed tuple below) already do. Without this, a raw continuity
+      // value that gets clamped/corrected and then falls back to THIS as the
+      // only audible line would silently speak the corrected number with no
+      // indication anything changed.
       const text = buildAlreadyGotConfirmationText(
         rawRecord.field,
         clampedRawValue,
         rawRecord.circuit,
-        designation
+        designation,
+        { correction: rawClamp.correction }
       );
       if (!text) continue;
       const mainBoardId = getMainBoardId(session.stateSnapshot);
