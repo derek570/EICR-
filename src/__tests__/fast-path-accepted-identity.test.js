@@ -159,7 +159,7 @@ describe('markFastAttemptPending', () => {
         canonicalValue: '1',
         comparisonText: 'x 1',
       });
-      jest.advanceTimersByTime(61_000);
+      jest.advanceTimersByTime(301_000); // F9: RECORD_TTL_MS is now 300_000, not 60_000
       identity.markFastAttemptPending(CID, {
         sessionId: SESS,
         turnId: TURN,
@@ -277,7 +277,7 @@ describe('TTL expiry', () => {
       });
       expect(identity.getFastAttemptState(CID)).toBe('pending');
       expect(identity.resolveAcceptedIdentity(CID)).not.toBeNull();
-      jest.advanceTimersByTime(61_000);
+      jest.advanceTimersByTime(301_000); // F9: RECORD_TTL_MS is now 300_000, not 60_000
       expect(identity.getFastAttemptState(CID)).toBeNull();
       expect(identity.resolveAcceptedIdentity(CID)).toBeNull();
     } finally {

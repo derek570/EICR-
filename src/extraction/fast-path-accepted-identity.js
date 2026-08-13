@@ -91,10 +91,26 @@
 /** @type {Map<string, FastAttemptRecord>} */
 const recordsByCorrelationId = new Map();
 
-/** Mirrors voice-latency-turn-summary.js's CORRELATION_TURN_TTL_MS — long
- *  enough to cover the Sonnet round-trip that the orphan-net decision waits
- *  on, well past the fast route's ~500ms typical audio latency. */
-const RECORD_TTL_MS = 60_000;
+// [DEVIATION] F9 (Codex diff-review, 2026-08-13, sanctioned) — the previous
+// value (60_000, mirroring voice-latency-turn-summary.js's
+// CORRELATION_TURN_TTL_MS) was SHORTER than the pipeline's actual maximum
+// supported single-turn duration: sonnet-stream.js's
+// EXTRACTION_WATCHDOG_ABSOLUTE_MS = 3 * ASK_USER_TIMEOUT_MS (45_000, from
+// stage6-dispatcher-ask.js) + 2 * EXTRACTION_WATCHDOG_MS (30_000) = 195_000ms
+// — a turn that legitimately waits on an ask or runs multiple extraction
+// rounds can take up to ~3m15s, well past the old 60s TTL. A record
+// expiring mid-turn would silently regress the orphan-net/echo-stamp logic
+// to duplicate/silent behaviour for a turn that is still genuinely in
+// flight — the exact class of bug this module exists to prevent. Set
+// comfortably above the watchdog ceiling with real headroom (not a
+// close-shave value) rather than mirroring CORRELATION_TURN_TTL_MS, which
+// was never validated against this pipeline's actual worst-case turn
+// duration. Same Audio-First evidence as F8 (a turn that legitimately runs
+// long must not lose its fast-attempt bookkeeping mid-turn and silently
+// regress to duplicate/silent behaviour). The iOS-side mirrored constant
+// (`AlertManager.fastPathCorrelationTTL`, CertMateUnified) is updated
+// separately, out of scope for this backend-only worktree.
+const RECORD_TTL_MS = 300_000;
 
 /** Mirrors voice-latency-turn-summary.js's LAZY_SWEEP_THRESHOLD. */
 const LAZY_SWEEP_THRESHOLD = 10_000;
