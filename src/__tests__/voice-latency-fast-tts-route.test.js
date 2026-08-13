@@ -41,6 +41,14 @@ jest.unstable_mockModule('../extraction/elevenlabs-stream-client.js', () => ({
     static logSynthSpans() {}
   },
   contentTypeForFormat: () => 'audio/mpeg',
+  // D1 (feedback id 121) fail-open helper — attempt 1 (the caller-supplied
+  // client) always succeeds in this mock, so the retry factory is never
+  // invoked; mirrors the real module's attempts=1 happy path.
+  synthWithLanguageFailOpen: async (client, _retryClientFactory, text, opts) => ({
+    timings: await client.synth(text, opts),
+    client,
+    attempts: 1,
+  }),
 }));
 
 // Mock the API-key secrets so the route can resolve without AWS.

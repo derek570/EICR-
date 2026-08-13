@@ -50,17 +50,33 @@ function benchEnabled() {
 }
 
 /**
- * Open an ElevenLabs stream-input WebSocket, send BOS + text + EOS, pipe
- * audio frames to the supplied response object using chunked transfer
- * encoding. Resolves on isFinal, rejects on error/timeout.
+ * D1 (feedback id 121) — pinned but deliberately FAIL-CLOSED: this bench
+ * opens its own WS rather than going through ElevenLabsStreamClient, so it
+ * does not get the fail-open compatibility retry — a loud bench failure is
+ * the desired signal of vendor incompatibility here, not a
+ * silently-degraded measurement. Exported (test-only) so the pin can be
+ * asserted without a real WS round-trip.
  */
-async function streamElevenLabsToResponse({ text, outputFormat, contentType, apiKey, res }) {
-  const url =
+export function _buildBenchStreamUrl(outputFormat) {
+  return (
     `wss://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}/stream-input` +
     `?model_id=${encodeURIComponent(MODEL_ID)}` +
     `&output_format=${encodeURIComponent(outputFormat)}` +
     `&inactivity_timeout=20` +
-    `&apply_text_normalization=on`;
+    `&apply_text_normalization=on` +
+    `&language_code=en`
+  );
+}
+
+/**
+ * Open an ElevenLabs stream-input WebSocket, send BOS + text + EOS, pipe
+ * audio frames to the supplied response object using chunked transfer
+ * encoding. Resolves on isFinal, rejects on error/timeout. Exported
+ * (test-only) so the D1 fail-closed contract (no retry) can be exercised
+ * directly against a fake `res`, without a real HTTP/supertest round-trip.
+ */
+export async function streamElevenLabsToResponse({ text, outputFormat, contentType, apiKey, res }) {
+  const url = _buildBenchStreamUrl(outputFormat);
 
   res.set('Content-Type', contentType);
   res.set('Transfer-Encoding', 'chunked');

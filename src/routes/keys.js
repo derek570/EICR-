@@ -241,7 +241,7 @@ async function streamConfirmationViaElevenLabs({
   recordStartedAttribution,
   recordTerminalAttribution,
 }) {
-  const { ElevenLabsStreamClient, contentTypeForFormat } =
+  const { ElevenLabsStreamClient, contentTypeForFormat, synthWithLanguageFailOpen } =
     await import('../extraction/elevenlabs-stream-client.js');
   const { mintCorrelationId, recordOutcome, recordSpan } =
     await import('../extraction/voice-latency-telemetry.js');
@@ -276,7 +276,18 @@ async function streamConfirmationViaElevenLabs({
       },
     };
     if (useMultiContext) opts.contextId = `conf_${correlationId}`;
-    timings = await client.synth(text, opts);
+    // D1 fail-open: attempt 1 is `client` (default language_code=en); on a
+    // zero-bytes attributable rejection this constructs a SECOND instance
+    // with languageCode: null and retries once. Correlation id + cost
+    // attribution above are unaffected — they were minted/opened once,
+    // before this call, regardless of attempt count.
+    const failOpenResult = await synthWithLanguageFailOpen(
+      client,
+      () => new ElevenLabsStreamClient({ apiKey, multiContext: useMultiContext, languageCode: null }),
+      text,
+      opts
+    );
+    timings = failOpenResult.timings;
     // ElevenLabsStreamClient stamps timings.firstAudioNs at the first
     // chunk-arrival. Derive ms here so the log + span rows agree.
     if (timings?.firstAudioNs) {
@@ -617,14 +628,11 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
     // stamping below it produced implausible 0-6ms "synth" measurements.
     const synthStartMs = Date.now();
     const synthStartNs = process.hrtime.bigint();
-    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-      method: 'POST',
-      headers: {
-        'xi-api-key': elevenLabsKey,
-        'Content-Type': 'application/json',
-        Accept: 'audio/mpeg',
-      },
-      body: JSON.stringify({
+    // D1 (feedback id 121) — buffered HTTP proxy fetch, factored so the
+    // fail-open retry below can call it twice with a different
+    // language_code without duplicating the request shape.
+    const fetchElevenLabsBuffered = (languageCode) => {
+      const body = {
         text,
         // Consolidated turbo→flash 2026-06-26: every live TTS path now runs
         // on eleven_flash_v2_5 (the streaming WS path already did). Flash is
@@ -642,8 +650,50 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
           style: 0.3,
           use_speaker_boost: true,
         },
-      }),
-    });
+      };
+      // D1: pin language to stop eleven_flash_v2_5's auto-detection from
+      // flipping a short, entirely-valid-French-words confirmation (e.g.
+      // "Garage, circuit 3, 1 points") into French (id 121). Omitted (not
+      // `null`) on the fail-open retry so the vendor sees no param at all.
+      if (languageCode) body.language_code = languageCode;
+      return fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': elevenLabsKey,
+          'Content-Type': 'application/json',
+          Accept: 'audio/mpeg',
+        },
+        body: JSON.stringify(body),
+      });
+    };
+
+    let response = await fetchElevenLabsBuffered('en');
+    if (!response.ok) {
+      // D1 fail-open: the buffered HTTP proxy's status always precedes any
+      // response body, so it's safe to inspect the error text before
+      // deciding whether to retry. Only retry when the vendor's rejection
+      // actually names language_code — an unrelated 4xx (auth, rate limit)
+      // is terminal on the first attempt, matching the streaming client's
+      // "attributable" scoping.
+      const errorText = await response.text();
+      const attributableToLanguageCode = /language_code/i.test(errorText);
+      if (attributableToLanguageCode) {
+        logger.warn('voice_latency.elevenlabs_buffered_retry_without_language_code', {
+          status: response.status,
+          error: errorText.substring(0, 200),
+        });
+        response = await fetchElevenLabsBuffered(null);
+      } else {
+        logger.error('ElevenLabs API rejected request', {
+          status: response.status,
+          error: errorText.substring(0, 200),
+        });
+        legacyTelemetry?.recordOutcome(legacyCorrelationId, 'synth_failed', {
+          meta: { sessionId, turnId: turnId || null, status: response.status },
+        });
+        return res.status(response.status).json({ error: errorText });
+      }
+    }
 
     if (!response.ok) {
       const errorText = await response.text();

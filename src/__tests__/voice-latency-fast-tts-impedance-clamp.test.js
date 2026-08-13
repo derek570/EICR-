@@ -42,6 +42,13 @@ jest.unstable_mockModule('../extraction/elevenlabs-stream-client.js', () => ({
     static logSynthSpans() {}
   },
   contentTypeForFormat: () => 'audio/mpeg',
+  // D1 (feedback id 121) fail-open helper — attempt 1 always succeeds in
+  // this mock, so the retry factory is never invoked.
+  synthWithLanguageFailOpen: async (client, _retryClientFactory, text, opts) => ({
+    timings: await client.synth(text, opts),
+    client,
+    attempts: 1,
+  }),
 }));
 
 jest.unstable_mockModule('../services/secrets.js', () => ({
