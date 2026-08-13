@@ -2480,6 +2480,13 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         // Belt-and-braces: canonical first, legacy fallback for snapshots
         // hydrated from pre-fix tool-loop creates. See stage6-snapshot-
         // mutators.js comment.
+        // Sync-is-social (PLAN-F item 1, predicate unification): this is
+        // THE canonical spare predicate — web's isSpareCircuit
+        // (voice-commands.ts) and iOS's isSpareCircuit
+        // (VoiceCommandExecutor.swift) both mirror this exact regex +
+        // blank-designation rule. iOS's old predicate was an EXACT `==
+        // "spare"` match that missed "Spare way"; web's old behaviour
+        // filtered nothing. Keep all three in sync.
         const designation = String(bucket.circuit_designation ?? bucket.designation ?? '').trim();
         if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
           skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
