@@ -3700,14 +3700,51 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             });
             // Codex diff-review cycle 2 (C2) — a `failed`/`pending_unrecorded`
             // correlation the ledger could not account for (no
-            // exactDuplicateTuple match) must still reach the ordinary
-            // orphan-prompt path, ALONGSIDE whatever ledger confirmations
-            // were just pushed above for sibling readings — never treated as
-            // "this turn is already fully handled" just because a sibling
-            // correlation WAS accounted for. See resolveZeroToolCallDuplicateOutcome's
-            // own `[DEVIATION] C2` doc comment for the full rationale.
+            // exactDuplicateTuple match) must still be ACCOUNTED FOR,
+            // ALONGSIDE whatever ledger confirmations were just pushed above
+            // for sibling readings — never treated as "this turn is already
+            // fully handled" just because a sibling correlation WAS
+            // accounted for. See resolveZeroToolCallDuplicateOutcome's own
+            // `[DEVIATION] C2` doc comment for the full rationale.
+            //
+            // [DEVIATION] D3 (Codex diff-review cycle 3, 2026-08-13,
+            // NARROWED per the orchestrating session's own directive — NOT
+            // Codex's originally-proposed bounded-synchronous-wait +
+            // tombstone + reject-late mechanism, which is a new
+            // architectural surface this plan never specified) — C2's fix
+            // made "accounted for" mean "speak the ordinary orphan prompt".
+            // But `hadUnaddressedFailure` can ONLY be true when a
+            // correlation WAS genuinely attempted this turn (it is set only
+            // inside the `fastLedgerOutcomes` branch above, which only runs
+            // when `correlationIds` was non-empty) — so the underlying
+            // fast-TTS HTTP POST may STILL be in flight and could stream its
+            // audio moments after this decision. Speaking the generic
+            // apology now risks a confusing SECOND, uncoordinated message
+            // once that clip lands. A truly silent turn is the safer
+            // failure mode — this is the plan's own "never a placeholder"
+            // discipline (Audio-First invariant #2) extended one step
+            // further: never a generic apology either, when something
+            // concrete might still be coming.
+            //
+            // The `entry.fastPathCorrelationIdByTurn.get(turnId)` check
+            // below is redundant-by-construction with `hadUnaddressedFailure`
+            // being true (both can only happen when correlationIds was
+            // non-empty) — kept explicit anyway as a defensive assertion: if
+            // some future refactor ever lets `hadUnaddressedFailure` fire
+            // without a genuinely attempted correlation, this falls back to
+            // the ORIGINAL (unchanged) generic-apology behaviour rather than
+            // silently swallowing a turn nothing was ever attempted for.
             if (zeroToolCallOutcome.hadUnaddressedFailure) {
-              emitGenericOrphanPrompt('fast_ledger_unaddressed_failure');
+              const attemptedThisTurn = entry?.fastPathCorrelationIdByTurn?.get(turnId);
+              if (attemptedThisTurn instanceof Set && attemptedThisTurn.size > 0) {
+                log.info?.('stage6.fast_ledger_unaddressed_failure_suppressed', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  textPreview: String(transcriptText || '').slice(0, 80),
+                });
+              } else {
+                emitGenericOrphanPrompt('fast_ledger_unaddressed_failure');
+              }
             }
           } else if (!recovered) {
             // M1 Defect B: all-rejected turns get an "I couldn't action that"

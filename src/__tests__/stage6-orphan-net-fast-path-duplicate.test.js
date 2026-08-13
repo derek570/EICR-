@@ -925,7 +925,7 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
   // duplicate/apology check for the OMITTED correlation's own reading —
   // that reading went completely silent, worse than before Plan B existed.
   describe('Codex diff-review C2 — mixed fast-ledger states never silently drop a sibling reading', () => {
-    test('one playback_started + one with NO ledger record at all (WS-before-HTTP race): the played one produces no confirmation AND the unrecorded one still gets SOME accounting — here, the ordinary orphan prompt (no exactDuplicateTuple to match)', async () => {
+    test('one playback_started + one with NO ledger record at all (WS-before-HTTP race): the played one produces no confirmation AND the unrecorded one is SILENTLY accounted for (D3 — the underlying fast-TTS POST may still be in flight, so NO generic apology fires)', async () => {
       fastIdentity.markFastAttemptPending('cid-played', {
         sessionId: SESSION_ID,
         turnId: 'irrelevant',
@@ -951,7 +951,7 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
 
       // Empty session state → the transcript can never reparse to an exact
       // duplicate, so 'cid-unrecorded' has NOTHING to fall back to except
-      // the ordinary orphan-prompt path.
+      // the (now-suppressed, per D3) ordinary orphan-prompt path.
       const session = makeSession({});
       const opts = baseOpts({ regexFastCorrelationId: ['cid-played', 'cid-unrecorded'] });
       const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
@@ -962,30 +962,62 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
         /^Already got that —/.test(c.text || '')
       );
       expect(alreadyGotConfs).toHaveLength(0);
-      // The unrecorded one's own reading is NOT silently dropped — it still
-      // reaches the ordinary orphan prompt (falls through, per C2's
-      // "falls through to the ordinary duplicate check" clause).
+      // Codex diff-review cycle 3 D3 — the unrecorded correlation's own
+      // fast-TTS HTTP POST may still be in flight and could still stream
+      // its audio moments later; speaking the generic apology now risks a
+      // confusing SECOND, uncoordinated message once that clip lands. A
+      // fully silent turn is the safer failure mode (never a placeholder,
+      // never a generic apology either, when something concrete might
+      // still be coming) — so NO orphan prompt fires at all here, unlike
+      // pre-D3 behaviour.
       const orphanPrompt = (result.confirmations ?? []).find((c) =>
         /(catch|repeat|say it)/i.test(c.text || '')
       );
-      expect(orphanPrompt).toBeDefined();
-      // The pre-C2 bug would have suppressed this entirely — the log row
-      // must show the fast-ledger branch fired (confirmationCount 0, from
-      // the suppress) AND the generic orphan-prompt row also fired for the
-      // unaddressed reading.
+      expect(orphanPrompt).toBeUndefined();
+      expect(result.confirmations ?? []).toHaveLength(0);
       const ledgerRow = opts.logger.info.mock.calls.find(
         ([ev]) => ev === 'stage6.orphan_duplicate_or_pending_outcome'
       );
       expect(ledgerRow).toBeDefined();
       expect(ledgerRow[1].confirmationCount).toBe(0);
+      // The generic orphan-prompt row must NOT fire — D3 suppresses it.
+      const orphanRow = opts.logger.info.mock.calls.find(
+        ([ev]) => ev === 'stage6.orphan_prompt_emitted'
+      );
+      expect(orphanRow).toBeUndefined();
+      // A distinct suppression row proves the branch was reached
+      // deliberately, not just skipped by accident.
+      const suppressedRow = opts.logger.info.mock.calls.find(
+        ([ev]) => ev === 'stage6.fast_ledger_unaddressed_failure_suppressed'
+      );
+      expect(suppressedRow).toBeDefined();
+    });
+
+    // Codex diff-review cycle 3 D3 — control case. When NO correlation was
+    // attempted for the turn at all (fastPathCorrelationIdByTurn empty),
+    // the ordinary/generic orphan prompt must fire EXACTLY as before — the
+    // suppression above is scoped to "a fast dispatch was genuinely
+    // attempted", not to every zero-tool-call turn.
+    test('D3 control — no correlation attempted at all this turn → the ordinary orphan prompt still fires unchanged', async () => {
+      const session = makeSession({});
+      const opts = baseOpts();
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      const orphanPrompt = (result.confirmations ?? []).find((c) =>
+        /(catch|repeat|say it)/i.test(c.text || '')
+      );
+      expect(orphanPrompt).toBeDefined();
       const orphanRow = opts.logger.info.mock.calls.find(
         ([ev]) => ev === 'stage6.orphan_prompt_emitted'
       );
       expect(orphanRow).toBeDefined();
-      expect(orphanRow[1].cause).toBe('fast_ledger_unaddressed_failure');
+      const suppressedRow = opts.logger.info.mock.calls.find(
+        ([ev]) => ev === 'stage6.fast_ledger_unaddressed_failure_suppressed'
+      );
+      expect(suppressedRow).toBeUndefined();
     });
 
-    test("one pending+committed + one failed: the pending one gets its correlation-stamped fallback AND the failed one's own reading still reaches the ordinary orphan prompt (no exactDuplicateTuple to match)", async () => {
+    test("one pending+committed + one failed: the pending one gets its correlation-stamped fallback AND the failed one's own reading is silently accounted for (D3 — no generic apology, no exactDuplicateTuple to match)", async () => {
       fastIdentity.markFastAttemptPending('cid-pending', {
         sessionId: SESSION_ID,
         turnId: 'irrelevant',
@@ -1022,14 +1054,21 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
         circuit: 4,
         fast_correlation_id: 'cid-pending',
       });
-      // The failed correlation's own reading is NOT silently absorbed by
-      // its sibling's fallback — it still reaches the ordinary orphan
-      // prompt, spoken ALONGSIDE the pending fallback above.
+      // Codex diff-review cycle 3 D3 — the failed correlation's own reading
+      // is accounted for SILENTLY, not via the ordinary orphan prompt: its
+      // fast-TTS HTTP POST may still be in flight (the fact this ledger
+      // state landed as 'failed' rather than never-attempted is exactly
+      // the case D3 covers), and speaking a generic apology risks an
+      // uncoordinated second message if that clip lands moments later.
       const orphanPrompt = (result.confirmations ?? []).find((c) =>
         /(catch|repeat|say it)/i.test(c.text || '')
       );
-      expect(orphanPrompt).toBeDefined();
-      expect(result.confirmations).toHaveLength(2);
+      expect(orphanPrompt).toBeUndefined();
+      expect(result.confirmations).toHaveLength(1);
+      const suppressedRow = opts.logger.info.mock.calls.find(
+        ([ev]) => ev === 'stage6.fast_ledger_unaddressed_failure_suppressed'
+      );
+      expect(suppressedRow).toBeDefined();
     });
 
     test('one pending+committed + one failed, but the transcript DOES reparse to an exact duplicate of stored data: the failed one\'s reading gets the ordinary UNSTAMPED "Already got" (not a second apology)', async () => {
