@@ -92,7 +92,16 @@ describe('isTtsAvailable', () => {
 });
 
 describe('confirmation-mode persistence', () => {
-  it('defaults to false when storage is empty', () => {
+  // PLAN-D (ids 122, 124) — default flipped false→true for the never-set
+  // case (an absent preference), matching iOS's own registered default
+  // (CertMateApp.swift:29-38) so new inspectors don't start silently
+  // muted. An EXPLICITLY stored false is a different case, covered below.
+  it('defaults to true when storage is empty (never-set case)', () => {
+    expect(getConfirmationModeEnabled()).toBe(true);
+  });
+
+  it('an explicitly stored false is preserved, not coerced to the new default', () => {
+    setConfirmationModeEnabled(false);
     expect(getConfirmationModeEnabled()).toBe(false);
   });
 
@@ -165,9 +174,9 @@ describe('speakConfirmation() — gated path', () => {
     expect(shim.speak).toHaveBeenCalledTimes(1);
   });
 
-  it('force=true speaks even when the toggle is off (toggle-on preview)', () => {
+  it('force=true speaks even when the toggle is off (toggle-flip cue preview)', () => {
     setConfirmationModeEnabled(false);
-    speakConfirmation('Confirmations on.', { force: true });
+    speakConfirmation('Voice read-backs on.', { force: true });
     expect(shim.speak).toHaveBeenCalledTimes(1);
   });
 

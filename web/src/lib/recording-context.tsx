@@ -82,6 +82,7 @@ import {
 } from './recording/vad-accumulator';
 import { useLiveFillStore } from './recording/live-fill-state';
 import {
+  CONFIRMATION_MODE_START_WARNING,
   cancelSpeech,
   confirmationToSentence,
   getConfirmationModeEnabled,
@@ -3788,6 +3789,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       }
       buildSleepManager();
       setState('active');
+      // PLAN-D (ids 122, 124) — one-shot warning when a NEW physical
+      // session starts with confirmations already off, so an inspector
+      // who forgot the toggle's state hears it named instead of getting
+      // silent read-backs for the whole session. Bound to THIS fresh-start
+      // path only — handleWake() (sleep/doze auto-resume) and resume()
+      // (manual pause-resume) must NOT re-speak it; neither call site
+      // reaches this branch, so "once per physical session" holds by
+      // construction. `force: true` + no dedupeKey: same fail-open-audible,
+      // dedupe-bypassing, FIFO-deferring, never-resetting contract as the
+      // toggle-flip cue.
+      if (!getConfirmationModeEnabled()) {
+        speakConfirmation(CONFIRMATION_MODE_START_WARNING, { force: true });
+      }
       beginTick();
     } catch (err) {
       if (sessionIdRef.current !== sessionId) {

@@ -86,6 +86,24 @@ const STORAGE_KEY = 'cm-confirmation-mode';
 const LEGACY_STORAGE_KEY = 'cm-voice-feedback';
 
 /**
+ * PLAN-D (feedback ids 122, 124) — one unified cue wording across BOTH
+ * clients (iOS speaks the identical strings). Spoken on EVERY toggle
+ * flip, in both directions — the prior web behaviour only spoke on
+ * ON, which this replaces ("Confirmations on." is retired). Speaking on
+ * the OFF-flip too is a deliberate reversal of this file's old
+ * rationale ("jarring, contradicts the preference just set"): for a
+ * hands-free product the OFF-flip is precisely the moment the inspector
+ * must hear one last utterance, or an accidental tap becomes
+ * indistinguishable from a silently broken pipeline (the id-122/124
+ * mechanism this plan fixes).
+ */
+export const CONFIRMATION_MODE_OFF_CUE = 'Voice read-backs off.';
+export const CONFIRMATION_MODE_ON_CUE = 'Voice read-backs on.';
+/** Session-start one-shot warning — spoken once per physical session
+ *  when the persisted preference is already off at start. */
+export const CONFIRMATION_MODE_START_WARNING = 'Heads up — voice read-backs are off.';
+
+/**
  * Returns true iff the runtime has the SpeechSynthesis API. Used by
  * callers that want to short-circuit (e.g. the Voice button in the
  * recording chrome hides itself when TTS is unavailable so inspectors
@@ -98,9 +116,18 @@ export function isTtsAvailable(): boolean {
 }
 
 /**
- * Read the persisted confirmation-mode preference. Defaults to `false`
- * when storage has no entry — matches iOS where the toggle is off until
- * the inspector explicitly enables it.
+ * Read the persisted confirmation-mode preference. Defaults to `true`
+ * when NEITHER storage key has ever been set — this does NOT match
+ * iOS's default (iOS registers `confirmationModeEnabled: true` at
+ * `CertMateApp.swift:29-38` precisely so new users don't start silently
+ * muted); the prior version of this comment claimed the opposite and
+ * was FALSE (PLAN-D, feedback ids 122/124 — an entire 9-minute field
+ * session ran with confirmations off and no telemetry/cue surfaced it,
+ * and web's absent-default made that the DEFAULT experience for every
+ * new inspector, not an edge case). An EXPLICITLY stored `false` is
+ * always preserved as-is — this only changes the never-set case, so no
+ * deliberate user choice is discarded (that's the auto-revert
+ * alternative this plan explicitly rejects).
  *
  * Migration: if the new key is unset and the legacy `cm-voice-feedback`
  * key has a value, lift it across once and rewrite under the new key.
@@ -109,7 +136,7 @@ export function isTtsAvailable(): boolean {
  * confirmation-only scope is strictly narrower so there's no surprise.
  */
 export function getConfirmationModeEnabled(): boolean {
-  if (typeof window === 'undefined') return false;
+  if (typeof window === 'undefined') return true;
   try {
     const current = window.localStorage.getItem(STORAGE_KEY);
     if (current !== null) return current === 'true';
@@ -118,9 +145,9 @@ export function getConfirmationModeEnabled(): boolean {
       window.localStorage.setItem(STORAGE_KEY, legacy);
       return legacy === 'true';
     }
-    return false;
+    return true;
   } catch {
-    return false;
+    return true;
   }
 }
 

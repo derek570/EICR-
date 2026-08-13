@@ -23,11 +23,14 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Image as ImageIcon } from 'lucide-react';
 import {
+  CONFIRMATION_MODE_OFF_CUE,
+  CONFIRMATION_MODE_ON_CUE,
   getConfirmationModeEnabled,
   isTtsAvailable,
   setConfirmationModeEnabled,
   speakConfirmation,
 } from '@/lib/recording/tts';
+import { clientDiagnostic } from '@/lib/recording/client-diagnostic';
 import { applyPresetToJob } from '@/lib/defaults/service';
 import { ApplyDefaultsSheet } from '@/components/defaults/apply-defaults-sheet';
 import { VadIndicator } from './vad-indicator';
@@ -141,9 +144,11 @@ function RecordingActionBar() {
   // parity with iOS where the on-screen label is the same misnomer
   // ("Voice"); the aria-label below makes its actual scope explicit.
   // Initialised from storage on mount so the button reflects the
-  // inspector's last choice. SSR renders as `false`; we hydrate after
-  // mount to avoid localStorage access during render.
-  const [voiceFeedbackOn, setVoiceFeedbackOn] = React.useState(false);
+  // inspector's last choice. SSR renders as `true` (matching the
+  // never-set default — PLAN-D id 122/124) and hydrates the real
+  // persisted value after mount to avoid localStorage access during
+  // render.
+  const [voiceFeedbackOn, setVoiceFeedbackOn] = React.useState(true);
   const [ttsSupported, setTtsSupported] = React.useState(true);
   React.useEffect(() => {
     setVoiceFeedbackOn(getConfirmationModeEnabled());
@@ -153,12 +158,20 @@ function RecordingActionBar() {
     const next = !voiceFeedbackOn;
     setConfirmationModeEnabled(next);
     setVoiceFeedbackOn(next);
-    // One-shot audible preview so the inspector gets immediate
-    // feedback that the toggle works. `force: true` bypasses the
-    // enabled check for the OFF→ON transition; on ON→OFF we stay
-    // silent — speaking "confirmations off" would be jarring and
-    // contradicts the preference just set.
-    if (next) speakConfirmation('Confirmations on.', { force: true });
+    clientDiagnostic('confirmation_mode_flipped', { enabled: next });
+    // PLAN-D (ids 122, 124) — speak the unified cue on BOTH directions,
+    // not just ON→ON. `force: true` bypasses the enabled check (so the
+    // OFF cue is audible even though confirmations are now off); no
+    // `dedupeKey` is passed, so this call bypasses the confirmation
+    // dedupe/TTL layer entirely — a rapid off→on→off within 30s produces
+    // three distinct cues, not one. It still FIFO-queues (deferring
+    // behind an active ask or in-progress speech rather than dropping)
+    // and never resets the queue, because `speakConfirmation` always
+    // enqueues via `enqueueConfirmation` — it never calls the direct
+    // `speak()` path's `preemptFlush()`.
+    speakConfirmation(next ? CONFIRMATION_MODE_ON_CUE : CONFIRMATION_MODE_OFF_CUE, {
+      force: true,
+    });
   }, [voiceFeedbackOn]);
 
   // End-session confirmation — iOS presents a parent-owned alert
