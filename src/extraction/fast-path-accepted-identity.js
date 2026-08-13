@@ -95,6 +95,22 @@
  *   `commitAcceptedIdentity`.
  * @property {string|null} comparisonText — the fast route's own rendered
  *   text (designation=null), set at `commitAcceptedIdentity`.
+ * @property {{original: string, corrected: string}|null} correction —
+ *   Codex diff-review cycle 3 D2 — the clamp-correction pair
+ *   (`fastClamp.correction` from `clampReadingForDispatch`) computed at the
+ *   SAME point `canonicalValue`/`comparisonText` are, set at
+ *   `commitAcceptedIdentity`. Carries the "— I corrected 16 to 1.6" clause
+ *   the fast clip's OWN audio spoke, so a later B3.3 committed-'pending'
+ *   fallback confirmation (built when the fast clip streamed but never got
+ *   an iOS playback-start ACK) can include the same clause instead of
+ *   silently dropping it — a pending fallback speaks the value itself, so a
+ *   missing correction clause here would be a safety-relevant omission (the
+ *   fallback would claim "16" when the certificate actually stores "1.6").
+ *   Also folded into the M4 coalescing group key (`resolveZeroToolCallDuplicateOutcome`)
+ *   so two attempts that land on the SAME final value via DIFFERENT
+ *   correction provenance (one clamp-corrected, one not) are never wrongly
+ *   coalesced into a single spoken outcome — their correction clauses (or
+ *   absence of one) differ, so what gets spoken must differ too.
  * @property {boolean} committed — true once `commitAcceptedIdentity` has run.
  * @property {'pending'|'playback_started'|'failed'} state
  * @property {number} expires_at_ms
@@ -253,7 +269,7 @@ export function markFastAttemptPending(correlationId, fields) {
  * not choosing which session's data wins.
  *
  * @param {string} correlationId
- * @param {{sessionId: string, turnId: string, field: string, circuit: number|null, boardId: string|null, canonicalValue: string, comparisonText: string}} fields
+ * @param {{sessionId: string, turnId: string, field: string, circuit: number|null, boardId: string|null, canonicalValue: string, comparisonText: string, correction?: {original: string, corrected: string}|null}} fields
  */
 export function commitAcceptedIdentity(correlationId, fields) {
   if (typeof correlationId !== 'string' || !correlationId) return;
@@ -280,6 +296,18 @@ export function commitAcceptedIdentity(correlationId, fields) {
     boardId: typeof fields?.boardId === 'string' && fields.boardId ? fields.boardId : base.boardId,
     canonicalValue: fields?.canonicalValue ?? null,
     comparisonText: fields?.comparisonText ?? null,
+    // Codex diff-review cycle 3 D2 — the clamp-correction pair, threaded
+    // through from voice-latency-fast-tts.js's `fastClamp.correction`
+    // (computed at the SAME clamp call canonicalValue/comparisonText come
+    // from). Validated defensively — a malformed/foreign shape becomes null
+    // rather than propagating garbage into a spoken confirmation clause.
+    correction:
+      fields?.correction &&
+      typeof fields.correction === 'object' &&
+      typeof fields.correction.original === 'string' &&
+      typeof fields.correction.corrected === 'string'
+        ? { original: fields.correction.original, corrected: fields.correction.corrected }
+        : null,
     committed: true,
     expires_at_ms: Date.now() + RECORD_TTL_MS,
   });

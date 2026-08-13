@@ -946,7 +946,14 @@ function resolveOutcomeIdentityForCoalescing(outcome, session, exactDuplicateTup
       // board identity instead of only some of them being resolved.
       boardId: resolveEffectiveBoardId(session, identity.boardId),
       value: identity.canonicalValue,
-      correction: null,
+      // Codex diff-review cycle 3 D2 — was hardcoded null, dropping the
+      // committed identity's clamp-correction provenance from the M4
+      // coalescing key. A 'suppress' outcome never itself builds a
+      // confirmation (playback already happened), but its correction still
+      // needs to be part of the group identity so it doesn't silently
+      // coalesce a differently-corrected sibling under the SAME group (see
+      // the groupKey construction below).
+      correction: identity.correction ?? null,
     };
   }
   if (outcome.kind === 'pending') {
@@ -956,7 +963,11 @@ function resolveOutcomeIdentityForCoalescing(outcome, session, exactDuplicateTup
       circuit: identity.circuit,
       boardId: resolveEffectiveBoardId(session, identity.boardId),
       value: identity.canonicalValue,
-      correction: null,
+      // Codex diff-review cycle 3 D2 — was hardcoded null (see the
+      // 'suppress' branch above for the rationale). This is the branch that
+      // actually matters for D2(a): `buildFastLedgerFallbackConfirmation`'s
+      // 'pending' case reads `resolved.correction` to speak the clause.
+      correction: identity.correction ?? null,
     };
   }
   if (outcome.kind === 'pending_uncommitted') {
@@ -1038,7 +1049,16 @@ function buildFastLedgerFallbackConfirmation({ outcome, resolved }, session, tur
     // exact-duplicate designation lookup below.
     const circuitData = getCircuitBucket(session.stateSnapshot, circuit, boardId);
     const designation = circuitData?.circuit_designation ?? null;
-    const text = buildAlreadyGotConfirmationText(field, value, circuit, designation);
+    // Codex diff-review cycle 3 D2 — forward the clamp correction (M2's
+    // fix already did this for 'pending_uncommitted'/'pending_unrecorded'
+    // below; the committed 'pending' identity now carries it too via
+    // `resolveOutcomeIdentityForCoalescing`). Without this, a fast clip
+    // that streamed a "— I corrected 16 to 1.6" clause but never got an
+    // iOS playback-start ACK would have its pending fallback speak the
+    // bare value with no correction clause at all.
+    const text = buildAlreadyGotConfirmationText(field, value, circuit, designation, {
+      correction,
+    });
     if (!text) return null;
     // C3 (gap 3) — stamp `board_id` consistently with every sibling branch
     // below (main board omitted, non-main included) so a committed
@@ -1226,9 +1246,23 @@ export function resolveZeroToolCallDuplicateOutcome({
     let ungroupableSeq = 0;
     for (const outcome of fastLedgerOutcomes) {
       const resolved = resolveOutcomeIdentityForCoalescing(outcome, session, exactDuplicateTuple);
+      // Codex diff-review cycle 3 D2 -- the group key now folds in
+      // correction PROVENANCE, not just the final slot+value. Two attempts
+      // that land on the SAME final value via DIFFERENT correction
+      // provenance (one clamp-corrected from a different raw dictation, one
+      // not corrected at all) must never coalesce into a single spoken
+      // outcome -- what gets spoken (whether the correction clause is
+      // present, and what it says) genuinely differs between them.
+      // Pipe-delimited (distinct from the :: slot-key delimiter) so a
+      // correction whose text happens to contain '::' can't collide with
+      // an uncorrected sibling key.
+      const correctionKeyPart =
+        resolved && resolved.correction
+          ? `|${resolved.correction.original}|${resolved.correction.corrected}`
+          : '';
       const groupKey =
         resolved != null
-          ? `${buildFastAttemptSlotKey(resolved)}::${resolved.value ?? ''}`
+          ? `${buildFastAttemptSlotKey(resolved)}::${resolved.value ?? ''}${correctionKeyPart}`
           : `\u0000ungroupable::${ungroupableSeq++}`;
       if (!groups.has(groupKey)) groups.set(groupKey, []);
       groups.get(groupKey).push({ outcome, resolved });

@@ -516,6 +516,14 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
               boardId: resolveIdentityBoardId(boardId, entry?.session?.stateSnapshot),
               canonicalValue: fastClamp.value,
               comparisonText: text,
+              // Codex diff-review cycle 3 D2 — thread the clamp correction
+              // (the "— I corrected 16 to 1.6" clause this route's OWN
+              // audio already spoke, via `text` above) onto the committed
+              // identity so a later B3.3 committed-'pending' fallback
+              // confirmation (fast clip streamed but no playback-start ACK)
+              // can include the same clause instead of silently dropping
+              // the safety-relevant correction.
+              correction: fastClamp.correction,
             });
             identityCommitted = true;
           } catch (err) {

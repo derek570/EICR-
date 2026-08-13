@@ -790,6 +790,132 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     expect(confs[0].dedupe_token).toBe(`duplicate_${SESSION_ID}-turn-1`);
   });
 
+  // Codex diff-review cycle 3 (D2, 2026-08-13) — the committed 'pending'
+  // fallback confirmation used to drop the clamp-correction clause entirely
+  // (fastClamp.correction was computed at the fast-tts route but never
+  // threaded into commitAcceptedIdentity's stored fields), and the M4
+  // coalescing group key grouped by slot+canonical-value only, so two
+  // attempts with the SAME final value but DIFFERENT correction provenance
+  // could wrongly coalesce into one spoken outcome.
+  describe('Codex diff-review D2 — committed pending fallback carries the clamp correction, and correction provenance is part of the coalescing identity', () => {
+    test('a COMMITTED ("pending") identity whose raw value needed a clamp correction — the pending fallback speaks the correction clause (fast clip streamed, no playback-start ACK)', async () => {
+      fastIdentity.markFastAttemptPending('cid-pending-clamp', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '16',
+      });
+      // Committed (the fast route's first onAudio byte ran, so
+      // canonicalValue/comparisonText/correction are all set) — but NEVER
+      // markFastAttemptPlaybackStarted, so the state stays 'pending': the
+      // clip streamed but iOS never ACKed playback-start.
+      fastIdentity.commitAcceptedIdentity('cid-pending-clamp', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '1.6',
+        comparisonText: 'Circuit 4, R1 plus R2 recorded as 1.6',
+        correction: { original: '16', corrected: '1.6' },
+      });
+
+      const session = makeSession({});
+      const opts = baseOpts({ regexFastCorrelationId: 'cid-pending-clamp' });
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      const confs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      expect(confs).toHaveLength(1);
+      // Pre-D2 fix, this fallback would have spoken only "Already got that —
+      // Circuit 4, R1 plus R2 recorded as 1.6" — silently dropping the
+      // safety-relevant "— I corrected 16 to 1.6" clause the ORIGINAL fast
+      // clip's own audio (voice-latency-fast-tts.js's `text`) included.
+      expect(confs[0].text).toBe(
+        'Already got that — Circuit 4, R1 plus R2 recorded as 1.6 — I corrected 16 to 1.6'
+      );
+      expect(confs[0]).toMatchObject({
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        fast_correlation_id: 'cid-pending-clamp',
+      });
+    });
+
+    test('two committed attempts landing on the SAME final value via DIFFERENT correction provenance do NOT coalesce — both are spoken', async () => {
+      // Attempt 1: raw 16 -> clamped 1.6 (a genuine clamp correction).
+      fastIdentity.markFastAttemptPending('cid-corrected', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '16',
+      });
+      fastIdentity.commitAcceptedIdentity('cid-corrected', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '1.6',
+        comparisonText: 'Circuit 4, R1 plus R2 recorded as 1.6',
+        correction: { original: '16', corrected: '1.6' },
+      });
+      // Attempt 2: raw 1.6 -> 1.6, no correction needed — same final value,
+      // different provenance (a genuinely different dictation that happens
+      // to land on the identical stored number).
+      fastIdentity.markFastAttemptPending('cid-uncorrected', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '1.6',
+      });
+      fastIdentity.commitAcceptedIdentity('cid-uncorrected', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'r1_r2_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '1.6',
+        // No correction — buildConfirmationText renders WITHOUT the
+        // "recorded as" / correction phrasing when options.correction is
+        // absent (matches what the fast-tts route would have actually
+        // rendered for an uncorrected candidate).
+        comparisonText: 'Circuit 4, R1 plus R2 1.6',
+        correction: null,
+      });
+
+      const session = makeSession({});
+      const opts = baseOpts({
+        regexFastCorrelationId: ['cid-corrected', 'cid-uncorrected'],
+      });
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      const confs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      // Pre-D2 fix, the coalescing group key was slot+value only —
+      // both attempts share field=r1_r2_ohm, circuit=4, boardId=null,
+      // value='1.6', so they would have wrongly coalesced into ONE spoken
+      // confirmation (arbitrarily picking one attempt's shape), silently
+      // dropping the other correlation's own accounting entirely.
+      expect(confs).toHaveLength(2);
+      const corrected = confs.find((c) => c.fast_correlation_id === 'cid-corrected');
+      const uncorrected = confs.find((c) => c.fast_correlation_id === 'cid-uncorrected');
+      expect(corrected).toBeDefined();
+      expect(uncorrected).toBeDefined();
+      expect(corrected.text).toBe(
+        'Already got that — Circuit 4, R1 plus R2 recorded as 1.6 — I corrected 16 to 1.6'
+      );
+      expect(uncorrected.text).toBe('Already got that — Circuit 4, R1 plus R2 1.6');
+    });
+  });
+
   // Codex diff-review cycle 2 (C2, 2026-08-13) — the MIXED-state bug: a
   // `failed` correlation (or one whose HTTP POST never reached the backend
   // at all, so no ledger record exists yet — the WS-transcript-before-HTTP-
