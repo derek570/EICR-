@@ -735,7 +735,47 @@ export function createPerTurnWrites() {
     //     outcomes: [{tool, code, reason?}], emptyRetryUsed: boolean,
     //     featureTouched: boolean }
     answer: createTurnAnswerState(),
+    // PLAN-F item 1 (2026-08-12, feedback id 115) — bulk-outcome ledger for
+    // the audible-skip disclosure. dispatchSetFieldForAllCircuits does NOT
+    // compose confirmations itself (the tool envelope never reaches
+    // bundleToolCallsIntoResult — it receives perTurnWrites/legacyResultShape/
+    // options only), so it STAGES one entry here per bulk call recording
+    // exactly what was applied vs spare-skipped; stage6-event-bundler.js
+    // consumes this to amend the matching grouped/per-circuit confirmation
+    // with a count-aware "…skipping N spare ways" clause, or to synthesise a
+    // standalone zero-applied confirmation when nothing was written. See
+    // stageBulkOutcomeForBundler below.
+    // Entries: { field, value, boardId, appliedRefs: number[],
+    //            spareSkippedRefs: number[], callId }.
+    bulkOutcomes: [],
   };
+}
+
+/**
+ * PLAN-F item 1 — stage one bulk-apply outcome for the bundler's audible-skip
+ * disclosure. Called once per dispatchSetFieldForAllCircuits invocation
+ * (never per-circuit — the disclosure is a single clause on the turn's
+ * confirmation, not a per-circuit event). `boardId` is the WIRE board id
+ * (the same value the fan-out's mirror entries carry — undefined for an
+ * ordinary single-board turn, a real board id for a cross-board '*' sweep
+ * member), so the bundler's matching logic joins on the identical identity
+ * space the grouped-confirmation bucket already keys on.
+ */
+export function stageBulkOutcomeForBundler(
+  perTurnWrites,
+  { field, value, boardId, appliedRefs, spareSkippedRefs, callId }
+) {
+  if (!Array.isArray(perTurnWrites.bulkOutcomes)) {
+    perTurnWrites.bulkOutcomes = [];
+  }
+  perTurnWrites.bulkOutcomes.push({
+    field,
+    value,
+    boardId: boardId ?? null,
+    appliedRefs: Array.isArray(appliedRefs) ? [...appliedRefs] : [],
+    spareSkippedRefs: Array.isArray(spareSkippedRefs) ? [...spareSkippedRefs] : [],
+    callId,
+  });
 }
 
 /**

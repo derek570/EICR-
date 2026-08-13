@@ -1772,6 +1772,79 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         entry.dedupe_token = `secfield_${identity.field}_${identity.scope}_${_confirmationDedupeTurnId}_ord${identity.ordinal}`;
       }
     }
+    // PLAN-F item 1 (2026-08-12, feedback id 115) — audible-skip disclosure.
+    // dispatchSetFieldForAllCircuits does NOT compose confirmations itself
+    // (it never sees `confirmations` — only perTurnWrites/legacyResultShape/
+    // options reach it, per the module JSDoc above), so it stages one
+    // bulkOutcomes entry per (call, board) with applied/spare-skipped refs;
+    // this amends the MATCHING grouped or per-circuit confirmation with a
+    // count-aware "…skipping N spare ways" clause, or synthesises the
+    // standalone zero-applied confirmation when nothing was written
+    // (Decision 4). Matched by (field, board_id, exact circuits set) — the
+    // same identity space the grouping loop above keys its buckets on
+    // (grouped `entry.circuits` already holds only the APPLIED refs, since
+    // a spare-skipped circuit never enters `readings` in the first place),
+    // so a multi-call / multi-board turn never attaches a disclosure to the
+    // wrong group. Not gated by `_turnId` — the disclosure is independent
+    // of the designation-token machinery above.
+    if (Array.isArray(perTurnWrites.bulkOutcomes) && perTurnWrites.bulkOutcomes.length > 0) {
+      for (const outcome of perTurnWrites.bulkOutcomes) {
+        if (!Array.isArray(outcome.spareSkippedRefs) || outcome.spareSkippedRefs.length === 0) {
+          continue; // nothing to disclose
+        }
+        const skipClause =
+          outcome.spareSkippedRefs.length === 1
+            ? 'skipping 1 spare way'
+            : `skipping ${outcome.spareSkippedRefs.length} spare ways`;
+        if (!Array.isArray(outcome.appliedRefs) || outcome.appliedRefs.length === 0) {
+          // Decision 4 — zero-applied: all targets were spares under an
+          // exclude policy, so no reading/group exists to annotate.
+          const zeroText = `No non-spare circuits were updated; ${skipClause}.`;
+          const zeroEntry = {
+            text: zeroText,
+            expanded_text: expandForTTS(zeroText),
+            field: outcome.field,
+            circuit: null,
+          };
+          if (outcome.boardId != null) zeroEntry.board_id = outcome.boardId;
+          confirmations.push(zeroEntry);
+          continue;
+        }
+        const appliedSet = new Set(outcome.appliedRefs);
+        const matchIdx = confirmations.findIndex((c) => {
+          if (c.field !== outcome.field) return false;
+          if ((c.board_id ?? null) !== outcome.boardId) return false;
+          if (Array.isArray(c.circuits) && c.circuits.length > 0) {
+            return (
+              c.circuits.length === appliedSet.size &&
+              c.circuits.every((ref) => appliedSet.has(ref))
+            );
+          }
+          if (appliedSet.size === 1 && Number.isInteger(c.circuit)) {
+            return appliedSet.has(c.circuit);
+          }
+          return false;
+        });
+        if (matchIdx >= 0) {
+          const match = confirmations[matchIdx];
+          match.text = `${match.text}, ${skipClause}`;
+          match.expanded_text = expandForTTS(match.text);
+        } else {
+          // Defensive fallback — Audio-First invariant #1: a disclosure
+          // must never be silently lost even if the matching confirmation
+          // was itself suppressed upstream for an unrelated reason.
+          const fallbackText = `${skipClause.charAt(0).toUpperCase()}${skipClause.slice(1)}.`;
+          const fallbackEntry = {
+            text: fallbackText,
+            expanded_text: expandForTTS(fallbackText),
+            field: outcome.field,
+            circuit: null,
+          };
+          if (outcome.boardId != null) fallbackEntry.board_id = outcome.boardId;
+          confirmations.push(fallbackEntry);
+        }
+      }
+    }
     // Codex r3-#2 — when the per-turn designation-op LOG shows more ops than
     // the last-write-wins readings Map surfaced, expand the read-backs to
     // one per operation (plan-pinned: "two designation changes on one

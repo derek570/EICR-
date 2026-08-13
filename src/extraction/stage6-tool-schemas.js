@@ -1043,14 +1043,41 @@ const startDialogueScript = makeTool({
 // result is returned in a single envelope.
 //
 // scope semantics (mirrors dispatchCalculateZs's selector model):
-//   non_spare        — every non-supply circuit whose designation isn't "spare"
-//                       (default; matches the inspector's natural meaning of
-//                       "all circuits" — they don't dictate values for spares).
+//   (omitted)        — every non-supply circuit; spare inclusion is decided
+//                       by spare_policy (see below) — PREFER OMITTING scope,
+//                       the dispatcher applies the correct family-aware spare
+//                       default automatically with no guidance needed.
 //   all              — every non-supply circuit regardless of designation.
+//                       EXPLICIT 'all' is a documented, TESTED unconditional
+//                       passthrough — spares are ALWAYS included unless
+//                       spare_policy explicitly says otherwise.
+//   non_spare        — LEGACY selector, still valid: every non-supply
+//                       circuit whose designation isn't "spare" (spares
+//                       forced-excluded regardless of spare_policy). Prefer
+//                       omitting scope + (if needed) spare_policy:"exclude"
+//                       instead of emitting this explicitly.
 //   rcd_protected_only — circuits with any of rcd_bs_en / rcd_type /
 //                        rcd_operating_current_ma populated. Useful for
 //                        bulk-setting RCD-test results without spilling onto
-//                        non-RCD circuits.
+//                        non-RCD circuits. Spare inclusion under this
+//                        selector is ALSO decided by spare_policy — omit it
+//                        for the correct family-aware default.
+//
+// spare_policy (2026-08-12, PLAN-F item 1, feedback id 115) — an ORTHOGONAL
+// filter applied AFTER whatever `scope` selected; composes with ANY scope
+// value including rcd_protected_only. NOT a scope value itself: a single
+// mutually-exclusive scope enum cannot carry both the protected-only
+// selector AND a spare modifier. Emit ONLY when the inspector explicitly
+// said "including spares" (include) or "except spares" / "excluding
+// spares" (exclude). Otherwise OMIT (or pass 'automatic') — the dispatcher
+// then resolves the correct default: device-attribute fields (RCD/OCPD
+// spec — a spare way with a fitted device shares the device's spec
+// attributes) default to INCLUDING spares; measurement/reading fields
+// (zs, r1r2, ir_*, rcd_trip_time, points…) default to EXCLUDING spares (a
+// spare has no readings). EXCEPTION: explicit scope:'all' with an omitted
+// spare_policy always resolves to include (the documented passthrough
+// above); explicit legacy scope:'non_spare' with an omitted spare_policy
+// always resolves to exclude.
 // ---------------------------------------------------------------------------
 const setFieldForAllCircuits = makeTool({
   name: 'set_field_for_all_circuits',
@@ -1072,7 +1099,13 @@ const setFieldForAllCircuits = makeTool({
       type: 'string',
       enum: ['non_spare', 'all', 'rcd_protected_only'],
       description:
-        'Which circuits to target. non_spare (default): every non-supply circuit whose designation is not "spare". all: every non-supply circuit. rcd_protected_only: only circuits with RCD fields populated.',
+        'SELECTOR — which circuits to target. Prefer OMITTING scope: the dispatcher applies the correct family-aware spare default automatically (see spare_policy). all: every non-supply circuit — a documented, tested unconditional passthrough that always includes spares unless spare_policy explicitly excludes them. non_spare: LEGACY, still valid — forces spare exclusion regardless of spare_policy; prefer omitting scope (+ spare_policy:"exclude" if needed) instead. rcd_protected_only: only circuits with RCD fields populated — emit this explicitly for protected-only intent ("...for all RCD-protected circuits"); spare inclusion under it is decided by spare_policy same as the omitted case.',
+    },
+    spare_policy: {
+      type: 'string',
+      enum: ['automatic', 'include', 'exclude'],
+      description:
+        'FILTER — applied AFTER whatever scope selected; composes with ANY scope value. Emit ONLY when the inspector explicitly said "including spares" (include) or "except spares" / "excluding spares" (exclude). Otherwise OMIT — automatic resolves to the correct family default: device-attribute fields (RCD/OCPD spec fields) include spares, reading/measurement fields exclude spares. Do not emit this when the utterance contains CONTRADICTORY spare modifiers ("including spares but excluding the spare way") — in that case do not call this tool at all; ask the inspector to clarify instead.',
     },
     confidence: {
       type: 'number',

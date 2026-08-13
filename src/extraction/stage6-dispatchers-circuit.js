@@ -126,6 +126,8 @@ import {
   classifyStructuralReading,
   STRUCTURAL_READING_FIELDS,
 } from './client-routable-reading-fields.js';
+import { DEVICE_ATTRIBUTE_FIELDS } from './device-attribute-fields.js';
+import { stageBulkOutcomeForBundler } from './stage6-per-turn-writes.js';
 
 // Field schema is loaded once at module init (same pattern as
 // stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
@@ -2062,6 +2064,43 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
   return envelope(call.tool_call_id, { ok: true, computed, skipped }, false);
 }
 
+// PLAN-F item 1 (2026-08-12, feedback id 115) — resolve the effective
+// spare-inclusion decision for a bulk apply. `scope` is the SELECTOR
+// (which base candidate set — 'all' or 'rcd_protected_only'); `spare_policy`
+// is an ORTHOGONAL FILTER applied after the selector. This function decides
+// only the filter's effective value; the selector's candidate-set logic
+// (rcd_protected_only's hasRcd check) is unchanged and lives in the fan-out
+// loop below.
+//
+// Truth table (PLAN-F, resolution rule — explicit scopes keep their
+// historic documented semantics; only OMISSION gets the family default):
+//   explicit spare_policy 'include'/'exclude'        → that value, always
+//     (an explicit filter overrides any scope-implied default, including
+//     the legacy 'non_spare' selector — Decision 3's "explicit spare_policy
+//     on top still overrides normally").
+//   spare_policy omitted/'automatic', scope explicit 'all'  → 'include'
+//     (documented, TESTED unconditional passthrough — JSDoc above,
+//     schema :1049, "scope=all does NOT filter spares" test — an explicit
+//     'all' must not be silently reinterpreted by the new machinery).
+//   spare_policy omitted/'automatic', scope explicit 'non_spare' (legacy)
+//     → 'exclude' (unchanged legacy behaviour).
+//   spare_policy omitted/'automatic', scope omitted OR 'rcd_protected_only'
+//     → family-aware default: 'include' for a DEVICE_ATTRIBUTE_FIELDS
+//     member, 'exclude' otherwise. (Under rcd_protected_only this closes a
+//     pre-existing hole: a reading bulk write could previously land on a
+//     spare way with a fitted RCD; rcd_protected_only has no passthrough
+//     contract to preserve, unlike explicit 'all'.)
+function resolveSparePolicy({ scopeInput, sparePolicyInput, isDeviceAttributeField }) {
+  if (sparePolicyInput === 'include' || sparePolicyInput === 'exclude') {
+    return sparePolicyInput;
+  }
+  // sparePolicyInput is undefined or 'automatic' from here on.
+  if (scopeInput === 'all') return 'include';
+  if (scopeInput === 'non_spare') return 'exclude';
+  // Omitted scope, or explicit 'rcd_protected_only' — family-aware default.
+  return isDeviceAttributeField ? 'include' : 'exclude';
+}
+
 // ---- set_field_for_all_circuits -------------------------------------------
 
 /**
@@ -2142,7 +2181,15 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       is_error: true,
       outcome: 'rejected',
       validation_error: err,
-      input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+      // PLAN-F item 1 (telemetry contract) — raw scope + raw spare_policy
+      // logged as SEPARATE fields, never conflated into one scope string.
+      // These are pre-resolution validation-error branches, so only the raw
+      // model input is known here (no resolved_spare_policy yet).
+      input_summary: {
+        field: input.field,
+        scope: input.scope ?? null,
+        spare_policy: input.spare_policy ?? null,
+      },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
@@ -2164,7 +2211,15 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       is_error: true,
       outcome: 'rejected',
       validation_error: structuralErr,
-      input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+      // PLAN-F item 1 (telemetry contract) — raw scope + raw spare_policy
+      // logged as SEPARATE fields, never conflated into one scope string.
+      // These are pre-resolution validation-error branches, so only the raw
+      // model input is known here (no resolved_spare_policy yet).
+      input_summary: {
+        field: input.field,
+        scope: input.scope ?? null,
+        spare_policy: input.spare_policy ?? null,
+      },
     });
     return envelope(call.tool_call_id, { ok: false, error: structuralErr }, true);
   }
@@ -2253,13 +2308,33 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         is_error: true,
         outcome: 'rejected',
         validation_error: bulkErr,
-        input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+        // PLAN-F item 1 (telemetry contract) — raw scope + raw spare_policy
+        // logged as SEPARATE fields, never conflated into one scope string.
+        // These are pre-resolution validation-error branches, so only the raw
+        // model input is known here (no resolved_spare_policy yet).
+        input_summary: {
+          field: input.field,
+          scope: input.scope ?? null,
+          spare_policy: input.spare_policy ?? null,
+        },
       });
       return envelope(call.tool_call_id, { ok: false, error: bulkErr }, true);
     }
   }
 
-  const scope = input.scope ?? 'non_spare';
+  // PLAN-F item 1 — scope is now a SELECTOR only (which base candidate set:
+  // 'all'-shaped iteration, or the rcd_protected_only hasRcd-filtered set).
+  // The legacy 'non_spare' value is still accepted and selects the SAME
+  // 'all' base set — its spare-exclusion behaviour is now carried by
+  // effectiveSparePolicy below, not by a separate iteration branch.
+  const rawScope = input.scope; // undefined | 'non_spare' | 'all' | 'rcd_protected_only'
+  const selector = rawScope === 'rcd_protected_only' ? 'rcd_protected_only' : 'all';
+  const isDeviceAttributeField = DEVICE_ATTRIBUTE_FIELDS.has(input.field);
+  const effectiveSparePolicy = resolveSparePolicy({
+    scopeInput: rawScope,
+    sparePolicyInput: input.spare_policy,
+    isDeviceAttributeField,
+  });
 
   // PLAN-backend-final.md Phase 8.2 — exclude_circuits dedup + validate.
   // Build a Set of valid integer refs to subtract from the apply list.
@@ -2301,6 +2376,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
 
   const applied = [];
   const skipped = [];
+  // PLAN-F item 1 — spare-skipped refs ONLY (a subset of `skipped`, which
+  // also carries 'no_rcd' and 'circuit_not_found'-adjacent reasons). Fed to
+  // the bundler's audible-skip ledger below; kept separate from `skipped`
+  // so the disclosure clause never counts a non-spare skip reason.
+  const spareSkippedRefs = [];
   for (const { boardId, refs } of iterationPlan) {
     for (const ref of refs) {
       const bucket = getCircuitBucket(snapshot, ref, boardId);
@@ -2335,18 +2415,50 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       // intent is "skip 3", not "skip 3 because spare". `excluded[]` is
       // surfaced as its own count below.
       if (requestedExcludes.has(ref)) continue;
-      // Plan 2A (2026-07-30) §3.1 — the two SCOPE-POLICY skips below
-      // (`spare_circuit`, `no_rcd`) are DESIGNED-SILENT for a scope
-      // instruction and are deliberately NOT partial-failure targets. The
-      // inspector said "all the non-spare circuits": a circuit excluded
-      // BECAUSE it is spare is the instruction working as asked, not a
-      // failure, and announcing every spare slot on a 12-way board would bury
-      // the read-back the turn actually exists for. They already surface in
-      // the `skipped[]` envelope, so the model can name them if the inspector
-      // asks. (An EXPLICITLY-NAMED ref rejected by policy is a different case
-      // and does join the notice channel — that path is `record_reading`'s,
+      // Plan 2A (2026-07-30) §3.1, UPDATED by PLAN-F item 1 (2026-08-12,
+      // feedback id 115) — the two SCOPE-POLICY skips below (`spare_circuit`,
+      // `no_rcd`) are deliberately NOT partial-failure notices (that channel
+      // is for "the turn was silently refused", not "the scope policy did
+      // exactly what was asked"). The ORIGINAL 2026-07-30 rationale priced
+      // per-slot spare announcements as pure noise ("announcing every spare
+      // slot on a 12-way board would bury the read-back") and left every
+      // spare skip fully silent. Derek's explicit ask ("Could we change all
+      // of them including spares?") made that silence-by-default stale: a
+      // spare skip is now surfaced via ONE count-capped clause appended to
+      // the turn's confirmation ("…skipping N spare ways" / the zero-applied
+      // wording) — see stageBulkOutcomeForBundler above and its consumer in
+      // stage6-event-bundler.js. Per-slot detail is still NOT read aloud
+      // (that would be the noise the original decision correctly avoided);
+      // only the count is. `no_rcd` skips remain fully silent — this plan
+      // only changes spare disclosure. They already surface in the
+      // `skipped[]` envelope either way, so the model can name them if asked.
+      // (An EXPLICITLY-NAMED ref rejected by policy is a different case and
+      // does join the notice channel — that path is `record_reading`'s,
       // above, not this fan-out's.) Pinned by test.
-      if (scope === 'non_spare') {
+      // PLAN-F item 1 — the rcd_protected_only SELECTOR (base candidate set)
+      // and the spare_policy FILTER now compose independently, instead of
+      // being two branches of one mutually-exclusive `if/else if`. A
+      // circuit can be dropped by either, or both (e.g. a spare way with a
+      // fitted RCD, under rcd_protected_only + automatic on a reading
+      // field — the pre-existing hole this plan closes).
+      if (selector === 'rcd_protected_only') {
+        // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
+        // check: field_schema.json:166 declares its default as "30", which
+        // means non-RCD circuits inherit "30" the moment any code reads
+        // through the default path. Including it would tag every circuit
+        // in the snapshot as RCD-protected and the filter would do nothing.
+        // Verified against session DC946608's snapshot — every circuit had
+        // rcd_operating_current_ma="30" regardless of actual RCD bank
+        // membership.
+        const hasRcd =
+          (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') ||
+          (bucket.rcd_type && bucket.rcd_type !== '');
+        if (!hasRcd) {
+          skipped.push({ circuit_ref: ref, reason: 'no_rcd' });
+          continue;
+        }
+      }
+      if (effectiveSparePolicy === 'exclude') {
         // Two ways a circuit reads as "spare":
         //   (a) the designation literally contains the word "spare" — but
         //       matched as a WHOLE WORD, not a substring. The previous
@@ -2371,22 +2483,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         const designation = String(bucket.circuit_designation ?? bucket.designation ?? '').trim();
         if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
           skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
-          continue;
-        }
-      } else if (scope === 'rcd_protected_only') {
-        // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
-        // check: field_schema.json:166 declares its default as "30", which
-        // means non-RCD circuits inherit "30" the moment any code reads
-        // through the default path. Including it would tag every circuit
-        // in the snapshot as RCD-protected and the filter would do nothing.
-        // Verified against session DC946608's snapshot — every circuit had
-        // rcd_operating_current_ma="30" regardless of actual RCD bank
-        // membership.
-        const hasRcd =
-          (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') ||
-          (bucket.rcd_type && bucket.rcd_type !== '');
-        if (!hasRcd) {
-          skipped.push({ circuit_ref: ref, reason: 'no_rcd' });
+          // Tagged with boardId (not a bare ref number): circuit refs are
+          // per-board, so a bare-number array would misattribute a
+          // spare-skip on board B's circuit 3 to board A's circuit 3 on a
+          // '*' cross-board sweep. See the post-loop ledger staging below.
+          spareSkippedRefs.push({ ref, boardId });
           continue;
         }
       }
@@ -2481,6 +2582,45 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // the post-exclude post-scope total; skipped_count continues to
   // count scope-rule drops only (no exclude pollution).
   const excludedCount = requestedExcludes.size;
+  // PLAN-F item 1 — stage the bulk-outcome ledger for the bundler's
+  // audible-skip disclosure BEFORE the log/return (both read from the same
+  // `applied`/`spareSkippedRefs` this dispatcher just computed). One entry
+  // per (call, board) pair, never per circuit — a '*' cross-board sweep
+  // produces MULTIPLE iteration-plan boards, and `applied`/`spareSkippedRefs`
+  // accumulate across ALL of them, so this groups by boardId before staging
+  // (matches the fan-out's own per-board grouping — the bundler's grouped
+  // confirmations are field+value+board_id buckets, so the ledger has to be
+  // too, or the disclosure clause attaches to the wrong board's line).
+  if (input.board_id === '*') {
+    const boardIds = new Set([
+      ...applied.map((a) => a.board_id),
+      ...spareSkippedRefs.map((s) => s.boardId),
+    ]);
+    for (const bId of boardIds) {
+      const appliedForBoard = applied.filter((a) => a.board_id === bId).map((a) => a.circuit);
+      const spareSkippedForBoard = spareSkippedRefs
+        .filter((s) => s.boardId === bId)
+        .map((s) => s.ref);
+      if (appliedForBoard.length === 0 && spareSkippedForBoard.length === 0) continue;
+      stageBulkOutcomeForBundler(perTurnWrites, {
+        field: input.field,
+        value: input.value,
+        boardId: bId,
+        appliedRefs: appliedForBoard,
+        spareSkippedRefs: spareSkippedForBoard,
+        callId: call.tool_call_id,
+      });
+    }
+  } else if (applied.length > 0 || spareSkippedRefs.length > 0) {
+    stageBulkOutcomeForBundler(perTurnWrites, {
+      field: input.field,
+      value: input.value,
+      boardId: input.board_id ?? null,
+      appliedRefs: applied.map((a) => a.circuit),
+      spareSkippedRefs: spareSkippedRefs.map((s) => s.ref),
+      callId: call.tool_call_id,
+    });
+  }
   logToolCall(logger, {
     sessionId: session.sessionId,
     turnId,
@@ -2492,7 +2632,13 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     validation_error: null,
     input_summary: {
       field: input.field,
-      scope,
+      // PLAN-F item 1 telemetry contract — raw scope + raw spare_policy +
+      // the resolved effective policy as SEPARATE fields (never conflated
+      // into one scope string, so a dashboard can distinguish "the model
+      // asked for X" from "the dispatcher resolved Y").
+      scope: rawScope ?? null,
+      spare_policy: input.spare_policy ?? null,
+      resolved_spare_policy: effectiveSparePolicy,
       applied_count: applied.length,
       skipped_count: skipped.length,
       excluded_count: excludedCount,
@@ -2524,6 +2670,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
 //   - For TEXT-typed fields, accept any string (matches record_reading
 //     behaviour — the schema has no enum to validate against).
 const VALID_SCOPES = new Set(['non_spare', 'all', 'rcd_protected_only']);
+// PLAN-F item 1 (2026-08-12, feedback id 115) — the orthogonal spare_policy
+// filter. 'automatic' is a valid explicit value (behaviourally identical to
+// omission) so a model that always fills every optional field doesn't fail
+// validation.
+const VALID_SPARE_POLICIES = new Set(['automatic', 'include', 'exclude']);
 function validateSetFieldForAllCircuits(input) {
   if (typeof input.field !== 'string' || input.field.length === 0) {
     return { code: 'invalid_field', field: 'field' };
@@ -2561,6 +2712,9 @@ function validateSetFieldForAllCircuits(input) {
   }
   if (input.scope !== undefined && !VALID_SCOPES.has(input.scope)) {
     return { code: 'invalid_scope', field: 'scope' };
+  }
+  if (input.spare_policy !== undefined && !VALID_SPARE_POLICIES.has(input.spare_policy)) {
+    return { code: 'invalid_spare_policy', field: 'spare_policy' };
   }
   return null;
 }

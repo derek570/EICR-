@@ -95,13 +95,23 @@ describe('dispatchSetFieldForAllCircuits — happy path', () => {
 
     const rows = toolCallRows(logger);
     expect(rows).toHaveLength(1);
+    // PLAN-F item 1 (2026-08-12, feedback id 115) — scope is now logged as
+    // the RAW model input (null when omitted, never defaulted to
+    // 'non_spare' in the log) alongside the resolved effective spare
+    // policy as a SEPARATE field. rcd_button_confirmed is a reading field
+    // (not in DEVICE_ATTRIBUTE_FIELDS), so omitted scope + omitted
+    // spare_policy resolves to 'exclude' — same net behaviour as the old
+    // 'non_spare' default (all 14 circuits here have real designations, so
+    // none were spare-skipped either way).
     expect(rows[0]).toMatchObject({
       tool: 'set_field_for_all_circuits',
       outcome: 'ok',
       is_error: false,
       input_summary: {
         field: 'rcd_button_confirmed',
-        scope: 'non_spare',
+        scope: null,
+        spare_policy: null,
+        resolved_spare_policy: 'exclude',
         applied_count: 14,
         skipped_count: 0,
       },
