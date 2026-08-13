@@ -56,8 +56,14 @@ const runShadowHarnessSpy = jest.fn(async () => ({
   observations: [],
   confirmations: [],
 }));
+// Codex diff-review cycle 3 D1 — sonnet-stream.js now imports
+// mergeFastPathCorrelationIds from this module too; ESM named-export
+// resolution requires the mock factory to provide every name any
+// importer uses. No-op stub is safe here — this file's assertions never
+// inspect entry.fastPathCorrelationIdByTurn.
 jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
+  mergeFastPathCorrelationIds: jest.fn(),
 }));
 
 const classifyOvertakeSpy = jest.fn(() => ({ kind: 'no_pending_asks' }));
@@ -83,9 +89,7 @@ jest.unstable_mockModule('../extraction/pre-llm-gate.js', () => ({
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
-const { processInsulationResistanceTurn } = await import(
-  '../extraction/dialogue-engine/index.js'
-);
+const { processInsulationResistanceTurn } = await import('../extraction/dialogue-engine/index.js');
 
 function makeFakeWs() {
   const sent = [];
@@ -167,7 +171,14 @@ describe('P6 real-engine IR ingress — "A hundred MΩ" captures 100', () => {
   test('control: the RAW word-number defeats the live engine WITHOUT normalisation', () => {
     // Direct real-engine call (bypassing the seam) proves normalisation is
     // load-bearing: "a hundred megaohms" delivered RAW does not fill L-L.
-    const ws = { OPEN: 1, readyState: 1, sent: [], send(d) { this.sent.push(JSON.parse(d)); } };
+    const ws = {
+      OPEN: 1,
+      readyState: 1,
+      sent: [],
+      send(d) {
+        this.sent.push(JSON.parse(d));
+      },
+    };
     const session = { sessionId: 'sess_direct', stateSnapshot: { circuits: { 13: {} } } };
     processInsulationResistanceTurn({
       ws,

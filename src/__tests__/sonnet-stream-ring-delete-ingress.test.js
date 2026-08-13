@@ -49,8 +49,14 @@ const runShadowHarnessSpy = jest.fn(async (_session, text) => {
   harnessCalls.push(text);
   return { extracted_readings: [], questions_for_user: [], observations: [], confirmations: [] };
 });
+// Codex diff-review cycle 3 D1 — sonnet-stream.js now imports
+// mergeFastPathCorrelationIds from this module too; ESM named-export
+// resolution requires the mock factory to provide every name any
+// importer uses. No-op stub is safe here — this file's assertions never
+// inspect entry.fastPathCorrelationIdByTurn.
 jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
+  mergeFastPathCorrelationIds: jest.fn(),
 }));
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');

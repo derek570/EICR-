@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "9f648f5e828bf70fe1c7d162b9e271889696ca4ce68a40d58e7df5fd9be3714e",
+  "semantic_oracle_digest": "e3255d5160f2439da4b1c447eaf7e782b31cac6469bc6ff248631ac15aec3875",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -517,7 +517,7 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "d4eca0df3c64118a71bc42f1f4098f021786a0056ca41d39890d04f0b889e2d7"
+      "sha256": "5eb7621794a9bf5b45d77fcd78542fc0d41aefe90afddf5fe02a24f246cd7150"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "027122c1e3579ad1d58290e268f7e3a5d126fb3d4af01d541c3f34f6bd3be149"
+      "sha256": "b3f41ab99bbdc69d0ff93124b6dbd3a7b08a28319d008b4b18672e12f0b428a8"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -549,7 +549,7 @@
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",
-      "sha256": "912a1805514a3a295091a4f21174322aea4aaff743c18be57e1ce3d2b31c8632"
+      "sha256": "d1fa628ae1b398c826479c4a4d82670fab78a05932bb778c63a5f7816657e657"
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",
