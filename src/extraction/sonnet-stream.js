@@ -2254,6 +2254,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               ws.close(1008, 'Rate limit exceeded');
               return;
             }
+            // D2 (feedback ids 122, 124) — the confirmations toggle has no
+            // session-start wire carrier (session_start doesn't have the
+            // flag; it only arrives per-transcript), so this is the one
+            // ingress seam that can observe it every turn. Belt-and-braces
+            // alongside the client-side telemetry/cue work: this row is
+            // what let the M2 forensic chain in EVIDENCE.md prove a 9-minute
+            // session ran with confirmations off from log evidence alone,
+            // rather than having to infer the state from three absences.
+            logger.info('stage6.confirmations_enabled_state', {
+              sessionId: currentSessionId,
+              utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
+              confirmations_enabled: msg.confirmations_enabled === true,
+            });
             await handleTranscript(ws, currentSessionId, msg, preSessionBuffer);
             break;
 
