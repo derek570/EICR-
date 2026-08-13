@@ -369,4 +369,79 @@ describe('PLAN-C C2a — lighter-weight pause (full RecordingProvider)', () => {
     expect(harness.tts.played.filter((p) => p.kind === 'direct')).toHaveLength(1);
     expect(harness.tts.played[0].text).toContain('Which circuit');
   });
+
+  it('cycle-3 re-review — a stale resume() whose mic-permission await outlives a stop()+fresh-start() must not touch the new session', async () => {
+    const harness = buildHarnessServices();
+    __setRecordingTestServices(harness.services);
+    setDiagnosticTap(harness.services.diagnosticTap!);
+    const apiRef: { current: RecordingApi | null } = { current: null };
+    await act(async () => {
+      root.render(
+        <JobProvider initial={makeJob()}>
+          <RecordingProvider>
+            <Probe apiRef={apiRef} />
+          </RecordingProvider>
+        </JobProvider>
+      );
+    });
+    await act(async () => {
+      await apiRef.current!.start();
+    });
+    await act(async () => {
+      apiRef.current!.pause();
+    });
+    expect(apiRef.current!.state).toBe('sleeping');
+
+    // Make the NEXT mic-permission request (the stale resume()'s) hang
+    // indefinitely until the test releases it — models a slow/queued
+    // getUserMedia prompt outliving a stop()+fresh-start() cycle.
+    let releaseStaleMic: (() => void) | null = null;
+    const staleMicGate = new Promise<void>((resolve) => {
+      releaseStaleMic = resolve;
+    });
+    __setRecordingTestServices({
+      ...harness.services,
+      micCaptureFactory: async (opts) => {
+        await staleMicGate;
+        return { sampleRate: 16000, stop: () => {} };
+      },
+    });
+
+    // Fire resume() WITHOUT awaiting it — it is now parked awaiting the
+    // gated mic factory. Immediately stop() (legal: statusRef is
+    // 'sleeping', not 'idle') and start a FRESH session.
+    const staleResume = apiRef.current!.resume();
+    await act(async () => {
+      apiRef.current!.stop();
+    });
+    expect(apiRef.current!.state).toBe('idle');
+
+    __setRecordingTestServices(harness.services); // restore the fast mic for the fresh session
+    await act(async () => {
+      await apiRef.current!.start();
+    });
+    expect(apiRef.current!.state).toBe('active');
+    const freshSonnet = harness.refs.sonnet!;
+    const freshDeepgram = harness.refs.deepgram!;
+    const deepgramConstructedAfterFreshStart = harness.counts.deepgramConstructed;
+    const sonnetConstructedAfterFreshStart = harness.counts.sonnetConstructed;
+
+    // NOW release the stale resume()'s mic-permission await. r2's fix
+    // alone stops the orphaned mic handle but still fell through into
+    // openDeepgram()/sonnetRef.resume() against whatever is CURRENTLY
+    // live — r3 makes beginMicOnly() report the abort so resume() bails
+    // immediately instead.
+    await act(async () => {
+      releaseStaleMic!();
+      await staleResume;
+    });
+
+    // The fresh session must be completely untouched: same Deepgram/
+    // Sonnet instances, no extra constructions, still active.
+    expect(apiRef.current!.state).toBe('active');
+    expect(harness.refs.sonnet).toBe(freshSonnet);
+    expect(harness.refs.deepgram).toBe(freshDeepgram);
+    expect(harness.counts.deepgramConstructed).toBe(deepgramConstructedAfterFreshStart);
+    expect(harness.counts.sonnetConstructed).toBe(sonnetConstructedAfterFreshStart);
+  });
 });

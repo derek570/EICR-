@@ -3480,15 +3480,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         clearTick();
       },
     });
-    // Codex diff-review r2 — session rotated while awaiting mic
+    // Codex diff-review r2/r3 — session rotated while awaiting mic
     // permission. Stop the handle THIS call created (it belongs to
-    // nobody now) and do NOT publish it — the current `micRef` belongs
-    // to whichever session is live now, and must be left alone.
+    // nobody now), do NOT publish it (the current `micRef` belongs to
+    // whichever session is live now, and must be left alone), and
+    // report the abort so the CALLER also stops proceeding — r3 caught
+    // that r2's fix alone still let a stale caller continue into
+    // openDeepgram()/sonnetRef.resume() on a since-rotated session.
     if (sessionIdRef.current !== sessionId) {
       handle.stop();
-      return;
+      return false;
     }
     micRef.current = handle;
+    return true;
   }, [setState, clearTick, teardownDeepgram, teardownMic, teardownSleep]);
 
   /** Open the mic stream, Deepgram, and Sonnet together. Shared between
@@ -3499,7 +3503,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  this, specifically to skip the `openSonnet()` call below (see
    *  `beginMicOnly`'s docblock). */
   const beginMicPipeline = React.useCallback(async () => {
-    await beginMicOnly();
+    // Codex diff-review r3 — if the session rotated during the mic
+    // await, beginMicOnly() already stopped the orphaned handle; stop
+    // HERE too rather than opening Deepgram/Sonnet for a session that's
+    // no longer current (the caller's own post-await sessionId check
+    // still runs and cleans up, but there's now nothing extra to clean
+    // up — strictly safer than proceeding).
+    const micOk = await beginMicOnly();
+    if (!micOk) return;
     // Samples arrive at DeepgramService already resampled to 16kHz (see
     // beginMicOnly's onSamples callback), so declare the source rate as
     // 16k regardless of the mic handle's actual rate. Otherwise
@@ -4209,7 +4220,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // filled) during the pause because the mic was stopped, so
         // there is nothing captured to send.
         pausedLightweightRef.current = false;
-        await beginMicOnly();
+        // Codex diff-review r3 — beginMicOnly() reports whether the
+        // session was still current when its mic-permission await
+        // resolved. r2's fix stopped the orphaned mic handle in that
+        // case, but this call still fell through into openDeepgram() /
+        // sonnetRef.resume() / resumeTimer() against whatever session
+        // is CURRENTLY live (a stale resume interfering with a fresh
+        // one). Bail immediately instead — nothing has been opened for
+        // this stale attempt yet, so there is nothing to unwind.
+        const micOk = await beginMicOnly();
+        if (!micOk) return;
         await openDeepgram(16000);
         sonnetRef.current?.resume();
         // Re-arm the automatic timer per the session-latched flag.
