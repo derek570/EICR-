@@ -68,73 +68,50 @@ describe('applyPostcodeLookupToSnapshot', () => {
     expect(snapshot.circuits[0].county).toBe('Greater London');
   });
 
-  // Plan E (feedback id 125) — Codex diff-review finding (cycle 1, lens C):
-  // `if (lookup.county && ...)` treated a valid-but-EMPTY lookup county
-  // identically to "no lookup data at all", so a stored drift value like
-  // "South East" could never be cleared once E3 started correctly
-  // returning blank county for unitary authorities (~40% of England) —
-  // exactly the mainstream case this plan exists to fix, not an edge case.
-  test('a valid lookup with an EMPTY county clears a stored drift value (unitary authority)', () => {
+  // Plan E (feedback id 125) — a blank-value drift-clear capability (write
+  // an empty county through to clear a stored "South East") was tried
+  // across two review cycles and ultimately REVERTED: the fill-empty-only
+  // merge means a client whose own cache still shows the pre-clear value
+  // structurally guarantees resurrecting it on its very next
+  // job_state_update push — see postcode-snapshot-applier.js's comment.
+  // This also exceeds the plan's explicit non-goal ("no retroactive repair
+  // of already-written drift values... Derek corrects by voice"). Pinned
+  // here: an EMPTY lookup value never touches an existing stored value,
+  // drift or not — the ONLY way to clear/replace a stored value is a
+  // NON-empty lookup result (unchanged from before this plan).
+  test('a valid lookup with an EMPTY county does NOT clear a stored drift value (E1/E3 non-goal: no retroactive repair)', () => {
     const snapshot = buildSnapshot({ town: 'Earley', county: 'South East' });
     const changes = applyPostcodeLookupToSnapshot(
       snapshot,
       { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: '' },
       'sess_test'
     );
-    expect(snapshot.circuits[0].county).toBe('');
-    expect(changes).toEqual([{ field: 'county', value: '' }]);
-  });
-
-  test('a valid lookup with an EMPTY county does NOT write a no-op over an already-blank county', () => {
-    const snapshot = buildSnapshot({ town: 'Earley', county: '' });
-    const changes = applyPostcodeLookupToSnapshot(
-      snapshot,
-      { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: '' },
-      'sess_test'
-    );
+    expect(snapshot.circuits[0].county).toBe('South East');
     expect(changes).toEqual([]);
   });
 
-  test('a valid lookup with an EMPTY county preserves a real manually-set county (not drift)', () => {
-    const snapshot = buildSnapshot({ town: 'Earley', county: 'Berkshire' });
-    const changes = applyPostcodeLookupToSnapshot(
-      snapshot,
-      { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: '' },
-      'sess_test'
-    );
-    expect(snapshot.circuits[0].county).toBe('Berkshire');
-    expect(changes).toEqual([]);
-  });
-
-  // Cycle-2 re-review finding: town is deliberately NOT symmetric with
-  // county's blank-clear-drift capability — UK_REGION_DRIFT contains values
-  // that can also be real town names ("london"), so extending blank-clear
-  // to town risks erasing a correct town that merely collides with a
-  // region name. Only county gets the new behaviour; town keeps its
-  // original truthy-gated guard (a non-empty new value can still replace
-  // town drift, exactly as before this plan).
-  test('a valid lookup with an EMPTY town does NOT clear a stored town drift value (town/county asymmetry)', () => {
+  test('a valid lookup with an EMPTY town does NOT clear a stored drift value either', () => {
     const snapshot = buildSnapshot({ town: 'London', county: 'Berkshire' });
     const changes = applyPostcodeLookupToSnapshot(
       snapshot,
       { valid: true, postcode: 'RG6 3EY', town: '', county: 'Berkshire' },
       'sess_test'
     );
-    // Even though "london" IS in UK_REGION_DRIFT, an empty lookup town must
-    // never clear it — only a non-empty replacement can.
     expect(snapshot.circuits[0].town).toBe('London');
     expect(changes).toEqual([]);
   });
 
-  test('a valid lookup with a NON-EMPTY town still replaces town drift, unchanged from before this plan', () => {
-    const snapshot = buildSnapshot({ town: 'London', county: 'Berkshire' });
+  test('a valid lookup with an EMPTY county still fills a genuinely EMPTY existing county', () => {
+    const snapshot = buildSnapshot({ town: 'Earley', county: '' });
     const changes = applyPostcodeLookupToSnapshot(
       snapshot,
-      { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: 'Berkshire' },
+      { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: '' },
       'sess_test'
     );
-    expect(snapshot.circuits[0].town).toBe('Earley');
-    expect(changes).toEqual([{ field: 'town', value: 'Earley' }]);
+    // Empty-to-empty: shouldOverride(existing='') is true, but the lookup
+    // value is falsy so the guard's `lookup.county &&` never fires — no-op,
+    // not a spurious write.
+    expect(changes).toEqual([]);
   });
 
   test('preserves manually-set real town/county', () => {

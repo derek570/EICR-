@@ -120,14 +120,7 @@ function shouldOverride(existing) {
 export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, options = {}) {
   if (!snapshot || typeof snapshot !== 'object') return [];
   if (!lookup || lookup.valid !== true) return [];
-  // Plan E (feedback id 125) — a valid lookup can legitimately return an
-  // EMPTY town/county string (E3: blank-on-unknown for a unitary authority's
-  // county). `!lookup.town` treats that empty string identically to "the
-  // lookup carries no locality info at all", so a genuinely present-but-
-  // blank field must be distinguished by key presence, not truthiness —
-  // otherwise a stored drift value ("South East") can never be cleared for
-  // the exact ~40%-of-England case this plan exists to fix.
-  if (typeof lookup.town !== 'string' && typeof lookup.county !== 'string') return [];
+  if (!lookup.town && !lookup.county) return [];
 
   if (!snapshot.circuits || typeof snapshot.circuits !== 'object') {
     snapshot.circuits = {};
@@ -166,34 +159,28 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, optio
       if (observer) observer.clearOriginFrame();
     }
   };
-  // Plan E — Codex diff-review finding: `lookup.county && ...` treated a
-  // valid-but-blank lookup value identically to "no lookup data", so a
-  // stored drift value could never be cleared when the (now-correct)
-  // mapping legitimately returns blank for a unitary authority (E3's
-  // confirmed real-world regression). Gate on the value actually being a
-  // string for the drift-clear case, but only write an empty value when
-  // there's something to clear (`isDriftValue`) — an empty-to-empty write
-  // would be a harmless but noisy no-op (spurious derived board-reading +
-  // log line) on every lookup against an already-empty field.
-  //
-  // COUNTY ONLY (cycle-2 re-review finding): town is deliberately NOT
-  // symmetric here. UK_REGION_DRIFT includes values that can also be
-  // legitimate real TOWN names (e.g. "london"), so extending blank-clear
-  // to town risks erasing a correct manually-set/dictated town that merely
-  // happens to collide with a region name — a materially different, more
-  // destructive outcome than the confirmed county regression this fix
-  // targets. Town's original truthy-gated behaviour (a NON-empty new value
-  // can still replace town drift, as before) is unchanged; only an empty
-  // lookup county gets this new drift-clear-to-blank capability.
+  // Plan E — a blank-value drift-clear capability (write an empty county
+  // through to clear a stored "South East") was tried in an earlier review
+  // cycle and REVERTED: `_mergeIncomingJobStateIntoSnapshot`'s fill-empty-
+  // only merge for the 8 address-family keys means a client whose own
+  // local cache still shows the pre-clear value (its apply-gate rejects an
+  // incoming empty-string "clear" the same way — `hasValue(existing)`
+  // wins) will silently resurrect the drift on its very next
+  // `job_state_update` push, structurally guaranteed, not just a rare
+  // reconnect race. This also exceeds the plan's own explicit non-goal:
+  // "No retroactive repair of already-written 'Hawkedon'/'South East'
+  // values in stored jobs (Derek corrects by voice; the source-level
+  // mapping fix stops recurrence)." E3 already stops NEW drift from ever
+  // being written (`region` is never read by the mapping); an
+  // already-stored value from before that fix shipped is out of scope
+  // here, exactly as the plan says. Both fields keep their original
+  // truthy-gated guard — a NON-empty new value still replaces a
+  // drift-flagged town/county, unchanged from before this plan.
   if (lookup.town && shouldOverride(circ0[townField])) {
     writeDerived(townField, lookup.town);
     changes.push({ field: townField, value: lookup.town });
   }
-  if (
-    typeof lookup.county === 'string' &&
-    shouldOverride(circ0[countyField]) &&
-    (lookup.county || isDriftValue(circ0[countyField]))
-  ) {
+  if (lookup.county && shouldOverride(circ0[countyField])) {
     writeDerived(countyField, lookup.county);
     changes.push({ field: countyField, value: lookup.county });
   }

@@ -225,7 +225,16 @@ postcode-area→county table); `region` is never read by the mapping — a
 source-level rule, not an output filter (filtering the lookup's own output
 through `UK_REGION_DRIFT` would blank legitimate towns like "London").
 `UK_REGION_DRIFT` itself is unchanged — it still replaces already-stored
-drift values in the applier.
+drift values in the applier, but ONLY with a non-empty new value; a review
+cycle tried teaching it to clear a drift value down to blank (for the
+unitary-authority case where the correct replacement IS empty) and reverted
+it — `_mergeIncomingJobStateIntoSnapshot`'s fill-empty-only merge means a
+client whose own cache still shows the pre-clear value structurally
+guarantees resurrecting it on the client's very next `job_state_update`
+push, and the plan's own non-goal ("no retroactive repair of already-
+written drift values… Derek corrects by voice") already covers this case —
+E3 stops new drift from ever being written; an already-stored value is out
+of scope.
 
 The derived town/county writes stay excluded from confirmation candidacy by
 design (Audio-First's "derived, not dictated" exception), so a wrong mapping
