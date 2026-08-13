@@ -68,6 +68,44 @@ describe('applyPostcodeLookupToSnapshot', () => {
     expect(snapshot.circuits[0].county).toBe('Greater London');
   });
 
+  // Plan E (feedback id 125) — Codex diff-review finding (cycle 1, lens C):
+  // `if (lookup.county && ...)` treated a valid-but-EMPTY lookup county
+  // identically to "no lookup data at all", so a stored drift value like
+  // "South East" could never be cleared once E3 started correctly
+  // returning blank county for unitary authorities (~40% of England) —
+  // exactly the mainstream case this plan exists to fix, not an edge case.
+  test('a valid lookup with an EMPTY county clears a stored drift value (unitary authority)', () => {
+    const snapshot = buildSnapshot({ town: 'Earley', county: 'South East' });
+    const changes = applyPostcodeLookupToSnapshot(
+      snapshot,
+      { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: '' },
+      'sess_test'
+    );
+    expect(snapshot.circuits[0].county).toBe('');
+    expect(changes).toEqual([{ field: 'county', value: '' }]);
+  });
+
+  test('a valid lookup with an EMPTY county does NOT write a no-op over an already-blank county', () => {
+    const snapshot = buildSnapshot({ town: 'Earley', county: '' });
+    const changes = applyPostcodeLookupToSnapshot(
+      snapshot,
+      { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: '' },
+      'sess_test'
+    );
+    expect(changes).toEqual([]);
+  });
+
+  test('a valid lookup with an EMPTY county preserves a real manually-set county (not drift)', () => {
+    const snapshot = buildSnapshot({ town: 'Earley', county: 'Berkshire' });
+    const changes = applyPostcodeLookupToSnapshot(
+      snapshot,
+      { valid: true, postcode: 'RG6 3EY', town: 'Earley', county: '' },
+      'sess_test'
+    );
+    expect(snapshot.circuits[0].county).toBe('Berkshire');
+    expect(changes).toEqual([]);
+  });
+
   test('preserves manually-set real town/county', () => {
     const snapshot = buildSnapshot({ town: 'Wokingham', county: 'Berkshire' });
     applyPostcodeLookupToSnapshot(

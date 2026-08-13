@@ -599,6 +599,19 @@ export function foldLocalityIntoLegacyConfirmations(confirmations, stateSnapshot
     if (conf?.field !== 'postcode' && conf?.field !== 'client_postcode') continue;
     if (typeof conf.text !== 'string' || !conf.text) continue;
     const family = conf.field === 'client_postcode' ? 'client' : 'site';
+    const townField = family === 'client' ? 'client_town' : 'town';
+    const countyField = family === 'client' ? 'client_county' : 'county';
+    // Codex diff-review finding (cycle 1, lens B) — the legacy prose-JSON
+    // extractor can independently emit its own town/county confirmation
+    // (town/county are legitimate directly-dictatable fields, and the model
+    // may also surface lookup evidence in its own words). If this response
+    // already carries a standalone confirmation for the matching family's
+    // town/county, folding it into the postcode tail too would speak it
+    // twice — defer to the standalone confirmation and stay quiet here.
+    const hasOwnConfirmation = confirmations.some(
+      (c) => c !== conf && (c?.field === townField || c?.field === countyField)
+    );
+    if (hasOwnConfirmation) continue;
     const tail = resolveEffectiveLocalityTail(stateSnapshot, family);
     if (!tail) continue;
     conf.text = `${conf.text}, ${tail}`;

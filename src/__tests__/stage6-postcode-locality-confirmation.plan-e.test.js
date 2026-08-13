@@ -154,6 +154,32 @@ describe('PLAN-E E4 — live production bundler path', () => {
     );
   });
 
+  test('SAME-TURN DICTATED TOWN: a directly-dictated (non-derived) town in the same turn as postcode speaks ONCE, not twice', async () => {
+    // town/county are legitimate directly-dictatable fields
+    // (config/field_schema.json), not only derived-from-lookup — Codex
+    // diff-review finding (cycle 1, lens B). Without the fix, "Earley"
+    // would speak both in its own confirmation AND appended to postcode's.
+    const writes = createPerTurnWrites();
+    const session = makeSession();
+    await writePostcode({ perTurnWrites: writes, session });
+    const townResult = await dispatchRecordBoardReading(
+      {
+        tool_call_id: 'town-write',
+        name: 'record_board_reading',
+        input: { field: 'town', value: 'Earley', confidence: 1, source_turn_id: 'turn-1' },
+      },
+      { session, logger: makeLogger(), turnId: 'turn-1', perTurnWrites: writes, round: 0 }
+    );
+    expect(townResult.is_error).toBe(false);
+    const bundled = bundleWithSnapshot(writes, session);
+    const townConfirmation = bundled.confirmations.find((c) => c.field === 'town');
+    expect(townConfirmation.text).toContain('Earley');
+    // The postcode confirmation must NOT also carry "Earley" — it already
+    // speaks once, via the town's own confirmation.
+    const conf = postcodeConfirmation(bundled);
+    expect(conf.text.includes('Earley')).toBe(false);
+  });
+
   test('DEDUPE IDENTITY UNCHANGED: dedupe_token is identical whether or not a locality tail is appended', async () => {
     const withTail = createPerTurnWrites();
     const sessionWithTail = makeSession({ town: 'Lower Earley' });
@@ -202,6 +228,21 @@ describe('PLAN-E E4 — legacy JSON-prose path (foldLocalityIntoLegacyConfirmati
       snapshot({ town: 'Lower Earley', county: 'Berkshire' })
     );
     expect(confirmations[0].text).toBe('postcode RG6 3EY, Lower Earley, Berkshire');
+  });
+
+  test('SAME-TURN model-emitted town confirmation: postcode tail defers to it instead of duplicating', () => {
+    // Codex diff-review finding (cycle 1, lens B) — the legacy prose-JSON
+    // extractor can independently emit its own town/county confirmation
+    // (from lookup evidence or direct dictation). Without the fix, this
+    // response would speak "Earley" twice: once via its own confirmation,
+    // once appended to the postcode tail.
+    const confirmations = [
+      { field: 'postcode', text: 'postcode RG6 3EY' },
+      { field: 'town', text: 'town Earley' },
+    ];
+    foldLocalityIntoLegacyConfirmations(confirmations, snapshot({ town: 'Earley' }));
+    expect(confirmations[0].text).toBe('postcode RG6 3EY');
+    expect(confirmations[1].text).toBe('town Earley');
   });
 
   test('also updates expanded_text when present, leaves it absent when not', () => {

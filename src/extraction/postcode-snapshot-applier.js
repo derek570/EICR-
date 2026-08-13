@@ -110,7 +110,14 @@ function shouldOverride(existing) {
 export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, options = {}) {
   if (!snapshot || typeof snapshot !== 'object') return [];
   if (!lookup || lookup.valid !== true) return [];
-  if (!lookup.town && !lookup.county) return [];
+  // Plan E (feedback id 125) — a valid lookup can legitimately return an
+  // EMPTY town/county string (E3: blank-on-unknown for a unitary authority's
+  // county). `!lookup.town` treats that empty string identically to "the
+  // lookup carries no locality info at all", so a genuinely present-but-
+  // blank field must be distinguished by key presence, not truthiness —
+  // otherwise a stored drift value ("South East") can never be cleared for
+  // the exact ~40%-of-England case this plan exists to fix.
+  if (!('town' in lookup) && !('county' in lookup)) return [];
 
   if (!snapshot.circuits || typeof snapshot.circuits !== 'object') {
     snapshot.circuits = {};
@@ -149,11 +156,27 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, optio
       if (observer) observer.clearOriginFrame();
     }
   };
-  if (lookup.town && shouldOverride(circ0[townField])) {
+  // Plan E — Codex diff-review finding: `lookup.town && ...` treated a
+  // valid-but-blank lookup value identically to "no lookup data", so a
+  // stored drift value could never be cleared when the (now-correct)
+  // mapping legitimately returns blank. Gate on key PRESENCE for the
+  // drift-clear case, but only actually write an empty value when there's
+  // something to clear (`isDriftValue`) — an empty-to-empty write would be
+  // a harmless but noisy no-op (spurious derived board-reading + log line)
+  // on every lookup against an already-empty field.
+  if (
+    'town' in lookup &&
+    shouldOverride(circ0[townField]) &&
+    (lookup.town || isDriftValue(circ0[townField]))
+  ) {
     writeDerived(townField, lookup.town);
     changes.push({ field: townField, value: lookup.town });
   }
-  if (lookup.county && shouldOverride(circ0[countyField])) {
+  if (
+    'county' in lookup &&
+    shouldOverride(circ0[countyField]) &&
+    (lookup.county || isDriftValue(circ0[countyField]))
+  ) {
     writeDerived(countyField, lookup.county);
     changes.push({ field: countyField, value: lookup.county });
   }

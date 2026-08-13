@@ -548,6 +548,21 @@ function synthesiseConfirmations(
   const localityTailOf = (r) => {
     if (r?.field !== 'postcode' && r?.field !== 'client_postcode') return null;
     const family = r.field === 'client_postcode' ? 'client' : 'site';
+    const townField = family === 'client' ? 'client_town' : 'town';
+    const countyField = family === 'client' ? 'client_county' : 'county';
+    // Codex diff-review finding (cycle 1, lens B) — town/county are ALSO
+    // legitimate directly-dictatable fields (config/field_schema.json), not
+    // only derived-from-lookup. If this SAME turn also confirms the
+    // matching town/county as its own (non-derived) board reading, that
+    // reading already speaks on its own; folding it into the postcode tail
+    // too would speak the same locality TWICE in one turn, violating
+    // Audio-First's exactly-once invariant. The tail's whole purpose is to
+    // surface a value that would otherwise stay silent — when it's already
+    // audible via its own confirmation, defer to that and stay quiet here.
+    const hasOwnConfirmation = Array.isArray(boardReadings)
+      ? boardReadings.some((br) => br.field === townField || br.field === countyField)
+      : false;
+    if (hasOwnConfirmation) return null;
     return resolveEffectiveLocalityTail(boardScope?.stateSnapshot, family);
   };
   // F/U-1 (2026-07-19) — identity Set of projected reading objects that came
