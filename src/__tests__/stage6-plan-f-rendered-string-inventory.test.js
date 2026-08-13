@@ -76,7 +76,12 @@ describe('PLAN-F rendered-string inventory — actual dispatcher/bundler output'
     expect(entry.text.endsWith('.')).toBe(false);
   });
 
-  test('the zero-applied standalone sentence is exactly "No non-spare circuits were updated; skipping N spare ways."', async () => {
+  // Codex diff-review r1 — the plan's zero-applied wording is PAST tense
+  // ("skipped"), distinct from the present-continuous append-clause
+  // ("skipping") used when there IS a surviving confirmation to annotate.
+  // PLAN-F-final.md Decision 4, verbatim: "No non-spare circuits were
+  // updated; skipped N spare ways."
+  test('the zero-applied standalone sentence is exactly "No non-spare circuits were updated; skipped N spare ways."', async () => {
     const session = {
       sessionId: 's-inventory-2',
       stateSnapshot: {
@@ -96,14 +101,14 @@ describe('PLAN-F rendered-string inventory — actual dispatcher/bundler output'
     );
     const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
-    expect(entry.text).toBe('No non-spare circuits were updated; skipping 1 spare way.');
+    expect(entry.text).toBe('No non-spare circuits were updated; skipped 1 spare way.');
   });
 });
 
 describe('PLAN-F rendered-string inventory — collision check against existing notice families', () => {
-  test('no OTHER spoken-string literal in src/extraction/ contains "skipping" + "spare" (this plan is the sole producer)', () => {
+  test('no OTHER spoken-string literal in src/extraction/ contains "skipping"/"skipped" + "spare" (this plan is the sole producer)', () => {
     const hits = grepAllExtractionSource(
-      /skipping\s+\d|skipping \$\{|skipping \$\{skipClause/i
+      /skipping\s+\d|skipping \$\{|skipped\s+\d|skipped \$\{/i
     ).filter((h) => /spare/i.test(h.text));
     const nonPlanFHits = hits.filter(
       (h) =>

@@ -97,7 +97,7 @@ describe('audible-skip disclosure — zero-applied (Decision 4 standalone confir
     const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
     expect(entry).toBeDefined();
-    expect(entry.text).toBe('No non-spare circuits were updated; skipping 2 spare ways.');
+    expect(entry.text).toBe('No non-spare circuits were updated; skipped 2 spare ways.');
     expect(entry.circuit).toBeNull();
   });
 
@@ -114,7 +114,7 @@ describe('audible-skip disclosure — zero-applied (Decision 4 standalone confir
     });
     const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
-    expect(entry.text).toBe('No non-spare circuits were updated; skipping 1 spare way.');
+    expect(entry.text).toBe('No non-spare circuits were updated; skipped 1 spare way.');
   });
 });
 

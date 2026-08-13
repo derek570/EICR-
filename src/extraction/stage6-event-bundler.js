@@ -1792,14 +1792,25 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         if (!Array.isArray(outcome.spareSkippedRefs) || outcome.spareSkippedRefs.length === 0) {
           continue; // nothing to disclose
         }
-        const skipClause =
+        // Codex diff-review r1 (2026-08-13) — the plan's exact wording
+        // DIFFERS by context: the clause appended to a success confirmation
+        // is present-continuous ("…skipping N spare ways"); the standalone
+        // zero-applied sentence is past-tense ("skipped N spare ways") —
+        // "No non-spare circuits were updated; skipped N spare ways."
+        // (PLAN-F-final.md Decision 4, verbatim). Two distinct forms, not
+        // one reused across both contexts.
+        const appendClause =
           outcome.spareSkippedRefs.length === 1
             ? 'skipping 1 spare way'
             : `skipping ${outcome.spareSkippedRefs.length} spare ways`;
+        const standaloneClause =
+          outcome.spareSkippedRefs.length === 1
+            ? 'skipped 1 spare way'
+            : `skipped ${outcome.spareSkippedRefs.length} spare ways`;
         if (!Array.isArray(outcome.appliedRefs) || outcome.appliedRefs.length === 0) {
           // Decision 4 — zero-applied: all targets were spares under an
           // exclude policy, so no reading/group exists to annotate.
-          const zeroText = `No non-spare circuits were updated; ${skipClause}.`;
+          const zeroText = `No non-spare circuits were updated; ${standaloneClause}.`;
           const zeroEntry = {
             text: zeroText,
             expanded_text: expandForTTS(zeroText),
@@ -1825,15 +1836,27 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           }
           return false;
         });
-        if (matchIdx >= 0) {
+        // Codex diff-review r1 (edge-interactions lens, WITHIN_INTENT per
+        // Audio-First invariant #1 — exactly once, never twice) — a
+        // confirmation that already carries `fast_correlation_id` is the
+        // canonical twin of an ALREADY-SPOKEN fast-TTS clip (PLAN-B); its
+        // text must stay byte-identical to what the fast path rendered, or
+        // iOS's exactly-once suppression either drops the disclosure
+        // entirely (text no longer matches → treated as a correction,
+        // suppressed as a duplicate) or the base reading risks a second
+        // playback. Never mutate that entry in place — the disclosure
+        // still ships, as its own additive line, so it's never silently
+        // lost either.
+        if (matchIdx >= 0 && !confirmations[matchIdx].fast_correlation_id) {
           const match = confirmations[matchIdx];
-          match.text = `${match.text}, ${skipClause}`;
+          match.text = `${match.text}, ${appendClause}`;
           match.expanded_text = expandForTTS(match.text);
         } else {
           // Defensive fallback — Audio-First invariant #1: a disclosure
           // must never be silently lost even if the matching confirmation
-          // was itself suppressed upstream for an unrelated reason.
-          const fallbackText = `${skipClause.charAt(0).toUpperCase()}${skipClause.slice(1)}.`;
+          // was itself suppressed upstream for an unrelated reason, OR
+          // (the fast-correlation case above) deliberately left unmutated.
+          const fallbackText = `${appendClause.charAt(0).toUpperCase()}${appendClause.slice(1)}.`;
           const fallbackEntry = {
             text: fallbackText,
             expanded_text: expandForTTS(fallbackText),

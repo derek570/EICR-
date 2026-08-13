@@ -159,6 +159,21 @@ describe('spare_policy resolution — legacy scope:"non_spare"', () => {
     const body = JSON.parse(result.content);
     expect(body.applied.map((a) => a.circuit).sort()).toEqual([1, 2, 3, 4]);
   });
+
+  // Codex diff-review r1 (wire-contract lens) — the schema/comment claimed
+  // non_spare forces exclusion UNCONDITIONALLY; the resolver's actual
+  // precedence is "explicit spare_policy always wins", including over
+  // legacy non_spare. Pin the runtime behaviour explicitly so the schema
+  // text can never silently drift from it again.
+  test('explicit scope:"non_spare" + explicit spare_policy:"include" → the explicit filter still overrides legacy exclude', async () => {
+    const { result } = await dispatch(
+      buildSession(),
+      mockLogger(),
+      deviceAttributeInput({ scope: 'non_spare', spare_policy: 'include' })
+    );
+    const body = JSON.parse(result.content);
+    expect(body.applied.map((a) => a.circuit).sort()).toEqual([1, 2, 3, 4, 5, 6]);
+  });
 });
 
 describe('spare_policy resolution — rcd_protected_only × automatic/include/exclude', () => {

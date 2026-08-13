@@ -1052,10 +1052,17 @@ const startDialogueScript = makeTool({
 //                       passthrough — spares are ALWAYS included unless
 //                       spare_policy explicitly says otherwise.
 //   non_spare        — LEGACY selector, still valid: every non-supply
-//                       circuit whose designation isn't "spare" (spares
-//                       forced-excluded regardless of spare_policy). Prefer
-//                       omitting scope + (if needed) spare_policy:"exclude"
-//                       instead of emitting this explicitly.
+//                       circuit whose designation isn't "spare" — an
+//                       omitted spare_policy resolves to forced-exclude
+//                       (unchanged legacy behaviour), but an EXPLICIT
+//                       spare_policy still overrides it, same as every
+//                       other selector (Codex diff-review r1 — the prior
+//                       wording claimed non_spare forces exclusion
+//                       unconditionally, which contradicted the actual
+//                       resolveSparePolicy precedence: explicit always
+//                       wins). Prefer omitting scope + (if needed)
+//                       spare_policy:"exclude" instead of emitting this
+//                       explicitly.
 //   rcd_protected_only — circuits with any of rcd_bs_en / rcd_type /
 //                        rcd_operating_current_ma populated. Useful for
 //                        bulk-setting RCD-test results without spilling onto
@@ -1099,7 +1106,7 @@ const setFieldForAllCircuits = makeTool({
       type: 'string',
       enum: ['non_spare', 'all', 'rcd_protected_only'],
       description:
-        'SELECTOR — which circuits to target. Prefer OMITTING scope: the dispatcher applies the correct family-aware spare default automatically (see spare_policy). all: every non-supply circuit — a documented, tested unconditional passthrough that always includes spares unless spare_policy explicitly excludes them. non_spare: LEGACY, still valid — forces spare exclusion regardless of spare_policy; prefer omitting scope (+ spare_policy:"exclude" if needed) instead. rcd_protected_only: only circuits with RCD fields populated — emit this explicitly for protected-only intent ("...for all RCD-protected circuits"); spare inclusion under it is decided by spare_policy same as the omitted case.',
+        'SELECTOR — which circuits to target. Prefer OMITTING scope: the dispatcher applies the correct family-aware spare default automatically (see spare_policy). all: every non-supply circuit — a documented, tested unconditional passthrough that always includes spares unless spare_policy explicitly excludes them. non_spare: LEGACY, still valid — an omitted spare_policy resolves to forced exclusion (unchanged), but an explicit spare_policy still overrides it like any other selector; prefer omitting scope (+ spare_policy:"exclude" if needed) instead. rcd_protected_only: only circuits with RCD fields populated — emit this explicitly for protected-only intent ("...for all RCD-protected circuits"); spare inclusion under it is decided by spare_policy same as the omitted case.',
     },
     spare_policy: {
       type: 'string',

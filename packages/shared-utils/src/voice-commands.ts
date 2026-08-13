@@ -592,7 +592,12 @@ function parseApplyField(transcript: string): VoiceCommand | null {
 // carries its own generated/pinned drift assertion against the schema).
 // ─────────────────────────────────────────────────────────────────────────
 
-const DEVICE_ATTRIBUTE_FIELDS = new Set<string>([
+// Codex diff-review r1 (wire-contract lens) — exported so a test can assert
+// this set directly against config/field_schema.json's live OCPD+RCD union,
+// the same drift-assertion contract backend's device-attribute-fields.js
+// carries. Without this export only the backend classifier was checked
+// against the live schema; the web copy could drift silently.
+export const DEVICE_ATTRIBUTE_FIELDS = new Set<string>([
   'ocpd_bs_en',
   'ocpd_type',
   'ocpd_rating_a',
@@ -635,7 +640,13 @@ function resolveSparePolicy(
 }
 
 // Contradiction detection + modifier stripping for the apply-field parser.
-const SPARE_INCLUDE_RE = /\b(?:including|include|with)\s+(?:the\s+)?spares?\b/i;
+// Codex diff-review r1 (silent-path lens) — "not including spares" matched
+// BOTH regexes independently (the exclude alternation's "not\s+including"
+// AND the include regex's bare "including spares" substring), so a single
+// exclude-shaped instruction was misclassified as a self-contradiction and
+// silently refused. The negative lookbehind makes the two patterns
+// mutually exclusive on this phrase.
+const SPARE_INCLUDE_RE = /(?<!not\s)\b(?:including|include|with)\s+(?:the\s+)?spares?\b/i;
 const SPARE_EXCLUDE_RE =
   /\b(?:excluding|exclude|except|not\s+including|without)\s+(?:the\s+)?spares?(?:\s+ways?)?\b/i;
 
@@ -1021,7 +1032,9 @@ function applyApplyField(
   // found" case. Distinct branches — the wording must not collide.
   if (indices.length === 0) {
     if (spareSkippedCount > 0) {
-      return { response: `No non-spare circuits were updated; ${skipClause(spareSkippedCount)}.` };
+      return {
+        response: `No non-spare circuits were updated; ${skipClause(spareSkippedCount, 'standalone')}.`,
+      };
     }
     return respondUnknown('No circuits found in the specified range.');
   }
@@ -1048,7 +1061,7 @@ function applyApplyField(
   // is appended when the bulk write also skipped spares under an exclude
   // policy (Decision 4's exact wording, shared with backend/iOS — no
   // client-invented variants).
-  const skipSuffix = spareSkippedCount > 0 ? `, ${skipClause(spareSkippedCount)}` : '';
+  const skipSuffix = spareSkippedCount > 0 ? `, ${skipClause(spareSkippedCount, 'append')}` : '';
   const response =
     updated === 1
       ? `Set ${label} to ${command.value} for 1 circuit${skipSuffix}.`
@@ -1061,10 +1074,14 @@ function applyApplyField(
 }
 
 /** Decision 4's exact count-aware skip clause, shared verbatim across all
- *  three implementations: "skipping 1 spare way" / "skipping N spare
- *  ways". No client-invented variants. */
-function skipClause(spareSkippedCount: number): string {
+ *  three implementations. 'append' (present continuous, joined onto a
+ *  success response): "skipping 1 spare way" / "skipping N spare ways".
+ *  'standalone' (past tense, the zero-applied sentence — plan line 85):
+ *  "skipped 1 spare way" / "skipped N spare ways". No client-invented
+ *  variants. */
+function skipClause(spareSkippedCount: number, mode: 'append' | 'standalone'): string {
+  const verb = mode === 'append' ? 'skipping' : 'skipped';
   return spareSkippedCount === 1
-    ? 'skipping 1 spare way'
-    : `skipping ${spareSkippedCount} spare ways`;
+    ? `${verb} 1 spare way`
+    : `${verb} ${spareSkippedCount} spare ways`;
 }

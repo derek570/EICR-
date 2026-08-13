@@ -768,14 +768,33 @@ export function stageBulkOutcomeForBundler(
   if (!Array.isArray(perTurnWrites.bulkOutcomes)) {
     perTurnWrites.bulkOutcomes = [];
   }
-  perTurnWrites.bulkOutcomes.push({
+  // Codex diff-review r1 (edge-interactions lens) — REPLACE, not append, any
+  // existing entry for the same (field, boardId). Two same-turn bulk calls
+  // for the same field+board is a same-turn CORRECTION: the readings Map is
+  // last-write-wins, so only the LATER call's value ever reaches the wire
+  // confirmation — a stale first-call ledger entry would otherwise still
+  // match that one surviving confirmation and double-append its skip
+  // clause (repro: 25 then 30, same spare-skipped circuit → "...30,
+  // skipping 1 spare way, skipping 1 spare way"). Mirrors the readings
+  // Map's own overwrite semantics so the ledger and the wire never
+  // disagree about which call's outcome is current.
+  const boardKey = boardId ?? null;
+  const existingIdx = perTurnWrites.bulkOutcomes.findIndex(
+    (o) => o.field === field && o.boardId === boardKey
+  );
+  const entry = {
     field,
     value,
-    boardId: boardId ?? null,
+    boardId: boardKey,
     appliedRefs: Array.isArray(appliedRefs) ? [...appliedRefs] : [],
     spareSkippedRefs: Array.isArray(spareSkippedRefs) ? [...spareSkippedRefs] : [],
     callId,
-  });
+  };
+  if (existingIdx >= 0) {
+    perTurnWrites.bulkOutcomes[existingIdx] = entry;
+  } else {
+    perTurnWrites.bulkOutcomes.push(entry);
+  }
 }
 
 /**

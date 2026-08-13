@@ -12,7 +12,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
+import {
+  applyVoiceCommand,
+  parseVoiceCommand,
+  DEVICE_ATTRIBUTE_FIELDS,
+  type VoiceCommandJob,
+} from '@certmate/shared-utils';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const fieldSchema = require('../../config/field_schema.json');
 
 const jobWithCircuits = (rows: Array<Record<string, unknown>>): VoiceCommandJob => ({
   supply: {},
@@ -75,6 +84,22 @@ describe('parseVoiceCommand — sparePolicy modifiers', () => {
       'rcd type AC for all circuits including spares but excluding spares'
     );
     expect(cmd).toEqual({ type: 'apply_field_contradiction' });
+  });
+
+  // Codex diff-review r1 (silent-path lens) — "not including spares" used
+  // to match BOTH the include AND exclude regexes (the exclude alternation
+  // includes "not including", but that phrase also contains the bare
+  // substring "including spares"), so a single exclude-shaped instruction
+  // was misclassified as a self-contradiction and silently refused.
+  it('"not including spares" is exclude, NOT a false contradiction', () => {
+    const cmd = parseVoiceCommand('rcd type AC for all circuits not including spares');
+    expect(cmd).toEqual({
+      type: 'apply_field',
+      field: 'rcd type',
+      value: 'ac',
+      scope: { kind: 'all' },
+      sparePolicy: 'exclude',
+    });
   });
 });
 
@@ -145,19 +170,19 @@ describe('applyVoiceCommand — spare_policy truth table, reading field (test vo
 });
 
 describe('applyVoiceCommand — zero-applied Decision 4 wording (exact match across implementations)', () => {
-  it('all targets spare under an exclude policy → "No non-spare circuits were updated; skipping N spare ways."', () => {
+  it('all targets spare under an exclude policy → "No non-spare circuits were updated; skipped N spare ways."', () => {
     const job = jobWithCircuits([SPARE_BLANK, SPARE_NAMED]);
     const cmd = parseVoiceCommand('test voltage 250 for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
     expect(out.patch).toBeUndefined();
-    expect(out.response).toBe('No non-spare circuits were updated; skipping 2 spare ways.');
+    expect(out.response).toBe('No non-spare circuits were updated; skipped 2 spare ways.');
   });
 
   it('exactly 1 spare skipped, zero applied → singular wording', () => {
     const job = jobWithCircuits([SPARE_NAMED]);
     const cmd = parseVoiceCommand('test voltage 250 for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
-    expect(out.response).toBe('No non-spare circuits were updated; skipping 1 spare way.');
+    expect(out.response).toBe('No non-spare circuits were updated; skipped 1 spare way.');
   });
 });
 
@@ -220,5 +245,51 @@ describe('BS/EN field aliases (web previously had none)', () => {
     const out = applyVoiceCommand(cmd, job);
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
     expect(updated.every((r) => r[canonical] === 'sixtyone')).toBe(true);
+  });
+});
+
+// Codex diff-review r1 (wire-contract + edge-interactions lenses) — the
+// plan requires one write-and-read-back test PER FIELD in the closed
+// 8-field list, not just the 4 fields this plan newly added aliases for.
+describe('all 8 DEVICE_ATTRIBUTE_FIELDS — write-and-read-back, spares included by default', () => {
+  it.each([
+    ['ocpd bs en', 'ocpd_bs_en'],
+    ['ocpd type', 'ocpd_type'],
+    ['ocpd rating', 'ocpd_rating_a'],
+    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka'],
+    ['ocpd max zs', 'ocpd_max_zs_ohm'],
+    ['rcd bs en', 'rcd_bs_en'],
+    ['rcd type', 'rcd_type'],
+    ['rcd operating current', 'rcd_operating_current_ma'],
+  ])(
+    '"%s" (%s) writes to every circuit incl. the spare, response names the count',
+    (phrase, canonical) => {
+      const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK]);
+      const cmd = parseVoiceCommand(`${phrase} nineteen for all circuits`)!;
+      expect(cmd).not.toBeNull();
+      const out = applyVoiceCommand(cmd, job);
+      const updated = out.patch?.circuits as Array<Record<string, unknown>>;
+      expect(updated).toHaveLength(3);
+      expect(updated.every((r) => r[canonical] === 'nineteen')).toBe(true);
+      expect(out.response).toContain('for 3 circuits');
+      expect(out.response).not.toContain('spare');
+    }
+  );
+});
+
+// Codex diff-review r1 (finding D) — the classifier is a hand-written
+// 8-field Set; nothing proved it tracks the live schema. Compare it
+// directly against config/field_schema.json's OCPD∪RCD union so a
+// future field-schema edit that forgets this Set fails a test, not a
+// field session.
+describe('DEVICE_ATTRIBUTE_FIELDS — live schema drift assertion', () => {
+  it('equals the live OCPD+RCD union from config/field_schema.json', () => {
+    const groups = (fieldSchema as { field_groups: Array<{ name: string; fields: string[] }> })
+      .field_groups;
+    const liveUnion = new Set(
+      groups.filter((g) => g.name === 'OCPD' || g.name === 'RCD').flatMap((g) => g.fields)
+    );
+    expect(liveUnion.size).toBeGreaterThan(0);
+    expect(DEVICE_ATTRIBUTE_FIELDS).toEqual(liveUnion);
   });
 });
