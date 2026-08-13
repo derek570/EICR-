@@ -3028,20 +3028,57 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // fallback and #5's next-turn duplicate at the source. Runs for the
           // all-rejected case too — recovering a real reading beats any prompt.
           let recovered = null;
-          // Plan B B3.2 (feedback ids 118/119) — before applying the
-          // re-parsed tuple as a NEW reading, check whether it's actually an
-          // EXACT duplicate of what's already stored (the "leg 3" false-
-          // apology class: a re-dictation of an already-applied-and-
-          // confirmed value that this deterministic re-parse WOULD
-          // otherwise silently re-write and read back with ordinary
-          // wording). Checking BEFORE the write — not after, in the
-          // `!recovered` branch below — matters: `applyOrphanRecoveredReading`
-          // always returns a truthy reading object, so `recovered` would
-          // already be non-null by the time any post-hoc check ran, and the
-          // apology-choice branch below would never be reached for this
-          // tuple at all.
           let exactDuplicateTuple = null;
-          if (ORPHAN_APPLY_COMPLETE_ENABLED) {
+          // Codex diff-review F4 (2026-08-13): the ORIGINAL pre-Plan-B
+          // shape (`git show fa3905b1:...stage6-shadow-harness.js`) ran the
+          // re-parse + `applyOrphanRecoveredReading` for BOTH allRejected
+          // and zero-tool-call turns, unconditionally on
+          // ORPHAN_APPLY_COMPLETE_ENABLED, with NO duplicate check at all.
+          // The first cut of B3.2 (a) gated the read-only duplicate CHECK
+          // behind that same OLDER, unrelated mutation-fallback flag — so
+          // turning it off silently disabled B3.2's re-speak too, though the
+          // plan never makes B3 conditional on it — and (b) let the check
+          // run (and set `exactDuplicateTuple`, skipping the write) even
+          // when `allRejected` is true, while `zeroToolCallOutcome` a few
+          // lines below is unconditionally null under `allRejected` — so an
+          // allRejected turn whose reparse happened to match a stored value
+          // fell through to neither the original recovery path nor B3.2,
+          // silently changing untouched allRejected behaviour.
+          //
+          // Fix: allRejected keeps the ORIGINAL shape verbatim (no duplicate
+          // check, ever — B3 is explicitly scoped to the non-allRejected,
+          // zero-tool-call class only). The non-allRejected class runs the
+          // duplicate check UNCONDITIONALLY (never flag-gated); the flag now
+          // gates only the WRITE (`applyOrphanRecoveredReading`) once a
+          // non-duplicate tuple is confirmed.
+          if (allRejected) {
+            if (ORPHAN_APPLY_COMPLETE_ENABLED) {
+              const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
+              if (tuple) {
+                recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
+                log.info?.('stage6.orphan_apply_complete', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  field: recovered.field,
+                  circuit: recovered.circuit,
+                  value: recovered.value,
+                  textPreview: String(transcriptText || '').slice(0, 80),
+                });
+              }
+            }
+          } else {
+            // Plan B B3.2 (feedback ids 118/119) — before applying the
+            // re-parsed tuple as a NEW reading, check whether it's actually
+            // an EXACT duplicate of what's already stored (the "leg 3"
+            // false-apology class: a re-dictation of an already-applied-and-
+            // confirmed value that this deterministic re-parse WOULD
+            // otherwise silently re-write and read back with ordinary
+            // wording). Checking BEFORE the write — not after, in the
+            // `!recovered` branch below — matters: `applyOrphanRecoveredReading`
+            // always returns a truthy reading object, so `recovered` would
+            // already be non-null by the time any post-hoc check ran, and the
+            // apology-choice branch below would never be reached for this
+            // tuple at all.
             const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
             if (tuple) {
               const dup = findExactDuplicateAgainstSnapshot({ session, tuple });
@@ -3055,7 +3092,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                   value: dup.value,
                   textPreview: String(transcriptText || '').slice(0, 80),
                 });
-              } else {
+              } else if (ORPHAN_APPLY_COMPLETE_ENABLED) {
                 recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
                 log.info?.('stage6.orphan_apply_complete', {
                   sessionId: session.sessionId,

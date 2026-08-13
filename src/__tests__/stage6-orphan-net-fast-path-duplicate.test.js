@@ -472,4 +472,64 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     );
     expect(suppressRow).toBeUndefined();
   });
+
+  // Codex diff-review F4 (2026-08-13) — an allRejected turn whose transcript
+  // happens to reparse to a value already matching the stored snapshot must
+  // go through the ORIGINAL pre-Plan-B recovery path (apply + ordinary
+  // read-back), NEVER B3.2's "Already got" wording — B3.2 is deliberately
+  // scoped to the non-allRejected, zero-tool-call class only (see
+  // resolveZeroToolCallDuplicateOutcome's doc comment and its caller, which
+  // only invokes it when `!allRejected`).
+  test('allRejected + reparse tuple matches an already-stored value → ORIGINAL recovery (write + ordinary read-back), never B3.2 "Already got"', async () => {
+    const session = makeSession({ 2: { rcd_time_ms: '24' } });
+    runToolLoopSpy.mockImplementationOnce(async () => ({
+      stop_reason: 'end_turn',
+      rounds: 1,
+      tool_calls: [
+        {
+          name: 'create_circuit',
+          input: {},
+          result: { tool_use_id: 't', content: '{"ok":false}', is_error: true },
+        },
+      ],
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const opts = baseOpts();
+    const result = await runShadowHarness(
+      session,
+      'RCD trip time for circuit 2 is 24 ms',
+      [],
+      opts
+    );
+    const dupConfs = (result.confirmations ?? []).filter((c) =>
+      /^Already got that —/.test(c.text || '')
+    );
+    expect(dupConfs).toHaveLength(0);
+    // The ORIGINAL recovery path ran: a reading was pushed and an ordinary
+    // (non-"Already got") confirmation speaks it.
+    expect(result.extracted_readings ?? []).toHaveLength(1);
+    expect(result.extracted_readings[0]).toMatchObject({
+      field: 'rcd_time_ms',
+      circuit: 2,
+      value: '24',
+    });
+    const ordinaryConf = (result.confirmations ?? []).find(
+      (c) => c.field === 'rcd_time_ms' && c.circuit === 2
+    );
+    expect(ordinaryConf).toBeDefined();
+    expect(ordinaryConf.text).not.toMatch(/^Already got/);
+    const recoveredRow = opts.logger.info.mock.calls.find(
+      ([ev]) => ev === 'stage6.orphan_apply_complete'
+    );
+    expect(recoveredRow).toBeDefined();
+    // B3.2's duplicate-detection log row must NEVER fire for an allRejected
+    // turn — the read-only check is scoped OUT of this class entirely.
+    const dupRow = opts.logger.info.mock.calls.find(
+      ([ev]) => ev === 'stage6.orphan_exact_duplicate_detected'
+    );
+    expect(dupRow).toBeUndefined();
+  });
 });
