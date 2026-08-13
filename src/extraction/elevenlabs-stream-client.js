@@ -375,7 +375,7 @@ export class ElevenLabsStreamClient {
 // excluding those would risk removing retry eligibility for the one
 // failure class D1 exists to recover from.
 const KNOWN_UNRELATED_FAILURE_RE =
-  /quota|payment[_-]?required|unauthorized|invalid[_-]?api[_-]?key|rate[_-]?limit|too many requests|\b401\b|\b402\b|\b403\b|\b429\b|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|CERT_|UNABLE_TO_VERIFY_LEAF_SIGNATURE|self[_\s-]signed certificate/i;
+  /quota|payment[_-]?required|unauthorized|invalid[_-]?api[_-]?key|rate[_-]?limit|too many requests|\b401\b|\b402\b|\b403\b|\b429\b|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|CERT_|UNABLE_TO_VERIFY_LEAF_SIGNATURE|self[_\s-]signed certificate/i;
 
 function isKnownUnrelatedFailure(err) {
   const message = typeof err?.message === 'string' ? err.message : '';

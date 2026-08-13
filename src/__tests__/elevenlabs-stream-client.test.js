@@ -500,7 +500,6 @@ describe('synthWithLanguageFailOpen', () => {
       ['ENOTFOUND', 'getaddrinfo ENOTFOUND api.elevenlabs.io'],
       ['402', 'Unexpected server response: 402'],
       ['payment_required', 'payment_required for this account'],
-      ['ECONNRESET', 'read ECONNRESET'],
       ['CERT_', 'unable to verify the first certificate CERT_HAS_EXPIRED'],
       ['self-signed certificate', 'self signed certificate in certificate chain'],
     ])('%s → no retry', async (_label, message) => {
@@ -530,6 +529,37 @@ describe('synthWithLanguageFailOpen', () => {
       setImmediate(() => {
         FakeWS.instances[0].emit('open');
         FakeWS.instances[0].emit('message', JSON.stringify({ error: 'invalid_language_code' }));
+      });
+      const driveSecond = setInterval(() => {
+        if (FakeWS.instances.length === 2) {
+          clearInterval(driveSecond);
+          FakeWS.instances[1].emit('open');
+          FakeWS.instances[1].emit('message', JSON.stringify({ isFinal: true }));
+        }
+      }, 1);
+      const result = await promise;
+      expect(result.attempts).toBe(2);
+      expect(retryClientFactory).toHaveBeenCalledTimes(1);
+    });
+
+    // Codex diff-review r5 IMPORTANT — the module's own docblock says this
+    // deny-list "deliberately does NOT deny-list... generic 'connection
+    // reset' markers close to a handshake" (a rejected language_code query
+    // param could plausibly surface as an abnormal close/reset rather than
+    // a parseable error body), but ECONNRESET had been added to the regex
+    // anyway, silently contradicting that stated intent. Proves the fix:
+    // ECONNRESET still retries.
+    test('ECONNRESET near a handshake still retries (matches the docblock, not a deny-list entry)', async () => {
+      const client = new ElevenLabsStreamClient({ apiKey: 'k' });
+      const retryClientFactory = jest.fn(
+        () => new ElevenLabsStreamClient({ apiKey: 'k', languageCode: null })
+      );
+      const promise = synthWithLanguageFailOpen(client, retryClientFactory, 'hello', {
+        onAudio: () => {},
+      });
+      setImmediate(() => {
+        FakeWS.instances[0].emit('open');
+        FakeWS.instances[0].emit('error', new Error('read ECONNRESET'));
       });
       const driveSecond = setInterval(() => {
         if (FakeWS.instances.length === 2) {

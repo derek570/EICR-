@@ -874,6 +874,31 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
     playConfirmationNative(text, controls);
     return;
   }
+  // Codex diff-review r4/r5 BLOCKER — `prepareElevenLabs()` calls
+  // `cancelElevenLabs()` UNCONDITIONALLY at its own entry, before the fetch
+  // and therefore before the queue's own `shouldDeferPlayback()` last-mile
+  // gate (in `controls.ready`, below) ever runs. If a direct `speak()` ask
+  // currently owns the channel (`isDirectAudioActive()`), calling
+  // `prepareElevenLabs()` now would kill the ask's audio mid-play before
+  // this head has any chance to be deferred instead — the opposite of "defer
+  // behind an active ask rather than dropping". Hand the queue a LAZY
+  // prepared handle that does nothing but re-enter this function on resume
+  // — nothing is fetched yet, so nothing needs cancelling. The queue's own
+  // `ready`-time gate sees the identical `isDirectAudioActive()` state
+  // SYNCHRONOUSLY (no fetch has happened in between) and parks this as an
+  // ordinary `deferredHead`, exactly like a real post-fetch deferral. When
+  // `resumeIfDeferred()` later calls this lazy `play()`, the ask has ended,
+  // so the recursive call falls through to the real fetch below — which
+  // still gets its own last-mile check when THAT fetch completes.
+  if (isDirectAudioActive()) {
+    controls.ready({
+      play: () => playConfirmationHead(text, controls),
+      discard: () => {
+        /* nothing fetched yet — no cleanup needed */
+      },
+    });
+    return;
+  }
   // Canceller hard-aborts the in-flight fetch / stops playing ElevenLabs audio.
   controls.registerCanceller(() => {
     cancelElevenLabs();
