@@ -610,8 +610,17 @@ function synthesiseConfirmations(
   // correction is always the one that speaks.
   const fastAttemptBySlotKey =
     boardScope?.fastAttemptBySlotKey instanceof Map ? boardScope.fastAttemptBySlotKey : null;
+  // Codex diff-review F1 (2026-08-13): this MUST join on the same
+  // dispatcher-resolved effective board `effectiveBoardOf` already computes
+  // above, not the raw wire `board_id`. An ordinary single-board write
+  // deliberately OMITS `board_id` on the wire (see `effectiveBoardOf`'s own
+  // comment) while the fast-TTS route's accepted identity always carries
+  // iOS's non-null local board id — joining on raw `r.board_id` would never
+  // match on the common single-board case, reproducing the exact
+  // double-read-back bug this module exists to fix.
   const fastSlotKeyOf = (r) => {
-    const normBoardId = typeof r?.board_id === 'string' && r.board_id ? r.board_id : '';
+    const effBoard = effectiveBoardOf(r);
+    const normBoardId = typeof effBoard === 'string' && effBoard ? effBoard : '';
     const circ = Number.isInteger(r?.circuit) ? r.circuit : 'null';
     return `${r?.field}::${circ}::${normBoardId}`;
   };

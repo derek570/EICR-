@@ -18,7 +18,11 @@
  */
 
 import { bundleToolCallsIntoResult } from '../extraction/stage6-event-bundler.js';
-import { encodeReadingKey } from '../extraction/stage6-per-turn-writes.js';
+import {
+  encodeReadingKey,
+  createPerTurnWrites,
+  attachEffectiveSlot,
+} from '../extraction/stage6-per-turn-writes.js';
 
 function makePerTurnWrites(overrides = {}) {
   return {
@@ -312,5 +316,79 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
     expect(grouped.circuits).toEqual([1, 3]);
     expect(grouped.text).toBe('Circuits 1, 3, Zs 0.62');
     expect(grouped).not.toHaveProperty('fast_correlation_id');
+  });
+
+  // Codex diff-review F1 (2026-08-13) — the join MUST use the
+  // dispatcher-resolved EFFECTIVE board (EFFECTIVE_CIRCUIT_SLOT), not the
+  // raw wire `board_id`. An ordinary single-board write on a multi-board job
+  // deliberately OMITS `board_id` on the wire; the fast route's accepted
+  // identity always carries iOS's non-null local board id. A join on raw
+  // `board_id` would never match this — the exact double-read-back bug the
+  // whole plan exists to fix, reproduced via the new join.
+  test("multi-board job, ordinary write omits wire board_id but resolves to the accepted identity's board — stamps fast_correlation_id", () => {
+    const p = createPerTurnWrites();
+    // Wire board_id intentionally OMITTED (no `boardId` property on the
+    // value entry) — only the EFFECTIVE_CIRCUIT_SLOT stamp carries the
+    // dispatcher-resolved board, exactly like an ordinary single-board
+    // write on a multi-board job.
+    p.readings.set(
+      encodeReadingKey('measured_zs_ohm', 1),
+      attachEffectiveSlot(
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+        'measured_zs_ohm',
+        1,
+        'main'
+      )
+    );
+    const fastAttemptBySlotKey = new Map([
+      [
+        'measured_zs_ohm::1::main',
+        accepted({
+          field: 'measured_zs_ohm',
+          circuit: 1,
+          boardId: 'main',
+          canonicalValue: '0.62',
+          comparisonText: 'Circuit 1, Zs 0.62',
+        }),
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      p,
+      { questions: [] },
+      { confirmationsEnabled: true, fastAttemptBySlotKey }
+    );
+    expect(r.confirmations).toHaveLength(1);
+    expect(r.confirmations[0].fast_correlation_id).toBe('cid-1');
+  });
+
+  test('multi-board job, ordinary write omits wire board_id and resolves to a DIFFERENT board than the accepted identity — no stamp', () => {
+    const p = createPerTurnWrites();
+    p.readings.set(
+      encodeReadingKey('measured_zs_ohm', 1),
+      attachEffectiveSlot(
+        { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
+        'measured_zs_ohm',
+        1,
+        'sub-1'
+      )
+    );
+    const fastAttemptBySlotKey = new Map([
+      [
+        'measured_zs_ohm::1::main',
+        accepted({
+          field: 'measured_zs_ohm',
+          circuit: 1,
+          boardId: 'main',
+          canonicalValue: '0.62',
+          comparisonText: 'Circuit 1, Zs 0.62',
+        }),
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      p,
+      { questions: [] },
+      { confirmationsEnabled: true, fastAttemptBySlotKey }
+    );
+    expect(r.confirmations[0]).not.toHaveProperty('fast_correlation_id');
   });
 });
