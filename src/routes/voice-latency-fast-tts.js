@@ -68,7 +68,7 @@ import {
   resolveBoardAwareEarthing,
 } from '../extraction/impedance-clamp.js';
 import { isRegexFastEligible } from '../extraction/regex-fast-eligibility.js';
-import { getMainBoardId } from '../extraction/stage6-multi-board-shape.js';
+import { getMainBoardId, isUnscopedBoardId } from '../extraction/stage6-multi-board-shape.js';
 import { getActiveSessionEntry, getVoiceLatencyForSession } from '../extraction/active-sessions.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
 import { decrementExpectedAcksByCorrelation } from '../extraction/voice-latency-turn-summary.js';
@@ -140,19 +140,37 @@ function buildSlotKey({ field, circuit, boardId }) {
  * the exact-duplicate/pending-uncommitted board stamping. Committing the
  * raw null here while the bundler later resolves a non-null board for the
  * SAME reading would make `fastSlotKeyOf`'s join fail in the reverse
- * direction from the bug F1 fixed. `getMainBoardId` always returns a
- * string (defaults to `DEFAULT_MAIN_BOARD_ID` when the snapshot has no
- * boards at all), so this fallback is always available — there is no
- * "genuinely ambiguous, leave it null" case in this codebase's current
- * board model.
+ * direction from the bug F1 fixed.
+ *
+ * Codex diff-review cycle 2 (C3, 2026-08-13) — M1 landed as `rawBoardId ??
+ * getMainBoardId(snapshot)`, which is WRONG when the session's actual
+ * CURRENT board is a sub-board: a scope-less fast dispatch on a sub-board
+ * session resolved to `main` instead of the board the inspector is
+ * actually standing at, so the accepted identity's slot key would never
+ * join the bundler's own resolution for the same ordinary write (the
+ * bundler's `effectiveBoardOf`/`resolveEffectiveBoardId` prefer
+ * `snapshot.currentBoardId` over main). Fixed to match the SAME
+ * "explicit → currentBoardId → canonical main" precedence used everywhere
+ * else in this codebase for a scope-less action's effective board —
+ * `resolveEffectiveBoardId` (stage6-dispatchers-circuit.js),
+ * `getCircuitBucket`/`getMainBoardId` fallback chains
+ * (stage6-multi-board-shape.js), and stage6-shadow-harness.js's own
+ * `resolveEffectiveBoardId(session, null)` call for the exact-duplicate
+ * board resolution. `isUnscopedBoardId` (null/undefined/'') is the shared
+ * definition of "no explicit board" (A2-multiboard scope item 6) — reused
+ * here rather than a bare truthiness check so an explicit empty-string
+ * wire boardId (a known legacy shape) is treated as unscoped too, not as
+ * "explicitly no board". `getMainBoardId` always returns a string
+ * (defaults to `DEFAULT_MAIN_BOARD_ID` when the snapshot has no boards at
+ * all), so the final fallback is always available.
  *
  * @param {string|null} rawBoardId
  * @param {object|null|undefined} stateSnapshot
  * @returns {string|null}
  */
 function resolveIdentityBoardId(rawBoardId, stateSnapshot) {
-  if (typeof rawBoardId === 'string' && rawBoardId) return rawBoardId;
-  return getMainBoardId(stateSnapshot);
+  if (!isUnscopedBoardId(rawBoardId)) return rawBoardId;
+  return stateSnapshot?.currentBoardId ?? getMainBoardId(stateSnapshot);
 }
 
 /**

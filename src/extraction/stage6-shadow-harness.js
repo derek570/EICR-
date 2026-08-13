@@ -940,7 +940,11 @@ function resolveOutcomeIdentityForCoalescing(outcome, session, exactDuplicateTup
     return {
       field: identity.field,
       circuit: identity.circuit,
-      boardId: identity.boardId,
+      // C3 — resolve through the SAME (explicit → currentBoardId → main)
+      // formula every other seam uses, so a suppress/pending/pending_uncommitted
+      // trio for the SAME single-board reading all group under the identical
+      // board identity instead of only some of them being resolved.
+      boardId: resolveEffectiveBoardId(session, identity.boardId),
       value: identity.canonicalValue,
       correction: null,
     };
@@ -950,14 +954,23 @@ function resolveOutcomeIdentityForCoalescing(outcome, session, exactDuplicateTup
     return {
       field: identity.field,
       circuit: identity.circuit,
-      boardId: identity.boardId,
+      boardId: resolveEffectiveBoardId(session, identity.boardId),
       value: identity.canonicalValue,
       correction: null,
     };
   }
   if (outcome.kind === 'pending_uncommitted') {
     const { rawRecord } = outcome;
-    const rawBoardId = rawRecord.boardId ?? null;
+    // C3 (gap 2) — `rawRecord.boardId` is the RAW wire boardId captured at
+    // `markFastAttemptPending` time (voice-latency-fast-tts.js), which runs
+    // BEFORE the route's own board resolution (`resolveIdentityBoardId`,
+    // only applied at `commitAcceptedIdentity`). A null/omitted wire boardId
+    // on a sub-board session must resolve to the CURRENT board here too —
+    // not stay null — or a committed ('pending') retry of the identical
+    // single-board reading resolves to a real board while this uncommitted
+    // one resolves to nothing, and the two never coalesce as "the same
+    // reading" under M4's grouping even though they are.
+    const rawBoardId = resolveEffectiveBoardId(session, rawRecord.boardId);
     const rawClamp = clampReadingForDispatch({
       field: rawRecord.field,
       value: rawRecord.rawValue,
@@ -1016,14 +1029,31 @@ function buildFastLedgerFallbackConfirmation({ outcome, resolved }, session, tur
   if (!resolved) return null;
   const { field, circuit, boardId, value, correction } = resolved;
   if (outcome.kind === 'pending') {
-    const designation = session.stateSnapshot?.circuits?.[circuit]?.circuit_designation ?? null;
+    // C3 (gap 3) — resolve the circuit through the SAME multi-board-aware
+    // bucket resolution `findExactDuplicateAgainstSnapshot` already uses
+    // (`getCircuitBucket`, keyed on the ALREADY-resolved `boardId` from
+    // `resolveOutcomeIdentityForCoalescing`) instead of a bare unscoped
+    // `circuits[circuit]` index, which resolves the WRONG board's circuit
+    // on a multi-board job — same bug class F3 fixed for the
+    // exact-duplicate designation lookup below.
+    const circuitData = getCircuitBucket(session.stateSnapshot, circuit, boardId);
+    const designation = circuitData?.circuit_designation ?? null;
     const text = buildAlreadyGotConfirmationText(field, value, circuit, designation);
     if (!text) return null;
+    // C3 (gap 3) — stamp `board_id` consistently with every sibling branch
+    // below (main board omitted, non-main included) so a committed
+    // ('pending') and a not-yet-committed ('pending_uncommitted') retry of
+    // the IDENTICAL single-board reading resolve to the SAME board
+    // identity and coalesce correctly under M4's grouping, instead of one
+    // carrying `board_id` and the other carrying none.
+    const mainBoardId = getMainBoardId(session.stateSnapshot);
+    const stampBoardId = boardId != null && boardId !== mainBoardId ? boardId : null;
     return {
       text,
       expanded_text: expandForTTS(text),
       field,
       circuit: Number.isInteger(circuit) ? circuit : null,
+      ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
       // B1.3-style echo stamp — lets iOS's B2 correlation state machine
       // treat this exactly like any other fast-attempt-covered
       // confirmation (parked under .fastPending; dropped on fast start,

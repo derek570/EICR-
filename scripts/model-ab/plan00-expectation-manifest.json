@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "0bd887279ce287ecb73ce1bf05be1216bf391d239cac4f237bcf8f3b3ac7ef0e",
+  "semantic_oracle_digest": "9f648f5e828bf70fe1c7d162b9e271889696ca4ce68a40d58e7df5fd9be3714e",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "69ecdfb5a3c7a6049709d9398657fdd0b9280703bd11f2b8063efea2afd81a14"
+      "sha256": "027122c1e3579ad1d58290e268f7e3a5d126fb3d4af01d541c3f34f6bd3be149"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -549,7 +549,7 @@
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",
-      "sha256": "7e0f8e45d63a50d1169403c477879f463a36128e54bc5cb144d8509fd067a754"
+      "sha256": "912a1805514a3a295091a4f21174322aea4aaff743c18be57e1ce3d2b31c8632"
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",

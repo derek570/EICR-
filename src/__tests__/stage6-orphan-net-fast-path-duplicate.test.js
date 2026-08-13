@@ -889,6 +889,116 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     });
   });
 
+  // Codex diff-review cycle 2 (C3, 2026-08-13) — board-scope consistency
+  // across the fast-ledger fallback paths. Both gaps below stem from the
+  // SAME root cause: a fast-ledger identity's `boardId` was carried
+  // through un-resolved (raw wire value, possibly null) instead of being
+  // resolved via the SAME (explicit → currentBoardId → main) formula the
+  // rest of the codebase uses for a scope-less action's effective board —
+  // so a committed and a not-yet-committed retry of the IDENTICAL
+  // single-board reading could resolve to DIFFERENT board identities and
+  // fail to coalesce, or resolve to the WRONG board entirely on a
+  // sub-board session.
+  describe('Codex diff-review C3 — board-scope consistency in the fast-ledger fallback paths', () => {
+    test('a committed ("pending") identity with a null boardId resolves through the CURRENT board, not main, on a sub-board session', async () => {
+      fastIdentity.markFastAttemptPending('cid-subboard', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '0.62',
+      });
+      // Simulates an accepted identity committed with a null boardId (e.g.
+      // an older record from before the route-side C3 fix) — the harness's
+      // OWN resolution must still land on the CURRENT board as a
+      // defense-in-depth, not just rely on the route having resolved it.
+      fastIdentity.commitAcceptedIdentity('cid-subboard', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '0.62',
+        comparisonText: 'Circuit 4, Zs 0.62',
+      });
+
+      const session = makeSession({});
+      session.stateSnapshot.boards = [
+        { id: 'main', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub' },
+      ];
+      session.stateSnapshot.currentBoardId = 'sub-1';
+      const opts = baseOpts({ regexFastCorrelationId: 'cid-subboard' });
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      const confs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      expect(confs).toHaveLength(1);
+      // Resolved to sub-1, the CURRENT board — not main, and not omitted
+      // (main is the only board_id value that's OMITTED from the wire).
+      expect(confs[0].board_id).toBe('sub-1');
+    });
+
+    test('a mixed committed+uncommitted retry pair for the IDENTICAL single-board reading coalesce into ONE confirmation with the SAME resolved board identity', async () => {
+      // 'cid-committed' has ALREADY reached commitAcceptedIdentity with a
+      // null boardId (unresolved at commit time).
+      fastIdentity.markFastAttemptPending('cid-committed', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '0.62',
+      });
+      fastIdentity.commitAcceptedIdentity('cid-committed', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        canonicalValue: '0.62',
+        comparisonText: 'Circuit 4, Zs 0.62',
+      });
+      // 'cid-uncommitted' is a RETRY for the identical reading — pending
+      // mark only, never committed (the fast route's first onAudio byte
+      // hasn't fired for THIS correlation yet).
+      fastIdentity.markFastAttemptPending('cid-uncommitted', {
+        sessionId: SESSION_ID,
+        turnId: 'irrelevant',
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        boardId: null,
+        rawValue: '0.62',
+      });
+
+      const session = makeSession({});
+      session.stateSnapshot.boards = [
+        { id: 'main', board_type: 'main' },
+        { id: 'sub-1', board_type: 'sub' },
+      ];
+      session.stateSnapshot.currentBoardId = 'sub-1';
+      const opts = baseOpts({
+        regexFastCorrelationId: ['cid-committed', 'cid-uncommitted'],
+      });
+      const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+      const confs = (result.confirmations ?? []).filter((c) =>
+        /^Already got that —/.test(c.text || '')
+      );
+      // Pre-C3: 'cid-committed' would resolve to boardId null → main
+      // (omitted board_id on the wire) while 'cid-uncommitted' would
+      // resolve to raw null (also omitted) — coincidentally the SAME on a
+      // legacy single-board session, which is exactly why this bug hid
+      // until a sub-board session exposed it. Both must resolve to the
+      // SAME 'sub-1' identity here and coalesce into exactly ONE line.
+      expect(confs).toHaveLength(1);
+      expect(confs[0].board_id).toBe('sub-1');
+      expect(['cid-committed', 'cid-uncommitted']).toContain(confs[0].fast_correlation_id);
+    });
+  });
+
   test('allRejected turns are completely untouched by the fast-ledger precedence chain', async () => {
     fastIdentity.markFastAttemptPending('cid-x', {
       sessionId: SESSION_ID,

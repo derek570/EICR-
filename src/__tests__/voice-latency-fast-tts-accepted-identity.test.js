@@ -235,6 +235,98 @@ describe('Codex diff-review M1 (2026-08-13, per-fix mini-review) — null/omitte
       expect.objectContaining({ boardId: 'sub-1' })
     );
   });
+
+  // Codex diff-review cycle 2 (C3, 2026-08-13) — the M1 fix above resolved
+  // an omitted wire boardId via `getMainBoardId(snapshot)` alone, which is
+  // WRONG when the session's actual CURRENT board is a sub-board (not
+  // main): a scope-less fast dispatch while the inspector is standing at a
+  // sub-board would commit `boardId: 'main'`, so the accepted identity's
+  // slot key would never join the bundler's own resolution for the SAME
+  // ordinary write (the bundler prefers `snapshot.currentBoardId` over
+  // main too). Fixed to resolve `stateSnapshot.currentBoardId ??
+  // getMainBoardId(stateSnapshot)` — current board first, main only as the
+  // fallback-of-last-resort.
+  test('C3: candidate.boardId omitted, session CURRENT board is a named sub-board — commit resolves to the sub-board, not main', async () => {
+    activeSessions.set('SESS', {
+      userId: 'test-user',
+      session: {
+        sessionId: 'SESS',
+        stateSnapshot: {
+          boards: [
+            { id: 'main', board_type: 'main' },
+            { id: 'sub-1', board_type: 'sub' },
+          ],
+          currentBoardId: 'sub-1',
+        },
+        loadedBarrelSpeculator: { abortBySlot: jest.fn() },
+      },
+      voiceLatency: { flags: { regexFastTts: true }, capabilities: { hasRegexFastV2: true } },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+    });
+    // No boardId on the candidate at all — a genuinely scope-less dispatch.
+    const res = await postFastTts(
+      basicBody({ candidate: { field: 'measured_zs_ohm', circuit: 1, value: '0.62' } })
+    );
+    expect(res.status).toBe(200);
+    expect(commitAcceptedIdentity).toHaveBeenCalledWith(
+      'cid-abc-123',
+      expect.objectContaining({ boardId: 'sub-1' })
+    );
+  });
+
+  test('C3: candidate.boardId omitted, session has NO currentBoardId pointer — falls back to main exactly as before (regression guard)', async () => {
+    activeSessions.set('SESS', {
+      userId: 'test-user',
+      session: {
+        sessionId: 'SESS',
+        stateSnapshot: { boards: [{ id: 'main', board_type: 'main' }] },
+        loadedBarrelSpeculator: { abortBySlot: jest.fn() },
+      },
+      voiceLatency: { flags: { regexFastTts: true }, capabilities: { hasRegexFastV2: true } },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+    });
+    const res = await postFastTts(
+      basicBody({ candidate: { field: 'measured_zs_ohm', circuit: 1, value: '0.62' } })
+    );
+    expect(res.status).toBe(200);
+    expect(commitAcceptedIdentity).toHaveBeenCalledWith(
+      'cid-abc-123',
+      expect.objectContaining({ boardId: 'main' })
+    );
+  });
+
+  test('C3: candidate.boardId explicitly populated STILL wins over currentBoardId (explicit > current > main precedence)', async () => {
+    activeSessions.set('SESS', {
+      userId: 'test-user',
+      session: {
+        sessionId: 'SESS',
+        stateSnapshot: {
+          boards: [
+            { id: 'main', board_type: 'main' },
+            { id: 'sub-1', board_type: 'sub' },
+            { id: 'sub-2', board_type: 'sub' },
+          ],
+          currentBoardId: 'sub-1',
+        },
+        loadedBarrelSpeculator: { abortBySlot: jest.fn() },
+      },
+      voiceLatency: { flags: { regexFastTts: true }, capabilities: { hasRegexFastV2: true } },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+    });
+    const res = await postFastTts(
+      basicBody({
+        candidate: { field: 'measured_zs_ohm', circuit: 1, value: '0.62', boardId: 'sub-2' },
+      })
+    );
+    expect(res.status).toBe(200);
+    expect(commitAcceptedIdentity).toHaveBeenCalledWith(
+      'cid-abc-123',
+      expect.objectContaining({ boardId: 'sub-2' })
+    );
+  });
 });
 
 describe('multiple onAudio chunks — commit fires ONCE, not per chunk', () => {
