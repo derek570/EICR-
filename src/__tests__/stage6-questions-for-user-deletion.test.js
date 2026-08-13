@@ -135,6 +135,7 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
   mergeFastPathCorrelationIds: jest.fn(),
   unmergeFastPathCorrelationIds: jest.fn(),
+  coerceFastPathCorrelationIds: jest.fn(() => new Set()),
 }));
 
 // classifyOvertake — inert for this suite; we're asserting on the

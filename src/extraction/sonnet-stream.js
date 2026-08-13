@@ -35,6 +35,7 @@ import {
   runShadowHarness,
   mergeFastPathCorrelationIds,
   unmergeFastPathCorrelationIds,
+  coerceFastPathCorrelationIds,
 } from './stage6-shadow-harness.js';
 import {
   POSTCODE_HINT_STATE,
@@ -115,6 +116,39 @@ import {
 // in_response_to replies, and drained-retry replays. Telemetry:
 // voice_latency.gate_blocked. Kill-switch: VOICE_PRE_LLM_GATE=false.
 import { shouldForwardToSonnet, GATE_REASONS } from './pre-llm-gate.js';
+
+// Codex diff-review cycle 5 (G2b) — evaluation-only counterpart to
+// `mergeFastPathCorrelationIds` for the ask-answer resolution sites below.
+// Those four sites merge a fast-dispatch correlation id onto the PRODUCTION
+// `entry.fastPathCorrelationIdByTurn` map when a resolve() genuinely wins
+// (never on a stale/racing resolve — the id belongs to whatever NEW turn
+// the transcript falls through to instead, per cycle-4 E2), but never told
+// the separate Plan 00 evaluation harness about it — so an ask-answer
+// turn's fast attempts were invisible to evaluation capture even though
+// production behaviour was already correct. Call this ONLY from the same
+// "resolve won" branch that keeps (never rolls back) the production merge.
+//
+// Deliberately fire-and-forget: this is evaluation-only telemetry, and per
+// the investigation behind this fix there is no rollback operation for it
+// (unlike `unmergeFastPathCorrelationIds`) — a stale/failed resolve simply
+// never calls this at all, rather than binding-then-trying-to-undo. Wrapped
+// in try/catch, same discipline as every other Plan 00 evaluation hook in
+// this file (e.g. `attachEvaluationContext`, `notifySuccessfulFrame`) —
+// a missing/dormant observer or a capture-internal error must never affect
+// the production response path.
+function bindFastPathCorrelationsForEvaluation(session, rawCid) {
+  try {
+    const observer = getMutationObserver(session);
+    if (!observer) return;
+    for (const cid of coerceFastPathCorrelationIds(rawCid)) {
+      observer.bindFastCorrelation(cid);
+    }
+  } catch (err) {
+    logger.warn?.('plan00.fast_correlation_evaluation_bind_error', {
+      error: err?.message ?? String(err),
+    });
+  }
+}
 
 // A1 agentic-voice (Codex diff-review r1) — ONE redacted answer-emission
 // logger shared by the sync path AND the P4d reconnect replay, called only
@@ -6013,6 +6047,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           // never actually its own.
           if (!preErrResolved) {
             unmergeFastPathCorrelationIds(entry, entry.activeTurnId, preErrNewlyMerged);
+          } else {
+            // G2b — resolve() genuinely won (the production merge above is
+            // KEPT, not rolled back): tell the Plan 00 evaluation harness
+            // this correlation belongs to the resumed (asking) turn too.
+            bindFastPathCorrelationsForEvaluation(entry.session, msg.regex_fast_correlation_id);
           }
           // id 93 — terminal ask-resolution disposition.
           consumeDestructiveToken('pre_queue_validation_error');
@@ -6055,6 +6094,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         );
         const preResolved = entry.pendingAsks.resolve(preVerdict.toolCallId, preResolvePayload);
         if (preResolved) {
+          // G2b — resolve() genuinely won (the production merge above is
+          // KEPT, not rolled back): tell the Plan 00 evaluation harness
+          // this correlation belongs to the resumed (asking) turn too.
+          bindFastPathCorrelationsForEvaluation(entry.session, msg.regex_fast_correlation_id);
           stampSeenTranscript();
           logger.info('stage6.transcript_pre_queue_answered', {
             sessionId,
@@ -6807,6 +6850,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               // runShadowHarness may want the regex context on this turn,
               // and the normal post-harness reset downstream handles it.
             } else {
+              // G2b — resolve() genuinely won (the production merge above
+              // is KEPT, not rolled back): tell the Plan 00 evaluation
+              // harness this correlation belongs to the resumed turn too.
+              bindFastPathCorrelationsForEvaluation(entry.session, msg.regex_fast_correlation_id);
               // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
               // lastRegexResults here too. The normal-path reset at line
               // 1686 is skipped on early-return; without this line, any
@@ -6876,6 +6923,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
                 reason: 'tool_call_id_already_resolved',
               });
             } else {
+              // G2b — resolve() genuinely won (the production merge above
+              // is KEPT, not rolled back): tell the Plan 00 evaluation
+              // harness this correlation belongs to the resumed turn too.
+              bindFastPathCorrelationsForEvaluation(entry.session, msg.regex_fast_correlation_id);
               // Plan 03-12 STT-11 (STG r5 MAJOR remediation) — clear
               // lastRegexResults on the answers early-return too. Same
               // rationale as the validation_error branch above: the normal

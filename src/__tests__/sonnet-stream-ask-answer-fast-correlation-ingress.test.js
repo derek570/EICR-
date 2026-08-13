@@ -89,8 +89,12 @@ const runShadowHarnessSpy = jest.fn(async () => ({
 // unit coverage proving this reimplementation matches the real one lives in
 // stage6-orphan-net-fast-path-duplicate.test.js (which imports the real,
 // unmocked module).
-function mergeFastPathCorrelationIdsMock(entry, turnId, rawCid) {
-  if (!entry || typeof turnId !== 'string' || !turnId) return new Set();
+// Codex diff-review cycle 5 (G2) — reimplemented verbatim (byte-identical
+// to stage6-shadow-harness.js's real `coerceFastPathCorrelationIds`), same
+// rationale: sonnet-stream.js now also imports this name (its evaluation-
+// only `bindFastPathCorrelationsForEvaluation` helper uses it), so the mock
+// factory below must provide it or the ESM import fails at load time.
+function coerceFastPathCorrelationIdsMock(rawCid) {
   const cids = new Set();
   if (typeof rawCid === 'string' && rawCid) {
     cids.add(rawCid);
@@ -99,6 +103,11 @@ function mergeFastPathCorrelationIdsMock(entry, turnId, rawCid) {
       if (typeof cid === 'string' && cid) cids.add(cid);
     }
   }
+  return cids;
+}
+function mergeFastPathCorrelationIdsMock(entry, turnId, rawCid) {
+  if (!entry || typeof turnId !== 'string' || !turnId) return new Set();
+  const cids = coerceFastPathCorrelationIdsMock(rawCid);
   if (cids.size === 0 || !(entry.fastPathCorrelationIdByTurn instanceof Map)) return new Set();
   const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
   const newlyInserted = new Set();
@@ -134,10 +143,18 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
   mergeFastPathCorrelationIds: mergeFastPathCorrelationIdsMock,
   unmergeFastPathCorrelationIds: unmergeFastPathCorrelationIdsMock,
+  coerceFastPathCorrelationIds: coerceFastPathCorrelationIdsMock,
 }));
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
+// G2b (Codex diff-review cycle 5) — real, UNMOCKED Plan 00 evaluation
+// observer. `plan00-semantic-capture.js` is not mocked anywhere in this
+// file, so this is the actual `bindFastCorrelation`/`fastCorrelationTurn`
+// implementation the production `bindFastPathCorrelationsForEvaluation`
+// helper (sonnet-stream.js) calls.
+const { createMutationObserver, attachMutationObserver } =
+  await import('../extraction/plan00-semantic-capture.js');
 // Direct unit coverage of `mergeFastPathCorrelationIds` itself (coercion
 // shape contract: string vs array, merge-not-replace) lives in
 // stage6-orphan-net-fast-path-duplicate.test.js, which imports the REAL
@@ -446,5 +463,156 @@ describe('E2 — the ask-answer merge rolls back when resolve() races and fails'
     const seeded = entry.fastPathCorrelationIdByTurn.get('turn-e2-overtake');
     expect(seeded?.has('cid-overtake-race')).not.toBe(true);
     expect(seeded?.has('cid-sibling-legit-2')).toBe(true);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Codex diff-review cycle 5 (G2b) — the same four "resolve() genuinely won"
+// branches above ALSO tell the separate Plan 00 evaluation harness about the
+// correlation now, via `bindFastPathCorrelationsForEvaluation`. Before this
+// fix, an ask-answer turn's fast attempts were invisible to evaluation
+// capture even though the production merge (D1/E2, proven above) was
+// already correct — this describe block proves the evaluation SIDE of the
+// same branches, using a REAL (unmocked) mutation observer attached to
+// `entry.session`.
+//
+// The observer's `enterTurnScope(turnId)` is called manually before each
+// transcript, standing in for "the asking turn's own runShadowHarness call
+// is still inside its try block, scope open, mid-await on the ask" — the
+// exact production state these ask-answer resolution sites run under
+// (entry.activeTurnId identifies that still-open turn).
+// -----------------------------------------------------------------------------
+describe('G2b — the Plan 00 evaluation harness learns the SAME correlation the production merge kept', () => {
+  test('pre-queue seam, resolve() wins: the correlation binds to the OPEN (asking) turn for evaluation', async () => {
+    const { ws, entry } = await startLiveSession(wss, SESSION_ID);
+    const observer = createMutationObserver({ sessionId: SESSION_ID });
+    attachMutationObserver(entry.session, observer);
+    observer.enterTurnScope('turn-open-g2b');
+
+    entry.activeTurnId = 'turn-open-g2b';
+    entry.isExtracting = true;
+    entry.pendingAsks.register('toolu_ask_g2b_preq', {
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 4,
+      expectedAnswerShape: 'number',
+      resolve: jest.fn(),
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    await ws._emit(
+      'message',
+      transcript('Zs on circuit 4 is 0.62.', 'utt-answer-g2b', {
+        regexResults: [{ field: 'measured_zs_ohm', circuit: 4, value: '0.62' }],
+        regex_fast_correlation_id: 'cid-g2b-preq',
+      })
+    );
+
+    // Production merge (D1) still holds — unchanged by G2b.
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-open-g2b')?.has('cid-g2b-preq')).toBe(true);
+    // NEW: the evaluation harness independently knows this correlation
+    // belongs to the same open turn.
+    expect(observer.fastCorrelationTurn('cid-g2b-preq')).toBe('turn-open-g2b');
+    expect(observer.invalid).toBeNull();
+  });
+
+  test('overtake seam, resolve() wins: the correlation binds to the OPEN (asking) turn for evaluation', async () => {
+    const { ws, entry } = await startLiveSession(wss, SESSION_ID);
+    const observer = createMutationObserver({ sessionId: SESSION_ID });
+    attachMutationObserver(entry.session, observer);
+    observer.enterTurnScope('turn-open-g2b-2');
+
+    entry.activeTurnId = 'turn-open-g2b-2';
+    entry.isExtracting = false;
+    entry.pendingAsks.register('toolu_ask_g2b_overtake', {
+      contextField: 'r1_r2_ohm',
+      contextCircuit: 7,
+      expectedAnswerShape: 'number',
+      resolve: jest.fn(),
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    await ws._emit(
+      'message',
+      transcript('R1 plus R2 on circuit 7 is 0.85.', 'utt-answer-g2b-2', {
+        regexResults: [{ field: 'r1_r2_ohm', circuit: 7, value: '0.85' }],
+        regex_fast_correlation_id: 'cid-g2b-overtake',
+      })
+    );
+
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-open-g2b-2')?.has('cid-g2b-overtake')).toBe(
+      true
+    );
+    expect(observer.fastCorrelationTurn('cid-g2b-overtake')).toBe('turn-open-g2b-2');
+    expect(observer.invalid).toBeNull();
+  });
+
+  test('pre-queue seam, resolve() RACES AND LOSES: no evaluation bind happens, and it never throws into the production fall-through', async () => {
+    const { ws, entry } = await startLiveSession(wss, SESSION_ID);
+    const observer = createMutationObserver({ sessionId: SESSION_ID });
+    attachMutationObserver(entry.session, observer);
+    observer.enterTurnScope('turn-e2-g2b-preq');
+
+    entry.activeTurnId = 'turn-e2-g2b-preq';
+    entry.isExtracting = true;
+    entry.pendingAsks.register('toolu_ask_e2_g2b_preq', {
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 4,
+      expectedAnswerShape: 'number',
+      resolve: jest.fn(),
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+    // Simulate the race: classification matches, but resolving loses.
+    entry.pendingAsks.resolve = jest.fn(() => false);
+
+    await ws._emit(
+      'message',
+      transcript('Zs on circuit 4 is 0.62.', 'utt-answer-race-g2b', {
+        regexResults: [{ field: 'measured_zs_ohm', circuit: 4, value: '0.62' }],
+        regex_fast_correlation_id: 'cid-g2b-race',
+      })
+    );
+
+    // The production side already proves the merge rolled back (E2 above);
+    // here we prove the EVALUATION side never bound this correlation to the
+    // stale turn either — there is no rollback for evaluation-only state
+    // (per the investigation behind this fix), so the fix is to never bind
+    // in the first place on a losing resolve.
+    expect(observer.fastCorrelationTurn('cid-g2b-race')).toBeNull();
+    expect(observer.invalid).toBeNull();
+    // And the production fall-through (the whole point of E2) is untouched
+    // by G2b's addition — no error frame, no thrown exception escaped.
+    expect(ws._sent.find((f) => f.type === 'error')).toBeUndefined();
+  });
+
+  test('control — an answering transcript with NO correlation id: no evaluation bind, no error', async () => {
+    const { ws, entry } = await startLiveSession(wss, SESSION_ID);
+    const observer = createMutationObserver({ sessionId: SESSION_ID });
+    attachMutationObserver(entry.session, observer);
+    observer.enterTurnScope('turn-open-g2b-3');
+
+    entry.activeTurnId = 'turn-open-g2b-3';
+    entry.isExtracting = true;
+    entry.pendingAsks.register('toolu_ask_g2b_control', {
+      contextField: 'measured_zs_ohm',
+      contextCircuit: 4,
+      expectedAnswerShape: 'number',
+      resolve: jest.fn(),
+      timer: setTimeout(() => {}, 60000),
+      askStartedAt: Date.now(),
+    });
+
+    await ws._emit(
+      'message',
+      transcript('Zs on circuit 4 is 0.62.', 'utt-answer-g2b-control', {
+        regexResults: [{ field: 'measured_zs_ohm', circuit: 4, value: '0.62' }],
+        // no regex_fast_correlation_id
+      })
+    );
+
+    expect(observer.invalid).toBeNull();
+    expect(ws._sent.find((f) => f.type === 'error')).toBeUndefined();
   });
 });

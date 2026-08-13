@@ -1411,6 +1411,34 @@ export function resolveZeroToolCallDuplicateOutcome({
 }
 
 /**
+ * Codex diff-review cycle 5 (G2) — shared coercion, extracted out of
+ * `mergeFastPathCorrelationIds` below. iOS's fast-dispatch correlation id(s)
+ * arrive as EITHER a legacy single string OR an array (B1.1's
+ * `regexFastCorrelationIds: [String]?` wire shape, one per slot in a
+ * multi-write utterance) — `options.regexFastCorrelationId` carries the same
+ * string-or-array value at every call site that reads it. Exported so BOTH
+ * `mergeFastPathCorrelationIds` (production turn-tracking, below) and
+ * `runShadowHarness`'s Plan 00 evaluation-only `bindFastCorrelation` call
+ * (and sonnet-stream.js's ask-answer evaluation binding) normalise this
+ * value IDENTICALLY — G2 was exactly a second, incomplete, hand-rolled copy
+ * of this coercion that only handled the scalar shape.
+ *
+ * @param {string|string[]|null|undefined} rawCid
+ * @returns {Set<string>} every valid non-empty string id, deduplicated
+ */
+export function coerceFastPathCorrelationIds(rawCid) {
+  const cids = new Set();
+  if (typeof rawCid === 'string' && rawCid) {
+    cids.add(rawCid);
+  } else if (Array.isArray(rawCid)) {
+    for (const cid of rawCid) {
+      if (typeof cid === 'string' && cid) cids.add(cid);
+    }
+  }
+  return cids;
+}
+
+/**
  * Codex diff-review cycle 3 D1 — shared coercion/merge helper for iOS's
  * fast-dispatch correlation id(s) onto `entry.fastPathCorrelationIdByTurn`.
  * `rawCid` accepts the legacy single-string shape AND an array (one per slot
@@ -1452,14 +1480,7 @@ export function resolveZeroToolCallDuplicateOutcome({
  */
 export function mergeFastPathCorrelationIds(entry, turnId, rawCid) {
   if (!entry || typeof turnId !== 'string' || !turnId) return new Set();
-  const cids = new Set();
-  if (typeof rawCid === 'string' && rawCid) {
-    cids.add(rawCid);
-  } else if (Array.isArray(rawCid)) {
-    for (const cid of rawCid) {
-      if (typeof cid === 'string' && cid) cids.add(cid);
-    }
-  }
+  const cids = coerceFastPathCorrelationIds(rawCid);
   if (cids.size === 0 || !(entry.fastPathCorrelationIdByTurn instanceof Map)) return new Set();
   const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
   const newlyInserted = new Set();
@@ -5461,8 +5482,17 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   try {
     if (plan00MutationObserver) {
       plan00TurnScopeEntered = plan00MutationObserver.enterTurnScope(extractionTurnId) === true;
-      if (typeof options.regexFastCorrelationId === 'string' && options.regexFastCorrelationId) {
-        plan00MutationObserver.bindFastCorrelation(options.regexFastCorrelationId);
+      // Codex diff-review cycle 5 (G2a) — `options.regexFastCorrelationId`
+      // carries B1.1's string-OR-ARRAY wire shape (a turn can fast-dispatch
+      // MULTIPLE correlations, one per slot in a multi-write utterance); this
+      // used to check `typeof ... === 'string'` only, so a multi-correlation
+      // turn's array value failed the guard entirely and bound NONE of them
+      // for evaluation. `bindFastCorrelation` binds one id at a time by
+      // design (plan00-semantic-capture.js) — call it once per coerced id,
+      // matching the SAME coercion `mergeFastPathCorrelationIds` already
+      // uses for the production turn-tracking Map below.
+      for (const cid of coerceFastPathCorrelationIds(options.regexFastCorrelationId)) {
+        plan00MutationObserver.bindFastCorrelation(cid);
       }
     }
     return await runShadowHarnessDispatch(session, transcriptText, regexResults, options, {

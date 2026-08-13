@@ -87,6 +87,7 @@ jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
   runShadowHarness: runShadowHarnessSpy,
   mergeFastPathCorrelationIds: jest.fn(),
   unmergeFastPathCorrelationIds: jest.fn(),
+  coerceFastPathCorrelationIds: jest.fn(() => new Set()),
 }));
 
 // classifyOvertake spy — default no_pending_asks so transcripts pass through and
