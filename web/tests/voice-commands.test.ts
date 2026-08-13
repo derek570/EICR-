@@ -89,10 +89,13 @@ describe('applyVoiceCommand — calculate_impedance', () => {
   });
 
   it('Zs across all circuits — pluralised response', () => {
+    // PLAN-F item 1 (2026-08-12, feedback id 115) — circuit_designation is
+    // now the spare-classification signal (blank = spare); these are real
+    // circuits under test, so they carry a non-spare designation.
     const job = jobWithCircuits('0.35', [
-      { id: 'c1', circuit_ref: '1', r1_r2_ohm: '0.45' },
-      { id: 'c2', circuit_ref: '2', r1_r2_ohm: '0.60' },
-      { id: 'c3', circuit_ref: '3', r1_r2_ohm: '0.20' },
+      { id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker', r1_r2_ohm: '0.45' },
+      { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets', r1_r2_ohm: '0.60' },
+      { id: 'c3', circuit_ref: '3', circuit_designation: 'Lights', r1_r2_ohm: '0.20' },
     ]);
     const cmd = parseVoiceCommand('calculate Zs for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
@@ -103,8 +106,8 @@ describe('applyVoiceCommand — calculate_impedance', () => {
 
   it('R1+R2 = Zs - Ze, skips circuits without Zs', () => {
     const job = jobWithCircuits('0.10', [
-      { id: 'c1', circuit_ref: '1', measured_zs_ohm: '0.55' },
-      { id: 'c2', circuit_ref: '2' /* no Zs */ },
+      { id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker', measured_zs_ohm: '0.55' },
+      { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets' /* no Zs */ },
     ]);
     const cmd = parseVoiceCommand('calculate R1+R2 for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
@@ -123,7 +126,9 @@ describe('applyVoiceCommand — calculate_impedance', () => {
   });
 
   it('reports zero updates when no circuits have the input', () => {
-    const job = jobWithCircuits('0.35', [{ id: 'c1', circuit_ref: '1' /* no R1+R2 */ }]);
+    const job = jobWithCircuits('0.35', [
+      { id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker' /* no R1+R2 */ },
+    ]);
     const cmd = parseVoiceCommand('calculate Zs for all')!;
     const out = applyVoiceCommand(cmd, job);
     expect(out.response).toBe('No circuits had the values needed to calculate Zs.');
@@ -164,10 +169,13 @@ describe('parseVoiceCommand — apply_field', () => {
 
 describe('applyVoiceCommand — apply_field', () => {
   it('writes the value to every circuit in scope; pluralises response', () => {
+    // ir_test_voltage_v is a reading field (not device-attribute), so the
+    // automatic default excludes spares — these are real circuits under
+    // test, so they carry a non-spare designation.
     const job = jobWithCircuits('0.10', [
-      { id: 'c1', circuit_ref: '1' },
-      { id: 'c2', circuit_ref: '2' },
-      { id: 'c3', circuit_ref: '3' },
+      { id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker' },
+      { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets' },
+      { id: 'c3', circuit_ref: '3', circuit_designation: 'Lights' },
     ]);
     const cmd = parseVoiceCommand('insulation test voltage 250 for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
@@ -178,8 +186,8 @@ describe('applyVoiceCommand — apply_field', () => {
 
   it('normalises pass/fail for polarity to ✓ / ✗ across the scope', () => {
     const job = jobWithCircuits('0.10', [
-      { id: 'c1', circuit_ref: '1' },
-      { id: 'c2', circuit_ref: '2' },
+      { id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker' },
+      { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets' },
     ]);
     const cmd = parseVoiceCommand('polarity pass for all circuits')!;
     const out = applyVoiceCommand(cmd, job);

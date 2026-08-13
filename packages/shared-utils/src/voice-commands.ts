@@ -105,6 +105,22 @@ export type VoiceCommand =
       field: string;
       value: string;
       scope: VoiceCommandScope;
+      /** PLAN-F item 1 (2026-08-12, feedback id 115) — orthogonal spare
+       *  filter, composes with `scope`. 'automatic' or undefined resolves
+       *  per field family (device-attribute fields include spares by
+       *  default; reading fields exclude). Set ONLY when the inspector
+       *  explicitly said "including spares" / "excluding spares". */
+      sparePolicy?: 'automatic' | 'include' | 'exclude';
+    }
+  | {
+      /** PLAN-F item 1, Decision 3 — the utterance named BOTH include- and
+       *  exclude-shaped spare language in one instruction ("including
+       *  spares but excluding the spare way"). The local parser CONSUMES
+       *  this: it speaks a deterministic refusal and does NOT fall
+       *  through to the server (an unforwarded local reject would
+       *  otherwise reach a backend with no contradiction branch, which
+       *  may pick one scope and mutate anyway). */
+      type: 'apply_field_contradiction';
     };
 
 export interface VoiceCommandOutcome {
@@ -140,6 +156,18 @@ const CIRCUIT_FIELD_ALIASES: Record<string, string> = {
   rating: 'ocpd_rating_a',
   'ocpd type': 'ocpd_type',
   type: 'ocpd_type',
+  // PLAN-F item 1 (2026-08-12, feedback id 115) — BS/EN + breaking-capacity
+  // + max-Zs aliases (web previously had none of these four; iOS/backend
+  // parity — same OCPD/RCD field_groups union that defines
+  // DEVICE_ATTRIBUTE_FIELDS below).
+  'ocpd bs en': 'ocpd_bs_en',
+  'ocpd standard': 'ocpd_bs_en',
+  'ocpd breaking capacity': 'ocpd_breaking_capacity_ka',
+  'breaking capacity': 'ocpd_breaking_capacity_ka',
+  'ocpd max zs': 'ocpd_max_zs_ohm',
+  'ocpd maximum zs': 'ocpd_max_zs_ohm',
+  'rcd bs en': 'rcd_bs_en',
+  'rcd standard': 'rcd_bs_en',
   // Cable
   'cable size': 'live_csa_mm2',
   cable: 'live_csa_mm2',
@@ -484,12 +512,15 @@ function matchTrailingScope(text: string): { scope: VoiceCommandScope; before: s
  * rejected here so the inspector hears a clear error rather than a
  * silent no-op; supply fields take a different command shape.
  */
-function parseApplyField(transcript: string): VoiceCommand | null {
-  const lower = transcript.trim().toLowerCase();
-  // Strip an optional leading "set " — iOS-style "set polarity correct
-  // for all circuits" should land here, not in UPDATE_FIELD_RE.
-  const stripped = lower.startsWith('set ') ? lower.slice(4) : lower;
-
+/** Core apply-field shape matcher (both grammars), operating on already
+ *  spare-modifier-stripped text. Extracted so the sparePolicy/contradiction
+ *  wrapper below can share it — the contradiction path only fires when
+ *  the CLEANED text still parses as a genuine apply-field command (avoids
+ *  misfiring on unrelated sentences that happen to mention both spare
+ *  directions). */
+function parseApplyFieldShape(
+  stripped: string
+): Extract<VoiceCommand, { type: 'apply_field' }> | null {
   // Shape 2: "<field> for <scope> is <value>".
   // Search for " for ... is ..." inside the input, then split at " is ".
   const isPattern =
@@ -528,6 +559,108 @@ function parseApplyField(transcript: string): VoiceCommand | null {
   return null;
 }
 
+function parseApplyField(transcript: string): VoiceCommand | null {
+  const lower = transcript.trim().toLowerCase();
+  // Strip an optional leading "set " — iOS-style "set polarity correct
+  // for all circuits" should land here, not in UPDATE_FIELD_RE.
+  const stripped = lower.startsWith('set ') ? lower.slice(4) : lower;
+
+  // PLAN-F item 1 (2026-08-12, feedback id 115) — strip a spoken spare
+  // modifier BEFORE shape-matching so "including spares"/"excluding
+  // spares" doesn't get swallowed into the value or field phrase. Parse
+  // the CLEANED text through the normal shapes first; only THEN decide
+  // whether to attach sparePolicy or emit the contradiction command —
+  // this way a coincidental "including"/"excluding" near "spares" in an
+  // utterance that doesn't otherwise parse as apply-field never misfires.
+  const spareInfo = extractSparePolicy(stripped);
+  const base = parseApplyFieldShape(spareInfo.cleaned);
+  if (!base) return null;
+  if (spareInfo.contradictory) {
+    return { type: 'apply_field_contradiction' };
+  }
+  if (spareInfo.policy) {
+    return { ...base, sparePolicy: spareInfo.policy };
+  }
+  return base;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PLAN-F item 1 (2026-08-12, feedback id 115) — spare-inclusion classifier
+// + predicate. DEVICE_ATTRIBUTE_FIELDS is the UNION of field_schema.json's
+// OCPD and RCD field_groups (8 fields) — MUST stay in sync with backend
+// device-attribute-fields.js and iOS's DeviceAttributeFields.swift (each
+// carries its own generated/pinned drift assertion against the schema).
+// ─────────────────────────────────────────────────────────────────────────
+
+const DEVICE_ATTRIBUTE_FIELDS = new Set<string>([
+  'ocpd_bs_en',
+  'ocpd_type',
+  'ocpd_rating_a',
+  'ocpd_breaking_capacity_ka',
+  'ocpd_max_zs_ohm',
+  'rcd_bs_en',
+  'rcd_type',
+  'rcd_operating_current_ma',
+]);
+
+/** Spare-detection predicate, aligned to the backend's semantics: regex
+ *  `(?<!-)\bspare\b` on the designation, plus empty-designation = spare
+ *  by convention (blank-row circuits in the schedule). No `is_spare`
+ *  flag needed — the web CircuitRow always carries `circuit_designation`.
+ *  Sync-is-social: mirrors backend stage6-dispatchers-circuit.js's spare
+ *  regex and iOS's exact-designation predicate. */
+const SPARE_DESIGNATION_RE = /(?<!-)\bspare\b/i;
+function isSpareCircuit(row: VoiceCommandCircuit): boolean {
+  const designation = String(row.circuit_designation ?? '').trim();
+  return designation === '' || SPARE_DESIGNATION_RE.test(designation);
+}
+
+type ResolvedSparePolicy = 'include' | 'exclude';
+
+/** Resolution rule — mirrors the backend's resolveSparePolicy exactly:
+ *  an explicit include/exclude always wins; otherwise the family-aware
+ *  automatic default (device-attribute → include, else → exclude). Web
+ *  has no scope:'all' vs scope:'non_spare' distinction (the PWA's
+ *  VoiceCommandScope has no such selector), so there is no passthrough
+ *  carve-out to preserve here — every 'all'-scope apply/calculate goes
+ *  through this one resolution path. */
+function resolveSparePolicy(
+  sparePolicyInput: 'automatic' | 'include' | 'exclude' | undefined,
+  fieldName: string | undefined
+): ResolvedSparePolicy {
+  if (sparePolicyInput === 'include') return 'include';
+  if (sparePolicyInput === 'exclude') return 'exclude';
+  if (fieldName && DEVICE_ATTRIBUTE_FIELDS.has(fieldName)) return 'include';
+  return 'exclude';
+}
+
+// Contradiction detection + modifier stripping for the apply-field parser.
+const SPARE_INCLUDE_RE = /\b(?:including|include|with)\s+(?:the\s+)?spares?\b/i;
+const SPARE_EXCLUDE_RE =
+  /\b(?:excluding|exclude|except|not\s+including|without)\s+(?:the\s+)?spares?(?:\s+ways?)?\b/i;
+
+function extractSparePolicy(text: string): {
+  policy: 'include' | 'exclude' | null;
+  contradictory: boolean;
+  cleaned: string;
+} {
+  const hasInclude = SPARE_INCLUDE_RE.test(text);
+  const hasExclude = SPARE_EXCLUDE_RE.test(text);
+  // Strip a leftover connective ("...including spares BUT excluding
+  // spares...") between the two removed phrases — otherwise the stray
+  // "but"/"and" breaks the trailing-scope regex match on the cleaned text.
+  const cleaned = text
+    .replace(SPARE_INCLUDE_RE, '')
+    .replace(SPARE_EXCLUDE_RE, '')
+    .replace(/\s+\b(?:but|and)\b\s+/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  if (hasInclude && hasExclude) return { policy: null, contradictory: true, cleaned };
+  if (hasInclude) return { policy: 'include', contradictory: false, cleaned };
+  if (hasExclude) return { policy: 'exclude', contradictory: false, cleaned };
+  return { policy: null, contradictory: false, cleaned: text };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Applier — takes a parsed command + current job, produces a patch.
 // Pure; never mutates the input.
@@ -550,6 +683,10 @@ function labelForField(field: string): string {
     afdd_button_confirmed: 'AFDD test button',
     ocpd_rating_a: 'OCPD rating',
     ocpd_type: 'OCPD type',
+    ocpd_bs_en: 'OCPD BS EN',
+    ocpd_breaking_capacity_ka: 'OCPD breaking capacity',
+    ocpd_max_zs_ohm: 'OCPD maximum Zs',
+    rcd_bs_en: 'RCD BS EN',
     polarity_confirmed: 'polarity',
     live_csa_mm2: 'cable size',
     cpc_csa_mm2: 'CPC size',
@@ -590,6 +727,13 @@ export function applyVoiceCommand(
       return applyCalculateImpedance(command, job);
     case 'apply_field':
       return applyApplyField(command, job);
+    case 'apply_field_contradiction':
+      // PLAN-F item 1, Decision 3 — consumed locally: speak a deterministic
+      // refusal, no patch (nothing mutates), never forwarded to the server.
+      return {
+        response:
+          'I heard contradictory spare instructions — please say either including or excluding spares, not both.',
+      };
     default: {
       // Exhaustiveness — TypeScript will flag a missing branch at compile
       // time; the runtime guard is belt-and-braces for hand-edited JSON.
@@ -729,31 +873,54 @@ function applyQueryField(
 // report the count via the spoken response.
 // ─────────────────────────────────────────────────────────────────────────
 
-function indicesForScope(scope: VoiceCommandScope, circuits: VoiceCommandCircuit[]): number[] {
-  if (circuits.length === 0) return [];
+/** PLAN-F item 1 (2026-08-12, feedback id 115) — `spareFilter` is threaded
+ *  from the caller's field identity so the 'all' branch can resolve the
+ *  family-aware spare default. `applyCalculateImpedance` passes NO
+ *  `fieldName` (always resolves to 'exclude' — calculate_zs/r1_r2 are
+ *  reading fields with no ambiguity, unaffected by this plan). This is
+ *  NEW exclusion logic for 'all' scope that did not exist before — web
+ *  previously included every circuit at this layer and relied on
+ *  downstream numeric checks (spares have no R1+R2/Zs, so a spare row
+ *  silently no-opped further down); now the exclusion is explicit, which
+ *  is what makes the audible-skip count meaningful. */
+function indicesForScope(
+  scope: VoiceCommandScope,
+  circuits: VoiceCommandCircuit[],
+  spareFilter?: { fieldName?: string; sparePolicy?: 'automatic' | 'include' | 'exclude' }
+): { indices: number[]; spareSkippedCount: number } {
+  if (circuits.length === 0) return { indices: [], spareSkippedCount: 0 };
   if (scope.kind === 'all') {
-    // All circuits, in order. iOS skips spare rows here; the PWA's
-    // CircuitRow doesn't carry an explicit `is_spare` flag yet, so we
-    // include all and let the field-write decide whether the row is
-    // applicable (e.g. calculate_zs skips rows without R1+R2).
-    return circuits.map((_, i) => i);
+    const effectivePolicy = resolveSparePolicy(spareFilter?.sparePolicy, spareFilter?.fieldName);
+    const indices: number[] = [];
+    let spareSkippedCount = 0;
+    circuits.forEach((row, i) => {
+      if (effectivePolicy === 'exclude' && isSpareCircuit(row)) {
+        spareSkippedCount += 1;
+        return;
+      }
+      indices.push(i);
+    });
+    return { indices, spareSkippedCount };
   }
+  // single/range — an explicitly-named circuit is never spare-filtered,
+  // matching the backend (the spare filter only applies to the bulk 'all'
+  // candidate set).
   if (scope.kind === 'single') {
     const ref = String(scope.circuit);
     const idx = circuits.findIndex((c) => c.circuit_ref === ref || c.number === ref);
-    return idx >= 0 ? [idx] : [];
+    return { indices: idx >= 0 ? [idx] : [], spareSkippedCount: 0 };
   }
   // range
   const fromRef = String(scope.from);
   const toRef = String(scope.to);
   const fromIdx = circuits.findIndex((c) => c.circuit_ref === fromRef || c.number === fromRef);
   const toIdx = circuits.findIndex((c) => c.circuit_ref === toRef || c.number === toRef);
-  if (fromIdx < 0 || toIdx < 0) return [];
+  if (fromIdx < 0 || toIdx < 0) return { indices: [], spareSkippedCount: 0 };
   const lo = Math.min(fromIdx, toIdx);
   const hi = Math.max(fromIdx, toIdx);
   const out: number[] = [];
   for (let i = lo; i <= hi; i++) out.push(i);
-  return out;
+  return { indices: out, spareSkippedCount: 0 };
 }
 
 /**
@@ -770,7 +937,9 @@ function applyCalculateImpedance(
   job: VoiceCommandJob
 ): VoiceCommandOutcome {
   const circuits = [...(job.circuits ?? [])];
-  const indices = indicesForScope(command.scope, circuits);
+  // No fieldName passed — calculate_zs/r1_r2 are reading fields, always
+  // spare-excluded (unaffected by this plan; see indicesForScope's doc).
+  const { indices } = indicesForScope(command.scope, circuits);
   if (indices.length === 0) {
     return respondUnknown('No circuits found in the specified range.');
   }
@@ -841,8 +1010,19 @@ function applyApplyField(
     return respondUnknown(`I don't know the field "${command.field}".`);
   }
   const circuits = [...(job.circuits ?? [])];
-  const indices = indicesForScope(command.scope, circuits);
+  const { indices, spareSkippedCount } = indicesForScope(command.scope, circuits, {
+    fieldName: resolved.circuitField,
+    sparePolicy: command.sparePolicy,
+  });
+  // PLAN-F item 1, Decision 4 — count-aware audible skip. Zero applied
+  // WITH spares skipped is the "all targets were spares under an exclude
+  // policy" case (there is no success confirmation to append to); zero
+  // applied with NO spares skipped is the pre-existing "range/circuit not
+  // found" case. Distinct branches — the wording must not collide.
   if (indices.length === 0) {
+    if (spareSkippedCount > 0) {
+      return { response: `No non-spare circuits were updated; ${skipClause(spareSkippedCount)}.` };
+    }
     return respondUnknown('No circuits found in the specified range.');
   }
   // Polarity normalisation — same sigil mapping as applyUpdateField.
@@ -864,14 +1044,27 @@ function applyApplyField(
   // iOS phrasing — VoiceCommandExecutor.swift around line 472. "Set X
   // for N circuits" / "for 1 circuit". Same direct-mutation semantics
   // (overrides any pre-existing value because the inspector explicitly
-  // asked for it).
+  // asked for it). PLAN-F item 1, Decision 4 — a count-aware skip clause
+  // is appended when the bulk write also skipped spares under an exclude
+  // policy (Decision 4's exact wording, shared with backend/iOS — no
+  // client-invented variants).
+  const skipSuffix = spareSkippedCount > 0 ? `, ${skipClause(spareSkippedCount)}` : '';
   const response =
     updated === 1
-      ? `Set ${label} to ${command.value} for 1 circuit.`
-      : `Set ${label} to ${command.value} for ${updated} circuits.`;
+      ? `Set ${label} to ${command.value} for 1 circuit${skipSuffix}.`
+      : `Set ${label} to ${command.value} for ${updated} circuits${skipSuffix}.`;
   return {
     patch: { circuits: next },
     response,
     changedKeys: [resolved.circuitField as string],
   };
+}
+
+/** Decision 4's exact count-aware skip clause, shared verbatim across all
+ *  three implementations: "skipping 1 spare way" / "skipping N spare
+ *  ways". No client-invented variants. */
+function skipClause(spareSkippedCount: number): string {
+  return spareSkippedCount === 1
+    ? 'skipping 1 spare way'
+    : `skipping ${spareSkippedCount} spare ways`;
 }
