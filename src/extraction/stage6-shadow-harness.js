@@ -1335,6 +1335,52 @@ export function resolveZeroToolCallDuplicateOutcome({
   return null;
 }
 
+/**
+ * Codex diff-review cycle 3 D1 — shared coercion/merge helper for iOS's
+ * fast-dispatch correlation id(s) onto `entry.fastPathCorrelationIdByTurn`.
+ * `rawCid` accepts the legacy single-string shape AND an array (one per slot
+ * in a multi-write utterance) — the SAME shape `options.regexFastCorrelationId`
+ * carries at the normal runLiveMode seeding site below, which itself reads
+ * `msg.regex_fast_correlation_id` off the incoming transcript
+ * (sonnet-stream.js).
+ *
+ * MERGES into any existing Set for `turnId` rather than replacing it — a
+ * turn's opening transcript may already have seeded correlation ids (e.g. one
+ * ambiguous reading raised an ask while a sibling reading fast-dispatched in
+ * the SAME utterance); a later answering transcript's ids must be ADDED, not
+ * overwrite.
+ *
+ * Exported so sonnet-stream.js's ask-answer resolution paths (the pre-queue
+ * and overtake seams, both of which resolve `entry.pendingAsks` and return
+ * WITHOUT ever calling runLiveMode again for that answer) can seed the
+ * RESUMED turn's correlation set from the answering transcript, using
+ * `entry.activeTurnId` (set below) to identify which in-flight turn to seed —
+ * without duplicating this coercion logic at each call site.
+ *
+ * @param {Object} entry - the activeSessions entry (getActiveSessionEntry result)
+ * @param {string} turnId - the turn to seed (entry.activeTurnId for the
+ *   ask-answer paths; the freshly-minted turnId for the normal seeding site)
+ * @param {string|string[]|null|undefined} rawCid
+ */
+export function mergeFastPathCorrelationIds(entry, turnId, rawCid) {
+  if (!entry || typeof turnId !== 'string' || !turnId) return;
+  const cids = new Set();
+  if (typeof rawCid === 'string' && rawCid) {
+    cids.add(rawCid);
+  } else if (Array.isArray(rawCid)) {
+    for (const cid of rawCid) {
+      if (typeof cid === 'string' && cid) cids.add(cid);
+    }
+  }
+  if (cids.size === 0 || !(entry.fastPathCorrelationIdByTurn instanceof Map)) return;
+  const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
+  if (existing instanceof Set) {
+    for (const cid of cids) existing.add(cid);
+  } else {
+    entry.fastPathCorrelationIdByTurn.set(turnId, cids);
+  }
+}
+
 async function runLiveMode(session, transcriptText, regexResults, options, log) {
   const turnNum = (session.turnCount ?? 0) + 1;
   const turnId = `${session.sessionId}-turn-${turnNum}`;
@@ -1382,19 +1428,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // fire on a stale slot.
   const entry = getActiveSessionEntry(session.sessionId);
   if (entry) {
-    const rawCid = options?.regexFastCorrelationId;
-    // Accept legacy single-string shape AND array shape; coerce both
-    // into a Set so callers don't have to remember which is which.
-    const cids = new Set();
-    if (typeof rawCid === 'string' && rawCid) cids.add(rawCid);
-    else if (Array.isArray(rawCid)) {
-      for (const cid of rawCid) {
-        if (typeof cid === 'string' && cid) cids.add(cid);
-      }
-    }
-    if (cids.size > 0 && entry.fastPathCorrelationIdByTurn instanceof Map) {
-      entry.fastPathCorrelationIdByTurn.set(turnId, cids);
-    }
+    // Codex diff-review cycle 3 D1 — publish the turn this call is opening
+    // as the session's "currently in-flight" turn. sonnet-stream.js's
+    // ask-answer resolution paths (pre-queue + overtake seams) resolve
+    // `entry.pendingAsks` and return WITHOUT ever calling runLiveMode again
+    // for that answer — the tool loop that's mid-await on the resolved
+    // Promise is THIS call, still inside its try block below. Those seams
+    // read `entry.activeTurnId` to know which turn's
+    // fastPathCorrelationIdByTurn set to seed from the answering
+    // transcript's `regex_fast_correlation_id`. Cleared in the `finally`
+    // below, symmetric with the other per-turn entry state torn down there.
+    entry.activeTurnId = turnId;
+    mergeFastPathCorrelationIds(entry, turnId, options?.regexFastCorrelationId);
     // Fix A 2026-06-02 (handoff §A) — populate broadcastIntentByTurn so the
     // speculator's preflight can skip per-circuit synth on broadcast turns.
     // Write must happen BEFORE runToolLoop is invoked so the very first
@@ -5040,6 +5085,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // written) and on the error path where runToolLoop threw before any
       // hook fired.
       entry.broadcastIntentByTurn?.delete(turnId);
+      // Codex diff-review cycle 3 D1 — symmetric teardown of the
+      // in-flight-turn pointer set above. Identity-compare against turnId
+      // (not an unconditional null) so a hypothetical re-entrant call for a
+      // DIFFERENT turn (this function is not reentrant per-session today,
+      // but the other per-turn cleanups in this finally use the same
+      // defensive pattern) never clobbers a live pointer that isn't ours.
+      if (entry.activeTurnId === turnId) {
+        entry.activeTurnId = null;
+      }
     }
     // Drop the per-turn transcript pointer so a dispatcher firing on
     // the next turn can't accidentally reuse this turn's text.

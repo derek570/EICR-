@@ -31,7 +31,7 @@ import { sanitizeReadingFieldContract } from './reading-field-contract-sanitizer
 import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
-import { runShadowHarness } from './stage6-shadow-harness.js';
+import { runShadowHarness, mergeFastPathCorrelationIds } from './stage6-shadow-harness.js';
 import {
   POSTCODE_HINT_STATE,
   lookupResolvedPostcodeHint,
@@ -5979,6 +5979,15 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             code: sanErr.code || 'sanitisation_error',
             message: sanErr.message,
           });
+          // Codex diff-review cycle 3 D1 — this transcript is being consumed
+          // as the blocking ask's answer and will NEVER reach runLiveMode's
+          // own seeding site (this function returns below without calling
+          // it), so if iOS fast-dispatched off THIS transcript, the
+          // RESUMED turn (entry.activeTurnId — the still-in-flight
+          // runLiveMode call this ask belongs to) would otherwise never
+          // learn the correlation id and the bundler's echo-stamp would
+          // have nothing to match. Seed it here, before consuming.
+          mergeFastPathCorrelationIds(entry, entry.activeTurnId, msg.regex_fast_correlation_id);
           entry.pendingAsks.resolve(preVerdict.toolCallId, {
             answered: false,
             reason: 'validation_error',
@@ -6017,6 +6026,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             stripped: sanitisedPre.stripped,
           };
         }
+        // Codex diff-review cycle 3 D1 — see the validation_error branch
+        // above for the rationale: this transcript resolves the ask and
+        // (on success) returns without ever reaching runLiveMode's own
+        // seeding site, so seed the resumed turn's correlation set here.
+        mergeFastPathCorrelationIds(entry, entry.activeTurnId, msg.regex_fast_correlation_id);
         const preResolved = entry.pendingAsks.resolve(preVerdict.toolCallId, preResolvePayload);
         if (preResolved) {
           stampSeenTranscript();
@@ -6711,6 +6725,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               code: sanErr.code || 'sanitisation_error',
               message: sanErr.message,
             });
+            // Codex diff-review cycle 3 D1 — see the pre-queue
+            // validation_error branch above: this transcript resolves the
+            // ask and (on success below) returns without ever reaching
+            // runLiveMode's own seeding site.
+            mergeFastPathCorrelationIds(entry, entry.activeTurnId, msg.regex_fast_correlation_id);
             const resolvedValidationError = entry.pendingAsks.resolve(verdict.toolCallId, {
               answered: false,
               reason: 'validation_error',
@@ -6775,6 +6794,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
                 stripped: sanitised.stripped,
               };
             }
+            // Codex diff-review cycle 3 D1 — see the pre-queue answered
+            // branch above: on success this transcript returns without
+            // ever reaching runLiveMode's own seeding site.
+            mergeFastPathCorrelationIds(entry, entry.activeTurnId, msg.regex_fast_correlation_id);
             const resolvedAnswer = entry.pendingAsks.resolve(verdict.toolCallId, resolvePayload);
 
             if (!resolvedAnswer) {

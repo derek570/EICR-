@@ -63,7 +63,7 @@ jest.unstable_mockModule('../extraction/loaded-barrel-speculator.js', () => ({
   createSpeculator: createSpeculatorSpy,
 }));
 
-const { runShadowHarness, findExactDuplicateAgainstSnapshot } =
+const { runShadowHarness, findExactDuplicateAgainstSnapshot, mergeFastPathCorrelationIds } =
   await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
 const fastIdentity = await import('../extraction/fast-path-accepted-identity.js');
@@ -142,6 +142,77 @@ beforeEach(() => {
 afterEach(() => {
   activeSessions.delete(SESSION_ID);
   fastIdentity._resetForTests();
+});
+
+// Codex diff-review cycle 3 D1 — direct unit coverage of the shared
+// coercion/merge helper sonnet-stream.js's four ask-answer resolution sites
+// now call (see sonnet-stream-ask-answer-fast-correlation-ingress.test.js
+// for the production-ingress test proving those call sites actually invoke
+// it; this describe block proves the helper's own shape contract in
+// isolation).
+describe('mergeFastPathCorrelationIds (unit level)', () => {
+  function makeEntry(seed) {
+    return { fastPathCorrelationIdByTurn: seed ?? new Map() };
+  }
+
+  test('accepts a single string id', () => {
+    const entry = makeEntry();
+    mergeFastPathCorrelationIds(entry, 'turn-1', 'cid-a');
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(new Set(['cid-a']));
+  });
+
+  test('accepts an array of ids', () => {
+    const entry = makeEntry();
+    mergeFastPathCorrelationIds(entry, 'turn-1', ['cid-a', 'cid-b']);
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(new Set(['cid-a', 'cid-b']));
+  });
+
+  test('MERGES into an existing Set for the turn rather than replacing it', () => {
+    const entry = makeEntry(new Map([['turn-1', new Set(['cid-existing'])]]));
+    mergeFastPathCorrelationIds(entry, 'turn-1', 'cid-new');
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(
+      new Set(['cid-existing', 'cid-new'])
+    );
+  });
+
+  test('a different turnId gets its own independent Set', () => {
+    const entry = makeEntry(new Map([['turn-1', new Set(['cid-a'])]]));
+    mergeFastPathCorrelationIds(entry, 'turn-2', 'cid-b');
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(new Set(['cid-a']));
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-2')).toEqual(new Set(['cid-b']));
+  });
+
+  test('no-op on null/undefined/empty-string rawCid — never creates a stray entry', () => {
+    const entry = makeEntry();
+    mergeFastPathCorrelationIds(entry, 'turn-1', null);
+    mergeFastPathCorrelationIds(entry, 'turn-1', undefined);
+    mergeFastPathCorrelationIds(entry, 'turn-1', '');
+    mergeFastPathCorrelationIds(entry, 'turn-1', []);
+    expect(entry.fastPathCorrelationIdByTurn.has('turn-1')).toBe(false);
+  });
+
+  test('no-op when turnId is not a non-empty string (e.g. entry.activeTurnId is null — no turn in flight)', () => {
+    const entry = makeEntry();
+    mergeFastPathCorrelationIds(entry, null, 'cid-a');
+    mergeFastPathCorrelationIds(entry, undefined, 'cid-a');
+    mergeFastPathCorrelationIds(entry, '', 'cid-a');
+    expect(entry.fastPathCorrelationIdByTurn.size).toBe(0);
+  });
+
+  test('no-op when entry is null/undefined — never throws', () => {
+    expect(() => mergeFastPathCorrelationIds(null, 'turn-1', 'cid-a')).not.toThrow();
+    expect(() => mergeFastPathCorrelationIds(undefined, 'turn-1', 'cid-a')).not.toThrow();
+  });
+
+  test('non-string array entries are filtered out; a fully-invalid array is a no-op', () => {
+    const entry = makeEntry();
+    mergeFastPathCorrelationIds(entry, 'turn-1', ['cid-a', 42, null, '', 'cid-b']);
+    expect(entry.fastPathCorrelationIdByTurn.get('turn-1')).toEqual(new Set(['cid-a', 'cid-b']));
+
+    const entry2 = makeEntry();
+    mergeFastPathCorrelationIds(entry2, 'turn-1', [42, null, '']);
+    expect(entry2.fastPathCorrelationIdByTurn.has('turn-1')).toBe(false);
+  });
 });
 
 describe('findExactDuplicateAgainstSnapshot (read-only, unit level)', () => {
