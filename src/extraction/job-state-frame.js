@@ -29,12 +29,20 @@ function isPlainRecord(v) {
  *  NONE of them own-present is envelope noise, not a job state — passing it
  *  through would rebuild (i.e. CLEAR) the circuit schedule from nothing.
  *  An explicit own `circuits: []` remains the valid way to clear. */
+// Plan E (feedback id 125) — the installation address bucket. Without these,
+// an installation-only `job_state_update` (no circuits/boards/supply change,
+// e.g. a client-side address edit) is classified as envelope noise and
+// dropped here before `_mergeIncomingJobStateIntoSnapshot` ever sees it —
+// the frame-level gate this plan's E1 keystone depends on.
 const JOB_STATE_FIELDS = [
   'circuits',
   'boards',
   'supply',
   'supply_characteristics',
   'supplyCharacteristics',
+  'installation',
+  'installationDetails',
+  'installation_details',
 ];
 
 function carriesJobStateFields(payload) {
@@ -59,6 +67,11 @@ function jobStateFieldsValid(payload) {
     if (!payload.boards.every((b) => isPlainRecord(b))) return false;
   }
   for (const k of ['supply', 'supply_characteristics', 'supplyCharacteristics']) {
+    if (Object.hasOwn(payload, k) && payload[k] != null && !isPlainRecord(payload[k])) return false;
+  }
+  // Plan E — installation containers must be plain records (or null), same
+  // contract as the supply containers above.
+  for (const k of ['installation', 'installationDetails', 'installation_details']) {
     if (Object.hasOwn(payload, k) && payload[k] != null && !isPlainRecord(payload[k])) return false;
   }
   return true;

@@ -69,6 +69,39 @@ const UK_REGION_DRIFT = new Set(
   ].map((s) => s.toLowerCase())
 );
 
+/**
+ * Plan E (feedback id 125, E4) — read the EFFECTIVE post-apply site/client
+ * town+county from the snapshot for folding into the postcode confirmation
+ * read-back. Deliberately NOT the raw lookup output: an E1-seeded (or
+ * otherwise pre-existing) non-empty value survives `shouldOverride` above
+ * and must speak AS STORED, which can differ from what this turn's lookup
+ * itself returned (e.g. lookup says "Earley", the stored/preserved value
+ * stays "Lower Earley"). Returns null when both fields are empty (or both
+ * excluded) so the caller appends nothing (postcode-only utterance stays
+ * postcode-only).
+ *
+ * `options.skipTown`/`skipCounty` (Codex per-fix mini-review, cycle 1) —
+ * when a component ALSO has its own confirmable reading this turn (a
+ * directly-dictated, non-derived town/county), that reading already speaks
+ * it; excluding ONLY that component from the tail — not the whole tail —
+ * keeps the OTHER component (e.g. a derived county) audible instead of
+ * going silent just because its sibling happened to be dictated too.
+ */
+export function resolveEffectiveLocalityTail(snapshot, family, options = {}) {
+  const circ0 = snapshot?.circuits?.[0];
+  if (!circ0 || typeof circ0 !== 'object') return null;
+  const townField = family === 'client' ? 'client_town' : 'town';
+  const countyField = family === 'client' ? 'client_county' : 'county';
+  const town =
+    !options.skipTown && typeof circ0[townField] === 'string' ? circ0[townField].trim() : '';
+  const county =
+    !options.skipCounty && typeof circ0[countyField] === 'string' ? circ0[countyField].trim() : '';
+  const parts = [];
+  if (town) parts.push(town);
+  if (county) parts.push(county);
+  return parts.length > 0 ? parts.join(', ') : null;
+}
+
 function isDriftValue(value) {
   if (typeof value !== 'string') return false;
   const norm = value.trim().toLowerCase();
@@ -126,6 +159,23 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, optio
       if (observer) observer.clearOriginFrame();
     }
   };
+  // Plan E — a blank-value drift-clear capability (write an empty county
+  // through to clear a stored "South East") was tried in an earlier review
+  // cycle and REVERTED: `_mergeIncomingJobStateIntoSnapshot`'s fill-empty-
+  // only merge for the 8 address-family keys means a client whose own
+  // local cache still shows the pre-clear value (its apply-gate rejects an
+  // incoming empty-string "clear" the same way — `hasValue(existing)`
+  // wins) will silently resurrect the drift on its very next
+  // `job_state_update` push, structurally guaranteed, not just a rare
+  // reconnect race. This also exceeds the plan's own explicit non-goal:
+  // "No retroactive repair of already-written 'Hawkedon'/'South East'
+  // values in stored jobs (Derek corrects by voice; the source-level
+  // mapping fix stops recurrence)." E3 already stops NEW drift from ever
+  // being written (`region` is never read by the mapping); an
+  // already-stored value from before that fix shipped is out of scope
+  // here, exactly as the plan says. Both fields keep their original
+  // truthy-gated guard — a NON-empty new value still replaces a
+  // drift-flagged town/county, unchanged from before this plan.
   if (lookup.town && shouldOverride(circ0[townField])) {
     writeDerived(townField, lookup.town);
     changes.push({ field: townField, value: lookup.town });

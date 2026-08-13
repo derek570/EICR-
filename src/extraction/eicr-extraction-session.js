@@ -38,7 +38,10 @@ import {
   applyWrapPolicy,
 } from './stage6-snapshot-user-text.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
-import { applyPostcodeLookupToSnapshot } from './postcode-snapshot-applier.js';
+import {
+  applyPostcodeLookupToSnapshot,
+  resolveEffectiveLocalityTail,
+} from './postcode-snapshot-applier.js';
 import {
   buildPostcodeLookupNote,
   canonicalisePostcodeHint,
@@ -529,6 +532,102 @@ export function selectSupplyContainer(jobState) {
     }
   }
   return merged;
+}
+
+/**
+ * Plan E (feedback id 125) — same precedence pattern as
+ * `selectSupplyContainer` above: iOS sends `jobState.installation`; web
+ * sends the whole job object whose bucket is `installation_details`
+ * (snake_case, `web/src/lib/types.ts`); `installationDetails` (camelCase)
+ * covers the third spelling the backend's own cost-tracker fallback
+ * (`sonnet-stream.js`) already tolerates. Merge PER FIELD across ALL
+ * plain-record containers — precedence per key: installation →
+ * installationDetails → installation_details (iOS-first).
+ */
+export function selectInstallationContainer(jobState) {
+  const containers = ['installation', 'installationDetails', 'installation_details']
+    .map((key) => jobState?.[key])
+    .filter((v) => isPlainRecord(v) && Object.keys(v).length > 0);
+  if (containers.length === 0) return null;
+  const merged = {};
+  for (const c of [...containers].reverse()) {
+    for (const k of Object.keys(c)) {
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+      merged[k] = c[k];
+    }
+  }
+  return merged;
+}
+
+/**
+ * Plan E — map the merged installation container (E2's frozen wire
+ * contract, iOS camelCase field names on every client) to the canonical
+ * snapshot address-family keys `address-mirror-controller.js` FAMILIES
+ * reads (site: address/postcode/town/county; client: client_address/
+ * client_postcode/client_town/client_county). A straight rename — the E2
+ * contract fixes ONE field-naming shape for both clients, so unlike
+ * `normaliseSupplyIngest` there is no spelling ambiguity left to resolve
+ * here.
+ */
+export function normaliseInstallationIngest(installation) {
+  if (!isPlainRecord(installation)) return {};
+  const out = {};
+  if (installation.address !== undefined) out.address = installation.address;
+  if (installation.postcode !== undefined) out.postcode = installation.postcode;
+  if (installation.town !== undefined) out.town = installation.town;
+  if (installation.county !== undefined) out.county = installation.county;
+  if (installation.clientAddress !== undefined) out.client_address = installation.clientAddress;
+  if (installation.clientPostcode !== undefined) out.client_postcode = installation.clientPostcode;
+  if (installation.clientTown !== undefined) out.client_town = installation.clientTown;
+  if (installation.clientCounty !== undefined) out.client_county = installation.clientCounty;
+  return out;
+}
+
+/**
+ * Plan E (feedback id 125, E4) — legacy JSON-prose path's locality fold.
+ * Extracted to a pure function (mutates `confirmations` in place) so it is
+ * independently testable without exercising the full extractFromUtterance
+ * Anthropic call. Mirrors the live production bundler's fold
+ * (stage6-event-bundler.js synthesiseConfirmations) but operates as a
+ * LATE-BIND mutation of already-composed confirmation text, since the
+ * legacy path builds `result.confirmations` from the model's own prose
+ * output before the postcode-lookup apply step runs.
+ */
+export function foldLocalityIntoLegacyConfirmations(confirmations, stateSnapshot) {
+  if (!Array.isArray(confirmations) || confirmations.length === 0) return;
+  for (const conf of confirmations) {
+    if (conf?.field !== 'postcode' && conf?.field !== 'client_postcode') continue;
+    if (typeof conf.text !== 'string' || !conf.text) continue;
+    const family = conf.field === 'client_postcode' ? 'client' : 'site';
+    const townField = family === 'client' ? 'client_town' : 'town';
+    const countyField = family === 'client' ? 'client_county' : 'county';
+    // Codex diff-review finding (cycle 1, lens B) — the legacy prose-JSON
+    // extractor can independently emit its own town/county confirmation
+    // (town/county are legitimate directly-dictatable fields, and the model
+    // may also surface lookup evidence in its own words). If this response
+    // already carries a standalone confirmation for the matching family's
+    // town/county, folding it into the postcode tail too would speak it
+    // twice — defer to the standalone confirmation and stay quiet here.
+    //
+    // Per-fix mini-review (cycle 1): check each component INDEPENDENTLY
+    // (a sibling town confirmation must not silence a still-only-derived
+    // county), and only count a sibling as "will speak on its own" when it
+    // carries genuinely non-empty text — an empty/placeholder confirmation
+    // object must not suppress the tail with nothing to replace it.
+    const hasOwnConfirmation = (field) =>
+      confirmations.some(
+        (c) => c !== conf && c?.field === field && typeof c.text === 'string' && c.text.trim()
+      );
+    const skipTown = hasOwnConfirmation(townField);
+    const skipCounty = hasOwnConfirmation(countyField);
+    if (skipTown && skipCounty) continue;
+    const tail = resolveEffectiveLocalityTail(stateSnapshot, family, { skipTown, skipCounty });
+    if (!tail) continue;
+    conf.text = `${conf.text}, ${tail}`;
+    if (typeof conf.expanded_text === 'string' && conf.expanded_text) {
+      conf.expanded_text = `${conf.expanded_text}, ${tail}`;
+    }
+  }
 }
 
 export function normaliseSupplyIngest(supply) {
@@ -1680,7 +1779,13 @@ export class EICRExtractionSession {
    * `validateRecordReading`'s existence check from false to true).
    */
   _seedStateFromJobState(jobState) {
-    if (!jobState?.circuits) return;
+    if (!jobState || typeof jobState !== 'object') return;
+    // Plan E (feedback id 125) — the early-out used to gate the WHOLE
+    // function on `jobState.circuits`, so an installation-only payload
+    // (no circuits yet dictated/imported) silently seeded nothing. Board
+    // hydration, supply, and installation seeding below are all
+    // independent of a circuits array; only the circuit-loop further down
+    // still requires one, and is now individually guarded.
     // "Work on Board" sprint Phase A.3 — hydrate boards[] from jobState
     // BEFORE seeding circuits, so the dual-shape circuit router can ask
     // `getMainBoardId(snapshot)` and route per-circuit to the correct
@@ -1770,7 +1875,10 @@ export class EICRExtractionSession {
     // mismatches at write-time on PUT; this seeder is read-time.
     const knownBoardIds = new Set((this.stateSnapshot.boards ?? []).map((b) => b?.id));
     let seeded = 0;
-    for (const circuit of jobState.circuits) {
+    // Plan E — guard absent/non-array circuits (installation-only payload):
+    // iterate an empty array rather than crashing/early-returning, so board
+    // hydration above and installation/supply seeding below still run.
+    for (const circuit of Array.isArray(jobState.circuits) ? jobState.circuits : []) {
       // F/U-4 r5 — circuit_ref is the canonical shared-type key (PWA JobDetail).
       const num = parseInt(
         circuit.ref || circuit.circuit_ref || circuit.circuitNumber || circuit.number
@@ -1934,6 +2042,25 @@ export class EICRExtractionSession {
         // circuit 0 would have seeded it — and a supply seed must never silently
         // wipe circuit fields (pre-Plan-D this was a bare assignment).
         this.stateSnapshot.circuits[0] = { ...(this.stateSnapshot.circuits[0] ?? {}), ...fields };
+        seeded++;
+      }
+    }
+    // Plan E (feedback id 125) — installation address bucket. SEED authority
+    // rule (resolved in refine round 4, see E1 step 2 in the plan): the seed
+    // target starts empty, so writing all 8 address-family keys
+    // unconditionally is functionally client-authoritative — unlike the
+    // supply block above, do NOT narrow to a hand-picked subset; every key
+    // `normaliseInstallationIngest` resolves gets written. This restores
+    // DIRECT-COMMAND mirroring and mirror-ask family completeness, and a
+    // non-empty seeded town blocks the postcode-lookup overwrite (E3/E4).
+    const installation = selectInstallationContainer(jobState);
+    if (installation) {
+      const resolvedInstallation = normaliseInstallationIngest(installation);
+      if (Object.keys(resolvedInstallation).length > 0) {
+        this.stateSnapshot.circuits[0] = {
+          ...(this.stateSnapshot.circuits[0] ?? {}),
+          ...resolvedInstallation,
+        };
         seeded++;
       }
     }
@@ -2362,6 +2489,27 @@ export class EICRExtractionSession {
     if (supplyIncoming) {
       const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
       this._mergeCircuitOrBoardFields(target, normaliseSupplyIngest(supplyIncoming), 'supply');
+    }
+
+    // --- INSTALLATION ADDRESS (Plan E, feedback id 125) — lives at
+    // circuits[0] alongside supply, per address-mirror-controller.js
+    // FAMILIES. MERGE AUTHORITY (resolved in refine round 4): the 8
+    // address-family keys are deliberately kept OUT of FACT_FIELDS, so
+    // `_mergeCircuitOrBoardFields` treats them as READING tier here —
+    // fill-EMPTY-only. A stale client jobState push (e.g. a WS-reconnect
+    // replay of an old cached address) can therefore never clobber a
+    // fresher Sonnet-dictated correction; it can only fill a slot the
+    // session hasn't heard a value for yet. This is the single precedence
+    // rule for this wave — genuine mid-session client-side address edits
+    // are out of scope (Derek corrects by voice).
+    const installationIncoming = selectInstallationContainer(jobState);
+    if (installationIncoming) {
+      const target = this.stateSnapshot.circuits[0] || (this.stateSnapshot.circuits[0] = {});
+      this._mergeCircuitOrBoardFields(
+        target,
+        normaliseInstallationIngest(installationIncoming),
+        'board'
+      );
     }
 
     // --- BOARDS — match by id, not by index (Codex v5 F2) ---
@@ -3104,6 +3252,16 @@ export class EICRExtractionSession {
         }
       }
     }
+
+    // Plan E (feedback id 125, E4) — legacy JSON-prose path: fold the
+    // EFFECTIVE post-apply locality into any postcode/client_postcode
+    // confirmation this response already carries. `result.confirmations`
+    // is composed by the model's own prose-JSON output (long before this
+    // point); the postcode-lookup apply loop directly above is what makes
+    // the snapshot's town/county authoritative, so this fold MUST run
+    // after it — a late-bind mutation of the already-built confirmation
+    // text, not a fresh confirmation object (one utterance, exactly-once).
+    foldLocalityIntoLegacyConfirmations(result.confirmations, this.stateSnapshot);
 
     // Track token costs (model id from response so per-model rates apply
     // correctly when the tiered router escalated this turn to a different
