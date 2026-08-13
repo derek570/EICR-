@@ -444,4 +444,71 @@ describe('PLAN-C C2a — lighter-weight pause (full RecordingProvider)', () => {
     expect(harness.counts.deepgramConstructed).toBe(deepgramConstructedAfterFreshStart);
     expect(harness.counts.sonnetConstructed).toBe(sonnetConstructedAfterFreshStart);
   });
+
+  it('cycle-4 re-review — a fresh session pause()+resume() succeeds WHILE a stale prior-session resume() is still pending (resumeInFlightRef is session-scoped, not a global lock)', async () => {
+    const harness = buildHarnessServices();
+    __setRecordingTestServices(harness.services);
+    setDiagnosticTap(harness.services.diagnosticTap!);
+    const apiRef: { current: RecordingApi | null } = { current: null };
+    await act(async () => {
+      root.render(
+        <JobProvider initial={makeJob()}>
+          <RecordingProvider>
+            <Probe apiRef={apiRef} />
+          </RecordingProvider>
+        </JobProvider>
+      );
+    });
+    await act(async () => {
+      await apiRef.current!.start();
+    });
+    await act(async () => {
+      apiRef.current!.pause();
+    });
+
+    // Gate the stale (session 1) resume()'s mic factory open indefinitely.
+    let releaseStaleMic: (() => void) | null = null;
+    const staleMicGate = new Promise<void>((resolve) => {
+      releaseStaleMic = resolve;
+    });
+    __setRecordingTestServices({
+      ...harness.services,
+      micCaptureFactory: async (opts) => {
+        await staleMicGate;
+        return { sampleRate: 16000, stop: () => {} };
+      },
+    });
+    const staleResume = apiRef.current!.resume(); // parked — claims resumeInFlightRef for session 1
+
+    await act(async () => {
+      apiRef.current!.stop();
+    });
+
+    // Session 2: restore the fast mic, start, pause, and resume. Before
+    // the r4 fix, resumeInFlightRef was a bare boolean still `true` from
+    // session 1's still-pending claim — session 2's resume() would see
+    // it and silently no-op, leaving THIS session stuck paused forever.
+    __setRecordingTestServices(harness.services);
+    await act(async () => {
+      await apiRef.current!.start();
+    });
+    await act(async () => {
+      apiRef.current!.pause();
+    });
+    expect(apiRef.current!.state).toBe('sleeping');
+    await act(async () => {
+      await apiRef.current!.resume();
+    });
+    // The fresh session's OWN resume must actually complete — this is
+    // the assertion that fails without the session-scoped token.
+    expect(apiRef.current!.state).toBe('active');
+
+    // Clean up: release the still-pending stale resume so it doesn't
+    // leak into a later test via an unresolved promise.
+    await act(async () => {
+      releaseStaleMic!();
+      await staleResume;
+    });
+    expect(apiRef.current!.state).toBe('active'); // stale resume's bail didn't disturb session 2
+  });
 });

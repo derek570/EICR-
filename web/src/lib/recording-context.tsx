@@ -1132,7 +1132,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // and takes the automatic-full-sleep branch instead — creating a
   // second mic/Deepgram/Sonnet. This ref is claimed synchronously
   // before any await in `resume()` so a second call is a no-op.
-  const resumeInFlightRef = React.useRef(false);
+  //
+  // Codex diff-review r4 (cycle 4): a plain boolean is the WRONG scope —
+  // it blocks across SESSION boundaries, not just within one. A stale
+  // resume() left pending on a hung mic-permission prompt (r3's own
+  // regression scenario) would hold this `true` for its entire wait; a
+  // FRESH session started underneath it would have its OWN legitimate
+  // pause()+resume() silently no-op, stuck paused indefinitely, because
+  // the flag doesn't know the claim belongs to a defunct session. Holds
+  // the CLAIMING session's id instead of a bare boolean: a resume() only
+  // blocks a second call for the SAME session (the double-tap case this
+  // ref exists for); a different session's resume() overwrites the
+  // claim and proceeds normally, and the stale resume's own `finally`
+  // checks "is this still MY claim" before clearing — so it can never
+  // release a claim a newer session already took.
+  const resumeInFlightRef = React.useRef<string | null>(null);
   // T20 — Silero v5 ONNX VAD wake gate. Loaded at session start, fed
   // 512-sample chunks (32ms @ 16kHz) by the accumulator below. When
   // `null`, the SleepManager falls back to its RMS path
@@ -4104,22 +4118,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // every `start()` call site.
     pausedLightweightRef.current = false;
     // Deliberately NOT resetting resumeInFlightRef here (Codex mini-review
-    // r1, cycle-2 re-review, self-caught before re-submitting): unlike
-    // pausedLightweightRef (a plain flag read once at the top of resume(),
-    // before any await — no async lifetime), resumeInFlightRef is claimed
-    // and released within ONE resume() call's own async lifetime via a
-    // `finally`. Resetting it here would OPEN the exact ABA race the
-    // finally-block release is designed to prevent: stop() firing while a
-    // resume() is still awaiting its mic/Deepgram open would clear the
-    // flag early, letting a subsequent pause()+resume() in a FRESH session
-    // start concurrently — and when the ORIGINAL (stale) resume() finally
-    // resolves, its `finally` would then clear the NEW resume()'s claim,
-    // or its session-mismatch cleanup could tear down the NEW session's
-    // live Deepgram/Sonnet refs. Leaving the flag alone here is safe: the
-    // original resume()'s own `finally` releases it as soon as its await
-    // chain settles (success or error) regardless of how the state moved
-    // around it, and a genuinely hung await is an unrelated failure mode
-    // this ref cannot fix.
+    // r1, cycle-2 re-review, self-caught before re-submitting; upgraded to
+    // a session-owned token in r4 — see the ref's own docblock for the
+    // full reasoning). Unlike pausedLightweightRef (a plain flag read
+    // once at the top of resume(), before any await — no async
+    // lifetime), resumeInFlightRef is claimed and released within ONE
+    // resume() call's own async lifetime via a `finally` that checks
+    // ownership before clearing. A stop() here does not need to touch
+    // it: the r4 token scoping means a stale resume's eventual release
+    // can never clear a fresher session's claim, and a fresh session's
+    // OWN resume() is never blocked by a stale claim belonging to a
+    // different (superseded) sessionId in the first place.
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
   /** Manual pause — the inspector tapped the Pause button (also reached
@@ -4190,11 +4199,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // `statusRef.current` doesn't flip away from 'sleeping' until the
     // very end, so the guard above alone does not stop a SECOND resume()
     // call from racing a first one still in flight (double-tap Resume).
+    // Snapshot sessionId so the late-resolving openDeepgram / beginMic
+    // paths below can detect if a stop() raced them, AND so the
+    // in-flight claim just below is scoped to THIS session (r4 fix —
+    // see resumeInFlightRef's docblock).
+    const sessionId = sessionIdRef.current;
     // Claim this synchronously, before any await, so a racing second
-    // call is a clean no-op instead of building a duplicate
-    // mic/Deepgram/Sonnet pipeline.
-    if (resumeInFlightRef.current) return;
-    resumeInFlightRef.current = true;
+    // call FOR THIS SAME SESSION is a clean no-op instead of building a
+    // duplicate mic/Deepgram/Sonnet pipeline. A DIFFERENT session's
+    // resume() (the claim holds a stale sessionId) is NOT blocked —
+    // it overwrites the claim and proceeds; the stale call's own
+    // `finally` below will find its claim no longer matches and
+    // correctly leave the new one alone.
+    if (resumeInFlightRef.current === sessionId) return;
+    resumeInFlightRef.current = sessionId;
     // Re-prime TTS inside the Resume-button user gesture stack frame
     // BEFORE any await. iPad Safari can drop the audio gesture grant
     // during a long pause (autoplay policy expires it), so a Resume
@@ -4204,9 +4222,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // is silent in exactly the same way the very-first ask_user
     // would be without start()'s primeTts.
     primeTts();
-    // Snapshot sessionId so the late-resolving openDeepgram / beginMic
-    // paths below can detect if a stop() raced them.
-    const sessionId = sessionIdRef.current;
     setErrorMessage(null);
     try {
       if (pausedLightweightRef.current) {
@@ -4276,7 +4291,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       teardownSonnet();
       teardownSleep();
     } finally {
-      resumeInFlightRef.current = false;
+      // Only release if this invocation's claim is still the CURRENT
+      // one — a stale (superseded) session's resume() must never clear
+      // a fresher session's in-flight claim out from under it (r4 fix).
+      if (resumeInFlightRef.current === sessionId) {
+        resumeInFlightRef.current = null;
+      }
     }
   }, [
     setState,
