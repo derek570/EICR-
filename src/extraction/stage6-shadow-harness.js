@@ -103,6 +103,12 @@ import { getVoiceLatencyForSession, getActiveSessionEntry } from './active-sessi
 import { detectBroadcastIntent } from './dialogue-engine/parsers/circuit-range.js';
 // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8).
 import { emitTurnCoreSummary, startAudioFinalizer } from './voice-latency-turn-summary.js';
+// Plan B (feedback ids 118/119) — B1.2/B1.3 accepted-identity resolution +
+// B3.1/B3.2/B3.3 fast-attempt ledger + orphan-net precedence chain.
+import {
+  resolveFastAttemptSlotIdentities,
+  resolveFastLedgerOutcomeForTurn,
+} from './fast-path-accepted-identity.js';
 import { getElevenLabsKey } from '../services/secrets.js';
 import {
   createWriteDispatcher,
@@ -792,6 +798,161 @@ export function applyOrphanRecoveredReading({ session, result, tuple, turnId }) 
     });
   }
   return reading;
+}
+
+/**
+ * Plan B B3.2 (feedback ids 118/119) — READ-ONLY duplicate check for the
+ * #5a apply-complete guard's re-parsed tuple. Deliberately separate from
+ * `applyOrphanRecoveredReading` (which WRITES): this function never mutates
+ * `session.stateSnapshot`, never pushes a confirmation, and never sets
+ * `session.orphanContext`. Applies the SAME clamp/normalisation the write
+ * path uses (`clampReadingForDispatch`, `resolveBoardAwareEarthing` scoped
+ * to the main board — matching `applyOrphanRecoveredReading`'s own
+ * unscoped-write pattern) so the comparison is apples-to-apples with
+ * whatever is already stored.
+ *
+ * Returns `{field, circuit, value}` (the CLAMPED value, ready to speak) when
+ * the re-parsed tuple is an EXACT duplicate of the circuit's current stored
+ * value for that field; `null` on any mismatch, ambiguity, or missing
+ * current value — the caller falls through to existing behaviour on null.
+ *
+ * @param {{session: Object, tuple: {slotField: string, circuit: number, value: string}}} args
+ * @returns {{field: string, circuit: number, value: string}|null}
+ */
+export function findExactDuplicateAgainstSnapshot({ session, tuple }) {
+  const stage6Field = ORPHAN_SLOT_TO_STAGE6_FIELD[tuple.slotField] ?? tuple.slotField;
+  const dupClamp = clampReadingForDispatch({
+    field: stage6Field,
+    value: tuple.value,
+    earthing: resolveBoardAwareEarthing(session.stateSnapshot, null),
+  });
+  const clampedValue = dupClamp.value;
+  const circuitData = session.stateSnapshot?.circuits?.[tuple.circuit];
+  const currentValue = circuitData ? circuitData[stage6Field] : undefined;
+  if (currentValue == null || clampedValue == null) return null;
+  if (String(currentValue).trim() !== String(clampedValue).trim()) return null;
+  return { field: stage6Field, circuit: tuple.circuit, value: clampedValue };
+}
+
+/**
+ * Plan B B3.2/B3.3 — the ONE "Already got …" text builder, shared by both
+ * the fast-ledger 'pending' fallback (B3.1) and the exact-duplicate re-speak
+ * (B3.2), so the two precedence-chain outcomes speak with the SAME wording
+ * family. Wraps the normal `buildConfirmationText` (real designation, same
+ * spoken form as every other confirmation) with an "Already got that — "
+ * prefix that is string-distinct from every existing apology/notice family
+ * (ORPHAN_/REJECTED_/OBSERVATION_/NOOP_/CATCHALL_/ASK_DECLINE_/ASK_ANSWERED_/
+ * ASK_AUDIBILITY_FALLBACK_TEXT — none of those begin with "Already"), so the
+ * client's text-keyed dedupe can never cross-dedupe this channel with any
+ * other. Returns null when the underlying text would be null (suppressed
+ * field, empty value) — same emptiness contract as buildConfirmationText.
+ *
+ * @param {string} field
+ * @param {string} value
+ * @param {number|null} circuit
+ * @param {string|null} designation
+ * @returns {string|null}
+ */
+export function buildAlreadyGotConfirmationText(field, value, circuit, designation = null) {
+  const base = buildConfirmationText(field, value, circuit, designation, {});
+  if (!base) return null;
+  return `Already got that — ${base}`;
+}
+
+/**
+ * Plan B B3.1/B3.3 — resolve the orphan-net precedence outcome for this
+ * turn, combining the fast-attempt ledger (B3.1) with the exact-duplicate
+ * tuple (B3.2, computed by the caller from the SAME re-parse the recovery
+ * guard already ran). Returns:
+ *   - `{kind: 'suppress'}` — a fast clip for this turn already played; speak
+ *     nothing else.
+ *   - `{kind: 'confirmation', confirmation}` — a fieldful "Already got"
+ *     confirmation to push instead of the ordinary apology.
+ *   - `null` — no fast-ledger signal and no exact duplicate; caller falls
+ *     through to the existing allRejected/observation/carriesValue/noop
+ *     prompt selection UNCHANGED.
+ *
+ * Deliberately scoped to the NON-allRejected case only (the caller only
+ * invokes this when `!allRejected`) — allRejected means a tool call actually
+ * fired and was rejected, a fundamentally different class from "zero tool
+ * calls" that B3 does not touch.
+ *
+ * @param {{session: Object, turnId: string, correlationIds: Set<string>|null|undefined, exactDuplicateTuple: {field: string, circuit: number, value: string}|null}} args
+ * @returns {{kind: 'suppress'}|{kind: 'confirmation', confirmation: Object}|null}
+ */
+export function resolveZeroToolCallDuplicateOutcome({
+  session,
+  turnId,
+  correlationIds,
+  exactDuplicateTuple,
+}) {
+  const fastLedgerOutcome = resolveFastLedgerOutcomeForTurn(correlationIds);
+  if (fastLedgerOutcome?.kind === 'suppress') {
+    return { kind: 'suppress' };
+  }
+  if (fastLedgerOutcome?.kind === 'pending') {
+    const { identity, correlationId } = fastLedgerOutcome;
+    const designation =
+      session.stateSnapshot?.circuits?.[identity.circuit]?.circuit_designation ?? null;
+    const text = buildAlreadyGotConfirmationText(
+      identity.field,
+      identity.canonicalValue,
+      identity.circuit,
+      designation
+    );
+    if (text) {
+      return {
+        kind: 'confirmation',
+        confirmation: {
+          text,
+          expanded_text: expandForTTS(text),
+          field: identity.field,
+          circuit: Number.isInteger(identity.circuit) ? identity.circuit : null,
+          // B1.3-style echo stamp — lets iOS's B2 correlation state machine
+          // treat this exactly like any other fast-attempt-covered
+          // confirmation (parked under .fastPending; dropped on fast start,
+          // re-dispatched on fast failure/TTL).
+          fast_correlation_id: correlationId,
+          // B3.2's anti-swallow token — see buildFastAttemptSlotKey's sibling
+          // module doc: a session-permanent fieldful dedupe would otherwise
+          // swallow a SECOND identical pending-fallback on a later turn.
+          dedupe_token: `duplicate_${turnId}`,
+          expects_ios_ack: false,
+        },
+      };
+    }
+    // Pending but no committed identity yet (race) — never fabricate a
+    // placeholder confirmation. Fall through to existing behaviour.
+    return null;
+  }
+  // fastLedgerOutcome is null (every attempted correlation failed, or none
+  // was attempted this turn) — try the exact-duplicate tuple instead.
+  if (exactDuplicateTuple) {
+    const designation =
+      session.stateSnapshot?.circuits?.[exactDuplicateTuple.circuit]?.circuit_designation ?? null;
+    const text = buildAlreadyGotConfirmationText(
+      exactDuplicateTuple.field,
+      exactDuplicateTuple.value,
+      exactDuplicateTuple.circuit,
+      designation
+    );
+    if (text) {
+      return {
+        kind: 'confirmation',
+        confirmation: {
+          text,
+          expanded_text: expandForTTS(text),
+          field: exactDuplicateTuple.field,
+          circuit: Number.isInteger(exactDuplicateTuple.circuit)
+            ? exactDuplicateTuple.circuit
+            : null,
+          dedupe_token: `duplicate_${turnId}`,
+          expects_ios_ack: false,
+        },
+      };
+    }
+  }
+  return null;
 }
 
 async function runLiveMode(session, transcriptText, regexResults, options, log) {
@@ -2041,6 +2202,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {
       confirmationsEnabled:
         options.confirmationsEnabled === true || perTurnWrites[FORCE_CONFIRMATIONS] === true,
+      // Plan B B1.2/B1.3 — resolve THIS turn's accepted fast-TTS identities
+      // IMMEDIATELY before bundling (not at turn entry, above — a route can
+      // accept mid-turn, during the Sonnet round-trip). Empty Map (not
+      // undefined) when the turn attempted no fast-TTS candidates, so the
+      // bundler's `instanceof Map` guard sees a real, cheap no-op.
+      fastAttemptBySlotKey: resolveFastAttemptSlotIdentities(
+        entry?.fastPathCorrelationIdByTurn?.get(turnId)
+      ),
       // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
       // trip it on the /api/proxy/elevenlabs-tts POST body for cache
       // lookup. Omitted when undefined; legacy decoders ignore unknown
@@ -2859,20 +3028,61 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // fallback and #5's next-turn duplicate at the source. Runs for the
           // all-rejected case too — recovering a real reading beats any prompt.
           let recovered = null;
+          // Plan B B3.2 (feedback ids 118/119) — before applying the
+          // re-parsed tuple as a NEW reading, check whether it's actually an
+          // EXACT duplicate of what's already stored (the "leg 3" false-
+          // apology class: a re-dictation of an already-applied-and-
+          // confirmed value that this deterministic re-parse WOULD
+          // otherwise silently re-write and read back with ordinary
+          // wording). Checking BEFORE the write — not after, in the
+          // `!recovered` branch below — matters: `applyOrphanRecoveredReading`
+          // always returns a truthy reading object, so `recovered` would
+          // already be non-null by the time any post-hoc check ran, and the
+          // apology-choice branch below would never be reached for this
+          // tuple at all.
+          let exactDuplicateTuple = null;
           if (ORPHAN_APPLY_COMPLETE_ENABLED) {
             const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
             if (tuple) {
-              recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
-              log.info?.('stage6.orphan_apply_complete', {
-                sessionId: session.sessionId,
-                turnId,
-                field: recovered.field,
-                circuit: recovered.circuit,
-                value: recovered.value,
-                textPreview: String(transcriptText || '').slice(0, 80),
-              });
+              const dup = findExactDuplicateAgainstSnapshot({ session, tuple });
+              if (dup) {
+                exactDuplicateTuple = dup;
+                log.info?.('stage6.orphan_exact_duplicate_detected', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  field: dup.field,
+                  circuit: dup.circuit,
+                  value: dup.value,
+                  textPreview: String(transcriptText || '').slice(0, 80),
+                });
+              } else {
+                recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
+                log.info?.('stage6.orphan_apply_complete', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  field: recovered.field,
+                  circuit: recovered.circuit,
+                  value: recovered.value,
+                  textPreview: String(transcriptText || '').slice(0, 80),
+                });
+              }
             }
           }
+          // Plan B B3.1/B3.3 — resolve the fast-ledger precedence outcome
+          // for this turn, scoped to the non-allRejected class only (a
+          // rejected tool call is a fundamentally different story — "I
+          // couldn't action that" — that B3 does not touch). Computed here,
+          // once, so it's available to the branch below regardless of
+          // which apology the un-touched allRejected path would have
+          // chosen.
+          const zeroToolCallOutcome = !allRejected
+            ? resolveZeroToolCallDuplicateOutcome({
+                session,
+                turnId,
+                correlationIds: entry?.fastPathCorrelationIdByTurn?.get(turnId),
+                exactDuplicateTuple,
+              })
+            : null;
           // Codex diff-review cycle 1 — the DEFERRED branch-3 stamp: only a
           // turn whose recovery FAILED hands the whole rejected set to A3's
           // generic line; a recovered turn keeps its covered refusals
@@ -2897,6 +3107,30 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               sessionId: session.sessionId,
               turnId,
               rejected_count: orphanToolCalls,
+              textPreview: String(transcriptText || '').slice(0, 80),
+            });
+          } else if (!recovered && zeroToolCallOutcome) {
+            // Plan B B3.3 — the honest-orphan-net precedence chain. This
+            // branch only ever fires when `!allRejected` (zeroToolCallOutcome
+            // is always null under allRejected — see its computation above),
+            // so the untouched allRejected/rejectedSetFullyCovered branch
+            // above, and `partialCoveragePending` (which is ALSO only ever
+            // set true under allRejected), are both unaffected by this path.
+            if (zeroToolCallOutcome.kind === 'confirmation') {
+              if (!Array.isArray(result.confirmations)) result.confirmations = [];
+              result.confirmations.push(zeroToolCallOutcome.confirmation);
+            }
+            // 'suppress' pushes nothing at all — the user already heard a
+            // fast clip for this turn's candidate. NEITHER sub-case sets
+            // session.orphanContext: a duplicate/pending-fallback outcome is
+            // not "the model failed to understand", so there is nothing to
+            // re-inject into the next turn.
+            log.info?.('stage6.orphan_duplicate_or_pending_outcome', {
+              sessionId: session.sessionId,
+              turnId,
+              kind: zeroToolCallOutcome.kind,
+              field: zeroToolCallOutcome.confirmation?.field ?? null,
+              hasFastCorrelationId: !!zeroToolCallOutcome.confirmation?.fast_correlation_id,
               textPreview: String(transcriptText || '').slice(0, 80),
             });
           } else if (!recovered) {
@@ -4886,6 +5120,17 @@ async function runShadowHarnessDispatch(
   // tool calls if the client opted in and legacy returned an empty array.
   const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy, {
     confirmationsEnabled: options.confirmationsEnabled === true,
+    // Plan B B1.2/B1.3 — resolved the same way as the live-mode call site
+    // above. Shadow mode's own confirmations never reach iOS (this
+    // function always `return legacy`s — see Step 8 below); wired for
+    // divergence-comparison completeness/consistency with the live path,
+    // not because it changes any user-visible behaviour. In practice this
+    // is near-always an empty Map: shadow mode never calls runLiveMode, so
+    // shadowCapEntry.fastPathCorrelationIdByTurn is never populated for
+    // shadow's own turnId by this code path.
+    fastAttemptBySlotKey: resolveFastAttemptSlotIdentities(
+      shadowCapEntry?.fastPathCorrelationIdByTurn?.get(turnId)
+    ),
   });
 
   // P5 (2026-07-23) — emit clear→write collapse telemetry (shadow path).

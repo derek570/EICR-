@@ -595,6 +595,47 @@ function synthesiseConfirmations(
   const lookupDesignation = (circuit, boardId = null) =>
     resolveDesignation(designations, circuit, boardId);
 
+  // Plan B B1.3 (feedback ids 118/119) — renderer-aligned echo-stamping.
+  // `fastAttemptBySlotKey` is `Map<slotKey, {correlationId, field, circuit,
+  // boardId, canonicalValue, comparisonText}>`, resolved by the caller
+  // (stage6-shadow-harness.js) IMMEDIATELY before bundleToolCallsIntoResult
+  // from this turn's accepted fast-TTS identities. A reading matches ONLY
+  // when its slotKey (field::circuit::boardId, the WIRE boardId — same
+  // normalisation the fast route uses) joins AND its OWN renderer-aligned
+  // comparison text (designation=null, matching the fast route's own
+  // render) is BYTE-IDENTICAL to the accepted text AND the canonical value
+  // also matches. A value/text mismatch (a correction) NEVER stamps — it is
+  // structurally excluded from `fastMatchByReading` below and falls through
+  // the ordinary per-circuit/grouped path unchanged, so the canonical
+  // correction is always the one that speaks.
+  const fastAttemptBySlotKey =
+    boardScope?.fastAttemptBySlotKey instanceof Map ? boardScope.fastAttemptBySlotKey : null;
+  const fastSlotKeyOf = (r) => {
+    const normBoardId = typeof r?.board_id === 'string' && r.board_id ? r.board_id : '';
+    const circ = Number.isInteger(r?.circuit) ? r.circuit : 'null';
+    return `${r?.field}::${circ}::${normBoardId}`;
+  };
+  // Identity-keyed (not slotKey-keyed): a reading OBJECT, not a tuple, so
+  // the grouping loop and the per-circuit loop below can both ask "was THIS
+  // exact projected reading fast-matched?" without re-deriving the slotKey
+  // or re-running the comparison-text render a second time.
+  const fastMatchByReading = new WeakMap();
+  if (fastAttemptBySlotKey && fastAttemptBySlotKey.size > 0) {
+    for (const r of readings) {
+      const identity = fastAttemptBySlotKey.get(fastSlotKeyOf(r));
+      if (!identity) continue;
+      const comparisonText = buildConfirmationText(r.field, r.value, r.circuit, null, {
+        calculated: isCalc(r),
+        correction: correctionOf(r),
+      });
+      const valueMatches =
+        String(r.value ?? '').trim() === String(identity.canonicalValue ?? '').trim();
+      if (comparisonText != null && comparisonText === identity.comparisonText && valueMatches) {
+        fastMatchByReading.set(r, identity.correlationId);
+      }
+    }
+  }
+
   // Issue 10 (2026-05-31, session B95B2EE1): a fan-out write to
   // multiple circuits used to emit one per-circuit confirmation each;
   // the speculator picked one random circuit and the inspector heard
@@ -606,6 +647,17 @@ function synthesiseConfirmations(
   const groups = new Map();
   for (let i = 0; i < readings.length; i += 1) {
     const r = readings[i];
+    // Plan B B1.3 — grouped-confirmation partition. A fast-attempted
+    // single-circuit reading is pulled OUT of grouping entirely, BEFORE the
+    // groupKey is even computed, so it can never be folded into a
+    // multi-circuit bucket. It falls through to the per-circuit loop below
+    // (untouched by `consumedReadingIndices`, since it's never added to a
+    // bucket here) where it gets its own single confirmation stamped with
+    // `fast_correlation_id` — and the REMAINING uncovered circuits in what
+    // would have been its bucket still group normally. Suppressing the
+    // whole grouped frame over one covered circuit would silence the
+    // others; refusing to partition would double-speak the covered one.
+    if (fastMatchByReading.has(r)) continue;
     // Audio-first (2026-06-18, readback-correction-optionb): the FINAL
     // read-back no longer drops on the model's self-reported confidence.
     // A hands-free inspector verifies by EAR, so every applied reading is
@@ -751,6 +803,16 @@ function synthesiseConfirmations(
     // on ValueConfirmation yet) see no change.
     if (r.board_id != null) {
       entry.board_id = r.board_id;
+    }
+    // Plan B B1.3 — echo stamp. The SPOKEN text above always carries the
+    // real designation (unchanged); `fast_correlation_id` is a PURELY
+    // ADDITIVE field that tells iOS this confirmation is the value-identical
+    // twin of a fast clip it may already have played, so it can suppress the
+    // duplicate read-back. Only set when `fastMatchByReading` found a
+    // full (slotKey + renderer-aligned text + value) match above.
+    const fastCorrelationId = fastMatchByReading.get(r);
+    if (fastCorrelationId) {
+      entry.fast_correlation_id = fastCorrelationId;
     }
     // W1.4 transient confidence sidecar (per-circuit fallback path).
     entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
@@ -1625,6 +1687,14 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // missing snapshot, so the postcode confirmation just carries no
         // locality clause rather than throwing.
         stateSnapshot: options.stateSnapshot ?? null,
+        // Plan B B1.3 — Map<slotKey, accepted identity>, resolved by the
+        // caller (stage6-shadow-harness.js) immediately before this call.
+        // Omitted (undefined) on any caller that doesn't pass it (test
+        // fixtures, older call sites) — synthesiseConfirmations treats a
+        // non-Map value as "no fast attempts this turn" and every reading
+        // takes the unstamped path, byte-identical to pre-B1.3 behaviour.
+        fastAttemptBySlotKey:
+          options.fastAttemptBySlotKey instanceof Map ? options.fastAttemptBySlotKey : null,
       }
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
