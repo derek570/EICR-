@@ -83,8 +83,8 @@ beforeEach(() => {
   setConfirmationModeEnabled(true);
   // Mirror recording-context.tsx's production wiring: the queue's discard/
   // playback-started hooks consult the mode-status cue handlers FIRST.
-  setOnDiscarded((dedupeKey) => {
-    handleModeStatusCueDiscard(dedupeKey);
+  setOnDiscarded((dedupeKey, reason) => {
+    handleModeStatusCueDiscard(dedupeKey, reason);
   });
   setOnPlaybackStarted((dedupeKey) => {
     handleModeStatusCuePlaybackStarted(dedupeKey);
@@ -240,5 +240,31 @@ describe('speakConfirmationModeStatus — exempt from queue-overflow eviction', 
     }
     for (const u of shim.spoken) spokenTexts.push(u.text);
     expect(spokenTexts).toContain('Voice read-backs off.');
+  });
+});
+
+// Codex diff-review r3 BLOCKER — re-parking unconditionally on EVERY
+// discard (including a genuine terminal playback failure — native AND
+// ElevenLabs both fail before any audio plays) retries forever against a
+// persistently broken synth backend. Only a queue-lifecycle discard
+// (preempt/overflow/purge/reset) is safe to retry; `playback_error` must
+// retire instead.
+describe('speakConfirmationModeStatus — retires (never retries) on a genuine playback failure', () => {
+  it('a native synth error before onstart retires the cue instead of re-parking it forever', () => {
+    setConfirmationModeEnabled(true);
+    speakConfirmationModeStatus('Voice read-backs off.');
+    expect(shim.speak).toHaveBeenCalledTimes(1);
+
+    // Native synth fails before any audio plays — onerror, never onstart.
+    shim.spoken[0].onerror?.();
+
+    // Retired, not re-parked: nothing further gets auto-dispatched for it.
+    expect(shim.speak).toHaveBeenCalledTimes(1);
+
+    // A fresh cue/confirmation afterwards is unaffected — no stale tracking
+    // blocks it, and the failed cue is not silently resurrected alongside it.
+    speakConfirmation('Circuit 2 is now Hallway Lighting.');
+    expect(shim.spoken[shim.spoken.length - 1].text).toBe('Circuit 2 is now Hallway Lighting.');
+    expect(shim.spoken.filter((u) => u.text === 'Voice read-backs off.').length).toBe(1);
   });
 });

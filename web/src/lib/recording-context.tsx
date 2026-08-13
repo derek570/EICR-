@@ -105,6 +105,7 @@ import {
   setOnDiscarded as ttsQueueSetOnDiscarded,
   setOnPlaybackStarted as ttsQueueSetOnPlaybackStarted,
   setShouldDeferPlayback as ttsQueueSetShouldDeferPlayback,
+  type DiscardReason,
 } from './recording/tts-queue';
 import { ConfirmationDedupeStore } from './recording/confirmation-dedupe-store';
 import {
@@ -1310,13 +1311,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // failures (TTS unavailable / empty terminal). Address operations reserve a
   // durable delivery token plus, sometimes, an ordinary confirmation key; the
   // pair must be released together or a backend retry is silently suppressed.
-  const discardConfirmationReservation = React.useCallback((dedupeKey: string) => {
+  const discardConfirmationReservation = React.useCallback((dedupeKey: string, reason: DiscardReason) => {
     // PLAN-D (ids 122, 124) — a mode-status cue (toggle-flip cue, the
     // session-start warning) destroyed by preemptFlush()/overflow re-parks
     // itself rather than being treated as an ordinary confirmation
     // reservation to forget. See handleModeStatusCueDiscard's docblock for
-    // why this must run FIRST and why it's safe during a full reset.
-    if (handleModeStatusCueDiscard(dedupeKey)) return;
+    // why this must run FIRST, why it's safe during a full reset, and why
+    // `reason` gates re-park vs retire.
+    if (handleModeStatusCueDiscard(dedupeKey, reason)) return;
     const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
     if (addressToken) {
       const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -2541,7 +2543,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             dedupeKey: deliveryDedupeKey,
           });
           if (!queued.enqueued) {
-            discardConfirmationReservation(deliveryDedupeKey);
+            discardConfirmationReservation(deliveryDedupeKey, 'not_queued');
           }
           continue;
         }
@@ -3162,7 +3164,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               dedupeKey,
             });
             if (!queued.enqueued) {
-              discardConfirmationReservation(dedupeKey);
+              discardConfirmationReservation(dedupeKey, 'not_queued');
             }
           } else {
             speakConfirmation(response.spoken_response, { force: true });

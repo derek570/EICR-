@@ -85,6 +85,16 @@ export interface QueuePlayControls {
 
 export type ConfirmationPlayFn = (text: string, controls: QueuePlayControls) => void;
 
+/** Why a never-played item was discarded. `onDiscarded` callers (PLAN-D's
+ *  mode-status re-park mechanism) branch on this: `overflow`/`preempt`/
+ *  `purge`/`reset`/`not_queued` are queue-LIFECYCLE events — the channel
+ *  itself is fine, just occupied or torn down, so retrying (re-parking) is
+ *  safe. `playback_error` is a genuine terminal failure (native AND
+ *  ElevenLabs both failed before any audio played) — re-parking that would
+ *  retry indefinitely against a persistently broken synth backend, so
+ *  callers must retire tracking instead. */
+export type DiscardReason = 'overflow' | 'preempt' | 'purge' | 'reset' | 'playback_error' | 'not_queued';
+
 export interface ConfirmationQueueItem {
   text: string;
   /** Prefix key for `cancel_pending_tts` purge. Confirmations set NONE today,
@@ -132,7 +142,7 @@ let idCounter = 0;
 let shouldDeferPlayback: () => boolean = () => false;
 /** Un-record hook. Null until recording-context registers it; `reset()` clears
  *  it so a later tour (no session) runs against no callback. */
-let onDiscarded: ((dedupeKey: string) => void) | null = null;
+let onDiscarded: ((dedupeKey: string, reason: DiscardReason) => void) | null = null;
 /** Playback-start hook (§A1b, field-feedback-2026-07-14). Fired once per
  *  head, at the moment real audio begins, with the head's dedupeKey —
  *  recording-context converts the key's RESERVATION into its heard state
@@ -145,7 +155,7 @@ export function setShouldDeferPlayback(fn: () => boolean): void {
   shouldDeferPlayback = fn;
 }
 
-export function setOnDiscarded(fn: (dedupeKey: string) => void): void {
+export function setOnDiscarded(fn: (dedupeKey: string, reason: DiscardReason) => void): void {
   onDiscarded = fn;
 }
 
@@ -155,10 +165,10 @@ export function setOnPlaybackStarted(fn: (dedupeKey: string) => void): void {
 
 /** Fire the un-record hook synchronously for a never-played item. No-op when
  *  the item has no dedupeKey or no hook is registered (tour path). */
-function fireDiscarded(item: { dedupeKey?: string }): void {
+function fireDiscarded(item: { dedupeKey?: string }, reason: DiscardReason): void {
   if (item.dedupeKey && onDiscarded) {
     try {
-      onDiscarded(item.dedupeKey);
+      onDiscarded(item.dedupeKey, reason);
     } catch {
       /* swallow — a bad consumer must not wedge the queue */
     }
@@ -189,7 +199,7 @@ export function enqueueConfirmation(item: ConfirmationQueueItem): {
     if (dropIndex !== -1) {
       const [dropped] = queue.splice(dropIndex, 1);
       discardedCount = 1;
-      fireDiscarded(dropped); // never played
+      fireDiscarded(dropped, 'overflow'); // never played
       clientDiagnostic('tts_queue_overflow', {
         droppedId: dropped.id,
         droppedDedupeKey: dropped.dedupeKey ?? null,
@@ -274,7 +284,7 @@ function completeHead(id: number, failed = false): void {
   if (id !== currentHeadId) return;
   const finished = head;
   if (failed && !startedPlayback && finished) {
-    fireDiscarded(finished);
+    fireDiscarded(finished, 'playback_error');
   }
   head = null;
   busy = false;
@@ -316,13 +326,13 @@ export function resumeIfDeferred(): void {
  * nothing plays); a mid-fetch/playing head is hard-cancelled via the
  * registered canceller. Returns whether it discarded (for preempt accounting).
  */
-function tearDownCurrentHeadManually(): { discarded: boolean } {
+function tearDownCurrentHeadManually(reason: DiscardReason): { discarded: boolean } {
   if (!head) return { discarded: false };
   const wasStarted = startedPlayback;
   const isDeferred = deferredHead != null && deferredHead.item.id === currentHeadId;
   let discarded = false;
   if (!wasStarted) {
-    fireDiscarded(head);
+    fireDiscarded(head, reason);
     discarded = true;
     if (!isDeferred) {
       clientDiagnostic('tts_queue_discarded_prefetch', { id: currentHeadId });
@@ -365,14 +375,14 @@ export function purge(prefix: string): void {
   for (const q of queue) {
     if (q.cancelKey && q.cancelKey.startsWith(prefix)) {
       purgedCount++;
-      fireDiscarded(q);
+      fireDiscarded(q, 'purge');
     } else {
       kept.push(q);
     }
   }
   queue = kept;
   if (head && head.cancelKey && head.cancelKey.startsWith(prefix)) {
-    tearDownCurrentHeadManually();
+    tearDownCurrentHeadManually('purge');
     purgedCount++;
   }
   if (purgedCount > 0) {
@@ -396,12 +406,12 @@ export function purge(prefix: string): void {
 export function preemptFlush(): number {
   let discardedCount = 0;
   for (const q of queue) {
-    fireDiscarded(q); // every queued item is never-played
+    fireDiscarded(q, 'preempt'); // every queued item is never-played
     discardedCount++;
   }
   queue = [];
   if (head) {
-    const r = tearDownCurrentHeadManually();
+    const r = tearDownCurrentHeadManually('preempt');
     if (r.discarded) discardedCount++;
   }
   clientDiagnostic('tts_queue_preempt_flush', { discardedCount });
@@ -418,11 +428,11 @@ export function preemptFlush(): number {
 export function reset(): void {
   let discarded = 0;
   for (const q of queue) {
-    fireDiscarded(q);
+    fireDiscarded(q, 'reset');
     discarded++;
   }
   queue = [];
-  if (head) tearDownCurrentHeadManually();
+  if (head) tearDownCurrentHeadManually('reset');
   clientDiagnostic('tts_queue_reset', { discardedQueued: discarded });
   shouldDeferPlayback = () => false;
   onDiscarded = null;

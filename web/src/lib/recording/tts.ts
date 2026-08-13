@@ -13,6 +13,7 @@ import {
   enqueueConfirmation,
   preemptFlush as ttsQueuePreemptFlush,
   reset as ttsQueueReset,
+  type DiscardReason,
   type QueuePlayControls,
 } from './tts-queue';
 import { clientDiagnostic } from './client-diagnostic';
@@ -1102,7 +1103,9 @@ function enqueueModeStatusCue(text: string): void {
  *     still-waiting item, `handleModeStatusCueDiscard` (wired into
  *     recording-context's `onDiscarded` hook) re-enqueues it rather than
  *     letting it vanish — so it plays as soon as the channel clears
- *     instead of being lost.
+ *     instead of being lost. That re-park is reason-gated (see
+ *     `handleModeStatusCueDiscard`'s docblock): a genuine terminal
+ *     playback failure retires the cue instead of retrying forever.
  *   - Never resets the FIFO itself (enqueues only; never calls
  *     `preemptFlush()`/`reset()`).
  */
@@ -1150,11 +1153,24 @@ export function speakConfirmationModeStatus(text: string): void {
  * resurrecting it into the next session. `modeStatusGeneration` closes
  * this: captured at schedule time, checked before the deferred enqueue
  * runs; `cancelSpeech` bumps it in the same place it clears the map.
+ *
+ * Codex diff-review r3 caught a second gap: re-parking unconditionally on
+ * EVERY discard — including `reason === 'playback_error'` (native AND
+ * ElevenLabs both failed before any audio played, e.g. a broken synth
+ * backend) — retries forever with no natural pacing, unlike a genuine
+ * queue-lifecycle discard (preempt/overflow/purge/reset), which only
+ * recurs when something else legitimately re-occupies the channel. Only
+ * `playback_error` retires instead of re-parking; every other reason still
+ * re-parks via the microtask mechanism above.
  */
-export function handleModeStatusCueDiscard(dedupeKey: string): boolean {
+export function handleModeStatusCueDiscard(dedupeKey: string, reason: DiscardReason): boolean {
   const text = modeStatusCueTexts.get(dedupeKey);
   if (text === undefined) return false;
   modeStatusCueTexts.delete(dedupeKey);
+  if (reason === 'playback_error') {
+    clientDiagnostic('tts_mode_status_cue_abandoned', { reason });
+    return true;
+  }
   const generationAtDiscard = modeStatusGeneration;
   queueMicrotask(() => {
     if (modeStatusGeneration !== generationAtDiscard) return; // torn down meanwhile
