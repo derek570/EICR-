@@ -826,14 +826,25 @@ export function applyOrphanRecoveredReading({ session, result, tuple, turnId }) 
  * accessor `record_reading` dispatch reads through (main board's bare
  * numeric keys vs a sub-board's `${boardId}::${ref}` composite key).
  *
- * Returns `{field, circuit, value, boardId}` (the CLAMPED value, ready to
- * speak, plus the resolved effective board) when the re-parsed tuple is an
- * EXACT duplicate of the circuit's current stored value for that field on
- * THAT board; `null` on any mismatch, ambiguity, or missing current value —
- * the caller falls through to existing behaviour on null.
+ * Returns `{field, circuit, value, boardId, correction}` (the CLAMPED value,
+ * ready to speak, plus the resolved effective board) when the re-parsed
+ * tuple is an EXACT duplicate of the circuit's current stored value for that
+ * field on THAT board; `null` on any mismatch, ambiguity, or missing current
+ * value — the caller falls through to existing behaviour on null.
+ *
+ * Codex diff-review cycle 4 (E3) — `correction` (the SAME clamp-correction
+ * shape `buildConfirmationText`/`buildAlreadyGotConfirmationText` accept:
+ * `{original, corrected}|null`) is now surfaced on the return value. A
+ * genuine exact-duplicate re-dictation of a value that required clamping
+ * (e.g. raw "16" matching a stored clamped "1.6" — `dupClamp` here clamps
+ * the RAW re-parsed tuple.value, not the already-clamped stored value, so
+ * the correction is real and worth speaking) was previously computed and
+ * then silently discarded — the caller spoke "Already got … 1.6" with no "—
+ * I corrected 16 to 1.6" clause, the same safety-clause omission D2 already
+ * fixed for the fast-ledger paths, just missed here.
  *
  * @param {{session: Object, tuple: {slotField: string, circuit: number, value: string}}} args
- * @returns {{field: string, circuit: number, value: string, boardId: string|null}|null}
+ * @returns {{field: string, circuit: number, value: string, boardId: string|null, correction: {original: string, corrected: string}|null}|null}
  */
 export function findExactDuplicateAgainstSnapshot({ session, tuple }) {
   const stage6Field = ORPHAN_SLOT_TO_STAGE6_FIELD[tuple.slotField] ?? tuple.slotField;
@@ -853,6 +864,9 @@ export function findExactDuplicateAgainstSnapshot({ session, tuple }) {
     circuit: tuple.circuit,
     value: clampedValue,
     boardId: effectiveBoardId,
+    // E3 — the clamp correction between the RAW re-dictated value and the
+    // (already-matching) stored value, if the raw value needed one.
+    correction: dupClamp.correction ?? null,
   };
 }
 
@@ -1005,7 +1019,15 @@ function resolveOutcomeIdentityForCoalescing(outcome, session, exactDuplicateTup
     circuit: exactDuplicateTuple.circuit,
     boardId: exactDuplicateTuple.boardId ?? null,
     value: exactDuplicateTuple.value,
-    correction: null,
+    // Codex diff-review cycle 4 (E3) — was hardcoded null, discarding
+    // `findExactDuplicateAgainstSnapshot`'s own clamp-correction (E3's
+    // return-value fix above) from BOTH the spoken text (via
+    // `buildFastLedgerFallbackConfirmation`) and this group's M4 coalescing
+    // identity — a corrected exactDuplicateTuple-derived outcome could
+    // wrongly coalesce with an uncorrected sibling that happens to land on
+    // the same final value, exactly the class D2 already fixed for the
+    // other ledger paths.
+    correction: exactDuplicateTuple.correction ?? null,
   };
 }
 
@@ -1093,7 +1115,15 @@ function buildFastLedgerFallbackConfirmation({ outcome, resolved }, session, tur
     // ledger-tracked fallback iOS needs to park/reconcile.
     const circuitData = getCircuitBucket(session.stateSnapshot, circuit, boardId);
     const designation = circuitData?.circuit_designation ?? null;
-    const text = buildAlreadyGotConfirmationText(field, value, circuit, designation);
+    // Codex diff-review cycle 4 (E3) — `correction` was already destructured
+    // from `resolved` above but never forwarded here: a 'failed' outcome's
+    // identity comes from the turn-level exactDuplicateTuple fallback (E3's
+    // own fix to `resolveOutcomeIdentityForCoalescing`), so this is the same
+    // safety-clause omission as the 'pending'/'pending_uncommitted' branches
+    // above once already fixed by D2/M2 — just missed for this branch.
+    const text = buildAlreadyGotConfirmationText(field, value, circuit, designation, {
+      correction,
+    });
     if (!text) return null;
     const mainBoardId = getMainBoardId(session.stateSnapshot);
     const stampBoardId = boardId != null && boardId !== mainBoardId ? boardId : null;
@@ -1112,9 +1142,13 @@ function buildFastLedgerFallbackConfirmation({ outcome, resolved }, session, tur
   const designation = circuitData?.circuit_designation ?? null;
   // M2 — forward the clamp correction so this fallback speaks "— I
   // corrected 16 to 1.6" when the raw dictated value needed clamping.
-  // ('pending_unrecorded' never carries a correction — its identity comes
-  // from the turn-level exactDuplicateTuple, which is already the
-  // clamped/stored value, not a fresh candidate needing re-clamp.)
+  // Codex diff-review cycle 4 (E3) — corrected an earlier, wrong assumption
+  // here: 'pending_unrecorded' CAN carry a correction. Its identity comes
+  // from the turn-level exactDuplicateTuple, whose `value` IS the already-
+  // matching stored value, but `findExactDuplicateAgainstSnapshot` clamps
+  // the RAW re-parsed transcript value to get there — a raw "16" matching a
+  // stored clamped "1.6" is a genuine correction worth speaking, exactly
+  // like 'pending_uncommitted's own rawValue re-clamp below.
   const text = buildAlreadyGotConfirmationText(field, value, circuit, designation, {
     correction,
   });
@@ -1328,11 +1362,18 @@ export function resolveZeroToolCallDuplicateOutcome({
       exactDuplicateTuple.boardId ?? null
     );
     const designation = duplicateCircuitData?.circuit_designation ?? null;
+    // Codex diff-review cycle 4 (E3) — forward the clamp correction
+    // `findExactDuplicateAgainstSnapshot` now surfaces on its return value
+    // (E3's own fix above), so a genuine exact-duplicate re-dictation of a
+    // clamp-corrected value (raw "16" matching a stored clamped "1.6")
+    // speaks the "— I corrected 16 to 1.6" clause instead of silently
+    // implying the raw number spoken is what got recorded.
     const text = buildAlreadyGotConfirmationText(
       exactDuplicateTuple.field,
       exactDuplicateTuple.value,
       exactDuplicateTuple.circuit,
-      designation
+      designation,
+      { correction: exactDuplicateTuple.correction ?? null }
     );
     if (text) {
       // F3 — stamp `board_id` on the confirmation the same way an ordinary

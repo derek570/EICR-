@@ -68,6 +68,7 @@ const {
   findExactDuplicateAgainstSnapshot,
   mergeFastPathCorrelationIds,
   unmergeFastPathCorrelationIds,
+  resolveZeroToolCallDuplicateOutcome,
   CATCHALL_AUDIBILITY_PROMPTS,
 } = await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
@@ -336,9 +337,36 @@ describe('findExactDuplicateAgainstSnapshot (read-only, unit level)', () => {
     });
     // Codex diff-review F3 (2026-08-13) — the resolved effective board now
     // rides along on the return value (single-board fixture → main).
-    expect(dup).toEqual({ field: 'rcd_time_ms', circuit: 2, value: '24', boardId: 'main' });
+    // Codex diff-review cycle 4 (E3) — `correction` now also rides along
+    // (null here — the raw re-dictated value "24" needed no clamping).
+    expect(dup).toEqual({
+      field: 'rcd_time_ms',
+      circuit: 2,
+      value: '24',
+      boardId: 'main',
+      correction: null,
+    });
     // Unchanged — never mutated.
     expect(session.stateSnapshot.circuits[2]).toEqual({ rcd_time_ms: '24' });
+  });
+
+  // Codex diff-review cycle 4 (E3) — the return-value fix under test: a raw
+  // re-dictated value that needed clamping to MATCH the stored value (e.g.
+  // "16" clamping to the stored "1.6") now surfaces that correction on the
+  // return value instead of silently discarding it.
+  test('exact match where the RAW re-dictated value needed clamping to match the stored value — correction is surfaced', () => {
+    const session = makeSession({ 4: { r1_r2_ohm: '1.6' } });
+    const dup = findExactDuplicateAgainstSnapshot({
+      session,
+      tuple: { slotField: 'r1_r2_ohm', circuit: 4, value: '16' },
+    });
+    expect(dup).toEqual({
+      field: 'r1_r2_ohm',
+      circuit: 4,
+      value: '1.6',
+      boardId: 'main',
+      correction: expect.objectContaining({ original: '16', corrected: '1.6' }),
+    });
   });
 
   test('value mismatch returns null', () => {
@@ -379,7 +407,13 @@ describe('findExactDuplicateAgainstSnapshot (read-only, unit level)', () => {
       session,
       tuple: { slotField: 'rcd_trip_time', circuit: 2, value: '24' },
     });
-    expect(mainDup).toEqual({ field: 'rcd_time_ms', circuit: 2, value: '24', boardId: 'main' });
+    expect(mainDup).toEqual({
+      field: 'rcd_time_ms',
+      circuit: 2,
+      value: '24',
+      boardId: 'main',
+      correction: null,
+    });
     // Re-dictating sub-1's OWN value ("99") while sub-1 is the CURRENT board
     // matches sub-1's own stored value, not main's "24".
     session.stateSnapshot.currentBoardId = 'sub-1';
@@ -387,7 +421,13 @@ describe('findExactDuplicateAgainstSnapshot (read-only, unit level)', () => {
       session,
       tuple: { slotField: 'rcd_trip_time', circuit: 2, value: '99' },
     });
-    expect(subDup).toEqual({ field: 'rcd_time_ms', circuit: 2, value: '99', boardId: 'sub-1' });
+    expect(subDup).toEqual({
+      field: 'rcd_time_ms',
+      circuit: 2,
+      value: '99',
+      boardId: 'sub-1',
+      correction: null,
+    });
     // Re-dictating MAIN's value ("24") while sub-1 is current must NOT match
     // — sub-1's own stored value is "99", a different value entirely.
     const crossBoardMiss = findExactDuplicateAgainstSnapshot({
@@ -1696,5 +1736,119 @@ describe('Codex diff-review cycle 4 (E1) — B3/D3 deliberate silence exempts ma
       ([ev]) => ev === 'stage6.catchall_audibility_fallback_emitted'
     );
     expect(catchallRow).toBeDefined();
+  });
+});
+
+// Codex diff-review cycle 4 (E3) — B3.2's `findExactDuplicateAgainstSnapshot`
+// now surfaces its clamp correction on the return value (tested directly
+// above), but that value has to actually REACH the spoken text at BOTH
+// downstream consumers: the no-fast-attempt branch (a) and the
+// 'failed'/'pending_unrecorded' ledger-outcome fallback (b) — the same bug
+// class D2 already fixed for the OTHER (committed-pending) fallback path,
+// just missed here. Exercised via `resolveZeroToolCallDuplicateOutcome`
+// directly (already exported, unit-testable) rather than the full harness —
+// R1+R2 has no single-complete-reading dialogue-schema trigger phrase this
+// suite could drive end-to-end, and the two functions under test
+// (`resolveOutcomeIdentityForCoalescing`'s exactDuplicateTuple fallback,
+// `buildFastLedgerFallbackConfirmation`'s 'failed' branch) are both reached
+// identically either way.
+describe('Codex diff-review cycle 4 (E3) — the clamp correction reaches BOTH exactDuplicateTuple-derived confirmation paths', () => {
+  const CORRECTION = { original: '16', corrected: '1.6' };
+  const correctedTuple = (boardId = 'main') => ({
+    field: 'r1_r2_ohm',
+    circuit: 4,
+    value: '1.6',
+    boardId,
+    correction: CORRECTION,
+  });
+
+  test('(a) no-fast-attempt exact duplicate of a clamp-corrected value — the "Already got" text includes the correction clause', () => {
+    const session = makeSession({ 4: { r1_r2_ohm: '1.6' } });
+    const outcome = resolveZeroToolCallDuplicateOutcome({
+      session,
+      turnId: 'turn-e3-a',
+      correlationIds: null, // no fast dispatch attempted this turn at all
+      exactDuplicateTuple: correctedTuple(),
+    });
+    expect(outcome.kind).toBe('confirmations');
+    expect(outcome.confirmations).toHaveLength(1);
+    expect(outcome.confirmations[0].text).toBe(
+      'Already got that — Circuit 4, R1 plus R2 recorded as 1.6 — I corrected 16 to 1.6'
+    );
+    expect(outcome.confirmations[0].fast_correlation_id).toBeUndefined();
+    expect(outcome.confirmations[0].dedupe_token).toBe('duplicate_turn-e3-a');
+  });
+
+  test('(b) failed-ledger-outcome exact duplicate of the same shape — the "Already got" text also includes the correction clause', () => {
+    fastIdentity.markFastAttemptFailed(SESSION_ID, 'cid-e3-failed');
+    const session = makeSession({ 4: { r1_r2_ohm: '1.6' } });
+    const outcome = resolveZeroToolCallDuplicateOutcome({
+      session,
+      turnId: 'turn-e3-b',
+      correlationIds: new Set(['cid-e3-failed']),
+      exactDuplicateTuple: correctedTuple(),
+    });
+    expect(outcome.kind).toBe('confirmations');
+    expect(outcome.confirmations).toHaveLength(1);
+    // Pre-E3-fix this would have been "Already got that — Circuit 4, R1
+    // plus R2 recorded as 1.6" with NO correction clause — silently
+    // implying the raw "16" the inspector re-dictated is what got recorded.
+    expect(outcome.confirmations[0].text).toBe(
+      'Already got that — Circuit 4, R1 plus R2 recorded as 1.6 — I corrected 16 to 1.6'
+    );
+    // C2 — deliberately UNSTAMPED: a 'failed' correlation is definitively
+    // dead, so this is the ordinary exact-duplicate re-speak, not a
+    // ledger-tracked fallback.
+    expect(outcome.confirmations[0].fast_correlation_id).toBeUndefined();
+    expect(outcome.confirmations[0].dedupe_token).toBe('duplicate_turn-e3-b');
+  });
+
+  // Coalescing test (M4): a committed 'pending' correlation and a 'failed'
+  // correlation whose only identity comes from the SAME exactDuplicateTuple
+  // now resolve to the IDENTICAL (field, circuit, boardId, value,
+  // correction) group key — read D2's own tests above for what "coalesce"
+  // means in this module: ONE spoken confirmation for the group, sourced
+  // from the preferred ('pending') representative, with the 'failed'
+  // sibling contributing nothing of its own (not a second line). Pre-E3-fix
+  // the 'failed' side's hardcoded `correction: null` would have produced a
+  // DIFFERENT group key (missing the correctionKeyPart), so this exact pair
+  // would have wrongly stayed un-coalesced and spoken TWICE.
+  test('a "pending"+committed correlation and a "failed" exact-duplicate resolving to the IDENTICAL (field, circuit, boardId, value, correction) coalesce into ONE confirmation', () => {
+    fastIdentity.markFastAttemptPending('cid-e3-pending', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'r1_r2_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '16',
+    });
+    fastIdentity.commitAcceptedIdentity('cid-e3-pending', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'r1_r2_ohm',
+      circuit: 4,
+      boardId: null,
+      canonicalValue: '1.6',
+      comparisonText: 'Circuit 4, R1 plus R2 recorded as 1.6',
+      correction: CORRECTION,
+    });
+    fastIdentity.markFastAttemptFailed(SESSION_ID, 'cid-e3-failed-2');
+
+    const session = makeSession({ 4: { r1_r2_ohm: '1.6' } });
+    const outcome = resolveZeroToolCallDuplicateOutcome({
+      session,
+      turnId: 'turn-e3-c',
+      correlationIds: new Set(['cid-e3-pending', 'cid-e3-failed-2']),
+      exactDuplicateTuple: correctedTuple(),
+    });
+    expect(outcome.confirmations).toHaveLength(1);
+    expect(outcome.confirmations[0].text).toBe(
+      'Already got that — Circuit 4, R1 plus R2 recorded as 1.6 — I corrected 16 to 1.6'
+    );
+    // The 'pending' member is the group's representative (STAMPED,
+    // carries fast_correlation_id) — the 'failed' sibling produced no
+    // confirmation of its own, but critically it did not SPLIT the group
+    // into two spoken lines either.
+    expect(outcome.confirmations[0].fast_correlation_id).toBe('cid-e3-pending');
   });
 });
