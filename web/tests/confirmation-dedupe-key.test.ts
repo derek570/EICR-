@@ -553,3 +553,108 @@ describe('A2-multiboard item 10 — board-aware circuit dedupe keys (backend-mir
     expect(withToken('main')).toBe('circuit_op_rename_c1_t7_ord0');
   });
 });
+
+/**
+ * Plan B B3.2 (feedback ids 118/119) — `duplicate_<turnId>` prefix branch.
+ *
+ * Web has NO fast-TTS path (WS3b item 4 still open), so `fast_correlation_id`
+ * never appears on a web-received confirmation in practice — but B3's
+ * exact-duplicate re-speak IS shared backend behaviour (the shadow-harness
+ * zero-tool-call seam), so a web session CAN receive an "Already got …"
+ * confirmation carrying `dedupe_token: duplicate_<turnId>`. Without this
+ * branch, a SECOND identical duplicate turn would be silently swallowed by
+ * the session-permanent fieldful dedupe Set before ever reaching the UI —
+ * this is the contract test the plan's Web companion section requires.
+ */
+describe('Plan B B3.2 — duplicate_<turnId> prefix branch wins ahead of the field-allowlist', () => {
+  it('an arbitrary non-allowlisted measured field gets a turn-unique key', () => {
+    const k = buildConfirmationDedupeKey({
+      text: 'Garage, circuit 1, Zs 0.83',
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      dedupe_token: 'duplicate_turn-42',
+    });
+    expect(k).toBe('measured_zs_ohm_duplicate_turn-42');
+  });
+
+  it('two consecutive duplicate turns on the same field/circuit/text get DISTINCT keys', () => {
+    const first = buildConfirmationDedupeKey({
+      text: 'Garage, circuit 1, Zs 0.83',
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      dedupe_token: 'duplicate_turn-42',
+    });
+    const second = buildConfirmationDedupeKey({
+      text: 'Garage, circuit 1, Zs 0.83',
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      dedupe_token: 'duplicate_turn-43',
+    });
+    expect(first).not.toBe(second);
+  });
+
+  it('multi-circuit (grouped) confirmation: duplicate token wins ahead of the allowlist check', () => {
+    const k = buildConfirmationDedupeKey({
+      text: 'Circuits 1, 2, R1+R2 0.31',
+      field: 'r1_r2_ohm',
+      circuits: [1, 2],
+      dedupe_token: 'duplicate_turn-9',
+    });
+    expect(k).toBe('r1_r2_ohm_duplicate_turn-9');
+  });
+
+  it('degenerate (board-level) confirmation: duplicate token wins ahead of the allowlist check', () => {
+    const k = buildConfirmationDedupeKey({
+      text: 'Ze 0.62',
+      field: 'earth_loop_impedance_ze',
+      board_id: 'main',
+      dedupe_token: 'duplicate_turn-9',
+    });
+    expect(k).toBe('earth_loop_impedance_ze_duplicate_turn-9');
+  });
+
+  it('an allowlisted field with a duplicate token STILL takes the duplicate branch (prefix wins first)', () => {
+    const k = buildConfirmationDedupeKey({
+      text: 'Circuit 3 renamed',
+      field: 'circuit_op',
+      circuit: 3,
+      dedupe_token: 'duplicate_turn-9',
+    });
+    expect(k).toBe('circuit_op_duplicate_turn-9');
+  });
+
+  it('a non-duplicate token (or none) is unaffected — legacy value/board-aware keys unchanged', () => {
+    const plain = buildConfirmationDedupeKey({
+      text: 'Circuit 1, Zs 0.44 ohms',
+      field: 'measured_zs_ohm',
+      circuit: 1,
+    });
+    const spurious = buildConfirmationDedupeKey({
+      text: 'Circuit 1, Zs 0.44 ohms',
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      dedupe_token: 'spurious_token',
+    });
+    expect(plain).toBe(`measured_zs_ohm_1_${djb2UInt64Decimal('Circuit 1, Zs 0.44 ohms')}`);
+    expect(spurious).toBe(plain);
+  });
+
+  it('web tolerates fast_correlation_id on a Confirmation without it affecting the dedupe key', () => {
+    // fast_correlation_id is not part of DedupeKeySource — a confirmation
+    // carrying it (should one ever reach web, e.g. via a future fast path)
+    // must not change key derivation. Cast through unknown since the field
+    // is deliberately absent from DedupeKeySource's declared shape.
+    const withoutField = buildConfirmationDedupeKey({
+      text: 'Circuit 1, Zs 0.44 ohms',
+      field: 'measured_zs_ohm',
+      circuit: 1,
+    });
+    const withField = buildConfirmationDedupeKey({
+      text: 'Circuit 1, Zs 0.44 ohms',
+      field: 'measured_zs_ohm',
+      circuit: 1,
+      ...({ fast_correlation_id: 'cid-123' } as Record<string, unknown>),
+    });
+    expect(withField).toBe(withoutField);
+  });
+});

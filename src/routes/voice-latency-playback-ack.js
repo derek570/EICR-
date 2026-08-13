@@ -57,6 +57,11 @@ import { recordOutcome as productionRecordOutcome } from '../extraction/voice-la
 // check + the evaluation-only ledger forwarding hook.
 import { getActiveSessionEntry as productionGetActiveSessionEntry } from '../extraction/active-sessions.js';
 import { EVALUATION_CONTEXT } from '../extraction/plan00-lifecycle-hooks.js';
+// Plan B (feedback ids 118/119) B3.1 — additive fast-attempt ledger mark.
+// This is a SECOND, independent no-throw side effect beside the existing
+// `recordOutcome` telemetry call below (same defensive shape: a ledger-mark
+// failure must never affect the 204 response or the telemetry row).
+import { markFastAttemptPlaybackStarted } from '../extraction/fast-path-accepted-identity.js';
 
 const SOURCE_ENUM = new Set(['fast_tts', 'bundler', 'local_fallback']);
 const AUDIO_SOURCE_ENUM = new Set([
@@ -264,6 +269,25 @@ export function createPlaybackAckRouter({
         sessionId,
         turnId,
         error: outcomeErr?.message || String(outcomeErr),
+      });
+    }
+    // Plan B B3.1 — mark the fast-attempt ledger 'playback_started'. Gated on
+    // `source === 'fast_tts'` (mirrors `recordPlaybackAck`'s own
+    // `isFastPathWithCorrelation` check) so an ask-path TTS ack carrying an
+    // unrelated correlation_id can never mutate a fast-attempt record it
+    // doesn't own — `markFastAttemptPlaybackStarted` is a no-op for a
+    // correlation id this module never saw `markFastAttemptPending` for, but
+    // the source gate keeps the call itself semantically scoped.
+    try {
+      if (source === 'fast_tts' && correlation_id) {
+        markFastAttemptPlaybackStarted(sessionId, correlation_id);
+      }
+    } catch (ledgerErr) {
+      logger.warn('voice_latency.fast_attempt_ledger_error', {
+        sessionId,
+        turnId,
+        stage: 'playback_started',
+        error: ledgerErr?.message || String(ledgerErr),
       });
     }
     // Plan 00B-2 C2.6 — evaluation-only ledger forwarding (dormant Symbol

@@ -270,6 +270,14 @@ export interface Confirmation {
    *  extraction envelope raw (no per-field decode), so declaring the
    *  property here is the whole decode. */
   dedupe_token?: string | null;
+  /** Plan B (feedback ids 118/119) — B1.3 echo stamp. Present only when the
+   *  backend bundler matched this confirmation's renderer-aligned comparison
+   *  text + canonical value + field/circuit/board against an accepted
+   *  fast-TTS identity for the current turn. Web has NO fast-TTS path
+   *  (WS3b item 4 still open) — this field is tolerated and ignored here;
+   *  it exists purely so the Confirmation type doesn't lie about the wire
+   *  shape iOS now receives. Mirrors iOS `ValueConfirmation.fastCorrelationId`. */
+  fast_correlation_id?: string | null;
 }
 
 /** Multi-board mutation op carried on the extraction envelope's

@@ -289,6 +289,94 @@ describe('§A1a / PLAN-2C dedupe_token — manifests + token composition drift t
 });
 
 /**
+ * Plan B B3.2 (feedback ids 118/119) — `duplicate_<turnId>` prefix branch.
+ *
+ * The exact-duplicate re-speak (stage6-shadow-harness.js zero-tool-call
+ * seam) stamps a replay-stable `duplicate_<turnId>` dedupe_token on its
+ * "Already got …" confirmation. iOS's fieldful dedupe key lives for the
+ * whole session, so a SECOND identical duplicate turn would be silently
+ * swallowed unless this token wins the key ahead of BOTH the ordinary
+ * value-aware shape AND the WIRE_CLIENT_DEDUPE_TOKEN_FIELDS allowlist check
+ * — deliberately NOT an allowlist addition, because the duplicate re-speak
+ * can fire for ANY measured field, and the allowlist route only works
+ * per-named-field (reopening it per field would reopen id-84).
+ */
+describe('Plan B B3.2 — duplicate_<turnId> prefix branch wins ahead of the field-allowlist', () => {
+  test('per-circuit: an arbitrary non-allowlisted measured field gets a turn-unique key', () => {
+    const k = buildPerCircuitDedupeKey(
+      'measured_zs_ohm',
+      1,
+      'Garage, circuit 1, Zs 0.83',
+      'duplicate_turn-42'
+    );
+    expect(k).toBe('measured_zs_ohm_duplicate_turn-42');
+  });
+
+  test('per-circuit: two consecutive duplicate turns on the same field/circuit/text get DISTINCT keys', () => {
+    const first = buildPerCircuitDedupeKey(
+      'measured_zs_ohm',
+      1,
+      'Garage, circuit 1, Zs 0.83',
+      'duplicate_turn-42'
+    );
+    const second = buildPerCircuitDedupeKey(
+      'measured_zs_ohm',
+      1,
+      'Garage, circuit 1, Zs 0.83',
+      'duplicate_turn-43'
+    );
+    expect(first).not.toBe(second);
+  });
+
+  test('multi-circuit (grouped): duplicate token wins ahead of the allowlist check', () => {
+    const k = buildMultiCircuitDedupeKey(
+      'r1_r2_ohm',
+      [1, 2],
+      'Circuits 1, 2, R1+R2 0.31',
+      'duplicate_turn-9'
+    );
+    expect(k).toBe('r1_r2_ohm_duplicate_turn-9');
+  });
+
+  test('degenerate: duplicate token wins ahead of the allowlist check', () => {
+    const k = buildDegenerateDedupeKey(
+      'earth_loop_impedance_ze',
+      'Ze 0.62',
+      'main',
+      'duplicate_turn-9'
+    );
+    expect(k).toBe('earth_loop_impedance_ze_duplicate_turn-9');
+  });
+
+  test('an allowlisted field with a duplicate token STILL takes the duplicate branch (prefix wins first)', () => {
+    // Ordering proof: duplicate_ is checked BEFORE the allowlist branch, so
+    // even a field that's normally token-eligible under the allowlist gets
+    // the turn-unique duplicate key, not the op-identity key.
+    const k = buildPerCircuitDedupeKey('circuit_op', 3, 'Circuit 3 renamed', 'duplicate_turn-9');
+    expect(k).toBe('circuit_op_duplicate_turn-9');
+  });
+
+  test('a non-duplicate token (or none) is unaffected — legacy value/board-aware keys unchanged', () => {
+    expect(buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Circuit 1, Zs 0.44 ohms')).toBe(
+      'measured_zs_ohm_1_' + djb2UInt64Decimal('Circuit 1, Zs 0.44 ohms')
+    );
+    expect(
+      buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Circuit 1, Zs 0.44 ohms', 'spurious_token')
+    ).toBe('measured_zs_ohm_1_' + djb2UInt64Decimal('Circuit 1, Zs 0.44 ohms'));
+  });
+
+  test('different-value corrections on a duplicate-tokened turn still stay distinct from the plain key', () => {
+    // Not the same scenario in practice (a correction wouldn't carry a
+    // duplicate_ token), but pins that the duplicate branch always returns
+    // early — the value-aware composite is never reached when the token
+    // prefix matches.
+    const dup = buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Zs 0.63', 'duplicate_turn-9');
+    const plain = buildPerCircuitDedupeKey('measured_zs_ohm', 1, 'Zs 0.63');
+    expect(dup).not.toBe(plain);
+  });
+});
+
+/**
  * A2-multiboard item 10 (2026-07-28) — board identity in the CIRCUIT dedupe keys.
  *
  * The degenerate (board-level) branch has folded `boardId` into its hash since

@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "4807106e3f773d1a1f2278c83aefcc70b8d5258df7ed076456a50e1213f16f6f",
+  "semantic_oracle_digest": "86d85b750fa73898fa6df9541a16a4b5fbc93c808027feeb732414a3304cf6a7",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -517,7 +517,7 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "d4eca0df3c64118a71bc42f1f4098f021786a0056ca41d39890d04f0b889e2d7"
+      "sha256": "754d87c1ea7b2f58f7d00db1ad55ea678a514f621748ea26f69dbdfe82e83a48"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "fc7feedbdb153c37ade88a89ee96d1a878b5a7c9a6401a9cf4d5cbeceaa9cacc"
+      "sha256": "871b87ed1d3fa524d5ffdaab5f958ea03bd615316ffc2095d95c7dd11ccb9eb0"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -549,11 +549,11 @@
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",
-      "sha256": "2d1022c5b3f24fa009837a8ed68a328c5ab5d378961f66f850307622da0e5fe5"
+      "sha256": "d1fa628ae1b398c826479c4a4d82670fab78a05932bb778c63a5f7816657e657"
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",
-      "sha256": "5b2732c95e4f6398689d73a3fd0318ad29116f8adaba48f830e7e6530e3fd8b8"
+      "sha256": "0ab7576ff64b107cf68422ebc46334f9b86763d6a00b453c6de64aa37ac17cff"
     },
     {
       "path": "scripts/model-ab/lib/mutation-classification.mjs",

@@ -174,6 +174,9 @@ export function djb2UInt64Decimal(text) {
  * @returns {string}
  */
 export function buildPerCircuitDedupeKey(field, circuit, text, opToken, boardId) {
+  if (typeof opToken === 'string' && opToken.startsWith('duplicate_')) {
+    return `${field ?? 'unknown'}_${opToken}`;
+  }
   if (opToken && WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has(field)) {
     return `${field}_${opToken}`;
   }
@@ -197,6 +200,13 @@ export function buildPerCircuitDedupeKey(field, circuit, text, opToken, boardId)
  * @returns {string}
  */
 export function buildMultiCircuitDedupeKey(field, circuits, text, opToken, boardId) {
+  // Plan B B3.2 (feedback ids 118/119): a `duplicate_<turnId>` token wins
+  // ahead of the field-allowlist check below — an exact-duplicate re-speak
+  // can fire for ANY measured field, not just the six wire/client-enrolled
+  // text-op fields, and the allowlist route only works per-named-field.
+  if (typeof opToken === 'string' && opToken.startsWith('duplicate_')) {
+    return `${field ?? 'unknown'}_${opToken}`;
+  }
   // §A1a: token takes precedence in EVERY branch an allowlisted text-op
   // confirmation can reach (a grouped circuit_designation broadcast lands
   // here, not in the per-circuit branch).
@@ -232,6 +242,13 @@ export function buildMultiCircuitDedupeKey(field, circuits, text, opToken, board
  * @returns {string}
  */
 export function buildDegenerateDedupeKey(field, text, boardId, opToken) {
+  // Plan B B3.2 (feedback ids 118/119): duplicate_<turnId> wins ahead of the
+  // field-allowlist check below — see buildMultiCircuitDedupeKey above for
+  // why this must be a structurally separate prefix branch, not an
+  // allowlist addition.
+  if (typeof opToken === 'string' && opToken.startsWith('duplicate_')) {
+    return `${field ?? 'unknown'}_${opToken}`;
+  }
   // §A1a: token takes precedence — this is the branch EVERY observation
   // deletion reaches (circuit:null + constant "Observation deleted" text →
   // identical hashed keys without the token).

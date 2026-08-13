@@ -68,9 +68,24 @@ import {
   resolveBoardAwareEarthing,
 } from '../extraction/impedance-clamp.js';
 import { isRegexFastEligible } from '../extraction/regex-fast-eligibility.js';
+import { getMainBoardId, isUnscopedBoardId } from '../extraction/stage6-multi-board-shape.js';
 import { getActiveSessionEntry, getVoiceLatencyForSession } from '../extraction/active-sessions.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
 import { decrementExpectedAcksByCorrelation } from '../extraction/voice-latency-turn-summary.js';
+// Plan B (feedback ids 118/119) — B1.2 accepted-identity record + B3.1
+// fast-attempt ledger, one combined TTL-scoped module. `markFastAttemptPending`
+// fires as soon as validateBody succeeds (before any later gate can still
+// reject); `commitAcceptedIdentity` fires ONCE on the first onAudio byte
+// (the route's earliest point with a clamped value + rendered comparison
+// text); `markFastAttemptFailed` is threaded through the existing
+// `rejectWithDecrement` funnel so every reject path (gate + pre-first-byte
+// synthesis failure) marks the ledger without a second call site to keep in
+// sync.
+import {
+  markFastAttemptPending,
+  commitAcceptedIdentity,
+  markFastAttemptFailed,
+} from '../extraction/fast-path-accepted-identity.js';
 // Plan 00B-2 C2.7/C3 — evaluation-only fast-TTS reservation + producer.
 // Dormant Symbol lookups; production sessions carry no evaluation context.
 import { EVALUATION_CONTEXT, beginProducer } from '../extraction/plan00-lifecycle-hooks.js';
@@ -113,6 +128,52 @@ function buildSlotKey({ field, circuit, boardId }) {
 }
 
 /**
+ * Codex diff-review M1 (2026-08-13, mini-review of the F1-F9 fix hunks) —
+ * resolve the boardId this route COMMITS as the accepted identity, not
+ * necessarily the raw wire `candidate.boardId`. `candidate.boardId` is
+ * schema-legal null/omitted (validateBody only requires it be a string
+ * WHEN present), but the bundler's own `effectiveBoardOf` (see F1's fix in
+ * stage6-event-bundler.js) resolves an ordinary write with no wire
+ * `board_id` to the session's dispatcher-attributed board — which on a
+ * single/default-board session is `getMainBoardId(snapshot)`, the same
+ * namespace-routing fallback `stage6-shadow-harness.js` already uses for
+ * the exact-duplicate/pending-uncommitted board stamping. Committing the
+ * raw null here while the bundler later resolves a non-null board for the
+ * SAME reading would make `fastSlotKeyOf`'s join fail in the reverse
+ * direction from the bug F1 fixed.
+ *
+ * Codex diff-review cycle 2 (C3, 2026-08-13) — M1 landed as `rawBoardId ??
+ * getMainBoardId(snapshot)`, which is WRONG when the session's actual
+ * CURRENT board is a sub-board: a scope-less fast dispatch on a sub-board
+ * session resolved to `main` instead of the board the inspector is
+ * actually standing at, so the accepted identity's slot key would never
+ * join the bundler's own resolution for the same ordinary write (the
+ * bundler's `effectiveBoardOf`/`resolveEffectiveBoardId` prefer
+ * `snapshot.currentBoardId` over main). Fixed to match the SAME
+ * "explicit → currentBoardId → canonical main" precedence used everywhere
+ * else in this codebase for a scope-less action's effective board —
+ * `resolveEffectiveBoardId` (stage6-dispatchers-circuit.js),
+ * `getCircuitBucket`/`getMainBoardId` fallback chains
+ * (stage6-multi-board-shape.js), and stage6-shadow-harness.js's own
+ * `resolveEffectiveBoardId(session, null)` call for the exact-duplicate
+ * board resolution. `isUnscopedBoardId` (null/undefined/'') is the shared
+ * definition of "no explicit board" (A2-multiboard scope item 6) — reused
+ * here rather than a bare truthiness check so an explicit empty-string
+ * wire boardId (a known legacy shape) is treated as unscoped too, not as
+ * "explicitly no board". `getMainBoardId` always returns a string
+ * (defaults to `DEFAULT_MAIN_BOARD_ID` when the snapshot has no boards at
+ * all), so the final fallback is always available.
+ *
+ * @param {string|null} rawBoardId
+ * @param {object|null|undefined} stateSnapshot
+ * @returns {string|null}
+ */
+function resolveIdentityBoardId(rawBoardId, stateSnapshot) {
+  if (!isUnscopedBoardId(rawBoardId)) return rawBoardId;
+  return stateSnapshot?.currentBoardId ?? getMainBoardId(stateSnapshot);
+}
+
+/**
  * Reject with the given status + error AFTER decrementing the
  * expected-ACK stash. The iOS client treats every non-2xx as "abandon
  * silently — do NOT speak native TTS"; this helper also takes care of
@@ -127,6 +188,27 @@ function rejectWithDecrement(res, sessionId, correlationId, status, errorBody) {
       logger.warn('voice_latency.fast_tts_decrement_error', {
         sessionId,
         correlationId,
+        error: err?.message || String(err),
+      });
+    }
+  }
+  // Plan B B3.1 — every reject path (a gate rejection OR a synthesis
+  // failure that happened BEFORE any audio byte streamed) funnels through
+  // here, so this is the ONE place to mark the fast-attempt ledger
+  // 'failed'. A failure that happens AFTER the first onAudio byte already
+  // streamed does NOT reach this function (see the route's catch block —
+  // `res.headersSent` is true by then, so it just ends the response), which
+  // mirrors the pre-existing decrement accounting immediately above: this is
+  // not a new gap, it's the same one the ACK/decrement system already
+  // tolerates.
+  if (correlationId) {
+    try {
+      markFastAttemptFailed(sessionId, correlationId);
+    } catch (err) {
+      logger.warn('voice_latency.fast_attempt_ledger_error', {
+        sessionId,
+        correlationId,
+        stage: 'failed',
         error: err?.message || String(err),
       });
     }
@@ -163,6 +245,23 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
 
   const { sessionId, turnId, correlationId, transcript, candidate } = req.body;
   const { field, circuit, value, boardId = null } = candidate;
+
+  // Plan B B3.1 — mark the fast-attempt ledger 'pending' now: validateBody
+  // has already succeeded (sessionId/turnId/correlationId/candidate are all
+  // known-shaped), and every gate below this point funnels its reject
+  // through rejectWithDecrement, which marks 'failed'. Capturing the RAW
+  // (un-clamped) candidate.value here gives the B3.1 orphan-net precedence
+  // chain something to fall back to even if this request never reaches
+  // synthesis — though the bundler's B1.2 echo-stamp only ever trusts the
+  // CLAMPED value committed below at first onAudio.
+  markFastAttemptPending(correlationId, {
+    sessionId,
+    turnId,
+    field,
+    circuit: Number.isInteger(circuit) ? circuit : null,
+    boardId,
+    rawValue: value,
+  });
 
   // Eligibility whitelist (Pivot 2). Non-whitelisted fields can drift
   // (booleans like polarity_confirmed) or have no iOS regex pattern
@@ -378,10 +477,63 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
     res.set('X-Voice-Latency-Source', 'fast_path');
 
     let terminal = 'failed';
+    // Plan B B1.2 — commit the accepted identity ONCE, on the FIRST
+    // successful onAudio write (not at route entry — the HTTP fast request
+    // and the WS transcript are concurrent, and the route hasn't clamped +
+    // rendered anything until this point anyway). `identityCommitted` is
+    // scoped OUTSIDE `opts` so a D1 fail-open retry (a second synth attempt
+    // reusing the SAME `opts.onAudio` callback) still only commits once.
+    let identityCommitted = false;
     try {
       const opts = {
+        // Codex diff-review F6 (2026-08-13): `identityCommitted` used to
+        // flip to `true` unconditionally on the FIRST call, even when
+        // `res.writableEnded` was already true (so `res.write` was SKIPPED
+        // — no audio actually reached the wire) or `buf` was empty. Worse,
+        // if `commitAcceptedIdentity` itself threw, the flag was already
+        // `true` by then, so every later chunk in the same response gave up
+        // retrying the commit forever. Fixed: only flip the flag AFTER a
+        // REAL, non-empty write has gone out AND the commit itself
+        // succeeded — a throw leaves `identityCommitted` false so a later
+        // genuine chunk (D1's fail-open retry reuses this same callback)
+        // still gets a chance to commit the identity.
         onAudio: (buf) => {
-          if (!res.writableEnded) res.write(buf);
+          if (res.writableEnded) return;
+          if (!buf || buf.length === 0) return;
+          res.write(buf);
+          if (identityCommitted) return;
+          try {
+            commitAcceptedIdentity(correlationId, {
+              sessionId,
+              turnId,
+              field,
+              circuit: Number.isInteger(circuit) ? circuit : null,
+              // M1 — resolve a null/omitted wire boardId to the session's
+              // main-board fallback so this identity's slot-key joins the
+              // bundler's effectiveBoardOf resolution for the SAME ordinary
+              // (bare board_id) write, rather than only matching when iOS
+              // happens to have populated boardId itself.
+              boardId: resolveIdentityBoardId(boardId, entry?.session?.stateSnapshot),
+              canonicalValue: fastClamp.value,
+              comparisonText: text,
+              // Codex diff-review cycle 3 D2 — thread the clamp correction
+              // (the "— I corrected 16 to 1.6" clause this route's OWN
+              // audio already spoke, via `text` above) onto the committed
+              // identity so a later B3.3 committed-'pending' fallback
+              // confirmation (fast clip streamed but no playback-start ACK)
+              // can include the same clause instead of silently dropping
+              // the safety-relevant correction.
+              correction: fastClamp.correction,
+            });
+            identityCommitted = true;
+          } catch (err) {
+            logger.warn('voice_latency.fast_attempt_ledger_error', {
+              sessionId,
+              correlationId,
+              stage: 'commit',
+              error: err?.message || String(err),
+            });
+          }
         },
       };
       // D1 fail-open (id 121): attempt 1 is `client` (default
@@ -392,7 +544,12 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
       // this try block, by the caller's own reservation.
       const { timings } = await synthWithLanguageFailOpen(
         client,
-        () => new ElevenLabsStreamClient({ apiKey, outputFormat: FORCED_OUTPUT_FORMAT, languageCode: null }),
+        () =>
+          new ElevenLabsStreamClient({
+            apiKey,
+            outputFormat: FORCED_OUTPUT_FORMAT,
+            languageCode: null,
+          }),
         text,
         opts
       );

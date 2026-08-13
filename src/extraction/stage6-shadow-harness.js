@@ -103,6 +103,14 @@ import { getVoiceLatencyForSession, getActiveSessionEntry } from './active-sessi
 import { detectBroadcastIntent } from './dialogue-engine/parsers/circuit-range.js';
 // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8).
 import { emitTurnCoreSummary, startAudioFinalizer } from './voice-latency-turn-summary.js';
+// Plan B (feedback ids 118/119) — B1.2/B1.3 accepted-identity resolution +
+// B3.1/B3.2/B3.3 fast-attempt ledger + orphan-net precedence chain.
+import {
+  resolveFastAttemptSlotIdentities,
+  resolveFastLedgerOutcomeForTurn,
+  resolveAcceptedIdentity,
+  buildFastAttemptSlotKey,
+} from './fast-path-accepted-identity.js';
 import { getElevenLabsKey } from '../services/secrets.js';
 import {
   createWriteDispatcher,
@@ -220,7 +228,7 @@ function resolveHarnessDesignation(designations, boardId, circuitRef) {
 // ref), and the snapshot's circuit buckets are DUAL-SHAPE (main board under
 // bare numeric keys, sub-boards under `${board_id}::${ref}` composites), so
 // resolving the main board's id is required to key the legacy half correctly.
-import { getMainBoardId } from './stage6-multi-board-shape.js';
+import { getMainBoardId, getCircuitBucket } from './stage6-multi-board-shape.js';
 // Plan A1a — the net-0 drain selects mandatory-notice text AT THE DRAIN
 // (post-suppression) via the dispatcher module's exported selector, so the
 // rotation cursor advances exactly once per emitted notice. Safe import:
@@ -794,6 +802,729 @@ export function applyOrphanRecoveredReading({ session, result, tuple, turnId }) 
   return reading;
 }
 
+/**
+ * Plan B B3.2 (feedback ids 118/119) — READ-ONLY duplicate check for the
+ * #5a apply-complete guard's re-parsed tuple. Deliberately separate from
+ * `applyOrphanRecoveredReading` (which WRITES): this function never mutates
+ * `session.stateSnapshot`, never pushes a confirmation, and never sets
+ * `session.orphanContext`. Applies the SAME clamp/normalisation the write
+ * path uses (`clampReadingForDispatch`), scoped to the CURRENT effective
+ * board — the same resolution ordinary `record_reading` dispatch applies to
+ * an unscoped write (`resolveEffectiveBoardId`, stage6-dispatchers-circuit.js)
+ * — so the comparison is apples-to-apples with whatever is already stored on
+ * THAT board, not whichever board happens to own the bare-numeric legacy key.
+ *
+ * Codex diff-review F3 (2026-08-13): the re-parsed tuple carries no board
+ * scope at all (`reparseSingleCompleteReading` never resolves one — the
+ * dialogue-engine schema triggers only capture field/circuit/value). The
+ * PREVIOUS shape read `session.stateSnapshot.circuits[tuple.circuit]`
+ * directly and clamped with a HARDCODED `null` board — on a multi-board job
+ * the same circuit ref exists on every board, so a re-dictation of board B's
+ * circuit 2 could silently compare against board A's circuit 2's stored
+ * value, producing either a false "Already got" (swallowing a genuine
+ * correction) or a false miss. `getCircuitBucket` is the SAME dual-shape
+ * accessor `record_reading` dispatch reads through (main board's bare
+ * numeric keys vs a sub-board's `${boardId}::${ref}` composite key).
+ *
+ * Returns `{field, circuit, value, boardId, correction}` (the CLAMPED value,
+ * ready to speak, plus the resolved effective board) when the re-parsed
+ * tuple is an EXACT duplicate of the circuit's current stored value for that
+ * field on THAT board; `null` on any mismatch, ambiguity, or missing current
+ * value — the caller falls through to existing behaviour on null.
+ *
+ * Codex diff-review cycle 4 (E3) — `correction` (the SAME clamp-correction
+ * shape `buildConfirmationText`/`buildAlreadyGotConfirmationText` accept:
+ * `{original, corrected}|null`) is now surfaced on the return value. A
+ * genuine exact-duplicate re-dictation of a value that required clamping
+ * (e.g. raw "16" matching a stored clamped "1.6" — `dupClamp` here clamps
+ * the RAW re-parsed tuple.value, not the already-clamped stored value, so
+ * the correction is real and worth speaking) was previously computed and
+ * then silently discarded — the caller spoke "Already got … 1.6" with no "—
+ * I corrected 16 to 1.6" clause, the same safety-clause omission D2 already
+ * fixed for the fast-ledger paths, just missed here.
+ *
+ * @param {{session: Object, tuple: {slotField: string, circuit: number, value: string}}} args
+ * @returns {{field: string, circuit: number, value: string, boardId: string|null, correction: {original: string, corrected: string}|null}|null}
+ */
+export function findExactDuplicateAgainstSnapshot({ session, tuple }) {
+  const stage6Field = ORPHAN_SLOT_TO_STAGE6_FIELD[tuple.slotField] ?? tuple.slotField;
+  const effectiveBoardId = resolveEffectiveBoardId(session, null);
+  const dupClamp = clampReadingForDispatch({
+    field: stage6Field,
+    value: tuple.value,
+    earthing: resolveBoardAwareEarthing(session.stateSnapshot, effectiveBoardId),
+  });
+  const clampedValue = dupClamp.value;
+  const circuitData = getCircuitBucket(session.stateSnapshot, tuple.circuit, effectiveBoardId);
+  const currentValue = circuitData ? circuitData[stage6Field] : undefined;
+  if (currentValue == null || clampedValue == null) return null;
+  if (String(currentValue).trim() !== String(clampedValue).trim()) return null;
+  return {
+    field: stage6Field,
+    circuit: tuple.circuit,
+    value: clampedValue,
+    boardId: effectiveBoardId,
+    // E3 — the clamp correction between the RAW re-dictated value and the
+    // (already-matching) stored value, if the raw value needed one.
+    correction: dupClamp.correction ?? null,
+  };
+}
+
+/**
+ * Plan B B3.2/B3.3 — the ONE "Already got …" text builder, shared by both
+ * the fast-ledger 'pending' fallback (B3.1) and the exact-duplicate re-speak
+ * (B3.2), so the two precedence-chain outcomes speak with the SAME wording
+ * family. Wraps the normal `buildConfirmationText` (real designation, same
+ * spoken form as every other confirmation) with an "Already got that — "
+ * prefix that is string-distinct from every existing apology/notice family
+ * (ORPHAN_/REJECTED_/OBSERVATION_/NOOP_/CATCHALL_/ASK_DECLINE_/ASK_ANSWERED_/
+ * ASK_AUDIBILITY_FALLBACK_TEXT — none of those begin with "Already"), so the
+ * client's text-keyed dedupe can never cross-dedupe this channel with any
+ * other. Returns null when the underlying text would be null (suppressed
+ * field, empty value) — same emptiness contract as buildConfirmationText.
+ *
+ * Codex diff-review M2 (2026-08-13, per-fix mini-review) — accepts and
+ * forwards an optional `options` object (mirroring buildConfirmationText's
+ * own trailing param) so a caller that clamp-corrected the raw value it is
+ * about to speak (e.g. the pending_uncommitted fallback below, whose
+ * rawValue may need the SAME decimal-slip clamp the fast route itself
+ * applies) can still speak the correction clause. Without this, a
+ * pending-uncommitted fallback that is the ONLY audible line for a clamped
+ * reading would speak the corrected number with no indication a correction
+ * happened — silently misleading, since the inspector would reasonably
+ * assume the number they said is what got recorded.
+ *
+ * @param {string} field
+ * @param {string} value
+ * @param {number|null} circuit
+ * @param {string|null} designation
+ * @param {{correction?: {original: string, corrected: string}|null}} [options]
+ * @returns {string|null}
+ */
+export function buildAlreadyGotConfirmationText(
+  field,
+  value,
+  circuit,
+  designation = null,
+  options = {}
+) {
+  const base = buildConfirmationText(field, value, circuit, designation, options);
+  if (!base) return null;
+  return `Already got that — ${base}`;
+}
+
+/**
+ * Codex diff-review M4 (2026-08-13, per-fix mini-review) — resolve the
+ * (field, circuit, boardId, value) identity a single fast-ledger outcome
+ * represents, for COALESCING purposes (see
+ * `resolveZeroToolCallDuplicateOutcome` below). Computed ONCE per outcome so
+ * the eventual confirmation-building pass never re-derives it:
+ *   - 'suppress' has no field/circuit/value of its own (F8 kept the entry
+ *     minimal) — resolved via the committed identity, since a
+ *     'playback_started' state can only be reached AFTER
+ *     `commitAcceptedIdentity` already ran (audio must have already
+ *     streamed). Returns `null` when no committed identity can be found
+ *     (defensive — should not happen structurally) so the caller treats it
+ *     as ungroupable rather than fabricating an identity.
+ *   - 'pending' already carries a committed identity on the outcome itself.
+ *   - 'pending_uncommitted' has only the raw pre-commit record; clamps the
+ *     raw value the same way the confirmation-building pass always did, so
+ *     grouping compares CLAMPED values (matching what would actually be
+ *     spoken), not raw candidate text.
+ *   - 'pending_unrecorded' / 'failed' (Codex diff-review C2, 2026-08-13) —
+ *     this module's ledger has NO identity data at all for these kinds (no
+ *     record, or a definitively failed one). The ONLY identity available is
+ *     the turn-level `exactDuplicateTuple` (B3.2's single re-parsed tuple),
+ *     passed in by the caller. When it's present, both kinds resolve to it
+ *     (so a 'failed'/'pending_unrecorded' sibling that happens to describe
+ *     the SAME reading as the turn's re-parsed tuple coalesces with it
+ *     instead of double-accounting); when absent, returns `null` so the
+ *     caller falls through to the ordinary orphan-prompt path for it
+ *     (`hadUnaddressedFailure` in `resolveZeroToolCallDuplicateOutcome`).
+ *
+ * @param {{kind: string, correlationId: string, identity?: Object, rawRecord?: Object}} outcome
+ * @param {Object} session
+ * @param {{field: string, circuit: number, value: string, boardId: string|null}|null} [exactDuplicateTuple]
+ * @returns {{field: string, circuit: number|null, boardId: string|null, value: string|null, correction: {original: string, corrected: string}|null}|null}
+ */
+function resolveOutcomeIdentityForCoalescing(outcome, session, exactDuplicateTuple = null) {
+  if (outcome.kind === 'suppress') {
+    const identity = resolveAcceptedIdentity(outcome.correlationId, session?.sessionId);
+    if (!identity) return null;
+    return {
+      field: identity.field,
+      circuit: identity.circuit,
+      // C3 — resolve through the SAME (explicit → currentBoardId → main)
+      // formula every other seam uses, so a suppress/pending/pending_uncommitted
+      // trio for the SAME single-board reading all group under the identical
+      // board identity instead of only some of them being resolved.
+      boardId: resolveEffectiveBoardId(session, identity.boardId),
+      value: identity.canonicalValue,
+      // Codex diff-review cycle 3 D2 — was hardcoded null, dropping the
+      // committed identity's clamp-correction provenance from the M4
+      // coalescing key. A 'suppress' outcome never itself builds a
+      // confirmation (playback already happened), but its correction still
+      // needs to be part of the group identity so it doesn't silently
+      // coalesce a differently-corrected sibling under the SAME group (see
+      // the groupKey construction below).
+      correction: identity.correction ?? null,
+    };
+  }
+  if (outcome.kind === 'pending') {
+    const { identity } = outcome;
+    return {
+      field: identity.field,
+      circuit: identity.circuit,
+      boardId: resolveEffectiveBoardId(session, identity.boardId),
+      value: identity.canonicalValue,
+      // Codex diff-review cycle 3 D2 — was hardcoded null (see the
+      // 'suppress' branch above for the rationale). This is the branch that
+      // actually matters for D2(a): `buildFastLedgerFallbackConfirmation`'s
+      // 'pending' case reads `resolved.correction` to speak the clause.
+      correction: identity.correction ?? null,
+    };
+  }
+  if (outcome.kind === 'pending_uncommitted') {
+    const { rawRecord } = outcome;
+    // C3 (gap 2) — `rawRecord.boardId` is the RAW wire boardId captured at
+    // `markFastAttemptPending` time (voice-latency-fast-tts.js), which runs
+    // BEFORE the route's own board resolution (`resolveIdentityBoardId`,
+    // only applied at `commitAcceptedIdentity`). A null/omitted wire boardId
+    // on a sub-board session must resolve to the CURRENT board here too —
+    // not stay null — or a committed ('pending') retry of the identical
+    // single-board reading resolves to a real board while this uncommitted
+    // one resolves to nothing, and the two never coalesce as "the same
+    // reading" under M4's grouping even though they are.
+    const rawBoardId = resolveEffectiveBoardId(session, rawRecord.boardId);
+    const rawClamp = clampReadingForDispatch({
+      field: rawRecord.field,
+      value: rawRecord.rawValue,
+      earthing: resolveBoardAwareEarthing(session.stateSnapshot, rawBoardId),
+    });
+    return {
+      field: rawRecord.field,
+      circuit: rawRecord.circuit,
+      boardId: rawBoardId,
+      value: rawClamp.value,
+      correction: rawClamp.correction,
+    };
+  }
+  // outcome.kind === 'pending_unrecorded' || outcome.kind === 'failed' — C2.
+  // No ledger identity exists; fall back to the turn-level re-parsed tuple
+  // if the caller found one, otherwise this outcome is ungroupable/
+  // unaddressed (see the doc comment above).
+  if (!exactDuplicateTuple) return null;
+  return {
+    field: exactDuplicateTuple.field,
+    circuit: exactDuplicateTuple.circuit,
+    boardId: exactDuplicateTuple.boardId ?? null,
+    value: exactDuplicateTuple.value,
+    // Codex diff-review cycle 4 (E3) — was hardcoded null, discarding
+    // `findExactDuplicateAgainstSnapshot`'s own clamp-correction (E3's
+    // return-value fix above) from BOTH the spoken text (via
+    // `buildFastLedgerFallbackConfirmation`) and this group's M4 coalescing
+    // identity — a corrected exactDuplicateTuple-derived outcome could
+    // wrongly coalesce with an uncorrected sibling that happens to land on
+    // the same final value, exactly the class D2 already fixed for the
+    // other ledger paths.
+    correction: exactDuplicateTuple.correction ?? null,
+  };
+}
+
+/**
+ * Codex diff-review M4 (2026-08-13, per-fix mini-review) — build the ONE
+ * fallback confirmation for a coalesced group's representative member,
+ * using the identity already resolved by `resolveOutcomeIdentityForCoalescing`
+ * (never recomputed). Mirrors the per-kind confirmation shapes exactly as
+ * they were before coalescing (a 'pending' confirmation carries no
+ * `board_id` stamp; a 'pending_uncommitted'/'pending_unrecorded' one does,
+ * omitted only when the resolved board is the session's main/default
+ * board) — M4 changes WHICH outcomes reach this builder, never the shape of
+ * what it builds.
+ *
+ * Codex diff-review C2 (2026-08-13) — added 'pending_unrecorded' (STAMPED,
+ * same shape as 'pending_uncommitted' but sourced from the turn-level
+ * exactDuplicateTuple since this module has no ledger identity for it — the
+ * correlation may still be genuinely alive client-side, so it still gets a
+ * `fast_correlation_id` for iOS's B2 correlation state machine to park/
+ * match against) and 'failed' (UNSTAMPED — the correlation is definitively
+ * dead server-side, so this is deliberately the SAME unstamped shape as the
+ * ordinary exact-duplicate confirmation below, per the plan's "falls
+ * through to the ordinary duplicate/orphan-prompt path" requirement, not a
+ * correlation-stamped ledger fallback).
+ *
+ * @param {{outcome: Object, resolved: Object|null}} member
+ * @param {Object} session
+ * @param {string} turnId
+ * @returns {Object|null}
+ */
+function buildFastLedgerFallbackConfirmation({ outcome, resolved }, session, turnId) {
+  if (!resolved) return null;
+  const { field, circuit, boardId, value, correction } = resolved;
+  if (outcome.kind === 'pending') {
+    // C3 (gap 3) — resolve the circuit through the SAME multi-board-aware
+    // bucket resolution `findExactDuplicateAgainstSnapshot` already uses
+    // (`getCircuitBucket`, keyed on the ALREADY-resolved `boardId` from
+    // `resolveOutcomeIdentityForCoalescing`) instead of a bare unscoped
+    // `circuits[circuit]` index, which resolves the WRONG board's circuit
+    // on a multi-board job — same bug class F3 fixed for the
+    // exact-duplicate designation lookup below.
+    const circuitData = getCircuitBucket(session.stateSnapshot, circuit, boardId);
+    const designation = circuitData?.circuit_designation ?? null;
+    // Codex diff-review cycle 3 D2 — forward the clamp correction (M2's
+    // fix already did this for 'pending_uncommitted'/'pending_unrecorded'
+    // below; the committed 'pending' identity now carries it too via
+    // `resolveOutcomeIdentityForCoalescing`). Without this, a fast clip
+    // that streamed a "— I corrected 16 to 1.6" clause but never got an
+    // iOS playback-start ACK would have its pending fallback speak the
+    // bare value with no correction clause at all.
+    const text = buildAlreadyGotConfirmationText(field, value, circuit, designation, {
+      correction,
+    });
+    if (!text) return null;
+    // C3 (gap 3) — stamp `board_id` consistently with every sibling branch
+    // below (main board omitted, non-main included) so a committed
+    // ('pending') and a not-yet-committed ('pending_uncommitted') retry of
+    // the IDENTICAL single-board reading resolve to the SAME board
+    // identity and coalesce correctly under M4's grouping, instead of one
+    // carrying `board_id` and the other carrying none.
+    const mainBoardId = getMainBoardId(session.stateSnapshot);
+    const stampBoardId = boardId != null && boardId !== mainBoardId ? boardId : null;
+    return {
+      text,
+      expanded_text: expandForTTS(text),
+      field,
+      circuit: Number.isInteger(circuit) ? circuit : null,
+      ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
+      // B1.3-style echo stamp — lets iOS's B2 correlation state machine
+      // treat this exactly like any other fast-attempt-covered
+      // confirmation (parked under .fastPending; dropped on fast start,
+      // re-dispatched on fast failure/TTL).
+      fast_correlation_id: outcome.correlationId,
+      // F8 — collision-free per-correlation token (a session-permanent
+      // fieldful dedupe would otherwise swallow a SECOND identical
+      // pending-fallback within the SAME turn, not just a later one).
+      dedupe_token: `duplicate_${turnId}_${outcome.correlationId}`,
+      expects_ios_ack: false,
+    };
+  }
+  if (outcome.kind === 'failed') {
+    // C2 — deliberately UNSTAMPED (no fast_correlation_id, no per-
+    // correlation dedupe suffix): this correlation is definitively dead, so
+    // this confirmation IS the ordinary exact-duplicate re-speak, not a
+    // ledger-tracked fallback iOS needs to park/reconcile.
+    const circuitData = getCircuitBucket(session.stateSnapshot, circuit, boardId);
+    const designation = circuitData?.circuit_designation ?? null;
+    // Codex diff-review cycle 4 (E3) — `correction` was already destructured
+    // from `resolved` above but never forwarded here: a 'failed' outcome's
+    // identity comes from the turn-level exactDuplicateTuple fallback (E3's
+    // own fix to `resolveOutcomeIdentityForCoalescing`), so this is the same
+    // safety-clause omission as the 'pending'/'pending_uncommitted' branches
+    // above once already fixed by D2/M2 — just missed for this branch.
+    const text = buildAlreadyGotConfirmationText(field, value, circuit, designation, {
+      correction,
+    });
+    if (!text) return null;
+    const mainBoardId = getMainBoardId(session.stateSnapshot);
+    const stampBoardId = boardId != null && boardId !== mainBoardId ? boardId : null;
+    return {
+      text,
+      expanded_text: expandForTTS(text),
+      field,
+      circuit: Number.isInteger(circuit) ? circuit : null,
+      ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
+      dedupe_token: `duplicate_${turnId}`,
+      expects_ios_ack: false,
+    };
+  }
+  // outcome.kind === 'pending_uncommitted' || outcome.kind === 'pending_unrecorded'
+  const circuitData = getCircuitBucket(session.stateSnapshot, circuit, boardId);
+  const designation = circuitData?.circuit_designation ?? null;
+  // M2 — forward the clamp correction so this fallback speaks "— I
+  // corrected 16 to 1.6" when the raw dictated value needed clamping.
+  // Codex diff-review cycle 4 (E3) — corrected an earlier, wrong assumption
+  // here: 'pending_unrecorded' CAN carry a correction. Its identity comes
+  // from the turn-level exactDuplicateTuple, whose `value` IS the already-
+  // matching stored value, but `findExactDuplicateAgainstSnapshot` clamps
+  // the RAW re-parsed transcript value to get there — a raw "16" matching a
+  // stored clamped "1.6" is a genuine correction worth speaking, exactly
+  // like 'pending_uncommitted's own rawValue re-clamp below.
+  const text = buildAlreadyGotConfirmationText(field, value, circuit, designation, {
+    correction,
+  });
+  if (!text) return null;
+  const mainBoardId = getMainBoardId(session.stateSnapshot);
+  const stampBoardId = boardId != null && boardId !== mainBoardId ? boardId : null;
+  return {
+    text,
+    expanded_text: expandForTTS(text),
+    field,
+    circuit: Number.isInteger(circuit) ? circuit : null,
+    ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
+    fast_correlation_id: outcome.correlationId,
+    dedupe_token: `duplicate_${turnId}_${outcome.correlationId}`,
+    expects_ios_ack: false,
+  };
+}
+
+/**
+ * Plan B B3.1/B3.3 — resolve the orphan-net precedence outcome for this
+ * turn, combining the fast-attempt ledger (B3.1) with the exact-duplicate
+ * tuple (B3.2, computed by the caller from the SAME re-parse the recovery
+ * guard already ran). Returns:
+ *   - `{kind: 'confirmations', confirmations: Object[], hadUnaddressedFailure}`
+ *     — the fast ledger had at least one attempted correlation this turn;
+ *     ZERO OR MORE fieldful "Already got"/echo-stamped confirmations to
+ *     push instead of the ordinary apology (an ALL-suppress turn yields an
+ *     empty array — see the `[DEVIATION] F8` note below). `hadUnaddressedFailure`
+ *     (C2, see its own `[DEVIATION]` note below) is true when at least one
+ *     `failed`/`pending_unrecorded` correlation produced no confirmation at
+ *     all — the CALLER must still route that reading through the ordinary
+ *     orphan-prompt path, alongside (never instead of) these confirmations.
+ *   - `{kind: 'confirmations', confirmations: [oneConfirmation]}` — no
+ *     correlation was attempted this turn at all (`correlationIds` was
+ *     empty/absent) but the B3.2 exact-duplicate re-parse matched.
+ *   - `null` — no fast-ledger signal at all and no exact duplicate; caller
+ *     falls through to the existing allRejected/observation/carriesValue/
+ *     noop prompt selection UNCHANGED.
+ *
+ * Deliberately scoped to the NON-allRejected case only (the caller only
+ * invokes this when `!allRejected`) — allRejected means a tool call actually
+ * fired and was rejected, a fundamentally different class from "zero tool
+ * calls" that B3 does not touch.
+ *
+ * [DEVIATION] F8 (Codex diff-review, 2026-08-13, sanctioned) —
+ * `resolveFastLedgerOutcomeForTurn` used to collapse an entire turn's
+ * attempted correlations to ONE winner (the first `playback_started`
+ * suppressed everything; only the FIRST `pending` correlation with a
+ * committed identity got a fallback). On a genuinely multi-reading turn (a
+ * second reading's fast clip still pending while a different reading's fast
+ * clip already played) this silently dropped a reading from consideration
+ * — Audio-First invariant #1 ("every dictated reading read back EXACTLY
+ * once — never 0, never 2") affirmatively requires each attempted
+ * correlation be accounted for independently, even though the plan's
+ * literal precedence table didn't spell out the multi-correlation case.
+ * `resolveFastLedgerOutcomeForTurn` now returns an ARRAY of per-correlation
+ * outcomes; this function builds ZERO OR ONE confirmation per DISTINCT
+ * SEMANTIC READING (a `suppress` entry contributes nothing, but never
+ * cancels a SIBLING pending entry's fallback for a DIFFERENT reading, and
+ * vice versa), each carrying its OWN `fast_correlation_id` and a
+ * COLLISION-FREE `dedupe_token` (`duplicate_<turnId>_<correlationId>` — the
+ * bare `duplicate_<turnId>` token B3.2 uses below can't be reused here since
+ * multiple confirmations in one turn need independently-dedupable tokens).
+ *
+ * [DEVIATION] M4 (Codex diff-review, per-fix mini-review, 2026-08-13,
+ * sanctioned) — F8's array gave every ATTEMPTED correlationId its own
+ * independent outcome, which is correct when they represent genuinely
+ * different dictated readings. But if TWO DISTINCT correlationIds resolve
+ * to the SAME semantic reading (same effective field+circuit+board+
+ * canonical value — e.g. iOS retries a fast dispatch with a freshly-minted
+ * correlationId for what is fundamentally the same dictated value), F8's
+ * per-correlationId `dedupe_token`s are deliberately DISTINCT (that was the
+ * whole point of the fix for the genuinely-different-readings case) — so
+ * the client could not collapse them, and the SAME reading could be spoken
+ * TWICE. Fixed by coalescing outcomes that share a (field, circuit,
+ * boardId, value) identity into ONE group before building confirmations
+ * (`resolveOutcomeIdentityForCoalescing` / `buildFastLedgerFallbackConfirmation`
+ * above): within a group, ANY `playback_started` member suppresses the
+ * WHOLE group; otherwise exactly ONE fallback is built, from any one member
+ * (they agree on value by construction of the group key). Distinct
+ * slot/value pairs remain fully independent, exactly as F8's own regression
+ * already covers.
+ *
+ * [DEVIATION] C2 (Codex diff-review cycle 2, 2026-08-13, sanctioned) —
+ * `resolveFastLedgerOutcomeForTurn` used to contribute NO entry at all for
+ * a `failed` correlation or one with no ledger record. On a MIXED-state
+ * turn (one correlation suppressed/pending, a sibling failed/unrecorded),
+ * this function saw only the represented correlations and returned a
+ * non-empty-looking outcome — the caller (stage6-shadow-harness's
+ * zero-tool-call branch) then treated the WHOLE turn as "handled by the
+ * fast ledger" and never fell through to the ordinary duplicate/orphan
+ * check for the omitted correlation's own reading, silently dropping it
+ * (worse than before Plan B existed). Now every attempted correlation gets
+ * an outcome (see `resolveFastLedgerOutcomeForTurn`'s own doc); a
+ * 'failed'/'pending_unrecorded' one tries the turn-level `exactDuplicateTuple`
+ * as its only available identity (`resolveOutcomeIdentityForCoalescing`),
+ * and when that's unavailable this function surfaces
+ * `hadUnaddressedFailure: true` so the CALLER (not this function — a
+ * generic-noop-prompt requires the turn's `carriesObservation`/
+ * `carriesValue`/`turnNum` context this function doesn't have) still routes
+ * that reading through the ordinary orphan-prompt selection, ALONGSIDE
+ * (never instead of) any ledger confirmations this call already built for
+ * sibling readings.
+ *
+ * @param {{session: Object, turnId: string, correlationIds: Set<string>|null|undefined, exactDuplicateTuple: {field: string, circuit: number, value: string, boardId: string|null}|null}} args
+ * @returns {{kind: 'confirmations', confirmations: Object[], hadUnaddressedFailure: boolean}|null}
+ */
+export function resolveZeroToolCallDuplicateOutcome({
+  session,
+  turnId,
+  correlationIds,
+  exactDuplicateTuple,
+}) {
+  // F5 — session-scope the ledger lookup so a stale/foreign correlationId
+  // (client replay, a UUID collision with a record from a different
+  // session) can never resolve as this session's outcome.
+  const fastLedgerOutcomes = resolveFastLedgerOutcomeForTurn(correlationIds, session?.sessionId);
+  if (fastLedgerOutcomes) {
+    // M4 — group outcomes by (field, circuit, boardId, value) BEFORE
+    // building confirmations. An outcome whose identity can't be resolved
+    // (a 'suppress' entry with no committed identity, or a
+    // 'failed'/'pending_unrecorded' entry with no exactDuplicateTuple to
+    // fall back on — C2) gets its own unique synthetic key so it stays an
+    // isolated no-op rather than merging into an unrelated group.
+    // `Map` iteration order preserves each group's FIRST-occurrence
+    // position, matching F8's original per-outcome ordering for turns with
+    // no coalescing to do.
+    const groups = new Map();
+    let ungroupableSeq = 0;
+    for (const outcome of fastLedgerOutcomes) {
+      const resolved = resolveOutcomeIdentityForCoalescing(outcome, session, exactDuplicateTuple);
+      // Codex diff-review cycle 3 D2 -- the group key now folds in
+      // correction PROVENANCE, not just the final slot+value. Two attempts
+      // that land on the SAME final value via DIFFERENT correction
+      // provenance (one clamp-corrected from a different raw dictation, one
+      // not corrected at all) must never coalesce into a single spoken
+      // outcome -- what gets spoken (whether the correction clause is
+      // present, and what it says) genuinely differs between them.
+      // Pipe-delimited (distinct from the :: slot-key delimiter) so a
+      // correction whose text happens to contain '::' can't collide with
+      // an uncorrected sibling key.
+      const correctionKeyPart =
+        resolved && resolved.correction
+          ? `|${resolved.correction.original}|${resolved.correction.corrected}`
+          : '';
+      const groupKey =
+        resolved != null
+          ? `${buildFastAttemptSlotKey(resolved)}::${resolved.value ?? ''}${correctionKeyPart}`
+          : `\u0000ungroupable::${ungroupableSeq++}`;
+      if (!groups.has(groupKey)) groups.set(groupKey, []);
+      groups.get(groupKey).push({ outcome, resolved });
+    }
+
+    const confirmations = [];
+    let hadUnaddressedFailure = false;
+    for (const members of groups.values()) {
+      // ANY playback_started member suppresses the WHOLE group — the user
+      // already heard this exact value via one of the (possibly several)
+      // correlationIds that resolved to it.
+      if (members.some((m) => m.outcome.kind === 'suppress')) continue;
+      // Prefer a committed ('pending') member as the group's representative
+      // — it already carries the clamped canonicalValue/comparisonText, so
+      // no re-clamp is needed. Then 'pending_uncommitted' (a real ledger
+      // record, just not committed yet), then 'pending_unrecorded' (STAMPED
+      // fallback from exactDuplicateTuple), then 'failed' (UNSTAMPED — C2
+      // deliberately prefers a live/possibly-still-parkable correlation's
+      // shape over a definitively-dead one when a group happens to mix
+      // them, which can only happen if they resolved to the identical
+      // exactDuplicateTuple identity).
+      const representative =
+        members.find((m) => m.outcome.kind === 'pending') ??
+        members.find((m) => m.outcome.kind === 'pending_uncommitted') ??
+        members.find((m) => m.outcome.kind === 'pending_unrecorded') ??
+        members[0];
+      // A genuinely empty/suppressed value (buildConfirmationText's own
+      // emptiness contract) contributes nothing for THIS group — never a
+      // placeholder, and never suppresses a sibling group.
+      const confirmation = buildFastLedgerFallbackConfirmation(representative, session, turnId);
+      if (confirmation) {
+        confirmations.push(confirmation);
+        continue;
+      }
+      // C2 — a group whose every member is 'failed' or 'pending_unrecorded'
+      // produced NO confirmation (no exactDuplicateTuple to fall back on,
+      // or the resolved value was genuinely empty). That reading must not
+      // be silently absorbed just because a SIBLING correlation in this
+      // turn WAS accounted for — flag it so the caller falls through to
+      // the ordinary orphan-prompt path instead of treating this turn as
+      // fully handled by the ledger alone.
+      if (
+        members.every((m) => m.outcome.kind === 'failed' || m.outcome.kind === 'pending_unrecorded')
+      ) {
+        hadUnaddressedFailure = true;
+      }
+    }
+    return { kind: 'confirmations', confirmations, hadUnaddressedFailure };
+  }
+  // fastLedgerOutcomes is null — correlationIds itself was empty/absent (no
+  // fast dispatch attempted this turn at all). Try the exact-duplicate
+  // tuple instead.
+  if (exactDuplicateTuple) {
+    // Codex diff-review F3 — the designation lookup shares the SAME
+    // board-ambiguous bug findExactDuplicateAgainstSnapshot just fixed: a
+    // bare `circuits[ref]` index can resolve to the WRONG board's circuit on
+    // a multi-board job. `exactDuplicateTuple.boardId` now carries the
+    // resolved effective board (findExactDuplicateAgainstSnapshot), so look
+    // the designation up through the same dual-shape accessor.
+    const duplicateCircuitData = getCircuitBucket(
+      session.stateSnapshot,
+      exactDuplicateTuple.circuit,
+      exactDuplicateTuple.boardId ?? null
+    );
+    const designation = duplicateCircuitData?.circuit_designation ?? null;
+    // Codex diff-review cycle 4 (E3) — forward the clamp correction
+    // `findExactDuplicateAgainstSnapshot` now surfaces on its return value
+    // (E3's own fix above), so a genuine exact-duplicate re-dictation of a
+    // clamp-corrected value (raw "16" matching a stored clamped "1.6")
+    // speaks the "— I corrected 16 to 1.6" clause instead of silently
+    // implying the raw number spoken is what got recorded.
+    const text = buildAlreadyGotConfirmationText(
+      exactDuplicateTuple.field,
+      exactDuplicateTuple.value,
+      exactDuplicateTuple.circuit,
+      designation,
+      { correction: exactDuplicateTuple.correction ?? null }
+    );
+    if (text) {
+      // F3 — stamp `board_id` on the confirmation the same way an ordinary
+      // reading does (see stage6-event-bundler.js's enrichment pass): OMIT
+      // it when the resolved board is the session's main/default board, so
+      // a legacy single-board turn stays byte-identical on the wire; INCLUDE
+      // it when the duplicate was resolved against a genuine sub-board, so
+      // iOS/web place the "Already got" line (and any highlight) on the
+      // right board's row instead of defaulting to whichever board is
+      // currently selected on the client.
+      const mainBoardId = getMainBoardId(session.stateSnapshot);
+      const stampBoardId =
+        exactDuplicateTuple.boardId != null && exactDuplicateTuple.boardId !== mainBoardId
+          ? exactDuplicateTuple.boardId
+          : null;
+      return {
+        kind: 'confirmations',
+        confirmations: [
+          {
+            text,
+            expanded_text: expandForTTS(text),
+            field: exactDuplicateTuple.field,
+            circuit: Number.isInteger(exactDuplicateTuple.circuit)
+              ? exactDuplicateTuple.circuit
+              : null,
+            ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
+            dedupe_token: `duplicate_${turnId}`,
+            expects_ios_ack: false,
+          },
+        ],
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Codex diff-review cycle 5 (G2) — shared coercion, extracted out of
+ * `mergeFastPathCorrelationIds` below. iOS's fast-dispatch correlation id(s)
+ * arrive as EITHER a legacy single string OR an array (B1.1's
+ * `regexFastCorrelationIds: [String]?` wire shape, one per slot in a
+ * multi-write utterance) — `options.regexFastCorrelationId` carries the same
+ * string-or-array value at every call site that reads it. Exported so BOTH
+ * `mergeFastPathCorrelationIds` (production turn-tracking, below) and
+ * `runShadowHarness`'s Plan 00 evaluation-only `bindFastCorrelation` call
+ * (and sonnet-stream.js's ask-answer evaluation binding) normalise this
+ * value IDENTICALLY — G2 was exactly a second, incomplete, hand-rolled copy
+ * of this coercion that only handled the scalar shape.
+ *
+ * @param {string|string[]|null|undefined} rawCid
+ * @returns {Set<string>} every valid non-empty string id, deduplicated
+ */
+export function coerceFastPathCorrelationIds(rawCid) {
+  const cids = new Set();
+  if (typeof rawCid === 'string' && rawCid) {
+    cids.add(rawCid);
+  } else if (Array.isArray(rawCid)) {
+    for (const cid of rawCid) {
+      if (typeof cid === 'string' && cid) cids.add(cid);
+    }
+  }
+  return cids;
+}
+
+/**
+ * Codex diff-review cycle 3 D1 — shared coercion/merge helper for iOS's
+ * fast-dispatch correlation id(s) onto `entry.fastPathCorrelationIdByTurn`.
+ * `rawCid` accepts the legacy single-string shape AND an array (one per slot
+ * in a multi-write utterance) — the SAME shape `options.regexFastCorrelationId`
+ * carries at the normal runLiveMode seeding site below, which itself reads
+ * `msg.regex_fast_correlation_id` off the incoming transcript
+ * (sonnet-stream.js).
+ *
+ * MERGES into any existing Set for `turnId` rather than replacing it — a
+ * turn's opening transcript may already have seeded correlation ids (e.g. one
+ * ambiguous reading raised an ask while a sibling reading fast-dispatched in
+ * the SAME utterance); a later answering transcript's ids must be ADDED, not
+ * overwrite.
+ *
+ * Exported so sonnet-stream.js's ask-answer resolution paths (the pre-queue
+ * and overtake seams, both of which resolve `entry.pendingAsks` and return
+ * WITHOUT ever calling runLiveMode again for that answer) can seed the
+ * RESUMED turn's correlation set from the answering transcript, using
+ * `entry.activeTurnId` (set below) to identify which in-flight turn to seed —
+ * without duplicating this coercion logic at each call site.
+ *
+ * Codex diff-review cycle 4 (E2) — returns the Set of ids this call ACTUALLY
+ * newly inserted for `turnId` (i.e. ids that were not already present in that
+ * turn's tracking Set before this call). `sonnet-stream.js`'s ask-answer
+ * resolution sites merge onto `entry.activeTurnId` BEFORE attempting
+ * `pendingAsks.resolve(...)`; if that resolve races and loses (a concurrent
+ * timeout/answer already won), the transcript falls through to a NEW turn
+ * and the merge just performed is now stale — attributed to a turn the
+ * answer never actually belongs to. The caller uses this return value to
+ * roll back exactly what it just added via `unmergeFastPathCorrelationIds`,
+ * never touching ids that were already legitimately present (e.g. from the
+ * turn's own opening utterance).
+ *
+ * @param {Object} entry - the activeSessions entry (getActiveSessionEntry result)
+ * @param {string} turnId - the turn to seed (entry.activeTurnId for the
+ *   ask-answer paths; the freshly-minted turnId for the normal seeding site)
+ * @param {string|string[]|null|undefined} rawCid
+ * @returns {Set<string>} the ids newly inserted by this call (empty if none)
+ */
+export function mergeFastPathCorrelationIds(entry, turnId, rawCid) {
+  if (!entry || typeof turnId !== 'string' || !turnId) return new Set();
+  const cids = coerceFastPathCorrelationIds(rawCid);
+  if (cids.size === 0 || !(entry.fastPathCorrelationIdByTurn instanceof Map)) return new Set();
+  const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
+  const newlyInserted = new Set();
+  if (existing instanceof Set) {
+    for (const cid of cids) {
+      if (!existing.has(cid)) {
+        existing.add(cid);
+        newlyInserted.add(cid);
+      }
+    }
+  } else {
+    entry.fastPathCorrelationIdByTurn.set(turnId, cids);
+    for (const cid of cids) newlyInserted.add(cid);
+  }
+  return newlyInserted;
+}
+
+/**
+ * Codex diff-review cycle 4 (E2) — the rollback counterpart to
+ * `mergeFastPathCorrelationIds`. Removes ONLY `idsToRemove` from `turnId`'s
+ * tracking Set — never the whole Set, and never an id that was already
+ * present before the caller's own merge (that id may belong to a genuinely
+ * earlier, legitimate merge for the same turn, e.g. the turn's own opening
+ * utterance). A no-op on any malformed input — never throws, mirroring
+ * `mergeFastPathCorrelationIds`'s own defensiveness.
+ *
+ * @param {Object} entry - the activeSessions entry
+ * @param {string} turnId - the turn whose tracking Set to remove ids from
+ * @param {Set<string>|string[]|null|undefined} idsToRemove
+ */
+export function unmergeFastPathCorrelationIds(entry, turnId, idsToRemove) {
+  if (!entry || typeof turnId !== 'string' || !turnId) return;
+  if (!(entry.fastPathCorrelationIdByTurn instanceof Map)) return;
+  if (idsToRemove == null) return;
+  const ids = idsToRemove instanceof Set ? idsToRemove : new Set(idsToRemove);
+  if (ids.size === 0) return;
+  const existing = entry.fastPathCorrelationIdByTurn.get(turnId);
+  if (!(existing instanceof Set)) return;
+  for (const cid of ids) existing.delete(cid);
+  // Never leave a stray empty Set sitting in the Map — matches the shape a
+  // turn that never had any correlation ids at all would have.
+  if (existing.size === 0) entry.fastPathCorrelationIdByTurn.delete(turnId);
+}
+
 async function runLiveMode(session, transcriptText, regexResults, options, log) {
   const turnNum = (session.turnCount ?? 0) + 1;
   const turnId = `${session.sessionId}-turn-${turnNum}`;
@@ -830,6 +1561,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // (Pitfall #2 — cross-turn leak prevention from shadow harness).
   const perTurnWrites = createPerTurnWrites();
 
+  // Codex diff-review cycle 4 (E1) — turn-scoped latch. B3's `suppress`
+  // outcome (a fast clip already played — "no second line") and D3's
+  // `hadUnaddressedFailure` silence branch (a correlation was attempted but
+  // resolves to nothing usable — deliberately silent because a fast clip may
+  // still land) BOTH correctly produce zero confirmations for the turn for a
+  // REASON — not because "nothing happened". Without this latch, marker-②'s
+  // catch-all `noSpeechIntent` check below sees "zero confirmations this
+  // turn" and fires its own generic apology on top, defeating the whole
+  // point of the suppression (a duplicate "already heard it" apology, or a
+  // confusing apology ahead of audio that's still in flight). Set to true at
+  // the two sites below; read (never written) at marker-②.
+  let fastLedgerSuppressesCatchallThisTurn = false;
+
   // Single-round latency sprint Phase 0 (PLAN_v8 §A Pivot 8.4) + Phase 1
   // (Pivot 9, 12.2). Resolve the activeSessions entry once at the top so
   // we can seed `fastPathCorrelationIdByTurn` from
@@ -841,19 +1585,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // fire on a stale slot.
   const entry = getActiveSessionEntry(session.sessionId);
   if (entry) {
-    const rawCid = options?.regexFastCorrelationId;
-    // Accept legacy single-string shape AND array shape; coerce both
-    // into a Set so callers don't have to remember which is which.
-    const cids = new Set();
-    if (typeof rawCid === 'string' && rawCid) cids.add(rawCid);
-    else if (Array.isArray(rawCid)) {
-      for (const cid of rawCid) {
-        if (typeof cid === 'string' && cid) cids.add(cid);
-      }
-    }
-    if (cids.size > 0 && entry.fastPathCorrelationIdByTurn instanceof Map) {
-      entry.fastPathCorrelationIdByTurn.set(turnId, cids);
-    }
+    // Codex diff-review cycle 3 D1 — publish the turn this call is opening
+    // as the session's "currently in-flight" turn. sonnet-stream.js's
+    // ask-answer resolution paths (pre-queue + overtake seams) resolve
+    // `entry.pendingAsks` and return WITHOUT ever calling runLiveMode again
+    // for that answer — the tool loop that's mid-await on the resolved
+    // Promise is THIS call, still inside its try block below. Those seams
+    // read `entry.activeTurnId` to know which turn's
+    // fastPathCorrelationIdByTurn set to seed from the answering
+    // transcript's `regex_fast_correlation_id`. Cleared in the `finally`
+    // below, symmetric with the other per-turn entry state torn down there.
+    entry.activeTurnId = turnId;
+    mergeFastPathCorrelationIds(entry, turnId, options?.regexFastCorrelationId);
     // Fix A 2026-06-02 (handoff §A) — populate broadcastIntentByTurn so the
     // speculator's preflight can skip per-circuit synth on broadcast turns.
     // Write must happen BEFORE runToolLoop is invoked so the very first
@@ -2041,6 +2784,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {
       confirmationsEnabled:
         options.confirmationsEnabled === true || perTurnWrites[FORCE_CONFIRMATIONS] === true,
+      // Plan B B1.2/B1.3 — resolve THIS turn's accepted fast-TTS identities
+      // IMMEDIATELY before bundling (not at turn entry, above — a route can
+      // accept mid-turn, during the Sonnet round-trip). Empty Map (not
+      // undefined) when the turn attempted no fast-TTS candidates, so the
+      // bundler's `instanceof Map` guard sees a real, cheap no-op.
+      // F5 — session-scoped so a stale/foreign correlationId never resolves
+      // this session's echo-stamp identity.
+      fastAttemptBySlotKey: resolveFastAttemptSlotIdentities(
+        entry?.fastPathCorrelationIdByTurn?.get(turnId),
+        session?.sessionId
+      ),
       // Loaded Barrel Phase 4a — emit result.turn_id so iOS can round-
       // trip it on the /api/proxy/elevenlabs-tts POST body for cache
       // lookup. Omitted when undefined; legacy decoders ignore unknown
@@ -2840,17 +3594,37 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // refusal would drain, count as speech-intent, and suppress
         // marker-② while the UNCOVERED rejection lost today's generic
         // fallback (the exact class branch 3 exists to prevent).
-        const orphanEmissionEligible =
-          ORPHAN_PROMPT_ENABLED &&
+        // Codex diff-review cycle 5 (G1): this is the shared CONTENT/STATE
+        // gate — it says nothing about the legacy generic-orphan-prompt
+        // kill switch. `orphanEmissionEligible` (below) is this predicate
+        // PLUS `ORPHAN_PROMPT_ENABLED`, and stays the gate for the
+        // allRejected class (unchanged, pre-Plan-B behaviour) and for the
+        // legacy generic-prompt emission calls further down. B3's
+        // exact-duplicate check and fast-ledger precedence chain
+        // (B3.1/B3.2/B3.3) are Plan-B mechanisms that were never supposed
+        // to live behind `ORPHAN_PROMPT_ENABLED` — that flag is a
+        // pre-existing, unrelated kill switch for the OLD generic
+        // orphan-prompt mechanism (same class of bug as cycle-1's F4, a
+        // different flag). They use `orphanContentEligible` instead so
+        // flipping VOICE_ORPHAN_PROMPT=false cannot silently disable
+        // "Already got", the playback_started suppress, the pending
+        // fast-ledger fallback, or D3's silence mitigation.
+        const orphanContentEligible =
           options.confirmationsEnabled === true &&
           producedNothing &&
           !isAnswerTurn &&
           (carriesValue || carriesObservation || chimeFired);
+        const orphanEmissionEligible = ORPHAN_PROMPT_ENABLED && orphanContentEligible;
         if (partialCoveragePending && !orphanEmissionEligible) {
           stampCoveredNoticesNonDraining();
           partialCoveragePending = false;
         }
-        if (orphanEmissionEligible) {
+        // allRejected keeps the exact pre-G1 gate (orphanEmissionEligible,
+        // i.e. flag-dependent) — that whole branch is the untouched legacy
+        // coverage-arbitration + #5a recovery path (stage6-honest-refusal-
+        // orphan-off.test.js pins this). Only the non-allRejected class
+        // (B3's home) is freed from the flag.
+        if (allRejected ? orphanEmissionEligible : orphanContentEligible) {
           // #5a apply-complete guard (PR #68) — before emitting a contentless
           // clarifying prompt, try a deterministic re-parse of transcriptText
           // (result is EMPTY here by definition of producedNothing). If it yields
@@ -2859,20 +3633,156 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // fallback and #5's next-turn duplicate at the source. Runs for the
           // all-rejected case too — recovering a real reading beats any prompt.
           let recovered = null;
-          if (ORPHAN_APPLY_COMPLETE_ENABLED) {
+          let exactDuplicateTuple = null;
+          // Codex diff-review F4 (2026-08-13): the ORIGINAL pre-Plan-B
+          // shape (`git show fa3905b1:...stage6-shadow-harness.js`) ran the
+          // re-parse + `applyOrphanRecoveredReading` for BOTH allRejected
+          // and zero-tool-call turns, unconditionally on
+          // ORPHAN_APPLY_COMPLETE_ENABLED, with NO duplicate check at all.
+          // The first cut of B3.2 (a) gated the read-only duplicate CHECK
+          // behind that same OLDER, unrelated mutation-fallback flag — so
+          // turning it off silently disabled B3.2's re-speak too, though the
+          // plan never makes B3 conditional on it — and (b) let the check
+          // run (and set `exactDuplicateTuple`, skipping the write) even
+          // when `allRejected` is true, while `zeroToolCallOutcome` a few
+          // lines below is unconditionally null under `allRejected` — so an
+          // allRejected turn whose reparse happened to match a stored value
+          // fell through to neither the original recovery path nor B3.2,
+          // silently changing untouched allRejected behaviour.
+          //
+          // Fix: allRejected keeps the ORIGINAL shape verbatim (no duplicate
+          // check, ever — B3 is explicitly scoped to the non-allRejected,
+          // zero-tool-call class only). The non-allRejected class runs the
+          // duplicate check UNCONDITIONALLY (never flag-gated); the flag now
+          // gates only the WRITE (`applyOrphanRecoveredReading`) once a
+          // non-duplicate tuple is confirmed.
+          if (allRejected) {
+            if (ORPHAN_APPLY_COMPLETE_ENABLED) {
+              const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
+              if (tuple) {
+                recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
+                log.info?.('stage6.orphan_apply_complete', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  field: recovered.field,
+                  circuit: recovered.circuit,
+                  value: recovered.value,
+                  textPreview: String(transcriptText || '').slice(0, 80),
+                });
+              }
+            }
+          } else {
+            // Plan B B3.2 (feedback ids 118/119) — before applying the
+            // re-parsed tuple as a NEW reading, check whether it's actually
+            // an EXACT duplicate of what's already stored (the "leg 3"
+            // false-apology class: a re-dictation of an already-applied-and-
+            // confirmed value that this deterministic re-parse WOULD
+            // otherwise silently re-write and read back with ordinary
+            // wording). Checking BEFORE the write — not after, in the
+            // `!recovered` branch below — matters: `applyOrphanRecoveredReading`
+            // always returns a truthy reading object, so `recovered` would
+            // already be non-null by the time any post-hoc check ran, and the
+            // apology-choice branch below would never be reached for this
+            // tuple at all.
             const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
             if (tuple) {
-              recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
-              log.info?.('stage6.orphan_apply_complete', {
-                sessionId: session.sessionId,
-                turnId,
-                field: recovered.field,
-                circuit: recovered.circuit,
-                value: recovered.value,
-                textPreview: String(transcriptText || '').slice(0, 80),
-              });
+              const dup = findExactDuplicateAgainstSnapshot({ session, tuple });
+              if (dup) {
+                exactDuplicateTuple = dup;
+                log.info?.('stage6.orphan_exact_duplicate_detected', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  field: dup.field,
+                  circuit: dup.circuit,
+                  value: dup.value,
+                  textPreview: String(transcriptText || '').slice(0, 80),
+                });
+              } else if (ORPHAN_PROMPT_ENABLED && ORPHAN_APPLY_COMPLETE_ENABLED) {
+                // G1: the #5a apply-complete WRITE for a genuinely NEW
+                // (non-duplicate) reading predates Plan B and was already
+                // nested inside the ORPHAN_PROMPT_ENABLED-gated block
+                // pre-Plan-B (git show fa3905b1 — same nesting). B3 only
+                // narrows the flag OUT of the duplicate check and the
+                // fast-ledger chain above/below; this write keeps its
+                // original flag dependency so a flag-off session behaves
+                // byte-identically for the "new reading, no ledger, no
+                // duplicate" case (silence — the final catch-all apology a
+                // few lines down is flag-gated too), not "widened".
+                recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
+                log.info?.('stage6.orphan_apply_complete', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  field: recovered.field,
+                  circuit: recovered.circuit,
+                  value: recovered.value,
+                  textPreview: String(transcriptText || '').slice(0, 80),
+                });
+              }
             }
           }
+          // Plan B B3.1/B3.3 — resolve the fast-ledger precedence outcome
+          // for this turn, scoped to the non-allRejected class only (a
+          // rejected tool call is a fundamentally different story — "I
+          // couldn't action that" — that B3 does not touch). Computed here,
+          // once, so it's available to the branch below regardless of
+          // which apology the un-touched allRejected path would have
+          // chosen.
+          const zeroToolCallOutcome = !allRejected
+            ? resolveZeroToolCallDuplicateOutcome({
+                session,
+                turnId,
+                correlationIds: entry?.fastPathCorrelationIdByTurn?.get(turnId),
+                exactDuplicateTuple,
+              })
+            : null;
+          // Codex diff-review cycle 2 (C2) — the generic orphan-prompt push
+          // (prompt selection + result.confirmations push + orphanContext +
+          // logging) used to live ONLY in the final `else if (!recovered)`
+          // branch below. C2 needs the IDENTICAL behaviour reachable from
+          // the zeroToolCallOutcome branch too, for a `hadUnaddressedFailure`
+          // reading the fast ledger could not account for — extracted here
+          // once so both call sites stay byte-identical instead of drifting.
+          // `allRejected` is always false at both call sites (the fast-ledger
+          // branch only exists under `!allRejected`, and the final branch's
+          // own `allRejected` sub-case is unaffected since it takes the
+          // `rejectedSetFullyCovered` branch above when covered, or reaches
+          // this same helper otherwise) — kept as a real branch rather than
+          // assumed away so this helper stays a byte-identical extraction of
+          // the pre-C2 code, not a rewrite.
+          const emitGenericOrphanPrompt = (cause) => {
+            const prompt = allRejected
+              ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
+              : carriesObservation
+                ? OBSERVATION_ORPHAN_PROMPT
+                : carriesValue
+                  ? ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length]
+                  : NOOP_AUDIBILITY_PROMPTS[turnNum % NOOP_AUDIBILITY_PROMPTS.length];
+            if (!Array.isArray(result.confirmations)) result.confirmations = [];
+            result.confirmations.push({
+              text: prompt,
+              field: null,
+              circuit: null,
+              // Keep out of the audio-finalizer expected-ACK accounting — this is
+              // a clarifying prompt, not a value read-back to reconcile against a
+              // fast-path POST.
+              expects_ios_ack: false,
+            });
+            // Carry the raw transcript forward ONLY when we have positive
+            // evidence it was a reading/observation/action (carriesValue,
+            // carriesObservation, or a rejected tool call). See the original
+            // (pre-C2) comment at this site's sole prior call for the full
+            // rationale — unchanged by the C2 extraction.
+            if (allRejected || carriesObservation || carriesValue) {
+              session.orphanContext = { transcript: transcriptText, turnNum };
+            }
+            log.info?.('stage6.orphan_prompt_emitted', {
+              sessionId: session.sessionId,
+              turnId,
+              rounds: toolLoopOut.rounds,
+              cause,
+              textPreview: String(transcriptText || '').slice(0, 80),
+            });
+          };
           // Codex diff-review cycle 1 — the DEFERRED branch-3 stamp: only a
           // turn whose recovery FAILED hands the whole rejected set to A3's
           // generic line; a recovered turn keeps its covered refusals
@@ -2899,7 +3809,122 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               rejected_count: orphanToolCalls,
               textPreview: String(transcriptText || '').slice(0, 80),
             });
-          } else if (!recovered) {
+          } else if (!recovered && zeroToolCallOutcome) {
+            // Plan B B3.3 — the honest-orphan-net precedence chain. This
+            // branch only ever fires when `!allRejected` (zeroToolCallOutcome
+            // is always null under allRejected — see its computation above),
+            // so the untouched allRejected/rejectedSetFullyCovered branch
+            // above, and `partialCoveragePending` (which is ALSO only ever
+            // set true under allRejected), are both unaffected by this path.
+            //
+            // [DEVIATION] F8 (Codex diff-review, 2026-08-13, sanctioned) —
+            // `resolveZeroToolCallDuplicateOutcome` now always returns
+            // `{kind: 'confirmations', confirmations: [...]}` (possibly
+            // empty) instead of a single-winner `{kind:'confirmation'|
+            // 'suppress', confirmation}`. On a genuinely multi-reading turn
+            // (two fast clips attempted, one played, one still pending) the
+            // OLD single-winner shape silently dropped whichever correlation
+            // didn't win — a turn could have TWO dictated readings and the
+            // net effect was that only one was ever accounted for. Every
+            // entry is pushed independently: a 'suppress' entry (the user
+            // already heard that clip) contributes nothing, but never
+            // cancels a SIBLING pending entry's fallback confirmation, and
+            // vice versa — Audio-First invariant #1 requires each dictated
+            // reading be heard EXACTLY once, not "at most one across the
+            // whole turn".
+            for (const confirmation of zeroToolCallOutcome.confirmations) {
+              if (!Array.isArray(result.confirmations)) result.confirmations = [];
+              result.confirmations.push(confirmation);
+            }
+            // Codex diff-review cycle 4 (E1) — a fast-ledger outcome that
+            // resolved to ZERO confirmations with no unaddressed failure
+            // means every attempted correlation was `suppress`
+            // (playback_started — the user already heard the fast clip, "no
+            // second line"). That is deliberate silence, not "nothing
+            // happened" — latch it so marker-② below does not apologise on
+            // top of audio the inspector already heard.
+            if (
+              zeroToolCallOutcome.confirmations.length === 0 &&
+              !zeroToolCallOutcome.hadUnaddressedFailure
+            ) {
+              fastLedgerSuppressesCatchallThisTurn = true;
+            }
+            // NEITHER sub-case sets session.orphanContext ON ITS OWN: a
+            // duplicate/pending-fallback outcome is not "the model failed to
+            // understand", so there is nothing to re-inject into the next
+            // turn from a HANDLED reading — true whether zero, one, or
+            // several confirmations fired for the ledger-accounted readings.
+            log.info?.('stage6.orphan_duplicate_or_pending_outcome', {
+              sessionId: session.sessionId,
+              turnId,
+              confirmationCount: zeroToolCallOutcome.confirmations.length,
+              fields: zeroToolCallOutcome.confirmations.map((c) => c.field ?? null),
+              fastCorrelationIds: zeroToolCallOutcome.confirmations
+                .map((c) => c.fast_correlation_id)
+                .filter(Boolean),
+              textPreview: String(transcriptText || '').slice(0, 80),
+            });
+            // Codex diff-review cycle 2 (C2) — a `failed`/`pending_unrecorded`
+            // correlation the ledger could not account for (no
+            // exactDuplicateTuple match) must still be ACCOUNTED FOR,
+            // ALONGSIDE whatever ledger confirmations were just pushed above
+            // for sibling readings — never treated as "this turn is already
+            // fully handled" just because a sibling correlation WAS
+            // accounted for. See resolveZeroToolCallDuplicateOutcome's own
+            // `[DEVIATION] C2` doc comment for the full rationale.
+            //
+            // [DEVIATION] D3 (Codex diff-review cycle 3, 2026-08-13,
+            // NARROWED per the orchestrating session's own directive — NOT
+            // Codex's originally-proposed bounded-synchronous-wait +
+            // tombstone + reject-late mechanism, which is a new
+            // architectural surface this plan never specified) — C2's fix
+            // made "accounted for" mean "speak the ordinary orphan prompt".
+            // But `hadUnaddressedFailure` can ONLY be true when a
+            // correlation WAS genuinely attempted this turn (it is set only
+            // inside the `fastLedgerOutcomes` branch above, which only runs
+            // when `correlationIds` was non-empty) — so the underlying
+            // fast-TTS HTTP POST may STILL be in flight and could stream its
+            // audio moments after this decision. Speaking the generic
+            // apology now risks a confusing SECOND, uncoordinated message
+            // once that clip lands. A truly silent turn is the safer
+            // failure mode — this is the plan's own "never a placeholder"
+            // discipline (Audio-First invariant #2) extended one step
+            // further: never a generic apology either, when something
+            // concrete might still be coming.
+            //
+            // The `entry.fastPathCorrelationIdByTurn.get(turnId)` check
+            // below is redundant-by-construction with `hadUnaddressedFailure`
+            // being true (both can only happen when correlationIds was
+            // non-empty) — kept explicit anyway as a defensive assertion: if
+            // some future refactor ever lets `hadUnaddressedFailure` fire
+            // without a genuinely attempted correlation, this falls back to
+            // the ORIGINAL (unchanged) generic-apology behaviour rather than
+            // silently swallowing a turn nothing was ever attempted for.
+            if (zeroToolCallOutcome.hadUnaddressedFailure) {
+              const attemptedThisTurn = entry?.fastPathCorrelationIdByTurn?.get(turnId);
+              if (attemptedThisTurn instanceof Set && attemptedThisTurn.size > 0) {
+                // Codex diff-review cycle 4 (E1) — D3's deliberate silence
+                // (a correlation was attempted but resolves to nothing
+                // usable, and the fast-TTS HTTP POST may still be in
+                // flight) must also exempt marker-②, for the identical
+                // reason D3 itself exists: speaking now risks a confusing
+                // apology moments before real audio lands.
+                fastLedgerSuppressesCatchallThisTurn = true;
+                log.info?.('stage6.fast_ledger_unaddressed_failure_suppressed', {
+                  sessionId: session.sessionId,
+                  turnId,
+                  textPreview: String(transcriptText || '').slice(0, 80),
+                });
+              } else if (ORPHAN_PROMPT_ENABLED) {
+                // G1: this defensive-assertion fallback (structurally
+                // shouldn't fire per the comment above — kept as a belt for
+                // a future refactor) is the LEGACY generic-prompt mechanism,
+                // not part of B3's ledger chain — it stays behind the flag
+                // like every other emitGenericOrphanPrompt call site.
+                emitGenericOrphanPrompt('fast_ledger_unaddressed_failure');
+              }
+            }
+          } else if (!recovered && ORPHAN_PROMPT_ENABLED) {
             // M1 Defect B: all-rejected turns get an "I couldn't action that"
             // message (the action WAS understood but rejected); the zero-tool-call
             // orphan case keeps the "didn't catch what that was for" wording.
@@ -2916,52 +3941,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // noun; we only know a beep went unanswered). The three specific
             // branches keep precedence: allRejected (a call happened + was
             // rejected), observation-shaped, then reading-shaped (carriesValue).
-            const prompt = allRejected
-              ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
-              : carriesObservation
-                ? OBSERVATION_ORPHAN_PROMPT
-                : carriesValue
-                  ? ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length]
-                  : NOOP_AUDIBILITY_PROMPTS[turnNum % NOOP_AUDIBILITY_PROMPTS.length];
-            if (!Array.isArray(result.confirmations)) result.confirmations = [];
-            result.confirmations.push({
-              text: prompt,
-              field: null,
-              circuit: null,
-              // Keep out of the audio-finalizer expected-ACK accounting — this is
-              // a clarifying prompt, not a value read-back to reconcile against a
-              // fast-path POST.
-              expects_ios_ack: false,
-            });
-            // Carry the raw transcript forward ONLY when we have positive
-            // evidence it was a reading/observation/action (carriesValue,
-            // carriesObservation, or a rejected tool call). The next-turn
-            // injection (see :~898) tells the model "I'm repeating that reading
-            // now — work out the field, circuit and value", which is only true
-            // for those shapes. The pure chime-only marker-① case fires on a
-            // garble we CANNOT classify (no digit, no observation lead-in, e.g.
-            // "move to the next board please" that the model no-op'd), so
-            // carrying it forward as "that reading" would mislabel a command and
-            // risk a phantom write next turn — we apologise and let the inspector
-            // re-dictate as a fresh turn instead. (Codex review, marker-① wave.)
-            if (allRejected || carriesObservation || carriesValue) {
-              session.orphanContext = { transcript: transcriptText, turnNum };
-            }
-            log.info?.('stage6.orphan_prompt_emitted', {
-              sessionId: session.sessionId,
-              turnId,
-              rounds: toolLoopOut.rounds,
-              // A3: the observation shape gets its own cause for forensics;
-              // the two pre-existing reading causes are unchanged.
-              cause: allRejected
+            // Codex diff-review cycle 2 (C2) — this branch's body is now the
+            // shared `emitGenericOrphanPrompt` helper (defined above, right
+            // after `zeroToolCallOutcome` is computed) so the C2 fast-ledger
+            // `hadUnaddressedFailure` call site and this pre-existing call
+            // site can never drift apart. Byte-identical behaviour to the
+            // pre-C2 inline code (see git history for the original inline
+            // form) — only the cause string moved to a computed value so
+            // both the "next-turn injection" transcript-carry rule and the
+            // per-cause forensics tag stay exactly as they were. A3: the
+            // observation shape gets its own cause for forensics; the two
+            // pre-existing reading causes are unchanged.
+            emitGenericOrphanPrompt(
+              allRejected
                 ? 'all_rejected'
                 : carriesObservation
                   ? 'observation_no_tool_calls'
                   : carriesValue
                     ? 'zero_tool_calls'
-                    : 'chimed_noop_no_content',
-              textPreview: String(transcriptText || '').slice(0, 80),
-            });
+                    : 'chimed_noop_no_content'
+            );
           }
         }
       } catch (orphanErr) {
@@ -3792,6 +4791,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     //      invite a duplicate re-dictation). Readings/observations counts are
     //      deliberately NOT audibility — successful writes are UI state, not
     //      speech (counting them is exactly what preserved beep-then-silence).
+    //   5. NOT `fastLedgerSuppressesCatchallThisTurn` (Codex diff-review
+    //      cycle 4, E1) — B3's `playback_started`-only "no second line"
+    //      outcome and D3's `hadUnaddressedFailure` silence branch both
+    //      deliberately produce zero confirmations for a reason that is NOT
+    //      "nothing happened"; without this exemption marker-② would stack
+    //      a generic apology on top of a fast clip the inspector already
+    //      heard, or ahead of one still in flight — defeating the whole
+    //      point of the suppression.
     //
     // F/U-1 (2026-07-19) — the former predicate 5 (designed-silent exemption
     // for a FULLY-computed calculator success, with its outcome parser +
@@ -3823,7 +4830,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // speech-intent: a chimed turn with an answer draws no apology
           // (mutual exclusion), exactly as audible confirmations, emitted
           // asks and queued prompts already count.
-          !isAudibleText(result.spoken_response);
+          !isAudibleText(result.spoken_response) &&
+          // E1 — see predicate 5 above.
+          !fastLedgerSuppressesCatchallThisTurn;
         if (noSpeechIntent) {
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
           // F/U-2/3 (2026-07-19, Codex r1) — SPECIFIC-FIRST branch: when a
@@ -4335,6 +5344,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // written) and on the error path where runToolLoop threw before any
       // hook fired.
       entry.broadcastIntentByTurn?.delete(turnId);
+      // Codex diff-review cycle 3 D1 — symmetric teardown of the
+      // in-flight-turn pointer set above. Identity-compare against turnId
+      // (not an unconditional null) so a hypothetical re-entrant call for a
+      // DIFFERENT turn (this function is not reentrant per-session today,
+      // but the other per-turn cleanups in this finally use the same
+      // defensive pattern) never clobbers a live pointer that isn't ours.
+      if (entry.activeTurnId === turnId) {
+        entry.activeTurnId = null;
+      }
     }
     // Drop the per-turn transcript pointer so a dispatcher firing on
     // the next turn can't accidentally reuse this turn's text.
@@ -4464,8 +5482,17 @@ export async function runShadowHarness(session, transcriptText, regexResults, op
   try {
     if (plan00MutationObserver) {
       plan00TurnScopeEntered = plan00MutationObserver.enterTurnScope(extractionTurnId) === true;
-      if (typeof options.regexFastCorrelationId === 'string' && options.regexFastCorrelationId) {
-        plan00MutationObserver.bindFastCorrelation(options.regexFastCorrelationId);
+      // Codex diff-review cycle 5 (G2a) — `options.regexFastCorrelationId`
+      // carries B1.1's string-OR-ARRAY wire shape (a turn can fast-dispatch
+      // MULTIPLE correlations, one per slot in a multi-write utterance); this
+      // used to check `typeof ... === 'string'` only, so a multi-correlation
+      // turn's array value failed the guard entirely and bound NONE of them
+      // for evaluation. `bindFastCorrelation` binds one id at a time by
+      // design (plan00-semantic-capture.js) — call it once per coerced id,
+      // matching the SAME coercion `mergeFastPathCorrelationIds` already
+      // uses for the production turn-tracking Map below.
+      for (const cid of coerceFastPathCorrelationIds(options.regexFastCorrelationId)) {
+        plan00MutationObserver.bindFastCorrelation(cid);
       }
     }
     return await runShadowHarnessDispatch(session, transcriptText, regexResults, options, {
@@ -4886,6 +5913,19 @@ async function runShadowHarnessDispatch(
   // tool calls if the client opted in and legacy returned an empty array.
   const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy, {
     confirmationsEnabled: options.confirmationsEnabled === true,
+    // Plan B B1.2/B1.3 — resolved the same way as the live-mode call site
+    // above. Shadow mode's own confirmations never reach iOS (this
+    // function always `return legacy`s — see Step 8 below); wired for
+    // divergence-comparison completeness/consistency with the live path,
+    // not because it changes any user-visible behaviour. In practice this
+    // is near-always an empty Map: shadow mode never calls runLiveMode, so
+    // shadowCapEntry.fastPathCorrelationIdByTurn is never populated for
+    // shadow's own turnId by this code path.
+    // F5 — session-scoped, same as the live-mode call site above.
+    fastAttemptBySlotKey: resolveFastAttemptSlotIdentities(
+      shadowCapEntry?.fastPathCorrelationIdByTurn?.get(turnId),
+      session?.sessionId
+    ),
   });
 
   // P5 (2026-07-23) — emit clear→write collapse telemetry (shadow path).
