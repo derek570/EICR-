@@ -1113,7 +1113,7 @@ export function resolveZeroToolCallDuplicateOutcome({
       const groupKey =
         resolved != null
           ? `${buildFastAttemptSlotKey(resolved)}::${resolved.value ?? ''}`
-          : ` ungroupable::${ungroupableSeq++}`;
+          : `\u0000ungroupable::${ungroupableSeq++}`;
       if (!groups.has(groupKey)) groups.set(groupKey, []);
       groups.get(groupKey).push({ outcome, resolved });
     }
