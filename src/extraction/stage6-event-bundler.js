@@ -559,11 +559,32 @@ function synthesiseConfirmations(
     // Audio-First's exactly-once invariant. The tail's whole purpose is to
     // surface a value that would otherwise stay silent — when it's already
     // audible via its own confirmation, defer to that and stay quiet here.
-    const hasOwnConfirmation = Array.isArray(boardReadings)
-      ? boardReadings.some((br) => br.field === townField || br.field === countyField)
-      : false;
-    if (hasOwnConfirmation) return null;
-    return resolveEffectiveLocalityTail(boardScope?.stateSnapshot, family);
+    //
+    // Per-fix mini-review (cycle 1) caught two follow-on defects in the
+    // first version of this guard: (a) it suppressed the WHOLE tail when
+    // EITHER component had its own confirmation, silencing a sibling that
+    // was still only derived (e.g. a dictated town alongside a
+    // still-only-derived county went completely inaudible); (b) it treated
+    // FIELD PRESENCE in `boardReadings` as proof the sibling would actually
+    // speak, but `buildConfirmationText` returns null (no confirmation at
+    // all) for an empty value — so an empty-valued sibling entry wrongly
+    // suppressed the tail with nothing to replace it. Fixed: check each
+    // component INDEPENDENTLY, and only count a sibling as "will speak on
+    // its own" when its value is genuinely non-empty (mirrors
+    // buildConfirmationText's own `String(value ?? '').trim()` emptiness
+    // check).
+    const hasOwnConfirmation = (field) =>
+      Array.isArray(boardReadings) &&
+      boardReadings.some(
+        (br) => br.field === field && br.value != null && String(br.value).trim() !== ''
+      );
+    const skipTown = hasOwnConfirmation(townField);
+    const skipCounty = hasOwnConfirmation(countyField);
+    if (skipTown && skipCounty) return null;
+    return resolveEffectiveLocalityTail(boardScope?.stateSnapshot, family, {
+      skipTown,
+      skipCounty,
+    });
   };
   // F/U-1 (2026-07-19) — identity Set of projected reading objects that came
   // from a calculator write (::calc:: source). These speak with "calculated

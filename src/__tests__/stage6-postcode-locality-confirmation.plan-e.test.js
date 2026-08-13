@@ -12,7 +12,11 @@ import { jest } from '@jest/globals';
 
 import { dispatchRecordBoardReading } from '../extraction/stage6-dispatchers-board.js';
 import { bundleToolCallsIntoResult } from '../extraction/stage6-event-bundler.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import {
+  createPerTurnWrites,
+  recordBoardReadingWrite,
+  encodeBoardReadingKey,
+} from '../extraction/stage6-per-turn-writes.js';
 import { foldLocalityIntoLegacyConfirmations } from '../extraction/eicr-extraction-session.js';
 
 function makeLogger() {
@@ -180,6 +184,58 @@ describe('PLAN-E E4 — live production bundler path', () => {
     expect(conf.text.includes('Earley')).toBe(false);
   });
 
+  test('PARTIAL SUPPRESSION: a dictated town does not silence a still-only-derived county (per-fix mini-review finding)', async () => {
+    // The FIRST version of the double-speech fix suppressed the WHOLE tail
+    // when EITHER component had its own confirmation — silencing a
+    // sibling that was still only derived. Fixed to check town/county
+    // independently: town speaks via its own confirmation; county (never
+    // separately dictated, only derived/seeded) must still speak via the
+    // postcode tail.
+    const writes = createPerTurnWrites();
+    const session = makeSession({ county: 'Berkshire' });
+    await writePostcode({ perTurnWrites: writes, session });
+    const townResult = await dispatchRecordBoardReading(
+      {
+        tool_call_id: 'town-write-partial',
+        name: 'record_board_reading',
+        input: { field: 'town', value: 'Earley', confidence: 1, source_turn_id: 'turn-1' },
+      },
+      { session, logger: makeLogger(), turnId: 'turn-1', perTurnWrites: writes, round: 0 }
+    );
+    expect(townResult.is_error).toBe(false);
+    const bundled = bundleWithSnapshot(writes, session);
+    const townConfirmation = bundled.confirmations.find((c) => c.field === 'town');
+    expect(townConfirmation.text).toContain('Earley');
+    const conf = postcodeConfirmation(bundled);
+    // Town is excluded (already spoken via its own confirmation); county
+    // is NOT excluded and must still speak via the tail.
+    expect(conf.text.includes('Earley')).toBe(false);
+    expect(conf.text.endsWith(', Berkshire')).toBe(true);
+  });
+
+  test('EMPTY-VALUED SIBLING does not falsely suppress the tail (per-fix mini-review finding)', async () => {
+    // A board-reading entry whose value is empty produces NO confirmation
+    // at all (buildConfirmationText returns null for an empty value) — its
+    // mere PRESENCE in the batch must not be treated as "this will speak
+    // on its own", or the tail goes silent with nothing to replace it.
+    // Constructed directly (bypassing the real dispatcher, which would
+    // legitimately WRITE an empty value into the snapshot and clear the
+    // seeded town — a different, real scenario this test isn't after) so
+    // only the confirmation-batch guard logic is under test.
+    const writes = createPerTurnWrites();
+    const session = makeSession({ town: 'Lower Earley' });
+    await writePostcode({ perTurnWrites: writes, session });
+    recordBoardReadingWrite(writes, encodeBoardReadingKey('town'), {
+      value: '',
+      confidence: 1,
+      source_turn_id: 'turn-1',
+    });
+    const bundled = bundleWithSnapshot(writes, session);
+    expect(bundled.confirmations.some((c) => c.field === 'town')).toBe(false);
+    const conf = postcodeConfirmation(bundled);
+    expect(conf.text.endsWith(', Lower Earley')).toBe(true);
+  });
+
   test('DEDUPE IDENTITY UNCHANGED: dedupe_token is identical whether or not a locality tail is appended', async () => {
     const withTail = createPerTurnWrites();
     const sessionWithTail = makeSession({ town: 'Lower Earley' });
@@ -243,6 +299,30 @@ describe('PLAN-E E4 — legacy JSON-prose path (foldLocalityIntoLegacyConfirmati
     foldLocalityIntoLegacyConfirmations(confirmations, snapshot({ town: 'Earley' }));
     expect(confirmations[0].text).toBe('postcode RG6 3EY');
     expect(confirmations[1].text).toBe('town Earley');
+  });
+
+  test('PARTIAL SUPPRESSION: a standalone town confirmation does not silence a still-only-derived county', () => {
+    const confirmations = [
+      { field: 'postcode', text: 'postcode RG6 3EY' },
+      { field: 'town', text: 'town Earley' },
+    ];
+    foldLocalityIntoLegacyConfirmations(
+      confirmations,
+      snapshot({ town: 'Earley', county: 'Berkshire' })
+    );
+    // Town already spoke via its own confirmation; county did not, so it
+    // must still fold into the postcode tail.
+    expect(confirmations[0].text).toBe('postcode RG6 3EY, Berkshire');
+    expect(confirmations[1].text).toBe('town Earley');
+  });
+
+  test('EMPTY-TEXT sibling confirmation does not falsely suppress the tail', () => {
+    const confirmations = [
+      { field: 'postcode', text: 'postcode RG6 3EY' },
+      { field: 'town', text: '' },
+    ];
+    foldLocalityIntoLegacyConfirmations(confirmations, snapshot({ town: 'Earley' }));
+    expect(confirmations[0].text).toBe('postcode RG6 3EY, Earley');
   });
 
   test('also updates expanded_text when present, leaves it absent when not', () => {

@@ -608,11 +608,20 @@ export function foldLocalityIntoLegacyConfirmations(confirmations, stateSnapshot
     // already carries a standalone confirmation for the matching family's
     // town/county, folding it into the postcode tail too would speak it
     // twice — defer to the standalone confirmation and stay quiet here.
-    const hasOwnConfirmation = confirmations.some(
-      (c) => c !== conf && (c?.field === townField || c?.field === countyField)
-    );
-    if (hasOwnConfirmation) continue;
-    const tail = resolveEffectiveLocalityTail(stateSnapshot, family);
+    //
+    // Per-fix mini-review (cycle 1): check each component INDEPENDENTLY
+    // (a sibling town confirmation must not silence a still-only-derived
+    // county), and only count a sibling as "will speak on its own" when it
+    // carries genuinely non-empty text — an empty/placeholder confirmation
+    // object must not suppress the tail with nothing to replace it.
+    const hasOwnConfirmation = (field) =>
+      confirmations.some(
+        (c) => c !== conf && c?.field === field && typeof c.text === 'string' && c.text.trim()
+      );
+    const skipTown = hasOwnConfirmation(townField);
+    const skipCounty = hasOwnConfirmation(countyField);
+    if (skipTown && skipCounty) continue;
+    const tail = resolveEffectiveLocalityTail(stateSnapshot, family, { skipTown, skipCounty });
     if (!tail) continue;
     conf.text = `${conf.text}, ${tail}`;
     if (typeof conf.expanded_text === 'string' && conf.expanded_text) {

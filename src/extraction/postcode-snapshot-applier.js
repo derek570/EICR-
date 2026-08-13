@@ -76,16 +76,26 @@ const UK_REGION_DRIFT = new Set(
  * otherwise pre-existing) non-empty value survives `shouldOverride` above
  * and must speak AS STORED, which can differ from what this turn's lookup
  * itself returned (e.g. lookup says "Earley", the stored/preserved value
- * stays "Lower Earley"). Returns null when both fields are empty so the
- * caller appends nothing (postcode-only utterance stays postcode-only).
+ * stays "Lower Earley"). Returns null when both fields are empty (or both
+ * excluded) so the caller appends nothing (postcode-only utterance stays
+ * postcode-only).
+ *
+ * `options.skipTown`/`skipCounty` (Codex per-fix mini-review, cycle 1) —
+ * when a component ALSO has its own confirmable reading this turn (a
+ * directly-dictated, non-derived town/county), that reading already speaks
+ * it; excluding ONLY that component from the tail — not the whole tail —
+ * keeps the OTHER component (e.g. a derived county) audible instead of
+ * going silent just because its sibling happened to be dictated too.
  */
-export function resolveEffectiveLocalityTail(snapshot, family) {
+export function resolveEffectiveLocalityTail(snapshot, family, options = {}) {
   const circ0 = snapshot?.circuits?.[0];
   if (!circ0 || typeof circ0 !== 'object') return null;
   const townField = family === 'client' ? 'client_town' : 'town';
   const countyField = family === 'client' ? 'client_county' : 'county';
-  const town = typeof circ0[townField] === 'string' ? circ0[townField].trim() : '';
-  const county = typeof circ0[countyField] === 'string' ? circ0[countyField].trim() : '';
+  const town =
+    !options.skipTown && typeof circ0[townField] === 'string' ? circ0[townField].trim() : '';
+  const county =
+    !options.skipCounty && typeof circ0[countyField] === 'string' ? circ0[countyField].trim() : '';
   const parts = [];
   if (town) parts.push(town);
   if (county) parts.push(county);
@@ -117,7 +127,7 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, optio
   // blank field must be distinguished by key presence, not truthiness —
   // otherwise a stored drift value ("South East") can never be cleared for
   // the exact ~40%-of-England case this plan exists to fix.
-  if (!('town' in lookup) && !('county' in lookup)) return [];
+  if (typeof lookup.town !== 'string' && typeof lookup.county !== 'string') return [];
 
   if (!snapshot.circuits || typeof snapshot.circuits !== 'object') {
     snapshot.circuits = {};
@@ -164,8 +174,11 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, optio
   // something to clear (`isDriftValue`) — an empty-to-empty write would be
   // a harmless but noisy no-op (spurious derived board-reading + log line)
   // on every lookup against an already-empty field.
+  // Per-fix mini-review NIT: require the lookup value to actually be a
+  // string (not just an own key) before writing it through — a malformed
+  // caller passing `{town: null}` must not write `null` into the snapshot.
   if (
-    'town' in lookup &&
+    typeof lookup.town === 'string' &&
     shouldOverride(circ0[townField]) &&
     (lookup.town || isDriftValue(circ0[townField]))
   ) {
@@ -173,7 +186,7 @@ export function applyPostcodeLookupToSnapshot(snapshot, lookup, sessionId, optio
     changes.push({ field: townField, value: lookup.town });
   }
   if (
-    'county' in lookup &&
+    typeof lookup.county === 'string' &&
     shouldOverride(circ0[countyField]) &&
     (lookup.county || isDriftValue(circ0[countyField]))
   ) {
