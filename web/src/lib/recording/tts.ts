@@ -117,15 +117,16 @@ export function isTtsAvailable(): boolean {
 
 /**
  * Read the persisted confirmation-mode preference. Defaults to `true`
- * when NEITHER storage key has ever been set — this does NOT match
- * iOS's default (iOS registers `confirmationModeEnabled: true` at
+ * when NEITHER storage key has ever been set — this NOW matches iOS's
+ * own default (iOS registers `confirmationModeEnabled: true` at
  * `CertMateApp.swift:29-38` precisely so new users don't start silently
- * muted); the prior version of this comment claimed the opposite and
- * was FALSE (PLAN-D, feedback ids 122/124 — an entire 9-minute field
- * session ran with confirmations off and no telemetry/cue surfaced it,
- * and web's absent-default made that the DEFAULT experience for every
- * new inspector, not an edge case). An EXPLICITLY stored `false` is
- * always preserved as-is — this only changes the never-set case, so no
+ * muted). The PRIOR version of this function defaulted to `false` while
+ * a comment here claimed that "matches iOS" — that claim was FALSE
+ * (PLAN-D, feedback ids 122/124 — an entire 9-minute field session ran
+ * with confirmations off and no telemetry/cue surfaced it, and web's
+ * absent-default made that the DEFAULT experience for every new
+ * inspector, not an edge case). An EXPLICITLY stored `false` is always
+ * preserved as-is — this only changes the never-set case, so no
  * deliberate user choice is discarded (that's the auto-revert
  * alternative this plan explicitly rejects).
  *
@@ -1030,6 +1031,127 @@ export function speakConfirmation(
   });
 }
 
+// ── Confirmation-mode status cues (PLAN-D D2, feedback ids 122/124) ─────────
+//
+// A bare `speakConfirmation(text, {force:true})` call (this file's first
+// cut) satisfies "bypasses dedupe" and "never resets the FIFO" — but NOT
+// "defers behind an active ask rather than dropping": `speak()`'s
+// `preemptFlush()` (a direct ask/alert taking the audio channel) and the
+// queue's own overflow drop-oldest both fire `onDiscarded` unconditionally
+// on every QUEUED item, and a bare `speakConfirmation` call passes no
+// `dedupeKey`, so the discard is silent and the cue is gone for good — an
+// inspector who flips the toggle right as the model asks a question would
+// never hear the flip confirmed. This block closes that gap with the
+// smallest mechanism that survives it: give the cue a dedupe key ONLY so
+// the discard hook can recognise and re-enqueue it (never for true
+// deduplication — each cue gets its own unique key, so back-to-back
+// identical cues are never collapsed).
+const MODE_STATUS_DEDUPE_PREFIX = 'mode-status:';
+let modeStatusKeyCounter = 0;
+/** dedupeKey → cue text, for cues currently enqueued (or already playing —
+ *  see `handleModeStatusCuePlaybackStarted`, which retires the entry once
+ *  the cue is actually heard). */
+const modeStatusCueTexts = new Map<string, string>();
+
+function buildModeStatusDedupeKey(): string {
+  modeStatusKeyCounter += 1;
+  return `${MODE_STATUS_DEDUPE_PREFIX}${modeStatusKeyCounter}`;
+}
+
+function enqueueModeStatusCue(text: string): void {
+  const dedupeKey = buildModeStatusDedupeKey();
+  modeStatusCueTexts.set(dedupeKey, text);
+  const harnessPlayer = getRecordingTestServices()?.ttsConfirmationPlayer;
+  enqueueConfirmation({
+    text,
+    dedupeKey,
+    play: harnessPlayer
+      ? (t, controls) => {
+          registerTtsFingerprint(t);
+          harnessPlayer(t, controls);
+        }
+      : playConfirmationHead,
+  });
+}
+
+/**
+ * Dedicated speech path for the confirmations-toggle cues ("Voice
+ * read-backs on/off.") and the session-start warning. Contract, mirroring
+ * iOS's own dedicated mode-status path (`AlertManager.swift`, which solves
+ * the identical problem with its own park/flush mechanism):
+ *   - Ignores the confirmation-mode toggle entirely (must be audible
+ *     precisely when confirmations are OFF).
+ *   - Bypasses the confirmation dedupe/TTL layer (a rapid off→on→off
+ *     within 30s is heard three times, never collapsed).
+ *   - DEFERS behind an active ask / in-progress inspector speech rather
+ *     than dropping: enqueues via the same FIFO as ordinary confirmations
+ *     (`shouldDeferPlayback` already gates on `isDirectAudioActive()`), and
+ *     if a LATER ask's `preemptFlush()` or queue overflow destroys the
+ *     still-waiting item, `handleModeStatusCueDiscard` (wired into
+ *     recording-context's `onDiscarded` hook) re-enqueues it rather than
+ *     letting it vanish — so it plays as soon as the channel clears
+ *     instead of being lost.
+ *   - Never resets the FIFO itself (enqueues only; never calls
+ *     `preemptFlush()`/`reset()`).
+ */
+export function speakConfirmationModeStatus(text: string): void {
+  const trimmed = text?.trim();
+  if (!trimmed) return;
+  if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) return;
+  clientDiagnostic('tts_speak_mode_status_called', { textPreview: trimmed.slice(0, 80) });
+  enqueueModeStatusCue(trimmed);
+}
+
+/**
+ * Called from recording-context's `onDiscarded` hook. Returns true iff
+ * `dedupeKey` belongs to a mode-status cue destroyed by a queue-lifecycle
+ * event (preempt / overflow) — the caller should not also treat it as an
+ * ordinary confirmation reservation. The re-enqueue itself is DEFERRED to a
+ * microtask, never called synchronously from here — this is load-bearing,
+ * not cosmetic: `preemptFlush()` and `reset()` both fire `onDiscarded` for
+ * every queued item via a LIVE `for (const q of queue)` loop, iterating the
+ * SAME array `enqueueConfirmation` pushes into. A synchronous re-enqueue
+ * from inside that loop pushes a new item onto the array the loop is still
+ * iterating, so the iterator visits the freshly-pushed item too — which
+ * re-enqueues again, and again, cascading within one synchronous call
+ * (confirmed empirically: it took five recursive re-enqueues, each
+ * evicting the last via the `MAX_QUEUE_DEPTH` overflow-drop, before one
+ * `queue.shift()` happened to remove an index the live iterator hadn't
+ * reached yet and it accidentally terminated — not a mechanism to rely on).
+ * `queueMicrotask` runs the actual push after the enclosing loop (and, for
+ * `reset()`, `cancelSpeech`'s `modeStatusCueTexts.clear()`) has already
+ * completed, so by the time it fires there is no iteration in progress to
+ * re-enter.
+ *
+ * During a FULL queue reset (session teardown, `cancelSpeech({resetQueue:
+ * true})`), `cancelSpeech` clears `modeStatusCueTexts` BEFORE calling
+ * `reset()` — so this returns `false` (nothing scheduled) and the cue is
+ * allowed to die with the session rather than being resurrected into the
+ * next one.
+ */
+export function handleModeStatusCueDiscard(dedupeKey: string): boolean {
+  const text = modeStatusCueTexts.get(dedupeKey);
+  if (text === undefined) return false;
+  modeStatusCueTexts.delete(dedupeKey);
+  queueMicrotask(() => enqueueModeStatusCue(text));
+  return true;
+}
+
+/** Called from recording-context's `onPlaybackStarted` hook — the cue was
+ *  actually heard, so its re-park tracking entry is retired (nothing left
+ *  to protect; a later flip speaks as a genuinely new cue via
+ *  `speakConfirmationModeStatus`). Returns true iff this was a tracked
+ *  mode-status key, so the caller can skip its own (irrelevant) handling. */
+export function handleModeStatusCuePlaybackStarted(dedupeKey: string): boolean {
+  return modeStatusCueTexts.delete(dedupeKey);
+}
+
+/** Test-only. */
+export function __resetModeStatusCuesForTests(): void {
+  modeStatusCueTexts.clear();
+  modeStatusKeyCounter = 0;
+}
+
 /**
  * Test-only — wipe the TTS audio window so a fresh test reads `null`
  * from `getTtsAudioWindow()`. Production callers don't need this; the
@@ -1070,7 +1192,14 @@ export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
   if (!isTtsAvailable()) {
     // Still flush the queue on a full teardown so a stuck `busy` can't survive
     // into the next session (queue is normally empty in the SSR/no-synth case).
-    if (resetQueue) ttsQueueReset();
+    if (resetQueue) {
+      // PLAN-D — clear mode-status tracking BEFORE reset() fires discards,
+      // so handleModeStatusCueDiscard sees no match and does not re-park a
+      // cue into a session that's tearing down (see that function's
+      // docblock for why re-parking here would hang the tab).
+      modeStatusCueTexts.clear();
+      ttsQueueReset();
+    }
     return;
   }
   const closeWindow = () => {
@@ -1081,6 +1210,9 @@ export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
   };
   if (resetQueue) {
     // FULL teardown — reset the queue FIRST (see docblock), then cancel direct.
+    // PLAN-D — clear mode-status tracking BEFORE reset() (see the
+    // no-isTtsAvailable() branch above for why ordering is load-bearing).
+    modeStatusCueTexts.clear();
     ttsQueueReset();
     try {
       window.speechSynthesis.cancel();

@@ -83,12 +83,15 @@ describe('recording-chrome.tsx — toggle-flip cue wiring (structural, PLAN-D id
     expect(src).toMatch(/CONFIRMATION_MODE_ON_CUE/);
   });
 
-  it('speaks the correct cue on BOTH directions via one force:true call, no dedupeKey', () => {
-    // Both directions route through the SAME speakConfirmation call with a
-    // ternary — proves there's no longer a one-directional (ON-only) gate,
-    // and that no dedupeKey is passed (dedupe bypass, per the plan).
+  it('speaks the correct cue on BOTH directions via the dedicated mode-status path (survives preemption)', () => {
+    // Both directions route through the SAME speakConfirmationModeStatus
+    // call with a ternary — proves there's no longer a one-directional
+    // (ON-only) gate, and that the dedicated (preemption-surviving,
+    // dedupe-bypassing) path is used, not a bare force:true
+    // speakConfirmation call (Codex diff review r1 BLOCKER — the latter
+    // can be silently discarded by a later ask's preemptFlush()).
     expect(src).toMatch(
-      /speakConfirmation\(next \? CONFIRMATION_MODE_ON_CUE : CONFIRMATION_MODE_OFF_CUE,\s*\{\s*\n\s*force: true,\s*\n\s*\}\)/
+      /speakConfirmationModeStatus\(next \? CONFIRMATION_MODE_ON_CUE : CONFIRMATION_MODE_OFF_CUE\)/
     );
   });
 
@@ -110,13 +113,13 @@ describe('recording-context.tsx — session-start warning wiring (structural, PL
 
   it('the warning call appears in the source EXACTLY ONCE (import + one call site = 2 occurrences of the identifier)', () => {
     const occurrences = src.match(/CONFIRMATION_MODE_START_WARNING/g) ?? [];
-    // One in the import list, one in the actual speakConfirmation(...) call.
+    // One in the import list, one in the actual speakConfirmationModeStatus(...) call.
     expect(occurrences).toHaveLength(2);
   });
 
   it('is wired adjacent to buildSleepManager()/setState(\'active\') — the PHYSICAL start() path', () => {
     expect(src).toMatch(
-      /buildSleepManager\(\);\s*\n\s*setState\('active'\);\s*\n[\s\S]*?if \(!getConfirmationModeEnabled\(\)\) \{\s*\n\s*speakConfirmation\(CONFIRMATION_MODE_START_WARNING, \{ force: true \}\);\s*\n\s*\}\s*\n\s*beginTick\(\);/
+      /buildSleepManager\(\);\s*\n\s*setState\('active'\);\s*\n[\s\S]*?if \(!getConfirmationModeEnabled\(\)\) \{\s*\n\s*speakConfirmationModeStatus\(CONFIRMATION_MODE_START_WARNING\);\s*\n\s*\}\s*\n\s*beginTick\(\);/
     );
   });
 
@@ -126,7 +129,7 @@ describe('recording-context.tsx — session-start warning wiring (structural, PL
     // the ONE occurrence of the warning call comes after that earlier pair,
     // not interleaved with it.
     const earlierActiveIdx = src.indexOf("setState('active');\n        beginTick();");
-    const warningCallIdx = src.indexOf('speakConfirmation(CONFIRMATION_MODE_START_WARNING');
+    const warningCallIdx = src.indexOf('speakConfirmationModeStatus(CONFIRMATION_MODE_START_WARNING');
     expect(earlierActiveIdx).toBeGreaterThan(-1);
     expect(warningCallIdx).toBeGreaterThan(-1);
     expect(warningCallIdx).toBeGreaterThan(earlierActiveIdx);
@@ -134,7 +137,7 @@ describe('recording-context.tsx — session-start warning wiring (structural, PL
 
   it('never appears near resume()\'s setState(\'active\') either (the last setState(\'active\') in the file)', () => {
     const lastActiveIdx = src.lastIndexOf("setState('active');\n      beginTick();");
-    const warningCallIdx = src.indexOf('speakConfirmation(CONFIRMATION_MODE_START_WARNING');
+    const warningCallIdx = src.indexOf('speakConfirmationModeStatus(CONFIRMATION_MODE_START_WARNING');
     // The warning's OWN setState('active') pair is not the last one in the
     // file (resume()'s is, since resume() is declared after start()) — so
     // the warning call must sit BEFORE the last occurrence, proving it is

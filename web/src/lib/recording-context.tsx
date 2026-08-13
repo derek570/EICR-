@@ -87,6 +87,8 @@ import {
   confirmationToSentence,
   getConfirmationModeEnabled,
   getTtsAudioWindow,
+  handleModeStatusCueDiscard,
+  handleModeStatusCuePlaybackStarted,
   isDirectAudioActive,
   isTTSEcho,
   isWithinTtsWindow,
@@ -94,6 +96,7 @@ import {
   setTtsLifecycleObserver,
   speak as speakRaw,
   speakConfirmation,
+  speakConfirmationModeStatus,
   type SpeakOptions,
 } from './recording/tts';
 import {
@@ -1308,6 +1311,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // durable delivery token plus, sometimes, an ordinary confirmation key; the
   // pair must be released together or a backend retry is silently suppressed.
   const discardConfirmationReservation = React.useCallback((dedupeKey: string) => {
+    // PLAN-D (ids 122, 124) — a mode-status cue (toggle-flip cue, the
+    // session-start warning) destroyed by preemptFlush()/overflow re-parks
+    // itself rather than being treated as an ordinary confirmation
+    // reservation to forget. See handleModeStatusCueDiscard's docblock for
+    // why this must run FIRST and why it's safe during a full reset.
+    if (handleModeStatusCueDiscard(dedupeKey)) return;
     const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
     if (addressToken) {
       const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -2627,6 +2636,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
     ttsQueueSetOnPlaybackStarted((dedupeKey) => {
+      // PLAN-D — a mode-status cue was actually heard; retire its re-park
+      // tracking entry (nothing left to protect it from).
+      if (handleModeStatusCuePlaybackStarted(dedupeKey)) return;
       const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
       if (addressToken) {
         const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -3796,11 +3808,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // path only — handleWake() (sleep/doze auto-resume) and resume()
       // (manual pause-resume) must NOT re-speak it; neither call site
       // reaches this branch, so "once per physical session" holds by
-      // construction. `force: true` + no dedupeKey: same fail-open-audible,
-      // dedupe-bypassing, FIFO-deferring, never-resetting contract as the
-      // toggle-flip cue.
+      // construction. Routed through the dedicated mode-status path (not a
+      // bare speakConfirmation force:true call): survives a fast ask that
+      // arrives before this warning gets its turn (preemptFlush/overflow
+      // re-park it instead of silently discarding it).
       if (!getConfirmationModeEnabled()) {
-        speakConfirmation(CONFIRMATION_MODE_START_WARNING, { force: true });
+        speakConfirmationModeStatus(CONFIRMATION_MODE_START_WARNING);
       }
       beginTick();
     } catch (err) {

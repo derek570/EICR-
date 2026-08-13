@@ -263,6 +263,112 @@ describe('/api/proxy/elevenlabs-tts — Loaded Barrel Phase 3 cache short-circui
     expect(global.fetch).toHaveBeenCalled();
   });
 
+  // D1 (feedback id 121) — buffered fail-open retry contract.
+  describe('D1 fail-open — buffered fallback language_code retry', () => {
+    function jsonResponse(status, body) {
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        body: {
+          getReader: () => ({
+            read: async () => ({ done: true, value: undefined }),
+            releaseLock: () => {},
+          }),
+        },
+        arrayBuffer: async () => new ArrayBuffer(0),
+        text: async () => JSON.stringify(body),
+      };
+    }
+
+    // These tests replace `global.fetch`'s implementation with
+    // `mockImplementation` (persistent, not `mockImplementationOnce`) for
+    // multi-call assertions — `beforeEach`'s `mockClear()` only resets call
+    // history, not the implementation, so it would otherwise leak into
+    // later tests in this file. Restore the module's original default.
+    afterEach(() => {
+      global.fetch.mockImplementation(() => Promise.resolve(mockStreamingResponse()));
+    });
+
+    test('attributable 4xx (mentions language_code) → retries once, second attempt succeeds', async () => {
+      const sessionId = 'sess-d1-retry-ok';
+      registerSession(sessionId);
+      global.fetch
+        .mockImplementationOnce(async () =>
+          jsonResponse(400, { detail: { status: 'invalid_language_code' } })
+        )
+        .mockImplementationOnce(async () => mockStreamingResponse());
+
+      const app = await buildApp();
+      const token = await authToken();
+      const res = await request(app)
+        .post('/api/proxy/elevenlabs-tts')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ text: 'hello', sessionId });
+
+      expect(res.status).toBe(200);
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      // First call carries the pin, second omits it.
+      const firstBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+      const secondBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+      expect(firstBody.language_code).toBe('en');
+      expect(secondBody.language_code).toBeUndefined();
+    });
+
+    test('attributable 4xx twice → terminal, exactly two attempts, vendor error passed through', async () => {
+      const sessionId = 'sess-d1-retry-fail';
+      registerSession(sessionId);
+      global.fetch.mockImplementation(async () =>
+        jsonResponse(400, { detail: { status: 'invalid_language_code' } })
+      );
+
+      const app = await buildApp();
+      const token = await authToken();
+      const res = await request(app)
+        .post('/api/proxy/elevenlabs-tts')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ text: 'hello', sessionId });
+
+      expect(res.status).toBe(400);
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    test('a 5xx that happens to mention language_code is terminal on the FIRST attempt (status guard)', async () => {
+      const sessionId = 'sess-d1-5xx';
+      registerSession(sessionId);
+      global.fetch.mockImplementation(async () =>
+        jsonResponse(500, { error: 'internal error while validating language_code' })
+      );
+
+      const app = await buildApp();
+      const token = await authToken();
+      const res = await request(app)
+        .post('/api/proxy/elevenlabs-tts')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ text: 'hello', sessionId });
+
+      expect(res.status).toBe(500);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    test('an unrelated 4xx (no language_code mention) is terminal on the first attempt', async () => {
+      const sessionId = 'sess-d1-unrelated';
+      registerSession(sessionId);
+      global.fetch.mockImplementation(async () =>
+        jsonResponse(401, { detail: { status: 'invalid_api_key' } })
+      );
+
+      const app = await buildApp();
+      const token = await authToken();
+      const res = await request(app)
+        .post('/api/proxy/elevenlabs-tts')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ text: 'hello', sessionId });
+
+      expect(res.status).toBe(401);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test('HIT_PENDING path: pending entry → promise resolves within 200ms → claim + serve', async () => {
     const sessionId = 'sess-pending';
     const costTracker = registerSession(sessionId);

@@ -302,6 +302,11 @@ export class ElevenLabsStreamClient {
       ws.on('error', (err) => {
         cleanup();
         this._closed = true;
+        try {
+          ws.close();
+        } catch {
+          /* noop */
+        }
         err.bytesReceived = timings.bytes;
         err.timings = timings;
         if (onError) onError(err);
@@ -351,6 +356,26 @@ export class ElevenLabsStreamClient {
   }
 }
 
+// D1 fail-open — known-unrelated-failure markers. The WS protocol carries
+// no structured vendor error code for a language_code rejection (unlike
+// the buffered HTTP path, which gets a JSON body naming the field), so
+// eligibility can't be a positive match on "this is a language_code
+// error." Instead this is a NEGATIVE deny-list: failure classes that are
+// clearly NOT a language_code problem (auth, quota, rate-limit, DNS/
+// connection-level errors) are excluded from the retry, so those don't
+// pay an extra useless round-trip before their (identical either way)
+// terminal failure. Anything not matching this list stays eligible —
+// deliberately permissive, since under-matching only costs one wasted
+// retry on a rare unrelated failure, while over-matching would exclude
+// the very failure class D1 exists to recover from.
+const KNOWN_UNRELATED_FAILURE_RE =
+  /quota|unauthorized|invalid[_-]?api[_-]?key|rate[_-]?limit|too many requests|\b401\b|\b403\b|\b429\b|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN/i;
+
+function isKnownUnrelatedFailure(err) {
+  const message = typeof err?.message === 'string' ? err.message : '';
+  return KNOWN_UNRELATED_FAILURE_RE.test(message);
+}
+
 /**
  * D1 fail-open contract, shared by every production `ElevenLabsStreamClient`
  * caller (`keys.js` streaming gate, `loaded-barrel-speculator.js`,
@@ -362,10 +387,12 @@ export class ElevenLabsStreamClient {
  * resolution). If it rejects with a vendor-attributable, zero-audio-bytes
  * error (only `msg.error` / `ws.on('error')` / `ws.on('close')` rejections
  * carry `bytesReceived` — a timeout, an abort, or a caller-callback throw
- * never do, so those never retry), a SECOND, freshly-constructed client
- * (never the same instance — `_closed` latches permanently) retries once
- * with `languageCode: null` (the explicit disable sentinel). Any error
- * received after the first audio byte, or a second failure, is terminal.
+ * never do, so those never retry) that isn't a KNOWN unrelated failure class
+ * (`isKnownUnrelatedFailure` — auth/quota/rate-limit/DNS), a SECOND,
+ * freshly-constructed client (never the same instance — `_closed` latches
+ * permanently) retries once with `languageCode: null` (the explicit disable
+ * sentinel). Any error received after the first audio byte, or a second
+ * failure, is terminal.
  *
  * Correlation id and cost attribution stay caller-threaded: this helper
  * does not call any telemetry/cost function itself, so a caller that opens
@@ -384,7 +411,10 @@ export async function synthWithLanguageFailOpen(client, retryClientFactory, text
     const timings = await client.synth(text, synthOpts);
     return { timings, client, attempts: 1 };
   } catch (err) {
-    const eligibleForRetry = typeof err?.bytesReceived === 'number' && err.bytesReceived === 0;
+    const eligibleForRetry =
+      typeof err?.bytesReceived === 'number' &&
+      err.bytesReceived === 0 &&
+      !isKnownUnrelatedFailure(err);
     if (!eligibleForRetry) throw err;
     if (client && typeof client.close === 'function') {
       try {
@@ -394,8 +424,22 @@ export async function synthWithLanguageFailOpen(client, retryClientFactory, text
       }
     }
     const retryClient = retryClientFactory();
-    const timings = await retryClient.synth(text, synthOpts);
-    return { timings, client: retryClient, attempts: 2 };
+    try {
+      const timings = await retryClient.synth(text, synthOpts);
+      return { timings, client: retryClient, attempts: 2 };
+    } catch (retryErr) {
+      // Belt-and-braces: most synth() reject paths already close their own
+      // WS before rejecting, but `ws.on('error')` (a raw transport error)
+      // does not — close explicitly rather than relying on that.
+      if (retryClient && typeof retryClient.close === 'function') {
+        try {
+          retryClient.close();
+        } catch {
+          /* noop */
+        }
+      }
+      throw retryErr;
+    }
   }
 }
 
@@ -407,4 +451,5 @@ export const _internals = {
   DEFAULT_VOICE_SETTINGS,
   DEFAULT_SYNTH_TIMEOUT_MS,
   DEFAULT_LANGUAGE_CODE,
+  isKnownUnrelatedFailure,
 };

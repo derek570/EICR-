@@ -28,7 +28,7 @@ import {
   getConfirmationModeEnabled,
   isTtsAvailable,
   setConfirmationModeEnabled,
-  speakConfirmation,
+  speakConfirmationModeStatus,
 } from '@/lib/recording/tts';
 import { clientDiagnostic } from '@/lib/recording/client-diagnostic';
 import { applyPresetToJob } from '@/lib/defaults/service';
@@ -160,18 +160,14 @@ function RecordingActionBar() {
     setVoiceFeedbackOn(next);
     clientDiagnostic('confirmation_mode_flipped', { enabled: next });
     // PLAN-D (ids 122, 124) — speak the unified cue on BOTH directions,
-    // not just ON→ON. `force: true` bypasses the enabled check (so the
-    // OFF cue is audible even though confirmations are now off); no
-    // `dedupeKey` is passed, so this call bypasses the confirmation
-    // dedupe/TTL layer entirely — a rapid off→on→off within 30s produces
-    // three distinct cues, not one. It still FIFO-queues (deferring
-    // behind an active ask or in-progress speech rather than dropping)
-    // and never resets the queue, because `speakConfirmation` always
-    // enqueues via `enqueueConfirmation` — it never calls the direct
-    // `speak()` path's `preemptFlush()`.
-    speakConfirmation(next ? CONFIRMATION_MODE_ON_CUE : CONFIRMATION_MODE_OFF_CUE, {
-      force: true,
-    });
+    // not just ON→ON, via the dedicated mode-status path: audible
+    // regardless of the toggle's new value, bypasses the confirmation
+    // dedupe/TTL layer (a rapid off→on→off within 30s produces three
+    // distinct cues), defers behind an active ask rather than dropping,
+    // and — unlike a bare force:true speakConfirmation call — survives a
+    // LATER ask's preemptFlush()/queue-overflow discard by re-parking
+    // itself instead of vanishing.
+    speakConfirmationModeStatus(next ? CONFIRMATION_MODE_ON_CUE : CONFIRMATION_MODE_OFF_CUE);
   }, [voiceFeedbackOn]);
 
   // End-session confirmation — iOS presents a parent-owned alert

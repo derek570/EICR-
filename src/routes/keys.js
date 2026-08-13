@@ -672,11 +672,14 @@ router.post('/proxy/elevenlabs-tts', auth.requireAuth, async (req, res) => {
       // D1 fail-open: the buffered HTTP proxy's status always precedes any
       // response body, so it's safe to inspect the error text before
       // deciding whether to retry. Only retry when the vendor's rejection
-      // actually names language_code — an unrelated 4xx (auth, rate limit)
-      // is terminal on the first attempt, matching the streaming client's
-      // "attributable" scoping.
+      // actually names language_code AND is a 4xx (a client-request
+      // problem) — a 5xx that happens to mention the substring elsewhere in
+      // its body (or an unrelated 4xx: auth, rate limit) is terminal on the
+      // first attempt, matching the streaming client's "attributable"
+      // scoping.
       const errorText = await response.text();
-      const attributableToLanguageCode = /language_code/i.test(errorText);
+      const attributableToLanguageCode =
+        response.status >= 400 && response.status < 500 && /language_code/i.test(errorText);
       if (attributableToLanguageCode) {
         logger.warn('voice_latency.elevenlabs_buffered_retry_without_language_code', {
           status: response.status,
