@@ -218,12 +218,19 @@ loops) structurally rather than patching the race. The machinery is
 `autoSleepEnabled` flag (hidden — no Settings UI this wave; iOS
 UserDefaults / web `localStorage['autoSleepEnabled']`) can re-enable it if
 continuous-streaming cost ever matters for a battery/data-constrained
-user. Explicit lifecycle actions (Pause button, BFCache auto-pause,
-interruption recovery) were ALSO found to route through the same
-sleep/wake machinery even with the automatic timer off — these now use an
+user. On web, explicit lifecycle actions (Pause button, BFCache
+auto-pause) were ALSO found to route through the same sleep/wake
+machinery even with the automatic timer off — these now use an
 iOS-parity lighter-weight pause (mic stop/reopen, Deepgram
 disconnect/reconnect, Sonnet session kept alive throughout) instead,
-unconditionally in both flag states. The wake-during-close race hardening
+unconditionally in both flag states (C2a). On iOS, the equivalent
+explicit path — `handleInterruptionResume` (AVAudioSession interruption
+recovery) — was independently found to share the SAME
+`reconnectDeepgramFromSleep` entry point as the sleep-wake path and is
+hardened separately via C1a's generation-owned reconnect API (a
+different mechanism from C2a — iOS has no lighter-weight-pause
+equivalent; C1a fixes the underlying reconnect race directly). The
+wake-during-close race hardening
 itself (non-destructive drain with re-replay, close-in-flight
 invalidation) was deliberately left OUT of this wave — with explicit
 pause moved off the Sleeping tier, that race is now reachable only via

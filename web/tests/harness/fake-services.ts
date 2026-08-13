@@ -330,6 +330,11 @@ export function buildHarnessServices(): {
     deepgram: FakeDeepgramService | null;
     sonnet: FakeSonnetSession | null;
   };
+  /** PLAN-C (id 120) C2a — construction counts, so a regression can prove
+   *  EXACTLY one mic/Deepgram reopen rather than merely a non-null ref
+   *  (a duplicate reopen from a racing double-resume would otherwise be
+   *  invisible — the second construction just overwrites `refs`). */
+  counts: { deepgramConstructed: number; sonnetConstructed: number; micStarted: number };
   tts: FakeTtsPlayers;
   chimes: { count: number };
   diagnostics: Array<{ category: string; payload: Record<string, unknown> }>;
@@ -339,20 +344,26 @@ export function buildHarnessServices(): {
     deepgram: null,
     sonnet: null,
   };
+  const counts = { deepgramConstructed: 0, sonnetConstructed: 0, micStarted: 0 };
   const tts = new FakeTtsPlayers();
   const chimes = { count: 0 };
   const diagnostics: Array<{ category: string; payload: Record<string, unknown> }> = [];
   const jobChanges: Array<{ source: string; changedKeys?: string[] }> = [];
   const services: RecordingTestServices = {
     deepgramServiceFactory: (callbacks, model) => {
+      counts.deepgramConstructed += 1;
       refs.deepgram = new FakeDeepgramService(callbacks, model);
       return refs.deepgram;
     },
     sonnetSessionFactory: (callbacks) => {
+      counts.sonnetConstructed += 1;
       refs.sonnet = new FakeSonnetSession(callbacks as FakeSonnetCallbacks);
       return refs.sonnet;
     },
-    micCaptureFactory: fakeMicCaptureFactory,
+    micCaptureFactory: (opts) => {
+      counts.micStarted += 1;
+      return fakeMicCaptureFactory(opts);
+    },
     resolveSttModel: () => Promise.resolve('flux'),
     diagnosticTap: (category, payload) => {
       diagnostics.push({ category, payload });
@@ -367,5 +378,5 @@ export function buildHarnessServices(): {
     ttsConfirmationPlayer: tts.confirmationPlayer,
     ttsDirectSpeak: tts.directSpeak,
   };
-  return { services, refs, tts, chimes, diagnostics, jobChanges };
+  return { services, refs, counts, tts, chimes, diagnostics, jobChanges };
 }

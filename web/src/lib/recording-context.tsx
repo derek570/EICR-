@@ -1110,6 +1110,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // consumes it so a later automatic sleep (flag ON) takes the other
   // branch.
   const pausedLightweightRef = React.useRef(false);
+  // C2a (PLAN-C, id 120) — Codex diff-review r1: `resume()` is async and
+  // its `statusRef.current !== 'sleeping'` guard only runs ONCE at the
+  // top; nothing flips `statusRef` again until the awaits resolve, so
+  // two rapid resume() calls (double-tap) BOTH pass the guard and run
+  // concurrently. Worse, the first call clears `pausedLightweightRef`
+  // before its first await, so a racing SECOND call reads it as false
+  // and takes the automatic-full-sleep branch instead — creating a
+  // second mic/Deepgram/Sonnet. This ref is claimed synchronously
+  // before any await in `resume()` so a second call is a no-op.
+  const resumeInFlightRef = React.useRef(false);
   // T20 — Silero v5 ONNX VAD wake gate. Loaded at session start, fed
   // 512-sample chunks (32ms @ 16kHz) by the accumulator below. When
   // `null`, the SleepManager falls back to its RMS path
@@ -1553,6 +1563,36 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(burstBufferRef.current.timer);
       burstBufferRef.current = null;
     }
+  }, []);
+
+  /** C2a (PLAN-C, id 120) — Codex diff-review r1 (BLOCKER, found
+   *  independently by two lenses): `pause()` originally called the FULL
+   *  `teardownDeepgram()` above, which — correctly, for stop()/error,
+   *  where Sonnet is ALSO gone — discards `burstBufferRef` /
+   *  `pendingNamingBufferRef` (the "Bug K" comment above explains why:
+   *  their deferred dispatch calls `sonnetRef.current?.sendTranscript`,
+   *  which would NPE once Sonnet is torn down too). A lighter-weight
+   *  pause keeps Sonnet alive, so that reasoning INVERTS: discarding
+   *  those buffers here would silently drop a reading the inspector
+   *  just finished dictating, with zero write and zero read-back — a
+   *  direct Audio-First invariant violation, and unlike stop() the
+   *  deferred dispatch would succeed fine if left alone (Sonnet is
+   *  still there to receive it). Disconnects ONLY the Deepgram
+   *  transport; deliberately does NOT touch `ttsActiveRef` /
+   *  `ttsResumeTimerRef` (TTS playback is independent of the mic/
+   *  Deepgram lifecycle and self-corrects via the still-wired TTS
+   *  lifecycle observer — forcibly resetting the gate mid-playback
+   *  risks a different failure mode) or `deferredTtsRef` (an owed
+   *  confirmation must still play once TTS clears). Mic is already
+   *  stopped by the caller before this runs, so
+   *  `isInspectorSpeakingRef` is safe to clear unconditionally. */
+  const disconnectDeepgramForPause = React.useCallback(() => {
+    deepgramRef.current?.disconnect();
+    deepgramRef.current = null;
+    setDeepgramState('disconnected');
+    setInterim('');
+    isInspectorSpeakingRef.current = false;
+    lastSpeechStartedTimeRef.current = null;
   }, []);
 
   const teardownSonnet = React.useCallback(() => {
@@ -3989,6 +4029,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     addressMirrorDeliveryStoreRef.current?.clearReservations();
     addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();
+    // C2a (PLAN-C, id 120) — Codex diff-review r1: this discriminator
+    // survived a stop() uncleared. A pause→stop→(fresh session, flag
+    // ON)→automatic-sleep→resume sequence would otherwise read the
+    // STALE `true` from the previous session and take the
+    // lighter-weight resume branch after a genuine automatic full-sleep
+    // teardown — calling `sonnetRef.current?.resume()` on a session
+    // automatic sleep had already torn down (`teardownSonnet()`), so
+    // the optional chain silently no-ops and the inspector ends up
+    // "active" with a dead extraction pipeline. Reset here (the one
+    // choke point every session boundary passes through) rather than at
+    // every `start()` call site.
+    pausedLightweightRef.current = false;
+    resumeInFlightRef.current = false;
   }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
 
   /** Manual pause — the inspector tapped the Pause button (also reached
@@ -4025,8 +4078,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     teardownMic();
     ringBufferRef.current?.reset();
     resetVadAccumulator(vadAccumulatorRef.current);
-    // Disconnect ONLY Deepgram.
-    teardownDeepgram();
+    // Disconnect ONLY Deepgram — the NARROW helper, not the full
+    // teardownDeepgram() (see disconnectDeepgramForPause's docblock for
+    // why: Sonnet stays alive here, so discarding a buffered
+    // almost-dispatched reading would silently drop it instead of
+    // safely reaching the still-connected session).
+    disconnectDeepgramForPause();
     // KEEP the Sonnet/server WS connected (iOS `sendPause` parity) —
     // do NOT call teardownSonnet(). The existing `session_ack
     // {status:paused}` backend frame is reused as-is via this call.
@@ -4039,7 +4096,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // needed for that UI contract and would touch every 'active' |
     // 'sleeping' branch elsewhere in this file for no behavioural gain.
     setState('sleeping');
-  }, [setState, clearTick, teardownMic, teardownDeepgram]);
+  }, [setState, clearTick, teardownMic, disconnectDeepgramForPause]);
 
   /** Manual resume — mirrors the wake path. If Deepgram was torn down
    *  (sleeping), reopen it; otherwise just unpause and replay the ring
@@ -4051,6 +4108,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // states — anything else (including a late retry from the overlay
     // while we've already rotated to a fresh session) must no-op.
     if (statusRef.current !== 'sleeping') return;
+    // C2a (PLAN-C, id 120) — Codex diff-review r1: resume() is async and
+    // `statusRef.current` doesn't flip away from 'sleeping' until the
+    // very end, so the guard above alone does not stop a SECOND resume()
+    // call from racing a first one still in flight (double-tap Resume).
+    // Claim this synchronously, before any await, so a racing second
+    // call is a clean no-op instead of building a duplicate
+    // mic/Deepgram/Sonnet pipeline.
+    if (resumeInFlightRef.current) return;
+    resumeInFlightRef.current = true;
     // Re-prime TTS inside the Resume-button user gesture stack frame
     // BEFORE any await. iPad Safari can drop the audio gesture grant
     // during a long pause (autoplay policy expires it), so a Resume
@@ -4122,6 +4188,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       teardownDeepgram();
       teardownSonnet();
       teardownSleep();
+    } finally {
+      resumeInFlightRef.current = false;
     }
   }, [
     setState,

@@ -207,4 +207,124 @@ describe('PLAN-C C2a — lighter-weight pause (full RecordingProvider)', () => {
       });
     }
   );
+
+  it('Codex diff-review r1 — flag ON: a question arriving over the still-open Sonnet WS mid-pause must not re-arm the automatic timer (sticky suspendTimer regression)', async () => {
+    window.localStorage.setItem(AUTO_SLEEP_KEY, 'true');
+    vi.useFakeTimers();
+    const { harness, apiRef } = await mountAndStart();
+
+    await act(async () => {
+      apiRef.current!.pause();
+    });
+    expect(apiRef.current!.state).toBe('sleeping');
+    const sonnetBeforeQuestion = harness.refs.sonnet!;
+
+    // A delayed extraction response arrives over the still-connected
+    // Sonnet WS WHILE paused — a question frame calls
+    // sleepManagerRef.onQuestionAsked(), which (pre-fix) re-armed the
+    // automatic timer even though suspendTimer() had already run.
+    await act(async () => {
+      harness.refs.sonnet!.emitQuestion({
+        question: 'Which circuit was that?',
+        question_type: 'clarification',
+      });
+    });
+
+    // Cross the (now question-answer-extended, then base) timeout
+    // windows entirely. If the timer were NOT sticky-suspended, this
+    // would fire onEnterSleeping, which tears down Sonnet — destroying
+    // the exact session the lighter-weight pause exists to keep alive.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(76_000);
+    });
+    expect(apiRef.current!.state).toBe('sleeping'); // still lighter-weight-paused, not auto-sleep-churned
+    expect(harness.refs.sonnet).toBe(sonnetBeforeQuestion); // never torn down
+
+    await act(async () => {
+      await apiRef.current!.resume();
+    });
+    expect(apiRef.current!.state).toBe('active');
+    expect(harness.refs.sonnet).toBe(sonnetBeforeQuestion);
+  });
+
+  it('Codex diff-review r1 — pause→stop→fresh session(flag ON)→real automatic sleep→resume takes the FULL wake branch, not a stale lighter-weight one', async () => {
+    window.localStorage.setItem(AUTO_SLEEP_KEY, 'true');
+    vi.useFakeTimers();
+    const { apiRef } = await mountAndStart();
+
+    // Lighter-weight pause sets the discriminator, then the session ends
+    // via stop() WITHOUT a resume() ever running to clear it.
+    await act(async () => {
+      apiRef.current!.pause();
+    });
+    expect(apiRef.current!.state).toBe('sleeping');
+    await act(async () => {
+      apiRef.current!.stop();
+    });
+    expect(apiRef.current!.state).toBe('idle');
+
+    // Fresh session. If the discriminator leaked across the stop(), a
+    // REAL automatic-timer sleep in THIS session would incorrectly take
+    // the lighter-weight resume branch afterwards (mic-only reopen +
+    // `sonnetRef.current?.resume()` on a ref automatic sleep already
+    // nulled — a silent no-op leaving the inspector "active" with a dead
+    // extraction pipeline).
+    const harness2 = buildHarnessServices();
+    __setRecordingTestServices(harness2.services);
+    setDiagnosticTap(harness2.services.diagnosticTap!);
+    await act(async () => {
+      await apiRef.current!.start();
+    });
+    expect(apiRef.current!.state).toBe('active');
+
+    // Cross the 60s automatic no-transcript timeout with no pause() —
+    // this is a GENUINE automatic sleep entry (flag ON), which fully
+    // tears down Deepgram AND Sonnet.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(61_000);
+    });
+    expect(apiRef.current!.state).toBe('sleeping');
+
+    const sonnetBeforeResume = harness2.refs.sonnet;
+    await act(async () => {
+      await apiRef.current!.resume();
+    });
+    expect(apiRef.current!.state).toBe('active');
+    // The FULL wake branch rebuilds Sonnet (openSonnet() runs) — a
+    // stale lighter-weight branch would instead call
+    // `sonnetRef.current?.resume()` on the already-torn-down instance
+    // and silently no-op, never reconstructing it.
+    expect(harness2.refs.sonnet).not.toBeNull();
+    expect(harness2.refs.sonnet).not.toBe(sonnetBeforeResume);
+  });
+
+  it('Codex diff-review r1 — a second resume() racing the first is a no-op, not a duplicate mic/Deepgram/Sonnet build', async () => {
+    const { harness, apiRef } = await mountAndStart();
+    await act(async () => {
+      apiRef.current!.pause();
+    });
+    expect(apiRef.current!.state).toBe('sleeping');
+
+    const deepgramBefore = harness.counts.deepgramConstructed;
+    const micBefore = harness.counts.micStarted;
+    const sonnetBefore = harness.counts.sonnetConstructed;
+
+    // Two resume() calls back-to-back, neither awaited before the
+    // second fires — models a double-tap on the Resume button. Without
+    // the resumeInFlightRef guard, both pass the `state === 'sleeping'`
+    // check (nothing flips it until the end of the FIRST call) and both
+    // build a mic/Deepgram pipeline concurrently.
+    await act(async () => {
+      const first = apiRef.current!.resume();
+      const second = apiRef.current!.resume();
+      await Promise.all([first, second]);
+    });
+
+    expect(apiRef.current!.state).toBe('active');
+    expect(harness.counts.micStarted - micBefore).toBe(1);
+    expect(harness.counts.deepgramConstructed - deepgramBefore).toBe(1);
+    // Sonnet is never reconstructed on the lighter-weight path at all
+    // (retained instance) — confirms neither call took the wrong branch.
+    expect(harness.counts.sonnetConstructed - sonnetBefore).toBe(0);
+  });
 });

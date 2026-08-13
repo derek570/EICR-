@@ -89,4 +89,34 @@ describe('SleepManager — autoSleepEnabled flag gate', () => {
     expect(getAutoSleepEnabled()).toBe(false);
     window.localStorage.removeItem('autoSleepEnabled');
   });
+
+  it('timerScheduler is injectable — driving a captured onFire manually (not vi.useFakeTimers) fires onEnterSleeping', () => {
+    vi.useRealTimers(); // prove the seam works with NO fake-timer dependency
+    const onEnterSleeping = vi.fn();
+    const mgr = new SleepManager(
+      { onEnterSleeping },
+      { autoSleepEnabled: true, noTranscriptTimeoutSec: 5 }
+    );
+    const captured: Array<{ timeoutMs: number; onFire: () => void }> = [];
+    mgr.timerScheduler = (timeoutMs, onFire) => {
+      captured.push({ timeoutMs, onFire });
+      return () => {
+        const idx = captured.findIndex((c) => c.onFire === onFire);
+        if (idx >= 0) captured.splice(idx, 1);
+      };
+    };
+
+    mgr.start();
+    expect(captured).toHaveLength(1);
+    expect(captured[0].timeoutMs).toBe(5_000);
+    expect(onEnterSleeping).not.toHaveBeenCalled();
+
+    // Manually invoke the captured onFire — this IS "the timeout
+    // elapsed" per the scheduler contract, with zero real or
+    // fake-timer wall-clock involvement.
+    captured[0].onFire();
+    expect(onEnterSleeping).toHaveBeenCalledOnce();
+    expect(mgr.currentState).toBe('sleeping');
+    vi.useFakeTimers();
+  });
 });

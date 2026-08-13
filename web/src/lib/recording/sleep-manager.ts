@@ -104,9 +104,13 @@ export interface SleepManagerConfig {
    *  machinery stays behind this flag (not deleted) so it can be
    *  re-enabled if continuous-streaming cost ever matters for a
    *  battery/data-constrained user. Does NOT gate explicit user
-   *  actions (Pause button, BFCache auto-pause, interruption recovery)
-   *  — those route through the C2a lighter-weight pause in
-   *  recording-context.tsx unconditionally, in both flag states. iOS
+   *  actions — on THIS client, the Pause button + BFCache auto-pause
+   *  route through the C2a lighter-weight pause in
+   *  recording-context.tsx unconditionally, in both flag states.
+   *  (Web has no AVAudioSession-interruption concept; iOS's own
+   *  equivalent explicit path — `handleInterruptionResume` — is
+   *  flag-independent too, but hardened separately via C1a's
+   *  generation-owned reconnect, not this file's C2a.) iOS
    *  counterpart: `autoSleepEnabled` (UserDefaults-backed, hidden, not
    *  exposed in Settings this wave). */
   autoSleepEnabled?: boolean;
@@ -152,10 +156,25 @@ export class SleepManager {
   private cfg: Required<SleepManagerConfig>;
   private cbs: SleepManagerCallbacks;
 
-  /** Active timer that, when it fires, transitions active → sleeping.
+  /** Cancel closure for the active timer, when armed — set by
+   *  `timerScheduler`'s return value, cleared by `clearNoTranscriptTimer`.
    *  Re-armed on every onSpeechActivity / onQuestionAsked / wake — the
    *  CURRENT timeout is whichever of the three constants applies. */
-  private noTranscriptTimer: ReturnType<typeof setTimeout> | null = null;
+  private cancelNoTranscriptTimer: (() => void) | null = null;
+
+  /** PLAN-C (id 120) — injectable timer scheduler (test seam), mirroring
+   *  iOS's `timerScheduler` on `SleepManager.swift`. The production
+   *  default schedules exactly what the pre-seam code did (a plain
+   *  `setTimeout`); tests can inject a fake that records
+   *  `(timeoutMs, onFire)` pairs and invokes `onFire` manually for
+   *  synchronous, deterministic control of the timer path without
+   *  depending solely on `vi.useFakeTimers()`. Returns a cancel
+   *  function — the sole handle this class keeps. Instance-scoped (not
+   *  static), so no state leaks across the test file. */
+  timerScheduler: (timeoutMs: number, onFire: () => void) => () => void = (timeoutMs, onFire) => {
+    const id = setTimeout(onFire, timeoutMs);
+    return () => clearTimeout(id);
+  };
 
   /** Question-answer flow flag — extends the no-transcript timeout
    *  to questionAnswerTimeoutSec until the next final transcript
@@ -176,6 +195,22 @@ export class SleepManager {
   private consecutiveSpeechFrames = 0;
   private cooldownUntilMs = 0;
 
+  /** PLAN-C (id 120) C2a — sticky latch set by `suspendTimer()` / cleared
+   *  by `resumeTimer()`. `suspendTimer()` alone only clears whatever
+   *  timer happens to be armed AT THAT INSTANT — it does not, by itself,
+   *  stop a LATER re-arm. Because the lighter-weight pause deliberately
+   *  leaves `state` at `active` (see the class docblock), any of
+   *  `onSpeechActivity` / `onQuestionAsked` / `setTtsActive(false)`
+   *  firing during a pause (e.g. a delayed extraction response arriving
+   *  over the still-connected Sonnet session) would otherwise call
+   *  `armNoTranscriptTimer()` again and silently resurrect the automatic
+   *  60s timeout mid-pause — reintroducing the exact
+   *  `onEnterSleeping`-tears-down-Sonnet failure C2a exists to eliminate
+   *  (test 4b). This flag makes `armNoTranscriptTimer()` a no-op for the
+   *  ENTIRE suspended window, not just the instant `suspendTimer()` ran.
+   *  Codex diff-review r1 (found independently by two lenses). */
+  private timerSuspended = false;
+
   constructor(callbacks: SleepManagerCallbacks = {}, config: SleepManagerConfig = {}) {
     this.cbs = callbacks;
     this.cfg = { ...DEFAULTS, ...config };
@@ -188,6 +223,7 @@ export class SleepManager {
   /** Arm the state machine. Must be called once the recording is live so
    *  the no-transcript timer starts ticking. */
   start(): void {
+    this.timerSuspended = false;
     this.setState('active');
     this.armNoTranscriptTimer();
   }
@@ -200,6 +236,7 @@ export class SleepManager {
     this.isQuestionAnswerFlow = false;
     this.isPostWakeGrace = false;
     this.isTtsActive = false;
+    this.timerSuspended = false;
   }
 
   /** Called whenever Deepgram emits a FINAL transcript. Resets the
@@ -316,12 +353,18 @@ export class SleepManager {
   }
 
   /** PLAN-C (id 120) — suspend the automatic timer WITHOUT touching
-   *  `state`. Used by recording-context.tsx's C2a lighter-weight pause
-   *  so a flag-ON automatic timer can't fire `enterSleeping()` mid-pause
-   *  (which would resurrect the full Deepgram/Sonnet teardown + replay
-   *  path the lighter-weight pause exists to avoid). No-op if
-   *  `autoSleepEnabled` is false — there is no timer to suspend. */
+   *  `state`, for the ENTIRE window until `resumeTimer()` is called —
+   *  not just the instant this method runs. Used by
+   *  recording-context.tsx's C2a lighter-weight pause so a flag-ON
+   *  automatic timer can't fire `enterSleeping()` mid-pause (which would
+   *  resurrect the full Deepgram/Sonnet teardown + replay path the
+   *  lighter-weight pause exists to avoid) — including from a LATER
+   *  re-arm via `onSpeechActivity`/`onQuestionAsked`/`setTtsActive(false)`
+   *  while paused (e.g. a delayed extraction response over the
+   *  still-connected Sonnet session). Safe/inert if `autoSleepEnabled`
+   *  is false — there is no timer to suspend either way. */
   suspendTimer(): void {
+    this.timerSuspended = true;
     this.clearNoTranscriptTimer();
   }
 
@@ -331,32 +374,39 @@ export class SleepManager {
    *  unconditionally: `armNoTranscriptTimer()` itself no-ops when
    *  `autoSleepEnabled` is false. */
   resumeTimer(): void {
+    this.timerSuspended = false;
     if (this.state === 'active') this.armNoTranscriptTimer();
   }
 
   private armNoTranscriptTimer() {
     this.clearNoTranscriptTimer();
+    // PLAN-C (id 120) C2a — while suspended (a lighter-weight pause is
+    // in flight), no re-arm may proceed, however it was triggered. See
+    // `timerSuspended`'s docblock for the failure this closes.
+    if (this.timerSuspended) return;
     // PLAN-C (id 120) — the Sleeping tier is retired by default. When
     // `autoSleepEnabled` is false the automatic state machine collapses
     // to `active` indefinitely: no timer is ever armed, so it can never
-    // fire `enterSleeping()`. Explicit lifecycle actions (Pause button,
-    // BFCache auto-pause, interruption recovery) are FLAG-INDEPENDENT —
-    // they no longer call through this class at all (see C2a in
+    // fire `enterSleeping()`. On THIS client, explicit lifecycle actions
+    // (Pause button, BFCache auto-pause) are FLAG-INDEPENDENT — they no
+    // longer call through this class at all (see C2a in
     // recording-context.tsx), so gating only the timer here is
-    // sufficient to satisfy "does not gate explicit user actions".
+    // sufficient to satisfy "does not gate explicit user actions". (Web
+    // has no interruption-recovery concept; iOS's equivalent is hardened
+    // separately via C1a, not this file.)
     if (!this.cfg.autoSleepEnabled) return;
     if (this.isTtsActive) return; // suspended while TTS speaks
     const ms = this.currentTimeoutSec() * 1000;
-    this.noTranscriptTimer = setTimeout(() => {
+    this.cancelNoTranscriptTimer = this.timerScheduler(ms, () => {
       // Direct entry into sleeping — no intermediate doze tier.
       if (this.state === 'active') this.enterSleeping();
-    }, ms);
+    });
   }
 
   private clearNoTranscriptTimer() {
-    if (this.noTranscriptTimer) {
-      clearTimeout(this.noTranscriptTimer);
-      this.noTranscriptTimer = null;
+    if (this.cancelNoTranscriptTimer) {
+      this.cancelNoTranscriptTimer();
+      this.cancelNoTranscriptTimer = null;
     }
   }
 }
