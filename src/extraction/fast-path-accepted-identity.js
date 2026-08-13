@@ -404,81 +404,78 @@ export function resolveFastAttemptSlotIdentities(correlationIds, sessionId) {
 
 /**
  * B3.1 — resolve the orphan-net precedence outcome for a turn's attempted
- * correlation ids. Returns:
- *   - `{kind: 'suppress'}` when ANY attempted correlation reached
- *     'playback_started' — the user already heard a fast clip for this
- *     turn's candidate; no second line.
- *   - `{kind: 'pending', correlationId, identity}` when no correlation
- *     reached 'playback_started' but at least one is still 'pending' (or
+ * correlation ids. Returns an ARRAY, one entry per attempted correlation id
+ * that isn't `failed` (a `failed` correlation contributes NO entry — same
+ * as before), or `null` when the array would be empty (every attempted
+ * correlation failed, or none was attempted / has any ledger record at
+ * all). Each entry is one of:
+ *   - `{correlationId, kind: 'suppress'}` — this correlation reached
+ *     'playback_started'; the user already heard THIS clip. No second line
+ *     for it — but this does NOT affect any sibling entry.
+ *   - `{correlationId, kind: 'pending', identity}` — still 'pending' (or
  *     unresolved — treated as pending per the plan's default) AND has a
  *     COMMITTED accepted identity (`resolveAcceptedIdentity`) to build a
  *     real, CLAMPED fallback confirmation from.
- *   - `{kind: 'pending_uncommitted', correlationId, rawRecord}` — Codex
+ *   - `{correlationId, kind: 'pending_uncommitted', rawRecord}` — Codex
  *     diff-review F2 (2026-08-13): the SAME 'pending, not absence' default,
  *     but for the race where the orphan-net decision fires BEFORE the fast
  *     route's first `onAudio` byte (so `commitAcceptedIdentity` hasn't run
- *     yet and `resolveAcceptedIdentity` returns null). Without this branch
- *     the caller previously fell through to `null` — silently defaulting to
- *     ABSENCE, exactly the outcome the plan's "pending, not absence" rule
- *     forbids. `rawRecord` is the UN-CLAMPED `getFastAttemptRecord(cid)`
- *     captured at `markFastAttemptPending` time (field/circuit/boardId/
- *     rawValue) — the caller is responsible for clamping `rawValue` before
- *     building a spoken confirmation from it (this module has no clamp
- *     helper and deliberately doesn't grow one just for this fallback).
- *   - `null` when every attempted correlation failed, or a genuinely
- *     unattempted correlation id has no ledger record at all (never
- *     fabricate a placeholder confirmation — falls through to the caller's
- *     existing behaviour).
+ *     yet and `resolveAcceptedIdentity` returns null). `rawRecord` is the
+ *     UN-CLAMPED `getFastAttemptRecord(cid)` captured at
+ *     `markFastAttemptPending` time (field/circuit/boardId/rawValue) — the
+ *     caller is responsible for clamping `rawValue` before building a
+ *     spoken confirmation from it (this module has no clamp helper and
+ *     deliberately doesn't grow one just for this fallback).
  *
- * Precedence when a turn attempts multiple correlations: a committed
- * identity anywhere in the set wins over an uncommitted one, regardless of
- * iteration order — matching `resolveAcceptedIdentity`'s own preference for
- * the clamped value over a pending record's raw one.
+ * [DEVIATION] F8 (Codex diff-review, 2026-08-13, sanctioned) — this used to
+ * collapse the ENTIRE turn's attempted correlation set to ONE outcome: the
+ * first `playback_started` correlation suppressed EVERYTHING for the turn,
+ * and only the FIRST `pending` correlation with a committed identity got a
+ * fallback; any OTHER correlation in the same turn (a second reading whose
+ * fast clip is still pending/failed while a different reading's fast clip
+ * already played) was silently dropped from consideration entirely. On a
+ * genuinely multi-reading turn this could suppress or drop readings that
+ * Audio-First invariant #1 requires be heard exactly once. The plan's
+ * literal precedence table didn't spell out the multi-correlation case, but
+ * the Audio-First mandate ("every dictated reading read back EXACTLY once
+ * — never 0, never 2") affirmatively requires each attempted correlation be
+ * accounted for independently — hence the array shape, judged in-intent by
+ * the orchestrating session rather than a literal-plan requirement.
  *
  * @param {Set<string>|null|undefined} correlationIds
  * @param {string|null} [sessionId] — F5: threaded through to every per-cid lookup below.
- * @returns {{kind: 'suppress'}|{kind: 'pending', correlationId: string, identity: FastAttemptRecord}|{kind: 'pending_uncommitted', correlationId: string, rawRecord: FastAttemptRecord}|null}
+ * @returns {Array<{correlationId: string, kind: 'suppress'}|{correlationId: string, kind: 'pending', identity: FastAttemptRecord}|{correlationId: string, kind: 'pending_uncommitted', rawRecord: FastAttemptRecord}>|null}
  */
 export function resolveFastLedgerOutcomeForTurn(correlationIds, sessionId) {
   if (!correlationIds || correlationIds.size === 0) return null;
-  let pendingWithIdentity = null;
-  let pendingUncommitted = null;
+  const outcomes = [];
   for (const cid of correlationIds) {
     const state = getFastAttemptState(cid, sessionId);
-    if (state === 'playback_started') {
-      return { kind: 'suppress' };
-    }
     if (state === 'failed') continue;
+    if (state === 'playback_started') {
+      outcomes.push({ correlationId: cid, kind: 'suppress' });
+      continue;
+    }
     // state === 'pending' OR null (unresolved race — the plan's explicit
     // "pending, not absence" default) — try to attach a committed identity
-    // first; a committed identity anywhere in the set always wins.
-    if (!pendingWithIdentity) {
-      const identity = resolveAcceptedIdentity(cid, sessionId);
-      if (identity) {
-        pendingWithIdentity = { correlationId: cid, identity };
-        continue;
-      }
+    // first for THIS correlation.
+    const identity = resolveAcceptedIdentity(cid, sessionId);
+    if (identity) {
+      outcomes.push({ correlationId: cid, kind: 'pending', identity });
+      continue;
     }
     // F2 — not committed (yet). Fall back to the raw pre-commit record so a
     // decision firing before `commitAcceptedIdentity` still yields a
-    // 'pending'-flavoured outcome instead of silently treating the turn as
-    // though nothing was attempted. Only remembers the FIRST such record —
-    // mirrors `pendingWithIdentity`'s own "first candidate wins" shape,
-    // superseded immediately if a later cid in the set turns out committed.
-    if (!pendingWithIdentity && !pendingUncommitted) {
-      const rawRecord = getFastAttemptRecord(cid, sessionId);
-      if (rawRecord) {
-        pendingUncommitted = { correlationId: cid, rawRecord };
-      }
+    // 'pending'-flavoured outcome for THIS correlation instead of silently
+    // treating it as though it was never attempted.
+    const rawRecord = getFastAttemptRecord(cid, sessionId);
+    if (rawRecord) {
+      outcomes.push({ correlationId: cid, kind: 'pending_uncommitted', rawRecord });
     }
+    // else: genuinely no ledger record at all for this cid (never
+    // attempted, or expired) — contributes nothing, same as before.
   }
-  if (pendingWithIdentity) {
-    return { kind: 'pending', ...pendingWithIdentity };
-  }
-  if (pendingUncommitted) {
-    return { kind: 'pending_uncommitted', ...pendingUncommitted };
-  }
-  return null;
+  return outcomes.length > 0 ? outcomes : null;
 }
 
 /**

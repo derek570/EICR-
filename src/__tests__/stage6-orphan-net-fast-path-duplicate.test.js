@@ -316,7 +316,9 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
       ([ev]) => ev === 'stage6.orphan_duplicate_or_pending_outcome'
     );
     expect(row).toBeDefined();
-    expect(row[1].kind).toBe('suppress');
+    // F8 (array shape) — a lone 'suppress' entry yields ZERO confirmations,
+    // logged via confirmationCount rather than a single top-level `kind`.
+    expect(row[1].confirmationCount).toBe(0);
   });
 
   test('pending WITH a committed identity → correlation + dedupe-token stamped "Already got" fallback', async () => {
@@ -351,7 +353,8 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
       field: 'measured_zs_ohm',
       circuit: 4,
       fast_correlation_id: 'cid-pending',
-      dedupe_token: `duplicate_${SESSION_ID}-turn-1`,
+      // F8 — per-correlation collision-free token.
+      dedupe_token: `duplicate_${SESSION_ID}-turn-1_cid-pending`,
       expects_ios_ack: false,
     });
     expect(confs[0].text).toBe('Already got that — Circuit 4, Zs 0.62');
@@ -396,7 +399,8 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
       field: 'measured_zs_ohm',
       circuit: 4,
       fast_correlation_id: 'cid-race',
-      dedupe_token: `duplicate_${SESSION_ID}-turn-1`,
+      // F8 — per-correlation collision-free token.
+      dedupe_token: `duplicate_${SESSION_ID}-turn-1_cid-race`,
       expects_ios_ack: false,
     });
     expect(confs[0].text).toBe('Already got that — Circuit 4, Zs 0.62');
@@ -459,8 +463,90 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     expect(c1.fast_correlation_id).toBe('cid-a');
     expect(c2.fast_correlation_id).toBe('cid-b');
     expect(c1.dedupe_token).not.toBe(c2.dedupe_token);
-    expect(c1.dedupe_token).toBe(`duplicate_${SESSION_ID}-turn-1`);
-    expect(c2.dedupe_token).toBe(`duplicate_${SESSION_ID}-turn-2`);
+    // F8 — per-correlation collision-free tokens.
+    expect(c1.dedupe_token).toBe(`duplicate_${SESSION_ID}-turn-1_cid-a`);
+    expect(c2.dedupe_token).toBe(`duplicate_${SESSION_ID}-turn-2_cid-b`);
+  });
+
+  // [DEVIATION] F8 (Codex diff-review, 2026-08-13, sanctioned) — the
+  // required test from the brief: a turn with TWO attempted correlations,
+  // one `playback_started` and one `pending` with a committed identity.
+  // Before F8, resolveFastLedgerOutcomeForTurn collapsed the whole turn to
+  // ONE winner — whichever correlation the for-loop hit first (Set
+  // iteration order, i.e. insertion order) decided the ENTIRE outcome, so
+  // depending on which correlation the test attempted first, the pending
+  // sibling's fallback could be silently dropped entirely (0 confirmations
+  // when there should be 1) OR the playback_started sibling's suppression
+  // could be defeated. F8 makes both independent: the playback_started
+  // correlation contributes nothing but does NOT cancel the pending
+  // sibling's own fallback confirmation.
+  test('[DEVIATION] F8 — TWO attempted correlations (one playback_started, one pending+committed) → exactly ONE fallback confirmation, BOTH independently accounted for', async () => {
+    fastIdentity.markFastAttemptPending('cid-played', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    fastIdentity.commitAcceptedIdentity('cid-played', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      canonicalValue: '0.62',
+      comparisonText: 'Circuit 4, Zs 0.62',
+    });
+    fastIdentity.markFastAttemptPlaybackStarted(SESSION_ID, 'cid-played');
+
+    fastIdentity.markFastAttemptPending('cid-pending', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'r1_r2_ohm',
+      circuit: 5,
+      boardId: null,
+      rawValue: '0.35',
+    });
+    fastIdentity.commitAcceptedIdentity('cid-pending', {
+      sessionId: SESSION_ID,
+      turnId: 'irrelevant',
+      field: 'r1_r2_ohm',
+      circuit: 5,
+      boardId: null,
+      canonicalValue: '0.35',
+      comparisonText: 'Circuit 5, R1 plus R2 0.35',
+    });
+    // cid-pending deliberately NOT marked playback_started or failed.
+
+    const session = makeSession({});
+    const opts = baseOpts({ regexFastCorrelationId: ['cid-played', 'cid-pending'] });
+    const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+    const confs = (result.confirmations ?? []).filter((c) =>
+      /^Already got that —/.test(c.text || '')
+    );
+    expect(confs).toHaveLength(1);
+    expect(confs[0]).toMatchObject({
+      field: 'r1_r2_ohm',
+      circuit: 5,
+      fast_correlation_id: 'cid-pending',
+      dedupe_token: `duplicate_${SESSION_ID}-turn-1_cid-pending`,
+    });
+    // The playback_started correlation produced NO confirmation of its own
+    // — but critically, it also didn't SUPPRESS the pending sibling's one.
+    expect(confs.find((c) => c.fast_correlation_id === 'cid-played')).toBeUndefined();
+    // Both correlations were independently accounted for: the log row
+    // reflects exactly ONE confirmation (the pending one), not zero (which
+    // would mean the playback_started sibling silently ate it) and not two
+    // (which would mean the suppress entry fabricated a second line).
+    const row = opts.logger.info.mock.calls.find(
+      ([ev]) => ev === 'stage6.orphan_duplicate_or_pending_outcome'
+    );
+    expect(row).toBeDefined();
+    expect(row[1].confirmationCount).toBe(1);
+    expect(row[1].fastCorrelationIds).toEqual(['cid-pending']);
+    expect(session.orphanContext == null).toBe(true);
   });
 
   test('failed ledger state falls through to the exact-duplicate check (not suppress/pending)', async () => {

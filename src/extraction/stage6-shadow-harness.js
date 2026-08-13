@@ -884,21 +884,45 @@ export function buildAlreadyGotConfirmationText(field, value, circuit, designati
  * turn, combining the fast-attempt ledger (B3.1) with the exact-duplicate
  * tuple (B3.2, computed by the caller from the SAME re-parse the recovery
  * guard already ran). Returns:
- *   - `{kind: 'suppress'}` — a fast clip for this turn already played; speak
- *     nothing else.
- *   - `{kind: 'confirmation', confirmation}` — a fieldful "Already got"
- *     confirmation to push instead of the ordinary apology.
- *   - `null` — no fast-ledger signal and no exact duplicate; caller falls
- *     through to the existing allRejected/observation/carriesValue/noop
- *     prompt selection UNCHANGED.
+ *   - `{kind: 'confirmations', confirmations: Object[]}` — the fast ledger
+ *     had at least one attempted-and-unfailed correlation this turn; ZERO OR
+ *     MORE fieldful "Already got"/echo-stamped confirmations to push instead
+ *     of the ordinary apology (an ALL-suppress turn yields an empty array —
+ *     see the `[DEVIATION] F8` note below).
+ *   - `{kind: 'confirmations', confirmations: [oneConfirmation]}` — the
+ *     ledger contributed nothing (every attempted correlation failed, or
+ *     none was attempted) but the B3.2 exact-duplicate re-parse matched.
+ *   - `null` — no fast-ledger signal at all and no exact duplicate; caller
+ *     falls through to the existing allRejected/observation/carriesValue/
+ *     noop prompt selection UNCHANGED.
  *
  * Deliberately scoped to the NON-allRejected case only (the caller only
  * invokes this when `!allRejected`) — allRejected means a tool call actually
  * fired and was rejected, a fundamentally different class from "zero tool
  * calls" that B3 does not touch.
  *
- * @param {{session: Object, turnId: string, correlationIds: Set<string>|null|undefined, exactDuplicateTuple: {field: string, circuit: number, value: string}|null}} args
- * @returns {{kind: 'suppress'}|{kind: 'confirmation', confirmation: Object}|null}
+ * [DEVIATION] F8 (Codex diff-review, 2026-08-13, sanctioned) —
+ * `resolveFastLedgerOutcomeForTurn` used to collapse an entire turn's
+ * attempted correlations to ONE winner (the first `playback_started`
+ * suppressed everything; only the FIRST `pending` correlation with a
+ * committed identity got a fallback). On a genuinely multi-reading turn (a
+ * second reading's fast clip still pending while a different reading's fast
+ * clip already played) this silently dropped a reading from consideration
+ * — Audio-First invariant #1 ("every dictated reading read back EXACTLY
+ * once — never 0, never 2") affirmatively requires each attempted
+ * correlation be accounted for independently, even though the plan's
+ * literal precedence table didn't spell out the multi-correlation case.
+ * `resolveFastLedgerOutcomeForTurn` now returns an ARRAY of per-correlation
+ * outcomes; this function builds ZERO OR ONE confirmation per entry (a
+ * `suppress` entry contributes nothing, but never cancels a SIBLING
+ * `pending`/`pending_uncommitted` entry's fallback, and vice versa), each
+ * carrying its OWN `fast_correlation_id` and a COLLISION-FREE
+ * `dedupe_token` (`duplicate_<turnId>_<correlationId>` — the bare
+ * `duplicate_<turnId>` token B3.2 uses below can't be reused here since
+ * multiple confirmations in one turn need independently-dedupable tokens).
+ *
+ * @param {{session: Object, turnId: string, correlationIds: Set<string>|null|undefined, exactDuplicateTuple: {field: string, circuit: number, value: string, boardId: string|null}|null}} args
+ * @returns {{kind: 'confirmations', confirmations: Object[]}|null}
  */
 export function resolveZeroToolCallDuplicateOutcome({
   session,
@@ -909,24 +933,31 @@ export function resolveZeroToolCallDuplicateOutcome({
   // F5 — session-scope the ledger lookup so a stale/foreign correlationId
   // (client replay, a UUID collision with a record from a different
   // session) can never resolve as this session's outcome.
-  const fastLedgerOutcome = resolveFastLedgerOutcomeForTurn(correlationIds, session?.sessionId);
-  if (fastLedgerOutcome?.kind === 'suppress') {
-    return { kind: 'suppress' };
-  }
-  if (fastLedgerOutcome?.kind === 'pending') {
-    const { identity, correlationId } = fastLedgerOutcome;
-    const designation =
-      session.stateSnapshot?.circuits?.[identity.circuit]?.circuit_designation ?? null;
-    const text = buildAlreadyGotConfirmationText(
-      identity.field,
-      identity.canonicalValue,
-      identity.circuit,
-      designation
-    );
-    if (text) {
-      return {
-        kind: 'confirmation',
-        confirmation: {
+  const fastLedgerOutcomes = resolveFastLedgerOutcomeForTurn(correlationIds, session?.sessionId);
+  if (fastLedgerOutcomes) {
+    // F8 — a non-null array means at least one correlation was attempted
+    // and didn't fail. Build zero-or-one confirmation PER ENTRY,
+    // independently; only fall through to B3.2 when the array itself is
+    // null (below) — never merely because every entry resolved to
+    // 'suppress'.
+    const confirmations = [];
+    for (const outcome of fastLedgerOutcomes) {
+      if (outcome.kind === 'suppress') continue;
+      if (outcome.kind === 'pending') {
+        const { identity, correlationId } = outcome;
+        const designation =
+          session.stateSnapshot?.circuits?.[identity.circuit]?.circuit_designation ?? null;
+        const text = buildAlreadyGotConfirmationText(
+          identity.field,
+          identity.canonicalValue,
+          identity.circuit,
+          designation
+        );
+        // A genuinely empty/suppressed value (buildConfirmationText's own
+        // emptiness contract) contributes nothing for THIS entry — never a
+        // placeholder, and never suppresses a sibling entry.
+        if (!text) continue;
+        confirmations.push({
           text,
           expanded_text: expandForTTS(text),
           field: identity.field,
@@ -936,72 +967,62 @@ export function resolveZeroToolCallDuplicateOutcome({
           // confirmation (parked under .fastPending; dropped on fast start,
           // re-dispatched on fast failure/TTL).
           fast_correlation_id: correlationId,
-          // B3.2's anti-swallow token — see buildFastAttemptSlotKey's sibling
-          // module doc: a session-permanent fieldful dedupe would otherwise
-          // swallow a SECOND identical pending-fallback on a later turn.
-          dedupe_token: `duplicate_${turnId}`,
+          // F8 — collision-free per-correlation token (a session-permanent
+          // fieldful dedupe would otherwise swallow a SECOND identical
+          // pending-fallback within the SAME turn, not just a later one).
+          dedupe_token: `duplicate_${turnId}_${correlationId}`,
           expects_ios_ack: false,
-        },
-      };
-    }
-    // Committed identity resolved to a genuinely empty/suppressed value
-    // (buildConfirmationText's own emptiness contract) — nothing to speak.
-    // Fall through to existing behaviour.
-    return null;
-  }
-  // Codex diff-review F2 (2026-08-13) — the orphan-net decision fired BEFORE
-  // the fast route's first `onAudio` byte, so `commitAcceptedIdentity` never
-  // ran and there is no clamped canonicalValue/comparisonText yet. The
-  // ledger still knows THIS turn attempted a fast clip for a specific
-  // field/circuit — the plan's "pending, not absence" default requires a
-  // fallback confirmation here too, built from the raw (un-clamped)
-  // candidate value captured at `markFastAttemptPending` time. Clamped the
-  // same way `findExactDuplicateAgainstSnapshot` clamps its own re-parsed
-  // tuple — this module has no clamp helper of its own by design (see
-  // fast-path-accepted-identity.js's header doc).
-  if (fastLedgerOutcome?.kind === 'pending_uncommitted') {
-    const { rawRecord, correlationId } = fastLedgerOutcome;
-    const rawBoardId = rawRecord.boardId ?? null;
-    const rawClamp = clampReadingForDispatch({
-      field: rawRecord.field,
-      value: rawRecord.rawValue,
-      earthing: resolveBoardAwareEarthing(session.stateSnapshot, rawBoardId),
-    });
-    const clampedRawValue = rawClamp.value;
-    const rawCircuitData = getCircuitBucket(session.stateSnapshot, rawRecord.circuit, rawBoardId);
-    const designation = rawCircuitData?.circuit_designation ?? null;
-    const text = buildAlreadyGotConfirmationText(
-      rawRecord.field,
-      clampedRawValue,
-      rawRecord.circuit,
-      designation
-    );
-    if (text) {
+        });
+        continue;
+      }
+      // outcome.kind === 'pending_uncommitted' — Codex diff-review F2
+      // (2026-08-13): the orphan-net decision fired BEFORE the fast route's
+      // first `onAudio` byte, so `commitAcceptedIdentity` never ran and
+      // there is no clamped canonicalValue/comparisonText yet. The ledger
+      // still knows THIS turn attempted a fast clip for a specific
+      // field/circuit — the plan's "pending, not absence" default requires
+      // a fallback confirmation here too, built from the raw (un-clamped)
+      // candidate value captured at `markFastAttemptPending` time. Clamped
+      // the same way `findExactDuplicateAgainstSnapshot` clamps its own
+      // re-parsed tuple — this module has no clamp helper of its own by
+      // design (see fast-path-accepted-identity.js's header doc).
+      const { rawRecord, correlationId } = outcome;
+      const rawBoardId = rawRecord.boardId ?? null;
+      const rawClamp = clampReadingForDispatch({
+        field: rawRecord.field,
+        value: rawRecord.rawValue,
+        earthing: resolveBoardAwareEarthing(session.stateSnapshot, rawBoardId),
+      });
+      const clampedRawValue = rawClamp.value;
+      const rawCircuitData = getCircuitBucket(session.stateSnapshot, rawRecord.circuit, rawBoardId);
+      const designation = rawCircuitData?.circuit_designation ?? null;
+      const text = buildAlreadyGotConfirmationText(
+        rawRecord.field,
+        clampedRawValue,
+        rawRecord.circuit,
+        designation
+      );
+      if (!text) continue;
       const mainBoardId = getMainBoardId(session.stateSnapshot);
       const stampBoardId = rawBoardId != null && rawBoardId !== mainBoardId ? rawBoardId : null;
-      return {
-        kind: 'confirmation',
-        confirmation: {
-          text,
-          expanded_text: expandForTTS(text),
-          field: rawRecord.field,
-          circuit: Number.isInteger(rawRecord.circuit) ? rawRecord.circuit : null,
-          ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
-          // Same B1.3-style echo stamp as the committed-identity 'pending'
-          // branch above — iOS's B2 correlation state machine treats this
-          // identically (parked under .fastPending; dropped on fast start,
-          // re-dispatched on fast failure/TTL).
-          fast_correlation_id: correlationId,
-          dedupe_token: `duplicate_${turnId}`,
-          expects_ios_ack: false,
-        },
-      };
+      confirmations.push({
+        text,
+        expanded_text: expandForTTS(text),
+        field: rawRecord.field,
+        circuit: Number.isInteger(rawRecord.circuit) ? rawRecord.circuit : null,
+        ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
+        // Same B1.3-style echo stamp as the committed-identity 'pending'
+        // branch above — iOS's B2 correlation state machine treats this
+        // identically (parked under .fastPending; dropped on fast start,
+        // re-dispatched on fast failure/TTL).
+        fast_correlation_id: correlationId,
+        dedupe_token: `duplicate_${turnId}_${correlationId}`,
+        expects_ios_ack: false,
+      });
     }
-    // Raw value clamped to nothing speakable — never fabricate a
-    // placeholder. Fall through to existing behaviour.
-    return null;
+    return { kind: 'confirmations', confirmations };
   }
-  // fastLedgerOutcome is null (every attempted correlation failed, or none
+  // fastLedgerOutcomes is null (every attempted correlation failed, or none
   // was attempted this turn) — try the exact-duplicate tuple instead.
   if (exactDuplicateTuple) {
     // Codex diff-review F3 — the designation lookup shares the SAME
@@ -1037,18 +1058,20 @@ export function resolveZeroToolCallDuplicateOutcome({
           ? exactDuplicateTuple.boardId
           : null;
       return {
-        kind: 'confirmation',
-        confirmation: {
-          text,
-          expanded_text: expandForTTS(text),
-          field: exactDuplicateTuple.field,
-          circuit: Number.isInteger(exactDuplicateTuple.circuit)
-            ? exactDuplicateTuple.circuit
-            : null,
-          ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
-          dedupe_token: `duplicate_${turnId}`,
-          expects_ios_ack: false,
-        },
+        kind: 'confirmations',
+        confirmations: [
+          {
+            text,
+            expanded_text: expandForTTS(text),
+            field: exactDuplicateTuple.field,
+            circuit: Number.isInteger(exactDuplicateTuple.circuit)
+              ? exactDuplicateTuple.circuit
+              : null,
+            ...(stampBoardId != null ? { board_id: stampBoardId } : {}),
+            dedupe_token: `duplicate_${turnId}`,
+            expects_ios_ack: false,
+          },
+        ],
       };
     }
   }
@@ -3256,21 +3279,38 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // so the untouched allRejected/rejectedSetFullyCovered branch
             // above, and `partialCoveragePending` (which is ALSO only ever
             // set true under allRejected), are both unaffected by this path.
-            if (zeroToolCallOutcome.kind === 'confirmation') {
+            //
+            // [DEVIATION] F8 (Codex diff-review, 2026-08-13, sanctioned) —
+            // `resolveZeroToolCallDuplicateOutcome` now always returns
+            // `{kind: 'confirmations', confirmations: [...]}` (possibly
+            // empty) instead of a single-winner `{kind:'confirmation'|
+            // 'suppress', confirmation}`. On a genuinely multi-reading turn
+            // (two fast clips attempted, one played, one still pending) the
+            // OLD single-winner shape silently dropped whichever correlation
+            // didn't win — a turn could have TWO dictated readings and the
+            // net effect was that only one was ever accounted for. Every
+            // entry is pushed independently: a 'suppress' entry (the user
+            // already heard that clip) contributes nothing, but never
+            // cancels a SIBLING pending entry's fallback confirmation, and
+            // vice versa — Audio-First invariant #1 requires each dictated
+            // reading be heard EXACTLY once, not "at most one across the
+            // whole turn".
+            for (const confirmation of zeroToolCallOutcome.confirmations) {
               if (!Array.isArray(result.confirmations)) result.confirmations = [];
-              result.confirmations.push(zeroToolCallOutcome.confirmation);
+              result.confirmations.push(confirmation);
             }
-            // 'suppress' pushes nothing at all — the user already heard a
-            // fast clip for this turn's candidate. NEITHER sub-case sets
-            // session.orphanContext: a duplicate/pending-fallback outcome is
-            // not "the model failed to understand", so there is nothing to
-            // re-inject into the next turn.
+            // NEITHER sub-case sets session.orphanContext: a duplicate/
+            // pending-fallback outcome is not "the model failed to
+            // understand", so there is nothing to re-inject into the next
+            // turn — true whether zero, one, or several confirmations fired.
             log.info?.('stage6.orphan_duplicate_or_pending_outcome', {
               sessionId: session.sessionId,
               turnId,
-              kind: zeroToolCallOutcome.kind,
-              field: zeroToolCallOutcome.confirmation?.field ?? null,
-              hasFastCorrelationId: !!zeroToolCallOutcome.confirmation?.fast_correlation_id,
+              confirmationCount: zeroToolCallOutcome.confirmations.length,
+              fields: zeroToolCallOutcome.confirmations.map((c) => c.field ?? null),
+              fastCorrelationIds: zeroToolCallOutcome.confirmations
+                .map((c) => c.fast_correlation_id)
+                .filter(Boolean),
               textPreview: String(transcriptText || '').slice(0, 80),
             });
           } else if (!recovered) {

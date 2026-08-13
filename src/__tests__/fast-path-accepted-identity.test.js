@@ -329,21 +329,39 @@ describe('resolveFastAttemptSlotIdentities', () => {
   });
 });
 
+// [DEVIATION] F8 (Codex diff-review, 2026-08-13, sanctioned) —
+// `resolveFastLedgerOutcomeForTurn` now returns an ARRAY of per-correlation
+// outcomes instead of collapsing an entire turn's attempted correlations to
+// ONE winner. Audio-First invariant #1 ("every dictated reading read back
+// EXACTLY once") requires each attempted correlation be accounted for
+// independently — a `playback_started` sibling must not silently drop a
+// DIFFERENT correlation's pending fallback, and vice versa.
 describe('resolveFastLedgerOutcomeForTurn', () => {
   test('null correlationIds → null', () => {
     expect(identity.resolveFastLedgerOutcomeForTurn(null)).toBeNull();
     expect(identity.resolveFastLedgerOutcomeForTurn(new Set())).toBeNull();
   });
 
-  test('playback_started wins even alongside a pending sibling', () => {
+  test('playback_started and a pending sibling are BOTH accounted for independently — neither drops the other', () => {
     identity.markFastAttemptPending('cid-a', { sessionId: SESS, turnId: TURN, field: 'x' });
     identity.markFastAttemptPlaybackStarted(SESS, 'cid-a');
-    identity.markFastAttemptPending('cid-b', { sessionId: SESS, turnId: TURN, field: 'y' });
-    const outcome = identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a', 'cid-b']));
-    expect(outcome).toEqual({ kind: 'suppress' });
+    identity.markFastAttemptPending('cid-b', {
+      sessionId: SESS,
+      turnId: TURN,
+      field: 'measured_zs_ohm',
+      circuit: 4,
+      boardId: null,
+      rawValue: '0.62',
+    });
+    const outcomes = identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a', 'cid-b']));
+    expect(outcomes).toHaveLength(2);
+    const a = outcomes.find((o) => o.correlationId === 'cid-a');
+    const b = outcomes.find((o) => o.correlationId === 'cid-b');
+    expect(a).toEqual({ correlationId: 'cid-a', kind: 'suppress' });
+    expect(b.kind).toBe('pending_uncommitted');
   });
 
-  test('failed correlation is skipped; pending WITH a committed identity resolves', () => {
+  test('failed correlation is skipped (no entry at all); pending WITH a committed identity gets its own entry', () => {
     identity.markFastAttemptFailed(SESS, 'cid-failed');
     identity.markFastAttemptPending('cid-pending', {
       sessionId: SESS,
@@ -362,12 +380,13 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
       canonicalValue: '0.62',
       comparisonText: 'Circuit 4, Zs 0.62',
     });
-    const outcome = identity.resolveFastLedgerOutcomeForTurn(
+    const outcomes = identity.resolveFastLedgerOutcomeForTurn(
       new Set(['cid-failed', 'cid-pending'])
     );
-    expect(outcome.kind).toBe('pending');
-    expect(outcome.correlationId).toBe('cid-pending');
-    expect(outcome.identity.canonicalValue).toBe('0.62');
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].kind).toBe('pending');
+    expect(outcomes[0].correlationId).toBe('cid-pending');
+    expect(outcomes[0].identity.canonicalValue).toBe('0.62');
   });
 
   test('all failed → null (falls through to existing behaviour)', () => {
@@ -391,10 +410,11 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
       rawValue: '0.62',
     });
     // Never committed (onAudio hasn't fired yet).
-    const outcome = identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a']));
-    expect(outcome.kind).toBe('pending_uncommitted');
-    expect(outcome.correlationId).toBe('cid-a');
-    expect(outcome.rawRecord).toMatchObject({
+    const outcomes = identity.resolveFastLedgerOutcomeForTurn(new Set(['cid-a']));
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].kind).toBe('pending_uncommitted');
+    expect(outcomes[0].correlationId).toBe('cid-a');
+    expect(outcomes[0].rawRecord).toMatchObject({
       field: 'measured_zs_ohm',
       circuit: 4,
       boardId: null,
@@ -403,7 +423,7 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
     });
   });
 
-  test('a committed identity elsewhere in the set wins over an earlier pending_uncommitted candidate, regardless of order', () => {
+  test('a committed identity and an uncommitted one in the SAME set both get their own distinct entries', () => {
     identity.markFastAttemptPending('cid-uncommitted', {
       sessionId: SESS,
       turnId: TURN,
@@ -429,12 +449,15 @@ describe('resolveFastLedgerOutcomeForTurn', () => {
       canonicalValue: '0.35',
       comparisonText: 'Circuit 5, R1 plus R2 0.35',
     });
-    // Set iteration order matches insertion order — 'cid-uncommitted' first.
-    const outcome = identity.resolveFastLedgerOutcomeForTurn(
+    const outcomes = identity.resolveFastLedgerOutcomeForTurn(
       new Set(['cid-uncommitted', 'cid-committed'])
     );
-    expect(outcome.kind).toBe('pending');
-    expect(outcome.correlationId).toBe('cid-committed');
+    expect(outcomes).toHaveLength(2);
+    const uncommitted = outcomes.find((o) => o.correlationId === 'cid-uncommitted');
+    const committed = outcomes.find((o) => o.correlationId === 'cid-committed');
+    expect(uncommitted.kind).toBe('pending_uncommitted');
+    expect(committed.kind).toBe('pending');
+    expect(committed.identity.canonicalValue).toBe('0.35');
   });
 
   test('unresolved race (no ledger entry at all for an attempted correlation id) defaults to pending, not absence', () => {
@@ -513,10 +536,10 @@ describe('session-scoped reads (F5)', () => {
     // Called with the OTHER session's id — the record belongs to SESS, so it
     // must be invisible, not a false 'suppress'.
     expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), OTHER_SESS)).toBeNull();
-    // Called with the correct session id still suppresses.
-    expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), SESS)).toEqual({
-      kind: 'suppress',
-    });
+    // Called with the correct session id still suppresses (F8: array shape).
+    expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), SESS)).toEqual([
+      { correlationId: CID, kind: 'suppress' },
+    ]);
   });
 
   test("resolveFastLedgerOutcomeForTurn: a foreign pending_uncommitted record never leaks as this session's fallback", () => {
@@ -531,7 +554,8 @@ describe('session-scoped reads (F5)', () => {
     // Never committed — stays 'pending'.
     expect(identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), OTHER_SESS)).toBeNull();
     const own = identity.resolveFastLedgerOutcomeForTurn(new Set([CID]), SESS);
-    expect(own.kind).toBe('pending_uncommitted');
+    expect(own).toHaveLength(1);
+    expect(own[0].kind).toBe('pending_uncommitted');
   });
 });
 
