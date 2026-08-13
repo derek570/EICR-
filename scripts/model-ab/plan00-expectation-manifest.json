@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "431bacd22026074c5fe4da975694e4e7736ac81f9f6ed62d500e13d3c8167d0b",
+  "semantic_oracle_digest": "6a862dfea5c1553db825ed1af73774b901e549b9158cda2ddca28b58a660ee7d",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "0180b64509b4a300d075670be434138dbd99335ae1a8ecf34e895f14898669a1"
+      "sha256": "d391135e2ccab6f2caf2fdb2b44555d8b74aa42fb0e674b8bf9011551a559326"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -549,7 +549,7 @@
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",
-      "sha256": "6299b42de09cb9e77cbc10f9d9e1fc952744484a8ff39ec9823bf7d5f4256c41"
+      "sha256": "785dee0f2de864008115e90fb72303f2ced93317d90d939fdbd947b23be82a5a"
     },
     {
       "path": "src/routes/voice-latency-playback-ack.js",
