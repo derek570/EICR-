@@ -71,6 +71,20 @@ import { isRegexFastEligible } from '../extraction/regex-fast-eligibility.js';
 import { getActiveSessionEntry, getVoiceLatencyForSession } from '../extraction/active-sessions.js';
 import { isKillSwitchActive } from '../extraction/voice-latency-config.js';
 import { decrementExpectedAcksByCorrelation } from '../extraction/voice-latency-turn-summary.js';
+// Plan B (feedback ids 118/119) — B1.2 accepted-identity record + B3.1
+// fast-attempt ledger, one combined TTL-scoped module. `markFastAttemptPending`
+// fires as soon as validateBody succeeds (before any later gate can still
+// reject); `commitAcceptedIdentity` fires ONCE on the first onAudio byte
+// (the route's earliest point with a clamped value + rendered comparison
+// text); `markFastAttemptFailed` is threaded through the existing
+// `rejectWithDecrement` funnel so every reject path (gate + pre-first-byte
+// synthesis failure) marks the ledger without a second call site to keep in
+// sync.
+import {
+  markFastAttemptPending,
+  commitAcceptedIdentity,
+  markFastAttemptFailed,
+} from '../extraction/fast-path-accepted-identity.js';
 // Plan 00B-2 C2.7/C3 — evaluation-only fast-TTS reservation + producer.
 // Dormant Symbol lookups; production sessions carry no evaluation context.
 import { EVALUATION_CONTEXT, beginProducer } from '../extraction/plan00-lifecycle-hooks.js';
@@ -131,6 +145,27 @@ function rejectWithDecrement(res, sessionId, correlationId, status, errorBody) {
       });
     }
   }
+  // Plan B B3.1 — every reject path (a gate rejection OR a synthesis
+  // failure that happened BEFORE any audio byte streamed) funnels through
+  // here, so this is the ONE place to mark the fast-attempt ledger
+  // 'failed'. A failure that happens AFTER the first onAudio byte already
+  // streamed does NOT reach this function (see the route's catch block —
+  // `res.headersSent` is true by then, so it just ends the response), which
+  // mirrors the pre-existing decrement accounting immediately above: this is
+  // not a new gap, it's the same one the ACK/decrement system already
+  // tolerates.
+  if (correlationId) {
+    try {
+      markFastAttemptFailed(sessionId, correlationId);
+    } catch (err) {
+      logger.warn('voice_latency.fast_attempt_ledger_error', {
+        sessionId,
+        correlationId,
+        stage: 'failed',
+        error: err?.message || String(err),
+      });
+    }
+  }
   return res.status(status).json(errorBody);
 }
 
@@ -163,6 +198,23 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
 
   const { sessionId, turnId, correlationId, transcript, candidate } = req.body;
   const { field, circuit, value, boardId = null } = candidate;
+
+  // Plan B B3.1 — mark the fast-attempt ledger 'pending' now: validateBody
+  // has already succeeded (sessionId/turnId/correlationId/candidate are all
+  // known-shaped), and every gate below this point funnels its reject
+  // through rejectWithDecrement, which marks 'failed'. Capturing the RAW
+  // (un-clamped) candidate.value here gives the B3.1 orphan-net precedence
+  // chain something to fall back to even if this request never reaches
+  // synthesis — though the bundler's B1.2 echo-stamp only ever trusts the
+  // CLAMPED value committed below at first onAudio.
+  markFastAttemptPending(correlationId, {
+    sessionId,
+    turnId,
+    field,
+    circuit: Number.isInteger(circuit) ? circuit : null,
+    boardId,
+    rawValue: value,
+  });
 
   // Eligibility whitelist (Pivot 2). Non-whitelisted fields can drift
   // (booleans like polarity_confirmed) or have no iOS regex pattern
@@ -378,10 +430,38 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
     res.set('X-Voice-Latency-Source', 'fast_path');
 
     let terminal = 'failed';
+    // Plan B B1.2 — commit the accepted identity ONCE, on the FIRST
+    // successful onAudio write (not at route entry — the HTTP fast request
+    // and the WS transcript are concurrent, and the route hasn't clamped +
+    // rendered anything until this point anyway). `identityCommitted` is
+    // scoped OUTSIDE `opts` so a D1 fail-open retry (a second synth attempt
+    // reusing the SAME `opts.onAudio` callback) still only commits once.
+    let identityCommitted = false;
     try {
       const opts = {
         onAudio: (buf) => {
           if (!res.writableEnded) res.write(buf);
+          if (!identityCommitted) {
+            identityCommitted = true;
+            try {
+              commitAcceptedIdentity(correlationId, {
+                sessionId,
+                turnId,
+                field,
+                circuit: Number.isInteger(circuit) ? circuit : null,
+                boardId,
+                canonicalValue: fastClamp.value,
+                comparisonText: text,
+              });
+            } catch (err) {
+              logger.warn('voice_latency.fast_attempt_ledger_error', {
+                sessionId,
+                correlationId,
+                stage: 'commit',
+                error: err?.message || String(err),
+              });
+            }
+          }
         },
       };
       // D1 fail-open (id 121): attempt 1 is `client` (default
@@ -392,7 +472,12 @@ router.post('/voice-latency/regex-fast-tts', auth.requireAuth, async (req, res) 
       // this try block, by the caller's own reservation.
       const { timings } = await synthWithLanguageFailOpen(
         client,
-        () => new ElevenLabsStreamClient({ apiKey, outputFormat: FORCED_OUTPUT_FORMAT, languageCode: null }),
+        () =>
+          new ElevenLabsStreamClient({
+            apiKey,
+            outputFormat: FORCED_OUTPUT_FORMAT,
+            languageCode: null,
+          }),
         text,
         opts
       );
