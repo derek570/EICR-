@@ -931,9 +931,29 @@ function playConfirmationHead(text: string, controls: QueuePlayControls): void {
         controls.onEnd();
       },
       onError: (reason) => {
-        // Only a MID-PLAYBACK error reaches here (pre-playback failures come
-        // through the onPrepared(null, reason) path below). Close the window
-        // and terminate the head so the pump advances.
+        // Codex diff-review r8 IMPORTANT — the old comment here claimed
+        // "only a mid-playback error reaches here (pre-playback failures
+        // come through the onPrepared(null, reason) path below)". That's
+        // incomplete: a PREPARED clip whose `audio.play()` itself rejects
+        // (e.g. the iOS Safari gesture grant expired between
+        // isElevenLabsAvailable()'s check and this exact call) never fires
+        // `onStart`, so it arrives HERE with `myStartMs` still null — a
+        // genuine pre-playback failure discovered one tick later than the
+        // onPrepared(null, reason) path, not a mid-playback one. Falling
+        // through to `controls.onError(reason)` unconditionally silently
+        // dropped the confirmation with no native fallback — a real "never
+        // heard" gap. Mirror `dispatchElevenLabs`'s own onError, which
+        // already makes exactly this `myStartMs`-null check and falls back
+        // to native instead (Audio-First invariant #1 — never zero).
+        if (myStartMs == null && reason !== 'aborted') {
+          playConfirmationNative(text, controls);
+          return;
+        }
+        // A genuine MID-PLAYBACK error (myStartMs set), or an abort/
+        // supersede (reason === 'aborted', terminal regardless of
+        // myStartMs — re-speaking after a supersede would fight whatever
+        // superseded it). Close the window and terminate the head so the
+        // pump advances.
         if (ttsWindow && myStartMs != null && ttsWindow.startMs === myStartMs) {
           ttsWindow = { startMs: myStartMs, endMs: Date.now() };
           notifyTtsLifecycle('end');

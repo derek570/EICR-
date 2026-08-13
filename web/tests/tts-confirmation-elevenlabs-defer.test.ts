@@ -56,12 +56,10 @@ const TOKEN_KEY = 'cm_token';
 
 const server = setupServer();
 
-/** Minimal SpeechSynthesis polyfill — only needed so `isTtsAvailable()`
- *  returns true (`speak()`/`speakConfirmation()` early-return otherwise).
- *  Never actually invoked: the ask routes via ElevenLabs (session set,
- *  `dispatchElevenLabs` cancels any in-flight native utterance up front but
- *  never calls `speak()` on it), and the confirmation's ElevenLabs branch
- *  never falls back to native in this test. */
+/** Minimal SpeechSynthesis polyfill — needed so `isTtsAvailable()` returns
+ *  true (`speak()`/`speakConfirmation()` early-return otherwise), and so the
+ *  ElevenLabs-play()-rejects test below can assert on the native fallback
+ *  it triggers. */
 class UtteranceShim {
   constructor(public text: string) {}
   lang = 'en-GB';
@@ -76,14 +74,20 @@ class UtteranceShim {
 class SynthShim {
   cancel = vi.fn();
   getVoices = vi.fn(() => [] as SpeechSynthesisVoice[]);
-  speak = vi.fn();
+  spoken: UtteranceShim[] = [];
+  speak = vi.fn((u: UtteranceShim) => {
+    this.spoken.push(u);
+  });
 }
+
+let shim: SynthShim;
 
 beforeEach(() => {
   server.listen({ onUnhandledRequest: 'error' });
   window.localStorage.setItem(TOKEN_KEY, 'test-token');
+  shim = new SynthShim();
   Object.defineProperty(window, 'speechSynthesis', {
-    value: new SynthShim(),
+    value: shim,
     writable: true,
     configurable: true,
   });
@@ -289,5 +293,37 @@ describe('confirmation FIFO — ElevenLabs deferral does not register a prematur
     resumeIfDeferred();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(isTTSEcho('Circuit 2 is now Kitchen Ring.')).toBe(true);
+  });
+});
+
+// Codex diff-review r8 IMPORTANT — a PREPARED ElevenLabs clip whose
+// `audio.play()` itself rejects (e.g. an expired iOS Safari gesture grant,
+// discovered one tick after a successful fetch) arrives at
+// `playConfirmationHead`'s ElevenLabs `onError` with `myStartMs` still
+// null — a genuine pre-playback failure, not a mid-playback one, but the
+// old code treated every `onError` reaching this handler as terminal with
+// no fallback, silently dropping the confirmation.
+describe('confirmation FIFO — a post-prepare play() rejection falls back to native, not silence', () => {
+  it('does not drop the confirmation when audio.play() rejects before "playing" ever fires', async () => {
+    setActiveSessionId('sess-play-reject-1');
+    setShouldDeferPlayback(() => false);
+
+    server.use(
+      http.post(`${API_BASE}/api/proxy/elevenlabs-tts`, async () =>
+        new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
+      )
+    );
+
+    // Override play() for this test only — rejects, simulating the fetch
+    // succeeding but the browser refusing the actual play() call.
+    const proto = HTMLMediaElement.prototype as unknown as { play: () => Promise<void> };
+    proto.play = vi.fn(() => Promise.reject(new Error('NotAllowedError')));
+
+    const { enqueued } = speakConfirmation('Circuit 4 is now Landing Light.');
+    expect(enqueued).toBe(true);
+
+    // Native fallback must have spoken it — never silently dropped.
+    await vi.waitFor(() => expect(shim.speak).toHaveBeenCalledTimes(1));
+    expect(shim.spoken[0].text).toBe('Circuit 4 is now Landing Light.');
   });
 });
