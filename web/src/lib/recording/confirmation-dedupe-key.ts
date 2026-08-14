@@ -123,6 +123,39 @@ export function isObservationRecodeConfirmation(conf: DedupeKeySource): boolean 
 }
 
 /**
+ * The closed P4 decline-ack prompt family — a byte-for-byte mirror of
+ * backend canon `ASK_DECLINE_ACK_PROMPTS` in
+ * `src/extraction/stage6-shadow-harness.js`. APPEND-ONLY (never reorder or
+ * edit an existing entry): the backend's `turnNum % length` rotation and
+ * any recorded fixture's `text_exact` assertions depend on stable indices.
+ * There is no shared module between web and the Node-only backend, so this
+ * list is duplicated deliberately rather than imported.
+ */
+export const ASK_DECLINE_ACK_PROMPTS: readonly string[] = Object.freeze([
+  'Okay — leaving that one.',
+  'No problem, moving on.',
+  "Alright — I'll leave that as it is.",
+  "That's fine — I'll leave it there.",
+  'Sure — leaving that as it stands.',
+]);
+
+const DECLINE_ACK_TEXT_SET: ReadonlySet<string> = new Set(ASK_DECLINE_ACK_PROMPTS);
+
+/**
+ * 2026-08-14 (PLAN-G, Derek decision, id-114): matches ONLY the closed P4
+ * decline-ack family, so `recording-context.tsx` can force these through
+ * `speakConfirmation` even when the local confirmation-mode toggle is off —
+ * an answer to a question the app asked is not a reading confirmation, and
+ * silence after "don't worry" is indistinguishable from a broken pipeline.
+ * Every OTHER confirmation (ordinary readings, the plain P4 ANSWERED-family
+ * ack) stays toggle-gated; this predicate must never widen beyond the exact
+ * five strings above.
+ */
+export function isP4DeclineAck(conf: DedupeKeySource): boolean {
+  return conf.field == null && DECLINE_ACK_TEXT_SET.has(conf.text.trim());
+}
+
+/**
  * Literal port of iOS `buildConfirmationDedupeKey` branch selection:
  * token precedence for allowlisted text-op fields (every branch), then
  * single-circuit wins, then multi-circuit broadcast, then degenerate.

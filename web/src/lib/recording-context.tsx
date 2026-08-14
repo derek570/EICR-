@@ -61,6 +61,7 @@ import {
 import {
   buildConfirmationDedupeKey,
   isObservationRecodeConfirmation,
+  isP4DeclineAck,
 } from './recording/confirmation-dedupe-key';
 import {
   PendingReadingsBuffer,
@@ -2669,7 +2670,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // confirmation is discarded before it ever plays (overflow / preempt /
         // purge / reset) — the sole "never a permanent read-back drop"
         // mechanism (Audio-First #1).
-        speakConfirmation(sentence, { dedupeKey });
+        // 2026-08-14 (PLAN-G, id-114): force ONLY the closed P4 decline-ack
+        // family through — the backend now emits these regardless of
+        // confirmationsEnabled (an answer to a question the app asked is
+        // not a reading confirmation), so the web toggle must not silently
+        // re-mute them here. Every other confirmation stays unforced.
+        speakConfirmation(sentence, { dedupeKey, force: isP4DeclineAck(conf) });
       }
       // Surface validation alerts in the pending-readings counter so
       // the inspector sees them in the recording chrome even if they
