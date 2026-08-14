@@ -660,10 +660,24 @@ function extractSparePolicy(text: string): {
   // Strip a leftover connective ("...including spares BUT excluding
   // spares...") between the two removed phrases — otherwise the stray
   // "but"/"and" breaks the trailing-scope regex match on the cleaned text.
+  //
+  // Codex diff-review cycle 2 (PLAN-F2 finding 2, 2026-08-14) — a stray
+  // COMMA is the same class of problem: the plan's own canonical phrasing
+  // is "circuits 3 to 5, excluding spares" (comma before the modifier).
+  // Removing only the modifier phrase left "circuits 3 to 5," — the
+  // trailing comma then broke parseApplyFieldShape's anchored `\s*\.?$`
+  // regex (it tolerates an optional trailing PERIOD, never a comma), so
+  // the range+modifier utterance silently fell through to Sonnet instead
+  // of composing deterministically — the exact feature Decision 1
+  // describes was unreachable for its own worked example. This grammar is
+  // a narrow, constrained apply-field mini-language (field + value + scope
+  // + optional spare modifier) where a comma never legitimately appears
+  // for any other reason, so a global strip is safe.
   const cleaned = text
     .replace(SPARE_INCLUDE_RE, '')
     .replace(SPARE_EXCLUDE_RE, '')
     .replace(/\s+\b(?:but|and)\b\s+/gi, ' ')
+    .replace(/\s*,\s*/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (hasInclude && hasExclude) return { policy: null, contradictory: true, cleaned };

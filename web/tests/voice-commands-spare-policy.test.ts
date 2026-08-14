@@ -313,7 +313,22 @@ describe('range/single scope composes with a spoken spare_policy modifier', () =
     expect(out.response).not.toContain('spare');
   });
 
-  it('MODIFIER PRESENT (exclude): "circuits 1 to 4, excluding spares" filters the spares out AND discloses the skip', () => {
+  it('Codex diff-review cycle 2 — the PLAN\'S OWN comma-bearing phrasing ("circuits 3 to 5, excluding spares") parses and composes, not just the no-comma form', () => {
+    // A stray comma left over after modifier-stripping used to break the
+    // anchored shape regex, silently deferring to Sonnet instead of
+    // composing locally — the exact worked example Decision 1 quotes.
+    const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK, SPARE_NAMED]);
+    const cmd = parseVoiceCommand('rcd type AC for circuits 1 to 4, excluding spares')!;
+    expect(cmd).not.toBeNull();
+    expect(cmd.scope).toEqual({ kind: 'range', from: 1, to: 4 });
+    expect(cmd.sparePolicy).toBe('exclude');
+    const out = applyVoiceCommand(cmd, job);
+    const updated = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(updated.filter((r) => r.rcd_type === 'ac')).toHaveLength(2);
+    expect(out.response).toContain(', skipping 2 spare ways.');
+  });
+
+  it('MODIFIER PRESENT (exclude): "circuits 1 to 4 excluding spares" filters the spares out AND discloses the skip', () => {
     const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK, SPARE_NAMED]);
     const cmd = parseVoiceCommand('rcd type AC for circuits 1 to 4 excluding spares')!;
     expect(cmd.scope).toEqual({ kind: 'range', from: 1, to: 4 });
