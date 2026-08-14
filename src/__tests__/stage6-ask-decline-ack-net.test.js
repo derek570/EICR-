@@ -677,3 +677,89 @@ describe('P4 — apology-text distinctness + rotation', () => {
     expect(new Set(texts).size).toBe(ASK_DECLINE_ACK_PROMPTS.length);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// PLAN-G2 (2026-08-14, held finding 2) — a replay-stable `p4ack_<turnId>`
+// dedupe token on BOTH ack families, stamped at production (this net) and
+// copied verbatim through the REAL §A4 drain (not mocked — these tests
+// exercise the actual runShadowHarness code path) into
+// `result.confirmations[].dedupe_token`. Pinning the exact emitted token
+// (not just its presence) is the "real-drain assertion" the plan requires —
+// a mocked drain could pass a presence-only check while a rename/typo at
+// either the production site or the copy-through silently broke the wire
+// shape.
+describe('P4 — dedupe_token (PLAN-G2 held finding 2)', () => {
+  test('DECLINE family ack carries dedupe_token p4ack_<turnId> on result.confirmations (real drain, not mocked)', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ _seedAskLifecycle: declineLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'zed s for circuit three', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    // First turn on a freshly-constructed session: turnNum=1 → turnId
+    // "sess-ask-decline-net-turn-1" (session.turnCount defaults to 0 in
+    // makeSession(), turnNum = turnCount + 1 in runLiveMode).
+    expect(acks[0].dedupe_token).toBe(`p4ack_${SESSION_ID}-turn-1`);
+  });
+
+  test('ANSWERED family ack ALSO carries dedupe_token p4ack_<turnId> (both families, not just decline)', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ _seedAskLifecycle: answeredLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'clarify then silence', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    expect(acks[0].dedupe_token).toBe(`p4ack_${SESSION_ID}-turn-1`);
+  });
+
+  test('two consecutive silent-answered turns on the SAME session mint DISTINCT tokens (turnId-scoped, not session-scoped)', async () => {
+    const session = makeSession();
+    silentAnsweredLoop();
+    const r1 = await runShadowHarness(
+      session,
+      'ask decline one',
+      [],
+      baseOpts({ _seedAskLifecycle: declineLifecycle() })
+    );
+    silentAnsweredLoop();
+    const r2 = await runShadowHarness(
+      session,
+      'ask decline two',
+      [],
+      baseOpts({ _seedAskLifecycle: declineLifecycle() })
+    );
+    const token1 = declineAckPrompts(r1)[0]?.dedupe_token;
+    const token2 = declineAckPrompts(r2)[0]?.dedupe_token;
+    expect(token1).toBeTruthy();
+    expect(token2).toBeTruthy();
+    expect(token1).not.toBe(token2);
+  });
+
+  test('an UNRELATED §A4 apology family (the F7 pre-emission fallback) does NOT gain a dedupe_token key at all', async () => {
+    // Distinguishes "copy through if present" from "always stamp a token" —
+    // the plan requires the former. Drive the F7 ASK_AUDIBILITY_FALLBACK_TEXT
+    // net (an attempted-but-unemitted ask, no engagement signal) rather than
+    // the P4 net, so the drained confirmation carries no dedupe_token at all.
+    runToolLoopSpy.mockImplementation(async () => ({
+      stop_reason: 'end_turn',
+      rounds: 1,
+      tool_calls: [
+        {
+          tool_call_id: 'toolu_attempt',
+          name: 'ask_user',
+          input: { question: 'Which circuit?', reason: 'missing_value' },
+          result: { tool_use_id: 'toolu_attempt', is_error: true, content: '{"error":"timeout"}' },
+        },
+      ],
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const opts = baseOpts();
+    const result = await runShadowHarness(makeSession(), 'attempted ask, no answer', [], opts);
+    const fallback = (result.confirmations ?? []).find(
+      (c) => c.text === ASK_AUDIBILITY_FALLBACK_TEXT
+    );
+    expect(fallback).toBeDefined();
+    expect('dedupe_token' in fallback).toBe(false);
+  });
+});

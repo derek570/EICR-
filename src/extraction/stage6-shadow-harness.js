@@ -5024,7 +5024,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
             const family = isDecline ? ASK_DECLINE_ACK_PROMPTS : ASK_ANSWERED_ACK_PROMPTS;
             const text = family[turnNum % family.length];
-            session.pendingVoicePrompts.push({ text, generationId });
+            // PLAN-G2 (2026-08-14, held finding 2) — a replay-stable structural
+            // dedupe token for BOTH P4 ack families. Neither family previously
+            // carried any board/turn identity, so two genuinely distinct acks
+            // landing on the same rotated text within the client's 30 s
+            // field-nil TTL window would silently collapse into one spoken ack.
+            // Stamped here at production so the token is turnId-scoped (stable
+            // across a replay of the SAME turn, distinct across different
+            // turns); copied verbatim through the §A4 drain below into
+            // `result.confirmations.dedupe_token` — the wire property name is
+            // used directly here (not a renamed internal field) so the copy is
+            // a straight passthrough, not a translation.
+            session.pendingVoicePrompts.push({
+              text,
+              generationId,
+              dedupe_token: `p4ack_${turnId}`,
+            });
             log.info?.('stage6.answered_ask_ack_emitted', {
               sessionId: session.sessionId,
               turnId,
@@ -5094,6 +5109,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           field: null,
           circuit: null,
           expects_ios_ack: false,
+          // PLAN-G2 — copy a producer-stamped dedupe token verbatim through
+          // to the wire. Conditionally spread (not `dedupe_token: p.dedupe_token`)
+          // so an apology family that never set a token (the pending-value
+          // terminal, the F7 Item 2 fallback, etc.) does not gain the KEY at
+          // all — only the P4 ack production site above stamps one.
+          ...(p.dedupe_token != null ? { dedupe_token: p.dedupe_token } : {}),
         });
         log.info?.('stage6.pending_value_apology_emitted', {
           sessionId: session.sessionId,
