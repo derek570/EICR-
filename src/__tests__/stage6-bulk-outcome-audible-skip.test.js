@@ -594,19 +594,33 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
     expect(fallbacks).toHaveLength(2);
     const tokens = fallbacks.map((f) => f.dedupe_token).sort();
     expect(tokens).toEqual(['bulkoutcome_noturn_tu_bulk_main', 'bulkoutcome_noturn_tu_bulk_sub-b']);
+    // Select each fallback by its exact token (not array/emission order),
+    // so the replay assertions below can't pass by accident if the
+    // consumer's emission order ever changes.
+    const mainFallback = fallbacks.find(
+      (f) => f.dedupe_token === 'bulkoutcome_noturn_tu_bulk_main'
+    );
+    const subFallback = fallbacks.find(
+      (f) => f.dedupe_token === 'bulkoutcome_noturn_tu_bulk_sub-b'
+    );
     // Both REAL tokens survive the server debounce window (distinct board
-    // segments keep them from colliding), and a replay of either original
-    // token is suppressed.
+    // segments keep them from colliding), and a replay of EITHER original
+    // token is suppressed — checked symmetrically for both boards, not
+    // just the first.
     const debounceState = { lastEmittedAt: 0, lastField: null };
     const t0 = 1_000_000;
-    const emitMain = applyConfirmationDebounce([fallbacks[0]], debounceState, { now: t0 });
-    const emitSub = applyConfirmationDebounce([fallbacks[1]], debounceState, { now: t0 + 50 });
-    const replayMain = applyConfirmationDebounce([fallbacks[0]], debounceState, {
+    const emitMain = applyConfirmationDebounce([mainFallback], debounceState, { now: t0 });
+    const emitSub = applyConfirmationDebounce([subFallback], debounceState, { now: t0 + 50 });
+    const replayMain = applyConfirmationDebounce([mainFallback], debounceState, {
       now: t0 + 100,
+    });
+    const replaySub = applyConfirmationDebounce([subFallback], debounceState, {
+      now: t0 + 150,
     });
     expect(emitMain).toHaveLength(1);
     expect(emitSub).toHaveLength(1);
     expect(replayMain).toHaveLength(0);
+    expect(replaySub).toHaveLength(0);
   });
 });
 
