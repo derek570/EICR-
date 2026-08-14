@@ -18,6 +18,7 @@ import {
   speakConfirmation,
 } from '@/lib/recording/tts';
 import { __resetForTests as __resetTtsQueueForTests } from '@/lib/recording/tts-queue';
+import { ConfirmationDedupeStore } from '@/lib/recording/confirmation-dedupe-store';
 
 describe('isP4DeclineAck — closed decline-ack family predicate', () => {
   it('matches every string in the closed ASK_DECLINE_ACK_PROMPTS family, field-null', () => {
@@ -141,5 +142,64 @@ describe('speakConfirmation + isP4DeclineAck — the recording-context call-site
     });
     expect(result.enqueued).toBe(true);
     expect(shim.speak).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * PLAN-G round-1 Codex diff review (cycle 1, lens C) — a forced decline ack
+ * that fails to enqueue (TTS genuinely unavailable — force:true means the
+ * confirmation-mode toggle can never be the cause) must NOT leave a
+ * permanent reservation behind, or a genuine LATER decline landing on the
+ * same rotated text would be silently swallowed forever. Mirrors the exact
+ * reserve/speak/discard-on-fail sequence recording-context.tsx runs
+ * (its own reserve()/discardConfirmationReservation() aren't exported, so
+ * this test drives the same public primitives — ConfirmationDedupeStore +
+ * speakConfirmation — the component composes them with).
+ */
+describe('P4 decline-ack reservation release on enqueue failure (PLAN-G cycle-1 fix)', () => {
+  it('TTS unavailable: a forced decline-ack reservation is released so a later attempt can still speak', () => {
+    // Override the file-level beforeEach's SynthShim install — this test
+    // needs isTtsAvailable() === false (genuinely unavailable), not muted.
+    delete (window as { speechSynthesis?: unknown }).speechSynthesis;
+    delete (window as { SpeechSynthesisUtterance?: unknown }).SpeechSynthesisUtterance;
+    const store = new ConfirmationDedupeStore();
+    const conf = { text: ASK_DECLINE_ACK_PROMPTS[2], field: null as string | null };
+    const dedupeKey = 'p4-decline-unavailable';
+    const fieldIsNil = conf.field == null;
+
+    store.reserve(dedupeKey, fieldIsNil);
+    const attempt = speakConfirmation(conf.text, { dedupeKey, force: isP4DeclineAck(conf) });
+    expect(attempt.enqueued).toBe(false);
+    // Without the fix this reservation would stand forever — assert the
+    // pre-fix hazard is real before asserting the fix's outcome below.
+    expect(store.isLive(dedupeKey, fieldIsNil)).toBe(true);
+
+    // The recording-context.tsx fix: p4DeclineAck && !enqueued → discard.
+    if (isP4DeclineAck(conf) && !attempt.enqueued) {
+      store.forget(dedupeKey);
+    }
+    expect(store.isLive(dedupeKey, fieldIsNil)).toBe(false);
+  });
+
+  it('an ORDINARY confirmation muted by the toggle (not TTS-unavailable) keeps its permanent reservation — never discarded', () => {
+    setConfirmationModeEnabled(false);
+    const store = new ConfirmationDedupeStore();
+    const conf = {
+      text: 'Set Zs to 0.44 on circuit 3.',
+      field: 'measured_zs_ohm' as string | null,
+    };
+    const dedupeKey = 'ordinary-muted';
+    const fieldIsNil = conf.field == null;
+
+    store.reserve(dedupeKey, fieldIsNil);
+    const attempt = speakConfirmation(conf.text, { dedupeKey, force: isP4DeclineAck(conf) });
+    expect(attempt.enqueued).toBe(false);
+    // p4DeclineAck is false here, so the fix's discard branch never fires —
+    // the reservation stands, which is CORRECT: a muted confirmation the
+    // inspector chose not to hear must not re-prompt.
+    if (isP4DeclineAck(conf) && !attempt.enqueued) {
+      store.forget(dedupeKey);
+    }
+    expect(store.isLive(dedupeKey, fieldIsNil)).toBe(true);
   });
 });

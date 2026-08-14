@@ -218,6 +218,41 @@ describe('id 114 ingress — decline at the INITIAL pending-value ask', () => {
     expect(ws.sent.filter((f) => f.type === 'ask_user_started')).toHaveLength(1);
   });
 
+  test('PLAN-G (2026-08-14, id 114): confirmationsEnabled:false → the decline ack STILL fires end-to-end through the REAL dispatcher (fingerprint/no-reask unchanged)', async () => {
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    runToolLoopSpy.mockImplementation(async (o) => {
+      const p = o.dispatcher(
+        { tool_call_id: 'toolu_g1', name: 'ask_user', input: noneAsk() },
+        o.ctx
+      );
+      await tick();
+      pendingAsks.resolve('toolu_g1', { answered: true, user_text: "Don't worry." });
+      const env = await p;
+      expect(JSON.parse(env.content).match_status).toBe('user_declined');
+      return loopOut([toolCallRecord('toolu_g1', env)]);
+    });
+    const session = makeSession();
+    const opts = {
+      logger: makeLogger(),
+      pendingAsks,
+      ws,
+      confirmationsEnabled: false,
+      generationId: 'gen-g1',
+    };
+    const result = await runShadowHarness(
+      session,
+      'RCD trip time upstairs is 26 milliseconds',
+      [],
+      opts
+    );
+    // Same real-dispatcher path as the toggle-ON case above: exactly ONE
+    // decline ack, drained, no apology, no write — the toggle bypass alone
+    // changed, nothing else about the fingerprint/no-reask contract.
+    expectExactlyOneDeclineAck(result, session, ws);
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started')).toHaveLength(1);
+  });
+
   test('decline + SAME-generation model retry → the retry is suppressed and the FULL sequence still yields exactly ONE decline ack', async () => {
     const pendingAsks = createPendingAsksRegistry();
     const ws = makeWs();

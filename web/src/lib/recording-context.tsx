@@ -2675,7 +2675,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // confirmationsEnabled (an answer to a question the app asked is
         // not a reading confirmation), so the web toggle must not silently
         // re-mute them here. Every other confirmation stays unforced.
-        speakConfirmation(sentence, { dedupeKey, force: isP4DeclineAck(conf) });
+        const p4DeclineAck = isP4DeclineAck(conf);
+        const spoken = speakConfirmation(sentence, { dedupeKey, force: p4DeclineAck });
+        // A forced decline ack can only fail to enqueue when TTS itself is
+        // unavailable (force:true means the toggle can never be the cause) —
+        // an ordinary confirmation-mode mute is CORRECTLY permanent (the
+        // reservation stands so a muted confirmation never re-prompts), but
+        // a TTS-unavailable drop of THIS family would otherwise permanently
+        // suppress a genuine future decline ack landing on the same rotated
+        // text. Mirrors the address-mirror-delivery branch's same pattern
+        // above. Ordinary (unforced) confirmations are unaffected.
+        if (p4DeclineAck && !spoken.enqueued) {
+          discardConfirmationReservation(dedupeKey, 'not_queued');
+        }
       }
       // Surface validation alerts in the pending-readings counter so
       // the inspector sees them in the recording chrome even if they

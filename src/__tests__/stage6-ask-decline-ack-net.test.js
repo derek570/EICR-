@@ -454,6 +454,37 @@ describe('P4 — does NOT fire', () => {
     expect(ackRows(opts.logger)).toHaveLength(0);
   });
 
+  test('(e2) PLAN-G (2026-08-14): confirmationsEnabled:false + an ordinary reading write → the reading confirmation stays suppressed (bundleToolCallsIntoResult synthesis is itself gated on confirmationsEnabled, unaffected by the P4 bypass)', async () => {
+    runToolLoopSpy.mockImplementation(async (o) => {
+      const ptw = o.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 3, undefined), {
+        value: '0.55',
+        confidence: 0.9,
+        source_turn_id: 'turn-1',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_w2',
+            name: 'record_reading',
+            input: { field: 'measured_zs_ohm', circuit: 3, value: '0.55' },
+            result: { tool_use_id: 'toolu_w2', is_error: false, content: '{"ok":true}' },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ confirmationsEnabled: false });
+    const result = await runShadowHarness(makeSession(), 'zs for c3 is 0.55', [], opts);
+    expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(false);
+    expect(declineAckPrompts(result)).toHaveLength(0);
+  });
+
   test('(f) A1 mutual exclusion — the model ANSWERED via answer_user (spoken_response set) → no ack; EXACTLY ONE audible response', async () => {
     runToolLoopSpy.mockImplementation(async (o) => {
       const ptw = o.perTurnWritesRef();
