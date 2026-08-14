@@ -110,6 +110,26 @@ const DJB2_MULT = 33n;
 const U64_MASK = (1n << 64n) - 1n;
 
 /**
+ * PLAN-F2 finding 5 (2026-08-14) — structural token prefixes that win ahead
+ * of the WIRE_CLIENT_DEDUPE_TOKEN_FIELDS allowlist check in every key
+ * builder below, exactly like `duplicate_` already does (Plan B B3.2,
+ * feedback ids 118/119): a `duplicate_<turnId>` exact-duplicate replay can
+ * fire for ANY measured field, and a `bulkoutcome_<turnId>_<callId>_<board>`
+ * disclosure token (stage6-event-bundler.js) is likewise minted for
+ * whichever field dispatchSetFieldForAllCircuits targeted — never just the
+ * five allowlisted text-op fields. A prefix SET (not a single string) is
+ * the extension point for any future structural token family.
+ */
+const STRUCTURAL_DEDUPE_TOKEN_PREFIXES = ['duplicate_', 'bulkoutcome_'];
+
+function hasStructuralTokenPrefix(opToken) {
+  return (
+    typeof opToken === 'string' &&
+    STRUCTURAL_DEDUPE_TOKEN_PREFIXES.some((prefix) => opToken.startsWith(prefix))
+  );
+}
+
+/**
  * Compute djb2 over a UTF-16 code-point stream, wrapping at UInt64.
  * Matches the Swift `for scalar in conf.text.unicodeScalars { hash = (hash &* 33) &+ UInt64(scalar.value) }`
  * loop byte-for-byte. Returns a decimal string (matches Swift's
@@ -174,7 +194,7 @@ export function djb2UInt64Decimal(text) {
  * @returns {string}
  */
 export function buildPerCircuitDedupeKey(field, circuit, text, opToken, boardId) {
-  if (typeof opToken === 'string' && opToken.startsWith('duplicate_')) {
+  if (hasStructuralTokenPrefix(opToken)) {
     return `${field ?? 'unknown'}_${opToken}`;
   }
   if (opToken && WIRE_CLIENT_DEDUPE_TOKEN_FIELDS.has(field)) {
@@ -204,7 +224,7 @@ export function buildMultiCircuitDedupeKey(field, circuits, text, opToken, board
   // ahead of the field-allowlist check below — an exact-duplicate re-speak
   // can fire for ANY measured field, not just the six wire/client-enrolled
   // text-op fields, and the allowlist route only works per-named-field.
-  if (typeof opToken === 'string' && opToken.startsWith('duplicate_')) {
+  if (hasStructuralTokenPrefix(opToken)) {
     return `${field ?? 'unknown'}_${opToken}`;
   }
   // §A1a: token takes precedence in EVERY branch an allowlisted text-op
@@ -246,7 +266,7 @@ export function buildDegenerateDedupeKey(field, text, boardId, opToken) {
   // field-allowlist check below — see buildMultiCircuitDedupeKey above for
   // why this must be a structurally separate prefix branch, not an
   // allowlist addition.
-  if (typeof opToken === 'string' && opToken.startsWith('duplicate_')) {
+  if (hasStructuralTokenPrefix(opToken)) {
     return `${field ?? 'unknown'}_${opToken}`;
   }
   // §A1a: token takes precedence — this is the branch EVERY observation

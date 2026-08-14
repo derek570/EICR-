@@ -376,6 +376,76 @@ describe('Plan B B3.2 — duplicate_<turnId> prefix branch wins ahead of the fie
   });
 });
 
+describe('PLAN-F2 finding 5 (2026-08-14) — bulkoutcome_ prefix branch wins ahead of the field-allowlist', () => {
+  test('per-circuit: an arbitrary non-allowlisted measured field gets a call+board-unique key', () => {
+    const k = buildPerCircuitDedupeKey(
+      'rcd_time_ms',
+      1,
+      'Circuit 1, RCD time 25, skipping 1 spare way',
+      'bulkoutcome_turn-9_tu_bulk_1_main'
+    );
+    expect(k).toBe('rcd_time_ms_bulkoutcome_turn-9_tu_bulk_1_main');
+  });
+
+  test('multi-circuit (grouped): bulkoutcome token wins ahead of the allowlist check', () => {
+    const k = buildMultiCircuitDedupeKey(
+      'rcd_time_ms',
+      [1, 2],
+      'Circuits 1, 2, RCD time 25, skipping 1 spare way',
+      'bulkoutcome_turn-9_tu_bulk_1_main'
+    );
+    expect(k).toBe('rcd_time_ms_bulkoutcome_turn-9_tu_bulk_1_main');
+  });
+
+  test('degenerate (zero-applied / fallback standalone): ONE wildcard call across two boards produces DISTINCT keys per board', () => {
+    const main = buildDegenerateDedupeKey(
+      'rcd_time_ms',
+      'No non-spare circuits were updated; skipped 2 spare ways.',
+      null,
+      'bulkoutcome_turn-9_tu_bulk_1_main'
+    );
+    const subB = buildDegenerateDedupeKey(
+      'rcd_time_ms',
+      'No non-spare circuits were updated; skipped 1 spare way.',
+      null,
+      'bulkoutcome_turn-9_tu_bulk_1_sub-b'
+    );
+    expect(main).not.toBe(subB);
+  });
+
+  test('an allowlisted field with a bulkoutcome token STILL takes the bulkoutcome branch (prefix wins first)', () => {
+    const k = buildPerCircuitDedupeKey(
+      'circuit_op',
+      3,
+      'Circuit 3 renamed',
+      'bulkoutcome_turn-9_tu_bulk_1_main'
+    );
+    expect(k).toBe('circuit_op_bulkoutcome_turn-9_tu_bulk_1_main');
+  });
+
+  test('replaying the SAME bulkoutcome token across all three shapes is stable (dedupes on genuine replay)', () => {
+    const first = buildDegenerateDedupeKey(
+      'measured_zs_ohm',
+      'Skipping 1 spare way.',
+      null,
+      'bulkoutcome_turn-9_tu_bulk_1_main'
+    );
+    const replay = buildDegenerateDedupeKey(
+      'measured_zs_ohm',
+      'Skipping 1 spare way.',
+      null,
+      'bulkoutcome_turn-9_tu_bulk_1_main'
+    );
+    expect(first).toBe(replay);
+  });
+
+  test('a non-bulkoutcome token (or none) is unaffected — legacy value/board-aware keys unchanged', () => {
+    expect(buildPerCircuitDedupeKey('rcd_time_ms', 1, 'Circuit 1, RCD time 25')).toBe(
+      'rcd_time_ms_1_' + djb2UInt64Decimal('Circuit 1, RCD time 25')
+    );
+  });
+});
+
 /**
  * A2-multiboard item 10 (2026-07-28) — board identity in the CIRCUIT dedupe keys.
  *

@@ -1900,6 +1900,15 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
             expanded_text: expandForTTS(zeroText),
             field: outcome.field,
             circuit: null,
+            // PLAN-F2 finding 5 (2026-08-14) — replay-stable dedupe token
+            // WITH a board discriminator: a single '*' wildcard call can
+            // stage one zero-applied entry per board (all sharing
+            // turn+call), so the board component is load-bearing, not
+            // decorative — without it, two boards' zero-applied disclosures
+            // in the same call would mint IDENTICAL tokens and client
+            // dedupe would swallow all but one. effectiveBoardId is never
+            // null (finding 4), so this segment is always populated.
+            dedupe_token: `bulkoutcome_${_turnId ?? 'noturn'}_${outcome.callId}_${outcome.effectiveBoardId}`,
           };
           if (outcome.boardId != null) zeroEntry.board_id = outcome.boardId;
           confirmations.push(zeroEntry);
@@ -1957,6 +1966,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
             expanded_text: expandForTTS(fallbackText),
             field: outcome.field,
             circuit: null,
+            // PLAN-F2 finding 5 (2026-08-14) — same replay-stable,
+            // board-discriminated token as the zero-applied branch above
+            // (see its comment for why the board segment is load-bearing).
+            dedupe_token: `bulkoutcome_${_turnId ?? 'noturn'}_${outcome.callId}_${outcome.effectiveBoardId}`,
           };
           if (outcome.boardId != null) fallbackEntry.board_id = outcome.boardId;
           confirmations.push(fallbackEntry);
@@ -2210,9 +2223,27 @@ export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
 // 7.1's TTS queue serialiser handles playing them back-to-back. The `value`
 // proxy prefers an explicit `value` (test fixtures) and falls back to the
 // rendered `text` (live confirmation entries, which encode circuit+value).
+// PLAN-F2 finding 5 (2026-08-14) — `bulkoutcome_` is a STRUCTURAL token
+// prefix, not a field-allowlist entry: dispatchSetFieldForAllCircuits can
+// target ANY circuit reading field (not just the five DEDUPE_TOKEN_FIELDS
+// text-op fields), so gating the server-side debounce's token-awareness on
+// DEDUPE_TOKEN_FIELDS.has(field) would mean two identical same-field bulk
+// commands inside the 1.5 s debounce window get dropped HERE, server-side,
+// before either client's own dedupe token branch ever runs. Mirrors the
+// client-side `duplicate_` structural-prefix pattern (ios-dedupe-key.js).
+function hasBulkOutcomeTokenPrefix(token) {
+  return typeof token === 'string' && token.startsWith('bulkoutcome_');
+}
+
 export function confirmationDebounceKey(c) {
   if (!c) return '';
   const field = c.field ?? '';
+  // PLAN-F2 finding 5 — checked BEFORE the field-allowlist branch, exactly
+  // like the client-side duplicate_ prefix takes precedence over the
+  // WIRE_CLIENT_DEDUPE_TOKEN_FIELDS allowlist check in ios-dedupe-key.js.
+  if (hasBulkOutcomeTokenPrefix(c.dedupe_token)) {
+    return `${field} tok:${c.dedupe_token}`;
+  }
   // §A1a (field-feedback-2026-07-14) — token-aware key for the five
   // allowlisted text-op fields. Deletions have null value so the composite
   // key falls to text, and every deletion's text is the constant
@@ -2251,7 +2282,12 @@ export function applyConfirmationDebounce(newConfirmations, debounceState, optio
     // so measured-value debounce keeps its existing single-slot contract
     // (and a token confirmation no longer evicts a measured reading's key).
     const isTokenKey =
-      c?.dedupe_token != null && DEDUPE_TOKEN_FIELDS.has(c?.field ?? '') && key !== '';
+      c?.dedupe_token != null &&
+      key !== '' &&
+      // PLAN-F2 finding 5 — bulkoutcome_ is structural (see
+      // hasBulkOutcomeTokenPrefix above), so it qualifies regardless of
+      // whether the field is on the DEDUPE_TOKEN_FIELDS allowlist.
+      (DEDUPE_TOKEN_FIELDS.has(c?.field ?? '') || hasBulkOutcomeTokenPrefix(c.dedupe_token));
     if (isTokenKey) {
       if (!(debounceState.tokenKeysMs instanceof Map)) debounceState.tokenKeysMs = new Map();
       for (const [k, ts] of debounceState.tokenKeysMs) {
