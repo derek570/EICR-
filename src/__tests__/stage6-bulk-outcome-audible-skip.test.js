@@ -469,3 +469,145 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
     expect(c3.text.endsWith(', skipping 1 spare way')).toBe(true);
   });
 });
+
+describe('PLAN-F2 finding 4 (2026-08-14) — multi-board omitted-board_id effective-board resolution', () => {
+  test('cross-board two-implicit-call: both calls omit board_id, session board changes between them — each keeps its OWN disclosure', async () => {
+    // main board uses legacy bare-numeric keys; sub-b uses composite keys —
+    // same shape as the existing cross-board "*" sweep test above. Circuit
+    // REFS deliberately collide (both boards start at 1) so a raw-boardId
+    // (rather than effective-board) match would misidentify call2 as a
+    // same-target correction of call1.
+    const session = {
+      sessionId: 's-cross-board-implicit',
+      stateSnapshot: {
+        currentBoardId: 'main',
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-b',
+            designation: 'DB-2',
+            board_type: 'sub_distribution',
+            parent_board_id: 'main',
+          },
+        ],
+        circuits: {
+          0: {},
+          1: { circuit_designation: 'Cooker' },
+          2: { circuit_designation: 'Spare' },
+          'sub-b::1': { board_id: 'sub-b', circuit: 1, circuit_designation: 'Immersion' },
+          'sub-b::2': { board_id: 'sub-b', circuit: 2, circuit_designation: 'Spare' },
+        },
+      },
+      extractedObservations: [],
+    };
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+    // Call 1 — board_id omitted, session currently on 'main'.
+    await d(
+      {
+        tool_call_id: 'tu_main',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '25', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    // Simulated select_board sub-b — board_id STILL omitted on call 2.
+    session.stateSnapshot.currentBoardId = 'sub-b';
+    await d(
+      {
+        tool_call_id: 'tu_sub',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '25', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    // Pre-finding-4: raw boardId is null for BOTH (board_id omitted on both
+    // calls) and the circuit REFS collide (1,2 on both boards) — a
+    // raw-board-keyed match would have replaced call1's entry with call2's.
+    expect(writes.bulkOutcomes).toHaveLength(2);
+    expect(writes.bulkOutcomes.map((o) => o.effectiveBoardId).sort()).toEqual(['main', 'sub-b']);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    // The turn touches two DISTINCT effective boards, so the bundler's
+    // cross-board enrichment pass stamps the resolved board onto both
+    // ordinary readings (A2-multiboard item 1) — board_id is 'main' here,
+    // not omitted, precisely because this turn is cross-board.
+    const mainConfirmation = r.confirmations.find(
+      (c) => c.field === 'rcd_time_ms' && c.circuit === 1 && c.board_id === 'main'
+    );
+    const subConfirmation = r.confirmations.find(
+      (c) => c.field === 'rcd_time_ms' && c.circuit === 1 && c.board_id === 'sub-b'
+    );
+    expect(mainConfirmation?.text.endsWith(', skipping 1 spare way')).toBe(true);
+    expect(subConfirmation?.text.endsWith(', skipping 1 spare way')).toBe(true);
+    // Exactly two disclosures — neither call's was silently discarded.
+    expect(r.confirmations.filter((c) => c.text.includes('spare'))).toHaveLength(2);
+  });
+
+  test('ordinary single-board bulk call: wire board_id stays OMITTED on the disclosure-bearing confirmation', async () => {
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Spare' },
+    });
+    const writes = await runBulkApply(session, {
+      field: 'rcd_time_ms',
+      value: '25',
+      confidence: 0.95,
+      source_turn_id: 't1',
+    });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 1);
+    expect(entry).toBeDefined();
+    expect(entry.text.endsWith(', skipping 1 spare way')).toBe(true);
+    // The effective-board upgrade (finding 4) must never leak the resolved
+    // id onto the wire — board_id stays absent, exactly as before finding 4.
+    expect('board_id' in entry).toBe(false);
+  });
+
+  test('ONE "*" wildcard call across two boards with DIFFERENT skip counts — each disclosure attaches to its own board, with the right count', async () => {
+    const session = {
+      sessionId: 's-cross-board-diff-counts',
+      stateSnapshot: {
+        currentBoardId: 'main',
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-b',
+            designation: 'DB-2',
+            board_type: 'sub_distribution',
+            parent_board_id: 'main',
+          },
+        ],
+        circuits: {
+          0: {},
+          // main: 1 applied, 2+3 spare (2 skipped)
+          1: { circuit_designation: 'Cooker' },
+          2: { circuit_designation: 'Spare' },
+          3: { circuit_designation: 'Spare' },
+          // sub-b: 1+2 applied, 3 spare (1 skipped)
+          'sub-b::1': { board_id: 'sub-b', circuit: 1, circuit_designation: 'Immersion' },
+          'sub-b::2': { board_id: 'sub-b', circuit: 2, circuit_designation: 'Shower' },
+          'sub-b::3': { board_id: 'sub-b', circuit: 3, circuit_designation: 'Spare' },
+        },
+      },
+      extractedObservations: [],
+    };
+    const writes = await runBulkApply(session, {
+      field: 'rcd_time_ms',
+      value: '25',
+      confidence: 0.95,
+      source_turn_id: 't1',
+      board_id: '*',
+    });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const mainConfirmation = r.confirmations.find(
+      (c) => c.field === 'rcd_time_ms' && c.board_id === 'main' && c.circuit === 1
+    );
+    const subConfirmation = r.confirmations.find(
+      (c) => c.field === 'rcd_time_ms' && c.board_id === 'sub-b' && Array.isArray(c.circuits)
+    );
+    expect(mainConfirmation?.text.endsWith(', skipping 2 spare ways')).toBe(true);
+    expect(subConfirmation?.text.endsWith(', skipping 1 spare way')).toBe(true);
+  });
+});

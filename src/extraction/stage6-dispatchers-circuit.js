@@ -2619,6 +2619,12 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         field: input.field,
         value: input.value,
         boardId: bId,
+        // PLAN-F2 finding 4 (2026-08-14) — `bId` here is already a REAL
+        // board id (the '*' sweep enumerates concrete boards), so
+        // resolveEffectiveBoardId is a no-op passthrough for this branch;
+        // still threaded for symmetry with the non-'*' branch below so the
+        // bundler's consumer has one uniform field to join on.
+        effectiveBoardId: resolveEffectiveBoardId(session, bId),
         appliedRefs: appliedForBoard,
         spareSkippedRefs: spareSkippedForBoard,
         callId: call.tool_call_id,
@@ -2629,6 +2635,13 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       field: input.field,
       value: input.value,
       boardId: input.board_id ?? null,
+      // PLAN-F2 finding 4 (2026-08-14) — the ordinary bulk-call case:
+      // input.board_id is undefined on the common single-board turn, so
+      // `boardId` above stays null (wire-conditional), but the SESSION may
+      // have a real non-main board selected (a prior select_board). Resolve
+      // it here so the bundler's consumer can join against the
+      // confirmation's own resolved effective board.
+      effectiveBoardId: resolveEffectiveBoardId(session, input.board_id),
       appliedRefs: applied.map((a) => a.circuit),
       spareSkippedRefs: spareSkippedRefs.map((s) => s.ref),
       callId: call.tool_call_id,

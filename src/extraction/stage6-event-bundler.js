@@ -807,13 +807,20 @@ function synthesiseConfirmations(
       Number.POSITIVE_INFINITY
     );
     if (!Number.isFinite(entry._confidence)) entry._confidence = null;
-    // PLAN-F2 finding 1 (2026-08-14) — stamp the composite (callId, boardId)
-    // identity so the bulk-outcome consumer in bundleToolCallsIntoResult can
-    // join this confirmation back to ONLY the bulk call that produced it.
-    // Non-enumerable: never rides the wire.
+    // PLAN-F2 finding 1 (2026-08-14) — stamp the composite (callId,
+    // effectiveBoardId) identity so the bulk-outcome consumer in
+    // bundleToolCallsIntoResult can join this confirmation back to ONLY the
+    // bulk call that produced it. Non-enumerable: never rides the wire.
+    // PLAN-F2 finding 4 — the board component is `bucket.effectiveBoardId`
+    // (already resolved above, same value the "All circuits" census uses),
+    // NOT the raw wire `bucket.board_id` — the ledger's matching field is
+    // now the resolved effectiveBoardId too (see the consumer below), and
+    // comparing raw-vs-resolved would fail the match on an ordinary
+    // single-board turn (where the wire board_id is omitted but the
+    // session may have a real non-main board selected).
     if (bucket.bulkCallId) {
       Object.defineProperty(entry, BULK_OUTCOME_MATCH_IDENTITY, {
-        value: { callId: bucket.bulkCallId, boardId: bucket.board_id ?? null },
+        value: { callId: bucket.bulkCallId, boardId: bucket.effectiveBoardId ?? null },
         enumerable: false,
         configurable: true,
         writable: false,
@@ -876,11 +883,13 @@ function synthesiseConfirmations(
     entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
     // PLAN-F2 finding 1 (2026-08-14) — same composite-identity stamp as the
     // grouped path above, for a bulk call whose sweep applied to exactly one
-    // circuit (never grouped — bucket.items.length < 2).
+    // circuit (never grouped — bucket.items.length < 2). PLAN-F2 finding 4
+    // — board component is effectiveBoardOf(r) (resolved), not raw
+    // r.board_id, same rationale as the grouped path above.
     const perCircuitBulkCallId = bulkCallIdOf(r);
     if (perCircuitBulkCallId) {
       Object.defineProperty(entry, BULK_OUTCOME_MATCH_IDENTITY, {
-        value: { callId: perCircuitBulkCallId, boardId: r.board_id ?? null },
+        value: { callId: perCircuitBulkCallId, boardId: effectiveBoardOf(r) ?? null },
         enumerable: false,
         configurable: true,
         writable: false,
@@ -1897,21 +1906,29 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           continue;
         }
         // PLAN-F2 finding 1 (2026-08-14) — join by the composite (callId,
-        // boardId) identity stamped during synthesis (BULK_OUTCOME_MATCH_IDENTITY),
-        // NOT by (field, board, exact circuit set). The field/circuit-set
-        // match this replaces could misattribute a disclosure whenever two
-        // same-turn bulk calls to the same field+board produced different
-        // groupings than the ledger expected (the class of bug this finding
-        // fixes) — an outcome now acts ONLY if its own call's identity owns
-        // a winning projected reading (i.e. a confirmation was actually
-        // stamped with it), so it can never latch onto a different call's
-        // confirmation by coincidence of shape.
+        // effectiveBoardId) identity stamped during synthesis
+        // (BULK_OUTCOME_MATCH_IDENTITY), NOT by (field, board, exact
+        // circuit set). The field/circuit-set match this replaces could
+        // misattribute a disclosure whenever two same-turn bulk calls to
+        // the same field+board produced different groupings than the
+        // ledger expected (the class of bug this finding fixes) — an
+        // outcome now acts ONLY if its own call's identity owns a winning
+        // projected reading (i.e. a confirmation was actually stamped with
+        // it), so it can never latch onto a different call's confirmation
+        // by coincidence of shape.
+        // PLAN-F2 finding 4 — the board component compares
+        // `outcome.effectiveBoardId` (resolved), NOT the raw `outcome.boardId`
+        // used for wire emission above. Both sides of the join are now the
+        // resolved effective board, so an ordinary single-board turn (wire
+        // board_id omitted, but the session may have a real non-main board
+        // selected) still matches correctly — comparing raw-vs-resolved
+        // would fail on exactly that common case.
         const matchIdx = confirmations.findIndex((c) => {
           const identity = c[BULK_OUTCOME_MATCH_IDENTITY];
           return (
             identity != null &&
             identity.callId === outcome.callId &&
-            identity.boardId === outcome.boardId
+            identity.boardId === outcome.effectiveBoardId
           );
         });
         // Codex diff-review r1 (edge-interactions lens, WITHIN_INTENT per

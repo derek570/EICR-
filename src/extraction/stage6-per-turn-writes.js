@@ -807,20 +807,43 @@ export function attachBulkOutcomeCallId(target, callId) {
  * (a correction of the same sweep); APPEND when disjoint (or otherwise not
  * identical), so each call's outcome keeps its own ledger entry and its own
  * disclosure.
+ *
+ * PLAN-F2 finding 4 (2026-08-14) — `effectiveBoardId` is a SEPARATE field
+ * from `boardId`. `boardId` stays the RAW wire value (undefined/null on an
+ * ordinary single-board turn) because it also drives wire emission in the
+ * bundler's consumer (zeroEntry.board_id / fallbackEntry.board_id stay
+ * conditional on it — never unconditionally set from a resolved id, or
+ * every single-board turn's wire shape would change). `effectiveBoardId` is
+ * the caller-resolved value (resolveEffectiveBoardId, which never returns
+ * null) and exists ONLY so the bundler's consumer can join against a
+ * confirmation's OWN effective board — comparing a raw-null ledger id
+ * against an already-resolved confirmation id would fail the match on the
+ * ordinary single-board case (the common one).
  */
 export function stageBulkOutcomeForBundler(
   perTurnWrites,
-  { field, value, boardId, appliedRefs, spareSkippedRefs, callId }
+  { field, value, boardId, effectiveBoardId, appliedRefs, spareSkippedRefs, callId }
 ) {
   if (!Array.isArray(perTurnWrites.bulkOutcomes)) {
     perTurnWrites.bulkOutcomes = [];
   }
   const boardKey = boardId ?? null;
+  const effectiveBoardKey = effectiveBoardId ?? null;
   const appliedList = Array.isArray(appliedRefs) ? [...appliedRefs] : [];
   const spareSkippedList = Array.isArray(spareSkippedRefs) ? [...spareSkippedRefs] : [];
   const circuitSetKey = [...appliedList, ...spareSkippedList].map(String).sort().join(',');
+  // PLAN-F2 finding 4 (2026-08-14) — match on `effectiveBoardId`, NOT the
+  // raw `boardId`. Two implicit-board calls (both omit board_id, so raw
+  // boardId is null for BOTH) that select DIFFERENT boards between them
+  // (a select_board in between) can easily target circuit sets that are
+  // IDENTICAL by ref number (every board's circuits start at 1) — matching
+  // on raw boardId alone would misidentify the second board's call as a
+  // same-target correction of the first and silently discard its
+  // disclosure. effectiveBoardId disambiguates them correctly (main vs the
+  // sub-board); a genuine same-board correction still has matching
+  // effectiveBoardId both times.
   const existingIdx = perTurnWrites.bulkOutcomes.findIndex((o) => {
-    if (o.field !== field || o.boardId !== boardKey) return false;
+    if (o.field !== field || (o.effectiveBoardId ?? null) !== effectiveBoardKey) return false;
     const oKey = [...o.appliedRefs, ...o.spareSkippedRefs].map(String).sort().join(',');
     return oKey === circuitSetKey;
   });
@@ -828,6 +851,7 @@ export function stageBulkOutcomeForBundler(
     field,
     value,
     boardId: boardKey,
+    effectiveBoardId: effectiveBoardId ?? null,
     appliedRefs: appliedList,
     spareSkippedRefs: spareSkippedList,
     callId,
