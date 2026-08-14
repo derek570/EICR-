@@ -483,6 +483,14 @@ describe('P4 — does NOT fire', () => {
     const result = await runShadowHarness(makeSession(), 'zs for c3 is 0.55', [], opts);
     expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(false);
     expect(declineAckPrompts(result)).toHaveLength(0);
+    // PLAN-G mini-review fix: prove the WRITE itself survived — confirmation
+    // mode gates the SPOKEN read-back only, never the reading (Audio-First
+    // invariant #2, "written regardless … never silently dropped"). Without
+    // this assertion the test above would pass identically if the reading
+    // had been dropped entirely rather than just muted.
+    expect(result.extracted_readings).toContainEqual(
+      expect.objectContaining({ field: 'measured_zs_ohm', circuit: 3, value: '0.55' })
+    );
   });
 
   test('(f) A1 mutual exclusion — the model ANSWERED via answer_user (spoken_response set) → no ack; EXACTLY ONE audible response', async () => {

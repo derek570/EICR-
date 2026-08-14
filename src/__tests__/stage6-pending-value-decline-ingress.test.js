@@ -296,6 +296,55 @@ describe('id 114 ingress — decline at the INITIAL pending-value ask', () => {
     // The suppressed retry never emitted an ask frame.
     expect(ws.sent.filter((f) => f.type === 'ask_user_started')).toHaveLength(1);
   });
+
+  test('PLAN-G mini-review fix: confirmationsEnabled:false + decline + SAME-generation model retry → the retry is STILL suppressed and the FULL sequence still yields exactly ONE decline ack', async () => {
+    // The single-invocation mode-off test above cannot distinguish a
+    // mode-off regression where a same-generation retry emits a SECOND ask
+    // (it only ever drives one dispatcher call). This mirrors the toggle-ON
+    // retry test above exactly, confirmationsEnabled:false only.
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    runToolLoopSpy.mockImplementation(async (o) => {
+      const p = o.dispatcher(
+        { tool_call_id: 'toolu_gr1', name: 'ask_user', input: noneAsk() },
+        o.ctx
+      );
+      await tick();
+      pendingAsks.resolve('toolu_gr1', { answered: true, user_text: "Don't worry." });
+      const env1 = await p;
+      // The model retries the same pending operation in the SAME generation.
+      const env2 = await o.dispatcher(
+        { tool_call_id: 'toolu_gr2', name: 'ask_user', input: noneAsk() },
+        o.ctx
+      );
+      const body2 = JSON.parse(env2.content);
+      expect(body2).toMatchObject({
+        answered: false,
+        reason: 'user_declined',
+        match_status: 'user_declined',
+      });
+      return loopOut([toolCallRecord('toolu_gr1', env1), toolCallRecord('toolu_gr2', env2)]);
+    });
+    const session = makeSession();
+    const opts = {
+      logger: makeLogger(),
+      pendingAsks,
+      ws,
+      confirmationsEnabled: false,
+      generationId: 'gen-gr',
+    };
+    const result = await runShadowHarness(
+      session,
+      'RCD trip time upstairs is 26 milliseconds',
+      [],
+      opts
+    );
+    // Across the FULL retry sequence: ONE decline-family entry, not two —
+    // toggle-off doesn't change the no-reask contract.
+    expectExactlyOneDeclineAck(result, session, ws);
+    // The suppressed retry never emitted an ask frame.
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started')).toHaveLength(1);
+  });
 });
 
 describe('id 114 ingress — decline at each brokered outcome', () => {

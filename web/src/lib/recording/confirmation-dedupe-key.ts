@@ -156,6 +156,28 @@ export function isP4DeclineAck(conf: DedupeKeySource): boolean {
 }
 
 /**
+ * 2026-08-14 (PLAN-G cycle-1 mini-review fix): a forced decline ack that
+ * fails to enqueue can only be TTS-unavailable — `force:true` rules out the
+ * confirmation-mode toggle as the cause — so its reservation must be
+ * released, or a genuine LATER decline landing on the same rotated text
+ * would be silently swallowed forever. An ORDINARY (unforced) confirmation
+ * muted by the toggle must keep its permanent reservation (a muted
+ * confirmation the inspector chose not to hear should not re-prompt), so
+ * this only ever returns true for the P4 decline family. Extracted as its
+ * own exported function (rather than an inline conditional in
+ * recording-context.tsx) so it is unit-testable directly — the previous
+ * cycle's test reimplemented this conditional against a bare
+ * `ConfirmationDedupeStore`, which would stay green even if
+ * `recording-context.tsx`'s own call to this logic broke or was deleted.
+ */
+export function shouldReleaseP4DeclineReservation(
+  isP4Decline: boolean,
+  enqueued: boolean
+): boolean {
+  return isP4Decline && !enqueued;
+}
+
+/**
  * Literal port of iOS `buildConfirmationDedupeKey` branch selection:
  * token precedence for allowlisted text-op fields (every branch), then
  * single-circuit wins, then multi-circuit broadcast, then degenerate.

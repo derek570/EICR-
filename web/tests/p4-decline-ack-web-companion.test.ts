@@ -11,7 +11,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ASK_DECLINE_ACK_PROMPTS, isP4DeclineAck } from '@/lib/recording/confirmation-dedupe-key';
+import {
+  ASK_DECLINE_ACK_PROMPTS,
+  isP4DeclineAck,
+  shouldReleaseP4DeclineReservation,
+} from '@/lib/recording/confirmation-dedupe-key';
 import {
   __resetTtsWindowForTests,
   setConfirmationModeEnabled,
@@ -145,16 +149,34 @@ describe('speakConfirmation + isP4DeclineAck — the recording-context call-site
   });
 });
 
+describe('shouldReleaseP4DeclineReservation — the exact predicate recording-context.tsx calls', () => {
+  it('true only for a forced decline ack that failed to enqueue', () => {
+    expect(shouldReleaseP4DeclineReservation(true, false)).toBe(true);
+  });
+
+  it('false for a decline ack that enqueued successfully', () => {
+    expect(shouldReleaseP4DeclineReservation(true, true)).toBe(false);
+  });
+
+  it('false for an ordinary (non-decline) confirmation, enqueued or not', () => {
+    expect(shouldReleaseP4DeclineReservation(false, false)).toBe(false);
+    expect(shouldReleaseP4DeclineReservation(false, true)).toBe(false);
+  });
+});
+
 /**
  * PLAN-G round-1 Codex diff review (cycle 1, lens C) — a forced decline ack
  * that fails to enqueue (TTS genuinely unavailable — force:true means the
  * confirmation-mode toggle can never be the cause) must NOT leave a
  * permanent reservation behind, or a genuine LATER decline landing on the
- * same rotated text would be silently swallowed forever. Mirrors the exact
- * reserve/speak/discard-on-fail sequence recording-context.tsx runs
- * (its own reserve()/discardConfirmationReservation() aren't exported, so
- * this test drives the same public primitives — ConfirmationDedupeStore +
- * speakConfirmation — the component composes them with).
+ * same rotated text would be silently swallowed forever. Drives the SAME
+ * exported predicate (`shouldReleaseP4DeclineReservation`) recording-
+ * context.tsx calls — not a reimplementation of its conditional — against
+ * ConfirmationDedupeStore + speakConfirmation, the same primitives the
+ * component composes (its own reserve()/discardConfirmationReservation()
+ * aren't exported, so those two calls alone still stand in for the
+ * component's plumbing; the decision logic itself is now shared, closing
+ * the mini-review's "would stay green if the real call site broke" gap).
  */
 describe('P4 decline-ack reservation release on enqueue failure (PLAN-G cycle-1 fix)', () => {
   it('TTS unavailable: a forced decline-ack reservation is released so a later attempt can still speak', () => {
@@ -166,16 +188,16 @@ describe('P4 decline-ack reservation release on enqueue failure (PLAN-G cycle-1 
     const conf = { text: ASK_DECLINE_ACK_PROMPTS[2], field: null as string | null };
     const dedupeKey = 'p4-decline-unavailable';
     const fieldIsNil = conf.field == null;
+    const p4DeclineAck = isP4DeclineAck(conf);
 
     store.reserve(dedupeKey, fieldIsNil);
-    const attempt = speakConfirmation(conf.text, { dedupeKey, force: isP4DeclineAck(conf) });
+    const attempt = speakConfirmation(conf.text, { dedupeKey, force: p4DeclineAck });
     expect(attempt.enqueued).toBe(false);
     // Without the fix this reservation would stand forever — assert the
     // pre-fix hazard is real before asserting the fix's outcome below.
     expect(store.isLive(dedupeKey, fieldIsNil)).toBe(true);
 
-    // The recording-context.tsx fix: p4DeclineAck && !enqueued → discard.
-    if (isP4DeclineAck(conf) && !attempt.enqueued) {
+    if (shouldReleaseP4DeclineReservation(p4DeclineAck, attempt.enqueued)) {
       store.forget(dedupeKey);
     }
     expect(store.isLive(dedupeKey, fieldIsNil)).toBe(false);
@@ -190,14 +212,15 @@ describe('P4 decline-ack reservation release on enqueue failure (PLAN-G cycle-1 
     };
     const dedupeKey = 'ordinary-muted';
     const fieldIsNil = conf.field == null;
+    const p4DeclineAck = isP4DeclineAck(conf);
 
     store.reserve(dedupeKey, fieldIsNil);
-    const attempt = speakConfirmation(conf.text, { dedupeKey, force: isP4DeclineAck(conf) });
+    const attempt = speakConfirmation(conf.text, { dedupeKey, force: p4DeclineAck });
     expect(attempt.enqueued).toBe(false);
     // p4DeclineAck is false here, so the fix's discard branch never fires —
     // the reservation stands, which is CORRECT: a muted confirmation the
     // inspector chose not to hear must not re-prompt.
-    if (isP4DeclineAck(conf) && !attempt.enqueued) {
+    if (shouldReleaseP4DeclineReservation(p4DeclineAck, attempt.enqueued)) {
       store.forget(dedupeKey);
     }
     expect(store.isLive(dedupeKey, fieldIsNil)).toBe(true);

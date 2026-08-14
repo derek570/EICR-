@@ -62,6 +62,7 @@ import {
   buildConfirmationDedupeKey,
   isObservationRecodeConfirmation,
   isP4DeclineAck,
+  shouldReleaseP4DeclineReservation,
 } from './recording/confirmation-dedupe-key';
 import {
   PendingReadingsBuffer,
@@ -2685,7 +2686,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // suppress a genuine future decline ack landing on the same rotated
         // text. Mirrors the address-mirror-delivery branch's same pattern
         // above. Ordinary (unforced) confirmations are unaffected.
-        if (p4DeclineAck && !spoken.enqueued) {
+        if (shouldReleaseP4DeclineReservation(p4DeclineAck, spoken.enqueued)) {
           discardConfirmationReservation(dedupeKey, 'not_queued');
         }
       }
