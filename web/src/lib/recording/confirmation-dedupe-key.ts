@@ -204,9 +204,17 @@ export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
   // zero-applied/fallback disclosure can target any circuit reading field,
   // not just the allowlist, so it needs the same prefix-wins-first
   // treatment as `duplicate_` — never an allowlist addition.
+  //
+  // PLAN-G2 (2026-08-14, held finding 2) — `p4ack_<turnId>` joins the set:
+  // both P4 ack families (`ASK_DECLINE_ACK_PROMPTS` / the plain ANSWERED
+  // family) always carry `field:null`, so the §A1a allowlist branch below
+  // can never reach them — this prefix branch is the only route to a
+  // replay-stable key instead of colliding on rotated text alone.
   if (
     conf.dedupe_token &&
-    (conf.dedupe_token.startsWith('duplicate_') || conf.dedupe_token.startsWith('bulkoutcome_'))
+    (conf.dedupe_token.startsWith('duplicate_') ||
+      conf.dedupe_token.startsWith('bulkoutcome_') ||
+      conf.dedupe_token.startsWith('p4ack_'))
   ) {
     return `${field}_${conf.dedupe_token}`;
   }

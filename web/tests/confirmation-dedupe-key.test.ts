@@ -713,3 +713,91 @@ describe('PLAN-F2 finding 5 — bulkoutcome_ prefix branch wins ahead of the fie
     expect(first).toBe(replay);
   });
 });
+
+/**
+ * PLAN-G2 (2026-08-14, held finding 2) — `p4ack_<turnId>` prefix branch,
+ * sibling of duplicate_/bulkoutcome_ above. Both P4 ack families
+ * (`ASK_DECLINE_ACK_PROMPTS` / the plain ANSWERED family in
+ * stage6-shadow-harness.js) always carry `field:null`, so the §A1a allowlist
+ * branch can never reach them — the prefix branch is the ONLY route to a
+ * replay-stable client-side dedupe key. Without it, two GENUINELY DISTINCT
+ * P4 acks landing on the same rotated text (1-in-5 chance, turnNum % 5)
+ * within the client's 30 s field-nil TTL would collapse into one spoken ack.
+ */
+describe('PLAN-G2 held finding 2 — p4ack_ prefix branch wins ahead of the field-allowlist', () => {
+  it('the real production shape (field:null) gets an "unknown"-prefixed turn-unique key', () => {
+    const k = buildConfirmationDedupeKey({
+      text: 'Okay — leaving that one.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-1',
+    });
+    expect(k).toBe('unknown_p4ack_sess-x-turn-1');
+  });
+
+  it('rapid-distinct: two DIFFERENT P4 acks on the SAME rotated text (different turnId tokens) produce DISTINCT keys', () => {
+    const first = buildConfirmationDedupeKey({
+      text: 'Okay — leaving that one.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-1',
+    });
+    const second = buildConfirmationDedupeKey({
+      text: 'Okay — leaving that one.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-2',
+    });
+    expect(first).not.toBe(second);
+  });
+
+  it('cross-board sequence: distinct turnId tokens produce distinct keys regardless of board_id (P4 acks carry no board_id on the wire)', () => {
+    const main = buildConfirmationDedupeKey({
+      text: 'Okay — leaving that one.',
+      field: null,
+      board_id: 'main',
+      dedupe_token: 'p4ack_sess-x-turn-1',
+    });
+    const subB = buildConfirmationDedupeKey({
+      text: 'Okay — leaving that one.',
+      field: null,
+      board_id: 'sub-b',
+      dedupe_token: 'p4ack_sess-x-turn-2',
+    });
+    expect(main).not.toBe(subB);
+  });
+
+  it('same-token-replay: replaying the SAME token produces the SAME key (stable replay dedupe)', () => {
+    const first = buildConfirmationDedupeKey({
+      text: 'Okay — leaving that one.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-1',
+    });
+    const replay = buildConfirmationDedupeKey({
+      text: 'Okay — leaving that one.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-1',
+    });
+    expect(first).toBe(replay);
+  });
+
+  it('the ANSWERED family (distinct text) is likewise token-aware and replay-stable', () => {
+    const first = buildConfirmationDedupeKey({
+      text: 'Okay, got it.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-3',
+    });
+    const replay = buildConfirmationDedupeKey({
+      text: 'Okay, got it.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-3',
+    });
+    expect(first).toBe(replay);
+  });
+
+  it('a non-p4ack token (or none) is unaffected — legacy text+board hash unchanged', () => {
+    expect(
+      buildConfirmationDedupeKey({
+        text: 'Okay — leaving that one.',
+        field: null,
+      })
+    ).toBe('unknown_' + djb2UInt64Decimal('Okay — leaving that one.'));
+  });
+});
