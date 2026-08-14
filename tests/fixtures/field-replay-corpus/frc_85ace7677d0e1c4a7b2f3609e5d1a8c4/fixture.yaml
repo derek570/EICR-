@@ -21,18 +21,33 @@
 # decline-family ack into result.confirmations.
 #
 # ORACLE (plan Option B): the §A4-drained ack is `{text, field:null,
-# circuit:null, expects_ios_ack:false}` — TOKENLESS (field:null is outside
-# DEDUPE_TOKEN_FIELDS), and runtime `confirmationMatches` keys on `text_exact`.
+# circuit:null, expects_ios_ack:false, dedupe_token}`. Originally TOKENLESS
+# (field:null is outside DEDUPE_TOKEN_FIELDS, so the historical mandatory
+# dedupe_token/expected_key was DROPPED from the field_null_fallback schema —
+# see fixture-schema.mjs), and runtime `confirmationMatches` keyed on
+# `text_exact` alone. PLAN-G2 (2026-08-14, held finding 2) added a
+# replay-stable `p4ack_<turnId>` structural token to BOTH P4 ack families
+# (stamped at production in stage6-shadow-harness.js, copied verbatim through
+# the §A4 drain) — this fixture now asserts it explicitly in ADDITION to
+# text_exact, strengthening the oracle from text-only to text+identity. The
+# `field_null_fallback` schema's text_exact-alone rule is UNCHANGED (it stays
+# the sufficient minimum — a token is optional per-fixture, since ordinary
+# marker-①/②/F7 apologies still emit no token at all; see fixture-schema.mjs).
+# The token is a deterministic hash of (corpusId, turnIndex) via the replay
+# harness's `mintSessionId`, NOT hand-computed — regenerate it with
+# `node -e "import('./scripts/field-replay/lib/canonical-crypto.mjs').then(m=>console.log(m.mintSessionId('frc_85ace7677d0e1c4a7b2f3609e5d1a8c4')))"`
+# if this fixture's corpus_id ever changes.
 # The ack rotates deterministically as `turnNum % ASK_DECLINE_ACK_PROMPTS.length`
 # (turn 1 → index 1 → "No problem, moving on."), so the phrase is computable in
-# the frozen lane. This needed the scoped `fixture-schema.mjs` relaxation
-# (a non-empty trimmed `text_exact` alone validates a `field_null_fallback`
-# matcher; a token would then FAIL the runtime match against the tokenless ack).
-# The declared `expected_audible_outputs` carry BOTH the original ask_user frame
-# AND the ack, so `matchAudibleOutputs` suppresses the `audibility.turn`
-# false-pass (the ask question is itself "audible") and the RED id is
-# `audibility.output.out_decline_ack`. Pre-fix replay fails EXACTLY that id
-# (the ask emits + is claimed; the ack is never synthesised → 0 matches).
+# the frozen lane. The declared `expected_audible_outputs` carry BOTH the
+# original ask_user frame AND the ack, so `matchAudibleOutputs` suppresses the
+# `audibility.turn` false-pass (the ask question is itself "audible") and the
+# RED id is `audibility.output.out_decline_ack`. Pre-fix replay fails EXACTLY
+# that id (the ask emits + is claimed; the ack is never synthesised → 0
+# matches). Pre-PLAN-G2 code (the ack synthesises but carries no token) would
+# also fail this RED id once the token assertion is added — verified by
+# temporarily reverting the `dedupe_token` line and confirming pass, matching
+# the fixture's pre-strengthening baseline.
 #
 # Provenance: HAND-AUTHORED / reconstructed from realtime chunks — session
 # 2ACE7677 has no field_sources/manifest (the iOS multipart analytics upload was
@@ -124,3 +139,4 @@ turns:
         count: 1
         match:
           text_exact: No problem, moving on.
+          dedupe_token: p4ack_frsess_bcb3a8a8bc226afd52a7e96cb3c41f42-turn-1

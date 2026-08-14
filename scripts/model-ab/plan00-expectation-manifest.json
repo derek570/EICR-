@@ -3,7 +3,7 @@
   "status": "UNREVIEWED-DRAFT",
   "generated_by": "scripts/model-ab/run-semantic-lane.mjs (Plan 00B B6)",
   "vendor_live_expectations": {
-    "sha256": "826644050e4be48f5ee79faa9676f2a19e160db10dc904e8914d0bf9e95e5eb6",
+    "sha256": "52e8b0a605300e682d68d83ec827a33f38747bba4e4ca496b3927d7732841678",
     "fixture_ids": [
       "frc_342b5176bba77d4e9a031c6541d60e63",
       "frc_4687948efcd06a3cd9dce203a3aa4ffe",
@@ -212,7 +212,8 @@
                 "kind": "field_null_fallback",
                 "count": 1,
                 "match": {
-                  "text_exact": "No problem, moving on."
+                  "text_exact": "No problem, moving on.",
+                  "dedupe_token": "p4ack_frsess_bcb3a8a8bc226afd52a7e96cb3c41f42-turn-1"
                 }
               }
             ]
@@ -496,8 +497,8 @@
       }
     ]
   },
-  "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "2f2288cce3068bb1de631865314b94f963096714c5d926ca5a074364f0319329",
+  "combined_sha256": "574bcfdb844e64195838fe061f9e2b1410e61c54246248cc84c9932e1831c729",
+  "semantic_oracle_digest": "adf927feb6c9d9d6d8c42a401fed3b684e1858834cf03a10230c9c635157c4bf",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -529,7 +530,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "223abd26f3981673730f88b2a59bb82b9ee81ae69ebd5dc02d24a51d8e68282f"
+      "sha256": "26bf42e0978197f49faf667f800f1fcd58717d38c4eabffa0cedc30f2f31e9c1"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -569,7 +570,7 @@
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
-      "sha256": "88d35286f642b4874ededf8f662f6b61573ca7dbaa4103af6b1ff62d20047cd6"
+      "sha256": "cb2fcf7dcc1436060028687d89088716578f63d8c0412d169d018e0a0afed58d"
     },
     {
       "path": "scripts/model-ab/run-semantic-lane.mjs",
@@ -682,6 +683,6 @@
       "dated": "2026-08-04"
     }
   ],
-  "vendor_live_sha256": "826644050e4be48f5ee79faa9676f2a19e160db10dc904e8914d0bf9e95e5eb6",
+  "vendor_live_sha256": "52e8b0a605300e682d68d83ec827a33f38747bba4e4ca496b3927d7732841678",
   "deterministic_egress_sha256": "4a9d8a8e9d5c5a386e209e18dc5bc063b8edf545808f6c963ddd1a5c01b618f5"
 }
