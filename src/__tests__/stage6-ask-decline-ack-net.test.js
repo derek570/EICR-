@@ -249,6 +249,27 @@ describe('P4 — the answered-ask silent-continuation net FIRES', () => {
     expect(declineAckPrompts(result)).toHaveLength(1);
   });
 
+  test('(j) confirmationsEnabled:false + DECLINE reply → the decline ack STILL fires. 2026-08-14 (Derek decision, PLAN-G, id-114): supersedes this pin\'s original id-85 assertion ("mode-off opted out of the spoken channel") for THIS family only — an answer to a question the app asked is not a reading confirmation, and silence after "don\'t worry" is indistinguishable from a broken pipeline. The pin changed deliberately, not accidentally; (j2) below confirms every OTHER P4 ack stays toggle-gated.', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ confirmationsEnabled: false, _seedAskLifecycle: declineLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'mode off decline', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    expect(DECLINE_SET.has(acks[0].text)).toBe(true);
+    // Fingerprint/no-reask unchanged: exactly one telemetry row, no duplicate
+    // or re-ask side effect from bypassing the toggle.
+    expect(ackRows(opts.logger)).toHaveLength(1);
+  });
+
+  test('(j3) confirmationsEnabled:true + DECLINE reply → still exactly ONE ack (toggle-ON path unchanged by the new bypass predicate — no double-count)', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ confirmationsEnabled: true, _seedAskLifecycle: declineLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'mode on decline', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    expect(ackRows(opts.logger)).toHaveLength(1);
+  });
+
   test('(b) a NON-decline answered outcome with a silent continuation → ONE generic "Okay."-class ack', async () => {
     silentAnsweredLoop();
     const opts = baseOpts({ _seedAskLifecycle: answeredLifecycle() });
@@ -530,10 +551,12 @@ describe('P4 — does NOT fire', () => {
     expect(declineAckPrompts(result)).toHaveLength(0);
   });
 
-  test('(j) confirmationsEnabled:false → no ack (mode-off opted out of the spoken channel)', async () => {
-    const opts = baseOpts({ confirmationsEnabled: false, _seedAskLifecycle: declineLifecycle() });
-    const result = await runShadowHarness(makeSession(), 'mode off decline', [], opts);
+  test('(j2) confirmationsEnabled:false + a NON-decline answered outcome → no ack (every OTHER P4 ack — the plain ANSWERED family — stays toggle-gated; only the decline family bypasses the toggle, per (j) in the FIRES block above)', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ confirmationsEnabled: false, _seedAskLifecycle: answeredLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'mode off non-decline', [], opts);
     expect(declineAckPrompts(result)).toHaveLength(0);
+    expect(ackRows(opts.logger)).toHaveLength(0);
   });
 
   test('(k) no ask at all (a plain no-op turn) → the P4 net does not fire (marker-① owns that class)', async () => {

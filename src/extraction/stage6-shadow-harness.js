@@ -4900,8 +4900,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the ack reaches result.confirmations THIS turn, exactly like marker-②).
     //
     // Fires when ALL hold:
-    //   1. confirmationsEnabled (a mode-off user opted out of the spoken
-    //      channel). NOTE: NOT gated on chimeObserved — the answered-ask signal
+    //   1. isDecline (predicate 3b below) OR confirmationsEnabled. 2026-08-14
+    //      (Derek decision, PLAN-G, id-114, supersedes id-85's original
+    //      "mode-off users opted out of the spoken channel" framing for THIS
+    //      one family): an answer to a question the app asked is not a
+    //      reading confirmation — the DECLINE family always speaks, even with
+    //      the toggle off, because silence after "don't worry" is
+    //      indistinguishable from a broken pipeline. The plain ANSWERED
+    //      family (a non-decline silent-but-answered outcome) stays
+    //      toggle-gated exactly as before. NOTE: NOT gated on chimeObserved — the answered-ask signal
     //      (a real user reply) is stronger proof of engagement than a chime,
     //      and the F7 ask net is likewise not chime-gated. Codex r1 DEVIATION
     //      from the plan's predicate-1 ("not cancelled"): the plan assumed the
@@ -4950,61 +4957,71 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // predicate 3 treats as a survivor — so in production this net is a
     // BACKSTOP for the frozen-no-op path, not the primary channel.
     try {
-      if (options.confirmationsEnabled === true) {
-        // The plan's exact rule (Codex r3): find the LATEST ANSWERED blocking
-        // ask (by resolutionSeq), then suppress ONLY if a NEW ask was emitted
-        // AFTER that answer resolved. A prior "max-emissionSeq must be answered"
-        // shortcut was NOT equivalent — an UNanswered ask emitted BEFORE the
-        // latest answer resolved (e.g. an srv-* dialogue-script ask observed via
-        // ASK_STARTED_OBSERVER while the initial ask awaited) would be the
-        // max-emissionSeq record with answered:false and wrongly suppress the
-        // ack, recreating answered-turn silence.
-        //
-        // `answered===true` + `resolutionSeq != null` + `resolutionSeq >
-        // emissionSeq` selects a real reply whose resolution followed its
-        // LATEST emission — this rejects a defensive out-of-order record AND a
-        // same-id RE-EMISSION after an earlier resolution (a re-emitted ask
-        // carries a stale answered:true but its new emissionSeq now exceeds its
-        // resolutionSeq, so it is not "answered since re-emission"). `srv-*`
-        // engine asks never receive an onAskAnswered call, so they stay
-        // answered:false and are excluded.
-        let latestAnswered = null;
+      // 2026-08-14 (PLAN-G): latestAnswered/laterAskEmitted/isDecline are
+      // computed UNCONDITIONALLY (moved out from behind the
+      // confirmationsEnabled check) so the DECLINE family can bypass the
+      // toggle below. Computing these is a pure ledger scan — no emission
+      // happens until the gated push further down.
+      //
+      // The plan's exact rule (Codex r3): find the LATEST ANSWERED blocking
+      // ask (by resolutionSeq), then suppress ONLY if a NEW ask was emitted
+      // AFTER that answer resolved. A prior "max-emissionSeq must be answered"
+      // shortcut was NOT equivalent — an UNanswered ask emitted BEFORE the
+      // latest answer resolved (e.g. an srv-* dialogue-script ask observed via
+      // ASK_STARTED_OBSERVER while the initial ask awaited) would be the
+      // max-emissionSeq record with answered:false and wrongly suppress the
+      // ack, recreating answered-turn silence.
+      //
+      // `answered===true` + `resolutionSeq != null` + `resolutionSeq >
+      // emissionSeq` selects a real reply whose resolution followed its
+      // LATEST emission — this rejects a defensive out-of-order record AND a
+      // same-id RE-EMISSION after an earlier resolution (a re-emitted ask
+      // carries a stale answered:true but its new emissionSeq now exceeds its
+      // resolutionSeq, so it is not "answered since re-emission"). `srv-*`
+      // engine asks never receive an onAskAnswered call, so they stay
+      // answered:false and are excluded.
+      let latestAnswered = null;
+      for (const rec of askLifecycleLedger.values()) {
+        if (
+          rec.answered === true &&
+          rec.resolutionSeq != null &&
+          rec.emissionSeq != null &&
+          rec.resolutionSeq > rec.emissionSeq
+        ) {
+          if (latestAnswered == null || rec.resolutionSeq > latestAnswered.resolutionSeq) {
+            latestAnswered = rec;
+          }
+        }
+      }
+      // A NEW ask emitted AFTER the latest answer resolved is itself audible
+      // (a follow-up question), so the turn is not silent — decline the net.
+      let laterAskEmitted = false;
+      if (latestAnswered) {
         for (const rec of askLifecycleLedger.values()) {
-          if (
-            rec.answered === true &&
-            rec.resolutionSeq != null &&
-            rec.emissionSeq != null &&
-            rec.resolutionSeq > rec.emissionSeq
-          ) {
-            if (latestAnswered == null || rec.resolutionSeq > latestAnswered.resolutionSeq) {
-              latestAnswered = rec;
-            }
+          if (rec.emissionSeq != null && rec.emissionSeq > latestAnswered.resolutionSeq) {
+            laterAskEmitted = true;
+            break;
           }
         }
-        // A NEW ask emitted AFTER the latest answer resolved is itself audible
-        // (a follow-up question), so the turn is not silent — decline the net.
-        let laterAskEmitted = false;
-        if (latestAnswered) {
-          for (const rec of askLifecycleLedger.values()) {
-            if (rec.emissionSeq != null && rec.emissionSeq > latestAnswered.resolutionSeq) {
-              laterAskEmitted = true;
-              break;
-            }
-          }
-        }
-        if (latestAnswered && !laterAskEmitted) {
-          const survivingConfCount = Array.isArray(result.confirmations)
-            ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
-            : 0;
-          const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-            ? session.pendingVoicePrompts.filter(
-                (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
-              ).length
-            : 0;
-          const survivingAnswer = isAudibleText(result.spoken_response);
-          if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
+      }
+      if (latestAnswered && !laterAskEmitted) {
+        const survivingConfCount = Array.isArray(result.confirmations)
+          ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
+          : 0;
+        const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
+          ? session.pendingVoicePrompts.filter(
+              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
+            ).length
+          : 0;
+        const survivingAnswer = isAudibleText(result.spoken_response);
+        if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
+          const isDecline = latestAnswered.declineClass === 'decline';
+          // 2026-08-14 (Derek decision, PLAN-G, id-114): the DECLINE family
+          // always speaks — bypasses confirmationsEnabled. Every OTHER P4
+          // ack (the plain ANSWERED family) remains toggle-gated, same as
+          // before this change.
+          if (isDecline || options.confirmationsEnabled === true) {
             if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
-            const isDecline = latestAnswered.declineClass === 'decline';
             const family = isDecline ? ASK_DECLINE_ACK_PROMPTS : ASK_ANSWERED_ACK_PROMPTS;
             const text = family[turnNum % family.length];
             session.pendingVoicePrompts.push({ text, generationId });
