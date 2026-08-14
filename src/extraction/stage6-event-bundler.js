@@ -560,6 +560,23 @@ function synthesiseConfirmations(
   // null for any reading that didn't come from a bulk call.
   const bulkCallIdOf = (r) =>
     bulkCallIds instanceof WeakMap ? (bulkCallIds.get(r) ?? null) : null;
+  // Codex diff-review cycle 2 (2026-08-14) — BLOCKER fix: the fan-out
+  // group-key identity must be the full (callId, effectiveBoardId)
+  // composite the plan specifies, not callId alone relying on the raw
+  // `boardId` base-key field to already equal the effective board. That
+  // reliance holds ONLY because the A2-multiboard cross-board enrichment
+  // pass happens to normalise raw→effective before grouping runs on any
+  // turn where the distinction would matter — correct by construction
+  // today, but fragile: it depends on an unrelated subsystem's side effect
+  // rather than being provably correct on its own. Composing effectiveBoardOf
+  // directly into the bulk identity removes that cross-subsystem dependency.
+  // Still null/undefined for non-bulk readings (no callId), so the key stays
+  // byte-identical to pre-finding-1 behaviour there.
+  const bulkGroupIdentityOf = (r) => {
+    const callId = bulkCallIdOf(r);
+    if (!callId) return undefined;
+    return `${callId}|${effectiveBoardOf(r) ?? ''}`;
+  };
   const sectionDedupeOperationOf = (r) => {
     const resolver = boardScope?.sectionDedupeOperationOf;
     return typeof resolver === 'function' ? (resolver(r) ?? null) : null;
@@ -725,7 +742,7 @@ function synthesiseConfirmations(
       boardId: r.board_id,
       calculated: isCalc(r),
       correction: correctionOf(r),
-      identity: bulkCallIdOf(r),
+      identity: bulkGroupIdentityOf(r),
     });
     let bucket = groups.get(groupKey);
     if (!bucket) {

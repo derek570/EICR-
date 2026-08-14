@@ -831,7 +831,19 @@ export function stageBulkOutcomeForBundler(
   const effectiveBoardKey = effectiveBoardId ?? null;
   const appliedList = Array.isArray(appliedRefs) ? [...appliedRefs] : [];
   const spareSkippedList = Array.isArray(spareSkippedRefs) ? [...spareSkippedRefs] : [];
-  const circuitSetKey = [...appliedList, ...spareSkippedList].map(String).sort().join(',');
+  // Codex diff-review cycle 2 (2026-08-14) — BLOCKER: comparing the UNION of
+  // applied+spare-skipped refs cannot distinguish "the same circuits, same
+  // partition" (a genuine correction) from "the same circuit REFS, but the
+  // applied/skipped PARTITION changed" (e.g. a designation edit between the
+  // two calls flips which of {1,2} is the spare) — both produce the SAME
+  // union "1,2". The latter is NOT a correction: both calls have surviving
+  // winning readings (different circuits, from different calls), so
+  // replacing the first ledger entry with the second silently drops the
+  // first call's disclosure even though its reading is still on the wire.
+  // Compare appliedRefs and spareSkippedRefs SEPARATELY — REPLACE requires
+  // BOTH partitions to match exactly, not just their union.
+  const appliedKey = appliedList.map(String).sort().join(',');
+  const spareSkippedKey = spareSkippedList.map(String).sort().join(',');
   // PLAN-F2 finding 4 (2026-08-14) — match on `effectiveBoardId`, NOT the
   // raw `boardId`. Two implicit-board calls (both omit board_id, so raw
   // boardId is null for BOTH) that select DIFFERENT boards between them
@@ -844,8 +856,9 @@ export function stageBulkOutcomeForBundler(
   // effectiveBoardId both times.
   const existingIdx = perTurnWrites.bulkOutcomes.findIndex((o) => {
     if (o.field !== field || (o.effectiveBoardId ?? null) !== effectiveBoardKey) return false;
-    const oKey = [...o.appliedRefs, ...o.spareSkippedRefs].map(String).sort().join(',');
-    return oKey === circuitSetKey;
+    const oAppliedKey = o.appliedRefs.map(String).sort().join(',');
+    const oSpareSkippedKey = o.spareSkippedRefs.map(String).sort().join(',');
+    return oAppliedKey === appliedKey && oSpareSkippedKey === spareSkippedKey;
   });
   const entry = {
     field,

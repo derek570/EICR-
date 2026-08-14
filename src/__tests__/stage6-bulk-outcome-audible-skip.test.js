@@ -15,7 +15,11 @@
 import { jest } from '@jest/globals';
 import { createWriteDispatcher } from '../extraction/stage6-dispatchers.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
-import { bundleToolCallsIntoResult } from '../extraction/stage6-event-bundler.js';
+import {
+  bundleToolCallsIntoResult,
+  applyConfirmationDebounce,
+} from '../extraction/stage6-event-bundler.js';
+import { buildDegenerateDedupeKey } from '../extraction/ios-dedupe-key.js';
 
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
@@ -391,6 +395,55 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
     expect(spareEntries[0].text).toBe('Circuit 1, RCD time 30, skipping 1 spare way');
   });
 
+  test('Codex diff-review cycle 2 — same circuit REFS but the applied/skipped PARTITION flips between calls: BOTH ledger entries survive (union-only matching was too coarse)', async () => {
+    // Call 1: circuit 1 is real (applied), circuit 2 is a spare (skipped).
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Spare' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+    await d(
+      {
+        tool_call_id: 'tu_before_rename',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '25', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    // Between calls: circuit 1 is renamed to a spare, circuit 2 is renamed
+    // to a real circuit — the applied/skipped PARTITION flips, but the
+    // circuit REF SET touched by a repeat bulk call is unchanged {1,2}.
+    session.stateSnapshot.circuits[1].circuit_designation = 'Spare';
+    session.stateSnapshot.circuits[2].circuit_designation = 'Immersion';
+    await d(
+      {
+        tool_call_id: 'tu_after_rename',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '25', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    // A union-only comparison ("1,2" both times) would have wrongly treated
+    // this as a same-target correction and replaced the first entry. Both
+    // calls have surviving winning readings (circuit 1 from the first call,
+    // circuit 2 from the second) — both ledger entries must survive.
+    expect(writes.bulkOutcomes).toHaveLength(2);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const c1 = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 1);
+    const c2 = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 2);
+    // Circuit 1's confirmation (from the FIRST call, which skipped circuit
+    // 2 as a spare) still carries its own disclosure — it must not have
+    // been silently dropped.
+    expect(c1?.text.endsWith(', skipping 1 spare way')).toBe(true);
+    // Circuit 2's confirmation (from the SECOND call, which skipped circuit
+    // 1 as a spare) carries ITS OWN disclosure too — both calls legitimately
+    // skipped a spare, so both confirmations disclose it.
+    expect(c2?.text.endsWith(', skipping 1 spare way')).toBe(true);
+  });
+
   test('fast-correlation confirmation is unaffected by a two-bulk-call turn — text stays byte-identical, disclosure ships as an additive sibling', async () => {
     const session = buildSession({
       0: {},
@@ -609,5 +662,113 @@ describe('PLAN-F2 finding 4 (2026-08-14) — multi-board omitted-board_id effect
     );
     expect(mainConfirmation?.text.endsWith(', skipping 2 spare ways')).toBe(true);
     expect(subConfirmation?.text.endsWith(', skipping 1 spare way')).toBe(true);
+  });
+});
+
+describe('Codex diff-review cycle 2 (2026-08-14) — dedupe_token real-ingress coverage', () => {
+  test('a REAL turnId (not the "noturn" fallback) is embedded in the token', async () => {
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Spare' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'real-turn-77', writes);
+    await d(
+      {
+        tool_call_id: 'tu_real_turn',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '25', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'real-turn-77' }
+    );
+    const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
+    expect(entry.dedupe_token).toBe('bulkoutcome_real-turn-77_tu_real_turn_main');
+    expect(entry.dedupe_token).not.toContain('noturn');
+  });
+
+  test('a REAL dispatcher→bundler-produced token, chained through the server debounce AND the backend client-mirror key builder — not hand-typed strings', async () => {
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Spare' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'chain-turn-1', writes);
+    await d(
+      {
+        tool_call_id: 'tu_chain_1',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '25', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    const r1 = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'chain-turn-1' }
+    );
+    const realToken1 = r1.confirmations.find((c) => c.field === 'rcd_time_ms')?.dedupe_token;
+    expect(realToken1).toBe('bulkoutcome_chain-turn-1_tu_chain_1_main');
+
+    // A second, DISTINCT real turn — same field, same all-spares board, a
+    // genuinely different dispatch (fresh perTurnWrites, fresh turnId/callId).
+    const writes2 = createPerTurnWrites();
+    const d2 = createWriteDispatcher(session, logger, 'chain-turn-2', writes2);
+    await d2(
+      {
+        tool_call_id: 'tu_chain_2',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '25', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    const r2 = bundleToolCallsIntoResult(
+      writes2,
+      { questions: [] },
+      { confirmationsEnabled: true, turnId: 'chain-turn-2' }
+    );
+    const realToken2 = r2.confirmations.find((c) => c.field === 'rcd_time_ms')?.dedupe_token;
+    expect(realToken2).toBe('bulkoutcome_chain-turn-2_tu_chain_2_main');
+    expect(realToken2).not.toBe(realToken1);
+
+    // Server debounce layer: BOTH real productions survive inside the
+    // window (distinct tokens); a REPLAY of the first real token is
+    // suppressed.
+    const debounceState = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const emit1 = applyConfirmationDebounce(
+      [{ text: 'x', field: 'rcd_time_ms', circuit: null, dedupe_token: realToken1 }],
+      debounceState,
+      { now: t0 }
+    );
+    const emit2 = applyConfirmationDebounce(
+      [{ text: 'x', field: 'rcd_time_ms', circuit: null, dedupe_token: realToken2 }],
+      debounceState,
+      { now: t0 + 100 }
+    );
+    const replay1 = applyConfirmationDebounce(
+      [{ text: 'x', field: 'rcd_time_ms', circuit: null, dedupe_token: realToken1 }],
+      debounceState,
+      { now: t0 + 200 }
+    );
+    expect(emit1).toHaveLength(1);
+    expect(emit2).toHaveLength(1);
+    expect(replay1).toHaveLength(0);
+
+    // Backend client-mirror key-builder layer (the SAME builder that feeds
+    // the `expected_dedupe_key` telemetry iOS/web must reconcile against):
+    // the two REAL tokens must produce DISTINCT keys, and replaying the
+    // SAME real token must produce the SAME key (stable).
+    const key1 = buildDegenerateDedupeKey('rcd_time_ms', 'x', null, realToken1);
+    const key2 = buildDegenerateDedupeKey('rcd_time_ms', 'x', null, realToken2);
+    const key1Replay = buildDegenerateDedupeKey('rcd_time_ms', 'x', null, realToken1);
+    expect(key1).not.toBe(key2);
+    expect(key1).toBe(key1Replay);
   });
 });
