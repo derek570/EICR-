@@ -1881,13 +1881,33 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // this amends the MATCHING grouped or per-circuit confirmation with a
     // count-aware "…skipping N spare ways" clause, or synthesises the
     // standalone zero-applied confirmation when nothing was written
-    // (Decision 4). Matched by (field, board_id, exact circuits set) — the
-    // same identity space the grouping loop above keys its buckets on
-    // (grouped `entry.circuits` already holds only the APPLIED refs, since
-    // a spare-skipped circuit never enters `readings` in the first place),
-    // so a multi-call / multi-board turn never attaches a disclosure to the
-    // wrong group. Not gated by `_turnId` — the disclosure is independent
-    // of the designation-token machinery above.
+    // (Decision 4). Joined by the composite (callId, effectiveBoardId)
+    // identity — see the join below. Not gated by `_turnId` — the
+    // disclosure is independent of the designation-token machinery above.
+    //
+    // Codex diff-review cycle 3 (2026-08-14) — BLOCKER fix: an outcome with
+    // a non-empty `appliedRefs` must act ONLY if its composite identity
+    // still owns at least one WINNING projected reading. Two same-turn
+    // calls to the same field+board with OVERLAPPING (not identical, so
+    // APPEND not REPLACE — finding 1) circuit targets can have the LATER
+    // call's write overwrite the readings Map entry the EARLIER call
+    // produced (last-write-wins on the shared (field, circuit, board) key),
+    // re-tagging that reading with the later call's identity. The earlier
+    // call's ledger entry then owns ZERO winning readings, yet without this
+    // check it would still fall through to the "defensive fallback" branch
+    // below and speak a STALE disclosure about circuits it no longer
+    // actually wrote. `bulkIdentityOwnsWinningReading` distinguishes that
+    // case (no reading anywhere carries this identity — skip entirely, no
+    // fallback) from the fallback's actual intended case (a reading DOES
+    // still carry this identity, but no confirmation was synthesised for
+    // it for an unrelated reason — the fallback still fires).
+    const bulkIdentityOwnsWinningReading = new Set();
+    for (const r of extracted_readings) {
+      const rCallId = bulkOutcomeCallIdByReading.get(r);
+      if (!rCallId) continue;
+      const rEffBoard = effectiveBoardByReading.get(r) ?? null;
+      bulkIdentityOwnsWinningReading.add(`${rCallId}|${rEffBoard}`);
+    }
     if (Array.isArray(perTurnWrites.bulkOutcomes) && perTurnWrites.bulkOutcomes.length > 0) {
       for (const outcome of perTurnWrites.bulkOutcomes) {
         if (!Array.isArray(outcome.spareSkippedRefs) || outcome.spareSkippedRefs.length === 0) {
@@ -1972,11 +1992,17 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           const match = confirmations[matchIdx];
           match.text = `${match.text}, ${appendClause}`;
           match.expanded_text = expandForTTS(match.text);
-        } else {
+        } else if (
+          bulkIdentityOwnsWinningReading.has(`${outcome.callId}|${outcome.effectiveBoardId}`)
+        ) {
           // Defensive fallback — Audio-First invariant #1: a disclosure
           // must never be silently lost even if the matching confirmation
           // was itself suppressed upstream for an unrelated reason, OR
           // (the fast-correlation case above) deliberately left unmutated.
+          // Codex diff-review cycle 3 — gated on ownership (see the Set's
+          // doc comment above): this outcome's identity DOES still own a
+          // winning reading, so its disclosure would otherwise go missing
+          // with no confirmation to append to.
           const fallbackText = `${appendClause.charAt(0).toUpperCase()}${appendClause.slice(1)}.`;
           const fallbackEntry = {
             text: fallbackText,
@@ -1991,6 +2017,11 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           if (outcome.boardId != null) fallbackEntry.board_id = outcome.boardId;
           confirmations.push(fallbackEntry);
         }
+        // else: this outcome's identity owns NO winning reading anywhere —
+        // every circuit it wrote was subsequently overwritten by a LATER
+        // call (last-write-wins on the shared readings Map key). Its
+        // disclosure is now STALE (nothing it actually wrote survives to
+        // annotate) and is correctly dropped, not spoken as a fallback.
       }
     }
     // Codex r3-#2 — when the per-turn designation-op LOG shows more ops than

@@ -516,10 +516,97 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
       (c) => c.text === 'Skipping 1 spare way.' && c.circuit == null
     );
     expect(fallback).toBeDefined();
+    // Codex diff-review cycle 3 — the REAL fallback entry produced by this
+    // dispatch also carries its own replay-stable token (not just the
+    // zero-applied path's).
+    expect(fallback.dedupe_token).toBe('bulkoutcome_noturn_tu_call_1_main');
     // The OTHER (non-fast) call's confirmation gets its disclosure appended
     // normally, unaffected by the fast-correlation turn.
     expect(c3.fast_correlation_id).toBeUndefined();
     expect(c3.text.endsWith(', skipping 1 spare way')).toBe(true);
+  });
+
+  test('Codex diff-review cycle 3 — a "*" wildcard call across TWO boards, BOTH fast-correlation-matched, produces TWO real fallback entries with DISTINCT board-discriminated tokens that both survive server debounce', async () => {
+    const session = {
+      sessionId: 's-cross-board-fast-fallback',
+      stateSnapshot: {
+        currentBoardId: 'main',
+        boards: [
+          { id: 'main', designation: 'DB-1', board_type: 'main' },
+          {
+            id: 'sub-b',
+            designation: 'DB-2',
+            board_type: 'sub_distribution',
+            parent_board_id: 'main',
+          },
+        ],
+        circuits: {
+          0: {},
+          1: { circuit_designation: 'Cooker' },
+          2: { circuit_designation: 'Spare' },
+          'sub-b::1': { board_id: 'sub-b', circuit: 1, circuit_designation: 'Immersion' },
+          'sub-b::2': { board_id: 'sub-b', circuit: 2, circuit_designation: 'Spare' },
+        },
+      },
+      extractedObservations: [],
+    };
+    const writes = await runBulkApply(session, {
+      field: 'rcd_time_ms',
+      value: '25',
+      confidence: 0.95,
+      source_turn_id: 't1',
+      board_id: '*',
+    });
+    // Both boards' circuit-1 confirmations are the "already played" fast-TTS
+    // twin — forcing BOTH disclosures onto the fallback path simultaneously.
+    const fastAttemptBySlotKey = new Map([
+      [
+        'rcd_time_ms::1::main',
+        {
+          correlationId: 'cid-fast-main',
+          field: 'rcd_time_ms',
+          circuit: 1,
+          boardId: null,
+          canonicalValue: '25',
+          comparisonText: 'Circuit 1, RCD time 25',
+        },
+      ],
+      [
+        'rcd_time_ms::1::sub-b',
+        {
+          correlationId: 'cid-fast-sub',
+          field: 'rcd_time_ms',
+          circuit: 1,
+          boardId: null,
+          canonicalValue: '25',
+          comparisonText: 'Circuit 1, RCD time 25',
+        },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, fastAttemptBySlotKey }
+    );
+    const fallbacks = r.confirmations.filter(
+      (c) => c.text === 'Skipping 1 spare way.' && c.circuit == null
+    );
+    expect(fallbacks).toHaveLength(2);
+    const tokens = fallbacks.map((f) => f.dedupe_token).sort();
+    expect(tokens).toEqual(['bulkoutcome_noturn_tu_bulk_main', 'bulkoutcome_noturn_tu_bulk_sub-b']);
+    // Both REAL tokens survive the server debounce window (distinct board
+    // segments keep them from colliding), and a replay of either original
+    // token is suppressed.
+    const debounceState = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const emitMain = applyConfirmationDebounce([fallbacks[0]], debounceState, { now: t0 });
+    const emitSub = applyConfirmationDebounce([fallbacks[1]], debounceState, { now: t0 + 50 });
+    const replayMain = applyConfirmationDebounce([fallbacks[0]], debounceState, {
+      now: t0 + 100,
+    });
+    expect(emitMain).toHaveLength(1);
+    expect(emitSub).toHaveLength(1);
+    expect(replayMain).toHaveLength(0);
   });
 });
 
@@ -770,5 +857,118 @@ describe('Codex diff-review cycle 2 (2026-08-14) — dedupe_token real-ingress c
     const key1Replay = buildDegenerateDedupeKey('rcd_time_ms', 'x', null, realToken1);
     expect(key1).not.toBe(key2);
     expect(key1).toBe(key1Replay);
+  });
+});
+
+describe('Codex diff-review cycle 3 (2026-08-14) — a stale disclosure must not fire when a later call overwrites every reading the earlier call wrote', () => {
+  test('call1 writes circuit 1 (skipping circuit 2 as spare); call2 (disjoint partition, so APPEND not REPLACE) overwrites circuit 1 — call1\'s "skipping 1 spare way" must NOT be spoken as a stale fallback', async () => {
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Spare' },
+      3: { circuit_designation: 'Immersion' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+    // Call 1: excludes circuit 3 -> touches {1,2}. Circuit 1 applied,
+    // circuit 2 spare-skipped.
+    await d(
+      {
+        tool_call_id: 'tu_call_1',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [3],
+        },
+      },
+      {}
+    );
+    // Call 2: excludes circuit 2 -> touches {1,3}. Circuit 1 is
+    // RE-WRITTEN (overwriting call1's reading, re-tagging it with call2's
+    // identity); circuit 3 is newly applied. Disjoint applied/spare-skipped
+    // partition from call1 (call1: applied=[1] skip=[2]; call2: applied=[1,3]
+    // skip=[]) -> APPEND, not REPLACE (finding 1) -- both ledger entries
+    // survive, but call1's now owns NO winning reading.
+    await d(
+      {
+        tool_call_id: 'tu_call_2',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [2],
+        },
+      },
+      {}
+    );
+    expect(writes.bulkOutcomes).toHaveLength(2);
+    const c1Outcome = writes.bulkOutcomes.find((o) => o.callId === 'tu_call_1');
+    expect(c1Outcome.appliedRefs).toEqual([1]);
+    expect(c1Outcome.spareSkippedRefs).toEqual([2]);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    // Circuit 1's SURVIVING confirmation is call2's write (value unchanged,
+    // so its text carries no disclosure of its own — call2 skipped nothing).
+    const c1Confirmation = r.confirmations.find(
+      (c) => c.field === 'rcd_time_ms' && (c.circuit === 1 || (c.circuits ?? []).includes(1))
+    );
+    expect(c1Confirmation?.text.includes('spare')).toBe(false);
+    // No confirmation anywhere mentions "spare" -- call1's stale disclosure
+    // (about circuit 2, a circuit whose write no longer exists under call1's
+    // identity) must not appear as a defensive-fallback standalone entry
+    // either.
+    expect(r.confirmations.filter((c) => c.text.includes('spare'))).toHaveLength(0);
+  });
+
+  test("CONTROL: when the earlier call's reading survives untouched, its disclosure still speaks (ownership check does not regress the normal case)", async () => {
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Spare' },
+      3: { circuit_designation: 'Immersion' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+    await d(
+      {
+        tool_call_id: 'tu_call_1',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [3],
+        },
+      },
+      {}
+    );
+    // Call 2 targets ONLY circuit 3 this time -- disjoint from call1, and
+    // never touches circuit 1, so call1's reading survives untouched.
+    await d(
+      {
+        tool_call_id: 'tu_call_2',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [1, 2],
+        },
+      },
+      {}
+    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const c1Confirmation = r.confirmations.find(
+      (c) => c.field === 'rcd_time_ms' && c.circuit === 1
+    );
+    expect(c1Confirmation?.text.endsWith(', skipping 1 spare way')).toBe(true);
   });
 });
