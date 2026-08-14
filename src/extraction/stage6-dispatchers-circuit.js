@@ -62,6 +62,7 @@ import {
   recordReadingWrite,
   removeReadingWrites,
   attachEffectiveOpBoard,
+  attachBulkOutcomeCallId,
 } from './stage6-per-turn-writes.js';
 import {
   getCircuitBucket,
@@ -126,6 +127,8 @@ import {
   classifyStructuralReading,
   STRUCTURAL_READING_FIELDS,
 } from './client-routable-reading-fields.js';
+import { DEVICE_ATTRIBUTE_FIELDS } from './device-attribute-fields.js';
+import { stageBulkOutcomeForBundler } from './stage6-per-turn-writes.js';
 
 // Field schema is loaded once at module init (same pattern as
 // stage6-tool-schemas.js). Used by dispatchSetFieldForAllCircuits to
@@ -2062,7 +2065,175 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
   return envelope(call.tool_call_id, { ok: true, computed, skipped }, false);
 }
 
+// PLAN-F item 1 (2026-08-12, feedback id 115) — resolve the effective
+// spare-inclusion decision for a bulk apply. `scope` is the SELECTOR
+// (which base candidate set — 'all' or 'rcd_protected_only'); `spare_policy`
+// is an ORTHOGONAL FILTER applied after the selector. This function decides
+// only the filter's effective value; the selector's candidate-set logic
+// (rcd_protected_only's hasRcd check) is unchanged and lives in the fan-out
+// loop below.
+//
+// Truth table (PLAN-F, resolution rule — explicit scopes keep their
+// historic documented semantics; only OMISSION gets the family default):
+//   explicit spare_policy 'include'/'exclude'        → that value, always
+//     (an explicit filter overrides any scope-implied default, including
+//     the legacy 'non_spare' selector — Decision 3's "explicit spare_policy
+//     on top still overrides normally").
+//   spare_policy omitted/'automatic', scope explicit 'all'  → 'include'
+//     (documented, TESTED unconditional passthrough — JSDoc above,
+//     schema :1049, "scope=all does NOT filter spares" test — an explicit
+//     'all' must not be silently reinterpreted by the new machinery).
+//   spare_policy omitted/'automatic', scope explicit 'non_spare' (legacy)
+//     → 'exclude' (unchanged legacy behaviour).
+//   spare_policy omitted/'automatic', scope omitted OR 'rcd_protected_only'
+//     → family-aware default: 'include' for a DEVICE_ATTRIBUTE_FIELDS
+//     member, 'exclude' otherwise. (Under rcd_protected_only this closes a
+//     pre-existing hole: a reading bulk write could previously land on a
+//     spare way with a fitted RCD; rcd_protected_only has no passthrough
+//     contract to preserve, unlike explicit 'all'.)
+function resolveSparePolicy({ scopeInput, sparePolicyInput, isDeviceAttributeField }) {
+  if (sparePolicyInput === 'include' || sparePolicyInput === 'exclude') {
+    return sparePolicyInput;
+  }
+  // sparePolicyInput is undefined or 'automatic' from here on.
+  if (scopeInput === 'all') return 'include';
+  if (scopeInput === 'non_spare') return 'exclude';
+  // Omitted scope, or explicit 'rcd_protected_only' — family-aware default.
+  return isDeviceAttributeField ? 'include' : 'exclude';
+}
+
 // ---- set_field_for_all_circuits -------------------------------------------
+
+/**
+ * PLAN-F2 finding 3 (2026-08-14) — the ONE eligibility predicate for a bulk
+ * circuit candidate under a resolved `selector` + `effectiveSparePolicy`,
+ * shared by the side-effect-free preflight below AND the main apply loop's
+ * classification, so the two can never drift out of sync (extract, don't
+ * duplicate). Pure: no mutation, no notice staging, no bucket-miss handling
+ * (that stays the caller's concern — a bucket miss is a DIFFERENT failure
+ * class, not an eligibility question this predicate answers). Mirrors the
+ * exact rcd_protected_only / spare_policy checks that previously lived
+ * inline in the apply loop, byte-for-byte.
+ */
+function resolveBulkCircuitEligibility(bucket, { selector, effectiveSparePolicy }) {
+  // PLAN-F item 1 — the rcd_protected_only SELECTOR (base candidate set)
+  // and the spare_policy FILTER compose independently, instead of being two
+  // branches of one mutually-exclusive `if/else if`. A circuit can be
+  // dropped by either, or both (e.g. a spare way with a fitted RCD, under
+  // rcd_protected_only + automatic on a reading field — the pre-existing
+  // hole that plan closed).
+  if (selector === 'rcd_protected_only') {
+    // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
+    // check: field_schema.json:166 declares its default as "30", which
+    // means non-RCD circuits inherit "30" the moment any code reads
+    // through the default path. Including it would tag every circuit in
+    // the snapshot as RCD-protected and the filter would do nothing.
+    // Verified against session DC946608's snapshot — every circuit had
+    // rcd_operating_current_ma="30" regardless of actual RCD bank
+    // membership.
+    const hasRcd =
+      (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') || (bucket.rcd_type && bucket.rcd_type !== '');
+    if (!hasRcd) return { eligible: false, reason: 'no_rcd' };
+  }
+  if (effectiveSparePolicy === 'exclude') {
+    // Two ways a circuit reads as "spare":
+    //   (a) the designation literally contains the word "spare" — but
+    //       matched as a WHOLE WORD, not a substring. The previous
+    //       `.includes('spare')` falsely flagged "non-spare" (rare in
+    //       practice but a real correctness bug). \bspare\b avoids that.
+    //   (b) the designation is empty / null / whitespace — blank-row
+    //       circuits in the schedule are spares by convention (the
+    //       inspector hasn't named them because there's nothing to
+    //       inspect). The previous filter only caught (a) and would have
+    //       applied the bulk write to every blank slot — a real
+    //       data-quality bug for any real-world dual-RCD board where
+    //       trailing slots are reserved for future use.
+    // The negative lookbehind `(?<!-)` rejects compound forms like
+    // "non-spare" / "anti-spare" — \b alone treats the hyphen as a word
+    // boundary and would falsely flag those as spares. The lookahead `\b`
+    // after `spare` is symmetric in spirit but we don't need a mirror
+    // lookahead because trailing hyphens on "spare-anything" ARE
+    // genuinely spares (e.g. "spare-RCBO"). Asymmetric on purpose.
+    // Belt-and-braces: canonical first, legacy fallback for snapshots
+    // hydrated from pre-fix tool-loop creates. See stage6-snapshot-
+    // mutators.js comment.
+    //
+    // Sync-is-social (PLAN-F item 1, predicate unification): this is THE
+    // canonical spare predicate — web's isSpareCircuit (voice-commands.ts)
+    // and iOS's isSpareCircuit (VoiceCommandExecutor.swift) both mirror
+    // this exact regex + blank-designation rule. iOS's old predicate was
+    // an EXACT `== "spare"` match that missed "Spare way"; web's old
+    // behaviour filtered nothing. Keep all three in sync.
+    const designation = String(bucket.circuit_designation ?? bucket.designation ?? '').trim();
+    if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
+      return { eligible: false, reason: 'spare_circuit' };
+    }
+  }
+  return { eligible: true, reason: null };
+}
+
+/**
+ * PLAN-F2 finding 3 (2026-08-14) + Codex diff-review cycle 2 (BLOCKER fix)
+ * — resolve the FULL per-ref candidate classification ONCE, side-effect-free
+ * (no mutation, no notice staging, no coercion/clamping — those stay
+ * exactly where they already run, once, before this is called). Both the
+ * LIM capability-gate preflight AND the apply loop below consume this SAME
+ * resolved list, via `hasApplicableBulkCandidate` and direct iteration
+ * respectively — the apply loop no longer re-fetches buckets or re-runs
+ * `resolveBulkCircuitEligibility`. This is what "the post-gate path reuses
+ * the preflight's resolved candidates" means literally: a boolean-only
+ * preflight would have forced the apply loop to duplicate the same
+ * classification work a second time, which is exactly the drift risk
+ * `resolveBulkCircuitEligibility`'s extraction was meant to close.
+ *
+ * Each candidate: `{ boardId, ref, bucket, excluded, eligible, reason }`.
+ * `bucket: null` marks a registry/bucket-miss (a DIFFERENT failure class
+ * from ineligibility — the caller decides what side effect that implies,
+ * this function only records the fact). `excluded` is the
+ * exclude_circuits subtractive filter, checked independently of
+ * eligibility so the caller can still tell "explicitly skipped" apart from
+ * "filtered by scope/spare_policy".
+ */
+function resolveBulkCandidates(
+  snapshot,
+  iterationPlan,
+  requestedExcludes,
+  { selector, effectiveSparePolicy }
+) {
+  const candidates = [];
+  for (const { boardId, refs } of iterationPlan) {
+    for (const ref of refs) {
+      const bucket = getCircuitBucket(snapshot, ref, boardId);
+      const excluded = requestedExcludes.has(ref);
+      if (!bucket || excluded) {
+        candidates.push({
+          boardId,
+          ref,
+          bucket: bucket ?? null,
+          excluded,
+          eligible: false,
+          reason: null,
+        });
+        continue;
+      }
+      const eligibility = resolveBulkCircuitEligibility(bucket, { selector, effectiveSparePolicy });
+      candidates.push({
+        boardId,
+        ref,
+        bucket,
+        excluded: false,
+        eligible: eligibility.eligible,
+        reason: eligibility.reason,
+      });
+    }
+  }
+  return candidates;
+}
+
+/** Does AT LEAST ONE resolved candidate survive the exclude/selector/spare-policy filters? */
+function hasApplicableBulkCandidate(candidates) {
+  return candidates.some((c) => c.eligible);
+}
 
 /**
  * dispatchSetFieldForAllCircuits — Bug A from session DC946608 (8 Branagh Ct,
@@ -2142,7 +2313,15 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       is_error: true,
       outcome: 'rejected',
       validation_error: err,
-      input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+      // PLAN-F item 1 (telemetry contract) — raw scope + raw spare_policy
+      // logged as SEPARATE fields, never conflated into one scope string.
+      // These are pre-resolution validation-error branches, so only the raw
+      // model input is known here (no resolved_spare_policy yet).
+      input_summary: {
+        field: input.field,
+        scope: input.scope ?? null,
+        spare_policy: input.spare_policy ?? null,
+      },
     });
     return envelope(call.tool_call_id, { ok: false, error: err }, true);
   }
@@ -2164,7 +2343,15 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       is_error: true,
       outcome: 'rejected',
       validation_error: structuralErr,
-      input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+      // PLAN-F item 1 (telemetry contract) — raw scope + raw spare_policy
+      // logged as SEPARATE fields, never conflated into one scope string.
+      // These are pre-resolution validation-error branches, so only the raw
+      // model input is known here (no resolved_spare_policy yet).
+      input_summary: {
+        field: input.field,
+        scope: input.scope ?? null,
+        spare_policy: input.spare_policy ?? null,
+      },
     });
     return envelope(call.tool_call_id, { ok: false, error: structuralErr }, true);
   }
@@ -2199,11 +2386,86 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     earthing: resolveBoardAwareEarthing(session.stateSnapshot, input.board_id),
   });
   input.value = bulkClamp.value;
+
+  // PLAN-F item 1 — scope is now a SELECTOR only (which base candidate set:
+  // 'all'-shaped iteration, or the rcd_protected_only hasRcd-filtered set).
+  // The legacy 'non_spare' value is still accepted and selects the SAME
+  // 'all' base set — its spare-exclusion behaviour is now carried by
+  // effectiveSparePolicy below, not by a separate iteration branch.
+  //
+  // PLAN-F2 finding 3 (2026-08-14) — HOISTED above the LIM capability gate
+  // below (it used to run after). The gate needs to know whether a real
+  // write is even going to be attempted before it decides whether to
+  // refuse — see the preflight immediately below.
+  const rawScope = input.scope; // undefined | 'non_spare' | 'all' | 'rcd_protected_only'
+  const selector = rawScope === 'rcd_protected_only' ? 'rcd_protected_only' : 'all';
+  const isDeviceAttributeField = DEVICE_ATTRIBUTE_FIELDS.has(input.field);
+  const effectiveSparePolicy = resolveSparePolicy({
+    scopeInput: rawScope,
+    sparePolicyInput: input.spare_policy,
+    isDeviceAttributeField,
+  });
+
+  // PLAN-backend-final.md Phase 8.2 — exclude_circuits dedup + validate.
+  // Build a Set of valid integer refs to subtract from the apply list.
+  // Drop non-integers / non-positive / unknown values silently; the
+  // schema already constrains the type at the API layer, so an invalid
+  // entry that survives is a model quirk worth ignoring rather than
+  // rejecting the whole tool call. excluded_count below is the count of
+  // dedup'd VALIDATED requests — it reflects inspector INTENT, not the
+  // subset actually subtracted from the scoped candidates.
+  const requestedExcludes = new Set();
+  if (Array.isArray(input.exclude_circuits)) {
+    for (const v of input.exclude_circuits) {
+      if (Number.isInteger(v) && v > 0) requestedExcludes.add(v);
+    }
+  }
+
+  // 2026-05-07 Phase 6.5 — board_id thread-through with `'*'` cross-board sweep.
+  //
+  // Resolve the iteration plan: a list of {boardId, refs[]} tuples.
+  //   - input.board_id === '*' → every board on the snapshot, scoped via
+  //     listCircuitRefsInBoard per board. Cross-board sweep is the locked
+  //     S5 decision from the multi-board sprint PLAN.md self-review:
+  //     default current-board-only, explicit '*' to opt into cross-board.
+  //   - input.board_id is a specific id → that board only.
+  //   - input.board_id omitted → default to currentBoardId via listCircuitRefsInBoard's
+  //     own fallback (preserves pre-Phase-6 behaviour exactly).
+  //
+  // Under flag-off, every board collapses to the legacy numeric-key namespace
+  // because listCircuitRefsInBoard ignores the boardId arg. So '*' is a no-op
+  // deviation from the unscoped default — same iteration shape, same writes.
+  const snapshot = session.stateSnapshot;
+  const iterationPlan =
+    input.board_id === '*'
+      ? (snapshot.boards ?? []).map((b) => ({
+          boardId: b?.id,
+          refs: listCircuitRefsInBoard(snapshot, b?.id),
+        }))
+      : [{ boardId: input.board_id, refs: listCircuitRefsInBoard(snapshot, input.board_id) }];
+
   // P3 Fix 8 — rollout gate (mirror of the direct record_reading path): deny a
   // bulk LIM write on a capability-gated field when the client hasn't advertised
   // `lim_ranged_write_v1` OR the server kill-switch is on. Non-error skip so the
   // marker-② net speaks.
+  //
+  // PLAN-F2 finding 3 (2026-08-14) — gated additionally on
+  // `hasApplicableBulkCandidate`: on a board where every eligible circuit is
+  // a spare (or otherwise filtered out), the REAL candidate set is empty
+  // regardless of capability — no write is going to be attempted either
+  // way, so refusing here would tell the inspector "capability missing"
+  // when the correct, more useful, zero-applied wording (Decision 4's
+  // standalone confirmation — see its producer in stage6-event-bundler.js)
+  // is reached naturally by letting the apply loop below run to completion
+  // with an empty `applied[]`. `resolveBulkCandidates` is side-effect-free
+  // (no mutation, no notices); the apply loop below iterates its result
+  // directly rather than re-resolving.
+  const bulkCandidates = resolveBulkCandidates(snapshot, iterationPlan, requestedExcludes, {
+    selector,
+    effectiveSparePolicy,
+  });
   if (
+    hasApplicableBulkCandidate(bulkCandidates) &&
     (isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true) &&
     isCapabilityGatedLimWrite(canonicalBulkField, input.value)
   ) {
@@ -2253,204 +2515,170 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         is_error: true,
         outcome: 'rejected',
         validation_error: bulkErr,
-        input_summary: { field: input.field, scope: input.scope ?? 'non_spare' },
+        // PLAN-F item 1 (telemetry contract) — raw scope + raw spare_policy
+        // logged as SEPARATE fields, never conflated into one scope string.
+        // These are pre-resolution validation-error branches, so only the raw
+        // model input is known here (no resolved_spare_policy yet).
+        input_summary: {
+          field: input.field,
+          scope: input.scope ?? null,
+          spare_policy: input.spare_policy ?? null,
+        },
       });
       return envelope(call.tool_call_id, { ok: false, error: bulkErr }, true);
     }
   }
 
-  const scope = input.scope ?? 'non_spare';
-
-  // PLAN-backend-final.md Phase 8.2 — exclude_circuits dedup + validate.
-  // Build a Set of valid integer refs to subtract from the apply list.
-  // Drop non-integers / non-positive / unknown values silently; the
-  // schema already constrains the type at the API layer, so an invalid
-  // entry that survives is a model quirk worth ignoring rather than
-  // rejecting the whole tool call. excluded_count below is the count of
-  // dedup'd VALIDATED requests — it reflects inspector INTENT, not the
-  // subset actually subtracted from the scoped candidates.
-  const requestedExcludes = new Set();
-  if (Array.isArray(input.exclude_circuits)) {
-    for (const v of input.exclude_circuits) {
-      if (Number.isInteger(v) && v > 0) requestedExcludes.add(v);
-    }
-  }
-
-  // 2026-05-07 Phase 6.5 — board_id thread-through with `'*'` cross-board sweep.
-  //
-  // Resolve the iteration plan: a list of {boardId, refs[]} tuples.
-  //   - input.board_id === '*' → every board on the snapshot, scoped via
-  //     listCircuitRefsInBoard per board. Cross-board sweep is the locked
-  //     S5 decision from the multi-board sprint PLAN.md self-review:
-  //     default current-board-only, explicit '*' to opt into cross-board.
-  //   - input.board_id is a specific id → that board only.
-  //   - input.board_id omitted → default to currentBoardId via listCircuitRefsInBoard's
-  //     own fallback (preserves pre-Phase-6 behaviour exactly).
-  //
-  // Under flag-off, every board collapses to the legacy numeric-key namespace
-  // because listCircuitRefsInBoard ignores the boardId arg. So '*' is a no-op
-  // deviation from the unscoped default — same iteration shape, same writes.
-  const snapshot = session.stateSnapshot;
-  const iterationPlan =
-    input.board_id === '*'
-      ? (snapshot.boards ?? []).map((b) => ({
-          boardId: b?.id,
-          refs: listCircuitRefsInBoard(snapshot, b?.id),
-        }))
-      : [{ boardId: input.board_id, refs: listCircuitRefsInBoard(snapshot, input.board_id) }];
-
   const applied = [];
   const skipped = [];
-  for (const { boardId, refs } of iterationPlan) {
-    for (const ref of refs) {
-      const bucket = getCircuitBucket(snapshot, ref, boardId);
-      if (!bucket) {
-        // Plan 2A (2026-07-30) §3.1 — the ONE genuinely silent channel inside
-        // this loop. `listCircuitRefsInBoard` offered the ref but
-        // `getCircuitBucket` can't resolve a record for it (a registry/bucket
-        // disagreement), so the ref is dropped with no `applied[]` entry, no
-        // `skipped[]` entry and nothing spoken. It joins channel 1's
-        // `circuit_not_found` machinery.
-        //
-        // The exclusion test is HOISTED above the staging deliberately: a ref
-        // the inspector explicitly asked us to skip must stay silent, and
-        // without this ordering an excluded ref that also missed its bucket
-        // would announce a failure the inspector had requested. (The real
-        // `continue` for excludes stays in its original position below so the
-        // non-miss path is byte-unchanged.)
-        if (!requestedExcludes.has(ref)) {
-          stageCircuitPartialFailure(ctx, {
-            reason: 'circuit_not_found',
-            field: input.field,
-            circuit: ref,
-            boardId,
-            producer: 'set_field_for_all_circuits_bucket_miss',
-          });
-        }
-        continue;
-      }
-      // PLAN-backend-final.md Phase 8.2 — exclude_circuits subtractive
-      // filter. Runs BEFORE the scope check so an excluded ref doesn't
-      // also pollute `skipped[]` with a scope reason — the inspector's
-      // intent is "skip 3", not "skip 3 because spare". `excluded[]` is
-      // surfaced as its own count below.
-      if (requestedExcludes.has(ref)) continue;
-      // Plan 2A (2026-07-30) §3.1 — the two SCOPE-POLICY skips below
-      // (`spare_circuit`, `no_rcd`) are DESIGNED-SILENT for a scope
-      // instruction and are deliberately NOT partial-failure targets. The
-      // inspector said "all the non-spare circuits": a circuit excluded
-      // BECAUSE it is spare is the instruction working as asked, not a
-      // failure, and announcing every spare slot on a 12-way board would bury
-      // the read-back the turn actually exists for. They already surface in
-      // the `skipped[]` envelope, so the model can name them if the inspector
-      // asks. (An EXPLICITLY-NAMED ref rejected by policy is a different case
-      // and does join the notice channel — that path is `record_reading`'s,
-      // above, not this fan-out's.) Pinned by test.
-      if (scope === 'non_spare') {
-        // Two ways a circuit reads as "spare":
-        //   (a) the designation literally contains the word "spare" — but
-        //       matched as a WHOLE WORD, not a substring. The previous
-        //       `.includes('spare')` falsely flagged "non-spare" (rare in
-        //       practice but a real correctness bug). \bspare\b avoids that.
-        //   (b) the designation is empty / null / whitespace — blank-row
-        //       circuits in the schedule are spares by convention (the
-        //       inspector hasn't named them because there's nothing to
-        //       inspect). The previous filter only caught (a) and would
-        //       have applied the bulk write to every blank slot — a real
-        //       data-quality bug for any real-world dual-RCD board where
-        //       trailing slots are reserved for future use.
-        // The negative lookbehind `(?<!-)` rejects compound forms like
-        // "non-spare" / "anti-spare" — \b alone treats the hyphen as a word
-        // boundary and would falsely flag those as spares. The lookahead
-        // `\b` after `spare` is symmetric in spirit but we don't need a
-        // mirror lookahead because trailing hyphens on "spare-anything"
-        // ARE genuinely spares (e.g. "spare-RCBO"). Asymmetric on purpose.
-        // Belt-and-braces: canonical first, legacy fallback for snapshots
-        // hydrated from pre-fix tool-loop creates. See stage6-snapshot-
-        // mutators.js comment.
-        const designation = String(bucket.circuit_designation ?? bucket.designation ?? '').trim();
-        if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
-          skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
-          continue;
-        }
-      } else if (scope === 'rcd_protected_only') {
-        // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
-        // check: field_schema.json:166 declares its default as "30", which
-        // means non-RCD circuits inherit "30" the moment any code reads
-        // through the default path. Including it would tag every circuit
-        // in the snapshot as RCD-protected and the filter would do nothing.
-        // Verified against session DC946608's snapshot — every circuit had
-        // rcd_operating_current_ma="30" regardless of actual RCD bank
-        // membership.
-        const hasRcd =
-          (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') ||
-          (bucket.rcd_type && bucket.rcd_type !== '');
-        if (!hasRcd) {
-          skipped.push({ circuit_ref: ref, reason: 'no_rcd' });
-          continue;
-        }
-      }
-      // Phase 6.5 — thread boardId so the flag-aware mutator writes to the
-      // correct composite-key bucket (under flag-on) or the legacy numeric
-      // bucket (under flag-off, where boardId is ignored by the mutator).
-      applyReadingFlagAware(snapshot, {
-        circuit: ref,
-        field: input.field,
-        value: input.value,
-        boardId,
-      });
-      // Slice 1.1c — perTurnWrites key now embeds boardId via
-      // encodeReadingKey. Cross-board '*' sweep can write the same
-      // (field, ref) on every board in one turn without collision; each
-      // (field, ref, board) tuple lands in its own Map slot, the bundler
-      // emits the correct extracted_readings entry per board, and the
-      // applied[] array still surfaces the per-board breakdown.
+  // PLAN-F item 1 — spare-skipped refs ONLY (a subset of `skipped`, which
+  // also carries 'no_rcd' and 'circuit_not_found'-adjacent reasons). Fed to
+  // the bundler's audible-skip ledger below; kept separate from `skipped`
+  // so the disclosure clause never counts a non-spare skip reason.
+  const spareSkippedRefs = [];
+  // Codex diff-review cycle 2 (2026-08-14) — this loop now iterates the
+  // `bulkCandidates` the LIM-gate preflight already resolved above, instead
+  // of re-fetching `getCircuitBucket` and re-running
+  // `resolveBulkCircuitEligibility` for every ref a second time. Side
+  // effects (partial-failure notices, the actual write) still happen HERE,
+  // exactly once, in the same order as before — only the CLASSIFICATION
+  // (bucket found/missing, excluded, eligible/reason) is reused rather than
+  // re-derived.
+  for (const { boardId, ref, bucket, excluded, eligible, reason } of bulkCandidates) {
+    if (!bucket) {
+      // Plan 2A (2026-07-30) §3.1 — the ONE genuinely silent channel inside
+      // this loop. `listCircuitRefsInBoard` offered the ref but
+      // `getCircuitBucket` can't resolve a record for it (a registry/bucket
+      // disagreement), so the ref is dropped with no `applied[]` entry, no
+      // `skipped[]` entry and nothing spoken. It joins channel 1's
+      // `circuit_not_found` machinery.
       //
-      // "Work on Board" hotfix slice 1.1a — value entry carries boardId so
-      // the bundler emits the right `reading.board_id` on each entry.
-      // P5 (2026-07-23) — effective slot identity from the iteration tuple's
-      // LOCAL boardId (a '*' broadcast has already been expanded to real board
-      // ids in iterationPlan, so `boardId` is never the '*' selector here);
-      // fall back to current/main only when the local value is nullish. Tagging
-      // a generated reading with '*' would both block a real-board clear from
-      // matching its replacement and conflate same-ref writes across boards.
-      const bulkMirror = attachEffectiveSlot(
-        {
-          value: input.value,
-          confidence: input.confidence,
-          source_turn_id: input.source_turn_id,
-          boardId: boardId ?? undefined,
-        },
-        input.field,
-        ref,
-        resolveEffectiveBoardId(session, boardId)
-      );
-      // id-100(b) — stash the clamp correction on every fan-out mirror entry so
-      // the bundler can name the correction aloud. The SAME correction object
-      // (identical original/corrected) is attached to each entry, which is what
-      // lets buildFanoutGroupKey collapse the whole sweep into one spoken line
-      // ("Circuits 1 to 5, R1+R2 recorded as 1.6 — I corrected 16 to 1.6")
-      // instead of repeating the correction once per circuit. Non-enumerable so
-      // it can never reach the wire or a JSON snapshot.
-      if (bulkClamp.correction) {
-        Object.defineProperty(bulkMirror, IMPEDANCE_CLAMP_CORRECTION, {
-          value: bulkClamp.correction,
-          enumerable: false,
-          configurable: true,
-          writable: true,
+      // The exclusion test is HOISTED above the staging deliberately: a ref
+      // the inspector explicitly asked us to skip must stay silent, and
+      // without this ordering an excluded ref that also missed its bucket
+      // would announce a failure the inspector had requested. (The real
+      // `continue` for excludes stays in its original position below so the
+      // non-miss path is byte-unchanged.)
+      if (!excluded) {
+        stageCircuitPartialFailure(ctx, {
+          reason: 'circuit_not_found',
+          field: input.field,
+          circuit: ref,
+          boardId,
+          producer: 'set_field_for_all_circuits_bucket_miss',
         });
       }
-      recordReadingWrite(perTurnWrites, encodeReadingKey(input.field, ref, boardId), bulkMirror);
-      applied.push({
-        circuit: ref,
-        field: input.field,
+      continue;
+    }
+    // PLAN-backend-final.md Phase 8.2 — exclude_circuits subtractive
+    // filter. Runs BEFORE the scope check so an excluded ref doesn't
+    // also pollute `skipped[]` with a scope reason — the inspector's
+    // intent is "skip 3", not "skip 3 because spare". `excluded[]` is
+    // surfaced as its own count below.
+    if (excluded) continue;
+    // Plan 2A (2026-07-30) §3.1, UPDATED by PLAN-F item 1 (2026-08-12,
+    // feedback id 115) — the two SCOPE-POLICY skips below (`spare_circuit`,
+    // `no_rcd`) are deliberately NOT partial-failure notices (that channel
+    // is for "the turn was silently refused", not "the scope policy did
+    // exactly what was asked"). The ORIGINAL 2026-07-30 rationale priced
+    // per-slot spare announcements as pure noise ("announcing every spare
+    // slot on a 12-way board would bury the read-back") and left every
+    // spare skip fully silent. Derek's explicit ask ("Could we change all
+    // of them including spares?") made that silence-by-default stale: a
+    // spare skip is now surfaced via ONE count-capped clause appended to
+    // the turn's confirmation ("…skipping N spare ways" / the zero-applied
+    // wording) — see stageBulkOutcomeForBundler above and its consumer in
+    // stage6-event-bundler.js. Per-slot detail is still NOT read aloud
+    // (that would be the noise the original decision correctly avoided);
+    // only the count is. `no_rcd` skips remain fully silent — this plan
+    // only changes spare disclosure. They already surface in the
+    // `skipped[]` envelope either way, so the model can name them if asked.
+    // (An EXPLICITLY-NAMED ref rejected by policy is a different case and
+    // does join the notice channel — that path is `record_reading`'s,
+    // above, not this fan-out's.) Pinned by test.
+    // PLAN-F2 finding 3 (2026-08-14) — the rcd_protected_only SELECTOR and
+    // spare_policy FILTER checks live in the shared
+    // resolveBulkCircuitEligibility predicate (full rationale there),
+    // called ONCE by `resolveBulkCandidates` above. This call site only
+    // maps the pre-resolved verdict onto the SAME skipped[]/
+    // spareSkippedRefs[] side effects as before — behaviour is
+    // byte-identical to the pre-extraction inline checks.
+    if (!eligible) {
+      skipped.push({ circuit_ref: ref, reason });
+      if (reason === 'spare_circuit') {
+        // Tagged with boardId (not a bare ref number): circuit refs are
+        // per-board, so a bare-number array would misattribute a
+        // spare-skip on board B's circuit 3 to board A's circuit 3 on a
+        // '*' cross-board sweep. See the post-loop ledger staging below.
+        spareSkippedRefs.push({ ref, boardId });
+      }
+      continue;
+    }
+    // Phase 6.5 — thread boardId so the flag-aware mutator writes to the
+    // correct composite-key bucket (under flag-on) or the legacy numeric
+    // bucket (under flag-off, where boardId is ignored by the mutator).
+    applyReadingFlagAware(snapshot, {
+      circuit: ref,
+      field: input.field,
+      value: input.value,
+      boardId,
+    });
+    // Slice 1.1c — perTurnWrites key now embeds boardId via
+    // encodeReadingKey. Cross-board '*' sweep can write the same
+    // (field, ref) on every board in one turn without collision; each
+    // (field, ref, board) tuple lands in its own Map slot, the bundler
+    // emits the correct extracted_readings entry per board, and the
+    // applied[] array still surfaces the per-board breakdown.
+    //
+    // "Work on Board" hotfix slice 1.1a — value entry carries boardId so
+    // the bundler emits the right `reading.board_id` on each entry.
+    // P5 (2026-07-23) — effective slot identity from the iteration tuple's
+    // LOCAL boardId (a '*' broadcast has already been expanded to real board
+    // ids in iterationPlan, so `boardId` is never the '*' selector here);
+    // fall back to current/main only when the local value is nullish. Tagging
+    // a generated reading with '*' would both block a real-board clear from
+    // matching its replacement and conflate same-ref writes across boards.
+    const bulkMirror = attachEffectiveSlot(
+      {
         value: input.value,
-        // Surface the board_id only for cross-board sweeps so the existing
-        // single-board envelope shape stays byte-identical for every
-        // pre-Phase-6.5 caller. iOS decoder treats unknown keys as benign.
-        ...(input.board_id === '*' ? { board_id: boardId } : {}),
+        confidence: input.confidence,
+        source_turn_id: input.source_turn_id,
+        boardId: boardId ?? undefined,
+      },
+      input.field,
+      ref,
+      resolveEffectiveBoardId(session, boardId)
+    );
+    // id-100(b) — stash the clamp correction on every fan-out mirror entry so
+    // the bundler can name the correction aloud. The SAME correction object
+    // (identical original/corrected) is attached to each entry, which is what
+    // lets buildFanoutGroupKey collapse the whole sweep into one spoken line
+    // ("Circuits 1 to 5, R1+R2 recorded as 1.6 — I corrected 16 to 1.6")
+    // instead of repeating the correction once per circuit. Non-enumerable so
+    // it can never reach the wire or a JSON snapshot.
+    if (bulkClamp.correction) {
+      Object.defineProperty(bulkMirror, IMPEDANCE_CLAMP_CORRECTION, {
+        value: bulkClamp.correction,
+        enumerable: false,
+        configurable: true,
+        writable: true,
       });
     }
+    // PLAN-F2 finding 1 (2026-08-14) — tag this reading with the
+    // originating call's identity so the bundler can join a staged
+    // bulk-outcome ledger entry back to ONLY the confirmation ITS OWN
+    // call produced (see attachBulkOutcomeCallId's doc comment).
+    attachBulkOutcomeCallId(bulkMirror, call.tool_call_id);
+    recordReadingWrite(perTurnWrites, encodeReadingKey(input.field, ref, boardId), bulkMirror);
+    applied.push({
+      circuit: ref,
+      field: input.field,
+      value: input.value,
+      // Surface the board_id only for cross-board sweeps so the existing
+      // single-board envelope shape stays byte-identical for every
+      // pre-Phase-6.5 caller. iOS decoder treats unknown keys as benign.
+      ...(input.board_id === '*' ? { board_id: boardId } : {}),
+    });
   }
 
   // id-100(b) — ONE telemetry row for the whole sweep (not one per circuit):
@@ -2481,6 +2709,58 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // the post-exclude post-scope total; skipped_count continues to
   // count scope-rule drops only (no exclude pollution).
   const excludedCount = requestedExcludes.size;
+  // PLAN-F item 1 — stage the bulk-outcome ledger for the bundler's
+  // audible-skip disclosure BEFORE the log/return (both read from the same
+  // `applied`/`spareSkippedRefs` this dispatcher just computed). One entry
+  // per (call, board) pair, never per circuit — a '*' cross-board sweep
+  // produces MULTIPLE iteration-plan boards, and `applied`/`spareSkippedRefs`
+  // accumulate across ALL of them, so this groups by boardId before staging
+  // (matches the fan-out's own per-board grouping — the bundler's grouped
+  // confirmations are field+value+board_id buckets, so the ledger has to be
+  // too, or the disclosure clause attaches to the wrong board's line).
+  if (input.board_id === '*') {
+    const boardIds = new Set([
+      ...applied.map((a) => a.board_id),
+      ...spareSkippedRefs.map((s) => s.boardId),
+    ]);
+    for (const bId of boardIds) {
+      const appliedForBoard = applied.filter((a) => a.board_id === bId).map((a) => a.circuit);
+      const spareSkippedForBoard = spareSkippedRefs
+        .filter((s) => s.boardId === bId)
+        .map((s) => s.ref);
+      if (appliedForBoard.length === 0 && spareSkippedForBoard.length === 0) continue;
+      stageBulkOutcomeForBundler(perTurnWrites, {
+        field: input.field,
+        value: input.value,
+        boardId: bId,
+        // PLAN-F2 finding 4 (2026-08-14) — `bId` here is already a REAL
+        // board id (the '*' sweep enumerates concrete boards), so
+        // resolveEffectiveBoardId is a no-op passthrough for this branch;
+        // still threaded for symmetry with the non-'*' branch below so the
+        // bundler's consumer has one uniform field to join on.
+        effectiveBoardId: resolveEffectiveBoardId(session, bId),
+        appliedRefs: appliedForBoard,
+        spareSkippedRefs: spareSkippedForBoard,
+        callId: call.tool_call_id,
+      });
+    }
+  } else if (applied.length > 0 || spareSkippedRefs.length > 0) {
+    stageBulkOutcomeForBundler(perTurnWrites, {
+      field: input.field,
+      value: input.value,
+      boardId: input.board_id ?? null,
+      // PLAN-F2 finding 4 (2026-08-14) — the ordinary bulk-call case:
+      // input.board_id is undefined on the common single-board turn, so
+      // `boardId` above stays null (wire-conditional), but the SESSION may
+      // have a real non-main board selected (a prior select_board). Resolve
+      // it here so the bundler's consumer can join against the
+      // confirmation's own resolved effective board.
+      effectiveBoardId: resolveEffectiveBoardId(session, input.board_id),
+      appliedRefs: applied.map((a) => a.circuit),
+      spareSkippedRefs: spareSkippedRefs.map((s) => s.ref),
+      callId: call.tool_call_id,
+    });
+  }
   logToolCall(logger, {
     sessionId: session.sessionId,
     turnId,
@@ -2492,7 +2772,13 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     validation_error: null,
     input_summary: {
       field: input.field,
-      scope,
+      // PLAN-F item 1 telemetry contract — raw scope + raw spare_policy +
+      // the resolved effective policy as SEPARATE fields (never conflated
+      // into one scope string, so a dashboard can distinguish "the model
+      // asked for X" from "the dispatcher resolved Y").
+      scope: rawScope ?? null,
+      spare_policy: input.spare_policy ?? null,
+      resolved_spare_policy: effectiveSparePolicy,
       applied_count: applied.length,
       skipped_count: skipped.length,
       excluded_count: excludedCount,
@@ -2524,6 +2810,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
 //   - For TEXT-typed fields, accept any string (matches record_reading
 //     behaviour — the schema has no enum to validate against).
 const VALID_SCOPES = new Set(['non_spare', 'all', 'rcd_protected_only']);
+// PLAN-F item 1 (2026-08-12, feedback id 115) — the orthogonal spare_policy
+// filter. 'automatic' is a valid explicit value (behaviourally identical to
+// omission) so a model that always fills every optional field doesn't fail
+// validation.
+const VALID_SPARE_POLICIES = new Set(['automatic', 'include', 'exclude']);
 function validateSetFieldForAllCircuits(input) {
   if (typeof input.field !== 'string' || input.field.length === 0) {
     return { code: 'invalid_field', field: 'field' };
@@ -2561,6 +2852,9 @@ function validateSetFieldForAllCircuits(input) {
   }
   if (input.scope !== undefined && !VALID_SCOPES.has(input.scope)) {
     return { code: 'invalid_scope', field: 'scope' };
+  }
+  if (input.spare_policy !== undefined && !VALID_SPARE_POLICIES.has(input.spare_policy)) {
+    return { code: 'invalid_spare_policy', field: 'spare_policy' };
   }
   return null;
 }

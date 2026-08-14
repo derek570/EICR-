@@ -735,7 +735,150 @@ export function createPerTurnWrites() {
     //     outcomes: [{tool, code, reason?}], emptyRetryUsed: boolean,
     //     featureTouched: boolean }
     answer: createTurnAnswerState(),
+    // PLAN-F item 1 (2026-08-12, feedback id 115) — bulk-outcome ledger for
+    // the audible-skip disclosure. dispatchSetFieldForAllCircuits does NOT
+    // compose confirmations itself (the tool envelope never reaches
+    // bundleToolCallsIntoResult — it receives perTurnWrites/legacyResultShape/
+    // options only), so it STAGES one entry here per bulk call recording
+    // exactly what was applied vs spare-skipped; stage6-event-bundler.js
+    // consumes this to amend the matching grouped/per-circuit confirmation
+    // with a count-aware "…skipping N spare ways" clause, or to synthesise a
+    // standalone zero-applied confirmation when nothing was written. See
+    // stageBulkOutcomeForBundler below.
+    // Entries: { field, value, boardId, appliedRefs: number[],
+    //            spareSkippedRefs: number[], callId }.
+    bulkOutcomes: [],
   };
+}
+
+/**
+ * PLAN-F2 finding 1 (2026-08-14, feedback id 115 residual) — non-enumerable
+ * bulk-call identity marker. Attached at DISPATCH time to each `bulkMirror`
+ * reading write made by dispatchSetFieldForAllCircuits, carrying the
+ * originating tool call's `tool_call_id`. Mirrors EFFECTIVE_CIRCUIT_SLOT's
+ * pattern (non-enumerable, attached once at write time; enumerable shape
+ * and wire bytes unchanged). The bundler reads it during projection to
+ * stamp the resulting confirmation (grouped or per-circuit) with a
+ * composite (callId, boardId) identity, so a staged bulk-outcome ledger
+ * entry only amends the confirmation ITS OWN call produced — two same-turn
+ * bulk calls to the same field+board with disjoint circuit targets each get
+ * their own disclosure instead of the second call's staged entry silently
+ * replacing the first's (see stageBulkOutcomeForBundler below, and its
+ * consumer in stage6-event-bundler.js).
+ */
+export const BULK_OUTCOME_CALL_ID = Symbol('stage6.bulkOutcomeCallId');
+
+export function attachBulkOutcomeCallId(target, callId) {
+  Object.defineProperty(target, BULK_OUTCOME_CALL_ID, {
+    value: callId ?? null,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return target;
+}
+
+/**
+ * PLAN-F item 1 — stage one bulk-apply outcome for the bundler's audible-skip
+ * disclosure. Called once per (call, board) pair from
+ * dispatchSetFieldForAllCircuits (never per-circuit — the disclosure is a
+ * single clause on the confirmation for that call's targets, not a
+ * per-circuit event). `boardId` is the WIRE board id (the same value the
+ * fan-out's mirror entries carry — undefined for an ordinary single-board
+ * turn, a real board id for a cross-board '*' sweep member), so the
+ * bundler's matching logic joins on the identical identity space the
+ * grouped-confirmation bucket already keys on.
+ *
+ * PLAN-F2 finding 1 (2026-08-14) — REPLACE vs APPEND is no longer keyed on
+ * (field, boardId) alone. The original rule (Codex diff-review r1, PLAN-F)
+ * replaced ANY existing entry for the same (field, boardId), reasoning that
+ * two same-turn bulk calls for the same field+board must be a same-turn
+ * CORRECTION (the readings Map is last-write-wins). That reasoning holds
+ * ONLY when the two calls target the SAME circuit set — a genuine
+ * resubmission/correction (e.g. 25 then 30 on the identical spare-skipped
+ * circuit). It does NOT hold when the two calls target DISJOINT circuit
+ * sets (e.g. a range-restricted first call, then a second call covering
+ * different circuits): the second call's ledger entry would silently
+ * discard the first call's disclosure even though BOTH calls' writes
+ * survive in the readings Map (different circuit slots, no collision).
+ * Mirror the readings Map's own last-write-wins identity precisely: match
+ * on (field, boardId, circuit set) — REPLACE only when the circuit set
+ * (applied ∪ spare-skipped refs) is IDENTICAL to an existing entry's
+ * (a correction of the same sweep); APPEND when disjoint (or otherwise not
+ * identical), so each call's outcome keeps its own ledger entry and its own
+ * disclosure.
+ *
+ * PLAN-F2 finding 4 (2026-08-14) — `effectiveBoardId` is a SEPARATE field
+ * from `boardId`. `boardId` stays the RAW wire value (undefined/null on an
+ * ordinary single-board turn) because it also drives wire emission in the
+ * bundler's consumer (zeroEntry.board_id / fallbackEntry.board_id stay
+ * conditional on it — never unconditionally set from a resolved id, or
+ * every single-board turn's wire shape would change). `effectiveBoardId` is
+ * the caller-resolved value (resolveEffectiveBoardId, which never returns
+ * null) and exists ONLY so the bundler's consumer can join against a
+ * confirmation's OWN effective board — comparing a raw-null ledger id
+ * against an already-resolved confirmation id would fail the match on the
+ * ordinary single-board case (the common one).
+ */
+export function stageBulkOutcomeForBundler(
+  perTurnWrites,
+  { field, value, boardId, effectiveBoardId, appliedRefs, spareSkippedRefs, callId }
+) {
+  if (!Array.isArray(perTurnWrites.bulkOutcomes)) {
+    perTurnWrites.bulkOutcomes = [];
+  }
+  const boardKey = boardId ?? null;
+  const effectiveBoardKey = effectiveBoardId ?? null;
+  const appliedList = Array.isArray(appliedRefs) ? [...appliedRefs] : [];
+  const spareSkippedList = Array.isArray(spareSkippedRefs) ? [...spareSkippedRefs] : [];
+  // Codex diff-review cycle 2 (2026-08-14) — BLOCKER: comparing the UNION of
+  // applied+spare-skipped refs cannot distinguish "the same circuits, same
+  // partition" (a genuine correction) from "the same circuit REFS, but the
+  // applied/skipped PARTITION changed" (e.g. a designation edit between the
+  // two calls flips which of {1,2} is the spare) — both produce the SAME
+  // union "1,2". The latter is NOT a correction: both calls have surviving
+  // winning readings (different circuits, from different calls), so
+  // replacing the first ledger entry with the second silently drops the
+  // first call's disclosure even though its reading is still on the wire.
+  // Compare appliedRefs and spareSkippedRefs SEPARATELY — REPLACE requires
+  // BOTH partitions to match exactly, not just their union.
+  const appliedKey = appliedList.map(String).sort().join(',');
+  const spareSkippedKey = spareSkippedList.map(String).sort().join(',');
+  // PLAN-F2 finding 4 (2026-08-14) — match on `effectiveBoardId`, NOT the
+  // raw `boardId`. Two implicit-board calls (both omit board_id, so raw
+  // boardId is null for BOTH) that select DIFFERENT boards between them
+  // (a select_board in between) can easily target circuit sets that are
+  // IDENTICAL by ref number (every board's circuits start at 1) — matching
+  // on raw boardId alone would misidentify the second board's call as a
+  // same-target correction of the first and silently discard its
+  // disclosure. effectiveBoardId disambiguates them correctly (main vs the
+  // sub-board); a genuine same-board correction still has matching
+  // effectiveBoardId both times.
+  const existingIdx = perTurnWrites.bulkOutcomes.findIndex((o) => {
+    if (o.field !== field || (o.effectiveBoardId ?? null) !== effectiveBoardKey) return false;
+    const oAppliedKey = o.appliedRefs.map(String).sort().join(',');
+    const oSpareSkippedKey = o.spareSkippedRefs.map(String).sort().join(',');
+    return oAppliedKey === appliedKey && oSpareSkippedKey === spareSkippedKey;
+  });
+  const entry = {
+    field,
+    value,
+    boardId: boardKey,
+    effectiveBoardId: effectiveBoardId ?? null,
+    appliedRefs: appliedList,
+    spareSkippedRefs: spareSkippedList,
+    callId,
+  };
+  if (existingIdx >= 0) {
+    // Genuine correction of the identical sweep — replace, matching the
+    // readings Map's own last-write-wins semantics.
+    perTurnWrites.bulkOutcomes[existingIdx] = entry;
+  } else {
+    // Disjoint (or otherwise non-identical) circuit set — a second,
+    // independent bulk call. Append so its disclosure survives alongside
+    // the first's.
+    perTurnWrites.bulkOutcomes.push(entry);
+  }
 }
 
 /**

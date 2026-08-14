@@ -20,7 +20,7 @@ export type {
 } from './apply-defaults';
 export { DEFAULTS_BY_CIRCUIT, GLOBAL_DEFAULTS, inferCircuitType } from './circuit-defaults-schema';
 export type { CircuitTypeKey } from './circuit-defaults-schema';
-export { parseVoiceCommand, applyVoiceCommand } from './voice-commands';
+export { parseVoiceCommand, applyVoiceCommand, DEVICE_ATTRIBUTE_FIELDS } from './voice-commands';
 export type {
   VoiceCommand,
   VoiceCommandOutcome,

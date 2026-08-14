@@ -170,6 +170,19 @@ const WEAK_TRIGGERS: readonly string[] = [
   'occupier',
   'address',
   'postcode',
+  // Extent / limitations dictation markers — 2026-08-11 field report
+  // (feedback id 78, 13-month orphan): "Extent cover is installing
+  // replacement consumer unit." died at this gate (no digit, no strong
+  // trigger, no weak trigger), even though the `extent` field is fully
+  // voice-writable server-side (installation_details_fields.extent,
+  // BOARD_FIELD_ENUM — stage6-tool-schemas.js:117). Weak tier only, per
+  // the build-386 rule: still requires the standard 3-content-word
+  // threshold, so "the extent of the damp is unreal" chitchat stays
+  // blocked. MUST stay in sync with backend WEAK_TRIGGER_WORDS and iOS
+  // TranscriptGate weakTriggers.
+  'extent',
+  'limitation',
+  'limitations',
 ];
 
 // Subset of WEAK_TRIGGERS that lowers the distinct-content-word threshold

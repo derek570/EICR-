@@ -658,3 +658,58 @@ describe('Plan B B3.2 — duplicate_<turnId> prefix branch wins ahead of the fie
     expect(withField).toBe(withoutField);
   });
 });
+
+/**
+ * PLAN-F2 finding 5 (2026-08-14) — `bulkoutcome_<turnId>_<callId>_<boardId>`
+ * prefix branch, sibling of duplicate_ above. dispatchSetFieldForAllCircuits's
+ * zero-applied / fallback disclosure can target ANY circuit reading field, so
+ * this must be checked ahead of the allowlist too — never a field-allowlist
+ * addition.
+ */
+describe('PLAN-F2 finding 5 — bulkoutcome_ prefix branch wins ahead of the field-allowlist', () => {
+  it('an arbitrary non-allowlisted measured field gets a call+board-unique key', () => {
+    const k = buildConfirmationDedupeKey({
+      text: 'No non-spare circuits were updated; skipped 2 spare ways.',
+      field: 'rcd_time_ms',
+      dedupe_token: 'bulkoutcome_turn-9_tu_bulk_1_main',
+    });
+    expect(k).toBe('rcd_time_ms_bulkoutcome_turn-9_tu_bulk_1_main');
+  });
+
+  it('ONE wildcard call staging one zero-applied entry per board produces DISTINCT keys per board', () => {
+    const main = buildConfirmationDedupeKey({
+      text: 'No non-spare circuits were updated; skipped 2 spare ways.',
+      field: 'rcd_time_ms',
+      dedupe_token: 'bulkoutcome_turn-9_tu_bulk_1_main',
+    });
+    const subB = buildConfirmationDedupeKey({
+      text: 'No non-spare circuits were updated; skipped 2 spare ways.',
+      field: 'rcd_time_ms',
+      dedupe_token: 'bulkoutcome_turn-9_tu_bulk_1_sub-b',
+    });
+    expect(main).not.toBe(subB);
+  });
+
+  it('an allowlisted field with a bulkoutcome token STILL takes the bulkoutcome branch (prefix wins first)', () => {
+    const k = buildConfirmationDedupeKey({
+      text: 'Skipping 1 spare way.',
+      field: 'circuit_designation',
+      dedupe_token: 'bulkoutcome_turn-9_tu_bulk_1_main',
+    });
+    expect(k).toBe('circuit_designation_bulkoutcome_turn-9_tu_bulk_1_main');
+  });
+
+  it('replaying the SAME bulkoutcome token produces the SAME key (stable replay dedupe)', () => {
+    const first = buildConfirmationDedupeKey({
+      text: 'Skipping 1 spare way.',
+      field: 'measured_zs_ohm',
+      dedupe_token: 'bulkoutcome_turn-9_tu_bulk_1_main',
+    });
+    const replay = buildConfirmationDedupeKey({
+      text: 'Skipping 1 spare way.',
+      field: 'measured_zs_ohm',
+      dedupe_token: 'bulkoutcome_turn-9_tu_bulk_1_main',
+    });
+    expect(first).toBe(replay);
+  });
+});

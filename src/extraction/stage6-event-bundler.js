@@ -30,6 +30,7 @@ import {
   circuitDesignationKey,
   resolveDesignation,
   readEffectiveOpBoard,
+  BULK_OUTCOME_CALL_ID,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
@@ -97,6 +98,18 @@ export const CLEAR_WIRE_EXEMPT = new Set(['r2_ohm']);
  * it never enters JSON wire output or a defensive spread.
  */
 export const SAME_TURN_CLEAR_WRITE_COLLAPSED = Symbol('stage6.sameTurnClearWriteCollapsed');
+
+/**
+ * PLAN-F2 finding 1 (2026-08-14) — module-local non-enumerable stamp joining
+ * a synthesised confirmation (grouped or per-circuit) back to the bulk call
+ * (and board) that produced it. Both the producer of this stamp
+ * (synthesiseConfirmations, via buildFanoutGroupKey's identity dimension)
+ * and its consumer (the bulk-outcome disclosure matching in
+ * bundleToolCallsIntoResult) live in this one file, so — unlike
+ * BULK_OUTCOME_CALL_ID, which crosses the dispatcher/bundler module
+ * boundary — this never needs to be exported.
+ */
+const BULK_OUTCOME_MATCH_IDENTITY = Symbol('stage6.bulkOutcomeMatchIdentity');
 
 /*
  * A2-multiboard (2026-07-28) — `REPLACES_CLEARED_AMBIGUOUS_PROJECTION` (and its
@@ -489,7 +502,14 @@ function synthesiseConfirmations(
   totalCircuitsInJob = null,
   calcReadings = null,
   clampCorrections = null,
-  boardScope = null
+  boardScope = null,
+  // PLAN-F2 finding 1 (2026-08-14) — WeakMap<reading, callId>, resolved by
+  // the caller from BULK_OUTCOME_CALL_ID during projection. Optional (a
+  // non-Map value, the default) means "no bulk-call identity this turn" —
+  // every existing caller (test fixtures, older call sites) omits it, and
+  // every reading takes the unstamped path, byte-identical to pre-finding-1
+  // behaviour.
+  bulkCallIds = null
 ) {
   const out = [];
   // A2-multiboard item 8 (2026-07-28) — per-GROUP circuit populations.
@@ -535,6 +555,28 @@ function synthesiseConfirmations(
   // across a turn that writes the same slot twice — identity is.
   const correctionOf = (r) =>
     clampCorrections instanceof WeakMap ? (clampCorrections.get(r) ?? null) : null;
+  // PLAN-F2 finding 1 (2026-08-14) — same identity pattern as correctionOf,
+  // for the bulk-call id BULK_OUTCOME_CALL_ID stamped at dispatch time.
+  // null for any reading that didn't come from a bulk call.
+  const bulkCallIdOf = (r) =>
+    bulkCallIds instanceof WeakMap ? (bulkCallIds.get(r) ?? null) : null;
+  // Codex diff-review cycle 2 (2026-08-14) — BLOCKER fix: the fan-out
+  // group-key identity must be the full (callId, effectiveBoardId)
+  // composite the plan specifies, not callId alone relying on the raw
+  // `boardId` base-key field to already equal the effective board. That
+  // reliance holds ONLY because the A2-multiboard cross-board enrichment
+  // pass happens to normalise raw→effective before grouping runs on any
+  // turn where the distinction would matter — correct by construction
+  // today, but fragile: it depends on an unrelated subsystem's side effect
+  // rather than being provably correct on its own. Composing effectiveBoardOf
+  // directly into the bulk identity removes that cross-subsystem dependency.
+  // Still null/undefined for non-bulk readings (no callId), so the key stays
+  // byte-identical to pre-finding-1 behaviour there.
+  const bulkGroupIdentityOf = (r) => {
+    const callId = bulkCallIdOf(r);
+    if (!callId) return undefined;
+    return `${callId}|${effectiveBoardOf(r) ?? ''}`;
+  };
   const sectionDedupeOperationOf = (r) => {
     const resolver = boardScope?.sectionDedupeOperationOf;
     return typeof resolver === 'function' ? (resolver(r) ?? null) : null;
@@ -687,12 +729,20 @@ function synthesiseConfirmations(
     // id-100(b) — the clamp correction is part of the fan-out identity, so a
     // clamped and an unclamped write of the same final value never collapse into
     // one line (which would silence the safety-critical correction clause).
+    // PLAN-F2 finding 1 (2026-08-14) — `identity` (the bulk call's
+    // tool_call_id, null for non-bulk readings) joins the group key so two
+    // same-turn bulk calls with disjoint circuit targets never collapse
+    // into one group even when field+value+board+calc+correction all
+    // match. Readings from ordinary (non-bulk) writes carry no identity —
+    // `identity` is null/undefined for them and the key is byte-identical
+    // to pre-finding-1 behaviour.
     const groupKey = buildFanoutGroupKey({
       field: r.field,
       value: r.value,
       boardId: r.board_id,
       calculated: isCalc(r),
       correction: correctionOf(r),
+      identity: bulkGroupIdentityOf(r),
     });
     let bucket = groups.get(groupKey);
     if (!bucket) {
@@ -711,6 +761,10 @@ function synthesiseConfirmations(
         // Safe to read off the FIRST member: every member of a bucket shares
         // this correction by construction (it is part of the group key).
         correction: correctionOf(r),
+        // PLAN-F2 finding 1 — likewise safe to read off the FIRST member:
+        // `identity` is part of the group key, so every member of a bucket
+        // shares the same bulk-call id (or all share `null`).
+        bulkCallId: bulkCallIdOf(r),
         items: [],
         indices: [],
       };
@@ -770,6 +824,25 @@ function synthesiseConfirmations(
       Number.POSITIVE_INFINITY
     );
     if (!Number.isFinite(entry._confidence)) entry._confidence = null;
+    // PLAN-F2 finding 1 (2026-08-14) — stamp the composite (callId,
+    // effectiveBoardId) identity so the bulk-outcome consumer in
+    // bundleToolCallsIntoResult can join this confirmation back to ONLY the
+    // bulk call that produced it. Non-enumerable: never rides the wire.
+    // PLAN-F2 finding 4 — the board component is `bucket.effectiveBoardId`
+    // (already resolved above, same value the "All circuits" census uses),
+    // NOT the raw wire `bucket.board_id` — the ledger's matching field is
+    // now the resolved effectiveBoardId too (see the consumer below), and
+    // comparing raw-vs-resolved would fail the match on an ordinary
+    // single-board turn (where the wire board_id is omitted but the
+    // session may have a real non-main board selected).
+    if (bucket.bulkCallId) {
+      Object.defineProperty(entry, BULK_OUTCOME_MATCH_IDENTITY, {
+        value: { callId: bucket.bulkCallId, boardId: bucket.effectiveBoardId ?? null },
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
     out.push(entry);
     for (const idx of bucket.indices) consumedReadingIndices.add(idx);
   }
@@ -825,6 +898,20 @@ function synthesiseConfirmations(
     }
     // W1.4 transient confidence sidecar (per-circuit fallback path).
     entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
+    // PLAN-F2 finding 1 (2026-08-14) — same composite-identity stamp as the
+    // grouped path above, for a bulk call whose sweep applied to exactly one
+    // circuit (never grouped — bucket.items.length < 2). PLAN-F2 finding 4
+    // — board component is effectiveBoardOf(r) (resolved), not raw
+    // r.board_id, same rationale as the grouped path above.
+    const perCircuitBulkCallId = bulkCallIdOf(r);
+    if (perCircuitBulkCallId) {
+      Object.defineProperty(entry, BULK_OUTCOME_MATCH_IDENTITY, {
+        value: { callId: perCircuitBulkCallId, boardId: effectiveBoardOf(r) ?? null },
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
     out.push(entry);
   }
   for (const r of boardReadings) {
@@ -980,6 +1067,11 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // reach the wire because the projected `reading` objects are serialised by
   // key enumeration and the correction never becomes one of their keys.
   const clampCorrectionByReading = new WeakMap();
+  // PLAN-F2 finding 1 (2026-08-14) — same hand-off pattern as
+  // clampCorrectionByReading above, for BULK_OUTCOME_CALL_ID. Only circuit
+  // readings (never board readings — dispatchSetFieldForAllCircuits writes
+  // circuits only) carry this stamp.
+  const bulkOutcomeCallIdByReading = new WeakMap();
   // A2 (2026-07-28) — `replaces_cleared` candidate index. Keyed by the SAME
   // slot identity the P5 collapse below matches on, and SPLIT the same way
   // (effective-stamped writes vs Symbol-less raw-key writes) so a lookup can
@@ -1119,6 +1211,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     const clampCorrection = entry?.[IMPEDANCE_CLAMP_CORRECTION];
     if (clampCorrection) {
       clampCorrectionByReading.set(reading, clampCorrection);
+    }
+    // PLAN-F2 finding 1 (2026-08-14) — carry the bulk-call identity across
+    // the projection boundary, same pattern as the clamp correction above.
+    const bulkOutcomeCallId = entry?.[BULK_OUTCOME_CALL_ID];
+    if (bulkOutcomeCallId) {
+      bulkOutcomeCallIdByReading.set(reading, bulkOutcomeCallId);
     }
     extracted_readings.push(reading);
   }
@@ -1704,7 +1802,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // takes the unstamped path, byte-identical to pre-B1.3 behaviour.
         fastAttemptBySlotKey:
           options.fastAttemptBySlotKey instanceof Map ? options.fastAttemptBySlotKey : null,
-      }
+      },
+      // PLAN-F2 finding 1 (2026-08-14) — bulk-call identity WeakMap built
+      // during projection above.
+      bulkOutcomeCallIdByReading
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
     // loop and the `_confidence` strip MOVED to stage6-shadow-harness.js,
@@ -1770,6 +1871,157 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         const identity = entry?.[SECTION_DEDUPE_OPERATION];
         if (!identity || identity.field !== field) continue;
         entry.dedupe_token = `secfield_${identity.field}_${identity.scope}_${_confirmationDedupeTurnId}_ord${identity.ordinal}`;
+      }
+    }
+    // PLAN-F item 1 (2026-08-12, feedback id 115) — audible-skip disclosure.
+    // dispatchSetFieldForAllCircuits does NOT compose confirmations itself
+    // (it never sees `confirmations` — only perTurnWrites/legacyResultShape/
+    // options reach it, per the module JSDoc above), so it stages one
+    // bulkOutcomes entry per (call, board) with applied/spare-skipped refs;
+    // this amends the MATCHING grouped or per-circuit confirmation with a
+    // count-aware "…skipping N spare ways" clause, or synthesises the
+    // standalone zero-applied confirmation when nothing was written
+    // (Decision 4). Joined by the composite (callId, effectiveBoardId)
+    // identity — see the join below. Not gated by `_turnId` — the
+    // disclosure is independent of the designation-token machinery above.
+    //
+    // Codex diff-review cycle 3 (2026-08-14) — BLOCKER fix: an outcome with
+    // a non-empty `appliedRefs` must act ONLY if its composite identity
+    // still owns at least one WINNING projected reading. Two same-turn
+    // calls to the same field+board with OVERLAPPING (not identical, so
+    // APPEND not REPLACE — finding 1) circuit targets can have the LATER
+    // call's write overwrite the readings Map entry the EARLIER call
+    // produced (last-write-wins on the shared (field, circuit, board) key),
+    // re-tagging that reading with the later call's identity. The earlier
+    // call's ledger entry then owns ZERO winning readings, yet without this
+    // check it would still fall through to the "defensive fallback" branch
+    // below and speak a STALE disclosure about circuits it no longer
+    // actually wrote. `bulkIdentityOwnsWinningReading` distinguishes that
+    // case (no reading anywhere carries this identity — skip entirely, no
+    // fallback) from the fallback's actual intended case (a reading DOES
+    // still carry this identity, but no confirmation was synthesised for
+    // it for an unrelated reason — the fallback still fires).
+    const bulkIdentityOwnsWinningReading = new Set();
+    for (const r of extracted_readings) {
+      const rCallId = bulkOutcomeCallIdByReading.get(r);
+      if (!rCallId) continue;
+      const rEffBoard = effectiveBoardByReading.get(r) ?? null;
+      bulkIdentityOwnsWinningReading.add(`${rCallId}|${rEffBoard}`);
+    }
+    if (Array.isArray(perTurnWrites.bulkOutcomes) && perTurnWrites.bulkOutcomes.length > 0) {
+      for (const outcome of perTurnWrites.bulkOutcomes) {
+        if (!Array.isArray(outcome.spareSkippedRefs) || outcome.spareSkippedRefs.length === 0) {
+          continue; // nothing to disclose
+        }
+        // Codex diff-review r1 (2026-08-13) — the plan's exact wording
+        // DIFFERS by context: the clause appended to a success confirmation
+        // is present-continuous ("…skipping N spare ways"); the standalone
+        // zero-applied sentence is past-tense ("skipped N spare ways") —
+        // "No non-spare circuits were updated; skipped N spare ways."
+        // (PLAN-F-final.md Decision 4, verbatim). Two distinct forms, not
+        // one reused across both contexts.
+        const appendClause =
+          outcome.spareSkippedRefs.length === 1
+            ? 'skipping 1 spare way'
+            : `skipping ${outcome.spareSkippedRefs.length} spare ways`;
+        const standaloneClause =
+          outcome.spareSkippedRefs.length === 1
+            ? 'skipped 1 spare way'
+            : `skipped ${outcome.spareSkippedRefs.length} spare ways`;
+        if (!Array.isArray(outcome.appliedRefs) || outcome.appliedRefs.length === 0) {
+          // Decision 4 — zero-applied: all targets were spares under an
+          // exclude policy, so no reading/group exists to annotate.
+          const zeroText = `No non-spare circuits were updated; ${standaloneClause}.`;
+          const zeroEntry = {
+            text: zeroText,
+            expanded_text: expandForTTS(zeroText),
+            field: outcome.field,
+            circuit: null,
+            // PLAN-F2 finding 5 (2026-08-14) — replay-stable dedupe token
+            // WITH a board discriminator: a single '*' wildcard call can
+            // stage one zero-applied entry per board (all sharing
+            // turn+call), so the board component is load-bearing, not
+            // decorative — without it, two boards' zero-applied disclosures
+            // in the same call would mint IDENTICAL tokens and client
+            // dedupe would swallow all but one. effectiveBoardId is never
+            // null (finding 4), so this segment is always populated.
+            dedupe_token: `bulkoutcome_${_turnId ?? 'noturn'}_${outcome.callId}_${outcome.effectiveBoardId}`,
+          };
+          if (outcome.boardId != null) zeroEntry.board_id = outcome.boardId;
+          confirmations.push(zeroEntry);
+          continue;
+        }
+        // PLAN-F2 finding 1 (2026-08-14) — join by the composite (callId,
+        // effectiveBoardId) identity stamped during synthesis
+        // (BULK_OUTCOME_MATCH_IDENTITY), NOT by (field, board, exact
+        // circuit set). The field/circuit-set match this replaces could
+        // misattribute a disclosure whenever two same-turn bulk calls to
+        // the same field+board produced different groupings than the
+        // ledger expected (the class of bug this finding fixes) — an
+        // outcome now acts ONLY if its own call's identity owns a winning
+        // projected reading (i.e. a confirmation was actually stamped with
+        // it), so it can never latch onto a different call's confirmation
+        // by coincidence of shape.
+        // PLAN-F2 finding 4 — the board component compares
+        // `outcome.effectiveBoardId` (resolved), NOT the raw `outcome.boardId`
+        // used for wire emission above. Both sides of the join are now the
+        // resolved effective board, so an ordinary single-board turn (wire
+        // board_id omitted, but the session may have a real non-main board
+        // selected) still matches correctly — comparing raw-vs-resolved
+        // would fail on exactly that common case.
+        const matchIdx = confirmations.findIndex((c) => {
+          const identity = c[BULK_OUTCOME_MATCH_IDENTITY];
+          return (
+            identity != null &&
+            identity.callId === outcome.callId &&
+            identity.boardId === outcome.effectiveBoardId
+          );
+        });
+        // Codex diff-review r1 (edge-interactions lens, WITHIN_INTENT per
+        // Audio-First invariant #1 — exactly once, never twice) — a
+        // confirmation that already carries `fast_correlation_id` is the
+        // canonical twin of an ALREADY-SPOKEN fast-TTS clip (PLAN-B); its
+        // text must stay byte-identical to what the fast path rendered, or
+        // iOS's exactly-once suppression either drops the disclosure
+        // entirely (text no longer matches → treated as a correction,
+        // suppressed as a duplicate) or the base reading risks a second
+        // playback. Never mutate that entry in place — the disclosure
+        // still ships, as its own additive line, so it's never silently
+        // lost either.
+        if (matchIdx >= 0 && !confirmations[matchIdx].fast_correlation_id) {
+          const match = confirmations[matchIdx];
+          match.text = `${match.text}, ${appendClause}`;
+          match.expanded_text = expandForTTS(match.text);
+        } else if (
+          bulkIdentityOwnsWinningReading.has(`${outcome.callId}|${outcome.effectiveBoardId}`)
+        ) {
+          // Defensive fallback — Audio-First invariant #1: a disclosure
+          // must never be silently lost even if the matching confirmation
+          // was itself suppressed upstream for an unrelated reason, OR
+          // (the fast-correlation case above) deliberately left unmutated.
+          // Codex diff-review cycle 3 — gated on ownership (see the Set's
+          // doc comment above): this outcome's identity DOES still own a
+          // winning reading, so its disclosure would otherwise go missing
+          // with no confirmation to append to.
+          const fallbackText = `${appendClause.charAt(0).toUpperCase()}${appendClause.slice(1)}.`;
+          const fallbackEntry = {
+            text: fallbackText,
+            expanded_text: expandForTTS(fallbackText),
+            field: outcome.field,
+            circuit: null,
+            // PLAN-F2 finding 5 (2026-08-14) — same replay-stable,
+            // board-discriminated token as the zero-applied branch above
+            // (see its comment for why the board segment is load-bearing).
+            dedupe_token: `bulkoutcome_${_turnId ?? 'noturn'}_${outcome.callId}_${outcome.effectiveBoardId}`,
+          };
+          if (outcome.boardId != null) fallbackEntry.board_id = outcome.boardId;
+          confirmations.push(fallbackEntry);
+        }
+        // else: this outcome's identity owns NO winning reading anywhere —
+        // every circuit it wrote was subsequently overwritten by a LATER
+        // call (last-write-wins on the shared readings Map key). Its
+        // disclosure is now STALE (nothing it actually wrote survives to
+        // annotate) and is correctly dropped, not spoken as a fallback.
       }
     }
     // Codex r3-#2 — when the per-turn designation-op LOG shows more ops than
@@ -2019,9 +2271,27 @@ export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
 // 7.1's TTS queue serialiser handles playing them back-to-back. The `value`
 // proxy prefers an explicit `value` (test fixtures) and falls back to the
 // rendered `text` (live confirmation entries, which encode circuit+value).
+// PLAN-F2 finding 5 (2026-08-14) — `bulkoutcome_` is a STRUCTURAL token
+// prefix, not a field-allowlist entry: dispatchSetFieldForAllCircuits can
+// target ANY circuit reading field (not just the five DEDUPE_TOKEN_FIELDS
+// text-op fields), so gating the server-side debounce's token-awareness on
+// DEDUPE_TOKEN_FIELDS.has(field) would mean two identical same-field bulk
+// commands inside the 1.5 s debounce window get dropped HERE, server-side,
+// before either client's own dedupe token branch ever runs. Mirrors the
+// client-side `duplicate_` structural-prefix pattern (ios-dedupe-key.js).
+function hasBulkOutcomeTokenPrefix(token) {
+  return typeof token === 'string' && token.startsWith('bulkoutcome_');
+}
+
 export function confirmationDebounceKey(c) {
   if (!c) return '';
   const field = c.field ?? '';
+  // PLAN-F2 finding 5 — checked BEFORE the field-allowlist branch, exactly
+  // like the client-side duplicate_ prefix takes precedence over the
+  // WIRE_CLIENT_DEDUPE_TOKEN_FIELDS allowlist check in ios-dedupe-key.js.
+  if (hasBulkOutcomeTokenPrefix(c.dedupe_token)) {
+    return `${field} tok:${c.dedupe_token}`;
+  }
   // §A1a (field-feedback-2026-07-14) — token-aware key for the five
   // allowlisted text-op fields. Deletions have null value so the composite
   // key falls to text, and every deletion's text is the constant
@@ -2060,7 +2330,12 @@ export function applyConfirmationDebounce(newConfirmations, debounceState, optio
     // so measured-value debounce keeps its existing single-slot contract
     // (and a token confirmation no longer evicts a measured reading's key).
     const isTokenKey =
-      c?.dedupe_token != null && DEDUPE_TOKEN_FIELDS.has(c?.field ?? '') && key !== '';
+      c?.dedupe_token != null &&
+      key !== '' &&
+      // PLAN-F2 finding 5 — bulkoutcome_ is structural (see
+      // hasBulkOutcomeTokenPrefix above), so it qualifies regardless of
+      // whether the field is on the DEDUPE_TOKEN_FIELDS allowlist.
+      (DEDUPE_TOKEN_FIELDS.has(c?.field ?? '') || hasBulkOutcomeTokenPrefix(c.dedupe_token));
     if (isTokenKey) {
       if (!(debounceState.tokenKeysMs instanceof Map)) debounceState.tokenKeysMs = new Map();
       for (const [k, ts] of debounceState.tokenKeysMs) {

@@ -284,6 +284,21 @@ const WEAK_TRIGGER_WORDS = new Set(
     'occupier',
     'address',
     'postcode',
+    // Extent / limitations dictation markers — 2026-08-11 field report
+    // (feedback id 78, 13-month orphan): "Extent cover is installing
+    // replacement consumer unit." died at this gate — no digit, no strong
+    // trigger, and no weak trigger for 'extent'/'limitation'/'limitations',
+    // even though the `extent` field is fully voice-writable server-side
+    // (installation_details_fields.extent, BOARD_FIELD_ENUM — see
+    // stage6-tool-schemas.js:117). Weak tier only, per the build-386 rule:
+    // these still require the standard 3-content-word threshold, so
+    // chitchat like "the extent of the damp is unreal" stays blocked.
+    // Mirrored in the iOS TranscriptGate weakTriggers
+    // (DeepgramRecordingViewModel.swift) and web transcript-gate.ts — keep
+    // all three lists in sync.
+    'extent',
+    'limitation',
+    'limitations',
   ].map((w) => w.toLowerCase())
 );
 

@@ -143,7 +143,16 @@ export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
   // reopen that bug for each field added. Mirrors the identical branch in
   // the backend's `src/extraction/ios-dedupe-key.js` (all three key
   // builders) and iOS `buildConfirmationDedupeKey`.
-  if (conf.dedupe_token && conf.dedupe_token.startsWith('duplicate_')) {
+  //
+  // PLAN-F2 finding 5 (2026-08-14) — `bulkoutcome_<turnId>_<callId>_<board>`
+  // is the SAME kind of structural token: dispatchSetFieldForAllCircuits's
+  // zero-applied/fallback disclosure can target any circuit reading field,
+  // not just the allowlist, so it needs the same prefix-wins-first
+  // treatment as `duplicate_` — never an allowlist addition.
+  if (
+    conf.dedupe_token &&
+    (conf.dedupe_token.startsWith('duplicate_') || conf.dedupe_token.startsWith('bulkoutcome_'))
+  ) {
     return `${field}_${conf.dedupe_token}`;
   }
   // §A1a — token precedence for the allowlisted text-op fields, in every

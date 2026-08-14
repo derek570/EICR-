@@ -366,6 +366,20 @@ Outcomes that resolve to the identical (field, circuit, board, value) identity c
 
 ---
 
+## Spares in bulk apply + gate trigger vocabulary (PLAN-F, feedback-2026-08-11 wave)
+
+> Added 2026-08-13 (feedback ids 115, 78). Backend + iOS + web. Not to be confused with the unrelated "Dialogue-script leading-circuit scope" section below, also historically named "Plan F".
+
+**spare_policy grammar (id 115).** `set_field_for_all_circuits`'s `scope` is a SELECTOR (`all` / legacy `non_spare` / `rcd_protected_only`); the new optional `spare_policy` (`automatic`|`include`|`exclude`) is an orthogonal FILTER composing with any selector. Resolution — identical on backend, iOS `VoiceCommandExecutor.resolveSparePolicy`, and web `voice-commands.ts`'s `resolveSparePolicy`: explicit `spare_policy` always wins (including over legacy `non_spare`); explicit `scope:'all'` + omitted policy preserves the documented tested passthrough (include); explicit `scope:'non_spare'` + omitted policy preserves forced-exclude; otherwise the family-aware automatic default applies — `DEVICE_ATTRIBUTE_FIELDS` (OCPD+RCD spec fields, 8-field closed list) include spares, every reading field excludes them. iOS/web local parsers (`ApplyFieldIntent.parse` / `parseVoiceCommand`) recognise spoken "including spares"/"excluding spares"/"except spares" modifiers and attach `sparePolicy` to the parsed command; a contradictory utterance (both directions named) is CONSUMED locally — a deterministic refusal, never forwarded to the server.
+
+**Audible skip disclosure (Decision 4).** Two distinct spoken forms, byte-identical across all three implementations: an append-clause on a surviving confirmation, present-continuous ("…skipping N spare ways"), and a standalone zero-applied sentence, past-tense ("No non-spare circuits were updated; skipped N spare ways.") — used when every scoped target was a spare under an exclude policy, so there is no confirmation to append to. The backend dispatcher stages a `perTurnWrites.bulkOutcomes` ledger entry that `stage6-event-bundler.js` consumes after `synthesiseConfirmations()` returns, joining by a composite `(callId, effectiveBoardId)` identity (PLAN-F2, 2026-08-14) — REPLACE fires only when a repeat call's `appliedRefs` AND `spareSkippedRefs` both match an existing entry EXACTLY (a genuine same-sweep correction); disjoint targets, or a partition that changed between calls, each APPEND their own entry and their own disclosure. The zero-applied/fallback entries also carry a board-discriminated `bulkoutcome_<turnId>_<callId>_<effectiveBoardId>` `dedupe_token`, recognised as a structural prefix by every client/backend dedupe-key builder and the server-side confirmation debounce. A confirmation already carrying PLAN-B's `fast_correlation_id` is never mutated in place (its text must stay byte-identical to the already-spoken fast clip) — the disclosure ships as its own additive line instead.
+
+**Extent/limitations gate vocabulary (id 78).** `extent`, `limitation`, `limitations` joined the WEAK trigger tier on all three synced gates (backend `pre-llm-gate.js`, iOS `TranscriptGate`, web `transcript-gate.ts`) — a 13-month orphan where the fully voice-writable `extent` field had no trigger word in any tier. Weak tier only; standard 3-content-word threshold unchanged.
+
+**Key files:** `src/extraction/stage6-dispatchers-circuit.js`, `src/extraction/stage6-tool-schemas.js`, `src/extraction/stage6-event-bundler.js`, `src/extraction/stage6-per-turn-writes.js`, `src/extraction/device-attribute-fields.js`, `src/extraction/pre-llm-gate.js`, `packages/shared-utils/src/voice-commands.ts`, `web/src/lib/recording/transcript-gate.ts`, CertMateUnified `Sources/Recording/{VoiceCommandExecutor,DeviceAttributeFields,DeepgramRecordingViewModel}.swift`.
+
+---
+
 ## Observation apply identity (P7 — server-id keying, marker ④)
 
 > Added 2026-07-24 (feedback id 82, session 36731498). Client-only (iOS `applySonnetObservations` + web `applyObservations`); **zero backend change**.

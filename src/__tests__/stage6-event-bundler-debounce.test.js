@@ -273,3 +273,90 @@ describe('§A1a — token-aware confirmationDebounceKey / applyConfirmationDebou
     expect(zsReplay).toHaveLength(0); // still coalesced despite the interleaved token entry
   });
 });
+
+// ── PLAN-F2 finding 5 (2026-08-14) — bulkoutcome_ structural token prefix ──
+// dispatchSetFieldForAllCircuits's zero-applied/fallback disclosure can
+// target ANY circuit reading field (rcd_time_ms here — NOT in
+// DEDUPE_TOKEN_FIELDS), so without the structural-prefix recognition this
+// suite exercises, two identical all-spares commands on the SAME field
+// within the debounce window would collide on the OLD composite key (same
+// field, null circuit, no circuits, same board, same TEXT) and the second
+// would be silently dropped SERVER-side before either client's own dedupe
+// token branch ever ran.
+describe('PLAN-F2 finding 5 — bulkoutcome_ prefix recognised by BOTH confirmationDebounceKey and the isTokenKey gate', () => {
+  const zeroApplied = (
+    token,
+    text = 'No non-spare circuits were updated; skipped 2 spare ways.'
+  ) => ({
+    text,
+    expanded_text: text,
+    field: 'rcd_time_ms',
+    circuit: null,
+    dedupe_token: token,
+  });
+
+  test('confirmationDebounceKey prefers the token even though rcd_time_ms is NOT in DEDUPE_TOKEN_FIELDS', () => {
+    const key = confirmationDebounceKey(zeroApplied('bulkoutcome_t1_tu1_main'));
+    expect(key).toBe('rcd_time_ms tok:bulkoutcome_t1_tu1_main');
+  });
+
+  test('two identical all-spares commands (same field, same text) in one session → BOTH spoken inside the debounce window', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    // Distinct tokens (different turnId/callId per turn) — exactly what the
+    // bundler mints for two separate turns.
+    const first = applyConfirmationDebounce([zeroApplied('bulkoutcome_t1_tu1_main')], state, {
+      now: t0,
+    });
+    const second = applyConfirmationDebounce([zeroApplied('bulkoutcome_t2_tu2_main')], state, {
+      now: t0 + 200,
+    });
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+  });
+
+  test('replaying the ORIGINAL token within the window is suppressed', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const first = applyConfirmationDebounce([zeroApplied('bulkoutcome_t1_tu1_main')], state, {
+      now: t0,
+    });
+    const replay = applyConfirmationDebounce([zeroApplied('bulkoutcome_t1_tu1_main')], state, {
+      now: t0 + 200,
+    });
+    expect(first).toHaveLength(1);
+    expect(replay).toHaveLength(0);
+    expect(state.lastSuppressedCount).toBe(1);
+  });
+
+  test('ONE wildcard call staging one zero-applied entry per board → both survive (distinct board segment)', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const main = applyConfirmationDebounce([zeroApplied('bulkoutcome_t1_tu1_main')], state, {
+      now: t0,
+    });
+    const subB = applyConfirmationDebounce([zeroApplied('bulkoutcome_t1_tu1_sub-b')], state, {
+      now: t0 + 50,
+    });
+    expect(main).toHaveLength(1);
+    expect(subB).toHaveLength(1);
+  });
+
+  test('the unmatched/fallback-sibling shape (non-zero text) is likewise token-aware and replay-suppressed', () => {
+    const fallback = (token) => zeroApplied(token, 'Skipping 1 spare way.');
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const first = applyConfirmationDebounce([fallback('bulkoutcome_t1_tu1_main')], state, {
+      now: t0,
+    });
+    const distinctCall = applyConfirmationDebounce([fallback('bulkoutcome_t1_tu2_main')], state, {
+      now: t0 + 50,
+    });
+    const replayOriginal = applyConfirmationDebounce([fallback('bulkoutcome_t1_tu1_main')], state, {
+      now: t0 + 100,
+    });
+    expect(first).toHaveLength(1);
+    expect(distinctCall).toHaveLength(1); // distinct call id — a different disclosure, survives
+    expect(replayOriginal).toHaveLength(0); // exact replay of the FIRST token — suppressed
+  });
+});
