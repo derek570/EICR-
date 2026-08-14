@@ -42,14 +42,17 @@ async function runBulk(field, value, { hasLimRangedWriteV1 = true } = {}) {
   // gate itself (deny without it) is covered by its own describe block.
   const session = { sessionId: 's_bulk_lim', stateSnapshot: buildSnapshot() };
   const writes = createPerTurnWrites();
-  const env = await dispatchSetFieldForAllCircuits(makeCall({ field, value, confidence: 0.95, source_turn_id: 't1' }), {
-    session,
-    logger: mockLogger(),
-    turnId: 't1',
-    perTurnWrites: writes,
-    round: 1,
-    hasLimRangedWriteV1,
-  });
+  const env = await dispatchSetFieldForAllCircuits(
+    makeCall({ field, value, confidence: 0.95, source_turn_id: 't1' }),
+    {
+      session,
+      logger: mockLogger(),
+      turnId: 't1',
+      perTurnWrites: writes,
+      round: 1,
+      hasLimRangedWriteV1,
+    }
+  );
   return parseEnvelope(env);
 }
 
@@ -63,14 +66,17 @@ const RANGED = [
 ];
 
 describe('bulk set_field_for_all_circuits — P3 LIM policy', () => {
-  test.each(RANGED)('%s: all four LIM forms accepted and stored as canonical "LIM"', async (field) => {
-    for (const form of ['LIM', 'lim', 'limb', 'limp', 'limitation']) {
-      const body = await runBulk(field, form);
-      expect(body.ok).toBe(true);
-      expect(body.applied.length).toBe(3);
-      for (const a of body.applied) expect(a.value).toBe('LIM');
+  test.each(RANGED)(
+    '%s: all four LIM forms accepted and stored as canonical "LIM"',
+    async (field) => {
+      for (const form of ['LIM', 'lim', 'limb', 'limp', 'limitation']) {
+        const body = await runBulk(field, form);
+        expect(body.ok).toBe(true);
+        expect(body.applied.length).toBe(3);
+        for (const a of body.applied) expect(a.value).toBe('LIM');
+      }
     }
-  });
+  );
 
   test.each(RANGED)('%s: near-matches rejected (never persisted)', async (field) => {
     for (const nm of ['limit', 'limited', 'lynn', 'lym']) {
@@ -116,6 +122,121 @@ describe('bulk set_field_for_all_circuits — P3 LIM policy', () => {
       const body = await runBulk('rcd_time_ms', '25', { hasLimRangedWriteV1: false });
       expect(body.ok).toBe(true);
       expect(body.applied.length).toBe(3);
+    });
+  });
+
+  describe('PLAN-F2 finding 3 (2026-08-14) — the gate does not fire when the real candidate set is already empty', () => {
+    function allSpareSnapshot() {
+      return {
+        circuits: {
+          1: { circuit_designation: 'Spare' },
+          2: { circuit_designation: '' },
+        },
+        boards: [{ id: 'main', is_current: true }],
+      };
+    }
+
+    async function runBulkOnSnapshot(snapshot, field, value, { hasLimRangedWriteV1 = false } = {}) {
+      const session = { sessionId: 's_bulk_lim_allspare', stateSnapshot: snapshot };
+      const writes = createPerTurnWrites();
+      const env = await dispatchSetFieldForAllCircuits(
+        makeCall({ field, value, confidence: 0.95, source_turn_id: 't1' }),
+        {
+          session,
+          logger: mockLogger(),
+          turnId: 't1',
+          perTurnWrites: writes,
+          round: 1,
+          hasLimRangedWriteV1,
+        }
+      );
+      return { body: parseEnvelope(env), writes };
+    }
+
+    test('an all-spares board with a LIM value and NO capability does NOT refuse with capability_missing — falls through to the normal zero-applied flow', async () => {
+      const { body, writes } = await runBulkOnSnapshot(
+        allSpareSnapshot(),
+        'measured_zs_ohm',
+        'limitation',
+        { hasLimRangedWriteV1: false }
+      );
+      // The gate's refusal shape is { ok:true, skipped:true, reason:'lim_ranged_write_capability_missing' }.
+      // The normal success shape's `skipped` is an ARRAY — asserting its type
+      // (not just truthiness) distinguishes the two shapes unambiguously.
+      expect(body.ok).toBe(true);
+      expect(Array.isArray(body.skipped)).toBe(true);
+      expect(body.reason).toBeUndefined();
+      expect(body.applied).toEqual([]);
+      // The ledger carries a zero-applied bulk outcome with the spare-skipped
+      // refs — the bundler consumes this to speak "No non-spare circuits
+      // were updated" (Decision 4), never "capability missing".
+      expect(writes.bulkOutcomes).toHaveLength(1);
+      expect(writes.bulkOutcomes[0].appliedRefs).toEqual([]);
+      expect(writes.bulkOutcomes[0].spareSkippedRefs.length).toBeGreaterThan(0);
+    });
+
+    test('a board with at least ONE non-spare circuit still gets refused with capability_missing (regression: the gate still fires when it should)', async () => {
+      const mixedSnapshot = {
+        circuits: {
+          1: { circuit_designation: 'Spare' },
+          2: { circuit_designation: 'Cooker' },
+        },
+        boards: [{ id: 'main', is_current: true }],
+      };
+      const { body } = await runBulkOnSnapshot(mixedSnapshot, 'measured_zs_ohm', 'limitation', {
+        hasLimRangedWriteV1: false,
+      });
+      expect(body).toMatchObject({
+        ok: true,
+        skipped: true,
+        reason: 'lim_ranged_write_capability_missing',
+      });
+    });
+
+    test('rcd_protected_only selector with NO RCD-fitted circuits: same "empty candidate set" relief applies', async () => {
+      const noRcdSnapshot = {
+        circuits: {
+          1: { circuit_designation: 'Cooker' },
+          2: { circuit_designation: 'Sockets' },
+        },
+        boards: [{ id: 'main', is_current: true }],
+      };
+      const session = { sessionId: 's_bulk_lim_norcd', stateSnapshot: noRcdSnapshot };
+      const writes = createPerTurnWrites();
+      const env = await dispatchSetFieldForAllCircuits(
+        makeCall({
+          field: 'measured_zs_ohm',
+          value: 'limitation',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          scope: 'rcd_protected_only',
+        }),
+        {
+          session,
+          logger: mockLogger(),
+          turnId: 't1',
+          perTurnWrites: writes,
+          round: 1,
+          hasLimRangedWriteV1: false,
+        }
+      );
+      const body = parseEnvelope(env);
+      expect(body.ok).toBe(true);
+      expect(Array.isArray(body.skipped)).toBe(true);
+      expect(body.applied).toEqual([]);
+    });
+
+    test('an all-spares board WITH the capability still writes nothing — unaffected by finding 3 (spares are still spares)', async () => {
+      const { body } = await runBulkOnSnapshot(
+        allSpareSnapshot(),
+        'measured_zs_ohm',
+        'limitation',
+        {
+          hasLimRangedWriteV1: true,
+        }
+      );
+      expect(body.ok).toBe(true);
+      expect(body.applied).toEqual([]);
     });
   });
 });

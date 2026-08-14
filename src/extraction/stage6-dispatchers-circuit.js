@@ -2105,6 +2105,103 @@ function resolveSparePolicy({ scopeInput, sparePolicyInput, isDeviceAttributeFie
 // ---- set_field_for_all_circuits -------------------------------------------
 
 /**
+ * PLAN-F2 finding 3 (2026-08-14) — the ONE eligibility predicate for a bulk
+ * circuit candidate under a resolved `selector` + `effectiveSparePolicy`,
+ * shared by the side-effect-free preflight below AND the main apply loop's
+ * classification, so the two can never drift out of sync (extract, don't
+ * duplicate). Pure: no mutation, no notice staging, no bucket-miss handling
+ * (that stays the caller's concern — a bucket miss is a DIFFERENT failure
+ * class, not an eligibility question this predicate answers). Mirrors the
+ * exact rcd_protected_only / spare_policy checks that previously lived
+ * inline in the apply loop, byte-for-byte.
+ */
+function resolveBulkCircuitEligibility(bucket, { selector, effectiveSparePolicy }) {
+  // PLAN-F item 1 — the rcd_protected_only SELECTOR (base candidate set)
+  // and the spare_policy FILTER compose independently, instead of being two
+  // branches of one mutually-exclusive `if/else if`. A circuit can be
+  // dropped by either, or both (e.g. a spare way with a fitted RCD, under
+  // rcd_protected_only + automatic on a reading field — the pre-existing
+  // hole that plan closed).
+  if (selector === 'rcd_protected_only') {
+    // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
+    // check: field_schema.json:166 declares its default as "30", which
+    // means non-RCD circuits inherit "30" the moment any code reads
+    // through the default path. Including it would tag every circuit in
+    // the snapshot as RCD-protected and the filter would do nothing.
+    // Verified against session DC946608's snapshot — every circuit had
+    // rcd_operating_current_ma="30" regardless of actual RCD bank
+    // membership.
+    const hasRcd =
+      (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') || (bucket.rcd_type && bucket.rcd_type !== '');
+    if (!hasRcd) return { eligible: false, reason: 'no_rcd' };
+  }
+  if (effectiveSparePolicy === 'exclude') {
+    // Two ways a circuit reads as "spare":
+    //   (a) the designation literally contains the word "spare" — but
+    //       matched as a WHOLE WORD, not a substring. The previous
+    //       `.includes('spare')` falsely flagged "non-spare" (rare in
+    //       practice but a real correctness bug). \bspare\b avoids that.
+    //   (b) the designation is empty / null / whitespace — blank-row
+    //       circuits in the schedule are spares by convention (the
+    //       inspector hasn't named them because there's nothing to
+    //       inspect). The previous filter only caught (a) and would have
+    //       applied the bulk write to every blank slot — a real
+    //       data-quality bug for any real-world dual-RCD board where
+    //       trailing slots are reserved for future use.
+    // The negative lookbehind `(?<!-)` rejects compound forms like
+    // "non-spare" / "anti-spare" — \b alone treats the hyphen as a word
+    // boundary and would falsely flag those as spares. The lookahead `\b`
+    // after `spare` is symmetric in spirit but we don't need a mirror
+    // lookahead because trailing hyphens on "spare-anything" ARE
+    // genuinely spares (e.g. "spare-RCBO"). Asymmetric on purpose.
+    // Belt-and-braces: canonical first, legacy fallback for snapshots
+    // hydrated from pre-fix tool-loop creates. See stage6-snapshot-
+    // mutators.js comment.
+    //
+    // Sync-is-social (PLAN-F item 1, predicate unification): this is THE
+    // canonical spare predicate — web's isSpareCircuit (voice-commands.ts)
+    // and iOS's isSpareCircuit (VoiceCommandExecutor.swift) both mirror
+    // this exact regex + blank-designation rule. iOS's old predicate was
+    // an EXACT `== "spare"` match that missed "Spare way"; web's old
+    // behaviour filtered nothing. Keep all three in sync.
+    const designation = String(bucket.circuit_designation ?? bucket.designation ?? '').trim();
+    if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
+      return { eligible: false, reason: 'spare_circuit' };
+    }
+  }
+  return { eligible: true, reason: null };
+}
+
+/**
+ * PLAN-F2 finding 3 — side-effect-free preflight: does AT LEAST ONE circuit
+ * in the resolved iteration plan survive the exclude/selector/spare-policy
+ * filters? No mutation, no notice staging, no coercion/clamping — those stay
+ * exactly where they already run (once, before this is called). A bucket
+ * miss is conservatively NOT a candidate here (mirrors the apply loop, which
+ * also `continue`s past it) but is deliberately not distinguished further —
+ * this predicate only answers "would the LIM capability gate below actually
+ * block a real write", not "what will the final applied/skipped breakdown
+ * be" (the apply loop still computes that in full, reusing the SAME
+ * `selector`/`effectiveSparePolicy`/`requestedExcludes`/`iterationPlan`
+ * this preflight was given — never re-derived).
+ */
+function hasApplicableBulkCandidate(
+  snapshot,
+  iterationPlan,
+  requestedExcludes,
+  { selector, effectiveSparePolicy }
+) {
+  return iterationPlan.some(({ boardId, refs }) =>
+    refs.some((ref) => {
+      if (requestedExcludes.has(ref)) return false;
+      const bucket = getCircuitBucket(snapshot, ref, boardId);
+      if (!bucket) return false;
+      return resolveBulkCircuitEligibility(bucket, { selector, effectiveSparePolicy }).eligible;
+    })
+  );
+}
+
+/**
  * dispatchSetFieldForAllCircuits — Bug A from session DC946608 (8 Branagh Ct,
  * 2026-05-06). Replaces the model's 14-tool-call burst pattern (which Sonnet
  * silently truncated to 7 in production) with one server-iterated tool call.
@@ -2255,11 +2352,86 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     earthing: resolveBoardAwareEarthing(session.stateSnapshot, input.board_id),
   });
   input.value = bulkClamp.value;
+
+  // PLAN-F item 1 — scope is now a SELECTOR only (which base candidate set:
+  // 'all'-shaped iteration, or the rcd_protected_only hasRcd-filtered set).
+  // The legacy 'non_spare' value is still accepted and selects the SAME
+  // 'all' base set — its spare-exclusion behaviour is now carried by
+  // effectiveSparePolicy below, not by a separate iteration branch.
+  //
+  // PLAN-F2 finding 3 (2026-08-14) — HOISTED above the LIM capability gate
+  // below (it used to run after). The gate needs to know whether a real
+  // write is even going to be attempted before it decides whether to
+  // refuse — see the preflight immediately below.
+  const rawScope = input.scope; // undefined | 'non_spare' | 'all' | 'rcd_protected_only'
+  const selector = rawScope === 'rcd_protected_only' ? 'rcd_protected_only' : 'all';
+  const isDeviceAttributeField = DEVICE_ATTRIBUTE_FIELDS.has(input.field);
+  const effectiveSparePolicy = resolveSparePolicy({
+    scopeInput: rawScope,
+    sparePolicyInput: input.spare_policy,
+    isDeviceAttributeField,
+  });
+
+  // PLAN-backend-final.md Phase 8.2 — exclude_circuits dedup + validate.
+  // Build a Set of valid integer refs to subtract from the apply list.
+  // Drop non-integers / non-positive / unknown values silently; the
+  // schema already constrains the type at the API layer, so an invalid
+  // entry that survives is a model quirk worth ignoring rather than
+  // rejecting the whole tool call. excluded_count below is the count of
+  // dedup'd VALIDATED requests — it reflects inspector INTENT, not the
+  // subset actually subtracted from the scoped candidates.
+  const requestedExcludes = new Set();
+  if (Array.isArray(input.exclude_circuits)) {
+    for (const v of input.exclude_circuits) {
+      if (Number.isInteger(v) && v > 0) requestedExcludes.add(v);
+    }
+  }
+
+  // 2026-05-07 Phase 6.5 — board_id thread-through with `'*'` cross-board sweep.
+  //
+  // Resolve the iteration plan: a list of {boardId, refs[]} tuples.
+  //   - input.board_id === '*' → every board on the snapshot, scoped via
+  //     listCircuitRefsInBoard per board. Cross-board sweep is the locked
+  //     S5 decision from the multi-board sprint PLAN.md self-review:
+  //     default current-board-only, explicit '*' to opt into cross-board.
+  //   - input.board_id is a specific id → that board only.
+  //   - input.board_id omitted → default to currentBoardId via listCircuitRefsInBoard's
+  //     own fallback (preserves pre-Phase-6 behaviour exactly).
+  //
+  // Under flag-off, every board collapses to the legacy numeric-key namespace
+  // because listCircuitRefsInBoard ignores the boardId arg. So '*' is a no-op
+  // deviation from the unscoped default — same iteration shape, same writes.
+  const snapshot = session.stateSnapshot;
+  const iterationPlan =
+    input.board_id === '*'
+      ? (snapshot.boards ?? []).map((b) => ({
+          boardId: b?.id,
+          refs: listCircuitRefsInBoard(snapshot, b?.id),
+        }))
+      : [{ boardId: input.board_id, refs: listCircuitRefsInBoard(snapshot, input.board_id) }];
+
   // P3 Fix 8 — rollout gate (mirror of the direct record_reading path): deny a
   // bulk LIM write on a capability-gated field when the client hasn't advertised
   // `lim_ranged_write_v1` OR the server kill-switch is on. Non-error skip so the
   // marker-② net speaks.
+  //
+  // PLAN-F2 finding 3 (2026-08-14) — gated additionally on
+  // `hasApplicableBulkCandidate`: on a board where every eligible circuit is
+  // a spare (or otherwise filtered out), the REAL candidate set is empty
+  // regardless of capability — no write is going to be attempted either
+  // way, so refusing here would tell the inspector "capability missing"
+  // when the correct, more useful, zero-applied wording (Decision 4's
+  // standalone confirmation — see its producer in stage6-event-bundler.js)
+  // is reached naturally by letting the apply loop below run to completion
+  // with an empty `applied[]`. The preflight is side-effect-free (no
+  // mutation, no notices) and reuses the SAME
+  // selector/effectiveSparePolicy/requestedExcludes/iterationPlan the
+  // apply loop below uses — never re-derived.
   if (
+    hasApplicableBulkCandidate(snapshot, iterationPlan, requestedExcludes, {
+      selector,
+      effectiveSparePolicy,
+    }) &&
     (isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true) &&
     isCapabilityGatedLimWrite(canonicalBulkField, input.value)
   ) {
@@ -2323,58 +2495,6 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     }
   }
 
-  // PLAN-F item 1 — scope is now a SELECTOR only (which base candidate set:
-  // 'all'-shaped iteration, or the rcd_protected_only hasRcd-filtered set).
-  // The legacy 'non_spare' value is still accepted and selects the SAME
-  // 'all' base set — its spare-exclusion behaviour is now carried by
-  // effectiveSparePolicy below, not by a separate iteration branch.
-  const rawScope = input.scope; // undefined | 'non_spare' | 'all' | 'rcd_protected_only'
-  const selector = rawScope === 'rcd_protected_only' ? 'rcd_protected_only' : 'all';
-  const isDeviceAttributeField = DEVICE_ATTRIBUTE_FIELDS.has(input.field);
-  const effectiveSparePolicy = resolveSparePolicy({
-    scopeInput: rawScope,
-    sparePolicyInput: input.spare_policy,
-    isDeviceAttributeField,
-  });
-
-  // PLAN-backend-final.md Phase 8.2 — exclude_circuits dedup + validate.
-  // Build a Set of valid integer refs to subtract from the apply list.
-  // Drop non-integers / non-positive / unknown values silently; the
-  // schema already constrains the type at the API layer, so an invalid
-  // entry that survives is a model quirk worth ignoring rather than
-  // rejecting the whole tool call. excluded_count below is the count of
-  // dedup'd VALIDATED requests — it reflects inspector INTENT, not the
-  // subset actually subtracted from the scoped candidates.
-  const requestedExcludes = new Set();
-  if (Array.isArray(input.exclude_circuits)) {
-    for (const v of input.exclude_circuits) {
-      if (Number.isInteger(v) && v > 0) requestedExcludes.add(v);
-    }
-  }
-
-  // 2026-05-07 Phase 6.5 — board_id thread-through with `'*'` cross-board sweep.
-  //
-  // Resolve the iteration plan: a list of {boardId, refs[]} tuples.
-  //   - input.board_id === '*' → every board on the snapshot, scoped via
-  //     listCircuitRefsInBoard per board. Cross-board sweep is the locked
-  //     S5 decision from the multi-board sprint PLAN.md self-review:
-  //     default current-board-only, explicit '*' to opt into cross-board.
-  //   - input.board_id is a specific id → that board only.
-  //   - input.board_id omitted → default to currentBoardId via listCircuitRefsInBoard's
-  //     own fallback (preserves pre-Phase-6 behaviour exactly).
-  //
-  // Under flag-off, every board collapses to the legacy numeric-key namespace
-  // because listCircuitRefsInBoard ignores the boardId arg. So '*' is a no-op
-  // deviation from the unscoped default — same iteration shape, same writes.
-  const snapshot = session.stateSnapshot;
-  const iterationPlan =
-    input.board_id === '*'
-      ? (snapshot.boards ?? []).map((b) => ({
-          boardId: b?.id,
-          refs: listCircuitRefsInBoard(snapshot, b?.id),
-        }))
-      : [{ boardId: input.board_id, refs: listCircuitRefsInBoard(snapshot, input.board_id) }];
-
   const applied = [];
   const skipped = [];
   // PLAN-F item 1 — spare-skipped refs ONLY (a subset of `skipped`, which
@@ -2436,68 +2556,24 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       // (An EXPLICITLY-NAMED ref rejected by policy is a different case and
       // does join the notice channel — that path is `record_reading`'s,
       // above, not this fan-out's.) Pinned by test.
-      // PLAN-F item 1 — the rcd_protected_only SELECTOR (base candidate set)
-      // and the spare_policy FILTER now compose independently, instead of
-      // being two branches of one mutually-exclusive `if/else if`. A
-      // circuit can be dropped by either, or both (e.g. a spare way with a
-      // fitted RCD, under rcd_protected_only + automatic on a reading
-      // field — the pre-existing hole this plan closes).
-      if (selector === 'rcd_protected_only') {
-        // rcd_operating_current_ma is DELIBERATELY excluded from the hasRcd
-        // check: field_schema.json:166 declares its default as "30", which
-        // means non-RCD circuits inherit "30" the moment any code reads
-        // through the default path. Including it would tag every circuit
-        // in the snapshot as RCD-protected and the filter would do nothing.
-        // Verified against session DC946608's snapshot — every circuit had
-        // rcd_operating_current_ma="30" regardless of actual RCD bank
-        // membership.
-        const hasRcd =
-          (bucket.rcd_bs_en && bucket.rcd_bs_en !== '') ||
-          (bucket.rcd_type && bucket.rcd_type !== '');
-        if (!hasRcd) {
-          skipped.push({ circuit_ref: ref, reason: 'no_rcd' });
-          continue;
-        }
-      }
-      if (effectiveSparePolicy === 'exclude') {
-        // Two ways a circuit reads as "spare":
-        //   (a) the designation literally contains the word "spare" — but
-        //       matched as a WHOLE WORD, not a substring. The previous
-        //       `.includes('spare')` falsely flagged "non-spare" (rare in
-        //       practice but a real correctness bug). \bspare\b avoids that.
-        //   (b) the designation is empty / null / whitespace — blank-row
-        //       circuits in the schedule are spares by convention (the
-        //       inspector hasn't named them because there's nothing to
-        //       inspect). The previous filter only caught (a) and would
-        //       have applied the bulk write to every blank slot — a real
-        //       data-quality bug for any real-world dual-RCD board where
-        //       trailing slots are reserved for future use.
-        // The negative lookbehind `(?<!-)` rejects compound forms like
-        // "non-spare" / "anti-spare" — \b alone treats the hyphen as a word
-        // boundary and would falsely flag those as spares. The lookahead
-        // `\b` after `spare` is symmetric in spirit but we don't need a
-        // mirror lookahead because trailing hyphens on "spare-anything"
-        // ARE genuinely spares (e.g. "spare-RCBO"). Asymmetric on purpose.
-        // Belt-and-braces: canonical first, legacy fallback for snapshots
-        // hydrated from pre-fix tool-loop creates. See stage6-snapshot-
-        // mutators.js comment.
-        // Sync-is-social (PLAN-F item 1, predicate unification): this is
-        // THE canonical spare predicate — web's isSpareCircuit
-        // (voice-commands.ts) and iOS's isSpareCircuit
-        // (VoiceCommandExecutor.swift) both mirror this exact regex +
-        // blank-designation rule. iOS's old predicate was an EXACT `==
-        // "spare"` match that missed "Spare way"; web's old behaviour
-        // filtered nothing. Keep all three in sync.
-        const designation = String(bucket.circuit_designation ?? bucket.designation ?? '').trim();
-        if (designation === '' || /(?<!-)\bspare\b/i.test(designation)) {
-          skipped.push({ circuit_ref: ref, reason: 'spare_circuit' });
+      // PLAN-F2 finding 3 (2026-08-14) — the rcd_protected_only SELECTOR and
+      // spare_policy FILTER checks now live in the shared
+      // resolveBulkCircuitEligibility predicate (full rationale there),
+      // reused by the side-effect-free preflight above the LIM capability
+      // gate. This call site only maps its verdict onto the SAME
+      // skipped[]/spareSkippedRefs[] side effects as before — behaviour is
+      // byte-identical to the pre-extraction inline checks.
+      const eligibility = resolveBulkCircuitEligibility(bucket, { selector, effectiveSparePolicy });
+      if (!eligibility.eligible) {
+        skipped.push({ circuit_ref: ref, reason: eligibility.reason });
+        if (eligibility.reason === 'spare_circuit') {
           // Tagged with boardId (not a bare ref number): circuit refs are
           // per-board, so a bare-number array would misattribute a
           // spare-skip on board B's circuit 3 to board A's circuit 3 on a
           // '*' cross-board sweep. See the post-loop ledger staging below.
           spareSkippedRefs.push({ ref, boardId });
-          continue;
         }
+        continue;
       }
       // Phase 6.5 — thread boardId so the flag-aware mutator writes to the
       // correct composite-key bucket (under flag-on) or the legacy numeric
