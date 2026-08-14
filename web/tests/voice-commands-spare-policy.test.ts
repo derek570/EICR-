@@ -293,3 +293,68 @@ describe('DEVICE_ATTRIBUTE_FIELDS — live schema drift assertion', () => {
     expect(DEVICE_ATTRIBUTE_FIELDS).toEqual(liveUnion);
   });
 });
+
+/**
+ * PLAN-F2 finding 2 (2026-08-14, Derek decision 1) — range/single scope now
+ * COMPOSES with a spoken spare_policy modifier, instead of ignoring it.
+ * Modifier ABSENT keeps today's behaviour (explicitly-named circuits are
+ * never spare-filtered); modifier PRESENT ('exclude') filters + discloses.
+ */
+describe('range/single scope composes with a spoken spare_policy modifier', () => {
+  it('MODIFIER ABSENT: "circuits 1 to 4" with a spare inside still writes ALL of them (unchanged default)', () => {
+    const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK, SPARE_NAMED]);
+    const cmd = parseVoiceCommand('rcd type AC for circuits 1 to 4')!;
+    expect(cmd.scope).toEqual({ kind: 'range', from: 1, to: 4 });
+    expect(cmd.sparePolicy).toBeUndefined();
+    const out = applyVoiceCommand(cmd, job);
+    const updated = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(updated.filter((r) => r.rcd_type === 'ac')).toHaveLength(4);
+    expect(out.response).toContain('for 4 circuits');
+    expect(out.response).not.toContain('spare');
+  });
+
+  it('MODIFIER PRESENT (exclude): "circuits 1 to 4, excluding spares" filters the spares out AND discloses the skip', () => {
+    const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK, SPARE_NAMED]);
+    const cmd = parseVoiceCommand('rcd type AC for circuits 1 to 4 excluding spares')!;
+    expect(cmd.scope).toEqual({ kind: 'range', from: 1, to: 4 });
+    expect(cmd.sparePolicy).toBe('exclude');
+    const out = applyVoiceCommand(cmd, job);
+    const updated = out.patch?.circuits as Array<Record<string, unknown>>;
+    // Only the two REAL circuits (1, 2) got written; the two spares (3, 4)
+    // did not.
+    expect(updated.filter((r) => r.rcd_type === 'ac')).toHaveLength(2);
+    expect(updated.find((r) => r.circuit_ref === '3')?.rcd_type).toBeUndefined();
+    expect(updated.find((r) => r.circuit_ref === '4')?.rcd_type).toBeUndefined();
+    expect(out.response).toContain('for 2 circuits');
+    expect(out.response).toContain(', skipping 2 spare ways.');
+  });
+
+  it('MODIFIER PRESENT (include) on a range with NO spares: harmless no-op, no disclosure', () => {
+    const job = jobWithCircuits([...REAL_CIRCUITS]);
+    const cmd = parseVoiceCommand('rcd type AC for circuits 1 to 2 including spares')!;
+    expect(cmd.sparePolicy).toBe('include');
+    const out = applyVoiceCommand(cmd, job);
+    const updated = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(updated.filter((r) => r.rcd_type === 'ac')).toHaveLength(2);
+    expect(out.response).not.toContain('spare');
+  });
+
+  it('SINGLE circuit, explicitly a spare, excluding spares → zero-applied standalone disclosure (no "circuit not found" collision)', () => {
+    const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_NAMED]);
+    const cmd = parseVoiceCommand('rcd type AC for circuit 4 excluding spares')!;
+    expect(cmd.scope).toEqual({ kind: 'single', circuit: 4 });
+    expect(cmd.sparePolicy).toBe('exclude');
+    const out = applyVoiceCommand(cmd, job);
+    expect(out.patch).toBeUndefined();
+    expect(out.response).toBe('No non-spare circuits were updated; skipped 1 spare way.');
+  });
+
+  it('SINGLE circuit, NOT a spare, excluding spares → writes normally (the modifier only filters, never blocks a real circuit)', () => {
+    const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_NAMED]);
+    const cmd = parseVoiceCommand('rcd type AC for circuit 1 excluding spares')!;
+    const out = applyVoiceCommand(cmd, job);
+    const updated = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(updated.find((r) => r.circuit_ref === '1')?.rcd_type).toBe('ac');
+    expect(out.response).not.toContain('spare');
+  });
+});

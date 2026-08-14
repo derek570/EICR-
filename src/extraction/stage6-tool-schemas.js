@@ -203,6 +203,19 @@ function makeTool({ name, description, properties, required }) {
 // field enum is sourced from field_schema.circuit_fields keys (Phase 1
 // resolved Q#2 as circuit-scoped; board-level readings may be widened in
 // Phase 2 or split into record_board_reading).
+//
+// PLAN-F2 finding 2 (2026-08-14) — VERIFIED: `spare_policy` composition has
+// NO backend symmetry counterpart here. `circuit` (below) targets exactly
+// ONE circuit ref — there is no circuit-list/range input shape on ANY
+// non-bulk tool (record_reading, clear_reading, calculate_zs/r1_plus_r2),
+// so a model-driven "circuits 3 to 5, excluding spares" utterance can only
+// reach the backend as N individual record_reading calls, never as one
+// scoped write `spare_policy` could filter. `spare_policy` remains a
+// set_field_for_all_circuits-only tool input (see its schema below); the
+// single/range + spare_policy composition Decision 1 describes is entirely
+// a CLIENT-side (iOS/web direct-manipulation voice command) concern — see
+// packages/shared-utils/src/voice-commands.ts's indicesForScope and
+// CertMateUnified's VoiceCommandExecutor.resolveCircuitScope.
 // ---------------------------------------------------------------------------
 const recordReading = makeTool({
   name: 'record_reading',

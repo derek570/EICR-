@@ -913,13 +913,27 @@ function indicesForScope(
     });
     return { indices, spareSkippedCount };
   }
-  // single/range — an explicitly-named circuit is never spare-filtered,
-  // matching the backend (the spare filter only applies to the bulk 'all'
-  // candidate set).
+  // single/range — an explicitly-named circuit is never spare-filtered
+  // BY DEFAULT, matching the backend (the spare filter only applies to the
+  // bulk 'all' candidate set UNLESS the inspector spoke a modifier).
+  //
+  // PLAN-F2 finding 2 (2026-08-14, Derek decision 1) — a SPOKEN spare
+  // modifier now COMPOSES with single/range scope too: "circuits 3 to 5,
+  // excluding spares" filters the spare out of the explicit range AND the
+  // caller discloses the skip (skipClause, already scope-agnostic — see
+  // applyApplyField below). Modifier ABSENT keeps today's behaviour
+  // (explicitly-named circuits are never spare-filtered). Modifier PRESENT
+  // as 'include' is a no-op here — single/range never filters unless the
+  // policy is 'exclude', so there's nothing to disclose either way.
+  const excludeSpares = spareFilter?.sparePolicy === 'exclude';
   if (scope.kind === 'single') {
     const ref = String(scope.circuit);
     const idx = circuits.findIndex((c) => c.circuit_ref === ref || c.number === ref);
-    return { indices: idx >= 0 ? [idx] : [], spareSkippedCount: 0 };
+    if (idx < 0) return { indices: [], spareSkippedCount: 0 };
+    if (excludeSpares && isSpareCircuit(circuits[idx])) {
+      return { indices: [], spareSkippedCount: 1 };
+    }
+    return { indices: [idx], spareSkippedCount: 0 };
   }
   // range
   const fromRef = String(scope.from);
@@ -930,8 +944,15 @@ function indicesForScope(
   const lo = Math.min(fromIdx, toIdx);
   const hi = Math.max(fromIdx, toIdx);
   const out: number[] = [];
-  for (let i = lo; i <= hi; i++) out.push(i);
-  return { indices: out, spareSkippedCount: 0 };
+  let spareSkippedCount = 0;
+  for (let i = lo; i <= hi; i++) {
+    if (excludeSpares && isSpareCircuit(circuits[i])) {
+      spareSkippedCount += 1;
+      continue;
+    }
+    out.push(i);
+  }
+  return { indices: out, spareSkippedCount };
 }
 
 /**
