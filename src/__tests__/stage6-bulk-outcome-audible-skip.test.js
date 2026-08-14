@@ -238,3 +238,234 @@ describe('audible-skip disclosure — multiple bulk calls / multiple boards in o
     expect(mainConfirmation?.text.endsWith(', skipping 1 spare way')).toBe(true);
   });
 });
+
+describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matching', () => {
+  test('disjoint-circuit two-call scenario: each call keeps its OWN ledger entry and its OWN disclosure (per-circuit path)', async () => {
+    // 1=Cooker (applied by call1), 2=Spare (skipped by call1),
+    // 3=Sockets (applied by call2), 4=Spare (skipped by call2).
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Spare' },
+      3: { circuit_designation: 'Sockets' },
+      4: { circuit_designation: 'Spare' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+    await d(
+      {
+        tool_call_id: 'tu_call_1',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [3, 4],
+        },
+      },
+      {}
+    );
+    await d(
+      {
+        tool_call_id: 'tu_call_2',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [1, 2],
+        },
+      },
+      {}
+    );
+    // Pre-finding-1: the second call's (field, boardId)-only REPLACE would
+    // have discarded the first call's ledger entry here. Both must survive.
+    expect(writes.bulkOutcomes).toHaveLength(2);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const c1 = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 1);
+    const c3 = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 3);
+    expect(c1?.text.endsWith(', skipping 1 spare way')).toBe(true);
+    expect(c3?.text.endsWith(', skipping 1 spare way')).toBe(true);
+    // No stray fallback/standalone entries — both disclosures landed on
+    // their own confirmation, not a defensive fallback line.
+    expect(r.confirmations.filter((c) => c.text.includes('spare'))).toHaveLength(2);
+  });
+
+  test('same-VALUE disjoint calls form TWO grouped confirmations, each with its own disclosure', async () => {
+    // 1,2 = Cooker/Sockets (applied by call1), 3 = Spare (skipped by call1)
+    // 4,5 = Immersion/Shower (applied by call2), 6 = Spare (skipped by call2)
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Sockets' },
+      3: { circuit_designation: 'Spare' },
+      4: { circuit_designation: 'Immersion' },
+      5: { circuit_designation: 'Shower' },
+      6: { circuit_designation: 'Spare' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+    await d(
+      {
+        tool_call_id: 'tu_call_1',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [4, 5, 6],
+        },
+      },
+      {}
+    );
+    await d(
+      {
+        tool_call_id: 'tu_call_2',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [1, 2, 3],
+        },
+      },
+      {}
+    );
+    expect(writes.bulkOutcomes).toHaveLength(2);
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const grouped = r.confirmations.filter(
+      (c) => c.field === 'rcd_time_ms' && Array.isArray(c.circuits)
+    );
+    // Same field+value+board would have collapsed into ONE bucket pre-
+    // finding-1 (buildFanoutGroupKey carried no call identity) — now two.
+    expect(grouped).toHaveLength(2);
+    const g1 = grouped.find((c) => c.circuits.includes(1));
+    const g2 = grouped.find((c) => c.circuits.includes(4));
+    expect(g1.circuits.sort()).toEqual([1, 2]);
+    expect(g2.circuits.sort()).toEqual([4, 5]);
+    expect(g1.text.endsWith(', skipping 1 spare way')).toBe(true);
+    expect(g2.text.endsWith(', skipping 1 spare way')).toBe(true);
+  });
+
+  test('a same-target correction (identical circuit set, new value) REPLACES — no stale fallback disclosure', async () => {
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Spare' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+    await d(
+      {
+        tool_call_id: 'tu_first',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '25', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    // Same circuit set (no exclude difference) — a genuine correction.
+    await d(
+      {
+        tool_call_id: 'tu_correction',
+        name: 'set_field_for_all_circuits',
+        input: { field: 'rcd_time_ms', value: '30', confidence: 0.95, source_turn_id: 't1' },
+      },
+      {}
+    );
+    // REPLACE, not append — one surviving ledger entry, the correction's.
+    expect(writes.bulkOutcomes).toHaveLength(1);
+    expect(writes.bulkOutcomes[0].callId).toBe('tu_correction');
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const spareEntries = r.confirmations.filter((c) => c.text.includes('spare'));
+    // The already-fixed bug (double-append: "...30, skipping 1 spare way,
+    // skipping 1 spare way") must not return, and no stray fallback entry
+    // either — exactly ONE confirmation, naming the corrected value.
+    expect(spareEntries).toHaveLength(1);
+    expect(spareEntries[0].text).toBe('Circuit 1, RCD time 30, skipping 1 spare way');
+  });
+
+  test('fast-correlation confirmation is unaffected by a two-bulk-call turn — text stays byte-identical, disclosure ships as an additive sibling', async () => {
+    const session = buildSession({
+      0: {},
+      1: { circuit_designation: 'Cooker' },
+      2: { circuit_designation: 'Spare' },
+      3: { circuit_designation: 'Sockets' },
+      4: { circuit_designation: 'Spare' },
+    });
+    const writes = createPerTurnWrites();
+    const logger = mockLogger();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+    await d(
+      {
+        tool_call_id: 'tu_call_1',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [3, 4],
+        },
+      },
+      {}
+    );
+    await d(
+      {
+        tool_call_id: 'tu_call_2',
+        name: 'set_field_for_all_circuits',
+        input: {
+          field: 'rcd_time_ms',
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+          exclude_circuits: [1, 2],
+        },
+      },
+      {}
+    );
+    // circuit 1's confirmation is the "already played" fast-TTS twin.
+    // Keyed by fastSlotKeyOf's EFFECTIVE board (resolveEffectiveBoardId
+    // falls back to DEFAULT_MAIN_BOARD_ID 'main' for this boards-less
+    // session), NOT the raw wire board_id (which stays omitted here).
+    const fastAttemptBySlotKey = new Map([
+      [
+        'rcd_time_ms::1::main',
+        {
+          correlationId: 'cid-fast-1',
+          field: 'rcd_time_ms',
+          circuit: 1,
+          boardId: null,
+          canonicalValue: '25',
+          comparisonText: 'Circuit 1, RCD time 25',
+        },
+      ],
+    ]);
+    const r = bundleToolCallsIntoResult(
+      writes,
+      { questions: [] },
+      { confirmationsEnabled: true, fastAttemptBySlotKey }
+    );
+    const c1 = r.confirmations.find((c) => c.circuit === 1 && c.field === 'rcd_time_ms');
+    const c3 = r.confirmations.find((c) => c.circuit === 3 && c.field === 'rcd_time_ms');
+    // The fast-correlation twin's TEXT is byte-identical to the fast route's
+    // render — never mutated in place with the skip clause.
+    expect(c1.fast_correlation_id).toBe('cid-fast-1');
+    expect(c1.text).toBe('Circuit 1, RCD time 25');
+    // Its disclosure still ships — as a separate additive fallback line.
+    const fallback = r.confirmations.find(
+      (c) => c.text === 'Skipping 1 spare way.' && c.circuit == null
+    );
+    expect(fallback).toBeDefined();
+    // The OTHER (non-fast) call's confirmation gets its disclosure appended
+    // normally, unaffected by the fast-correlation turn.
+    expect(c3.fast_correlation_id).toBeUndefined();
+    expect(c3.text.endsWith(', skipping 1 spare way')).toBe(true);
+  });
+});

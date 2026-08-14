@@ -30,6 +30,7 @@ import {
   circuitDesignationKey,
   resolveDesignation,
   readEffectiveOpBoard,
+  BULK_OUTCOME_CALL_ID,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
@@ -97,6 +98,18 @@ export const CLEAR_WIRE_EXEMPT = new Set(['r2_ohm']);
  * it never enters JSON wire output or a defensive spread.
  */
 export const SAME_TURN_CLEAR_WRITE_COLLAPSED = Symbol('stage6.sameTurnClearWriteCollapsed');
+
+/**
+ * PLAN-F2 finding 1 (2026-08-14) — module-local non-enumerable stamp joining
+ * a synthesised confirmation (grouped or per-circuit) back to the bulk call
+ * (and board) that produced it. Both the producer of this stamp
+ * (synthesiseConfirmations, via buildFanoutGroupKey's identity dimension)
+ * and its consumer (the bulk-outcome disclosure matching in
+ * bundleToolCallsIntoResult) live in this one file, so — unlike
+ * BULK_OUTCOME_CALL_ID, which crosses the dispatcher/bundler module
+ * boundary — this never needs to be exported.
+ */
+const BULK_OUTCOME_MATCH_IDENTITY = Symbol('stage6.bulkOutcomeMatchIdentity');
 
 /*
  * A2-multiboard (2026-07-28) — `REPLACES_CLEARED_AMBIGUOUS_PROJECTION` (and its
@@ -489,7 +502,14 @@ function synthesiseConfirmations(
   totalCircuitsInJob = null,
   calcReadings = null,
   clampCorrections = null,
-  boardScope = null
+  boardScope = null,
+  // PLAN-F2 finding 1 (2026-08-14) — WeakMap<reading, callId>, resolved by
+  // the caller from BULK_OUTCOME_CALL_ID during projection. Optional (a
+  // non-Map value, the default) means "no bulk-call identity this turn" —
+  // every existing caller (test fixtures, older call sites) omits it, and
+  // every reading takes the unstamped path, byte-identical to pre-finding-1
+  // behaviour.
+  bulkCallIds = null
 ) {
   const out = [];
   // A2-multiboard item 8 (2026-07-28) — per-GROUP circuit populations.
@@ -535,6 +555,11 @@ function synthesiseConfirmations(
   // across a turn that writes the same slot twice — identity is.
   const correctionOf = (r) =>
     clampCorrections instanceof WeakMap ? (clampCorrections.get(r) ?? null) : null;
+  // PLAN-F2 finding 1 (2026-08-14) — same identity pattern as correctionOf,
+  // for the bulk-call id BULK_OUTCOME_CALL_ID stamped at dispatch time.
+  // null for any reading that didn't come from a bulk call.
+  const bulkCallIdOf = (r) =>
+    bulkCallIds instanceof WeakMap ? (bulkCallIds.get(r) ?? null) : null;
   const sectionDedupeOperationOf = (r) => {
     const resolver = boardScope?.sectionDedupeOperationOf;
     return typeof resolver === 'function' ? (resolver(r) ?? null) : null;
@@ -687,12 +712,20 @@ function synthesiseConfirmations(
     // id-100(b) — the clamp correction is part of the fan-out identity, so a
     // clamped and an unclamped write of the same final value never collapse into
     // one line (which would silence the safety-critical correction clause).
+    // PLAN-F2 finding 1 (2026-08-14) — `identity` (the bulk call's
+    // tool_call_id, null for non-bulk readings) joins the group key so two
+    // same-turn bulk calls with disjoint circuit targets never collapse
+    // into one group even when field+value+board+calc+correction all
+    // match. Readings from ordinary (non-bulk) writes carry no identity —
+    // `identity` is null/undefined for them and the key is byte-identical
+    // to pre-finding-1 behaviour.
     const groupKey = buildFanoutGroupKey({
       field: r.field,
       value: r.value,
       boardId: r.board_id,
       calculated: isCalc(r),
       correction: correctionOf(r),
+      identity: bulkCallIdOf(r),
     });
     let bucket = groups.get(groupKey);
     if (!bucket) {
@@ -711,6 +744,10 @@ function synthesiseConfirmations(
         // Safe to read off the FIRST member: every member of a bucket shares
         // this correction by construction (it is part of the group key).
         correction: correctionOf(r),
+        // PLAN-F2 finding 1 — likewise safe to read off the FIRST member:
+        // `identity` is part of the group key, so every member of a bucket
+        // shares the same bulk-call id (or all share `null`).
+        bulkCallId: bulkCallIdOf(r),
         items: [],
         indices: [],
       };
@@ -770,6 +807,18 @@ function synthesiseConfirmations(
       Number.POSITIVE_INFINITY
     );
     if (!Number.isFinite(entry._confidence)) entry._confidence = null;
+    // PLAN-F2 finding 1 (2026-08-14) — stamp the composite (callId, boardId)
+    // identity so the bulk-outcome consumer in bundleToolCallsIntoResult can
+    // join this confirmation back to ONLY the bulk call that produced it.
+    // Non-enumerable: never rides the wire.
+    if (bucket.bulkCallId) {
+      Object.defineProperty(entry, BULK_OUTCOME_MATCH_IDENTITY, {
+        value: { callId: bucket.bulkCallId, boardId: bucket.board_id ?? null },
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
     out.push(entry);
     for (const idx of bucket.indices) consumedReadingIndices.add(idx);
   }
@@ -825,6 +874,18 @@ function synthesiseConfirmations(
     }
     // W1.4 transient confidence sidecar (per-circuit fallback path).
     entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
+    // PLAN-F2 finding 1 (2026-08-14) — same composite-identity stamp as the
+    // grouped path above, for a bulk call whose sweep applied to exactly one
+    // circuit (never grouped — bucket.items.length < 2).
+    const perCircuitBulkCallId = bulkCallIdOf(r);
+    if (perCircuitBulkCallId) {
+      Object.defineProperty(entry, BULK_OUTCOME_MATCH_IDENTITY, {
+        value: { callId: perCircuitBulkCallId, boardId: r.board_id ?? null },
+        enumerable: false,
+        configurable: true,
+        writable: false,
+      });
+    }
     out.push(entry);
   }
   for (const r of boardReadings) {
@@ -980,6 +1041,11 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // reach the wire because the projected `reading` objects are serialised by
   // key enumeration and the correction never becomes one of their keys.
   const clampCorrectionByReading = new WeakMap();
+  // PLAN-F2 finding 1 (2026-08-14) — same hand-off pattern as
+  // clampCorrectionByReading above, for BULK_OUTCOME_CALL_ID. Only circuit
+  // readings (never board readings — dispatchSetFieldForAllCircuits writes
+  // circuits only) carry this stamp.
+  const bulkOutcomeCallIdByReading = new WeakMap();
   // A2 (2026-07-28) — `replaces_cleared` candidate index. Keyed by the SAME
   // slot identity the P5 collapse below matches on, and SPLIT the same way
   // (effective-stamped writes vs Symbol-less raw-key writes) so a lookup can
@@ -1119,6 +1185,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     const clampCorrection = entry?.[IMPEDANCE_CLAMP_CORRECTION];
     if (clampCorrection) {
       clampCorrectionByReading.set(reading, clampCorrection);
+    }
+    // PLAN-F2 finding 1 (2026-08-14) — carry the bulk-call identity across
+    // the projection boundary, same pattern as the clamp correction above.
+    const bulkOutcomeCallId = entry?.[BULK_OUTCOME_CALL_ID];
+    if (bulkOutcomeCallId) {
+      bulkOutcomeCallIdByReading.set(reading, bulkOutcomeCallId);
     }
     extracted_readings.push(reading);
   }
@@ -1704,7 +1776,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // takes the unstamped path, byte-identical to pre-B1.3 behaviour.
         fastAttemptBySlotKey:
           options.fastAttemptBySlotKey instanceof Map ? options.fastAttemptBySlotKey : null,
-      }
+      },
+      // PLAN-F2 finding 1 (2026-08-14) — bulk-call identity WeakMap built
+      // during projection above.
+      bulkOutcomeCallIdByReading
     );
     // §A1a (field-feedback-2026-07-14) — the `ios_send_attempt` telemetry
     // loop and the `_confidence` strip MOVED to stage6-shadow-harness.js,
@@ -1821,20 +1896,23 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           confirmations.push(zeroEntry);
           continue;
         }
-        const appliedSet = new Set(outcome.appliedRefs);
+        // PLAN-F2 finding 1 (2026-08-14) — join by the composite (callId,
+        // boardId) identity stamped during synthesis (BULK_OUTCOME_MATCH_IDENTITY),
+        // NOT by (field, board, exact circuit set). The field/circuit-set
+        // match this replaces could misattribute a disclosure whenever two
+        // same-turn bulk calls to the same field+board produced different
+        // groupings than the ledger expected (the class of bug this finding
+        // fixes) — an outcome now acts ONLY if its own call's identity owns
+        // a winning projected reading (i.e. a confirmation was actually
+        // stamped with it), so it can never latch onto a different call's
+        // confirmation by coincidence of shape.
         const matchIdx = confirmations.findIndex((c) => {
-          if (c.field !== outcome.field) return false;
-          if ((c.board_id ?? null) !== outcome.boardId) return false;
-          if (Array.isArray(c.circuits) && c.circuits.length > 0) {
-            return (
-              c.circuits.length === appliedSet.size &&
-              c.circuits.every((ref) => appliedSet.has(ref))
-            );
-          }
-          if (appliedSet.size === 1 && Number.isInteger(c.circuit)) {
-            return appliedSet.has(c.circuit);
-          }
-          return false;
+          const identity = c[BULK_OUTCOME_MATCH_IDENTITY];
+          return (
+            identity != null &&
+            identity.callId === outcome.callId &&
+            identity.boardId === outcome.boardId
+          );
         });
         // Codex diff-review r1 (edge-interactions lens, WITHIN_INTENT per
         // Audio-First invariant #1 — exactly once, never twice) — a

@@ -397,12 +397,26 @@ export function buildValueSpokenTail(field, valueStr, friendly, options = {}) {
  * majority, and the one the pinned vectors below guard) stays byte-identical to
  * its pre-id-100(b) form. Widening all keys unconditionally would have been an
  * invisible change to all three call sites for zero benefit.
+ *
+ * PLAN-F2 finding 1 (2026-08-14) — optional trailing `identity` parameter.
+ * The bundler's grouping loop stamps this with a bulk call's `tool_call_id`
+ * (see BULK_OUTCOME_CALL_ID in stage6-per-turn-writes.js) so two same-turn
+ * bulk calls to the same field+value+board with DISJOINT circuit targets
+ * form two distinct groups instead of silently collapsing into one — each
+ * call's audible-skip disclosure then joins only its own group. Default is
+ * `undefined`: every existing call site (and every pinned vector below)
+ * omits it, so the key stays byte-identical when identity doesn't apply
+ * (ordinary, non-bulk writes).
  */
-export function buildFanoutGroupKey({ field, value, boardId, calculated, correction }) {
+export function buildFanoutGroupKey({ field, value, boardId, calculated, correction, identity }) {
   const valueStr = String(value ?? '').trim();
   const base = `${field}|${valueStr}|${boardId ?? ''}|${calculated ? 'calc' : ''}`;
-  if (!correction || correction.original == null || correction.corrected == null) return base;
-  return `${base}|${correction.original}>${correction.corrected}`;
+  const withCorrection =
+    !correction || correction.original == null || correction.corrected == null
+      ? base
+      : `${base}|${correction.original}>${correction.corrected}`;
+  if (identity == null || identity === '') return withCorrection;
+  return `${withCorrection}|${identity}`;
 }
 
 export function buildGroupedConfirmationText(

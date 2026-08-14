@@ -752,14 +752,61 @@ export function createPerTurnWrites() {
 }
 
 /**
+ * PLAN-F2 finding 1 (2026-08-14, feedback id 115 residual) — non-enumerable
+ * bulk-call identity marker. Attached at DISPATCH time to each `bulkMirror`
+ * reading write made by dispatchSetFieldForAllCircuits, carrying the
+ * originating tool call's `tool_call_id`. Mirrors EFFECTIVE_CIRCUIT_SLOT's
+ * pattern (non-enumerable, attached once at write time; enumerable shape
+ * and wire bytes unchanged). The bundler reads it during projection to
+ * stamp the resulting confirmation (grouped or per-circuit) with a
+ * composite (callId, boardId) identity, so a staged bulk-outcome ledger
+ * entry only amends the confirmation ITS OWN call produced — two same-turn
+ * bulk calls to the same field+board with disjoint circuit targets each get
+ * their own disclosure instead of the second call's staged entry silently
+ * replacing the first's (see stageBulkOutcomeForBundler below, and its
+ * consumer in stage6-event-bundler.js).
+ */
+export const BULK_OUTCOME_CALL_ID = Symbol('stage6.bulkOutcomeCallId');
+
+export function attachBulkOutcomeCallId(target, callId) {
+  Object.defineProperty(target, BULK_OUTCOME_CALL_ID, {
+    value: callId ?? null,
+    enumerable: false,
+    configurable: true,
+    writable: false,
+  });
+  return target;
+}
+
+/**
  * PLAN-F item 1 — stage one bulk-apply outcome for the bundler's audible-skip
- * disclosure. Called once per dispatchSetFieldForAllCircuits invocation
- * (never per-circuit — the disclosure is a single clause on the turn's
- * confirmation, not a per-circuit event). `boardId` is the WIRE board id
- * (the same value the fan-out's mirror entries carry — undefined for an
- * ordinary single-board turn, a real board id for a cross-board '*' sweep
- * member), so the bundler's matching logic joins on the identical identity
- * space the grouped-confirmation bucket already keys on.
+ * disclosure. Called once per (call, board) pair from
+ * dispatchSetFieldForAllCircuits (never per-circuit — the disclosure is a
+ * single clause on the confirmation for that call's targets, not a
+ * per-circuit event). `boardId` is the WIRE board id (the same value the
+ * fan-out's mirror entries carry — undefined for an ordinary single-board
+ * turn, a real board id for a cross-board '*' sweep member), so the
+ * bundler's matching logic joins on the identical identity space the
+ * grouped-confirmation bucket already keys on.
+ *
+ * PLAN-F2 finding 1 (2026-08-14) — REPLACE vs APPEND is no longer keyed on
+ * (field, boardId) alone. The original rule (Codex diff-review r1, PLAN-F)
+ * replaced ANY existing entry for the same (field, boardId), reasoning that
+ * two same-turn bulk calls for the same field+board must be a same-turn
+ * CORRECTION (the readings Map is last-write-wins). That reasoning holds
+ * ONLY when the two calls target the SAME circuit set — a genuine
+ * resubmission/correction (e.g. 25 then 30 on the identical spare-skipped
+ * circuit). It does NOT hold when the two calls target DISJOINT circuit
+ * sets (e.g. a range-restricted first call, then a second call covering
+ * different circuits): the second call's ledger entry would silently
+ * discard the first call's disclosure even though BOTH calls' writes
+ * survive in the readings Map (different circuit slots, no collision).
+ * Mirror the readings Map's own last-write-wins identity precisely: match
+ * on (field, boardId, circuit set) — REPLACE only when the circuit set
+ * (applied ∪ spare-skipped refs) is IDENTICAL to an existing entry's
+ * (a correction of the same sweep); APPEND when disjoint (or otherwise not
+ * identical), so each call's outcome keeps its own ledger entry and its own
+ * disclosure.
  */
 export function stageBulkOutcomeForBundler(
   perTurnWrites,
@@ -768,31 +815,31 @@ export function stageBulkOutcomeForBundler(
   if (!Array.isArray(perTurnWrites.bulkOutcomes)) {
     perTurnWrites.bulkOutcomes = [];
   }
-  // Codex diff-review r1 (edge-interactions lens) — REPLACE, not append, any
-  // existing entry for the same (field, boardId). Two same-turn bulk calls
-  // for the same field+board is a same-turn CORRECTION: the readings Map is
-  // last-write-wins, so only the LATER call's value ever reaches the wire
-  // confirmation — a stale first-call ledger entry would otherwise still
-  // match that one surviving confirmation and double-append its skip
-  // clause (repro: 25 then 30, same spare-skipped circuit → "...30,
-  // skipping 1 spare way, skipping 1 spare way"). Mirrors the readings
-  // Map's own overwrite semantics so the ledger and the wire never
-  // disagree about which call's outcome is current.
   const boardKey = boardId ?? null;
-  const existingIdx = perTurnWrites.bulkOutcomes.findIndex(
-    (o) => o.field === field && o.boardId === boardKey
-  );
+  const appliedList = Array.isArray(appliedRefs) ? [...appliedRefs] : [];
+  const spareSkippedList = Array.isArray(spareSkippedRefs) ? [...spareSkippedRefs] : [];
+  const circuitSetKey = [...appliedList, ...spareSkippedList].map(String).sort().join(',');
+  const existingIdx = perTurnWrites.bulkOutcomes.findIndex((o) => {
+    if (o.field !== field || o.boardId !== boardKey) return false;
+    const oKey = [...o.appliedRefs, ...o.spareSkippedRefs].map(String).sort().join(',');
+    return oKey === circuitSetKey;
+  });
   const entry = {
     field,
     value,
     boardId: boardKey,
-    appliedRefs: Array.isArray(appliedRefs) ? [...appliedRefs] : [],
-    spareSkippedRefs: Array.isArray(spareSkippedRefs) ? [...spareSkippedRefs] : [],
+    appliedRefs: appliedList,
+    spareSkippedRefs: spareSkippedList,
     callId,
   };
   if (existingIdx >= 0) {
+    // Genuine correction of the identical sweep — replace, matching the
+    // readings Map's own last-write-wins semantics.
     perTurnWrites.bulkOutcomes[existingIdx] = entry;
   } else {
+    // Disjoint (or otherwise non-identical) circuit set — a second,
+    // independent bulk call. Append so its disclosure survives alongside
+    // the first's.
     perTurnWrites.bulkOutcomes.push(entry);
   }
 }

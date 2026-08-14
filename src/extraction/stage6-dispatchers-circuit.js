@@ -62,6 +62,7 @@ import {
   recordReadingWrite,
   removeReadingWrites,
   attachEffectiveOpBoard,
+  attachBulkOutcomeCallId,
 } from './stage6-per-turn-writes.js';
 import {
   getCircuitBucket,
@@ -2548,6 +2549,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
           writable: true,
         });
       }
+      // PLAN-F2 finding 1 (2026-08-14) — tag this reading with the
+      // originating call's identity so the bundler can join a staged
+      // bulk-outcome ledger entry back to ONLY the confirmation ITS OWN
+      // call produced (see attachBulkOutcomeCallId's doc comment).
+      attachBulkOutcomeCallId(bulkMirror, call.tool_call_id);
       recordReadingWrite(perTurnWrites, encodeReadingKey(input.field, ref, boardId), bulkMirror);
       applied.push({
         circuit: ref,

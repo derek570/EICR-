@@ -464,6 +464,27 @@ export function createSpeculator({
   // Value: { firstCircuit: int|null, correlationId: string|null,
   //          suppressed: bool }. Reset alongside perTurnCount when
   // turnId changes.
+  //
+  // PLAN-F2 finding 1 (2026-08-14) — VERIFIED, identity deliberately NOT
+  // threaded here (the two buildFanoutGroupKey call sites below stay
+  // unchanged, `identity` omitted). Reasoning: this bucket only decides
+  // whether a PER-CIRCUIT speculative pre-synth fires; it never decides the
+  // FINAL spoken confirmation text (the bundler's synthesiseConfirmations
+  // does that, always correctly, post-loop — see stage6-event-bundler.js).
+  // Two same-turn bulk calls sharing a bucket here (no identity dimension)
+  // just means BOTH calls' circuits get folded into one suppressed
+  // broadcast bucket instead of two separate ones — but a bulk call
+  // touching 2+ circuits already gets its OWN bucket suppressed on its
+  // second circuit regardless of whether it shares the bucket with another
+  // call, so the practical outcome (no premature per-circuit speculation)
+  // is unchanged either way. Suppression is the conservative/safe branch
+  // here (defers to the bundler); it can never cause WRONG audio, only a
+  // missed speculative-cache optimisation. Threading identity through
+  // would only matter for two single-circuit bulk calls sharing a bucket —
+  // a narrow case that still resolves safely today (both stay unsuppressed
+  // until a genuine second circuit shows up, and `validateAgainstConfirmations`
+  // invalidates any parked entry that doesn't match the bundler's eventual
+  // text). Not worth the added surface area in this already-dense function.
   const broadcastBuckets = new Map();
 
   // Plan B (2026-06-17) B1b — per-turn speculation registry. No per-turn
