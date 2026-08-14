@@ -51,6 +51,24 @@ describe('PLAN-F item 1 — spare_policy prompt guidance (secondary layer)', () 
     expect(promptText).toContain('Do NOT emit `scope: "non_spare"`');
   });
 
+  // PLAN-F2 finding 6 / Derek decision 2 (2026-08-14) — DECIDED: no new
+  // "real-ingress" regression is being added here, and that is the
+  // deliberate decision, not an oversight. The parent plan (PLAN-F) asked
+  // for proof that the PRODUCTION ingress path (initSonnetStream) never
+  // dispatches a mutator tool call on a contradictory utterance. There is
+  // no deterministic backend-side contradiction DETECTOR to exercise —
+  // contradiction restraint ("including spares but excluding the spare
+  // way" → ask_user, not a tool call) is MODEL judgment, governed entirely
+  // by the prompt sentence this test pins below. A "real-ingress" test
+  // would necessarily mock the model's tool-call response (there is no
+  // live model in a unit test), so it would prove only the test harness's
+  // own plumbing — that a mocked non-call doesn't dispatch — not that the
+  // real model actually restrains itself on a real contradictory
+  // utterance. That would be false confidence, not verification. This
+  // static prompt-content test is therefore the correct and COMPLETE
+  // backend-side contract for this half of Decision 3: it proves the
+  // instruction the model is given, which is the only lever the backend
+  // has. Closes the parent plan's real-ingress requirement.
   test('teaches the two-sided contradiction rule: do not call the tool, ask_user instead', () => {
     expect(promptText).toMatch(/Contradictory modifiers/);
     expect(promptText).toMatch(/do NOT call the tool — `ask_user` instead/);
