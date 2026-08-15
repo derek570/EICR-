@@ -1298,17 +1298,20 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     // (snake_case, matching the row-naming convention `resolveDeliveryReceipt`
     // / the field_cleared judge branch already use for `row.dedupe_token`)
     // is optional and additive: every EXISTING caller omits it and gets the
-    // exact same frozen row shape as before. Only field-null confirmations
-    // that carry a wire `dedupe_token` (currently the two P4 ack families)
-    // populate it, giving `semantic-judge.mjs`'s field_null_fallback branch
-    // a token to compare when a fixture declares one.
+    // exact same frozen row shape as before — conditionally spread (Codex
+    // diff-review cycle 2 NIT), not an unconditional `dedupe_token: null`,
+    // so an unrelated row never gains the key at all. Only field-null
+    // confirmations that carry a wire `dedupe_token` (currently the two P4
+    // ack families) populate it, giving `semantic-judge.mjs`'s
+    // field_null_fallback branch a token to compare when a fixture declares
+    // one.
     if (ctx.captureBudget?.admit('non_mutating_audible') !== false) {
       ctx.nonMutatingAudible.push(
         Object.freeze({
           channel: channel ?? null,
           kind: kind ?? null,
           text,
-          dedupe_token: dedupeToken ?? null,
+          ...(typeof dedupeToken === 'string' ? { dedupe_token: dedupeToken } : {}),
         })
       );
     }

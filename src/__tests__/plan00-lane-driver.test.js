@@ -27,6 +27,7 @@ const { normaliseEvaluationContext, attachEvaluationContext, EVALUATION_CONTEXT 
   await import('../extraction/plan00-lifecycle-hooks.js');
 const { createDeliveryLedger, operationIdentityKey } =
   await import('../extraction/plan00-audibility-ledgers.js');
+const { recordFrameDeliveryEvidence } = await import('../extraction/sonnet-stream.js');
 
 function baseEvidence(overrides = {}) {
   return {
@@ -733,6 +734,59 @@ describe('Codex r2 judge hardening — consumption, sweeps, turn membership', ()
       )
     );
     expect(v.verdict).toBe('FAIL');
+  });
+
+  test('Codex diff-review cycle 2 — the REAL producer path (recordFrameDeliveryEvidence) threads a p4ack_ dedupe_token into non_mutating_audible, not just synthetic evidence', () => {
+    // The three tests above prove the JUDGE comparison works against
+    // hand-built evidence rows. This drives sonnet-stream.js's actual
+    // frame-evaluation function — deleting the dedupeToken threading edit
+    // inside it (sonnet-stream.js's frameKind==='extraction' field-null
+    // branch, or plan00-lifecycle-hooks.js's recordNonMutatingAudible) would
+    // leave every other new test in this cycle green but this one RED.
+    const ctx = normaliseEvaluationContext(
+      { deliveryLedger: createDeliveryLedger() },
+      { sessionId: 's-p4ack' }
+    );
+    recordFrameDeliveryEvidence(
+      ctx,
+      'extraction',
+      {
+        confirmations: [
+          {
+            text: 'No problem, moving on.',
+            field: null,
+            circuit: null,
+            dedupe_token: 'p4ack_s-p4ack-turn-1',
+          },
+        ],
+        turn_id: 't-p4ack',
+      },
+      null
+    );
+    expect(ctx.nonMutatingAudible).toHaveLength(1);
+    expect(ctx.nonMutatingAudible[0]).toMatchObject({
+      kind: 'field_null_confirmation',
+      text: 'No problem, moving on.',
+      dedupe_token: 'p4ack_s-p4ack-turn-1',
+    });
+  });
+
+  test('Codex diff-review cycle 2 — an ORDINARY field-null confirmation (no dedupe_token) reaching the real producer path gains NO dedupe_token key at all', () => {
+    const ctx = normaliseEvaluationContext(
+      { deliveryLedger: createDeliveryLedger() },
+      { sessionId: 's-plain' }
+    );
+    recordFrameDeliveryEvidence(
+      ctx,
+      'extraction',
+      {
+        confirmations: [{ text: 'Sorry, say again?', field: null, circuit: null }],
+        turn_id: 't-plain',
+      },
+      null
+    );
+    expect(ctx.nonMutatingAudible).toHaveLength(1);
+    expect('dedupe_token' in ctx.nonMutatingAudible[0]).toBe(false);
   });
 
   test('field_cleared: a clear receipt from ANOTHER turn can never satisfy the confirmation', () => {

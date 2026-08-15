@@ -733,6 +733,34 @@ describe('P4 — dedupe_token (PLAN-G2 held finding 2)', () => {
     expect(token1).not.toBe(token2);
   });
 
+  test('Codex diff-review cycle 2 — a genuine token replay is suppressed through the REAL §A4 drain path, not just the standalone applyConfirmationDebounce helper', async () => {
+    // Cycle 1 fixed the server-side p4ack_ debounce being structurally
+    // unreachable (the ONE applyConfirmationDebounce call site runs before
+    // the P4 net/§A4 drain produce their entries); the unit tests added
+    // there call applyConfirmationDebounce directly, so deleting the new
+    // scoped debounce pass inside the drain would leave them green. This
+    // drives the REAL end-to-end path: pre-seed session.confirmationDebounceState
+    // with the token THIS turn's P4 net will mint (simulating a genuine
+    // wire replay landing a moment after the original), then prove the
+    // real drain suppresses the duplicate and logs stage6.p4ack_debounced.
+    const session = makeSession();
+    const expectedToken = `p4ack_${SESSION_ID}-turn-1`;
+    session.confirmationDebounceState = {
+      lastEmittedAt: 0,
+      lastField: null,
+      tokenKeysMs: new Map([[` tok:${expectedToken}`, Date.now()]]),
+    };
+    silentAnsweredLoop();
+    const opts = baseOpts({ _seedAskLifecycle: declineLifecycle() });
+    const result = await runShadowHarness(session, 'ask decline replay', [], opts);
+    expect(declineAckPrompts(result)).toHaveLength(0);
+    const debouncedRows = opts.logger.info.mock.calls.filter(
+      ([ev]) => ev === 'stage6.p4ack_debounced'
+    );
+    expect(debouncedRows).toHaveLength(1);
+    expect(debouncedRows[0][1].dedupe_token).toBe(expectedToken);
+  });
+
   test('an UNRELATED §A4 apology family (the F7 pre-emission fallback) does NOT gain a dedupe_token key at all', async () => {
     // Distinguishes "copy through if present" from "always stamp a token" —
     // the plan requires the former. Drive the F7 ASK_AUDIBILITY_FALLBACK_TEXT
