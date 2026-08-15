@@ -332,6 +332,19 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
           ) {
             continue;
           }
+          // Codex diff-review cycle 3 (PLAN-G2) NIT — `expected_key` is the
+          // SAME alias `replay-assertions.mjs`'s `confirmationMatches`
+          // already supports (falling back to `dedupe_token` when the row
+          // carries no separate `expected_key`), so a field_null_fallback
+          // fixture using `expected_key` instead of `dedupe_token` now
+          // enforces identically in both lanes rather than false-passing
+          // here.
+          if (
+            audible.match?.expected_key != null &&
+            (rowsAll[i].expected_key ?? rowsAll[i].dedupe_token) !== audible.match.expected_key
+          ) {
+            continue;
+          }
           consumedNonMutating.add(i);
           taken += 1;
         }
