@@ -2279,8 +2279,17 @@ export const CONFIRMATION_DEBOUNCE_WINDOW_MS = 1500;
 // commands inside the 1.5 s debounce window get dropped HERE, server-side,
 // before either client's own dedupe token branch ever runs. Mirrors the
 // client-side `duplicate_` structural-prefix pattern (ios-dedupe-key.js).
-function hasBulkOutcomeTokenPrefix(token) {
-  return typeof token === 'string' && token.startsWith('bulkoutcome_');
+//
+// PLAN-G2 (2026-08-14, held finding 2) — `p4ack_` joins the set for the same
+// reason: both P4 ack families always carry `field:null`, so they can never
+// reach the DEDUPE_TOKEN_FIELDS branch below; the prefix branch is the only
+// route to a replay-stable server-side debounce key for them.
+const SERVER_STRUCTURAL_DEDUPE_TOKEN_PREFIXES = ['bulkoutcome_', 'p4ack_'];
+function hasServerStructuralTokenPrefix(token) {
+  return (
+    typeof token === 'string' &&
+    SERVER_STRUCTURAL_DEDUPE_TOKEN_PREFIXES.some((prefix) => token.startsWith(prefix))
+  );
 }
 
 export function confirmationDebounceKey(c) {
@@ -2289,7 +2298,7 @@ export function confirmationDebounceKey(c) {
   // PLAN-F2 finding 5 — checked BEFORE the field-allowlist branch, exactly
   // like the client-side duplicate_ prefix takes precedence over the
   // WIRE_CLIENT_DEDUPE_TOKEN_FIELDS allowlist check in ios-dedupe-key.js.
-  if (hasBulkOutcomeTokenPrefix(c.dedupe_token)) {
+  if (hasServerStructuralTokenPrefix(c.dedupe_token)) {
     return `${field} tok:${c.dedupe_token}`;
   }
   // §A1a (field-feedback-2026-07-14) — token-aware key for the five
@@ -2332,10 +2341,10 @@ export function applyConfirmationDebounce(newConfirmations, debounceState, optio
     const isTokenKey =
       c?.dedupe_token != null &&
       key !== '' &&
-      // PLAN-F2 finding 5 — bulkoutcome_ is structural (see
-      // hasBulkOutcomeTokenPrefix above), so it qualifies regardless of
+      // PLAN-F2 finding 5 / PLAN-G2 — bulkoutcome_/p4ack_ are structural (see
+      // hasServerStructuralTokenPrefix above), so they qualify regardless of
       // whether the field is on the DEDUPE_TOKEN_FIELDS allowlist.
-      (DEDUPE_TOKEN_FIELDS.has(c?.field ?? '') || hasBulkOutcomeTokenPrefix(c.dedupe_token));
+      (DEDUPE_TOKEN_FIELDS.has(c?.field ?? '') || hasServerStructuralTokenPrefix(c.dedupe_token));
     if (isTokenKey) {
       if (!(debounceState.tokenKeysMs instanceof Map)) debounceState.tokenKeysMs = new Map();
       for (const [k, ts] of debounceState.tokenKeysMs) {

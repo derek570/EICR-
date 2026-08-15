@@ -249,6 +249,27 @@ describe('P4 — the answered-ask silent-continuation net FIRES', () => {
     expect(declineAckPrompts(result)).toHaveLength(1);
   });
 
+  test('(j) confirmationsEnabled:false + DECLINE reply → the decline ack STILL fires. 2026-08-14 (Derek decision, PLAN-G, id-114): supersedes this pin\'s original id-85 assertion ("mode-off opted out of the spoken channel") for THIS family only — an answer to a question the app asked is not a reading confirmation, and silence after "don\'t worry" is indistinguishable from a broken pipeline. The pin changed deliberately, not accidentally; (j2) below confirms every OTHER P4 ack stays toggle-gated.', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ confirmationsEnabled: false, _seedAskLifecycle: declineLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'mode off decline', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    expect(DECLINE_SET.has(acks[0].text)).toBe(true);
+    // Fingerprint/no-reask unchanged: exactly one telemetry row, no duplicate
+    // or re-ask side effect from bypassing the toggle.
+    expect(ackRows(opts.logger)).toHaveLength(1);
+  });
+
+  test('(j3) confirmationsEnabled:true + DECLINE reply → still exactly ONE ack (toggle-ON path unchanged by the new bypass predicate — no double-count)', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ confirmationsEnabled: true, _seedAskLifecycle: declineLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'mode on decline', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    expect(ackRows(opts.logger)).toHaveLength(1);
+  });
+
   test('(b) a NON-decline answered outcome with a silent continuation → ONE generic "Okay."-class ack', async () => {
     silentAnsweredLoop();
     const opts = baseOpts({ _seedAskLifecycle: answeredLifecycle() });
@@ -433,6 +454,45 @@ describe('P4 — does NOT fire', () => {
     expect(ackRows(opts.logger)).toHaveLength(0);
   });
 
+  test('(e2) PLAN-G (2026-08-14): confirmationsEnabled:false + an ordinary reading write → the reading confirmation stays suppressed (bundleToolCallsIntoResult synthesis is itself gated on confirmationsEnabled, unaffected by the P4 bypass)', async () => {
+    runToolLoopSpy.mockImplementation(async (o) => {
+      const ptw = o.perTurnWritesRef();
+      ptw.readings.set(encodeReadingKey('measured_zs_ohm', 3, undefined), {
+        value: '0.55',
+        confidence: 0.9,
+        source_turn_id: 'turn-1',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 2,
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_w2',
+            name: 'record_reading',
+            input: { field: 'measured_zs_ohm', circuit: 3, value: '0.55' },
+            result: { tool_use_id: 'toolu_w2', is_error: false, content: '{"ok":true}' },
+          },
+        ],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const opts = baseOpts({ confirmationsEnabled: false });
+    const result = await runShadowHarness(makeSession(), 'zs for c3 is 0.55', [], opts);
+    expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(false);
+    expect(declineAckPrompts(result)).toHaveLength(0);
+    // PLAN-G mini-review fix: prove the WRITE itself survived — confirmation
+    // mode gates the SPOKEN read-back only, never the reading (Audio-First
+    // invariant #2, "written regardless … never silently dropped"). Without
+    // this assertion the test above would pass identically if the reading
+    // had been dropped entirely rather than just muted.
+    expect(result.extracted_readings).toContainEqual(
+      expect.objectContaining({ field: 'measured_zs_ohm', circuit: 3, value: '0.55' })
+    );
+  });
+
   test('(f) A1 mutual exclusion — the model ANSWERED via answer_user (spoken_response set) → no ack; EXACTLY ONE audible response', async () => {
     runToolLoopSpy.mockImplementation(async (o) => {
       const ptw = o.perTurnWritesRef();
@@ -530,10 +590,12 @@ describe('P4 — does NOT fire', () => {
     expect(declineAckPrompts(result)).toHaveLength(0);
   });
 
-  test('(j) confirmationsEnabled:false → no ack (mode-off opted out of the spoken channel)', async () => {
-    const opts = baseOpts({ confirmationsEnabled: false, _seedAskLifecycle: declineLifecycle() });
-    const result = await runShadowHarness(makeSession(), 'mode off decline', [], opts);
+  test('(j2) confirmationsEnabled:false + a NON-decline answered outcome → no ack (every OTHER P4 ack — the plain ANSWERED family — stays toggle-gated; only the decline family bypasses the toggle, per (j) in the FIRES block above)', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ confirmationsEnabled: false, _seedAskLifecycle: answeredLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'mode off non-decline', [], opts);
     expect(declineAckPrompts(result)).toHaveLength(0);
+    expect(ackRows(opts.logger)).toHaveLength(0);
   });
 
   test('(k) no ask at all (a plain no-op turn) → the P4 net does not fire (marker-① owns that class)', async () => {
@@ -613,5 +675,119 @@ describe('P4 — apology-text distinctness + rotation', () => {
     }
     expect(texts.every((t) => typeof t === 'string')).toBe(true);
     expect(new Set(texts).size).toBe(ASK_DECLINE_ACK_PROMPTS.length);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// PLAN-G2 (2026-08-14, held finding 2) — a replay-stable `p4ack_<turnId>`
+// dedupe token on BOTH ack families, stamped at production (this net) and
+// copied verbatim through the REAL §A4 drain (not mocked — these tests
+// exercise the actual runShadowHarness code path) into
+// `result.confirmations[].dedupe_token`. Pinning the exact emitted token
+// (not just its presence) is the "real-drain assertion" the plan requires —
+// a mocked drain could pass a presence-only check while a rename/typo at
+// either the production site or the copy-through silently broke the wire
+// shape.
+describe('P4 — dedupe_token (PLAN-G2 held finding 2)', () => {
+  test('DECLINE family ack carries dedupe_token p4ack_<turnId> on result.confirmations (real drain, not mocked)', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ _seedAskLifecycle: declineLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'zed s for circuit three', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    // First turn on a freshly-constructed session: turnNum=1 → turnId
+    // "sess-ask-decline-net-turn-1" (session.turnCount defaults to 0 in
+    // makeSession(), turnNum = turnCount + 1 in runLiveMode).
+    expect(acks[0].dedupe_token).toBe(`p4ack_${SESSION_ID}-turn-1`);
+  });
+
+  test('ANSWERED family ack ALSO carries dedupe_token p4ack_<turnId> (both families, not just decline)', async () => {
+    silentAnsweredLoop();
+    const opts = baseOpts({ _seedAskLifecycle: answeredLifecycle() });
+    const result = await runShadowHarness(makeSession(), 'clarify then silence', [], opts);
+    const acks = declineAckPrompts(result);
+    expect(acks).toHaveLength(1);
+    expect(acks[0].dedupe_token).toBe(`p4ack_${SESSION_ID}-turn-1`);
+  });
+
+  test('two consecutive silent-answered turns on the SAME session mint DISTINCT tokens (turnId-scoped, not session-scoped)', async () => {
+    const session = makeSession();
+    silentAnsweredLoop();
+    const r1 = await runShadowHarness(
+      session,
+      'ask decline one',
+      [],
+      baseOpts({ _seedAskLifecycle: declineLifecycle() })
+    );
+    silentAnsweredLoop();
+    const r2 = await runShadowHarness(
+      session,
+      'ask decline two',
+      [],
+      baseOpts({ _seedAskLifecycle: declineLifecycle() })
+    );
+    const token1 = declineAckPrompts(r1)[0]?.dedupe_token;
+    const token2 = declineAckPrompts(r2)[0]?.dedupe_token;
+    expect(token1).toBeTruthy();
+    expect(token2).toBeTruthy();
+    expect(token1).not.toBe(token2);
+  });
+
+  test('Codex diff-review cycle 2 — a genuine token replay is suppressed through the REAL §A4 drain path, not just the standalone applyConfirmationDebounce helper', async () => {
+    // Cycle 1 fixed the server-side p4ack_ debounce being structurally
+    // unreachable (the ONE applyConfirmationDebounce call site runs before
+    // the P4 net/§A4 drain produce their entries); the unit tests added
+    // there call applyConfirmationDebounce directly, so deleting the new
+    // scoped debounce pass inside the drain would leave them green. This
+    // drives the REAL end-to-end path: pre-seed session.confirmationDebounceState
+    // with the token THIS turn's P4 net will mint (simulating a genuine
+    // wire replay landing a moment after the original), then prove the
+    // real drain suppresses the duplicate and logs stage6.p4ack_debounced.
+    const session = makeSession();
+    const expectedToken = `p4ack_${SESSION_ID}-turn-1`;
+    session.confirmationDebounceState = {
+      lastEmittedAt: 0,
+      lastField: null,
+      tokenKeysMs: new Map([[` tok:${expectedToken}`, Date.now()]]),
+    };
+    silentAnsweredLoop();
+    const opts = baseOpts({ _seedAskLifecycle: declineLifecycle() });
+    const result = await runShadowHarness(session, 'ask decline replay', [], opts);
+    expect(declineAckPrompts(result)).toHaveLength(0);
+    const debouncedRows = opts.logger.info.mock.calls.filter(
+      ([ev]) => ev === 'stage6.p4ack_debounced'
+    );
+    expect(debouncedRows).toHaveLength(1);
+    expect(debouncedRows[0][1].dedupe_token).toBe(expectedToken);
+  });
+
+  test('an UNRELATED §A4 apology family (the F7 pre-emission fallback) does NOT gain a dedupe_token key at all', async () => {
+    // Distinguishes "copy through if present" from "always stamp a token" —
+    // the plan requires the former. Drive the F7 ASK_AUDIBILITY_FALLBACK_TEXT
+    // net (an attempted-but-unemitted ask, no engagement signal) rather than
+    // the P4 net, so the drained confirmation carries no dedupe_token at all.
+    runToolLoopSpy.mockImplementation(async () => ({
+      stop_reason: 'end_turn',
+      rounds: 1,
+      tool_calls: [
+        {
+          tool_call_id: 'toolu_attempt',
+          name: 'ask_user',
+          input: { question: 'Which circuit?', reason: 'missing_value' },
+          result: { tool_use_id: 'toolu_attempt', is_error: true, content: '{"error":"timeout"}' },
+        },
+      ],
+      aborted: false,
+      messages_final: [],
+      usage: {},
+      terminal_reason: 'end_turn',
+    }));
+    const opts = baseOpts();
+    const result = await runShadowHarness(makeSession(), 'attempted ask, no answer', [], opts);
+    const fallback = (result.confirmations ?? []).find(
+      (c) => c.text === ASK_AUDIBILITY_FALLBACK_TEXT
+    );
+    expect(fallback).toBeDefined();
+    expect('dedupe_token' in fallback).toBe(false);
   });
 });

@@ -1290,12 +1290,29 @@ export function normaliseEvaluationContext(rawResult, { sessionId = null } = {})
     return ctx.recordPlayback(ackBody, matches, { producerId: 'playback_ack_slot', source });
   };
 
-  ctx.recordNonMutatingAudible = ({ channel, kind, text = null }) => {
+  ctx.recordNonMutatingAudible = ({ channel, kind, text = null, dedupeToken = null }) => {
     // Plan 00B C3 — budgeted. `appendSub` carries its own admission gate, so
     // past the budget neither the mirror array nor the row grows.
+    //
+    // PLAN-G2 (2026-08-14, Codex diff-review cycle 1) — `dedupe_token`
+    // (snake_case, matching the row-naming convention `resolveDeliveryReceipt`
+    // / the field_cleared judge branch already use for `row.dedupe_token`)
+    // is optional and additive: every EXISTING caller omits it and gets the
+    // exact same frozen row shape as before — conditionally spread (Codex
+    // diff-review cycle 2 NIT), not an unconditional `dedupe_token: null`,
+    // so an unrelated row never gains the key at all. Only field-null
+    // confirmations that carry a wire `dedupe_token` (currently the two P4
+    // ack families) populate it, giving `semantic-judge.mjs`'s
+    // field_null_fallback branch a token to compare when a fixture declares
+    // one.
     if (ctx.captureBudget?.admit('non_mutating_audible') !== false) {
       ctx.nonMutatingAudible.push(
-        Object.freeze({ channel: channel ?? null, kind: kind ?? null, text })
+        Object.freeze({
+          channel: channel ?? null,
+          kind: kind ?? null,
+          text,
+          ...(typeof dedupeToken === 'string' ? { dedupe_token: dedupeToken } : {}),
+        })
       );
     }
     appendSub('non_mutating_audible', { channel: channel ?? null, audible_kind: kind ?? null });

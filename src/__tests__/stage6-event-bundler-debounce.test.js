@@ -360,3 +360,95 @@ describe('PLAN-F2 finding 5 — bulkoutcome_ prefix recognised by BOTH confirmat
     expect(replayOriginal).toHaveLength(0); // exact replay of the FIRST token — suppressed
   });
 });
+
+// ── PLAN-G2 (2026-08-14, held finding 2) — p4ack_ structural token prefix ──
+// Both P4 ack families (stage6-shadow-harness.js ASK_DECLINE_ACK_PROMPTS /
+// ASK_ANSWERED_ACK_PROMPTS) always carry field:null, so — exactly like
+// bulkoutcome_ above — the field-allowlist branch can never reach them; only
+// the structural-prefix branch gives them a replay-stable server-side
+// debounce key. Without it, two GENUINELY DISTINCT P4 acks landing on the
+// same rotated text (1-in-5 chance, turnNum % 5) within the debounce window
+// would collide on the old composite key (null field, null circuit, no
+// circuits, same/absent board, same TEXT) and the second would be silently
+// dropped server-side.
+describe('PLAN-G2 held finding 2 — p4ack_ prefix recognised by BOTH confirmationDebounceKey and the isTokenKey gate', () => {
+  const p4Ack = (token, text = 'Okay — leaving that one.', boardId = null) => ({
+    text,
+    field: null,
+    circuit: null,
+    board_id: boardId,
+    dedupe_token: token,
+  });
+
+  test('confirmationDebounceKey prefers the token even though field is null (never on DEDUPE_TOKEN_FIELDS)', () => {
+    const key = confirmationDebounceKey(p4Ack('p4ack_sess-x-turn-1'));
+    expect(key).toBe(' tok:p4ack_sess-x-turn-1');
+  });
+
+  test('rapid-distinct: two DIFFERENT P4 acks on the SAME rotated text (different turnId tokens) → BOTH spoken inside the debounce window', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const first = applyConfirmationDebounce([p4Ack('p4ack_sess-x-turn-1')], state, { now: t0 });
+    const second = applyConfirmationDebounce([p4Ack('p4ack_sess-x-turn-2')], state, {
+      now: t0 + 200,
+    });
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+  });
+
+  test('same-token-replay: replaying the ORIGINAL token within the window is suppressed', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const first = applyConfirmationDebounce([p4Ack('p4ack_sess-x-turn-1')], state, { now: t0 });
+    const replay = applyConfirmationDebounce([p4Ack('p4ack_sess-x-turn-1')], state, {
+      now: t0 + 200,
+    });
+    expect(first).toHaveLength(1);
+    expect(replay).toHaveLength(0);
+    expect(state.lastSuppressedCount).toBe(1);
+  });
+
+  test('cross-board sequence: a P4 ack on board "main" then one on board "sub-b" (distinct turnId tokens) → no swallow', () => {
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const main = applyConfirmationDebounce(
+      [p4Ack('p4ack_sess-x-turn-1', 'Okay — leaving that one.', 'main')],
+      state,
+      { now: t0 }
+    );
+    const subB = applyConfirmationDebounce(
+      [p4Ack('p4ack_sess-x-turn-2', 'Okay — leaving that one.', 'sub-b')],
+      state,
+      { now: t0 + 50 }
+    );
+    expect(main).toHaveLength(1);
+    expect(subB).toHaveLength(1);
+  });
+
+  test('the ANSWERED family (distinct text) is likewise token-aware and replay-suppressed', () => {
+    const answered = (token) => p4Ack(token, 'Okay, got it.');
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const first = applyConfirmationDebounce([answered('p4ack_sess-x-turn-3')], state, { now: t0 });
+    const replay = applyConfirmationDebounce([answered('p4ack_sess-x-turn-3')], state, {
+      now: t0 + 100,
+    });
+    expect(first).toHaveLength(1);
+    expect(replay).toHaveLength(0);
+  });
+
+  test('rapid-distinct: the ANSWERED family ALSO gets two DIFFERENT P4 acks on the SAME rotated text (different turnId tokens) both speaking', () => {
+    // Codex diff-review cycle 1 finding — rapid-distinct coverage had only
+    // been pinned for the DECLINE family; the ANSWERED family shares the
+    // same code path but deserves its own explicit proof.
+    const answered = (token) => p4Ack(token, 'Okay, got it.');
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const first = applyConfirmationDebounce([answered('p4ack_sess-x-turn-4')], state, { now: t0 });
+    const second = applyConfirmationDebounce([answered('p4ack_sess-x-turn-5')], state, {
+      now: t0 + 200,
+    });
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+  });
+});

@@ -27,6 +27,7 @@ const { normaliseEvaluationContext, attachEvaluationContext, EVALUATION_CONTEXT 
   await import('../extraction/plan00-lifecycle-hooks.js');
 const { createDeliveryLedger, operationIdentityKey } =
   await import('../extraction/plan00-audibility-ledgers.js');
+const { recordFrameDeliveryEvidence } = await import('../extraction/sonnet-stream.js');
 
 function baseEvidence(overrides = {}) {
   return {
@@ -614,6 +615,252 @@ describe('Codex r2 judge hardening — consumption, sweeps, turn membership', ()
     );
     expect(v.verdict).toBe('FAIL');
     expect(v.reason).toBe('undeclared_audible');
+  });
+
+  // PLAN-G2 (2026-08-14, Codex diff-review cycle 1) — field_null_fallback's
+  // optional match.dedupe_token comparison. Most field_null_fallback targets
+  // (marker-①/②/F7 apologies) never declare a token and are unaffected
+  // (proven by the undeclared-audible test above using an unrelated shape);
+  // these two pin the NEW comparison itself for a fixture that DOES declare
+  // one (the two P4 ack families, PLAN-G2).
+  test('field_null_fallback with a declared dedupe_token PASSES when the captured row carries the SAME token', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'field_null_fallback',
+                count: 1,
+                match: {
+                  text_exact: 'No problem, moving on.',
+                  dedupe_token: 'p4ack_sess-x-turn-1',
+                },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'No problem, moving on.',
+              dedupe_token: 'p4ack_sess-x-turn-1',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('PASS');
+  });
+
+  test('RED: field_null_fallback with a declared dedupe_token FAILS when the captured row carries a DIFFERENT token', () => {
+    // Proves the comparison is load-bearing, not vacuous — a captured row
+    // with the right TEXT but the wrong TOKEN (e.g. a stale/replayed turn's
+    // ack landing where a fresh one was expected) must not silently PASS.
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'field_null_fallback',
+                count: 1,
+                match: {
+                  text_exact: 'No problem, moving on.',
+                  dedupe_token: 'p4ack_sess-x-turn-1',
+                },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'No problem, moving on.',
+              dedupe_token: 'p4ack_sess-x-turn-99',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+  });
+
+  test('RED: field_null_fallback with a declared dedupe_token FAILS when the captured row carries NO token at all', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'field_null_fallback',
+                count: 1,
+                match: {
+                  text_exact: 'No problem, moving on.',
+                  dedupe_token: 'p4ack_sess-x-turn-1',
+                },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'No problem, moving on.',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+  });
+
+  test('Codex diff-review cycle 2 — the REAL producer path (recordFrameDeliveryEvidence) threads a p4ack_ dedupe_token into non_mutating_audible, not just synthetic evidence', () => {
+    // The three tests above prove the JUDGE comparison works against
+    // hand-built evidence rows. This drives sonnet-stream.js's actual
+    // frame-evaluation function — deleting the dedupeToken threading edit
+    // inside it (sonnet-stream.js's frameKind==='extraction' field-null
+    // branch, or plan00-lifecycle-hooks.js's recordNonMutatingAudible) would
+    // leave every other new test in this cycle green but this one RED.
+    const ctx = normaliseEvaluationContext(
+      { deliveryLedger: createDeliveryLedger() },
+      { sessionId: 's-p4ack' }
+    );
+    recordFrameDeliveryEvidence(
+      ctx,
+      'extraction',
+      {
+        confirmations: [
+          {
+            text: 'No problem, moving on.',
+            field: null,
+            circuit: null,
+            dedupe_token: 'p4ack_s-p4ack-turn-1',
+          },
+        ],
+        turn_id: 't-p4ack',
+      },
+      null
+    );
+    expect(ctx.nonMutatingAudible).toHaveLength(1);
+    expect(ctx.nonMutatingAudible[0]).toMatchObject({
+      kind: 'field_null_confirmation',
+      text: 'No problem, moving on.',
+      dedupe_token: 'p4ack_s-p4ack-turn-1',
+    });
+  });
+
+  test('Codex diff-review cycle 2 — an ORDINARY field-null confirmation (no dedupe_token) reaching the real producer path gains NO dedupe_token key at all', () => {
+    const ctx = normaliseEvaluationContext(
+      { deliveryLedger: createDeliveryLedger() },
+      { sessionId: 's-plain' }
+    );
+    recordFrameDeliveryEvidence(
+      ctx,
+      'extraction',
+      {
+        confirmations: [{ text: 'Sorry, say again?', field: null, circuit: null }],
+        turn_id: 't-plain',
+      },
+      null
+    );
+    expect(ctx.nonMutatingAudible).toHaveLength(1);
+    expect('dedupe_token' in ctx.nonMutatingAudible[0]).toBe(false);
+  });
+
+  test('Codex diff-review cycle 3 — field_null_fallback also honours the expected_key alias (falls back to dedupe_token), matching replay-assertions.mjs parity', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'field_null_fallback',
+                count: 1,
+                match: {
+                  text_exact: 'No problem, moving on.',
+                  expected_key: 'p4ack_sess-x-turn-1',
+                },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'No problem, moving on.',
+              dedupe_token: 'p4ack_sess-x-turn-1',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('PASS');
+  });
+
+  test('RED: field_null_fallback with a declared expected_key FAILS when the captured row carries a DIFFERENT dedupe_token', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'field_null_fallback',
+                count: 1,
+                match: {
+                  text_exact: 'No problem, moving on.',
+                  expected_key: 'p4ack_sess-x-turn-1',
+                },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'No problem, moving on.',
+              dedupe_token: 'p4ack_sess-x-turn-99',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
   });
 
   test('field_cleared: a clear receipt from ANOTHER turn can never satisfy the confirmation', () => {

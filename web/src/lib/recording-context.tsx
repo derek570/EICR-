@@ -61,6 +61,8 @@ import {
 import {
   buildConfirmationDedupeKey,
   isObservationRecodeConfirmation,
+  isP4DeclineAck,
+  shouldReleaseP4DeclineReservation,
 } from './recording/confirmation-dedupe-key';
 import {
   PendingReadingsBuffer,
@@ -2669,7 +2671,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // confirmation is discarded before it ever plays (overflow / preempt /
         // purge / reset) — the sole "never a permanent read-back drop"
         // mechanism (Audio-First #1).
-        speakConfirmation(sentence, { dedupeKey });
+        // 2026-08-14 (PLAN-G, id-114): force ONLY the closed P4 decline-ack
+        // family through — the backend now emits these regardless of
+        // confirmationsEnabled (an answer to a question the app asked is
+        // not a reading confirmation), so the web toggle must not silently
+        // re-mute them here. Every other confirmation stays unforced.
+        const p4DeclineAck = isP4DeclineAck(conf);
+        const spoken = speakConfirmation(sentence, { dedupeKey, force: p4DeclineAck });
+        // A forced decline ack can only fail to enqueue when TTS itself is
+        // unavailable (force:true means the toggle can never be the cause) —
+        // an ordinary confirmation-mode mute is CORRECTLY permanent (the
+        // reservation stands so a muted confirmation never re-prompts), but
+        // a TTS-unavailable drop of THIS family would otherwise permanently
+        // suppress a genuine future decline ack landing on the same rotated
+        // text. Mirrors the address-mirror-delivery branch's same pattern
+        // above. Ordinary (unforced) confirmations are unaffected.
+        if (shouldReleaseP4DeclineReservation(p4DeclineAck, spoken.enqueued)) {
+          discardConfirmationReservation(dedupeKey, 'not_queued');
+        }
       }
       // Surface validation alerts in the pending-readings counter so
       // the inspector sees them in the recording chrome even if they

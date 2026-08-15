@@ -119,8 +119,15 @@ const U64_MASK = (1n << 64n) - 1n;
  * whichever field dispatchSetFieldForAllCircuits targeted — never just the
  * five allowlisted text-op fields. A prefix SET (not a single string) is
  * the extension point for any future structural token family.
+ *
+ * PLAN-G2 (2026-08-14, held finding 2) — `p4ack_<turnId>` is the same kind
+ * of structural token: both P4 ack families (`ASK_DECLINE_ACK_PROMPTS` /
+ * `ASK_ANSWERED_ACK_PROMPTS` in stage6-shadow-harness.js) always carry
+ * `field:null`, so the field-allowlist branch below can never reach them —
+ * the prefix branch is the ONLY route by which these acks get a
+ * replay-stable key instead of colliding on rotated text alone.
  */
-const STRUCTURAL_DEDUPE_TOKEN_PREFIXES = ['duplicate_', 'bulkoutcome_'];
+const STRUCTURAL_DEDUPE_TOKEN_PREFIXES = ['duplicate_', 'bulkoutcome_', 'p4ack_'];
 
 function hasStructuralTokenPrefix(opToken) {
   return (

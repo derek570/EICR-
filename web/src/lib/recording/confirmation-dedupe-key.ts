@@ -123,6 +123,61 @@ export function isObservationRecodeConfirmation(conf: DedupeKeySource): boolean 
 }
 
 /**
+ * The closed P4 decline-ack prompt family — a byte-for-byte mirror of
+ * backend canon `ASK_DECLINE_ACK_PROMPTS` in
+ * `src/extraction/stage6-shadow-harness.js`. APPEND-ONLY (never reorder or
+ * edit an existing entry): the backend's `turnNum % length` rotation and
+ * any recorded fixture's `text_exact` assertions depend on stable indices.
+ * There is no shared module between web and the Node-only backend, so this
+ * list is duplicated deliberately rather than imported.
+ */
+export const ASK_DECLINE_ACK_PROMPTS: readonly string[] = Object.freeze([
+  'Okay — leaving that one.',
+  'No problem, moving on.',
+  "Alright — I'll leave that as it is.",
+  "That's fine — I'll leave it there.",
+  'Sure — leaving that as it stands.',
+]);
+
+const DECLINE_ACK_TEXT_SET: ReadonlySet<string> = new Set(ASK_DECLINE_ACK_PROMPTS);
+
+/**
+ * 2026-08-14 (PLAN-G, Derek decision, id-114): matches ONLY the closed P4
+ * decline-ack family, so `recording-context.tsx` can force these through
+ * `speakConfirmation` even when the local confirmation-mode toggle is off —
+ * an answer to a question the app asked is not a reading confirmation, and
+ * silence after "don't worry" is indistinguishable from a broken pipeline.
+ * Every OTHER confirmation (ordinary readings, the plain P4 ANSWERED-family
+ * ack) stays toggle-gated; this predicate must never widen beyond the exact
+ * five strings above.
+ */
+export function isP4DeclineAck(conf: DedupeKeySource): boolean {
+  return conf.field == null && DECLINE_ACK_TEXT_SET.has(conf.text.trim());
+}
+
+/**
+ * 2026-08-14 (PLAN-G cycle-1 mini-review fix): a forced decline ack that
+ * fails to enqueue can only be TTS-unavailable — `force:true` rules out the
+ * confirmation-mode toggle as the cause — so its reservation must be
+ * released, or a genuine LATER decline landing on the same rotated text
+ * would be silently swallowed forever. An ORDINARY (unforced) confirmation
+ * muted by the toggle must keep its permanent reservation (a muted
+ * confirmation the inspector chose not to hear should not re-prompt), so
+ * this only ever returns true for the P4 decline family. Extracted as its
+ * own exported function (rather than an inline conditional in
+ * recording-context.tsx) so it is unit-testable directly — the previous
+ * cycle's test reimplemented this conditional against a bare
+ * `ConfirmationDedupeStore`, which would stay green even if
+ * `recording-context.tsx`'s own call to this logic broke or was deleted.
+ */
+export function shouldReleaseP4DeclineReservation(
+  isP4Decline: boolean,
+  enqueued: boolean
+): boolean {
+  return isP4Decline && !enqueued;
+}
+
+/**
  * Literal port of iOS `buildConfirmationDedupeKey` branch selection:
  * token precedence for allowlisted text-op fields (every branch), then
  * single-circuit wins, then multi-circuit broadcast, then degenerate.
@@ -149,9 +204,17 @@ export function buildConfirmationDedupeKey(conf: DedupeKeySource): string {
   // zero-applied/fallback disclosure can target any circuit reading field,
   // not just the allowlist, so it needs the same prefix-wins-first
   // treatment as `duplicate_` — never an allowlist addition.
+  //
+  // PLAN-G2 (2026-08-14, held finding 2) — `p4ack_<turnId>` joins the set:
+  // both P4 ack families (`ASK_DECLINE_ACK_PROMPTS` / the plain ANSWERED
+  // family) always carry `field:null`, so the §A1a allowlist branch below
+  // can never reach them — this prefix branch is the only route to a
+  // replay-stable key instead of colliding on rotated text alone.
   if (
     conf.dedupe_token &&
-    (conf.dedupe_token.startsWith('duplicate_') || conf.dedupe_token.startsWith('bulkoutcome_'))
+    (conf.dedupe_token.startsWith('duplicate_') ||
+      conf.dedupe_token.startsWith('bulkoutcome_') ||
+      conf.dedupe_token.startsWith('p4ack_'))
   ) {
     return `${field}_${conf.dedupe_token}`;
   }

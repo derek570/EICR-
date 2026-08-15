@@ -446,6 +446,72 @@ describe('PLAN-F2 finding 5 (2026-08-14) — bulkoutcome_ prefix branch wins ahe
   });
 });
 
+describe('PLAN-G2 held finding 2 (2026-08-14) — p4ack_<turnId> prefix branch wins ahead of the field-allowlist', () => {
+  // Both P4 ack families (stage6-shadow-harness.js ASK_DECLINE_ACK_PROMPTS /
+  // ASK_ANSWERED_ACK_PROMPTS) always carry field:null + circuit:null, so in
+  // practice only the degenerate builder ever sees a p4ack_ token — but the
+  // prefix branch is shared code across all three shapes (hasStructuralTokenPrefix),
+  // so pinning per-circuit too catches a future regression that narrows the
+  // check to one builder.
+  test('degenerate (the real production shape — field:null, circuit:null): prefix wins, "unknown" field fallback', () => {
+    const k = buildDegenerateDedupeKey(
+      undefined,
+      'Okay — leaving that one.',
+      null,
+      'p4ack_sess-x-turn-1'
+    );
+    expect(k).toBe('unknown_p4ack_sess-x-turn-1');
+  });
+
+  test('per-circuit (defensive — not a real P4 shape, but the shared prefix check must still apply)', () => {
+    const k = buildPerCircuitDedupeKey(
+      'measured_zs_ohm',
+      3,
+      'irrelevant text',
+      'p4ack_sess-x-turn-1'
+    );
+    expect(k).toBe('measured_zs_ohm_p4ack_sess-x-turn-1');
+  });
+
+  test('rapid-distinct: two DIFFERENT turnId tokens on the SAME rotated text → DISTINCT keys', () => {
+    const first = buildDegenerateDedupeKey(
+      undefined,
+      'Okay — leaving that one.',
+      null,
+      'p4ack_sess-x-turn-1'
+    );
+    const second = buildDegenerateDedupeKey(
+      undefined,
+      'Okay — leaving that one.',
+      null,
+      'p4ack_sess-x-turn-2'
+    );
+    expect(first).not.toBe(second);
+  });
+
+  test('same-token-replay: replaying the SAME token is stable (dedupes on genuine replay)', () => {
+    const first = buildDegenerateDedupeKey(
+      undefined,
+      'Okay — leaving that one.',
+      null,
+      'p4ack_sess-x-turn-1'
+    );
+    const replay = buildDegenerateDedupeKey(
+      undefined,
+      'Okay — leaving that one.',
+      null,
+      'p4ack_sess-x-turn-1'
+    );
+    expect(first).toBe(replay);
+  });
+
+  test('a non-p4ack token (or none) is unaffected — legacy text+board hash unchanged', () => {
+    expect(buildDegenerateDedupeKey(undefined, 'Okay — leaving that one.', null)).toBe(
+      'unknown_' + djb2UInt64Decimal('Okay — leaving that one.')
+    );
+  });
+});
+
 /**
  * A2-multiboard item 10 (2026-07-28) — board identity in the CIRCUIT dedupe keys.
  *

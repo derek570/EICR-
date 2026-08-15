@@ -315,6 +315,36 @@ export function judgeFrozenEvidence(expectation, frozen, opts = {}) {
           if (audible.match?.text_exact != null && rowsAll[i].text !== audible.match.text_exact) {
             continue;
           }
+          // PLAN-G2 (2026-08-14, Codex diff-review cycle 1) — `dedupe_token`
+          // is OPTIONAL on the matcher, exactly like `text_exact` above: most
+          // field_null_fallback targets (marker-①/②/F7 apologies) are still
+          // genuinely tokenless and never declare this, so omitting it stays
+          // byte-compatible with every existing fixture. When a fixture DOES
+          // declare one (the two P4 ack families, PLAN-G2), the captured row
+          // must carry the SAME token — closing the gap where a strengthened
+          // text+token fixture assertion was silently unenforced here (the
+          // recorded-lane field-replay matcher already enforced it via
+          // replay-assertions.mjs; this brings the Plan-00 vendor-live lane
+          // to parity).
+          if (
+            audible.match?.dedupe_token != null &&
+            rowsAll[i].dedupe_token !== audible.match.dedupe_token
+          ) {
+            continue;
+          }
+          // Codex diff-review cycle 3 (PLAN-G2) NIT — `expected_key` is the
+          // SAME alias `replay-assertions.mjs`'s `confirmationMatches`
+          // already supports (falling back to `dedupe_token` when the row
+          // carries no separate `expected_key`), so a field_null_fallback
+          // fixture using `expected_key` instead of `dedupe_token` now
+          // enforces identically in both lanes rather than false-passing
+          // here.
+          if (
+            audible.match?.expected_key != null &&
+            (rowsAll[i].expected_key ?? rowsAll[i].dedupe_token) !== audible.match.expected_key
+          ) {
+            continue;
+          }
           consumedNonMutating.add(i);
           taken += 1;
         }

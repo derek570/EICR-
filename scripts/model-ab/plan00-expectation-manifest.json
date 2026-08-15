@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "86d85b750fa73898fa6df9541a16a4b5fbc93c808027feeb732414a3304cf6a7",
+  "semantic_oracle_digest": "eca159e493ca87235e80e885ab1dfad455fd4db2878ced728b20963d2097c326",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -513,11 +513,11 @@
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "478bb08397894a2c86d7293b3cf5ef519e8c962bd494c5b7d51618d85bdbb29a"
+      "sha256": "9ca47b56ff02068ed3ae55884eeb7ace8bd559269426ec76d7c9c60cd9790582"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "754d87c1ea7b2f58f7d00db1ad55ea678a514f621748ea26f69dbdfe82e83a48"
+      "sha256": "1bc67b9d7fc694c4c4df11a3e00eb13211727de17a83b4f73e27cd9a8ba9cf54"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "871b87ed1d3fa524d5ffdaab5f958ea03bd615316ffc2095d95c7dd11ccb9eb0"
+      "sha256": "19244f4c483f4a538d6f66fa09c9edf001525f39023d8b9bbf95a3d8f4c23837"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -565,11 +565,11 @@
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
-      "sha256": "eb7ed52cf0dd395537d431b2f110a199d71fcae1df84d75f8dbd6c6e1d80efb7"
+      "sha256": "c73c929dbc93575487ead54f7c0a63afc85f12bfbaf14a896e86288dd8a7d21c"
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
-      "sha256": "88d35286f642b4874ededf8f662f6b61573ca7dbaa4103af6b1ff62d20047cd6"
+      "sha256": "cb2fcf7dcc1436060028687d89088716578f63d8c0412d169d018e0a0afed58d"
     },
     {
       "path": "scripts/model-ab/run-semantic-lane.mjs",

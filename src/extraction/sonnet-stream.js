@@ -1670,8 +1670,15 @@ async function sendResultFrameLedger(ws, snapshot, result, session = {}, entry =
  * delivery claim lineage (the `address_mirror_delivery_ack` correlates by
  * token, per the parent B3 scoping decision — identity is never derived
  * from a result envelope).
+ *
+ * Exported (PLAN-G2, 2026-08-14, Codex diff-review cycle 2) so a test can
+ * drive the REAL producer-to-evidence contract directly (a field-null
+ * confirmation carrying `dedupe_token` → `evalCtx.nonMutatingAudible`'s
+ * `dedupe_token`) without standing up the full WS/lane-driver harness —
+ * closing the gap where deleting the token-threading edit inside this
+ * function would have left every existing test green.
  */
-function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptOrdinal = null) {
+export function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptOrdinal = null) {
   try {
     const mirrorDelivery = result?.[ADDRESS_MIRROR_DELIVERY];
     // A frame can be sent AFTER the harness turn scope has closed (buffered
@@ -1834,6 +1841,11 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptOrdinal 
             channel: 'ws_extraction',
             kind: 'field_null_confirmation',
             text: c.text ?? null,
+            // PLAN-G2 (2026-08-14, Codex diff-review cycle 1) — carry the
+            // wire dedupe_token through so the field_null_fallback judge
+            // branch can compare it when a fixture declares one (currently
+            // only the two P4 ack families ever set this).
+            dedupeToken: typeof c.dedupe_token === 'string' ? c.dedupe_token : null,
           });
         }
       }

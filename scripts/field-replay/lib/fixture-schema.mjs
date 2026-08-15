@@ -734,17 +734,30 @@ export async function validateFixtureDocument(doc, opts = {}) {
       outIds.add(out.output_id);
       if (out.kind === 'field_null_fallback') {
         // P4 (ask-decline-ack-net 2026-07-23) — a NON-EMPTY trimmed text_exact
-        // is a sufficient oracle on its own. Historically this ALSO demanded a
-        // dedupe_token / expected_key, but the §A4-drained field-null ack this
-        // oracle targets (marker-①/②/F7 apologies AND the P4 decline-ack) is
-        // TOKENLESS — field:null is outside DEDUPE_TOKEN_FIELDS, so the emitted
-        // confirmation carries no token, and runtime `confirmationMatches` keys
-        // on `text_exact` alone (no token needed). Demanding a token made a
-        // field-null-fallback oracle impossible to express, and a FABRICATED
-        // token would then fail the runtime match against the tokenless wire
-        // ack (so it could never flip to required_green). An empty/whitespace
-        // text_exact provides no meaningful oracle and stays REJECTED. The
-        // field:null + circuit:null implication (enforced at match time in
+        // is a SUFFICIENT oracle on its own (never mandatory to pair with a
+        // token). Historically this ALSO demanded a dedupe_token / expected_key,
+        // but the §A4-drained field-null ack this oracle targets (marker-①/②/F7
+        // apologies AND, until PLAN-G2, the P4 acks) was TOKENLESS — field:null
+        // is outside DEDUPE_TOKEN_FIELDS, so the emitted confirmation carried no
+        // token, and runtime `confirmationMatches` keyed on `text_exact` alone.
+        // Demanding a token made a field-null-fallback oracle impossible to
+        // express for those still-tokenless families, and a FABRICATED token
+        // would fail the runtime match against a tokenless wire ack (so it could
+        // never flip to required_green). An empty/whitespace text_exact provides
+        // no meaningful oracle and stays REJECTED.
+        //
+        // PLAN-G2 (2026-08-14, held finding 2) — BOTH P4 ack families now stamp
+        // a real `dedupe_token: p4ack_<turnId>` at production, copied through the
+        // §A4 drain. `match.dedupe_token`/`match.expected_key` remain OPTIONAL
+        // here (not re-required): most field_null_fallback targets — marker-①/②/
+        // F7 apologies — are still genuinely tokenless, so making the field
+        // mandatory would break every one of those fixtures. A fixture targeting
+        // a P4 ack specifically MAY add `dedupe_token` for a strengthened
+        // text+identity oracle (see frc_85ace7677…); replay-assertions.mjs
+        // already supports matching it generically (line ~68) — no runtime
+        // change was needed here, only this comment's TOKENLESS claim was stale.
+        //
+        // The field:null + circuit:null implication (enforced at match time in
         // replay-assertions.mjs) and the DUPLICATE_OUTPUT_ID check above are
         // unchanged. The value must be ALREADY trimmed (`=== .trim()`), not
         // merely trim-non-empty (Codex r1): runtime `confirmationMatches` trims

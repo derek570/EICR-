@@ -21,18 +21,34 @@
 # decline-family ack into result.confirmations.
 #
 # ORACLE (plan Option B): the §A4-drained ack is `{text, field:null,
-# circuit:null, expects_ios_ack:false}` — TOKENLESS (field:null is outside
-# DEDUPE_TOKEN_FIELDS), and runtime `confirmationMatches` keys on `text_exact`.
+# circuit:null, expects_ios_ack:false, dedupe_token}`. Originally TOKENLESS
+# (field:null is outside DEDUPE_TOKEN_FIELDS, so the historical mandatory
+# dedupe_token/expected_key was DROPPED from the field_null_fallback schema —
+# see fixture-schema.mjs), and runtime `confirmationMatches` keyed on
+# `text_exact` alone. PLAN-G2 (2026-08-14, held finding 2) added a
+# replay-stable `p4ack_<turnId>` structural token to BOTH P4 ack families
+# (stamped at production in stage6-shadow-harness.js, copied verbatim through
+# the §A4 drain) — `field_null_fallback` matchers MAY now additionally assert
+# `match.dedupe_token` (see fixture-schema.mjs / field-replay-corpus.md) for a
+# text+identity oracle. THIS fixture deliberately does NOT — it is consumed by
+# TWO harnesses with DIFFERENT session-id minting schemes for the SAME
+# corpus_id (the field-replay recorded lane's `mintSessionId(corpusId)` here
+# in replay-runner-core.mjs vs the Plan-00 vendor-live lane's `lane-<corpusId>`
+# in lane-driver.mjs's `runVendorLaneMock`), so the token's exact bytes differ
+# per harness and a single literal value in `match` cannot be correct in both
+# (Codex diff-review cycle 1 caught this: asserting one harness's token broke
+# the OTHER harness's `runVendorLaneMock` 9/9 acceptance test). `text_exact`
+# alone remains harness-agnostic and is the correct oracle for a
+# dual-consumed fixture; a token assertion belongs on a fixture that is
+# vendor_live-ONLY or field-replay-ONLY, not both.
 # The ack rotates deterministically as `turnNum % ASK_DECLINE_ACK_PROMPTS.length`
 # (turn 1 → index 1 → "No problem, moving on."), so the phrase is computable in
-# the frozen lane. This needed the scoped `fixture-schema.mjs` relaxation
-# (a non-empty trimmed `text_exact` alone validates a `field_null_fallback`
-# matcher; a token would then FAIL the runtime match against the tokenless ack).
-# The declared `expected_audible_outputs` carry BOTH the original ask_user frame
-# AND the ack, so `matchAudibleOutputs` suppresses the `audibility.turn`
-# false-pass (the ask question is itself "audible") and the RED id is
-# `audibility.output.out_decline_ack`. Pre-fix replay fails EXACTLY that id
-# (the ask emits + is claimed; the ack is never synthesised → 0 matches).
+# the frozen lane. The declared `expected_audible_outputs` carry BOTH the
+# original ask_user frame AND the ack, so `matchAudibleOutputs` suppresses the
+# `audibility.turn` false-pass (the ask question is itself "audible") and the
+# RED id is `audibility.output.out_decline_ack`. Pre-fix replay fails EXACTLY
+# that id (the ask emits + is claimed; the ack is never synthesised → 0
+# matches).
 #
 # Provenance: HAND-AUTHORED / reconstructed from realtime chunks — session
 # 2ACE7677 has no field_sources/manifest (the iOS multipart analytics upload was

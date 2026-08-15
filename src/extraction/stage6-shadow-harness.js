@@ -4900,8 +4900,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // the ack reaches result.confirmations THIS turn, exactly like marker-②).
     //
     // Fires when ALL hold:
-    //   1. confirmationsEnabled (a mode-off user opted out of the spoken
-    //      channel). NOTE: NOT gated on chimeObserved — the answered-ask signal
+    //   1. isDecline (predicate 3b below) OR confirmationsEnabled. 2026-08-14
+    //      (Derek decision, PLAN-G, id-114, supersedes id-85's original
+    //      "mode-off users opted out of the spoken channel" framing for THIS
+    //      one family): an answer to a question the app asked is not a
+    //      reading confirmation — the DECLINE family always speaks, even with
+    //      the toggle off, because silence after "don't worry" is
+    //      indistinguishable from a broken pipeline. The plain ANSWERED
+    //      family (a non-decline silent-but-answered outcome) stays
+    //      toggle-gated exactly as before. NOTE: NOT gated on chimeObserved — the answered-ask signal
     //      (a real user reply) is stronger proof of engagement than a chime,
     //      and the F7 ask net is likewise not chime-gated. Codex r1 DEVIATION
     //      from the plan's predicate-1 ("not cancelled"): the plan assumed the
@@ -4950,64 +4957,89 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // predicate 3 treats as a survivor — so in production this net is a
     // BACKSTOP for the frozen-no-op path, not the primary channel.
     try {
-      if (options.confirmationsEnabled === true) {
-        // The plan's exact rule (Codex r3): find the LATEST ANSWERED blocking
-        // ask (by resolutionSeq), then suppress ONLY if a NEW ask was emitted
-        // AFTER that answer resolved. A prior "max-emissionSeq must be answered"
-        // shortcut was NOT equivalent — an UNanswered ask emitted BEFORE the
-        // latest answer resolved (e.g. an srv-* dialogue-script ask observed via
-        // ASK_STARTED_OBSERVER while the initial ask awaited) would be the
-        // max-emissionSeq record with answered:false and wrongly suppress the
-        // ack, recreating answered-turn silence.
-        //
-        // `answered===true` + `resolutionSeq != null` + `resolutionSeq >
-        // emissionSeq` selects a real reply whose resolution followed its
-        // LATEST emission — this rejects a defensive out-of-order record AND a
-        // same-id RE-EMISSION after an earlier resolution (a re-emitted ask
-        // carries a stale answered:true but its new emissionSeq now exceeds its
-        // resolutionSeq, so it is not "answered since re-emission"). `srv-*`
-        // engine asks never receive an onAskAnswered call, so they stay
-        // answered:false and are excluded.
-        let latestAnswered = null;
+      // 2026-08-14 (PLAN-G): latestAnswered/laterAskEmitted/isDecline are
+      // computed UNCONDITIONALLY (moved out from behind the
+      // confirmationsEnabled check) so the DECLINE family can bypass the
+      // toggle below. Computing these is a pure ledger scan — no emission
+      // happens until the gated push further down.
+      //
+      // The plan's exact rule (Codex r3): find the LATEST ANSWERED blocking
+      // ask (by resolutionSeq), then suppress ONLY if a NEW ask was emitted
+      // AFTER that answer resolved. A prior "max-emissionSeq must be answered"
+      // shortcut was NOT equivalent — an UNanswered ask emitted BEFORE the
+      // latest answer resolved (e.g. an srv-* dialogue-script ask observed via
+      // ASK_STARTED_OBSERVER while the initial ask awaited) would be the
+      // max-emissionSeq record with answered:false and wrongly suppress the
+      // ack, recreating answered-turn silence.
+      //
+      // `answered===true` + `resolutionSeq != null` + `resolutionSeq >
+      // emissionSeq` selects a real reply whose resolution followed its
+      // LATEST emission — this rejects a defensive out-of-order record AND a
+      // same-id RE-EMISSION after an earlier resolution (a re-emitted ask
+      // carries a stale answered:true but its new emissionSeq now exceeds its
+      // resolutionSeq, so it is not "answered since re-emission"). `srv-*`
+      // engine asks never receive an onAskAnswered call, so they stay
+      // answered:false and are excluded.
+      let latestAnswered = null;
+      for (const rec of askLifecycleLedger.values()) {
+        if (
+          rec.answered === true &&
+          rec.resolutionSeq != null &&
+          rec.emissionSeq != null &&
+          rec.resolutionSeq > rec.emissionSeq
+        ) {
+          if (latestAnswered == null || rec.resolutionSeq > latestAnswered.resolutionSeq) {
+            latestAnswered = rec;
+          }
+        }
+      }
+      // A NEW ask emitted AFTER the latest answer resolved is itself audible
+      // (a follow-up question), so the turn is not silent — decline the net.
+      let laterAskEmitted = false;
+      if (latestAnswered) {
         for (const rec of askLifecycleLedger.values()) {
-          if (
-            rec.answered === true &&
-            rec.resolutionSeq != null &&
-            rec.emissionSeq != null &&
-            rec.resolutionSeq > rec.emissionSeq
-          ) {
-            if (latestAnswered == null || rec.resolutionSeq > latestAnswered.resolutionSeq) {
-              latestAnswered = rec;
-            }
+          if (rec.emissionSeq != null && rec.emissionSeq > latestAnswered.resolutionSeq) {
+            laterAskEmitted = true;
+            break;
           }
         }
-        // A NEW ask emitted AFTER the latest answer resolved is itself audible
-        // (a follow-up question), so the turn is not silent — decline the net.
-        let laterAskEmitted = false;
-        if (latestAnswered) {
-          for (const rec of askLifecycleLedger.values()) {
-            if (rec.emissionSeq != null && rec.emissionSeq > latestAnswered.resolutionSeq) {
-              laterAskEmitted = true;
-              break;
-            }
-          }
-        }
-        if (latestAnswered && !laterAskEmitted) {
-          const survivingConfCount = Array.isArray(result.confirmations)
-            ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
-            : 0;
-          const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-            ? session.pendingVoicePrompts.filter(
-                (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
-              ).length
-            : 0;
-          const survivingAnswer = isAudibleText(result.spoken_response);
-          if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
+      }
+      if (latestAnswered && !laterAskEmitted) {
+        const survivingConfCount = Array.isArray(result.confirmations)
+          ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
+          : 0;
+        const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
+          ? session.pendingVoicePrompts.filter(
+              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
+            ).length
+          : 0;
+        const survivingAnswer = isAudibleText(result.spoken_response);
+        if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
+          const isDecline = latestAnswered.declineClass === 'decline';
+          // 2026-08-14 (Derek decision, PLAN-G, id-114): the DECLINE family
+          // always speaks — bypasses confirmationsEnabled. Every OTHER P4
+          // ack (the plain ANSWERED family) remains toggle-gated, same as
+          // before this change.
+          if (isDecline || options.confirmationsEnabled === true) {
             if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
-            const isDecline = latestAnswered.declineClass === 'decline';
             const family = isDecline ? ASK_DECLINE_ACK_PROMPTS : ASK_ANSWERED_ACK_PROMPTS;
             const text = family[turnNum % family.length];
-            session.pendingVoicePrompts.push({ text, generationId });
+            // PLAN-G2 (2026-08-14, held finding 2) — a replay-stable structural
+            // dedupe token for BOTH P4 ack families. Neither family previously
+            // carried any board/turn identity, so two genuinely distinct acks
+            // landing on the same rotated text within the client's 30 s
+            // field-nil TTL window would silently collapse into one spoken ack.
+            // Stamped here at production so the token is turnId-scoped (stable
+            // across a replay of the SAME turn, distinct across different
+            // turns); copied verbatim through the §A4 drain below into
+            // `result.confirmations.dedupe_token` — the wire property name is
+            // used directly here (not a renamed internal field) so the copy is
+            // a straight passthrough, not a translation.
+            session.pendingVoicePrompts.push({
+              text,
+              generationId,
+              dedupe_token: `p4ack_${turnId}`,
+            });
             log.info?.('stage6.answered_ask_ack_emitted', {
               sessionId: session.sessionId,
               turnId,
@@ -5072,12 +5104,49 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           });
           continue;
         }
-        result.confirmations.push({
+        const drained = {
           text: p.text,
           field: null,
           circuit: null,
           expects_ios_ack: false,
-        });
+          // PLAN-G2 — copy a producer-stamped dedupe token verbatim through
+          // to the wire. Conditionally spread (not `dedupe_token: p.dedupe_token`)
+          // so an apology family that never set a token (the pending-value
+          // terminal, the F7 Item 2 fallback, etc.) does not gain the KEY at
+          // all — only the P4 ack production site above stamps one.
+          ...(p.dedupe_token != null ? { dedupe_token: p.dedupe_token } : {}),
+        };
+        // Codex diff-review cycle 1 (PLAN-G2) — the ONE
+        // applyConfirmationDebounce call site (§3.3a above, ~line 3324) runs
+        // BEFORE this drain even executes, so a p4ack_-tokened entry pushed
+        // here was NEVER actually reaching the server-side debounce despite
+        // stage6-event-bundler.js's hasServerStructuralTokenPrefix
+        // recognising the prefix — the recognition code was correct but
+        // structurally unreachable for real P4 acks. Route ONLY p4ack_-
+        // tokened entries through the SAME per-session debounce state used
+        // above (a second, independent, tightly-scoped pass) so a genuine
+        // replay within the 1.5 s window is suppressed exactly like every
+        // other token-keyed confirmation. Every OTHER §A4 apology family
+        // (no token, or a non-p4ack_ token) is completely untouched — this
+        // does not widen debounce behaviour beyond what the plan asked for.
+        if (typeof drained.dedupe_token === 'string' && drained.dedupe_token.startsWith('p4ack_')) {
+          if (!session.confirmationDebounceState) {
+            session.confirmationDebounceState = { lastEmittedAt: 0, lastField: null };
+          }
+          const [survived] = applyConfirmationDebounce(
+            [drained],
+            session.confirmationDebounceState
+          );
+          if (!survived) {
+            log.info?.('stage6.p4ack_debounced', {
+              sessionId: session.sessionId,
+              turnId,
+              dedupe_token: drained.dedupe_token,
+            });
+            continue;
+          }
+        }
+        result.confirmations.push(drained);
         log.info?.('stage6.pending_value_apology_emitted', {
           sessionId: session.sessionId,
           turnId,
