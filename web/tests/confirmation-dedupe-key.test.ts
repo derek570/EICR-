@@ -792,6 +792,23 @@ describe('PLAN-G2 held finding 2 — p4ack_ prefix branch wins ahead of the fiel
     expect(first).toBe(replay);
   });
 
+  it('rapid-distinct: the ANSWERED family ALSO produces DISTINCT keys for two DIFFERENT P4 acks on the SAME rotated text', () => {
+    // Codex diff-review cycle 1 finding — rapid-distinct coverage had only
+    // been pinned for the DECLINE family; the ANSWERED family shares the
+    // same buildConfirmationDedupeKey code path but deserves its own proof.
+    const first = buildConfirmationDedupeKey({
+      text: 'Okay, got it.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-4',
+    });
+    const second = buildConfirmationDedupeKey({
+      text: 'Okay, got it.',
+      field: null,
+      dedupe_token: 'p4ack_sess-x-turn-5',
+    });
+    expect(first).not.toBe(second);
+  });
+
   it('a non-p4ack token (or none) is unaffected — legacy text+board hash unchanged', () => {
     expect(
       buildConfirmationDedupeKey({

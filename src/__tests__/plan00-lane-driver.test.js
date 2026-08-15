@@ -616,6 +616,125 @@ describe('Codex r2 judge hardening — consumption, sweeps, turn membership', ()
     expect(v.reason).toBe('undeclared_audible');
   });
 
+  // PLAN-G2 (2026-08-14, Codex diff-review cycle 1) — field_null_fallback's
+  // optional match.dedupe_token comparison. Most field_null_fallback targets
+  // (marker-①/②/F7 apologies) never declare a token and are unaffected
+  // (proven by the undeclared-audible test above using an unrelated shape);
+  // these two pin the NEW comparison itself for a fixture that DOES declare
+  // one (the two P4 ack families, PLAN-G2).
+  test('field_null_fallback with a declared dedupe_token PASSES when the captured row carries the SAME token', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'field_null_fallback',
+                count: 1,
+                match: {
+                  text_exact: 'No problem, moving on.',
+                  dedupe_token: 'p4ack_sess-x-turn-1',
+                },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'No problem, moving on.',
+              dedupe_token: 'p4ack_sess-x-turn-1',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('PASS');
+  });
+
+  test('RED: field_null_fallback with a declared dedupe_token FAILS when the captured row carries a DIFFERENT token', () => {
+    // Proves the comparison is load-bearing, not vacuous — a captured row
+    // with the right TEXT but the wrong TOKEN (e.g. a stale/replayed turn's
+    // ack landing where a fresh one was expected) must not silently PASS.
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'field_null_fallback',
+                count: 1,
+                match: {
+                  text_exact: 'No problem, moving on.',
+                  dedupe_token: 'p4ack_sess-x-turn-1',
+                },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'No problem, moving on.',
+              dedupe_token: 'p4ack_sess-x-turn-99',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+  });
+
+  test('RED: field_null_fallback with a declared dedupe_token FAILS when the captured row carries NO token at all', () => {
+    const v = judgeFrozenEvidence(
+      {
+        schema_version: 1,
+        corpus_id: 'frc_test',
+        turns: [
+          {
+            operations: [],
+            audible_outputs: [
+              {
+                kind: 'field_null_fallback',
+                count: 1,
+                match: {
+                  text_exact: 'No problem, moving on.',
+                  dedupe_token: 'p4ack_sess-x-turn-1',
+                },
+              },
+            ],
+          },
+        ],
+      },
+      frozenWith(
+        baseEvidence({
+          non_mutating_audible: [
+            {
+              channel: 'ws_extraction',
+              kind: 'field_null_confirmation',
+              text: 'No problem, moving on.',
+            },
+          ],
+        })
+      )
+    );
+    expect(v.verdict).toBe('FAIL');
+  });
+
   test('field_cleared: a clear receipt from ANOTHER turn can never satisfy the confirmation', () => {
     const clearReceipt = {
       kind: 'clear',

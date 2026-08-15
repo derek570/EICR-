@@ -373,11 +373,16 @@ describe('capability exclusions + fidelity rules', () => {
   });
 
   // ── P4 (ask-decline-ack-net 2026-07-23) — field_null_fallback relaxation ──
-  // The §A4-drained field-null ack (marker-①/②/F7 apologies AND the P4
-  // decline-ack) is TOKENLESS, so a non-empty trimmed text_exact is a
-  // sufficient oracle on its own; a fabricated token would then FAIL the
-  // runtime match against the tokenless wire ack. An empty/whitespace text_exact
-  // still provides no meaningful oracle and stays rejected.
+  // A non-empty trimmed text_exact is a SUFFICIENT oracle on its own for any
+  // field_null_fallback target — never mandatory to pair with a token. Most
+  // targets (marker-①/②/F7 apologies) are genuinely TOKENLESS; a fabricated
+  // token on one of THOSE would FAIL the runtime match. PLAN-G2 (2026-08-14)
+  // gave BOTH P4 ack families a real `dedupe_token: p4ack_<turnId>`, so a
+  // fixture targeting a P4 ack MAY additionally assert `match.dedupe_token`
+  // for a strengthened text+identity oracle — replay-assertions.mjs already
+  // matches it generically when present (see frc_85ace7677…). An
+  // empty/whitespace text_exact still provides no meaningful oracle and
+  // stays rejected.
   function fnfTurn(match) {
     // A turn whose sole audible output is a field_null_fallback ack — no
     // expected_operations (the answered-decline produces no write), and the

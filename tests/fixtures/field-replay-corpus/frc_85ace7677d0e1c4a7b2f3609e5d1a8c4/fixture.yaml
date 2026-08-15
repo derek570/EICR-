@@ -28,15 +28,19 @@
 # `text_exact` alone. PLAN-G2 (2026-08-14, held finding 2) added a
 # replay-stable `p4ack_<turnId>` structural token to BOTH P4 ack families
 # (stamped at production in stage6-shadow-harness.js, copied verbatim through
-# the §A4 drain) — this fixture now asserts it explicitly in ADDITION to
-# text_exact, strengthening the oracle from text-only to text+identity. The
-# `field_null_fallback` schema's text_exact-alone rule is UNCHANGED (it stays
-# the sufficient minimum — a token is optional per-fixture, since ordinary
-# marker-①/②/F7 apologies still emit no token at all; see fixture-schema.mjs).
-# The token is a deterministic hash of (corpusId, turnIndex) via the replay
-# harness's `mintSessionId`, NOT hand-computed — regenerate it with
-# `node -e "import('./scripts/field-replay/lib/canonical-crypto.mjs').then(m=>console.log(m.mintSessionId('frc_85ace7677d0e1c4a7b2f3609e5d1a8c4')))"`
-# if this fixture's corpus_id ever changes.
+# the §A4 drain) — `field_null_fallback` matchers MAY now additionally assert
+# `match.dedupe_token` (see fixture-schema.mjs / field-replay-corpus.md) for a
+# text+identity oracle. THIS fixture deliberately does NOT — it is consumed by
+# TWO harnesses with DIFFERENT session-id minting schemes for the SAME
+# corpus_id (the field-replay recorded lane's `mintSessionId(corpusId)` here
+# in replay-runner-core.mjs vs the Plan-00 vendor-live lane's `lane-<corpusId>`
+# in lane-driver.mjs's `runVendorLaneMock`), so the token's exact bytes differ
+# per harness and a single literal value in `match` cannot be correct in both
+# (Codex diff-review cycle 1 caught this: asserting one harness's token broke
+# the OTHER harness's `runVendorLaneMock` 9/9 acceptance test). `text_exact`
+# alone remains harness-agnostic and is the correct oracle for a
+# dual-consumed fixture; a token assertion belongs on a fixture that is
+# vendor_live-ONLY or field-replay-ONLY, not both.
 # The ack rotates deterministically as `turnNum % ASK_DECLINE_ACK_PROMPTS.length`
 # (turn 1 → index 1 → "No problem, moving on."), so the phrase is computable in
 # the frozen lane. The declared `expected_audible_outputs` carry BOTH the
@@ -44,10 +48,7 @@
 # `audibility.turn` false-pass (the ask question is itself "audible") and the
 # RED id is `audibility.output.out_decline_ack`. Pre-fix replay fails EXACTLY
 # that id (the ask emits + is claimed; the ack is never synthesised → 0
-# matches). Pre-PLAN-G2 code (the ack synthesises but carries no token) would
-# also fail this RED id once the token assertion is added — verified by
-# temporarily reverting the `dedupe_token` line and confirming pass, matching
-# the fixture's pre-strengthening baseline.
+# matches).
 #
 # Provenance: HAND-AUTHORED / reconstructed from realtime chunks — session
 # 2ACE7677 has no field_sources/manifest (the iOS multipart analytics upload was
@@ -139,4 +140,3 @@ turns:
         count: 1
         match:
           text_exact: No problem, moving on.
-          dedupe_token: p4ack_frsess_bcb3a8a8bc226afd52a7e96cb3c41f42-turn-1

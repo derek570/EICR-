@@ -3,7 +3,7 @@
   "status": "UNREVIEWED-DRAFT",
   "generated_by": "scripts/model-ab/run-semantic-lane.mjs (Plan 00B B6)",
   "vendor_live_expectations": {
-    "sha256": "52e8b0a605300e682d68d83ec827a33f38747bba4e4ca496b3927d7732841678",
+    "sha256": "826644050e4be48f5ee79faa9676f2a19e160db10dc904e8914d0bf9e95e5eb6",
     "fixture_ids": [
       "frc_342b5176bba77d4e9a031c6541d60e63",
       "frc_4687948efcd06a3cd9dce203a3aa4ffe",
@@ -212,8 +212,7 @@
                 "kind": "field_null_fallback",
                 "count": 1,
                 "match": {
-                  "text_exact": "No problem, moving on.",
-                  "dedupe_token": "p4ack_frsess_bcb3a8a8bc226afd52a7e96cb3c41f42-turn-1"
+                  "text_exact": "No problem, moving on."
                 }
               }
             ]
@@ -497,8 +496,8 @@
       }
     ]
   },
-  "combined_sha256": "574bcfdb844e64195838fe061f9e2b1410e61c54246248cc84c9932e1831c729",
-  "semantic_oracle_digest": "adf927feb6c9d9d6d8c42a401fed3b684e1858834cf03a10230c9c635157c4bf",
+  "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
+  "semantic_oracle_digest": "fb5f1deffbe3132490afdd9eafaa8b42c61b1850b1745b6621e4a3e3dd0bbadb",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -514,11 +513,11 @@
     },
     {
       "path": "src/extraction/plan00-lifecycle-hooks.js",
-      "sha256": "478bb08397894a2c86d7293b3cf5ef519e8c962bd494c5b7d51618d85bdbb29a"
+      "sha256": "9da6792b3b4eb64ae889f2d850c0ecc760bbe2bc34ac9335931b57f7524bb75d"
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "754d87c1ea7b2f58f7d00db1ad55ea678a514f621748ea26f69dbdfe82e83a48"
+      "sha256": "240a15100696c7880460550ab3e7260c4503335f923f62cfb722a0e0703f5dc8"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -530,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "26bf42e0978197f49faf667f800f1fcd58717d38c4eabffa0cedc30f2f31e9c1"
+      "sha256": "19244f4c483f4a538d6f66fa09c9edf001525f39023d8b9bbf95a3d8f4c23837"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -566,7 +565,7 @@
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
-      "sha256": "eb7ed52cf0dd395537d431b2f110a199d71fcae1df84d75f8dbd6c6e1d80efb7"
+      "sha256": "a7b7dba143b6329d941602d208c1f50233ff78dc60d36a2073ff0b32ce2ef657"
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
@@ -683,6 +682,6 @@
       "dated": "2026-08-04"
     }
   ],
-  "vendor_live_sha256": "52e8b0a605300e682d68d83ec827a33f38747bba4e4ca496b3927d7732841678",
+  "vendor_live_sha256": "826644050e4be48f5ee79faa9676f2a19e160db10dc904e8914d0bf9e95e5eb6",
   "deterministic_egress_sha256": "4a9d8a8e9d5c5a386e209e18dc5bc063b8edf545808f6c963ddd1a5c01b618f5"
 }

@@ -1834,6 +1834,11 @@ function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptOrdinal 
             channel: 'ws_extraction',
             kind: 'field_null_confirmation',
             text: c.text ?? null,
+            // PLAN-G2 (2026-08-14, Codex diff-review cycle 1) — carry the
+            // wire dedupe_token through so the field_null_fallback judge
+            // branch can compare it when a fixture declares one (currently
+            // only the two P4 ack families ever set this).
+            dedupeToken: typeof c.dedupe_token === 'string' ? c.dedupe_token : null,
           });
         }
       }

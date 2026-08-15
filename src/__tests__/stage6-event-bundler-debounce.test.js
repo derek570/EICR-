@@ -436,4 +436,19 @@ describe('PLAN-G2 held finding 2 — p4ack_ prefix recognised by BOTH confirmati
     expect(first).toHaveLength(1);
     expect(replay).toHaveLength(0);
   });
+
+  test('rapid-distinct: the ANSWERED family ALSO gets two DIFFERENT P4 acks on the SAME rotated text (different turnId tokens) both speaking', () => {
+    // Codex diff-review cycle 1 finding — rapid-distinct coverage had only
+    // been pinned for the DECLINE family; the ANSWERED family shares the
+    // same code path but deserves its own explicit proof.
+    const answered = (token) => p4Ack(token, 'Okay, got it.');
+    const state = { lastEmittedAt: 0, lastField: null };
+    const t0 = 1_000_000;
+    const first = applyConfirmationDebounce([answered('p4ack_sess-x-turn-4')], state, { now: t0 });
+    const second = applyConfirmationDebounce([answered('p4ack_sess-x-turn-5')], state, {
+      now: t0 + 200,
+    });
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+  });
 });

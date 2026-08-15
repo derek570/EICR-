@@ -5104,7 +5104,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           });
           continue;
         }
-        result.confirmations.push({
+        const drained = {
           text: p.text,
           field: null,
           circuit: null,
@@ -5115,7 +5115,38 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // terminal, the F7 Item 2 fallback, etc.) does not gain the KEY at
           // all — only the P4 ack production site above stamps one.
           ...(p.dedupe_token != null ? { dedupe_token: p.dedupe_token } : {}),
-        });
+        };
+        // Codex diff-review cycle 1 (PLAN-G2) — the ONE
+        // applyConfirmationDebounce call site (§3.3a above, ~line 3324) runs
+        // BEFORE this drain even executes, so a p4ack_-tokened entry pushed
+        // here was NEVER actually reaching the server-side debounce despite
+        // stage6-event-bundler.js's hasServerStructuralTokenPrefix
+        // recognising the prefix — the recognition code was correct but
+        // structurally unreachable for real P4 acks. Route ONLY p4ack_-
+        // tokened entries through the SAME per-session debounce state used
+        // above (a second, independent, tightly-scoped pass) so a genuine
+        // replay within the 1.5 s window is suppressed exactly like every
+        // other token-keyed confirmation. Every OTHER §A4 apology family
+        // (no token, or a non-p4ack_ token) is completely untouched — this
+        // does not widen debounce behaviour beyond what the plan asked for.
+        if (typeof drained.dedupe_token === 'string' && drained.dedupe_token.startsWith('p4ack_')) {
+          if (!session.confirmationDebounceState) {
+            session.confirmationDebounceState = { lastEmittedAt: 0, lastField: null };
+          }
+          const [survived] = applyConfirmationDebounce(
+            [drained],
+            session.confirmationDebounceState
+          );
+          if (!survived) {
+            log.info?.('stage6.p4ack_debounced', {
+              sessionId: session.sessionId,
+              turnId,
+              dedupe_token: drained.dedupe_token,
+            });
+            continue;
+          }
+        }
+        result.confirmations.push(drained);
         log.info?.('stage6.pending_value_apology_emitted', {
           sessionId: session.sessionId,
           turnId,
