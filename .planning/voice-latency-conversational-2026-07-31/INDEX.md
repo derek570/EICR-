@@ -79,13 +79,14 @@ scoped for the full dual-reviewer loop, and it no longer earns one.
 
 This was the "re-argue after 08A" caveat, and it resolved **earlier than expected and without 08A** —
 Plan 07's within-turn data answered it directly, because Loaded Barrel already demonstrates what
-overlapping the vendor is worth. 08A's `pre_tool_use_ms` split can still overturn this, but the
-burden has moved: Plan 02 must now argue its way back in. **Do not open Plan 02's `/rp` before
-reading it** — that is the substantive reason for the 08-before-02 order, not just sequencing.
+overlapping the vendor is worth. **RATIFIED by Derek 2026-08-16** (see
+`~/obsidian-vault/active/ep-digest.md`'s Resolved section): the demotion stands. Plan 02 stays
+unbuilt unless a future non-latency argument reopens it via its own `/rp` — that argument would
+have to be made fresh, not inferred from telemetry.
 
-### Tier C — held, reassess after 02
+### Tier C — held indefinitely (Plan 02 closed, not reassessed)
 
-- **03 §1–2** (ElevenLabs connection pooling) — only if 02's numbers show vendor setup is still material.
+- **03 §1–2** (ElevenLabs connection pooling) — was gated on "only if 02's numbers show vendor setup is still material"; since 02 is not being built, there are no such numbers coming. Stays held unless raised independently.
 - **04** — Phase 2 (no-text connection preparation) at most. Phase 1's cohort mandate is cut; Phase 3 stays dark and still requires its own explicit go/no-go.
 - **05** — deferred. New prefetch cache + wire surface for a modest saving on question turns, which are a minority of turns for a single user.
 
