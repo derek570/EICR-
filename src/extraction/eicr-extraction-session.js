@@ -1329,6 +1329,22 @@ export class EICRExtractionSession {
         ? options.maxProviderAttempts
         : null;
 
+    // Plan 08C-A benchmark hardening (2026-08-16) — SDK-LAYER retry pin,
+    // the companion knob to `_maxProviderAttempts` above. That cap clamps
+    // callWithRetry's OWN attempt loop, but the OpenAI SDK client retries
+    // 429/5xx INTERNALLY (default 2) inside every one of those attempts —
+    // a silent backoff-and-retry whose sleep lands inside the round's
+    // measured stream window and whose eventual success means no
+    // stage6_live_error row ever exposes that a rate limit fired. A latency
+    // benchmark needs retries at EVERY layer to surface, so it pins this
+    // to 0. Same constructor-latched, option-not-env contract as its
+    // sibling. `null` (the default, and every production call site) omits
+    // the argument entirely, so production keeps the SDK's own default.
+    this._providerMaxRetries =
+      Number.isInteger(options.providerMaxRetries) && options.providerMaxRetries >= 0
+        ? options.providerMaxRetries
+        : null;
+
     // Stage 6 Phase 4: mode-gated prompt selection.
     //   off         → legacy cert-specific prompt (STR-01 rollback path).
     //   shadow/live → cert-agnostic agentic prompt; cert-specific facts
@@ -1443,7 +1459,14 @@ export class EICRExtractionSession {
           }
         );
       }
-      return new Anthropic({ apiKey: this._anthropicApiKey });
+      // Same providerMaxRetries contract as the OpenAI branch below — the
+      // Anthropic SDK also retries internally by default; null omits the
+      // override entirely.
+      return new Anthropic(
+        this._providerMaxRetries != null
+          ? { apiKey: this._anthropicApiKey, maxRetries: this._providerMaxRetries }
+          : { apiKey: this._anthropicApiKey }
+      );
     }
 
     if (provider === 'openai') {
@@ -1458,9 +1481,20 @@ export class EICRExtractionSession {
           { provider, extractionApi: this.extractionApi }
         );
       }
+      // `maxRetries` reaches the SDK client only when `providerMaxRetries`
+      // was latched at construction (benchmark/evaluation lanes); the null
+      // default omits it so both adapters keep the SDK's own retry policy —
+      // byte-identical to the pre-option behaviour at every production
+      // call site.
       return this.extractionApi === 'chat_completions'
-        ? createOpenAIToolUseAdapter({ apiKey: this._openaiApiKey })
-        : createOpenAIResponsesAdapter({ apiKey: this._openaiApiKey });
+        ? createOpenAIToolUseAdapter({
+            apiKey: this._openaiApiKey,
+            ...(this._providerMaxRetries != null ? { maxRetries: this._providerMaxRetries } : {}),
+          })
+        : createOpenAIResponsesAdapter({
+            apiKey: this._openaiApiKey,
+            ...(this._providerMaxRetries != null ? { maxRetries: this._providerMaxRetries } : {}),
+          });
     }
 
     throw new ProviderResolutionError(`Unsupported extraction provider: ${provider}`, { provider });

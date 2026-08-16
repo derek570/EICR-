@@ -231,3 +231,32 @@ describe('snapshotRecentCircuits — constructor-latched override', () => {
     expect(text).toMatch(/1 earlier circuits? \(7\) stored server-side/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 08C-A benchmark hardening (2026-08-16) — providerMaxRetries
+// constructor-latched SDK-retry pin
+// ---------------------------------------------------------------------------
+//
+// Companion to _maxProviderAttempts: that clamps callWithRetry's own loop,
+// but the SDK client retries 429/5xx internally (default 2) inside every
+// attempt — silent backoff that lands inside a benchmark's measured stream
+// window. The latency bench pins this to 0 so retries at every layer
+// surface as errors instead of contaminating stream_ms.
+describe('providerMaxRetries — constructor-latched SDK retry pin', () => {
+  test('no option → null (SDK keeps its own default; production unchanged)', () => {
+    const s = makeSession();
+    expect(s._providerMaxRetries).toBeNull();
+  });
+
+  test('options.providerMaxRetries: 0 → latched as 0 (0 is a VALID pin, not falsy-rejected)', () => {
+    const s = makeSession({ providerMaxRetries: 0 });
+    expect(s._providerMaxRetries).toBe(0);
+  });
+
+  test('positive integers latch; non-integers/negatives/strings/null fall back to null', () => {
+    expect(makeSession({ providerMaxRetries: 2 })._providerMaxRetries).toBe(2);
+    for (const bad of [-1, 1.5, 'zero', null, undefined, NaN]) {
+      expect(makeSession({ providerMaxRetries: bad })._providerMaxRetries).toBeNull();
+    }
+  });
+});
