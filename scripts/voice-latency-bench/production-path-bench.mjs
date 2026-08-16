@@ -619,6 +619,16 @@ function assignRoundIdx(capturedNs, roundTimings) {
 // Finds the confirmations[]/ask_user_started evidence for one dispatched
 // call, from the ws frames captured during this turn. See header doc's
 // "an honest limitation" section.
+//
+// THREE-STATE return (Sonnet-max cycle-2 finding): a frame object when the
+// audible evidence was found; `null` when the tool's audibility IS provable
+// by this matcher and no frame arrived (genuinely silent — a parity
+// failure); the string 'unprovable' when the tool carries no `field` in its
+// input summary (create_circuit, select_board, board ops, ...) so this
+// runner structurally CANNOT match a confirmation to it. The analyzer
+// treats only `null` as unspoken — conflating the two turned a single
+// identical-across-arms structural call into a both-candidates parity
+// failure with no diagnostic trail.
 function findEmittedAudibleFrame(toolCallRow, wsFramesThisTurn) {
   const tool = toolCallRow.tool;
   const inputSummary = toolCallRow.input_summary ?? {};
@@ -630,7 +640,7 @@ function findEmittedAudibleFrame(toolCallRow, wsFramesThisTurn) {
     }
     return null;
   }
-  if (inputSummary.field === undefined) return null;
+  if (inputSummary.field === undefined) return 'unprovable';
   for (const ev of wsFramesThisTurn) {
     if (ev.msg?.type !== 'extraction') continue;
     const confirmations = Array.isArray(ev.msg.result?.confirmations) ? ev.msg.result.confirmations : [];
@@ -852,10 +862,12 @@ async function runRepetition({
       //   utteranceId           — per-turn identity, production threads one
       //                           per consumed transcript.
       //   filledSlotsShadow     — DELIBERATELY omitted: the harness installs
-      //                           a behaviour-identical no-op default
-      //                           (stage6-shadow-harness.js:306); the real
-      //                           logger is telemetry-only and needs the
-      //                           activeSessions stateSnapshot wiring.
+      //                           a behaviour-identical no-op default (the
+      //                           `options.filledSlotsShadow ?? (() => {})`
+      //                           fallbacks in stage6-shadow-harness.js);
+      //                           the real logger is telemetry-only and
+      //                           needs the activeSessions stateSnapshot
+      //                           wiring.
       result = await runShadowHarness(session, transcriptText, regexResults, {
         confirmationsEnabled: true,
         pendingAsks,

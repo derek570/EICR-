@@ -41,8 +41,11 @@
  *     with divergent turns could still contribute its matching subset);
  *   - parity compares the FINAL per-destination applied value (identical
  *     transcripts ⇒ identical final field state), not just the destination
- *     set, and additionally requires every applied write to have emitted an
- *     audible frame (Audio-First #1 — a silently-writing arm must not win);
+ *     set, and additionally requires every applied write whose audibility
+ *     the runner can PROVE to have emitted an audible frame (Audio-First #1
+ *     — a silently-writing arm must not win). Field-less structural tools
+ *     are 'unprovable', counted + reported, never treated as silence;
+ *     per-block mismatch reason codes ride in parity.*.mismatch_details;
  *   - a candidate wins only with usable paired data from EVERY fixture in
  *     the results file (previously one surviving fixture could decide).
  *
@@ -209,6 +212,7 @@ function main() {
       const behaviourProfile = (rep) => {
         const state = new Map();
         let unspoken = 0;
+        let unprovable = 0;
         let nonOk = 0;
         let asks = 0;
         for (const t of rep.turns) {
@@ -220,19 +224,45 @@ function main() {
             }
             if (!l.applied_mutation) continue;
             state.set(l.canonical_destination, l.normalised_value ?? null);
-            if (!l.emitted_audible_frame) unspoken += 1;
+            // THREE-STATE audibility (Sonnet-max cycle-2 finding, empirically
+            // reproduced): the runner returns 'unprovable' for field-less
+            // structural tools (create_circuit, select_board, ...) whose
+            // confirmations it structurally cannot match — only an explicit
+            // null means PROVABLY silent. Conflating them let one identical-
+            // across-arms structural call fail parity for both candidates.
+            // Unprovable calls are counted separately and surfaced in the
+            // report, never treated as silence.
+            if (l.emitted_audible_frame === null) unspoken += 1;
+            else if (l.emitted_audible_frame === 'unprovable') unprovable += 1;
           }
         }
-        return { state: JSON.stringify([...state.entries()].sort()), unspoken, nonOk, asks };
+        return { state: JSON.stringify([...state.entries()].sort()), unspoken, unprovable, nonOk, asks };
+      };
+      const mismatchReasons = (b, c) => {
+        const reasons = [];
+        if (c.state !== b.state) reasons.push('final_state_divergence');
+        if (c.unspoken > 0) reasons.push('candidate_unspoken_write');
+        if (c.asks !== b.asks) reasons.push(`ask_count_${b.asks}_vs_${c.asks}`);
+        if (c.nonOk !== b.nonOk) reasons.push(`non_ok_rows_${b.nonOk}_vs_${c.nonOk}`);
+        return reasons;
       };
       const base = behaviourProfile(arms.get(BASELINE_ARM));
+      fixtureReport.parity_unprovable_audibility_calls =
+        (fixtureReport.parity_unprovable_audibility_calls ?? 0) + base.unprovable;
       if (base.unspoken > 0) {
-        for (const cand of CANDIDATE_ARMS) fixtureReport.parity[cand].destination_mismatch_blocks += 1;
+        for (const cand of CANDIDATE_ARMS) {
+          fixtureReport.parity[cand].destination_mismatch_blocks += 1;
+          fixtureReport.parity[cand].mismatch_details ??= [];
+          fixtureReport.parity[cand].mismatch_details.push({ block: blockId, reasons: ['baseline_unspoken_write'] });
+        }
       } else {
         for (const cand of CANDIDATE_ARMS) {
           const c = behaviourProfile(arms.get(cand));
-          if (c.state !== base.state || c.unspoken > 0 || c.asks !== base.asks || c.nonOk !== base.nonOk) {
+          const reasons = mismatchReasons(base, c);
+          if (reasons.length > 0) {
             fixtureReport.parity[cand].destination_mismatch_blocks += 1;
+            fixtureReport.parity[cand].mismatch_details ??= [];
+            fixtureReport.parity[cand].mismatch_details.push({ block: blockId, reasons });
           }
         }
       }
