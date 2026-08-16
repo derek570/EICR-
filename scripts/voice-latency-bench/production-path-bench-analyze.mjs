@@ -53,6 +53,7 @@
  */
 
 import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 const BASELINE_ARM = 'recent_3';
 const CANDIDATE_ARMS = ['ascending', 'window_6'];
@@ -93,13 +94,11 @@ function turnStreamMs(turn) {
   return (turn.round_timings ?? []).reduce((s, r) => s + (r.stream_ms ?? 0), 0);
 }
 
-function main() {
-  const resultsPath = process.argv[2];
-  if (!resultsPath) {
-    process.stderr.write('usage: production-path-bench-analyze.mjs <results.json>\n');
-    process.exit(2);
-  }
-  const reps = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+// Exported so the committed regression suite (Sonnet-max cycle-3 finding:
+// three consecutive BLOCKER classes in this file had only uncommitted /tmp
+// selftests) can drive the EXACT decision logic without a child process.
+export function analyzeResults(reps, inputLabel = '<in-memory>') {
+  const resultsPath = inputLabel;
 
   // Fixture universe from ALL reps — including wholly-rate-limited ones
   // (Codex cycle-2: deriving it from the clean subset let a fixture whose
@@ -407,7 +406,22 @@ function main() {
   else outcome = 'NO ARM WINS — keep recent_3 (inconclusive or sub-threshold)';
   report.decision = { per_arm: decision, outcome };
 
+  return report;
+}
+
+function main() {
+  const resultsPath = process.argv[2];
+  if (!resultsPath) {
+    process.stderr.write('usage: production-path-bench-analyze.mjs <results.json>\n');
+    process.exit(2);
+  }
+  const reps = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
+  const report = analyzeResults(reps, resultsPath);
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
 }
 
-main();
+// Import-safe CLI guard: running under Jest (or any importer) must not
+// execute main() at module load.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

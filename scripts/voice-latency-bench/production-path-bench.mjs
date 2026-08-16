@@ -168,7 +168,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import Transport from 'winston-transport';
 import yaml from 'js-yaml';
 import { DELETED_SO_DEFAULTS_APPLY } from '../field-replay/replay-environment.mjs';
@@ -235,7 +235,7 @@ const WRITE_TOOL_NAMES = new Set([
 //      replay-environment.mjs's DELETED_SO_DEFAULTS_APPLY class), so a
 //      shell leftover here changed the reasoning profile of every round.
 // ---------------------------------------------------------------------------
-const PROD_ENV_DEFAULTS = {
+export const PROD_ENV_DEFAULTS = {
   NODE_ENV: 'production',
   SONNET_TOOL_CALLS: 'live',
   SONNET_EXTRACT_MODEL: 'gpt-5.6-luna',
@@ -264,7 +264,7 @@ const PROD_ENV_DEFAULTS = {
 
 // Mirror keys whose value DELIBERATELY diverges from the live task-def, with
 // the reason. The drift assertion skips exactly these.
-const DELIBERATE_TASK_DEF_DIVERGENCES = {
+export const DELIBERATE_TASK_DEF_DIVERGENCES = {
   // ElevenLabs synthesis is orthogonal to the per-round LLM levers 08C-A
   // measures; disabling removes an API-key requirement + synth-latency noise.
   VOICE_LATENCY_LOADED_BARREL: 'false',
@@ -286,7 +286,7 @@ const DELIBERATE_TASK_DEF_DIVERGENCES = {
 // evidence buckets stayed EMPTY; and with NODE_ENV=production now pinned,
 // a stale LOG_FILE would activate the production File transport, adding
 // unrelated I/O inside measured spans.
-const FORCE_DELETED_ENV = [...DELETED_SO_DEFAULTS_APPLY, 'LOG_LEVEL', 'LOG_FILE'];
+export const FORCE_DELETED_ENV = [...DELETED_SO_DEFAULTS_APPLY, 'LOG_LEVEL', 'LOG_FILE'];
 
 function applyProdEnvDefaults() {
   const overriddenShellValues = {};
@@ -637,7 +637,7 @@ function assignRoundIdx(capturedNs, roundTimings) {
 // treats only `null` as unspoken — conflating the two turned a single
 // identical-across-arms structural call into a both-candidates parity
 // failure with no diagnostic trail.
-function findEmittedAudibleFrame(toolCallRow, wsFramesThisTurn) {
+export function findEmittedAudibleFrame(toolCallRow, wsFramesThisTurn) {
   const tool = toolCallRow.tool;
   const inputSummary = toolCallRow.input_summary ?? {};
   if (tool === 'ask_user') {
@@ -1300,7 +1300,12 @@ async function main() {
 // durable .crash.jsonl record as detached ones (dual-review finding).
 let moduleCrashRecorder = null;
 
-main()
+// Import-safe CLI guard: the committed regression suite imports this module
+// for its exported seams (findEmittedAudibleFrame, the env-mirror constants)
+// and must not launch a benchmark at module load.
+const IS_MAIN = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (IS_MAIN)
+  main()
   .then(() => {
     // The OpenAI/Anthropic SDK HTTP clients (and possibly AWS SDK credential
     // providers exercised by the AWS Secrets Manager / ECS describe-task-
