@@ -1,6 +1,6 @@
 # Plan 06 — broaden `answer_user` into a safe conversational lane
 
-Status: **TIER B — GO GIVEN (Derek, 2026-08-10). Own `/rp`, runs after Plans 08 and 02.**
+Status: **TIER B — GO GIVEN (Derek, 2026-08-10). Own `/rp`, runs after Plan 08.** (Plan 02's demotion was ratified 2026-08-16 — it is closed, not a dependency; the "08 and 02" ordering this line originally carried is stale.)
 
 > The product go/no-go this plan waited on has been given. It remains a **product** change,
 > not a latency fix: judge it on usefulness, cost and distraction in a hands-free inspection,
