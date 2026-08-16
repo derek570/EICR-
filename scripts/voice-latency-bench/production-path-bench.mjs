@@ -1002,6 +1002,39 @@ async function main() {
     fs.writeFileSync(outputAbs, JSON.stringify(results, null, 2) + '\n');
   }
 
+  // Crash forensics: main().catch only sees rejections that propagate up
+  // through main. A detached promise rejection or a sync throw inside a
+  // timer callback (the session keepalive machinery is exactly this shape)
+  // kills the process with nothing on disk — the 2026-08-12 run died at
+  // 25/90 reps leaving zero trail, and its stderr log lived in /tmp, which
+  // the next reboot wiped. Persist a crash record NEXT TO the output file
+  // and flush completed reps before dying, so a dead run is diagnosable
+  // and its finished evidence survives.
+  const progress = { note: 'pre-loop' };
+  const recordCrash = (kind, err) => {
+    try {
+      flush();
+    } catch {
+      /* the results themselves may be the casualty — still record the crash */
+    }
+    const row = {
+      kind,
+      at: new Date().toISOString(),
+      last_progress: progress.note,
+      reps_completed: results.length,
+      error: String((err && (err.stack || err.message)) || err),
+    };
+    try {
+      fs.appendFileSync(`${outputAbs}.crash.jsonl`, JSON.stringify(row) + '\n');
+    } catch {
+      /* nothing left to do — stderr below is the last resort */
+    }
+    process.stderr.write(`FATAL(${kind}) at ${row.last_progress}: ${row.error}\n`);
+    process.exit(1);
+  };
+  process.on('uncaughtException', (err) => recordCrash('uncaughtException', err));
+  process.on('unhandledRejection', (err) => recordCrash('unhandledRejection', err));
+
   for (const fixture of fixtures) {
     process.stderr.write(`\n=== fixture: ${fixture.fixture_id} ===\n`);
     for (let blockIdx = 0; blockIdx < reps; blockIdx++) {
@@ -1022,6 +1055,7 @@ async function main() {
         const MAX_REP_ATTEMPTS = 3;
         let rep = null;
         for (let attempt = 1; attempt <= MAX_REP_ATTEMPTS; attempt++) {
+          progress.note = `${blockId} arm=${armName} attempt=${attempt}`;
           process.stderr.write(`    running arm=${armName} rep_index_in_block=${blockIdx} (attempt ${attempt})...\n`);
           rep = await runRepetition({
             fixture,
