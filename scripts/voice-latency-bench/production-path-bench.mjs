@@ -213,10 +213,26 @@ const WRITE_TOOL_NAMES = new Set([
 // ---------------------------------------------------------------------------
 // Production env mirror — set BEFORE any extraction module import so the
 // constructor-latched flags (Research §Pitfall 4) read the real values.
-// Only applied when the caller hasn't already set the var, so a caller can
-// still override for a deliberate off-prod experiment. VOICE_LATENCY_LOADED_
-// BARREL is force-set to 'false' regardless (see header doc — deliberately
-// out of scope for this bench).
+//
+// Dual-review rewrite (2026-08-16, Codex sol-high + Sonnet-max findings):
+//   1. FORCE-set, not set-if-undefined. The old apply-if-unset contract let
+//      a stale developer-shell value (OPENAI_EXTRACT_API=chat_completions,
+//      a leftover CIRCUIT_ORDER experiment, ...) silently change the
+//      transport or routing of a paid go/no-go run while every evidence row
+//      reported only the model name. Any shell value this stomps is
+//      recorded (returned + threaded into envMeta) so a deliberate
+//      off-prod experiment is still POSSIBLE — it just can't be silent.
+//   2. The mirror now includes every settable VOICE_LATENCY_* snapshot flag
+//      from the live task-def (the old mirror omitted all of them — three
+//      run true in production and silently ran false here).
+//   3. Runtime drift assertion: every mirror key that exists in
+//      ecs/task-def-backend.json must MATCH it, except the documented
+//      divergences below. A task-def change fails the bench fast instead
+//      of silently measuring a stale mirror.
+//   4. OPENAI_EXTRACT_REASONING_EFFORT is force-DELETED so the code default
+//      applies — production's task-def does not set it (it is in
+//      replay-environment.mjs's DELETED_SO_DEFAULTS_APPLY class), so a
+//      shell leftover here changed the reasoning profile of every round.
 // ---------------------------------------------------------------------------
 const PROD_ENV_DEFAULTS = {
   SONNET_TOOL_CALLS: 'live',
@@ -233,16 +249,72 @@ const PROD_ENV_DEFAULTS = {
   OBSERVATION_TIER_ROUTING: 'true',
   LIM_RANGED_WRITE_DISABLED: 'false',
   BOARD_CLEAR_DISABLED: 'false',
+  // VOICE_LATENCY_* snapshot flags, mirrored from ecs/task-def-backend.json
+  // (verified 2026-08-16). snapshotFlagsForSession() reads these; the three
+  // `true` ones were silently false in every earlier bench invocation.
+  VOICE_LATENCY_STREAM_CONFIRMATIONS: 'true',
+  VOICE_LATENCY_SUPPRESSION: 'false',
+  VOICE_LATENCY_REGEX_FAST_TTS: 'true',
+  VOICE_LATENCY_STREAM_ASK_USER: 'false',
+  VOICE_LATENCY_USE_MULTI_CONTEXT: 'true',
+  VOICE_LATENCY_KILL_SWITCH: 'false',
+  VOICE_LATENCY_ROUND1_MODEL: '',
 };
 
+// Mirror keys whose value DELIBERATELY diverges from the live task-def, with
+// the reason. The drift assertion skips exactly these.
+const DELIBERATE_TASK_DEF_DIVERGENCES = {
+  // ElevenLabs synthesis is orthogonal to the per-round LLM levers 08C-A
+  // measures; disabling removes an API-key requirement + synth-latency noise.
+  VOICE_LATENCY_LOADED_BARREL: 'false',
+};
+
+// Production leaves these UNSET (DELETED_SO_DEFAULTS_APPLY class in
+// scripts/field-replay/replay-environment.mjs) — the code default applies.
+// Force-delete so a developer-shell leftover cannot change the reasoning
+// profile of a paid run.
+const FORCE_DELETED_ENV = ['OPENAI_EXTRACT_REASONING_EFFORT'];
+
 function applyProdEnvDefaults() {
+  const overriddenShellValues = {};
   for (const [k, v] of Object.entries(PROD_ENV_DEFAULTS)) {
-    if (process.env[k] === undefined) process.env[k] = v;
+    if (process.env[k] !== undefined && process.env[k] !== v) {
+      overriddenShellValues[k] = process.env[k];
+      process.stderr.write(`→ WARNING: shell had ${k}=${process.env[k]}; forced to production mirror value '${v}'\n`);
+    }
+    process.env[k] = v;
   }
-  // Deliberately out of scope for this bench (see header doc) — force off
-  // regardless of caller env so a stray VOICE_LATENCY_LOADED_BARREL=true in
-  // the calling shell can't inject ElevenLabs synthesis noise/cost.
-  process.env.VOICE_LATENCY_LOADED_BARREL = 'false';
+  for (const k of FORCE_DELETED_ENV) {
+    if (process.env[k] !== undefined) {
+      overriddenShellValues[k] = process.env[k];
+      process.stderr.write(`→ WARNING: shell had ${k}=${process.env[k]}; deleted (production leaves it unset — code default applies)\n`);
+      delete process.env[k];
+    }
+  }
+  for (const [k, v] of Object.entries(DELIBERATE_TASK_DEF_DIVERGENCES)) {
+    if (process.env[k] !== undefined && process.env[k] !== v) overriddenShellValues[k] = process.env[k];
+    process.env[k] = v;
+  }
+
+  // Runtime drift assertion against the live task-def source template.
+  const taskDefPath = path.join(REPO_ROOT, 'ecs', 'task-def-backend.json');
+  const taskDef = JSON.parse(fs.readFileSync(taskDefPath, 'utf8'));
+  const taskDefEnv = Object.fromEntries(
+    (taskDef.containerDefinitions?.[0]?.environment ?? []).map((e) => [e.name, e.value])
+  );
+  const drift = [];
+  for (const [k, v] of Object.entries(PROD_ENV_DEFAULTS)) {
+    if (k in taskDefEnv && taskDefEnv[k] !== v) drift.push(`${k}: mirror='${v}' task-def='${taskDefEnv[k]}'`);
+  }
+  for (const k of FORCE_DELETED_ENV) {
+    if (k in taskDefEnv) drift.push(`${k}: mirror deletes it but the task-def now SETS it ('${taskDefEnv[k]}')`);
+  }
+  if (drift.length > 0) {
+    throw new Error(
+      `PROD_ENV_DEFAULTS has drifted from ecs/task-def-backend.json — fix the mirror before running a paid bench:\n  ${drift.join('\n  ')}`
+    );
+  }
+  return { overriddenShellValues };
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +644,22 @@ function findEmittedAudibleFrame(toolCallRow, wsFramesThisTurn) {
 // ---------------------------------------------------------------------------
 // One (fixture, arm) repetition
 // ---------------------------------------------------------------------------
-async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modules, envMeta, verbose, turnPaceMs = 0 }) {
+async function runRepetition({
+  fixture,
+  armName,
+  blockId,
+  repIndexInBlock,
+  modules,
+  envMeta,
+  verbose,
+  turnPaceMs = 0,
+  // Dual-review finding (Codex sol-high, 2026-08-16): pacing state MUST be
+  // shared across the whole run. When it lived inside runRepetition, the
+  // first turn of every new arm/block bypassed --turn-pace-ms entirely —
+  // three ~72k-token turn starts could land inside one 60s provider window
+  // at rep boundaries, exactly the 429 storm the pacing exists to prevent.
+  pacer,
+}) {
   const { EICRExtractionSession, runShadowHarness, createPendingAsksRegistry, activeSessions, projectLogger } =
     modules;
 
@@ -594,6 +681,18 @@ async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modul
   const armOptions = ARMS[armName] ?? {};
   const session = new EICRExtractionSession(process.env.ANTHROPIC_API_KEY ?? null, sessionId, 'eicr', {
     toolCallsMode: 'live',
+    // Dual-review finding (2026-08-16): retries at EVERY layer must surface,
+    // not silently blend into stream_ms. maxProviderAttempts:1 clamps
+    // callWithRetry's own loop (one dispatch = one provider request);
+    // providerMaxRetries:0 pins the SDK client's INTERNAL 429/5xx retries
+    // off. Without both, a rate-limited call could backoff-and-succeed
+    // inside the measured stream window with no live_error row — a
+    // contaminated rep entering the go/no-go statistic marked clean. A
+    // deliberate, documented divergence from production (which keeps both
+    // defaults): the retry policy is not what 08C-A measures, and the
+    // rep-level retry loop already re-runs any rep a surfaced 429 poisons.
+    maxProviderAttempts: 1,
+    providerMaxRetries: 0,
     ...armOptions,
   });
 
@@ -636,6 +735,18 @@ async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modul
   session.start(jobState);
 
   const pendingAsks = createPendingAsksRegistry();
+  // Dual-review finding (Codex sol-high, 2026-08-16): mirror the production
+  // ingress' gate-stack composition. stage6-ask-gate-wrapper composes its
+  // debounce + per-key ask-budget gates ONLY when BOTH askBudget and
+  // restrainedMode are truthy options — the bench previously passed
+  // neither, so it measured a code path with the production ask gates
+  // silently absent. One askBudget per session (production lifetime:
+  // created at session_start, destroyed at teardown); restrainedMode is
+  // the SAME always-inactive stub production wires (sonnet-stream.js
+  // ~:4509 — stubbed by design since Plan 05-04, kept truthy so the
+  // wrapper still composes the other gates).
+  const askBudget = modules.createAskBudget();
+  const restrainedMode = { isActive: () => false, recordAsk: () => {}, destroy: () => {} };
   const wsEvents = [];
   const answeredInTurn = new Set();
   const ws = makeCapturingWs(wsEvents, {
@@ -663,7 +774,6 @@ async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modul
     .sort((a, b) => (a.at_ms ?? 0) - (b.at_ms ?? 0));
 
   let turnIndex = 0;
-  let lastTurnStartMs = null;
 
   async function runOneTurn(transcriptText, regexResults = []) {
     turnIndex += 1;
@@ -705,23 +815,51 @@ async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modul
     // rate under the limit; the sleep sits entirely OUTSIDE the measured
     // spans (round_timings are stamped inside the harness), so pacing does
     // not contaminate the latency comparison.
-    if (turnPaceMs > 0 && lastTurnStartMs !== null) {
-      const sinceLast = performance.now() - lastTurnStartMs;
+    if (turnPaceMs > 0 && pacer.lastTurnStartMs !== null) {
+      const sinceLast = performance.now() - pacer.lastTurnStartMs;
       const waitMs = turnPaceMs - sinceLast;
       if (waitMs > 0) {
         if (verbose) process.stderr.write(`    pacing: sleeping ${Math.round(waitMs)}ms\n`);
         await new Promise((res) => setTimeout(res, waitMs));
       }
     }
-    lastTurnStartMs = performance.now();
+    pacer.lastTurnStartMs = performance.now();
 
     const wallStart = performance.now();
     let result = null;
     let threw = null;
     try {
+      // Options mirror the LIVE production ingress at sonnet-stream.js:7106
+      // (dual-review finding, 2026-08-16 — the bench previously omitted the
+      // behaviour-bearing subset added by post-2026-08-11 waves and was no
+      // longer measuring the code path production runs):
+      //   chimeObserved:true    — production hardcodes true at this call
+      //                           site (a forwarded utterance means the
+      //                           client chimed); arms the no-op audibility
+      //                           net + mandatory-notice drains.
+      //   askBudget/restrainedMode — gate-stack composition (see creation
+      //                           site above).
+      //   inResponseTo:false    — bench turns are never answers to a TTS
+      //                           question (in-turn ask replies resolve via
+      //                           pendingAsks, not this flag).
+      //   fallbackToLegacy:false — the advertised capability set (above) is
+      //                           a full modern client.
+      //   utteranceId           — per-turn identity, production threads one
+      //                           per consumed transcript.
+      //   filledSlotsShadow     — DELIBERATELY omitted: the harness installs
+      //                           a behaviour-identical no-op default
+      //                           (stage6-shadow-harness.js:306); the real
+      //                           logger is telemetry-only and needs the
+      //                           activeSessions stateSnapshot wiring.
       result = await runShadowHarness(session, transcriptText, regexResults, {
         confirmationsEnabled: true,
         pendingAsks,
+        askBudget,
+        restrainedMode,
+        chimeObserved: true,
+        inResponseTo: false,
+        fallbackToLegacy: false,
+        utteranceId: randomUUID(),
         ws,
         rawInspectorTranscript: transcriptText,
         logger,
@@ -870,6 +1008,13 @@ async function runRepetition({ fixture, armName, blockId, repIndexInBlock, modul
   } catch (err) {
     process.stderr.write(`    warn: session.stop() failed (${err.message}) — keepalive timer may leak\n`);
   }
+  // Same teardown contract as production's handleSessionStop: the askBudget
+  // is destroyed with the session that owns it.
+  try {
+    askBudget.destroy();
+  } catch {
+    /* a destroy failure must not kill an otherwise-valid rep */
+  }
 
   const totalRounds = turns.reduce((sum, t) => sum + t.round_timings.length, 0);
   const totalStreamMs = turns.reduce(
@@ -920,6 +1065,17 @@ function buildEnvMeta() {
     node_version: process.version,
     model: process.env.SONNET_EXTRACT_MODEL ?? null,
     task_def_revision: taskDefRevision,
+    // Dual-review finding (2026-08-16): the evidence rows previously named
+    // only the model — a run whose transport, tier, cache mode or reasoning
+    // profile differed was indistinguishable in the artifact. Record the
+    // full effective mirror + the retry pins so every row is reproducible.
+    effective_env: Object.fromEntries(
+      Object.keys(PROD_ENV_DEFAULTS).map((k) => [k, process.env[k] ?? null])
+    ),
+    deleted_env: FORCE_DELETED_ENV.slice(),
+    deliberate_divergences: { ...DELIBERATE_TASK_DEF_DIVERGENCES },
+    max_provider_attempts: 1,
+    provider_max_retries: 0,
   };
 }
 
@@ -952,7 +1108,7 @@ async function main() {
     process.stderr.write('→ --dry-run: clamped to 1 fixture, 1 arm, 1 rep\n');
   }
 
-  applyProdEnvDefaults();
+  const { overriddenShellValues } = applyProdEnvDefaults();
   loadApiKeysIntoEnv();
 
   process.stderr.write(
@@ -980,11 +1136,13 @@ async function main() {
     import('../../src/logger.js'),
   ]);
   const projectLogger = projectLoggerModule.default;
+  const { createAskBudget } = await import('../../src/extraction/stage6-ask-budget.js');
 
   const modules = {
     EICRExtractionSession,
     runShadowHarness,
     createPendingAsksRegistry,
+    createAskBudget,
     activeSessions,
     snapshotFlagsForSession,
     parseVoiceLatencyCapabilities,
@@ -992,6 +1150,7 @@ async function main() {
   };
 
   const envMeta = buildEnvMeta();
+  envMeta.overridden_shell_values = overriddenShellValues;
   process.stderr.write(`→ env: git_sha=${envMeta.git_sha} node=${envMeta.node_version} task_def_revision=${envMeta.task_def_revision}\n`);
 
   const fixtures = fixturePaths.map(loadFixture);
@@ -999,7 +1158,15 @@ async function main() {
   const outputAbs = path.isAbsolute(args.output) ? args.output : path.join(process.cwd(), args.output);
 
   function flush() {
-    fs.writeFileSync(outputAbs, JSON.stringify(results, null, 2) + '\n');
+    // Atomic checkpoint (dual-review finding, 2026-08-16): a direct
+    // writeFileSync opens the EXISTING checkpoint in truncating mode, so an
+    // ENOSPC/EACCES mid-write destroys every previously flushed rep — the
+    // only surviving evidence of a paid run. Write-to-temp + rename is
+    // atomic on POSIX same-filesystem renames; a failed write leaves the
+    // prior checkpoint untouched.
+    const tmpPath = `${outputAbs}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(results, null, 2) + '\n');
+    fs.renameSync(tmpPath, outputAbs);
   }
 
   // Crash forensics: main().catch only sees rejections that propagate up
@@ -1011,6 +1178,9 @@ async function main() {
   // and flush completed reps before dying, so a dead run is diagnosable
   // and its finished evidence survives.
   const progress = { note: 'pre-loop' };
+  // Shared pacing state across ALL reps/arms/blocks (see runRepetition's
+  // pacer param doc — per-rep state let rep boundaries bypass the pace).
+  const pacer = { lastTurnStartMs: null };
   const recordCrash = (kind, err) => {
     try {
       flush();
@@ -1034,6 +1204,13 @@ async function main() {
   };
   process.on('uncaughtException', (err) => recordCrash('uncaughtException', err));
   process.on('unhandledRejection', (err) => recordCrash('unhandledRejection', err));
+  // Dual-review finding (both reviewers, 2026-08-16): exceptions that
+  // propagate NORMALLY through main()'s async control flow are CAUGHT by
+  // the terminal .catch, so the process-level handlers above never fire
+  // for them — the bare stderr-and-exit catch reproduced the exact
+  // died-untraced failure mode this machinery exists to prevent. Export
+  // the recorder so the terminal .catch writes the same durable record.
+  moduleCrashRecorder = recordCrash;
 
   for (const fixture of fixtures) {
     process.stderr.write(`\n=== fixture: ${fixture.fixture_id} ===\n`);
@@ -1066,6 +1243,7 @@ async function main() {
             envMeta,
             verbose: args.verbose,
             turnPaceMs: args.turnPaceMs,
+            pacer,
           });
           const rateLimited = rep.turns.some(
             (t) => t.live_error && /rate limit|429|tokens per min|TPM/i.test(String(t.live_error.error ?? ''))
@@ -1092,6 +1270,11 @@ async function main() {
   process.stderr.write(`\n=== done: ${results.length} repetitions written to ${outputAbs} ===\n`);
 }
 
+// Set by main() once its flush/progress state exists; the terminal .catch
+// below routes through it so NORMALLY-propagating failures leave the same
+// durable .crash.jsonl record as detached ones (dual-review finding).
+let moduleCrashRecorder = null;
+
 main()
   .then(() => {
     // The OpenAI/Anthropic SDK HTTP clients (and possibly AWS SDK credential
@@ -1107,6 +1290,13 @@ main()
     process.exit(0);
   })
   .catch((err) => {
+    // Before main() reaches the point where the recorder exists (arg
+    // validation, env mirror drift assertion, key loading), there is no
+    // evidence to lose — stderr + exit is complete forensics there.
+    if (moduleCrashRecorder) {
+      moduleCrashRecorder('main_catch', err); // flushes, records, exits 1
+      return;
+    }
     process.stderr.write(`FATAL: ${err.stack || err.message}\n`);
     process.exit(1);
   });
