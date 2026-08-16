@@ -171,6 +171,7 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import Transport from 'winston-transport';
 import yaml from 'js-yaml';
+import { DELETED_SO_DEFAULTS_APPLY } from '../field-replay/replay-environment.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -235,9 +236,9 @@ const WRITE_TOOL_NAMES = new Set([
 //      shell leftover here changed the reasoning profile of every round.
 // ---------------------------------------------------------------------------
 const PROD_ENV_DEFAULTS = {
+  NODE_ENV: 'production',
   SONNET_TOOL_CALLS: 'live',
   SONNET_EXTRACT_MODEL: 'gpt-5.6-luna',
-  OPENAI_EXTRACT_API: 'responses',
   OPENAI_EXTRACT_SERVICE_TIER: 'fast',
   OPENAI_EXTRACT_PROMPT_CACHE: 'explicit',
   SNAPSHOT_FORMAT: 'split_blocks',
@@ -269,11 +270,15 @@ const DELIBERATE_TASK_DEF_DIVERGENCES = {
   VOICE_LATENCY_LOADED_BARREL: 'false',
 };
 
-// Production leaves these UNSET (DELETED_SO_DEFAULTS_APPLY class in
-// scripts/field-replay/replay-environment.mjs) — the code default applies.
-// Force-delete so a developer-shell leftover cannot change the reasoning
-// profile of a paid run.
-const FORCE_DELETED_ENV = ['OPENAI_EXTRACT_REASONING_EFFORT'];
+// Production leaves the ENTIRE DELETED_SO_DEFAULTS_APPLY class unset — the
+// code default applies for every member. Imported from
+// replay-environment.mjs rather than duplicated (Codex cycle-2: the first
+// version force-deleted only OPENAI_EXTRACT_REASONING_EFFORT, leaving
+// behaviour-bearing leftovers like VOICE_MID_STREAM_FILTER or
+// VOICE_ORPHAN_PROMPT free to silently change confirmation/no-op audio
+// behaviour in a paid run). replay-environment.mjs's own drift suite is
+// what keeps this list true to the task-def.
+const FORCE_DELETED_ENV = [...DELETED_SO_DEFAULTS_APPLY];
 
 function applyProdEnvDefaults() {
   const overriddenShellValues = {};

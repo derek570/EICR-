@@ -1244,6 +1244,24 @@ export class EICRExtractionSession {
     this._providerClients = new Map(Object.entries(options.providerClients || {}));
     this.defaultExtractionModel = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
     this.extractionProvider = providerForModel(this.defaultExtractionModel);
+    // Plan 08C-A benchmark hardening (2026-08-16) — SDK-LAYER retry pin.
+    // MUST be latched BEFORE the default client construction below:
+    // _createExtractionClient reads it, and the DEFAULT provider's client is
+    // built right here in the constructor — a later latch would pin only
+    // lazily-created cross-provider clients while the client every ordinary
+    // round uses kept the SDK default (the exact defect Codex cycle-2 found
+    // in the first version of this option). See the companion
+    // _maxProviderAttempts comment further down for the layering rationale:
+    // that cap clamps callWithRetry's own loop; this pins the SDK client's
+    // INTERNAL 429/5xx retries, whose silent backoff otherwise lands inside
+    // a benchmark's measured stream window. Same constructor-latched,
+    // option-not-env contract. `null` (the default, and every production
+    // call site) omits the argument entirely, so production keeps the SDK's
+    // own default.
+    this._providerMaxRetries =
+      Number.isInteger(options.providerMaxRetries) && options.providerMaxRetries >= 0
+        ? options.providerMaxRetries
+        : null;
     this.client =
       this._providerClients.get(this.extractionProvider) ||
       this._createExtractionClient(this.extractionProvider);
@@ -1329,21 +1347,10 @@ export class EICRExtractionSession {
         ? options.maxProviderAttempts
         : null;
 
-    // Plan 08C-A benchmark hardening (2026-08-16) — SDK-LAYER retry pin,
-    // the companion knob to `_maxProviderAttempts` above. That cap clamps
-    // callWithRetry's OWN attempt loop, but the OpenAI SDK client retries
-    // 429/5xx INTERNALLY (default 2) inside every one of those attempts —
-    // a silent backoff-and-retry whose sleep lands inside the round's
-    // measured stream window and whose eventual success means no
-    // stage6_live_error row ever exposes that a rate limit fired. A latency
-    // benchmark needs retries at EVERY layer to surface, so it pins this
-    // to 0. Same constructor-latched, option-not-env contract as its
-    // sibling. `null` (the default, and every production call site) omits
-    // the argument entirely, so production keeps the SDK's own default.
-    this._providerMaxRetries =
-      Number.isInteger(options.providerMaxRetries) && options.providerMaxRetries >= 0
-        ? options.providerMaxRetries
-        : null;
+    // (providerMaxRetries — the SDK-layer companion to the cap above — is
+    // latched EARLIER in this constructor, before the default client is
+    // built; see the comment at that latch for why the ordering is
+    // load-bearing.)
 
     // Stage 6 Phase 4: mode-gated prompt selection.
     //   off         → legacy cert-specific prompt (STR-01 rollback path).

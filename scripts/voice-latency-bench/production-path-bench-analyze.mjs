@@ -98,6 +98,14 @@ function main() {
   }
   const reps = JSON.parse(fs.readFileSync(resultsPath, 'utf8'));
 
+  // Fixture universe from ALL reps — including wholly-rate-limited ones
+  // (Codex cycle-2: deriving it from the clean subset let a fixture whose
+  // every rep was rate-limited VANISH from the coverage gate, re-opening
+  // the single-fixture-wins hole). NOTE: the analyzed file must be the
+  // measurement matrix only — capability-validation fixtures (cancellation,
+  // no-op) run separately and, if mixed in, will correctly block any win.
+  const fixtureUniverse = [...new Set(reps.map((r) => r.fixture_id))].sort();
+
   const clean = reps.filter((r) => !r.rate_limited);
   const excluded = reps.length - clean.length;
 
@@ -181,6 +189,54 @@ function main() {
       }
       const turnCount = turnCounts[0];
 
+      // Semantic parity (2026-08-16 tightening, extended cycle 2): computed
+      // for EVERY fully-paired block — including cache-stratified ones —
+      // because behavioural divergence matters regardless of cache warmth
+      // (Codex cycle-2: parity was silently skipped for stratified blocks).
+      // Identical transcripts ⇒ identical FINAL field state, so compare the
+      // final applied value per destination (the destination-set comparison
+      // passed an arm writing 0.70 where baseline wrote 0.80; last-write-
+      // per-destination still tolerates the eviction fixture's EXPECTED
+      // same-value repeat write). Beyond final state: every applied write
+      // must have emitted an audible frame (Audio-First #1 — a silently-
+      // writing arm must not win), the per-block ask_user count must match
+      // (an arm that guesses instead of asking is behaviourally different
+      // even when it lands the same value), and the count of non-ok /
+      // errored ledger rows must match (an arm provoking rejections is not
+      // at parity). An unspoken BASELINE write fails parity for both
+      // candidates: invalid evidence falls to the safe keep-recent_3
+      // outcome.
+      const behaviourProfile = (rep) => {
+        const state = new Map();
+        let unspoken = 0;
+        let nonOk = 0;
+        let asks = 0;
+        for (const t of rep.turns) {
+          asks += t.ask_users_count ?? 0;
+          for (const l of t.ledger ?? []) {
+            if (l.dispatch_outcome !== 'ok' || l.is_error) {
+              nonOk += 1;
+              continue;
+            }
+            if (!l.applied_mutation) continue;
+            state.set(l.canonical_destination, l.normalised_value ?? null);
+            if (!l.emitted_audible_frame) unspoken += 1;
+          }
+        }
+        return { state: JSON.stringify([...state.entries()].sort()), unspoken, nonOk, asks };
+      };
+      const base = behaviourProfile(arms.get(BASELINE_ARM));
+      if (base.unspoken > 0) {
+        for (const cand of CANDIDATE_ARMS) fixtureReport.parity[cand].destination_mismatch_blocks += 1;
+      } else {
+        for (const cand of CANDIDATE_ARMS) {
+          const c = behaviourProfile(arms.get(cand));
+          if (c.state !== base.state || c.unspoken > 0 || c.asks !== base.asks || c.nonOk !== base.nonOk) {
+            fixtureReport.parity[cand].destination_mismatch_blocks += 1;
+          }
+        }
+      }
+
       // All-or-nothing admission (2026-08-16 tightening — see header): every
       // turn index must have an IDENTICAL cache outcome across arms, and that
       // outcome must be 'read' or 'write' (matched cold turns are expected —
@@ -213,37 +269,6 @@ function main() {
         }
       }
 
-      // Semantic parity (2026-08-16 tightening — see header): identical
-      // transcripts ⇒ identical FINAL field state, so compare the final
-      // applied value per destination, not just the destination set. The
-      // eviction fixture's EXPECTED difference is a REPEAT write of the same
-      // value to the SAME destination, which last-write-per-destination
-      // deliberately tolerates — a VALUE divergence (arm writes 0.70 where
-      // baseline wrote 0.80) now fails parity where the set comparison
-      // passed it. Additionally: every applied write must have emitted an
-      // audible frame (Audio-First #1) — an arm that writes silently must
-      // not be eligible to win on latency.
-      const finalState = (rep) => {
-        const state = new Map();
-        let unspoken = 0;
-        for (const t of rep.turns) {
-          for (const l of t.ledger ?? []) {
-            if (!l.applied_mutation || l.dispatch_outcome !== 'ok') continue;
-            state.set(l.canonical_destination, l.normalised_value ?? null);
-            if (!l.emitted_audible_frame) unspoken += 1;
-          }
-        }
-        return { state: JSON.stringify([...state.entries()].sort()), unspoken };
-      };
-      const base = finalState(arms.get(BASELINE_ARM));
-      if (base.unspoken > 0) {
-        for (const cand of CANDIDATE_ARMS) fixtureReport.parity[cand].destination_mismatch_blocks += 1;
-      } else {
-        for (const cand of CANDIDATE_ARMS) {
-          const c = finalState(arms.get(cand));
-          if (c.state !== base.state || c.unspoken > 0) fixtureReport.parity[cand].destination_mismatch_blocks += 1;
-        }
-      }
     }
 
     for (const cand of CANDIDATE_ARMS) {
@@ -252,24 +277,37 @@ function main() {
     report.fixtures[fixtureId] = fixtureReport;
   }
 
-  // Causality table over the eviction fixture.
+  // Causality table over the eviction fixture. Admission (Codex cycle-2):
+  // only blocks with a COMPLETE arm set where every turn in every arm ran
+  // clean (no live_error, no throw, no empty/zero-round turn) — a candidate
+  // whose requests failed and recorded no writes must not count as a
+  // successful no-duplicate observation, and per-arm denominators must be
+  // equal. Cache warmth is deliberately NOT required here: a cold block
+  // still evidences duplicate-write behaviour validly.
   const evictionId = [...byFixture.keys()].find((f) => f.startsWith(EVICTION_FIXTURE_PREFIX));
   if (evictionId) {
     const byBlock = byFixture.get(evictionId);
+    const repRanClean = (rep) =>
+      rep.turns.length > 0 &&
+      rep.turns.every((t) => !t.live_error && !t.threw && (t.round_usage ?? []).length > 0);
+    const admittedBlocks = [...byBlock.entries()].filter(
+      ([, arms]) => armNames.every((a) => arms.has(a)) && armNames.every((a) => repRanClean(arms.get(a)))
+    );
     const d = {};
     for (const arm of armNames) {
       let dup = 0;
       let n = 0;
-      for (const [, arms] of byBlock) {
+      for (const [, arms] of admittedBlocks) {
         const rep = arms.get(arm);
-        if (!rep) continue;
         n += 1;
         if (rep.turns.some((t) => t.duplicate_write_detected)) dup += 1;
       }
       d[arm] = n > 0 ? dup / n : null;
     }
     let verdict;
-    if (Object.values(d).every((v) => v === 0)) verdict = 'UNTESTED — trigger never fired in any arm; no refutation claim';
+    if (Object.values(d).some((v) => v === null))
+      verdict = 'INCONCLUSIVE — insufficient clean fully-paired blocks for a causal claim';
+    else if (Object.values(d).every((v) => v === 0)) verdict = 'UNTESTED — trigger never fired in any arm; no refutation claim';
     else if (d[BASELINE_ARM] >= 0.5 && d.ascending === 0 && d.window_6 === 0)
       verdict = 'SUPPORTED — duplicate follows visibility; vanishes when the circuit is rendered';
     else if (
@@ -278,11 +316,17 @@ function main() {
     )
       verdict = 'REFUTED — duplicates occur even with the circuit visible';
     else verdict = 'INCONCLUSIVE — keep recent_3, report rates, no causal claim';
-    report.causality = { fixture: evictionId, d, verdict };
+    report.causality = {
+      fixture: evictionId,
+      blocks_admitted: admittedBlocks.length,
+      blocks_total: byBlock.size,
+      d,
+      verdict,
+    };
   }
 
   // Decision rule.
-  const fixturesTotal = byFixture.size;
+  const fixturesTotal = fixtureUniverse.length;
   const decision = {};
   for (const cand of CANDIDATE_ARMS) {
     const meds = Object.values(perFixtureMedians[cand]).filter((m) => m !== null);
@@ -298,7 +342,7 @@ function main() {
     // fixture. Provider failures wiping out five of six fixtures must not
     // let the survivor decide alone — the run is INCONCLUSIVE instead, with
     // the missing fixtures named.
-    const fixturesWithoutPairedData = [...byFixture.keys()].filter((f) => perFixtureMedians[cand][f] === null || perFixtureMedians[cand][f] === undefined);
+    const fixturesWithoutPairedData = fixtureUniverse.filter((f) => perFixtureMedians[cand][f] === null || perFixtureMedians[cand][f] === undefined);
     decision[cand] = {
       per_fixture_medians: perFixtureMedians[cand],
       mean_of_medians: mean,
