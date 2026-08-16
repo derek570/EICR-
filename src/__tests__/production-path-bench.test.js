@@ -200,6 +200,15 @@ describe('runner — findEmittedAudibleFrame three-state contract', () => {
     ).toBeNull();
   });
 
+  test("the ask_user branch: matching tool_call_id returns the frame, otherwise null (Sonnet-max cycle-4 NIT — this branch had no coverage)", () => {
+    const frames = [{ msg: { type: 'ask_user_started', tool_call_id: 'tc_1', question: 'Which circuit?' } }];
+    expect(findEmittedAudibleFrame({ tool: 'ask_user', tool_use_id: 'tc_1', input_summary: {} }, frames)).toMatchObject({
+      type: 'ask_user_started',
+      question: 'Which circuit?',
+    });
+    expect(findEmittedAudibleFrame({ tool: 'ask_user', tool_use_id: 'tc_2', input_summary: {} }, frames)).toBeNull();
+  });
+
   test('a field-bearing tool with a matching confirmation returns the frame', () => {
     const frames = [
       { msg: { type: 'extraction', result: { confirmations: [{ field: 'measured_zs_ohm', circuit: 3, text: 'Circuit 3, Zs 0.52' }] } } },
