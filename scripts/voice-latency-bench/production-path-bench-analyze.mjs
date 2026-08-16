@@ -23,10 +23,28 @@
  *   Inconclusive: anything else.
  *
  * Cache stratification (per the plan's §2.1 invariant): a paired block is
- * MEASURED only if, turn-for-turn, the cache outcome (write vs read) matches
- * across all arms in the block; blocks containing any cache-write round or a
- * cross-arm outcome mismatch are reported separately, never blended into the
- * warm comparison. Reps marked rate_limited:true are excluded outright.
+ * MEASURED only if, turn-for-turn, the cache outcome matches EXACTLY across
+ * all arms in the block; any cross-arm outcome divergence, any cache-MISS
+ * turn (rounds that neither wrote nor read cache), any errored/empty turn
+ * anywhere in the block stratifies the WHOLE block out, reported separately,
+ * never blended into the warm comparison. Warm latency sums run over the
+ * all-arms-read turns of surviving blocks only (turn 1's matched cold write
+ * is expected and excluded from the sum, not a disqualifier). Reps marked
+ * rate_limited:true are excluded outright.
+ *
+ * 2026-08-16 pre-data tightening (dual adversarial review — Codex sol-high +
+ * Sonnet-max — of the restart branch; NO benchmark data existed when these
+ * landed, so the predeclared-rule discipline holds):
+ *   - cache outcomes gained 'miss' and 'error' classes (previously a
+ *     zero-cache miss or a non-429 failed turn silently counted as 'read');
+ *   - block admission is all-or-nothing as stated above (previously a block
+ *     with divergent turns could still contribute its matching subset);
+ *   - parity compares the FINAL per-destination applied value (identical
+ *     transcripts ⇒ identical final field state), not just the destination
+ *     set, and additionally requires every applied write to have emitted an
+ *     audible frame (Audio-First #1 — a silently-writing arm must not win);
+ *   - a candidate wins only with usable paired data from EVERY fixture in
+ *     the results file (previously one surviving fixture could decide).
  *
  * Usage: node scripts/voice-latency-bench/production-path-bench-analyze.mjs <results.json>
  */
@@ -52,12 +70,20 @@ function p(xs, q) {
   return s[idx];
 }
 
-// A turn's cache outcome: 'write' if any round wrote cache, 'read' if all
-// rounds read, 'none' if the turn produced no rounds (errored/cancelled).
+// A turn's cache outcome. Round-level: 'write' if it wrote cache, 'read' if
+// it read cache, 'miss' if it did neither (a genuine cache miss — full price,
+// warm-comparison poison). Turn-level: 'error' if the turn recorded a live
+// error (any failure, not just 429s — those already excluded the whole rep),
+// 'none' if it produced no rounds, 'write' if any round wrote, 'read' only
+// if EVERY round read, 'miss' otherwise. The old classifier labelled any
+// no-write turn 'read' — a zero-cache miss or a failed turn slid into the
+// warm stratum unnoticed (2026-08-16 review finding).
 function turnCacheOutcome(turn) {
+  if (turn.live_error) return 'error';
   const rounds = turn.round_usage ?? [];
   if (rounds.length === 0) return 'none';
-  return rounds.some((r) => (r.cache_write_input_tokens ?? 0) > 0) ? 'write' : 'read';
+  if (rounds.some((r) => (r.cache_write_input_tokens ?? 0) > 0)) return 'write';
+  return rounds.every((r) => (r.cache_read_input_tokens ?? 0) > 0) ? 'read' : 'miss';
 }
 
 function turnStreamMs(turn) {
@@ -145,19 +171,34 @@ function main() {
         continue;
       }
       const repsByArm = armNames.map((a) => arms.get(a));
-      const turnCount = Math.min(...repsByArm.map((r) => r.turns.length));
-
-      // Warm-matched turn indices: same cache outcome === 'read' in EVERY arm.
-      const warmIdx = [];
-      let mismatch = false;
-      for (let i = 0; i < turnCount; i++) {
-        const outcomes = repsByArm.map((r) => turnCacheOutcome(r.turns[i]));
-        if (outcomes.every((o) => o === 'read')) warmIdx.push(i);
-        else if (new Set(outcomes).size > 1 && outcomes.some((o) => o === 'read') && outcomes.some((o) => o === 'write'))
-          mismatch = true;
+      const turnCounts = repsByArm.map((r) => r.turns.length);
+      // Arms replay the SAME fixture transcript — divergent turn counts mean
+      // an arm lost turns (error/cancellation) and the block is not a fair
+      // pairing. The old Math.min silently truncated to the shortest arm.
+      if (new Set(turnCounts).size > 1) {
+        fixtureReport.blocks_stratified_out.push({ block: blockId, reason: 'turn_count_mismatch' });
+        continue;
       }
-      if (warmIdx.length === 0) {
-        fixtureReport.blocks_stratified_out.push({ block: blockId, reason: mismatch ? 'cache_outcome_mismatch' : 'no_warm_turns' });
+      const turnCount = turnCounts[0];
+
+      // All-or-nothing admission (2026-08-16 tightening — see header): every
+      // turn index must have an IDENTICAL cache outcome across arms, and that
+      // outcome must be 'read' or 'write' (matched cold turns are expected —
+      // excluded from the warm sum, not disqualifying). Any divergence, miss,
+      // error or empty turn anywhere stratifies the whole block out.
+      const warmIdx = [];
+      let strataReason = null;
+      for (let i = 0; i < turnCount && !strataReason; i++) {
+        const outcomes = repsByArm.map((r) => turnCacheOutcome(r.turns[i]));
+        const uniform = new Set(outcomes).size === 1;
+        if (!uniform) strataReason = 'cache_outcome_mismatch';
+        else if (outcomes[0] === 'read') warmIdx.push(i);
+        else if (outcomes[0] === 'write') continue; // matched cold turn — fine, just not warm
+        else strataReason = `turn_${outcomes[0]}`; // miss / error / none anywhere poisons the block
+      }
+      if (!strataReason && warmIdx.length === 0) strataReason = 'no_warm_turns';
+      if (strataReason) {
+        fixtureReport.blocks_stratified_out.push({ block: blockId, reason: strataReason });
         continue;
       }
       fixtureReport.blocks_paired_warm += 1;
@@ -172,18 +213,36 @@ function main() {
         }
       }
 
-      // Semantic parity: the applied-write destination set must match the
-      // baseline's within the same block (identical transcripts ⇒ identical
-      // intended final field state). The eviction fixture's EXPECTED
-      // difference is a repeat write to the SAME destination, which a set
-      // comparison deliberately tolerates.
-      const destSet = (rep) =>
-        JSON.stringify(
-          [...new Set(rep.turns.flatMap((t) => (t.ledger ?? []).filter((l) => l.applied_mutation).map((l) => l.canonical_destination)))].sort()
-        );
-      const baseSet = destSet(arms.get(BASELINE_ARM));
-      for (const cand of CANDIDATE_ARMS) {
-        if (destSet(arms.get(cand)) !== baseSet) fixtureReport.parity[cand].destination_mismatch_blocks += 1;
+      // Semantic parity (2026-08-16 tightening — see header): identical
+      // transcripts ⇒ identical FINAL field state, so compare the final
+      // applied value per destination, not just the destination set. The
+      // eviction fixture's EXPECTED difference is a REPEAT write of the same
+      // value to the SAME destination, which last-write-per-destination
+      // deliberately tolerates — a VALUE divergence (arm writes 0.70 where
+      // baseline wrote 0.80) now fails parity where the set comparison
+      // passed it. Additionally: every applied write must have emitted an
+      // audible frame (Audio-First #1) — an arm that writes silently must
+      // not be eligible to win on latency.
+      const finalState = (rep) => {
+        const state = new Map();
+        let unspoken = 0;
+        for (const t of rep.turns) {
+          for (const l of t.ledger ?? []) {
+            if (!l.applied_mutation || l.dispatch_outcome !== 'ok') continue;
+            state.set(l.canonical_destination, l.normalised_value ?? null);
+            if (!l.emitted_audible_frame) unspoken += 1;
+          }
+        }
+        return { state: JSON.stringify([...state.entries()].sort()), unspoken };
+      };
+      const base = finalState(arms.get(BASELINE_ARM));
+      if (base.unspoken > 0) {
+        for (const cand of CANDIDATE_ARMS) fixtureReport.parity[cand].destination_mismatch_blocks += 1;
+      } else {
+        for (const cand of CANDIDATE_ARMS) {
+          const c = finalState(arms.get(cand));
+          if (c.state !== base.state || c.unspoken > 0) fixtureReport.parity[cand].destination_mismatch_blocks += 1;
+        }
       }
     }
 
@@ -223,22 +282,35 @@ function main() {
   }
 
   // Decision rule.
+  const fixturesTotal = byFixture.size;
   const decision = {};
   for (const cand of CANDIDATE_ARMS) {
     const meds = Object.values(perFixtureMedians[cand]).filter((m) => m !== null);
     const mean = meds.length ? meds.reduce((a, b) => a + b, 0) / meds.length : null;
-    // A win requires the mean ≥ +10% (candidate faster), so "consistent sign
-    // on a majority of fixtures" means: a strict majority of per-fixture
-    // medians are POSITIVE (agreeing with the claimed direction).
+    // "Consistent sign on a majority of fixtures" is judged against ALL
+    // fixtures in the run, not just the ones that survived stratification —
+    // a fixture with no usable paired data cannot silently shrink the
+    // denominator (2026-08-16 tightening).
     const positives = meds.filter((m) => m > 0).length;
-    const signConsistent = meds.length > 0 && positives > meds.length / 2;
+    const signConsistent = fixturesTotal > 0 && positives > fixturesTotal / 2;
     const parityClean = Object.values(report.fixtures).every((f) => f.parity[cand].destination_mismatch_blocks === 0);
+    // Full coverage: a win needs usable paired-warm evidence from EVERY
+    // fixture. Provider failures wiping out five of six fixtures must not
+    // let the survivor decide alone — the run is INCONCLUSIVE instead, with
+    // the missing fixtures named.
+    const fixturesWithoutPairedData = [...byFixture.keys()].filter((f) => perFixtureMedians[cand][f] === null || perFixtureMedians[cand][f] === undefined);
     decision[cand] = {
       per_fixture_medians: perFixtureMedians[cand],
       mean_of_medians: mean,
       sign_consistent_majority: signConsistent,
       parity_clean: parityClean,
-      wins: parityClean && mean !== null && mean >= MIN_EFFECT && signConsistent,
+      fixtures_without_paired_data: fixturesWithoutPairedData,
+      wins:
+        parityClean &&
+        fixturesWithoutPairedData.length === 0 &&
+        mean !== null &&
+        mean >= MIN_EFFECT &&
+        signConsistent,
     };
   }
   let outcome;
