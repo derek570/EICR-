@@ -88,6 +88,22 @@ describe('analyzer — value parity, stratification, coverage (dual-review cycle
     expect(r.fixtures.fixB.blocks_stratified_out.some((b) => b.reason === 'cache_outcome_mismatch')).toBe(true);
   });
 
+  test('parity is computed even for a cache-stratified block — a divergent value there still dirties the candidate (Codex cycle-4: the earlier fixture was behaviourally identical, so parity moving back below stratification stayed green)', () => {
+    const strat = [
+      // uniform 'miss' on turn 2 → block stratified out of the LATENCY stats
+      // (reason turn_miss), but ascending writes 0.70 where baseline wrote
+      // 0.80 — parity must still record final_state_divergence.
+      rep('fixE', 'recent_3', 'fixE:b0', [turn('write'), turn('miss', { dest: 'c7.zs', val: '0.80' })]),
+      rep('fixE', 'ascending', 'fixE:b0', [turn('write'), turn('miss', { dest: 'c7.zs', val: '0.70' })]),
+      rep('fixE', 'window_6', 'fixE:b0', [turn('write'), turn('miss', { dest: 'c7.zs', val: '0.80' })]),
+    ];
+    const re = analyzeResults(strat);
+    expect(re.fixtures.fixE.blocks_stratified_out.some((b) => b.reason === 'turn_miss')).toBe(true);
+    expect(re.fixtures.fixE.parity.ascending.destination_mismatch_blocks).toBe(1);
+    expect(re.fixtures.fixE.parity.ascending.mismatch_details[0].reasons).toContain('final_state_divergence');
+    expect(re.fixtures.fixE.parity.window_6.destination_mismatch_blocks).toBe(0);
+  });
+
   test('a fixture with no paired data blocks the win and is NAMED (single-fixture wins were possible)', () => {
     expect(r.decision.per_arm.window_6.fixtures_without_paired_data).toEqual(['fixB']);
     expect(r.decision.per_arm.window_6.wins).toBe(false);
@@ -113,8 +129,19 @@ describe('analyzer — three-state audibility (Sonnet-max cycle 2)', () => {
     expect(r.decision.per_arm.ascending.wins).toBe(true);
   });
 
-  test('unprovable calls are surfaced per-arm, not silently dropped', () => {
+  test('unprovable calls are surfaced per-arm, not silently dropped (candidate-side counts included — Codex cycle-4: baseline-only assertion let candidate accounting vanish)', () => {
     expect(r.fixtures.fixC.parity_unprovable_audibility_calls.recent_3).toBe(1);
+    expect(r.fixtures.fixC.parity_unprovable_audibility_calls.ascending).toBe(1);
+    expect(r.fixtures.fixC.parity_unprovable_audibility_calls.window_6).toBe(1);
+    // Candidate-ONLY unprovable call: baseline 0, candidate 1.
+    const candOnly = [
+      rep('fixU', 'recent_3', 'fixU:b0', [turn('write'), turn('read', { dest: 'c5.zs', val: '0.2' })]),
+      rep('fixU', 'ascending', 'fixU:b0', [turn('write'), turn('read', { dest: 'c5.zs', val: '0.2' })]),
+      rep('fixU', 'window_6', 'fixU:b0', [turn('write'), turn('read', { dest: 'c5.zs', val: '0.2' }), turn('read', { dest: 'board.x', val: 'sel', unprovable: true })]),
+    ];
+    const ru = analyzeResults(candOnly);
+    expect(ru.fixtures.fixU.parity_unprovable_audibility_calls.recent_3).toBe(0);
+    expect(ru.fixtures.fixU.parity_unprovable_audibility_calls.window_6).toBe(1);
   });
 
   test('a PROVABLY silent write (explicit null frame) still fails parity', () => {
@@ -197,6 +224,13 @@ describe('runner — production env mirror stays true to the live task-def', () 
     for (const k of FORCE_DELETED_ENV) {
       expect(taskDefEnv[k]).toBeUndefined();
     }
+  });
+
+  test('the logger vars are PINNED members of the deleted class (Codex cycle-4: iterating the array cannot detect their removal — a stale LOG_LEVEL=error empties every capture bucket of a paid run)', () => {
+    expect(FORCE_DELETED_ENV).toContain('LOG_LEVEL');
+    expect(FORCE_DELETED_ENV).toContain('LOG_FILE');
+    expect(FORCE_DELETED_ENV).toContain('OPENAI_EXTRACT_REASONING_EFFORT');
+    expect(FORCE_DELETED_ENV).toContain('OPENAI_EXTRACT_API');
   });
 
   test('every deliberate divergence is a real divergence from a real task-def key, with a different value', () => {
