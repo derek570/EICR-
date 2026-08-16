@@ -182,15 +182,6 @@ function main() {
         continue;
       }
       const repsByArm = armNames.map((a) => arms.get(a));
-      const turnCounts = repsByArm.map((r) => r.turns.length);
-      // Arms replay the SAME fixture transcript — divergent turn counts mean
-      // an arm lost turns (error/cancellation) and the block is not a fair
-      // pairing. The old Math.min silently truncated to the shortest arm.
-      if (new Set(turnCounts).size > 1) {
-        fixtureReport.blocks_stratified_out.push({ block: blockId, reason: 'turn_count_mismatch' });
-        continue;
-      }
-      const turnCount = turnCounts[0];
 
       // Semantic parity (2026-08-16 tightening, extended cycle 2): computed
       // for EVERY fully-paired block — including cache-stratified ones —
@@ -236,19 +227,30 @@ function main() {
             else if (l.emitted_audible_frame === 'unprovable') unprovable += 1;
           }
         }
-        return { state: JSON.stringify([...state.entries()].sort()), unspoken, unprovable, nonOk, asks };
+        return {
+          state: JSON.stringify([...state.entries()].sort()),
+          turnCount: rep.turns.length,
+          unspoken,
+          unprovable,
+          nonOk,
+          asks,
+        };
       };
       const mismatchReasons = (b, c) => {
         const reasons = [];
+        if (c.turnCount !== b.turnCount) reasons.push(`turn_count_${b.turnCount}_vs_${c.turnCount}`);
         if (c.state !== b.state) reasons.push('final_state_divergence');
         if (c.unspoken > 0) reasons.push('candidate_unspoken_write');
         if (c.asks !== b.asks) reasons.push(`ask_count_${b.asks}_vs_${c.asks}`);
         if (c.nonOk !== b.nonOk) reasons.push(`non_ok_rows_${b.nonOk}_vs_${c.nonOk}`);
         return reasons;
       };
-      const base = behaviourProfile(arms.get(BASELINE_ARM));
-      fixtureReport.parity_unprovable_audibility_calls =
-        (fixtureReport.parity_unprovable_audibility_calls ?? 0) + base.unprovable;
+      const profiles = Object.fromEntries(armNames.map((a) => [a, behaviourProfile(arms.get(a))]));
+      const base = profiles[BASELINE_ARM];
+      // Per-ARM unprovable accounting (Codex cycle-3: baseline-only counting
+      // discarded candidate-side observability gaps).
+      fixtureReport.parity_unprovable_audibility_calls ??= Object.fromEntries(armNames.map((a) => [a, 0]));
+      for (const a of armNames) fixtureReport.parity_unprovable_audibility_calls[a] += profiles[a].unprovable;
       if (base.unspoken > 0) {
         for (const cand of CANDIDATE_ARMS) {
           fixtureReport.parity[cand].destination_mismatch_blocks += 1;
@@ -257,8 +259,7 @@ function main() {
         }
       } else {
         for (const cand of CANDIDATE_ARMS) {
-          const c = behaviourProfile(arms.get(cand));
-          const reasons = mismatchReasons(base, c);
+          const reasons = mismatchReasons(base, profiles[cand]);
           if (reasons.length > 0) {
             fixtureReport.parity[cand].destination_mismatch_blocks += 1;
             fixtureReport.parity[cand].mismatch_details ??= [];
@@ -266,6 +267,17 @@ function main() {
           }
         }
       }
+
+      // Latency stratification only BELOW this line — parity above is done.
+      const turnCounts = repsByArm.map((r) => r.turns.length);
+      // Arms replay the SAME fixture transcript — divergent turn counts mean
+      // an arm lost/gained turns and the block is not a fair latency pairing
+      // (parity already recorded the divergence above).
+      if (new Set(turnCounts).size > 1) {
+        fixtureReport.blocks_stratified_out.push({ block: blockId, reason: 'turn_count_mismatch' });
+        continue;
+      }
+      const turnCount = turnCounts[0];
 
       // All-or-nothing admission (2026-08-16 tightening — see header): every
       // turn index must have an IDENTICAL cache outcome across arms, and that

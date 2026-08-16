@@ -278,7 +278,15 @@ const DELIBERATE_TASK_DEF_DIVERGENCES = {
 // VOICE_ORPHAN_PROMPT free to silently change confirmation/no-op audio
 // behaviour in a paid run). replay-environment.mjs's own drift suite is
 // what keeps this list true to the task-def.
-const FORCE_DELETED_ENV = [...DELETED_SO_DEFAULTS_APPLY];
+// LOG_LEVEL / LOG_FILE are a BENCH-LOCAL addition to the deleted class
+// (Codex cycle-3): src/logger.js reads both AFTER the mirror is applied and
+// neither is set in the task-def. A stale shell LOG_LEVEL=error silences
+// the info-level stage6_tool_call / turn_core_summary rows this runner's
+// capture transports consume — provider calls would complete while the
+// evidence buckets stayed EMPTY; and with NODE_ENV=production now pinned,
+// a stale LOG_FILE would activate the production File transport, adding
+// unrelated I/O inside measured spans.
+const FORCE_DELETED_ENV = [...DELETED_SO_DEFAULTS_APPLY, 'LOG_LEVEL', 'LOG_FILE'];
 
 function applyProdEnvDefaults() {
   const overriddenShellValues = {};
