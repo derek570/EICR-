@@ -20,7 +20,7 @@ parked on the identical criterion that parked 08C
 (`/Users/derekbeckley/Developer/EICR_Automation/.planning/voice-latency-conversational-2026-07-31/plan-08c-per-round-cost.md`):
 it depended on 08A telemetry that no field session had yet produced. **That session has now run** —
 the telemetry it produced resolves §2's fork and unparks 08D outright. It very likely discharges
-08C's park too (session `8B9B2BDD` is on `:393`, past 08C's `:388+` revision gate), but 08C's own
+08C's park too (session `8B9B2BDD` is on `:392`, past 08C's `:388+` revision gate), but 08C's own
 three-item unblocking checklist (revision `:388+`, split on `round_usage[].api_transport` before
 computing, key on `round_idx` not array position) must be independently confirmed against this
 session before 08C's `/rp` opens — updating 08C's stale `PARKED` status line is a deliverable of
@@ -447,7 +447,7 @@ exact file — `PLAN-final.md` in this handoff folder (the file `/ep` is launche
    pointer to 08D's closure, so 08B owns only §2.1 and a future 08B session cannot re-review the
    dead fourth mechanism. **Also update 08B's Status line** (currently `READY TO REFINE
    (2026-08-10)`) and any 08B wording claiming no `:388` field session has run or that 08C/08D
-   are parked — reconcile every occurrence with session `8B9B2BDD` on `:393` and the docs-only
+   are parked — reconcile every occurrence with session `8B9B2BDD` on `:392` and the docs-only
    closure. **Sweep rule for deliverables 3-5:** grep all three cross-plan files (08B, 08C,
    INDEX.md) for `PARKED`, `READY TO REFINE`, "field session", and future-session wording, and
    reconcile EVERY occurrence — including BOTH 08C rows in INDEX.md and the stale 08A Tier-B row
