@@ -73,6 +73,8 @@ Fixtures enter AND exit at the `runShadowHarness` boundary. Out of scope in v1 (
 
 Environment parity: the recorded lane runs the task-def env loader (`scripts/field-replay/replay-environment.mjs`) so `SNAPSHOT_FORMAT=split_blocks` / `CIRCUIT_ORDER=recent_3` / the routing models match production (config divergence is prompt divergence). Loaded Barrel OFF is the SOLE deliberate override.
 
+**2026-08-11 (plan 08C-A):** `OPENAI_EXTRACT_REASONING_EFFORT` and `OPENAI_EXTRACT_API` moved from `EXCLUDED_NOT_IN_REPLAY_CLOSURE.openai_trial` to `DELETED_SO_DEFAULTS_APPLY` (`REPLAY_ENV_INVENTORY_VERSION` 6 → 7). Both were excluded on the rationale that the OpenAI-backed extraction route was a trial reachable only when `SONNET_EXTRACT_MODEL` was a `gpt-*` model — that route is now the live production route (`SONNET_EXTRACT_MODEL=gpt-5.6-luna`, `PINNED_FROM_TASK_DEF`), so a stale developer-shell value for either var would have silently leaked into an unpinned replay run instead of being stripped. Neither var is present in `ecs/task-def-backend.json`, so `DELETED_SO_DEFAULTS_APPLY` (not `PINNED_FROM_TASK_DEF`) is correct — the loader now deletes any pre-set value so the code's own defaults apply: `'low'` reasoning effort on the Responses transport for ordinary turns, `'none'` on the Chat Completions fallback, and `responses` as the API mode.
+
 ## Gate-state machine
 
 Fixtures carry `gate_state`. The two executable states drive the blocking gate:
