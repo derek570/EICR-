@@ -55,3 +55,25 @@
 
 ## Session hygiene
 - ep-reap self-teardown: will correctly SKIP (manual run inside Derek's own `eicr-2` session, not a spawned ep-* session).
+
+## HOLD RESOLVED 2026-08-17 (interactive session, Derek's go) — candidate measured, closure CONFIRMED
+
+- Derek chose to size the candidate before deciding ("let's go and see if this is worth
+  exploring"). Desk check: `store` defaults TRUE on `/v1/responses` — GET on the probe's
+  parent returned 200 with no `store` param sent, so the org retains responses 30 days
+  TODAY and the "store semantics" follow-up dissolves (chaining never carried a new
+  retention concession; `store:false` is now a separate zero-latency privacy decision,
+  queued to Derek).
+- Measurement: `scripts/voice-latency-bench/prid-chaining-probe.mjs` (evidence
+  `evidence-08c-b-prid-probe-2026-08-17.json`, wave dir) — interleaved A/B, n=12/arm,
+  arm order alternated, terminal-round shape, `gpt-5.6-luna`, real API. FULL (production
+  shape, 146,383 B) vs CHAIN (`previous_response_id` + tool result only, 713 B):
+  p50 TTFB 448→449 ms, p50 first-text 902→889 ms, CHAIN p90 WORSE (2,741 vs 1,088 ms);
+  chained call still bills full input and reads ~29.7k `cached_tokens`. Candidate
+  DISPROVED; excludes a ≥100 ms p50 win decisively.
+- Applied on this branch: closure banner flipped PROPOSED+HELD → CONFIRMED, axis 5 added,
+  08C-A §1.4 partial resolution (transport slice ~0), 08D §3 cross-record un-deferred,
+  INDEX/changelog/hub rows updated, probe script + evidence committed.
+- Follow-up disposition from the held run: "store semantics decision" RESOLVED (above);
+  audio-ready telemetry contract and the `findEmittedAudibleFrame` matcher gap remain
+  queued in `todos-certmate.md`, unchanged.

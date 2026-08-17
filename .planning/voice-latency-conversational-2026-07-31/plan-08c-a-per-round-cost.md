@@ -279,6 +279,16 @@ this plan. No text in this plan may describe the post-benchmark residual as a pr
 provider-side fixed floor. It is explicitly **not** a cost question — Plan 01 closed that — and
 must not be allowed to re-open one.
 
+> **Partial resolution 2026-08-17 (08C-B closure probe):** the TRANSPORT slice of the span is
+> now measured ~0 at p50. The `prid-chaining-probe` A/B (evidence
+> `evidence-08c-b-prid-probe-2026-08-17.json`, this directory) sent the same terminal-round
+> call with the full ~29.7k-token prefix on the wire (146 KB) vs `previous_response_id`
+> chaining (713 B): p50 TTFB and first-text moved ≤13 ms, and the chained call still read
+> ~29.7k `cached_tokens` server-side. So prefix *upload/ingest* contributes ~nothing, and no
+> transport-level treatment can shrink the span. The INTERNAL decomposition (queue/service
+> delay vs cached-prefill processing vs hidden reasoning vs generation) remains unattributed —
+> that part of this section stands.
+
 > Corrected 2026-08-10 at 08A review round 2: this section previously referenced a `first_token_ns`
 > field. 08A **dropped** that field — the Responses adapter yields a synthetic `message_start`
 > before reading provider SSE (`openai-responses-adapter.js:353`), so a first-event stamp would have
