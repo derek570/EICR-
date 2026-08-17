@@ -272,7 +272,7 @@ own wording; 08D §2's closing sentence explicitly names this transfer: *"This g
 > section as part of §7's deliverables.
 
 ("THIS plan" above refers to 08D, whose no-runtime closure needed only the single session
-`8B9B2BDD` / `eicr-backend:393`, 12 turns; the activation bar the quote states binds *this* plan.)
+`8B9B2BDD` / `eicr-backend:392`, 12 turns; the activation bar the quote states binds *this* plan.)
 
 **Four acceptance preconditions — quoted verbatim from 08D §8** (again, "08C" below is 08D's own
 self-reference — these bullets were authored anticipating exactly this transfer):

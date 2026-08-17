@@ -1,7 +1,7 @@
 # Plan 08D — The discarded terminal round, and releasing the inspector from it
 
 Status: **CLOSED docs-only 2026-08-11 — the park condition was discharged by measured field
-evidence (12 turns, session `8B9B2BDD`, `eicr-backend:393`; see §2), and the refine cycle
+evidence (12 turns, session `8B9B2BDD`, `eicr-backend:392`; see §2), and the refine cycle
 converged on a no-runtime-mechanism closure (§7): 08D ships nothing to `src/`/`web`/iOS; the
 terminal round's shrink/eliminate-round lever transfers to 08C.**
 Review lane: **full dual-reviewer loop — internal Sonnet high (`certmate-plan-reviewer`), external
@@ -90,7 +90,7 @@ as a fork — "mostly **streaming**" (door captures most of the dead time) vs "m
 (door captures almost nothing) — and said nobody could tell which. The measurement below answers
 the fork anyway, and the answer moots the door from a second, independent direction.
 
-### The measurement — 2026-08-11, session `8B9B2BDD`, `eicr-backend:393`, 12 turns
+### The measurement — 2026-08-11, session `8B9B2BDD`, `eicr-backend:392`, 12 turns
 
 The 08A telemetry (`reasoning_tokens` via `openai-responses-adapter.js:442` →
 `attributeRoundUsage`'s allowlist at `round-usage-attribution.js:208`; terminal rounds identified by
@@ -245,7 +245,7 @@ same turn) did not occur once.
 Note also `t-12` and `t-13`: the write lands in a **later** round. Any release must key off the
 write, not off round 0.
 
-### The 12-turn corpus (`8B9B2BDD-22FB-45B0-91A9-C2C83CDA16AD`, `eicr-backend:393`) — names-only screen, §7 deliverable 1
+### The 12-turn corpus (`8B9B2BDD-22FB-45B0-91A9-C2C83CDA16AD`, `eicr-backend:392`) — names-only screen, §7 deliverable 1
 
 Queried directly from `/ecs/eicr/eicr-backend`'s `voice_latency.turn_core_summary` rows for this
 session (no join — `tool_names_per_round` is complete per row), applying the same multi-round
@@ -348,7 +348,7 @@ Any successor plan must not inherit 08B's round-count framing.
 
 ## 6. The session landed — status of the three moves
 
-The park condition was discharged 2026-08-11 by session `8B9B2BDD` on `eicr-backend:393` (12 turns).
+The park condition was discharged 2026-08-11 by session `8B9B2BDD` on `eicr-backend:392` (12 turns).
 
 1. **DONE — `reasoning_tokens` read on the terminal rounds.** The answer fits neither branch as
    posed: 0 on 10/12 (neither thinking nor meaningfully streaming — round-trip floor, §2). The
@@ -429,7 +429,7 @@ exact file — `PLAN-final.md` in this handoff folder (the file `/ep` is launche
    deliverable 1) over
    `.planning/voice-latency-conversational-2026-07-31/plan-08d-terminal-round-release.md`.
 3. **Update the tracked 08C plan** (`plan-08c-per-round-cost.md`): flip its stale `PARKED —
-   blocked on … :388` status to unparked, recording session `8B9B2BDD` / `eicr-backend:393` as the
+   blocked on … :388` status to unparked, recording session `8B9B2BDD` / `eicr-backend:392` as the
    discharging evidence and noting its three-item checklist (revision `:388+`, `api_transport`
    split, `round_idx` keying) still needs independent confirmation when 08C's `/rp` opens.
    **Replace BOTH stale 08C passages that describe 08D as parked / possibly removing the round /

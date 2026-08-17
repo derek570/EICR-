@@ -4,7 +4,7 @@ Status: **§2.1's code SHIPPED BY HAND 2026-08-11** (three commits; `/rp` hit th
 without converging — a process failure, not an unresolved-risk signal; see INDEX.md for the full
 account). **§2.0 (the terminal round) split fully out into [Plan 08D](plan-08d-terminal-round-release.md),
 which closed docs-only 2026-08-11 with no runtime mechanism** (session `8B9B2BDD`,
-`eicr-backend:393`). **This plan now owns only §2.1, whose code has already shipped** — see the
+`eicr-backend:392`). **This plan now owns only §2.1, whose code has already shipped** — see the
 note at the top of §2.1 below for what landed; nothing here is queued for a future `/rp`.
 Backend repo: `/Users/derekbeckley/Developer/EICR_Automation`
 
@@ -23,7 +23,7 @@ docs-only the following day, 2026-08-11):
    field session on `:388`. Refining them now would have paid full reviewer cost every round to
    re-raise one finding: that the conclusions rest on measurements that do not exist. §2.2 went
    with them because its first hypothesis is settled by 08A's cached-token counts. **That field
-   session has since run** (session `8B9B2BDD`, `eicr-backend:393`, 2026-08-11) — 08C is unparked,
+   session has since run** (session `8B9B2BDD`, `eicr-backend:392`, 2026-08-11) — 08C is unparked,
    pending independent confirmation of its own three-item unblocking checklist before its `/rp`
    opens.
 3. §2.0 split a third time, into its own plan [08D](plan-08d-terminal-round-release.md), after
@@ -78,7 +78,7 @@ at this lever — while §2.1 below drew zero findings from either reviewer. The
 mechanisms originally sketched here were never implemented; they were superseded, before any
 attempt, by 08D's own more thorough review of the same territory. [Plan 08D](plan-08d-terminal-round-release.md)
 carries the full measurement, precedent record, and mechanism history, and it **closed docs-only
-2026-08-11** (session `8B9B2BDD`, `eicr-backend:393`): the current transport has no trustworthy
+2026-08-11** (session `8B9B2BDD`, `eicr-backend:392`): the current transport has no trustworthy
 pre-completion no-tool signal, every mechanism actually proposed and reviewed there has since
 failed in production or review, and 08D ships no runtime early-release mechanism. The
 shrink/eliminate-round lever transferred to [08C](plan-08c-per-round-cost.md), which now carries
