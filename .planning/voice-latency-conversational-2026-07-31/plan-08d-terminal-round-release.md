@@ -218,6 +218,19 @@ per-round bundling, canonical suppression, forced tool choice, or skipped-loop m
 mechanisms have already died on this lever; a fifth needing escalating machinery is the signature
 of a wrong design, not a hard one.
 
+**Cross-record 2026-08-17 (from 08C-B's confirmed closure — added once its Codex hold resolved
+by measurement, per the deferral rule that a contested disproof must not enter this settled
+catalogue):** the OTHER mechanism class — leaving the round in place and accelerating its
+TRANSPORT — is now also dead, by measurement rather than precedent. 08C-B's five-axis
+feasibility inventory (service tier already priority; prompt-prefix cache engaged; connection
+warm; predicted outputs unavailable on gpt-5.x/Responses; and `previous_response_id`/
+Responses-WS state chaining probed 2026-08-17 at ~13 ms p50 for a 205× smaller payload —
+`evidence-08c-b-prid-probe-2026-08-17.json`) found zero material headroom: the ~1.27 s
+zero-reasoning terminal round is provider-side fixed overhead. Between this plan's four dead
+release shapes and 08C-B's five dead transport axes, BOTH halves of the lever are closed; what
+could ever reopen it is a provider protocol change (tool calls + terminal decision in one
+round) or a Plan-06-era behaviour change that makes terminal-position content productive.
+
 ---
 
 ## 4. What kind of follow-up actually occurs — the measurement that must survive the park

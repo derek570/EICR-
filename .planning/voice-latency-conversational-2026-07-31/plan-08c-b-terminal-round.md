@@ -1,7 +1,12 @@
 # Plan 08C-B — Terminal-round shrink/eliminate lever
 
-Status: **ACTIVE — split out of the combined 08C at the round-1 walkthrough (Derek, 2026-08-11,
-Option A).** This chunk is the sole owner of the terminal-round shrink/eliminate lever
+Status: **CLOSED docs-only 2026-08-17 — deliverable 1 (feasibility) resolved to NO VIABLE
+MECHANISM, and the closure is CONFIRMED BY MEASUREMENT: the one candidate the Codex hold
+identified (`previous_response_id`/Responses-WS chaining) was probed the same day and
+disproved (~13 ms at p50 for a 205× smaller payload); see the dated closure section at the
+end.** Split out of the combined 08C at the
+round-1 walkthrough (Derek, 2026-08-11, Option A). This chunk was the sole owner of the
+terminal-round shrink/eliminate lever
 transferred from Plan 08D's docs-only closure (08D §7 deliverable 3), together with its
 replication gate, the four acceptance preconditions, the honesty limit, and the §9 invariants.
 It chains SECOND in the batch: [08C-A](plan-08c-a-per-round-cost.md) (config probes + prefix/snapshot pair) ships
@@ -335,3 +340,140 @@ this plan's Delivery, not just its Web-companion prose.
   site map is informative only.)
 - **What did the A/B split lose?** Is there a deliverable, wire contract, or measurement that
   neither sibling now owns?
+
+## Closure — 2026-08-17: deliverable 1 resolved to NO VIABLE MECHANISM — **CONFIRMED BY MEASUREMENT (hold resolved same day)**
+
+> **✅ HOLD RESOLVED (2026-08-17, Derek's direction: "see if this is worth exploring" →
+> measured, then "do that" on the accept recommendation).** The Codex hold (cycle 1, all
+> three lenses) had found the four-axis inventory below INCOMPLETE: it omitted **Responses
+> API WebSocket mode / `previous_response_id` state chaining** — documented low-latency
+> continuation for exactly this loop shape, undisprovable from documentation alone. The
+> candidate was then EVALUATED the same day by a direct interleaved A/B probe against the
+> real API (`scripts/voice-latency-bench/prid-chaining-probe.mjs`, evidence in
+> `evidence-08c-b-prid-probe-2026-08-17.json`, this directory): **DISPROVED — see axis 5
+> below.** Chaining cut the request payload 205× and moved p50 first-token latency by
+> ~13 ms; the chained call still runs the full cached prefill server-side. The closure below
+> therefore stands as a CONFIRMED outcome — the argued inventory's one identified gap is now
+> measured shut — and the 08-series is complete. Two probe side-findings recorded for their
+> own sake: (a) `store` defaults to **true** on `/v1/responses` and the org retains
+> responses 30 days TODAY (GET on the probe's parent returned 200 with no `store` param
+> sent), so chaining never carried a new retention concession — whether to set
+> `store:false` in the adapter is a separate privacy decision, queued to Derek, with zero
+> latency impact either way; (b) the org's `gpt-5.6-luna` TPM cap is 200k — each production
+> round bills ~30k, so ~6 rounds/min is the ceiling any concurrent bench must respect.
+
+Executed by `/ep` run `20260817T001655Z-ep`, chained after 08C-A's merge (PR #189,
+`e087492b`), re-baselined on post-A `main`. Deliverables 2–4 did NOT run because the run
+provisionally judged feasibility to have failed — per the plan's gate nothing is built on a
+failed feasibility decision, and the audio-ready telemetry does not ride along on the
+failed gate. (The cross-record of this disproof alongside 08D's dead shapes in
+`plan-08d-terminal-round-release.md` was deferred while the hold stood — a contested
+disproof must not propagate into a settled catalogue — and was applied 2026-08-17 once the
+hold resolved by measurement.)
+
+### The disproof (five axes — four argued by the run, the fifth found by review and then measured)
+
+The `/ep` run argued that the candidate class constraint 1 permits — a **content-independent
+pre-call/transport treatment applied uniformly to every terminal-position call** — decomposes
+into four provider/transport axes, each exhausted or unavailable. Review found the inventory
+incomplete (the chaining candidate); the same-day probe then measured that fifth axis shut
+(axis 5 below), which also retroactively strengthens axes 2 and 3:
+
+1. **Service-tier acceleration — already at maximum.** Production ordinary turns run Luna
+   Fast; the adapter resolves and sends an explicit `service_tier`
+   (`openai-responses-adapter.js:588–593`), and every round in the 2026-08-16 90-rep bench —
+   terminal rounds included — came back `response_tier: "priority"`. There is no faster tier
+   to move the terminal-position cohort onto.
+2. **Prompt-prefix caching — already engaged.** 1,331/1,332 of the bench's completed
+   multi-round terminal rows read a ~35.7–35.8k-token cached prefix
+   (`cache_read_input_tokens` ∈ {35,659, 35,699, 35,833}); one zero-reasoning terminal row
+   cold-wrote 35,833 tokens. Plan 01 §5's Tier-A probe detected **no prefill-latency cost
+   above noise** in its small matched-round sample (cold n=4, cold 89 ms faster than warm) —
+   evidence that prefill is not obviously where the terminal round's cost lives, though the
+   sample is small and cached-prefix latency attribution remains deliberately unowned
+   (08C-A §1.4).
+3. **Connection warmness — partially present, reuse unmeasured.** The session reuses one
+   adapter per provider (`createOpenAIResponsesAdapter`, one SDK client per session) and the
+   installed SDK routes requests through a keep-alive connection pool — but that proves
+   client-object reuse, not that consecutive rounds share a socket or skip a handshake;
+   actual socket reuse is unmeasured. This axis is *plausibly* mostly-warm, not proven
+   exhausted.
+4. **Predicted outputs (speculative-decoding hint) — structurally unavailable AND immaterial.**
+   It is a Chat-Completions-only parameter (`prediction: {type:"content"}`); the gpt-5.x
+   model pages list predicted outputs as unsupported, and the production loop is the
+   Responses API on a reasoning model. Even were it available, prediction accelerates
+   DECODE — and the zero-reasoning terminal round decodes exactly **4 tokens**. Decode is
+   ~0 of its cost.
+5. **`previous_response_id` state chaining / Responses-WS continuation — MEASURED, disproved
+   (2026-08-17 probe).** Interleaved A/B, n=12/arm, arm order alternated per rep,
+   terminal-round shape (function_call_output in, ~5 tokens out, effort `low`, ~29.7k-token
+   stable prefix with the production explicit `prompt_cache_key` shape), `gpt-5.6-luna`,
+   real API: FULL (production shape, 146,383-byte request) vs CHAIN (`previous_response_id`
+   + only the new `function_call_output`, 713 bytes). **p50 TTFB 448 → 449 ms; p50
+   first-text 902 → 889 ms; CHAIN's tail WORSE (p90 first-text 2,741 vs 1,088 ms).** The
+   mechanism is visible in the usage rows: the chained call still bills the full ~29.7k
+   input tokens and still reads ~29.7k `cached_tokens` — the server reconstructs the
+   conversation and runs the same cached prefill either way, so chaining removes only the
+   wire upload, and a 146 KB upload was never the cost. This measurement also closes the
+   question 08C-A §1.4 left unowned: **cached-prefix upload/ingest is ~free at p50**, so the
+   ~1.27 s floor is provider-side fixed overhead (scheduling + cached prefill + decode) —
+   consistent with axis 2's cold-vs-warm evidence, now at direct-measurement strength. The
+   Responses-WS "connection-local cache" variant's only differential mechanism is skipping
+   the stored-state lookup, which this probe measured at ~0 ms over plain HTTP; no residual
+   mechanism remains for it to win materially. (Probe network path was dev-Mac→OpenAI, not
+   ECS→OpenAI; the arm delta on one connection is the signal, and it excludes a ≥100 ms p50
+   win decisively while unable to distinguish 0 from ~50 ms.)
+
+Every other mechanism shape fails constraints 1/3 by construction, not by tuning: per-round
+reasoning-effort reduction (the ladder below `'low'` is `'none'`, a documented Luna looping
+regression — 08C-A §1.1 — and any effort change can alter the thinking cohort's output);
+`tool_choice: "none"` or `max_output_tokens` clamps on post-tool rounds (truncate legitimate
+multi-tool-round turns and thinking-terminal responses); a different/faster model for
+post-tool rounds (not provably inert on the thinking cohort); and round elimination (requires
+predicted terminality — the transport has no trustworthy pre-completion no-tool signal, 08D,
+verified in source).
+
+**Conclusion: the zero-reasoning terminal round's ~1.27 s p50 is the round-trip floor (TTFT)
+of a protocol-mandatory round whose transport is already fully accelerated — now confirmed by
+direct measurement of the one candidate the review found (axis 5), which is consistent with
+Plan 01's cold-vs-warm result and 08C-A's 1,332-turn replication.** Within this plan's
+constraint space the remaining headroom is zero. What could ever remove it sits
+OUTSIDE the space and is recorded here for honesty, not as a proposal: a provider-side
+protocol change letting a model emit tool calls and a final terminal decision in one round,
+or a Plan-06-era behaviour change that makes terminal-position content productive often
+enough that the "wasted round" framing stops applying.
+
+### Fresh corroborating evidence — the shape replicates at scale (bench, not field)
+
+The 2026-08-16 08C-A production-path benchmark (90 reps, 3 fixtures × 3 arms × 10 blocks,
+`evidence-08c-a-analysis-2026-08-17.json` + results manifest in this directory) contains
+**1,332 completed multi-round turns** — a ~110× larger sample than the 12-turn corpus this
+lever was measured on:
+
+| Metric | 12-turn corpus (`8B9B2BDD`, `:392`) | 90-rep bench (2026-08-16) |
+|---|---|---|
+| Zero-reasoning terminal share | 10/12 (~83 %) | 1,163/1,332 (**87.3 %**) |
+| Thinking-terminal share | 2/12 (17 %, provisional) | 169/1,332 (**12.7 %**) |
+| Zero-reasoning terminal `stream_ms` p50 | 1,267 ms | **1,266 ms** |
+| Terminal output tokens (zero-reasoning) | exactly 4 | p50 = max = **4** |
+| Share of summed round `stream_ms` | 34.0 % all terminal rounds (24.4 % zero-reasoning subset) | **35.3 %** (zero-reasoning subset ÷ all rounds of the 1,332 multi-round turns; 35.0 % if the 18 completed single-round turns join the denominator) |
+
+The p50 agreement to within 1 ms across 110× the sample confirms a stable floor, not a
+session artifact. **Caveat, stated deliberately:** these are benchmark sessions on the
+production path, not an independent *ordinary field session* — so this does NOT discharge
+the inherited replication gate, which binds ACTIVATION and is moot on a no-mechanism close.
+It is corroboration of the shape, recorded because it existed on the day of closure.
+
+### Dispositions
+
+- **Audio-ready telemetry (deliverable 2):** NOT shipped, per the round-3 restructure — it
+  does not ride along on a failed feasibility gate. The deliverable-2 CONTRACT text above
+  (fields, two independent dimensions, one-shot latch, identifier scoping, delayed correlated
+  publication) remains the binding specification should it ever be argued as its own
+  observability follow-up. Unowned as of this closure; queued in the vault todo file.
+- **Web companion:** none needed — no mechanism selected, so no wire change (the plan's own
+  "no mechanism → no ledger row" rule).
+- **Inherited apparatus:** the replication gate, four acceptance preconditions, honesty limit
+  and §9 invariants remain binding on any FUTURE reopening of this lever; a reopening must
+  also re-run deliverable 1 against the then-current transport, since this closure's axis
+  inventory is dated 2026-08-17.

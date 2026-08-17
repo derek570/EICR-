@@ -1,0 +1,720 @@
+{
+  "probe": "previous_response_id state-chaining A/B (08C-B held-closure candidate, PR #190)",
+  "date": "2026-08-17",
+  "script": "scripts/voice-latency-bench/prid-chaining-probe.mjs",
+  "model": "gpt-5.6-luna",
+  "method": "12 interleaved reps per arm, arm order alternated per rep, 12s pacing (TPM-safe), terminal-round shape: function_call_output in, ~5 output tokens out, reasoning effort low, ~29.7k-token stable prefix with production explicit prompt_cache_key shape. FULL = production shape (full input every call). CHAIN = previous_response_id + [function_call_output] only.",
+  "network_caveat": "Run from the dev Mac, not ECS eu-west-2 — absolute values differ from the production 1,266 ms bench floor; the ARM DELTA on one connection is the signal.",
+  "store_default_check": "GET /v1/responses/{parent_id} returned HTTP 200 with no store param sent — the org retains responses 30 days by DEFAULT; store:true is the existing status quo, not a new concession.",
+  "verdict": "CANDIDATE DISPROVED. Payload 146,383 B -> 713 B (205x smaller) moved p50 first-text by ~13 ms (902 -> 889) and p50 TTFB by ~0 ms (448 -> 449); CHAIN tail was WORSE (p90 first-text 2,741 vs 1,088). The chained call still bills full input and still runs the cached prefill server-side (cached_tokens ~29.7k both arms). Cached-prefix upload/ingest is ~free; the terminal-round floor is provider-side fixed overhead, unreachable by transport changes.",
+  "summary": {
+    "FULL": {
+      "req_bytes": 146383,
+      "ttfb_ms": {
+        "n": 12,
+        "p50": 448,
+        "p90": 544,
+        "min": 413,
+        "max": 643
+      },
+      "first_output_item_ms": {
+        "n": 12,
+        "p50": 885,
+        "p90": 1072,
+        "min": 713,
+        "max": 4074
+      },
+      "first_text_ms": {
+        "n": 12,
+        "p50": 902,
+        "p90": 1088,
+        "min": 729,
+        "max": 4094
+      },
+      "total_ms": {
+        "n": 12,
+        "p50": 1078,
+        "p90": 1267,
+        "min": 895,
+        "max": 4297
+      },
+      "cached_tokens": 29585,
+      "input_tokens": 29712
+    },
+    "CHAIN": {
+      "req_bytes": 713,
+      "ttfb_ms": {
+        "n": 12,
+        "p50": 449,
+        "p90": 751,
+        "min": 397,
+        "max": 1036
+      },
+      "first_output_item_ms": {
+        "n": 12,
+        "p50": 871,
+        "p90": 2719,
+        "min": 634,
+        "max": 3271
+      },
+      "first_text_ms": {
+        "n": 12,
+        "p50": 889,
+        "p90": 2741,
+        "min": 653,
+        "max": 3296
+      },
+      "total_ms": {
+        "n": 12,
+        "p50": 1054,
+        "p90": 2932,
+        "min": 794,
+        "max": 3474
+      },
+      "cached_tokens": 29709,
+      "input_tokens": 29712
+    }
+  },
+  "parent_usage": {
+    "input_tokens": 29606,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 29458
+    },
+    "output_tokens": 75,
+    "output_tokens_details": {
+      "reasoning_tokens": 33
+    },
+    "total_tokens": 29681
+  },
+  "raw_reps": {
+    "FULL": [
+      {
+        "bytes": 146383,
+        "headers_ms": 500.08691700000054,
+        "ttfb_ms": 500.17933300000004,
+        "first_event_ms": 500.3634579999998,
+        "first_output_item_ms": 828.9540420000012,
+        "first_text_ms": 836.9817079999993,
+        "total_ms": 1008.5763750000006,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82abdf8c248191b6f203dca291528d",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 448.081124999997,
+        "ttfb_ms": 448.17895800000406,
+        "first_event_ms": 448.41999999999825,
+        "first_output_item_ms": 743.4888329999958,
+        "first_text_ms": 767.9196670000092,
+        "total_ms": 927.0026670000079,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac092b8481918984ab741e255ef7",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 428.91033400000015,
+        "ttfb_ms": 428.99658399999316,
+        "first_event_ms": 429.14541699999245,
+        "first_output_item_ms": 4074.265041999999,
+        "first_text_ms": 4094.3007919999945,
+        "total_ms": 4296.984499999991,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac161e188191a5a6fbfb52a9a7a1",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 413.12395899998955,
+        "ttfb_ms": 413.2146669999929,
+        "first_event_ms": 413.37204199998814,
+        "first_output_item_ms": 713.3585419999872,
+        "first_text_ms": 729.3535419999971,
+        "total_ms": 895.0805839999957,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac413b3081919fcb9f791c9c3185",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 425.60216700000456,
+        "ttfb_ms": 425.6901670000225,
+        "first_event_ms": 425.83500000002095,
+        "first_output_item_ms": 746.2744170000078,
+        "first_text_ms": 762.5427500000224,
+        "total_ms": 896.8795830000017,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac4e226c819188fcb2503bdfe83e",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 456.9115420000162,
+        "ttfb_ms": 456.9949170000036,
+        "first_event_ms": 457.1227090000175,
+        "first_output_item_ms": 884.9176250000019,
+        "first_text_ms": 901.7139170000155,
+        "total_ms": 1063.8018340000126,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac74e6e08191bec404d8438079ba",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 642.9664580000099,
+        "ttfb_ms": 643.1879159999953,
+        "first_event_ms": 643.3483330000017,
+        "first_output_item_ms": 928.8600830000069,
+        "first_text_ms": 944.513082999998,
+        "total_ms": 1109.9779160000035,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac82236c8191b777278af0539f0b",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 544.1658339999849,
+        "ttfb_ms": 544.2654589999875,
+        "first_event_ms": 544.4794589999947,
+        "first_output_item_ms": 952.0689589999965,
+        "first_text_ms": 975.4673749999783,
+        "total_ms": 1266.6383339999884,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82aca9e6d88191b650d398be8bdf91",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 439.4523749999935,
+        "ttfb_ms": 439.51941700000316,
+        "first_event_ms": 439.60324999998556,
+        "first_output_item_ms": 1072.1173340000096,
+        "first_text_ms": 1087.8797919999924,
+        "total_ms": 1231.6391669999866,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82acb72aa8819182e2fd5cbf464b62",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 513.7184170000255,
+        "ttfb_ms": 513.8787500000326,
+        "first_event_ms": 514.1985839999979,
+        "first_output_item_ms": 788.536791999999,
+        "first_text_ms": 887.4292090000235,
+        "total_ms": 1077.7541670000064,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82acde85ac8191957533029920dd28",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 446.60512500000186,
+        "ttfb_ms": 446.7326250000042,
+        "first_event_ms": 446.96254099998623,
+        "first_output_item_ms": 922.0634580000187,
+        "first_text_ms": 922.1535830000066,
+        "total_ms": 1082.7292080000043,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82aceba25c819188965cd0528b332a",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 146383,
+        "headers_ms": 442.66204199998174,
+        "ttfb_ms": 442.73166699998546,
+        "first_event_ms": 442.84908399998676,
+        "first_output_item_ms": 844.2922499999986,
+        "first_text_ms": 860.3645839999663,
+        "total_ms": 1021.4708339999779,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29585
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ad147e0c8191a9c9c7ba5b19f93a",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      }
+    ],
+    "CHAIN": [
+      {
+        "bytes": 713,
+        "headers_ms": 449.08583300000464,
+        "ttfb_ms": 449.2335000000021,
+        "first_event_ms": 449.5820420000018,
+        "first_output_item_ms": 3270.7547080000004,
+        "first_text_ms": 3296.079500000007,
+        "total_ms": 3474.0617920000004,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82abec96488191ba447001405b422f",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 435.10112500000105,
+        "ttfb_ms": 435.239625000002,
+        "first_event_ms": 435.3321670000005,
+        "first_output_item_ms": 871.3653750000012,
+        "first_text_ms": 889.1003330000021,
+        "total_ms": 1038.7284579999978,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82abfc0fcc819195a44f645d0e57f0",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 553.431958000001,
+        "ttfb_ms": 567.3818329999922,
+        "first_event_ms": 567.5087079999939,
+        "first_output_item_ms": 1577.9171659999993,
+        "first_text_ms": 1596.776457999993,
+        "total_ms": 1821.5194579999952,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac2679f0819187fde16dd3afbcb9",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 437.7668330000015,
+        "ttfb_ms": 437.8516660000023,
+        "first_event_ms": 438.002708,
+        "first_output_item_ms": 659.6061250000057,
+        "first_text_ms": 697.9278330000088,
+        "total_ms": 873.9895830000023,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac3447d08191ac805c0dcd2d7220",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 621.3549579999817,
+        "ttfb_ms": 621.4179160000058,
+        "first_event_ms": 621.5557499999995,
+        "first_output_item_ms": 789.2949159999844,
+        "first_text_ms": 800.4139159999904,
+        "total_ms": 1004.2318749999977,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac5b09808191b875f55d972fb3df",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 396.8457089999865,
+        "ttfb_ms": 396.9558749999851,
+        "first_event_ms": 397.20650000000023,
+        "first_output_item_ms": 640.6165840000031,
+        "first_text_ms": 659.9915000000037,
+        "total_ms": 794.4617919999873,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac6804088191abae901ee8ad4996",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 564.4612079999933,
+        "ttfb_ms": 564.5224579999922,
+        "first_event_ms": 564.6679160000058,
+        "first_output_item_ms": 872.1204579999903,
+        "first_text_ms": 900.2160830000066,
+        "total_ms": 1101.716374999989,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac8f16ac8191b881d32ef1432f73",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 1036.2432079999999,
+        "ttfb_ms": 1036.3981669999775,
+        "first_event_ms": 1036.6830419999897,
+        "first_output_item_ms": 1201.3170419999806,
+        "first_text_ms": 1226.188374999998,
+        "total_ms": 1550.63841699998,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ac9c8f34819190454a22d8b95f09",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 410.47012500002165,
+        "ttfb_ms": 410.5768340000068,
+        "first_event_ms": 410.8390420000069,
+        "first_output_item_ms": 780.739916999999,
+        "first_text_ms": 798.193500000023,
+        "total_ms": 944.9922090000182,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82acc45c048191b7dc60d2bc83a42a",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 742.9344580000034,
+        "ttfb_ms": 751.1135829999694,
+        "first_event_ms": 751.3605000000098,
+        "first_output_item_ms": 844.0267079999903,
+        "first_text_ms": 871.9353329999722,
+        "total_ms": 1053.80587500002,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82acd15c488191a918790804e1e4e3",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 401.76666600001045,
+        "ttfb_ms": 401.87804100004723,
+        "first_event_ms": 402.1343329999945,
+        "first_output_item_ms": 2718.5029160000267,
+        "first_text_ms": 2741.409500000009,
+        "total_ms": 2932.000250000041,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82acf8af848191afc354621d3d1676",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      },
+      {
+        "bytes": 713,
+        "headers_ms": 421.7039169999771,
+        "ttfb_ms": 421.7866250000079,
+        "first_event_ms": 421.98487500002375,
+        "first_output_item_ms": 633.6629589999793,
+        "first_text_ms": 653.1343340000021,
+        "total_ms": 794.2890420000185,
+        "usage": {
+          "input_tokens": 29712,
+          "input_tokens_details": {
+            "cache_write_tokens": 0,
+            "cached_tokens": 29709
+          },
+          "output_tokens": 5,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 29717
+        },
+        "response_id": "resp_0547caf17da0022b006a82ad07a1408191af968972e7097a1d",
+        "output_kinds": [
+          "message"
+        ],
+        "text": "DONE"
+      }
+    ]
+  }
+}
