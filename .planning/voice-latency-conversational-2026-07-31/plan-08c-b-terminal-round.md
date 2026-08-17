@@ -349,23 +349,27 @@ this plan's Delivery, not just its Web-companion prose.
 > round, so it belongs in deliverable 1's inventory and could not be disproved from
 > documentation alone on the night. Whether it has MATERIAL headroom against the ~1.27 s
 > floor is unknowable without measurement — 08C-A §1.4 deliberately left cached-prefix
-> latency attribution unowned. **Until this candidate is either disproved or selected (which
-> would re-open deliverables 2–4 as a dark build), the closure below is a PROPOSAL, not a
-> confirmed outcome, and the 08-series is NOT complete.** Decision queued to Derek via the
-> `/ep` digest.
+> latency attribution unowned. **The closure below is therefore a PROPOSAL, not a confirmed
+> outcome, and the 08-series is NOT complete. Derek decides either (1) evaluate the
+> candidate — re-opening deliverables 2–4 as a dark build — or (2) accept the argued closure
+> despite the unmeasured candidate.** Decision queued via the `/ep` digest.
 
 Executed by `/ep` run `20260817T001655Z-ep`, chained after 08C-A's merge (PR #189,
-`e087492b`), re-baselined on post-A `main`. Deliverables 2–4 did NOT run, per the plan's own
-gate: nothing is built when feasibility fails, and the audio-ready telemetry does not ride
-along as a dead prerequisite. (The cross-record of this disproof alongside 08D's dead shapes
+`e087492b`), re-baselined on post-A `main`. Deliverables 2–4 did NOT run because the run
+provisionally judged feasibility to have failed — per the plan's gate nothing is built on a
+failed feasibility decision, and the audio-ready telemetry does not ride along on the
+provisionally-failed (now held) gate. (The cross-record of this disproof alongside 08D's dead shapes
 in `plan-08d-terminal-round-release.md` is deliberately deferred until the hold above
 resolves — a contested disproof must not propagate into a settled catalogue.)
 
 ### The disproof as argued (four axes — held incomplete by review, see banner)
 
-The only candidate class constraint 1 permits — a **content-independent pre-call/transport
-treatment applied uniformly to every terminal-position call** — decomposes into exactly four
-provider/transport axes, and all four are exhausted or unavailable:
+The `/ep` run argued that the candidate class constraint 1 permits — a **content-independent
+pre-call/transport treatment applied uniformly to every terminal-position call** — decomposes
+into four provider/transport axes, each exhausted or unavailable. **Review subsequently found
+this inventory incomplete (the chaining candidate in the banner), so neither the
+exhaustiveness nor the exact cardinality of this list is established** — it stands as the
+run's argued inventory:
 
 1. **Service-tier acceleration — already at maximum.** Production ordinary turns run Luna
    Fast; the adapter resolves and sends an explicit `service_tier`
