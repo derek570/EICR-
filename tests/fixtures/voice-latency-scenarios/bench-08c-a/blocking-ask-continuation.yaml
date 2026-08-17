@@ -1,0 +1,41 @@
+name: blocking_ask_continuation
+suite: bench-08c-a
+description: |
+  Runner-CAPABILITY coverage fixture (per plan 08C-A item 1): exercises the
+  blocking ask_user round-trip end-to-end through production-path-bench.mjs
+  — the same in-turn ask/answer mechanism transcript-replay-direct-runner.mjs
+  established (ws stub reacts to `ask_user_started`, resolves the matching
+  `pendingAsks` entry mid-turn via the SAME channel production's
+  `ask_user_answered` frame uses, so the tool loop resumes in the SAME turn
+  rather than waiting for a fresh transcript after a timeout).
+
+  Only one circuit exists on the board; the inspector dictates a reading
+  against a designation that ISN'T in the schedule ("the kitchen ring") —
+  mirrors the established baseline/unknown_circuit_designation.yaml negative
+  control, where the model should ask "which circuit?" rather than invent
+  or silently drop the value. `ask_user_responses.matches: "circuit"` is a
+  broad substring (the model's exact question wording is free text, not
+  scripted) — any reasonable clarifying question about an unresolved circuit
+  reference should mention "circuit" somewhere.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "Zs for the kitchen ring is zero point five."
+    isFinal: true
+
+ask_user_responses:
+  - matches: "circuit"
+    text: "Circuit one."
+    at_ms_after_ask: 500

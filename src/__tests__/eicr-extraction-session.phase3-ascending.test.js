@@ -186,3 +186,117 @@ describe('recentCircuitOrder — array still maintained under ascending', () => 
     expect(s.recentCircuitOrder).toEqual([3, 1, 5]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Plan 08C-A — snapshotRecentCircuits constructor-latched benchmark seam
+// ---------------------------------------------------------------------------
+//
+// Lets a 3-arm latency benchmark (recent_3 / ascending / window_6) drive the
+// SAME production renderer with a wider recent-circuit window than the
+// frozen SNAPSHOT_RECENT_CIRCUITS default, without restarting the process or
+// flipping a module-level constant. Deliberately an OPTION rather than an
+// env read (unlike _resolveCircuitOrder above) — this is a benchmark/test
+// -only knob and must NOT be settable via a mid-session-mutable env var.
+describe('snapshotRecentCircuits — constructor-latched override', () => {
+  test('no option → defaults byte-identically to the frozen module constant (3)', () => {
+    const s = makeSession();
+    expect(s.snapshotRecentCircuits).toBe(3);
+  });
+
+  test('options.snapshotRecentCircuits: 6 → session.snapshotRecentCircuits is 6', () => {
+    const s = makeSession({ snapshotRecentCircuits: 6 });
+    expect(s.snapshotRecentCircuits).toBe(6);
+  });
+
+  test('snapshotRecentCircuits only accepts a positive integer — 0/-1/NaN/string/null/undefined all fall back to 3', () => {
+    for (const bad of [0, -1, 1.5, 'six', null, undefined, NaN]) {
+      const s = makeSession({ snapshotRecentCircuits: bad });
+      expect(s.snapshotRecentCircuits).toBe(3);
+    }
+  });
+
+  test('renderer actually renders up to the overridden window — 6 circuits detailed, only the oldest summarised', () => {
+    const s = makeSession({ snapshotRecentCircuits: 6 });
+    // 7 circuits, recency order 7..1 (seedCircuits: LAST entry is most
+    // recent, so circuit 1 is most-recent and circuit 7 is oldest). Window
+    // is 6, so only circuit 7 (the oldest) should be pushed into the
+    // "stored server-side" summary line — a byte-identical scenario would
+    // summarise 4 circuits (4,5,6,7) under the production default of 3.
+    seedCircuits(s, [7, 6, 5, 4, 3, 2, 1]);
+    const text = s.buildStateSnapshotMessage();
+    for (const num of [1, 2, 3, 4, 5, 6]) {
+      expect(text).toMatch(new RegExp(`^${num}:\\{`, 'm'));
+    }
+    expect(text).not.toMatch(/^7:\{/m);
+    expect(text).toMatch(/1 earlier circuits? \(7\) stored server-side/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan 08C-A benchmark hardening (2026-08-16) — providerMaxRetries
+// constructor-latched SDK-retry pin
+// ---------------------------------------------------------------------------
+//
+// Companion to _maxProviderAttempts: that clamps callWithRetry's own loop,
+// but the SDK client retries 429/5xx internally (default 2) inside every
+// attempt — silent backoff that lands inside a benchmark's measured stream
+// window. The latency bench pins this to 0 so retries at every layer
+// surface as errors instead of contaminating stream_ms.
+describe('providerMaxRetries — constructor-latched SDK retry pin', () => {
+  test('no option → null (SDK keeps its own default; production unchanged)', () => {
+    const s = makeSession();
+    expect(s._providerMaxRetries).toBeNull();
+  });
+
+  test('options.providerMaxRetries: 0 → latched as 0 (0 is a VALID pin, not falsy-rejected)', () => {
+    const s = makeSession({ providerMaxRetries: 0 });
+    expect(s._providerMaxRetries).toBe(0);
+  });
+
+  test('positive integers latch; non-integers/negatives/strings/null fall back to null', () => {
+    expect(makeSession({ providerMaxRetries: 2 })._providerMaxRetries).toBe(2);
+    for (const bad of [-1, 1.5, 'zero', null, undefined, NaN]) {
+      expect(makeSession({ providerMaxRetries: bad })._providerMaxRetries).toBeNull();
+    }
+  });
+
+  // ORDERING REGRESSION (Codex cycle-2 BLOCKER): the DEFAULT provider's
+  // client is built inside the constructor itself, so the pin must be
+  // latched BEFORE that construction — the first version latched it after,
+  // and the one client every ordinary round uses silently kept the SDK
+  // retry default while _providerMaxRetries reported the pin. Assert on
+  // what the constructor ACTUALLY passed to the SDK, not the stored option.
+  test('the pin reaches the DEFAULT in-constructor client (Anthropic branch): SDK constructor receives maxRetries', async () => {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    Anthropic.mockClear();
+    makeSession({ providerMaxRetries: 0 });
+    expect(Anthropic).toHaveBeenCalledTimes(1);
+    expect(Anthropic.mock.calls[0][0]).toMatchObject({ maxRetries: 0 });
+  });
+
+  test('no option → the SDK constructor receives NO maxRetries key (its own default stands)', async () => {
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    Anthropic.mockClear();
+    makeSession();
+    expect(Anthropic).toHaveBeenCalledTimes(1);
+    expect(Object.keys(Anthropic.mock.calls[0][0])).not.toContain('maxRetries');
+  });
+
+  test('the pin reaches the DEFAULT in-constructor client (OpenAI responses branch, the bench path): providerConfig echoes it', () => {
+    const savedModel = process.env.SONNET_EXTRACT_MODEL;
+    const savedKey = process.env.OPENAI_API_KEY;
+    try {
+      process.env.SONNET_EXTRACT_MODEL = 'gpt-5.6-luna';
+      process.env.OPENAI_API_KEY = 'sk-test-not-dispatched';
+      const s = makeSession({ providerMaxRetries: 0 });
+      expect(s.client.providerConfig).toEqual({ maxRetries: 0 });
+      const dflt = makeSession();
+      expect(dflt.client.providerConfig).toEqual({ maxRetries: null });
+    } finally {
+      if (savedModel === undefined) delete process.env.SONNET_EXTRACT_MODEL;
+      else process.env.SONNET_EXTRACT_MODEL = savedModel;
+      if (savedKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = savedKey;
+    }
+  });
+});

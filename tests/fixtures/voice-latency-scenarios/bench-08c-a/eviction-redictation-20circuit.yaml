@@ -1,0 +1,241 @@
+name: eviction_redictation_20circuit
+suite: bench-08c-a
+description: |
+  THE required fixture for plan 08C-A (non-optional per the plan). Proves
+  the causal claim behind the `snapshotRecentCircuits`/`circuitOrder` arms:
+  a narrow recent-circuit WINDOW evicts a circuit's full detail from the
+  model-facing snapshot before the inspector is actually done with it,
+  while a wider window (or ascending, which never evicts) keeps it visible.
+
+  22-circuit board (large domestic/commercial-style consumer unit; deliberately
+  more than SNAPSHOT_RECENT_CIRCUITS=3 and more than the window_6 arm's
+  override, so eviction is exercised for BOTH the default and window_6 arm
+  before this fixture ends).
+
+  Causality sequence:
+    (a) turn 1  — dictate a reading for circuit 1 (Kitchen sockets, Zs).
+    (b) turns 2-6 — dictate readings for circuits 2 through 6, IN ORDER.
+        After turn 6, session.recentCircuitOrder == [1,2,3,4,5,6] (6 entries):
+          - recent_3 (default, window=3): last-3 == [4,5,6] — circuit 1 is
+            EVICTED from full detail, folded into the "N earlier circuits
+            stored server-side" summary line.
+          - window_6 (snapshotRecentCircuits=6): last-6 == [1,2,3,4,5,6] —
+            circuit 1 is STILL fully visible.
+          - ascending: renders every circuit in numeric order every turn;
+            nothing is ever evicted (existing, already-shipped resolver).
+    (c) turn 7  — RE-dictate the IDENTICAL circuit-1 value from turn 1,
+        VERBATIM. This is the causality trigger: does the model's behaviour
+        (round count, whether it treats this as a genuine new write vs.
+        recognising the value is unchanged) differ depending on whether
+        circuit 1's prior value is visible in the snapshot at this exact
+        turn?
+    (d) turns 8-23 — continue dictating one reading per circuit for
+        circuits 7 through 22 (16 more turns), to reach a realistic full-
+        board circuit count so the per-turn token-growth measurement
+        (ascending renders EVERY circuit EVERY round, so its snapshot
+        keeps growing turn-over-turn in a way recent_3/window_6 do not)
+        is exercised across the whole fixture, not just the redictation
+        moment. This also eventually evicts circuit 1 from window_6 too
+        (once 6 more distinct circuits have been touched after it) — that
+        is expected and fine; the causality read this fixture pins is at
+        turn 7, before that happens.
+
+  Duplicate-write detection: the production-path-bench.mjs ledger should
+  show turn 7's `record_reading` write on (field=measured_zs_ohm,
+  circuit=1) as a `duplicate_write_detected: true` turn (turn 1 already
+  wrote that exact destination) REGARDLESS of arm — the point is not
+  whether the write is flagged as a duplicate (it always will be, since
+  duplicate detection reads the ledger, not the model-facing snapshot) but
+  whether the ROUND COUNT / token cost for turn 7 differs by arm.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Kitchen sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Ground floor lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 3
+      board_id: main
+      designation: First floor lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 4
+      board_id: main
+      designation: Upstairs sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 5
+      board_id: main
+      designation: Downstairs sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 6
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 7
+      board_id: main
+      designation: Electric shower
+      ocpd_rating_a: 40
+      ocpd_type: B
+    - number: 8
+      board_id: main
+      designation: Immersion heater
+      ocpd_rating_a: 16
+      ocpd_type: B
+    - number: 9
+      board_id: main
+      designation: Garage sockets
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 10
+      board_id: main
+      designation: Outside lights
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 11
+      board_id: main
+      designation: EV charger
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 12
+      board_id: main
+      designation: Loft sockets
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 13
+      board_id: main
+      designation: Utility room sockets
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 14
+      board_id: main
+      designation: Dishwasher
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 15
+      board_id: main
+      designation: Washing machine
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 16
+      board_id: main
+      designation: Boiler
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 17
+      board_id: main
+      designation: Alarm system
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 18
+      board_id: main
+      designation: Extractor fans
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 19
+      board_id: main
+      designation: Conservatory sockets
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 20
+      board_id: main
+      designation: Study sockets
+      ocpd_rating_a: 20
+      ocpd_type: B
+    - number: 21
+      board_id: main
+      designation: Second floor lighting
+      ocpd_rating_a: 6
+      ocpd_type: B
+    - number: 22
+      board_id: main
+      designation: Smoke detectors
+      ocpd_rating_a: 6
+      ocpd_type: B
+
+transcript:
+  # (a) circuit 1 — the value re-dictated verbatim at turn 7.
+  - at_ms: 0
+    text: "Circuit one Zs zero point four two."
+    isFinal: true
+  # (b) circuits 2 through 6, in order.
+  - at_ms: 1000
+    text: "Circuit two Zs zero point five five."
+    isFinal: true
+  - at_ms: 2000
+    text: "Circuit three R1 plus R2 zero point three three."
+    isFinal: true
+  - at_ms: 3000
+    text: "Circuit four Zs zero point six eight."
+    isFinal: true
+  - at_ms: 4000
+    text: "Circuit five R1 plus R2 zero point two nine."
+    isFinal: true
+  - at_ms: 5000
+    text: "Circuit six Zs zero point seven one."
+    isFinal: true
+  # (c) causality trigger — IDENTICAL text to turn 1.
+  - at_ms: 6000
+    text: "Circuit one Zs zero point four two."
+    isFinal: true
+  # (d) circuits 7 through 22.
+  - at_ms: 7000
+    text: "Circuit seven Zs zero point eight three."
+    isFinal: true
+  - at_ms: 8000
+    text: "Circuit eight R1 plus R2 zero point four seven."
+    isFinal: true
+  - at_ms: 9000
+    text: "Circuit nine Zs zero point five two."
+    isFinal: true
+  - at_ms: 10000
+    text: "Circuit ten R1 plus R2 zero point one nine."
+    isFinal: true
+  - at_ms: 11000
+    text: "Circuit eleven Zs zero point six one."
+    isFinal: true
+  - at_ms: 12000
+    text: "Circuit twelve R1 plus R2 zero point three eight."
+    isFinal: true
+  - at_ms: 13000
+    text: "Circuit thirteen Zs zero point four four."
+    isFinal: true
+  - at_ms: 14000
+    text: "Circuit fourteen R1 plus R2 zero point five six."
+    isFinal: true
+  - at_ms: 15000
+    text: "Circuit fifteen Zs zero point three one."
+    isFinal: true
+  - at_ms: 16000
+    text: "Circuit sixteen R1 plus R2 zero point two two."
+    isFinal: true
+  - at_ms: 17000
+    text: "Circuit seventeen Zs zero point seven four."
+    isFinal: true
+  - at_ms: 18000
+    text: "Circuit eighteen R1 plus R2 zero point four one."
+    isFinal: true
+  - at_ms: 19000
+    text: "Circuit nineteen Zs zero point five eight."
+    isFinal: true
+  - at_ms: 20000
+    text: "Circuit twenty R1 plus R2 zero point three six."
+    isFinal: true
+  - at_ms: 21000
+    text: "Circuit twenty one Zs zero point six six."
+    isFinal: true
+  - at_ms: 22000
+    text: "Circuit twenty two R1 plus R2 zero point one eight."
+    isFinal: true

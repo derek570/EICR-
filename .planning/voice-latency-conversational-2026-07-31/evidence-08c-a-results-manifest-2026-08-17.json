@@ -1,0 +1,20 @@
+{
+  "plan": "08C-A per-round cost (§2.1 snapshot circuit-ordering lever)",
+  "decision": "NO ARM WINS — keep recent_3",
+  "run_date_utc": "2026-08-16",
+  "reps_total": 90,
+  "reps_excluded_rate_limited": 0,
+  "fixtures": ["eviction_redictation_20circuit", "simple_write_moderate", "correction_flow"],
+  "arms": ["recent_3", "ascending", "window_6"],
+  "raw_results": {
+    "note": "The full per-rep evidence array (14 MB) is NOT committed to the repo (size); it lives in the operator's local bench dir and is reproducible from this branch. Referenced here by path + sha256 for provenance.",
+    "path": "~/.certmate/08c-a-bench/results.json",
+    "sha256": "139ee891289c8fb31f2471973bdd762f2a513c294c95fc7d2fd2b2a701506030",
+    "bytes": 14070673
+  },
+  "committed_artifacts": {
+    "analysis": "evidence-08c-a-analysis-2026-08-17.json",
+    "capability_validation": "evidence-08c-a-capability-2026-08-17.json"
+  },
+  "reproduce": "node scripts/voice-latency-bench/production-path-bench-analyze.mjs <results.json> — the decision rule is committed code (production-path-bench-analyze.mjs); nothing is tuned post-hoc."
+}

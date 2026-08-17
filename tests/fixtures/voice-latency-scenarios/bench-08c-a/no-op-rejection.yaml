@@ -1,0 +1,36 @@
+name: no_op_rejection
+suite: bench-08c-a
+description: |
+  Runner-CAPABILITY coverage fixture (per plan 08C-A item 1): an utterance
+  that passes the pre-LLM gate (it contains a weak trigger word so it is
+  forwarded to the model — see src/extraction/pre-llm-gate.js) but carries
+  no structurally complete reading (no field + circuit/board scope + value),
+  so the correct outcome is a no-op turn: zero record_reading writes, zero
+  ask_user calls. "The circuit breaker's in the cupboard." is the CANONICAL
+  example already documented in this repo's hub changelog (2026-08-11 entry,
+  "the `second`->`circuit` repair") as the reason `circuit`/`lights`/`sockets`
+  stayed WEAK triggers rather than being promoted to strong — it is exactly
+  the kind of ordinary sentence that must earn silence, not a spurious
+  write or an unnecessary ask.
+
+job_state:
+  boards:
+    - id: main
+      designation: "DB-1"
+      board_type: main
+  circuits:
+    - number: 1
+      board_id: main
+      designation: Kitchen sockets
+      ocpd_rating_a: 32
+      ocpd_type: B
+    - number: 2
+      board_id: main
+      designation: Cooker
+      ocpd_rating_a: 32
+      ocpd_type: B
+
+transcript:
+  - at_ms: 0
+    text: "The circuit breaker's in the cupboard."
+    isFinal: true

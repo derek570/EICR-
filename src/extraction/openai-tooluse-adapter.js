@@ -378,6 +378,10 @@ export function createOpenAIToolUseAdapter({ apiKey, maxRetries }) {
   }
   const openai = new OpenAI(maxRetries == null ? { apiKey } : { apiKey, maxRetries });
   return {
+    // Inert config echo so a caller/test can verify what the WIRED client
+    // was actually constructed with (the OpenAI instance itself is closed
+    // over) — added for the 08C-A providerMaxRetries ordering regression.
+    providerConfig: Object.freeze({ maxRetries: maxRetries ?? null }),
     messages: {
       stream: (streamArgs, options) => createStream(openai, streamArgs, options),
       create: async (streamArgs, options) => {

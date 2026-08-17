@@ -1244,6 +1244,24 @@ export class EICRExtractionSession {
     this._providerClients = new Map(Object.entries(options.providerClients || {}));
     this.defaultExtractionModel = (process.env.SONNET_EXTRACT_MODEL || 'claude-sonnet-4-6').trim();
     this.extractionProvider = providerForModel(this.defaultExtractionModel);
+    // Plan 08C-A benchmark hardening (2026-08-16) — SDK-LAYER retry pin.
+    // MUST be latched BEFORE the default client construction below:
+    // _createExtractionClient reads it, and the DEFAULT provider's client is
+    // built right here in the constructor — a later latch would pin only
+    // lazily-created cross-provider clients while the client every ordinary
+    // round uses kept the SDK default (the exact defect Codex cycle-2 found
+    // in the first version of this option). See the companion
+    // _maxProviderAttempts comment further down for the layering rationale:
+    // that cap clamps callWithRetry's own loop; this pins the SDK client's
+    // INTERNAL 429/5xx retries, whose silent backoff otherwise lands inside
+    // a benchmark's measured stream window. Same constructor-latched,
+    // option-not-env contract. `null` (the default, and every production
+    // call site) omits the argument entirely, so production keeps the SDK's
+    // own default.
+    this._providerMaxRetries =
+      Number.isInteger(options.providerMaxRetries) && options.providerMaxRetries >= 0
+        ? options.providerMaxRetries
+        : null;
     this.client =
       this._providerClients.get(this.extractionProvider) ||
       this._createExtractionClient(this.extractionProvider);
@@ -1281,6 +1299,21 @@ export class EICRExtractionSession {
     // the array is cheap); only the renderer's consumption differs.
     this.circuitOrder = this._resolveCircuitOrder(options.circuitOrder);
 
+    // Plan 08C-A latency-benchmark seam — constructor-latched override for
+    // the module-level SNAPSHOT_RECENT_CIRCUITS default. Deliberately an
+    // OPTION rather than an env read (mirrors _maxProviderAttempts below,
+    // NOT _resolveCircuitOrder above): this is a benchmark/test-only knob
+    // that must NOT be settable via a mid-session-mutable env var, so a
+    // 3-arm latency benchmark (recent_3 / ascending / window_6) can run all
+    // three arms through the same production code path in the same build
+    // without restarting the process or flipping a module-level constant.
+    // `undefined` (every production call site today) leaves both
+    // consumption sites byte-identical to the frozen module constant.
+    this.snapshotRecentCircuits =
+      Number.isInteger(options.snapshotRecentCircuits) && options.snapshotRecentCircuits > 0
+        ? options.snapshotRecentCircuits
+        : SNAPSHOT_RECENT_CIRCUITS;
+
     // A1 agentic-voice (2026-07-23) — ONE master flag VOICE_AGENTIC_ANSWERS,
     // read ONCE here and LATCHED. The conditional prompt render (below),
     // buildSessionTools (harness), and the pre-LLM gate's borderline-forward
@@ -1313,6 +1346,11 @@ export class EICRExtractionSession {
       Number.isInteger(options.maxProviderAttempts) && options.maxProviderAttempts > 0
         ? options.maxProviderAttempts
         : null;
+
+    // (providerMaxRetries — the SDK-layer companion to the cap above — is
+    // latched EARLIER in this constructor, before the default client is
+    // built; see the comment at that latch for why the ordering is
+    // load-bearing.)
 
     // Stage 6 Phase 4: mode-gated prompt selection.
     //   off         → legacy cert-specific prompt (STR-01 rollback path).
@@ -1428,7 +1466,14 @@ export class EICRExtractionSession {
           }
         );
       }
-      return new Anthropic({ apiKey: this._anthropicApiKey });
+      // Same providerMaxRetries contract as the OpenAI branch below — the
+      // Anthropic SDK also retries internally by default; null omits the
+      // override entirely.
+      return new Anthropic(
+        this._providerMaxRetries != null
+          ? { apiKey: this._anthropicApiKey, maxRetries: this._providerMaxRetries }
+          : { apiKey: this._anthropicApiKey }
+      );
     }
 
     if (provider === 'openai') {
@@ -1443,9 +1488,20 @@ export class EICRExtractionSession {
           { provider, extractionApi: this.extractionApi }
         );
       }
+      // `maxRetries` reaches the SDK client only when `providerMaxRetries`
+      // was latched at construction (benchmark/evaluation lanes); the null
+      // default omits it so both adapters keep the SDK's own retry policy —
+      // byte-identical to the pre-option behaviour at every production
+      // call site.
       return this.extractionApi === 'chat_completions'
-        ? createOpenAIToolUseAdapter({ apiKey: this._openaiApiKey })
-        : createOpenAIResponsesAdapter({ apiKey: this._openaiApiKey });
+        ? createOpenAIToolUseAdapter({
+            apiKey: this._openaiApiKey,
+            ...(this._providerMaxRetries != null ? { maxRetries: this._providerMaxRetries } : {}),
+          })
+        : createOpenAIResponsesAdapter({
+            apiKey: this._openaiApiKey,
+            ...(this._providerMaxRetries != null ? { maxRetries: this._providerMaxRetries } : {}),
+          });
     }
 
     throw new ProviderResolutionError(`Unsupported extraction provider: ${provider}`, { provider });
@@ -1579,8 +1635,11 @@ export class EICRExtractionSession {
    * post-construction must NOT drift the mode).
    *
    *   recent_3 (default)  → today's rotating last-N window; the renderer
-   *                          slices `recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS)`
-   *                          and emits older circuits as the
+   *                          slices `recentCircuitOrder.slice(-this.snapshotRecentCircuits)`
+   *                          (constructor-latched from SNAPSHOT_RECENT_CIRCUITS
+   *                          unless a benchmark/test caller overrides it — see
+   *                          the Plan 08C-A comment above) and emits older
+   *                          circuits as the
    *                          "X earlier circuits (1,2) stored server-side"
    *                          summary line. Byte-identical to pre-Phase-3
    *                          main.
@@ -3886,7 +3945,7 @@ export class EICRExtractionSession {
     // by buildSystemBlocks where the token estimate is already
     // computed via CostTracker on the real API call).
     const tokenStatRefs = listCircuitRefsInBoard(this.stateSnapshot, parts.currentBoardId);
-    const recentCount = Math.min(this.recentCircuitOrder.length, SNAPSHOT_RECENT_CIRCUITS);
+    const recentCount = Math.min(this.recentCircuitOrder.length, this.snapshotRecentCircuits);
     const compactedCount = tokenStatRefs.length - recentCount;
     const estimate = Math.ceil(joined.length / 4);
     logger.info(
@@ -4304,7 +4363,7 @@ export class EICRExtractionSession {
       if (this.circuitOrder === 'ascending') {
         circuitsToRender = [...allNonSupply].sort((a, b) => a - b);
       } else {
-        const recentNums = this.recentCircuitOrder.slice(-SNAPSHOT_RECENT_CIRCUITS);
+        const recentNums = this.recentCircuitOrder.slice(-this.snapshotRecentCircuits);
         const olderNums = allNonSupply.filter((n) => !recentNums.includes(n)).sort((a, b) => a - b);
 
         if (olderNums.length > 0) {
