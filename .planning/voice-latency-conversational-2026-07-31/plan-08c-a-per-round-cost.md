@@ -1,10 +1,14 @@
 # Plan 08C-A — Per-round cost levers (config probes + prefix/snapshot pair)
 
-Status: **ACTIVE — split out of the combined 08C at the round-1 walkthrough (Derek, 2026-08-11,
-Option A).** This chunk owns the config-lever probes (§1.1 effort — bounded probe confirmed;
-§1.2 round-1 model — CLOSED) and the §1.4+§2.1 prefix/snapshot pair (3-arm benchmark confirmed).
-The inherited terminal-round shrink/eliminate lever, its replication gate, and the 08D acceptance
-apparatus now live in the sibling [08C-B](plan-08c-b-terminal-round.md), which chains after this plan ships.
+Status: **SHIPPED 2026-08-17 (PR #189) — §2.1 verdict: NO ARM WINS, keep `recent_3`** (ascending
++0.9 %, window_6 +3.7 %, both under the +10 % bar; eviction duplicate-write causality REFUTED;
+benchmark harness + analyzer delivered dark, `SNAPSHOT_RECENT_CIRCUITS` unchanged). Split out of
+the combined 08C at the round-1 walkthrough (Derek, 2026-08-11, Option A). This chunk owned the
+config-lever probes (§1.1 effort — CLOSED on documented evidence; §1.2 round-1 model — CLOSED)
+and the §1.4+§2.1 prefix/snapshot pair. The inherited terminal-round shrink/eliminate lever, its
+replication gate, and the 08D acceptance apparatus live in the sibling
+[08C-B](plan-08c-b-terminal-round.md), which chained after this plan's merge (its `/ep` ran
+2026-08-17; closure proposed and HELD — see its banner).
 The /rp-opening gate was discharged 2026-08-11: the three-item checklist was independently
 confirmed against session `8B9B2BDD`'s CloudWatch telemetry (12 `voice_latency.turn_core_summary`
 rows, log group `/ecs/eicr/eicr-backend`). One correction from that confirmation: **the session

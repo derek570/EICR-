@@ -338,14 +338,30 @@ this plan's Delivery, not just its Web-companion prose.
 - **What did the A/B split lose?** Is there a deliverable, wire contract, or measurement that
   neither sibling now owns?
 
-## CLOSED docs-only — 2026-08-17: deliverable 1 resolves to NO VIABLE MECHANISM
+## PROPOSED closure — 2026-08-17: deliverable 1 argued to NO VIABLE MECHANISM — **HELD IN CODEX REVIEW, not confirmed**
+
+> **⚠️ HOLD (2026-08-17, `/ep` run `20260817T001655Z-ep`, Codex diff review cycle 1 — all
+> three lenses).** The four-axis inventory below is INCOMPLETE: it omits **Responses API
+> WebSocket mode / `previous_response_id` state chaining** — documented by the provider as a
+> low-latency continuation path for exactly this loop shape (connection-local prior-response
+> cache; requires `store:true`, which the production adapter currently does not set). It is
+> content-independent, available before the call, and applies uniformly to every post-tool
+> round, so it belongs in deliverable 1's inventory and could not be disproved from
+> documentation alone on the night. Whether it has MATERIAL headroom against the ~1.27 s
+> floor is unknowable without measurement — 08C-A §1.4 deliberately left cached-prefix
+> latency attribution unowned. **Until this candidate is either disproved or selected (which
+> would re-open deliverables 2–4 as a dark build), the closure below is a PROPOSAL, not a
+> confirmed outcome, and the 08-series is NOT complete.** Decision queued to Derek via the
+> `/ep` digest.
 
 Executed by `/ep` run `20260817T001655Z-ep`, chained after 08C-A's merge (PR #189,
 `e087492b`), re-baselined on post-A `main`. Deliverables 2–4 did NOT run, per the plan's own
 gate: nothing is built when feasibility fails, and the audio-ready telemetry does not ride
-along as a dead prerequisite.
+along as a dead prerequisite. (The cross-record of this disproof alongside 08D's dead shapes
+in `plan-08d-terminal-round-release.md` is deliberately deferred until the hold above
+resolves — a contested disproof must not propagate into a settled catalogue.)
 
-### The disproof (recorded alongside 08D §3's five dead shapes)
+### The disproof as argued (four axes — held incomplete by review, see banner)
 
 The only candidate class constraint 1 permits — a **content-independent pre-call/transport
 treatment applied uniformly to every terminal-position call** — decomposes into exactly four
@@ -356,14 +372,20 @@ provider/transport axes, and all four are exhausted or unavailable:
    (`openai-responses-adapter.js:588–593`), and every round in the 2026-08-16 90-rep bench —
    terminal rounds included — came back `response_tier: "priority"`. There is no faster tier
    to move the terminal-position cohort onto.
-2. **Prompt-prefix caching — already engaged, and measured FREE.** Every terminal round reads
-   the ~35k-token cached prefix (`cache_read_input_tokens: 35659` on the bench's terminal
-   rows), and Plan 01 §5's Tier-A probe measured a cold 34,794-token prefill **89 ms faster**
-   than warm at matched round index. Prefill is not where the terminal round's cost lives.
-3. **Connection warmness — structurally already present.** The terminal round is a follow-up
-   call on the same memoised SDK client/connection that just carried the tool round
-   (`createOpenAIResponsesAdapter`, one client per session); there is no handshake left to
-   save.
+2. **Prompt-prefix caching — already engaged.** 1,331/1,332 of the bench's completed
+   multi-round terminal rows read a ~35.7–35.8k-token cached prefix
+   (`cache_read_input_tokens` ∈ {35,659, 35,699, 35,833}); one zero-reasoning terminal row
+   cold-wrote 35,833 tokens. Plan 01 §5's Tier-A probe detected **no prefill-latency cost
+   above noise** in its small matched-round sample (cold n=4, cold 89 ms faster than warm) —
+   evidence that prefill is not obviously where the terminal round's cost lives, though the
+   sample is small and cached-prefix latency attribution remains deliberately unowned
+   (08C-A §1.4).
+3. **Connection warmness — partially present, reuse unmeasured.** The session reuses one
+   adapter per provider (`createOpenAIResponsesAdapter`, one SDK client per session) and the
+   installed SDK routes requests through a keep-alive connection pool — but that proves
+   client-object reuse, not that consecutive rounds share a socket or skip a handshake;
+   actual socket reuse is unmeasured. This axis is *plausibly* mostly-warm, not proven
+   exhausted.
 4. **Predicted outputs (speculative-decoding hint) — structurally unavailable AND immaterial.**
    It is a Chat-Completions-only parameter (`prediction: {type:"content"}`); the gpt-5.x
    model pages list predicted outputs as unsupported, and the production loop is the
@@ -401,7 +423,7 @@ lever was measured on:
 | Thinking-terminal share | 2/12 (17 %, provisional) | 169/1,332 (**12.7 %**) |
 | Zero-reasoning terminal `stream_ms` p50 | 1,267 ms | **1,266 ms** |
 | Terminal output tokens (zero-reasoning) | exactly 4 | p50 = max = **4** |
-| Share of summed round `stream_ms` | 34.0 % (24.4 % zero-reasoning subset) | **35.0 %** (zero-reasoning subset) |
+| Share of summed round `stream_ms` | 34.0 % all terminal rounds (24.4 % zero-reasoning subset) | **35.3 %** (zero-reasoning subset ÷ all rounds of the 1,332 multi-round turns; 35.0 % if the 18 completed single-round turns join the denominator) |
 
 The p50 agreement to within 1 ms across 110× the sample confirms a stable floor, not a
 session artifact. **Caveat, stated deliberately:** these are benchmark sessions on the
