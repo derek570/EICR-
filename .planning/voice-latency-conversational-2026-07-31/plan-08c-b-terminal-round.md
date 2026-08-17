@@ -1,7 +1,9 @@
 # Plan 08C-B — Terminal-round shrink/eliminate lever
 
-Status: **ACTIVE — split out of the combined 08C at the round-1 walkthrough (Derek, 2026-08-11,
-Option A).** This chunk is the sole owner of the terminal-round shrink/eliminate lever
+Status: **CLOSED docs-only 2026-08-17 — deliverable 1 (feasibility) resolved to NO VIABLE
+MECHANISM; see the dated closure section at the end.** Split out of the combined 08C at the
+round-1 walkthrough (Derek, 2026-08-11, Option A). This chunk was the sole owner of the
+terminal-round shrink/eliminate lever
 transferred from Plan 08D's docs-only closure (08D §7 deliverable 3), together with its
 replication gate, the four acceptance preconditions, the honesty limit, and the §9 invariants.
 It chains SECOND in the batch: [08C-A](plan-08c-a-per-round-cost.md) (config probes + prefix/snapshot pair) ships
@@ -335,3 +337,88 @@ this plan's Delivery, not just its Web-companion prose.
   site map is informative only.)
 - **What did the A/B split lose?** Is there a deliverable, wire contract, or measurement that
   neither sibling now owns?
+
+## CLOSED docs-only — 2026-08-17: deliverable 1 resolves to NO VIABLE MECHANISM
+
+Executed by `/ep` run `20260817T001655Z-ep`, chained after 08C-A's merge (PR #189,
+`e087492b`), re-baselined on post-A `main`. Deliverables 2–4 did NOT run, per the plan's own
+gate: nothing is built when feasibility fails, and the audio-ready telemetry does not ride
+along as a dead prerequisite.
+
+### The disproof (recorded alongside 08D §3's five dead shapes)
+
+The only candidate class constraint 1 permits — a **content-independent pre-call/transport
+treatment applied uniformly to every terminal-position call** — decomposes into exactly four
+provider/transport axes, and all four are exhausted or unavailable:
+
+1. **Service-tier acceleration — already at maximum.** Production ordinary turns run Luna
+   Fast; the adapter resolves and sends an explicit `service_tier`
+   (`openai-responses-adapter.js:588–593`), and every round in the 2026-08-16 90-rep bench —
+   terminal rounds included — came back `response_tier: "priority"`. There is no faster tier
+   to move the terminal-position cohort onto.
+2. **Prompt-prefix caching — already engaged, and measured FREE.** Every terminal round reads
+   the ~35k-token cached prefix (`cache_read_input_tokens: 35659` on the bench's terminal
+   rows), and Plan 01 §5's Tier-A probe measured a cold 34,794-token prefill **89 ms faster**
+   than warm at matched round index. Prefill is not where the terminal round's cost lives.
+3. **Connection warmness — structurally already present.** The terminal round is a follow-up
+   call on the same memoised SDK client/connection that just carried the tool round
+   (`createOpenAIResponsesAdapter`, one client per session); there is no handshake left to
+   save.
+4. **Predicted outputs (speculative-decoding hint) — structurally unavailable AND immaterial.**
+   It is a Chat-Completions-only parameter (`prediction: {type:"content"}`); the gpt-5.x
+   model pages list predicted outputs as unsupported, and the production loop is the
+   Responses API on a reasoning model. Even were it available, prediction accelerates
+   DECODE — and the zero-reasoning terminal round decodes exactly **4 tokens**. Decode is
+   ~0 of its cost.
+
+Every other mechanism shape fails constraints 1/3 by construction, not by tuning: per-round
+reasoning-effort reduction (the ladder below `'low'` is `'none'`, a documented Luna looping
+regression — 08C-A §1.1 — and any effort change can alter the thinking cohort's output);
+`tool_choice: "none"` or `max_output_tokens` clamps on post-tool rounds (truncate legitimate
+multi-tool-round turns and thinking-terminal responses); a different/faster model for
+post-tool rounds (not provably inert on the thinking cohort); and round elimination (requires
+predicted terminality — the transport has no trustworthy pre-completion no-tool signal, 08D,
+verified in source).
+
+**Conclusion: the zero-reasoning terminal round's ~1.27 s p50 is the round-trip floor (TTFT)
+of a protocol-mandatory round whose transport is already fully accelerated.** Within this
+plan's constraint space the remaining headroom is zero. What could ever remove it sits
+OUTSIDE the space and is recorded here for honesty, not as a proposal: a provider-side
+protocol change letting a model emit tool calls and a final terminal decision in one round,
+or a Plan-06-era behaviour change that makes terminal-position content productive often
+enough that the "wasted round" framing stops applying.
+
+### Fresh corroborating evidence — the shape replicates at scale (bench, not field)
+
+The 2026-08-16 08C-A production-path benchmark (90 reps, 3 fixtures × 3 arms × 10 blocks,
+`evidence-08c-a-analysis-2026-08-17.json` + results manifest in this directory) contains
+**1,332 completed multi-round turns** — a ~110× larger sample than the 12-turn corpus this
+lever was measured on:
+
+| Metric | 12-turn corpus (`8B9B2BDD`, `:392`) | 90-rep bench (2026-08-16) |
+|---|---|---|
+| Zero-reasoning terminal share | 10/12 (~83 %) | 1,163/1,332 (**87.3 %**) |
+| Thinking-terminal share | 2/12 (17 %, provisional) | 169/1,332 (**12.7 %**) |
+| Zero-reasoning terminal `stream_ms` p50 | 1,267 ms | **1,266 ms** |
+| Terminal output tokens (zero-reasoning) | exactly 4 | p50 = max = **4** |
+| Share of summed round `stream_ms` | 34.0 % (24.4 % zero-reasoning subset) | **35.0 %** (zero-reasoning subset) |
+
+The p50 agreement to within 1 ms across 110× the sample confirms a stable floor, not a
+session artifact. **Caveat, stated deliberately:** these are benchmark sessions on the
+production path, not an independent *ordinary field session* — so this does NOT discharge
+the inherited replication gate, which binds ACTIVATION and is moot on a no-mechanism close.
+It is corroboration of the shape, recorded because it existed on the day of closure.
+
+### Dispositions
+
+- **Audio-ready telemetry (deliverable 2):** NOT shipped, per the round-3 restructure — it
+  does not ride along on a failed feasibility gate. The deliverable-2 CONTRACT text above
+  (fields, two independent dimensions, one-shot latch, identifier scoping, delayed correlated
+  publication) remains the binding specification should it ever be argued as its own
+  observability follow-up. Unowned as of this closure; queued in the vault todo file.
+- **Web companion:** none needed — no mechanism selected, so no wire change (the plan's own
+  "no mechanism → no ledger row" rule).
+- **Inherited apparatus:** the replication gate, four acceptance preconditions, honesty limit
+  and §9 invariants remain binding on any FUTURE reopening of this lever; a reopening must
+  also re-run deliverable 1 against the then-current transport, since this closure's axis
+  inventory is dated 2026-08-17.
