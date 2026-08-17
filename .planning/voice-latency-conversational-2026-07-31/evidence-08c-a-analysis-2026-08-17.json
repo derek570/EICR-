@@ -1,0 +1,647 @@
+{
+  "input": "/Users/derekbeckley/.certmate/08c-a-bench/results.json",
+  "reps_total": 90,
+  "reps_excluded_rate_limited": 0,
+  "fixtures": {
+    "eviction_redictation_20circuit": {
+      "blocks_total": 10,
+      "blocks_paired_warm": 9,
+      "blocks_stratified_out": [
+        {
+          "block": "eviction_redictation_20circuit:block2",
+          "reason": "cache_outcome_mismatch"
+        }
+      ],
+      "per_arm": {
+        "recent_3": {
+          "warm_turns": 229,
+          "rounds": 456,
+          "turn_stream_ms_p50": 3310,
+          "turn_stream_ms_p95": 4928,
+          "first_tool_span_ms_p50": 1597,
+          "fresh_input_tokens_p50": 298,
+          "fresh_input_tokens_max": 410
+        },
+        "ascending": {
+          "warm_turns": 230,
+          "rounds": 450,
+          "turn_stream_ms_p50": 3284,
+          "turn_stream_ms_p95": 4573,
+          "first_tool_span_ms_p50": 1545,
+          "fresh_input_tokens_p50": 914,
+          "fresh_input_tokens_max": 1153
+        },
+        "window_6": {
+          "warm_turns": 230,
+          "rounds": 461,
+          "turn_stream_ms_p50": 3260,
+          "turn_stream_ms_p95": 4950,
+          "first_tool_span_ms_p50": 1571,
+          "fresh_input_tokens_p50": 401,
+          "fresh_input_tokens_max": 524
+        }
+      },
+      "paired_rel_diff": {
+        "ascending": [
+          0.015179944073890254,
+          0.009552830781881062,
+          0.02503364054129535,
+          -0.10353406993231494,
+          0.10154118771713026,
+          0.05209640974140095,
+          -0.06418833627871749,
+          0.01963297800566725,
+          0.07359879680279452
+        ],
+        "window_6": [
+          0.0076141824740645694,
+          -0.012406587825582238,
+          0.046652448777515426,
+          -0.19691538029374783,
+          0.13974445662057872,
+          0.00556113482299774,
+          -0.04165614743751578,
+          -0.005950613952233167,
+          0.017332346841000885
+        ]
+      },
+      "parity": {
+        "ascending": {
+          "destination_mismatch_blocks": 10,
+          "mismatch_details": [
+            {
+              "block": "eviction_redictation_20circuit:block0",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block1",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block2",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block3",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block4",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block5",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block6",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block7",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block8",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block9",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            }
+          ]
+        },
+        "window_6": {
+          "destination_mismatch_blocks": 10,
+          "mismatch_details": [
+            {
+              "block": "eviction_redictation_20circuit:block0",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block1",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block2",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block3",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block4",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block5",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block6",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block7",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block8",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "eviction_redictation_20circuit:block9",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            }
+          ]
+        }
+      },
+      "parity_unprovable_audibility_calls": {
+        "recent_3": 0,
+        "ascending": 0,
+        "window_6": 0
+      }
+    },
+    "simple_write_moderate": {
+      "blocks_total": 10,
+      "blocks_paired_warm": 9,
+      "blocks_stratified_out": [
+        {
+          "block": "simple_write_moderate:block0",
+          "reason": "cache_outcome_mismatch"
+        }
+      ],
+      "per_arm": {
+        "recent_3": {
+          "warm_turns": 119,
+          "rounds": 238,
+          "turn_stream_ms_p50": 3237,
+          "turn_stream_ms_p95": 5750,
+          "first_tool_span_ms_p50": 1585,
+          "fresh_input_tokens_p50": 259,
+          "fresh_input_tokens_max": 420
+        },
+        "ascending": {
+          "warm_turns": 120,
+          "rounds": 242,
+          "turn_stream_ms_p50": 3240,
+          "turn_stream_ms_p95": 5670,
+          "first_tool_span_ms_p50": 1573,
+          "fresh_input_tokens_p50": 581,
+          "fresh_input_tokens_max": 825
+        },
+        "window_6": {
+          "warm_turns": 120,
+          "rounds": 235,
+          "turn_stream_ms_p50": 3174,
+          "turn_stream_ms_p95": 5438,
+          "first_tool_span_ms_p50": 1530,
+          "fresh_input_tokens_p50": 352,
+          "fresh_input_tokens_max": 521
+        }
+      },
+      "paired_rel_diff": {
+        "ascending": [
+          0.07789524851136226,
+          -0.33916894083723803,
+          0.17972386279188016,
+          0.005216197666437886,
+          0.049754976670027436,
+          -0.14174458407038987,
+          -0.07248487841007283,
+          0.00748534338358459,
+          0.031563435851119453
+        ],
+        "window_6": [
+          0.2216753757038117,
+          0.05447711240409866,
+          0.23260452927601988,
+          -0.0765133836650652,
+          0.08722361602851181,
+          0.07312366468331458,
+          -0.057745957289223555,
+          -0.14114845058626466,
+          -0.2377002424300043
+        ]
+      },
+      "parity": {
+        "ascending": {
+          "destination_mismatch_blocks": 10,
+          "mismatch_details": [
+            {
+              "block": "simple_write_moderate:block0",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block1",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block2",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block3",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block4",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block5",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block6",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block7",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block8",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block9",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            }
+          ]
+        },
+        "window_6": {
+          "destination_mismatch_blocks": 10,
+          "mismatch_details": [
+            {
+              "block": "simple_write_moderate:block0",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block1",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block2",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block3",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block4",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block5",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block6",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block7",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block8",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "simple_write_moderate:block9",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            }
+          ]
+        }
+      },
+      "parity_unprovable_audibility_calls": {
+        "recent_3": 10,
+        "ascending": 10,
+        "window_6": 10
+      }
+    },
+    "correction_flow": {
+      "blocks_total": 10,
+      "blocks_paired_warm": 9,
+      "blocks_stratified_out": [
+        {
+          "block": "correction_flow:block0",
+          "reason": "cache_outcome_mismatch"
+        }
+      ],
+      "per_arm": {
+        "recent_3": {
+          "warm_turns": 99,
+          "rounds": 207,
+          "turn_stream_ms_p50": 3003,
+          "turn_stream_ms_p95": 5685,
+          "first_tool_span_ms_p50": 1360,
+          "fresh_input_tokens_p50": 278,
+          "fresh_input_tokens_max": 521
+        },
+        "ascending": {
+          "warm_turns": 100,
+          "rounds": 203,
+          "turn_stream_ms_p50": 3036,
+          "turn_stream_ms_p95": 4398,
+          "first_tool_span_ms_p50": 1411,
+          "fresh_input_tokens_p50": 488,
+          "fresh_input_tokens_max": 630
+        },
+        "window_6": {
+          "warm_turns": 100,
+          "rounds": 206,
+          "turn_stream_ms_p50": 2899,
+          "turn_stream_ms_p95": 4841,
+          "first_tool_span_ms_p50": 1362,
+          "fresh_input_tokens_p50": 377,
+          "fresh_input_tokens_max": 629
+        }
+      },
+      "paired_rel_diff": {
+        "ascending": [
+          -0.020550563945708276,
+          0.09678450053736892,
+          0.0797729221489607,
+          -0.0043917167342706395,
+          0.058011214507277496,
+          -0.1843839403388087,
+          0.0006713340366356574,
+          0.05011087840335099,
+          -0.08927444794952681
+        ],
+        "window_6": [
+          0.05110558847893965,
+          0.09030702646178872,
+          0.08760829070695722,
+          0.07627558022507548,
+          0.1709914101646385,
+          -0.005014625992478061,
+          -0.10485598286499792,
+          -0.007823087347542196,
+          -1.0382018927444796
+        ]
+      },
+      "parity": {
+        "ascending": {
+          "destination_mismatch_blocks": 10,
+          "mismatch_details": [
+            {
+              "block": "correction_flow:block0",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block1",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block2",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block3",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block4",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block5",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block6",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block7",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block8",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block9",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            }
+          ]
+        },
+        "window_6": {
+          "destination_mismatch_blocks": 10,
+          "mismatch_details": [
+            {
+              "block": "correction_flow:block0",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block1",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block2",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block3",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block4",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block5",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block6",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block7",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block8",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            },
+            {
+              "block": "correction_flow:block9",
+              "reasons": [
+                "baseline_unspoken_write"
+              ]
+            }
+          ]
+        }
+      },
+      "parity_unprovable_audibility_calls": {
+        "recent_3": 0,
+        "ascending": 0,
+        "window_6": 0
+      }
+    }
+  },
+  "decision": {
+    "per_arm": {
+      "ascending": {
+        "per_fixture_medians": {
+          "eviction_redictation_20circuit": 0.01963297800566725,
+          "simple_write_moderate": 0.00748534338358459,
+          "correction_flow": 0.0006713340366356574
+        },
+        "mean_of_medians": 0.009263218475295832,
+        "sign_consistent_majority": true,
+        "parity_clean": false,
+        "fixtures_without_paired_data": [],
+        "wins": false
+      },
+      "window_6": {
+        "per_fixture_medians": {
+          "eviction_redictation_20circuit": 0.00556113482299774,
+          "simple_write_moderate": 0.05447711240409866,
+          "correction_flow": 0.05110558847893965
+        },
+        "mean_of_medians": 0.03704794523534535,
+        "sign_consistent_majority": true,
+        "parity_clean": false,
+        "fixtures_without_paired_data": [],
+        "wins": false
+      }
+    },
+    "outcome": "NO ARM WINS — keep recent_3 (inconclusive or sub-threshold)"
+  },
+  "causality": {
+    "fixture": "eviction_redictation_20circuit",
+    "blocks_admitted": 10,
+    "blocks_total": 10,
+    "d": {
+      "recent_3": 1,
+      "ascending": 0,
+      "window_6": 1
+    },
+    "verdict": "REFUTED — duplicates occur even with the circuit visible"
+  }
+}
