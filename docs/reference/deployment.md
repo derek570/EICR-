@@ -65,6 +65,18 @@ aws logs tail /ecs/eicr/eicr-frontend --region eu-west-2 --since 10m
 aws logs tail /ecs/eicr/eicr-backend --region eu-west-2 --since 10m
 ```
 
+### ECS Exec — shell/one-liners inside a running container (2026-08-19)
+
+```bash
+TASK=$(aws ecs list-tasks --cluster eicr-cluster-production --service-name eicr-backend --region eu-west-2 --query "taskArns[0]" --output text)
+aws ecs execute-command --cluster eicr-cluster-production --task "$TASK" \
+  --container eicr-backend --region eu-west-2 --interactive --command "echo ok"
+```
+
+- Needs `session-manager-plugin` locally (dev Mac: installed at `/opt/homebrew/bin`, 2026-08-19; reinstall by extracting the binary from AWS's `mac_arm64/session-manager-plugin.pkg` with `pkgutil --expand-full` — the Homebrew cask needs sudo).
+- The in-task SSM agent authenticates with the **task role**, so `eicr-ecs-task-role` carries an `EcsExecSsmMessages` inline policy (the four `ssmmessages:*` channel actions; source: `infrastructure/setup-ecs.sh`, applied unconditionally so re-runs converge an existing role). Without it the agent shows `RUNNING` but every exec fails `TargetNotConnected` — which is also what you get on any task **launched before** the policy existed; the agent registers once at task start, so exec into the long-lived service task only works after its next replacement (any deploy). One-off `run-task` needs `--enable-execute-command` explicitly.
+- For ad-hoc read-only prod DB queries this is the sanctioned path (RDS is VPC-private; the API needs Derek's password). Fallback if exec is unavailable: `run-task` the backend task def with a `node --input-type=module -e "…"` command override that imports `/app/src/services/secrets.js` + `/app/src/db.js`, print between sentinel lines, read them back from the task's CloudWatch stream (`ecs/eicr-backend/<taskId>`).
+
 ### Parity-ledger staleness warning (PR-only, warn-only)
 
 `.github/workflows/deploy.yml` job `parity-ledger-warn` (added 2026-07-02, WS1 of the iOS↔Web Full-Parity Program):

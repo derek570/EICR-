@@ -350,6 +350,38 @@ EOF
         echo "  Task role exists: ${TASK_ROLE_NAME}"
     fi
 
+    # ECS Exec (aws ecs execute-command) — the in-task SSM agent opens its
+    # control/data channels with the TASK role's credentials, so without
+    # these the agent reports RUNNING but every exec fails with
+    # TargetNotConnected (observed 2026-08-19). ssmmessages does not
+    # support resource-level scoping, hence Resource "*".
+    # Applied UNCONDITIONALLY (put-role-policy is idempotent), unlike the
+    # creation-only blocks above — re-running this script must converge an
+    # existing role too, or a policy added here never reaches live.
+    ECS_EXEC_POLICY=$(cat <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "ssmmessages:CreateControlChannel",
+                "ssmmessages:CreateDataChannel",
+                "ssmmessages:OpenControlChannel",
+                "ssmmessages:OpenDataChannel"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+EOF
+)
+    aws iam put-role-policy \
+        --role-name "${TASK_ROLE_NAME}" \
+        --policy-name "EcsExecSsmMessages" \
+        --policy-document "${ECS_EXEC_POLICY}"
+    echo "  Ensured ECS Exec (ssmmessages) policy on ${TASK_ROLE_NAME}"
+
     EXECUTION_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${EXECUTION_ROLE_NAME}"
     TASK_ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${TASK_ROLE_NAME}"
 
