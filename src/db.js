@@ -812,8 +812,20 @@ export async function claimAddressMirrorIntentDelivery(
   return result.rows[0] || null;
 }
 
-/** Persist a fail-closed convenience recovery conflict before emission. */
-export async function conflictAddressMirrorIntent(userId, jobId, resolutionToken, terminalOutcome) {
+/**
+ * Persist a fail-closed convenience recovery conflict before emission.
+ * `expectedDeliveryClaimToken` (id 126) fences the write to the caller's own
+ * delivery lease: after the 10s lease expiry another emitter can reclaim the
+ * row mid-materialisation, and an unfenced UPDATE would overwrite the new
+ * owner's terminal. Null keeps the legacy unfenced behaviour.
+ */
+export async function conflictAddressMirrorIntent(
+  userId,
+  jobId,
+  resolutionToken,
+  terminalOutcome,
+  expectedDeliveryClaimToken = null
+) {
   if (!usePostgres()) return null;
   const db = getPool();
   const result = await db.query(
@@ -821,8 +833,9 @@ export async function conflictAddressMirrorIntent(userId, jobId, resolutionToken
         SET status = 'conflict', terminal_outcome = $4::jsonb, resolved_at = NOW()
       WHERE user_id = $1 AND job_id = $2 AND resolution_token = $3
         AND delivered_at IS NULL AND status <> 'pending'
+        AND ($5::text IS NULL OR delivery_claim_token = $5)
       RETURNING *`,
-    [userId, jobId, resolutionToken, JSON.stringify(terminalOutcome)]
+    [userId, jobId, resolutionToken, JSON.stringify(terminalOutcome), expectedDeliveryClaimToken]
   );
   return result.rows[0] || null;
 }
@@ -1060,12 +1073,18 @@ export async function claimAddressMirrorDirectIntentDelivery(
   return result.rows[0] || null;
 }
 
-/** Persist a fail-closed target-drift decision before recovery emission. */
+/**
+ * Persist a fail-closed target-drift decision before recovery emission.
+ * `expectedDeliveryClaimToken` (id 126) fences the write to the caller's own
+ * delivery lease — see conflictAddressMirrorIntent. Null keeps the legacy
+ * unfenced behaviour.
+ */
 export async function conflictAddressMirrorDirectIntent(
   userId,
   jobId,
   operationToken,
-  terminalOutcome
+  terminalOutcome,
+  expectedDeliveryClaimToken = null
 ) {
   if (!usePostgres()) return null;
   const db = getPool();
@@ -1074,8 +1093,9 @@ export async function conflictAddressMirrorDirectIntent(
         SET status = 'conflict', terminal_outcome = $4::jsonb, resolved_at = NOW()
       WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
         AND delivered_at IS NULL AND status <> 'pending'
+        AND ($5::text IS NULL OR delivery_claim_token = $5)
       RETURNING *`,
-    [userId, jobId, operationToken, JSON.stringify(terminalOutcome)]
+    [userId, jobId, operationToken, JSON.stringify(terminalOutcome), expectedDeliveryClaimToken]
   );
   return result.rows[0] || null;
 }

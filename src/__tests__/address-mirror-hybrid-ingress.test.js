@@ -243,4 +243,86 @@ describe('hybrid-blocked direct command at transcript ingress', () => {
       client_county: 'Essex',
     });
   });
+
+  test('durable restart: an undelivered persisted blocked terminal replays exactly one spoken blocker through the real reconnect outbox', async () => {
+    // Codex diff-review cycle 1 — the restart contract through the REAL ws
+    // layer: the process died after the blocked terminal was persisted but
+    // before its audio was delivered; the reconnect outbox replay must speak
+    // the persisted blocker exactly once, copy nothing, and mark the row
+    // delivered.
+    let row = {
+      status: 'conflict',
+      clarification_kind: 'direct',
+      source_family: 'site',
+      target_family: 'client',
+      operation_token: 'direct-blocked-restart',
+      question_id: 'address-mirror-direct-blocked-restart',
+      source_snapshot: { address: '137 Large Lane', county: 'Essex' },
+      source_writes: [],
+      terminal_outcome: {
+        outcome: 'blocked',
+        reason: 'source_missing_target_components',
+        missing_source_keys: ['postcode'],
+        source_family: 'site',
+        target_family: 'client',
+      },
+      delivered_at: null,
+    };
+    const store = {
+      load: jest.fn(async () => null),
+      loadRecoverableDirect: jest.fn(async () => (row.delivered_at ? [] : [row])),
+      claimDirectDelivery: jest.fn(async (_user, _job, _token, claimToken) => {
+        row = { ...row, delivery_claim_token: claimToken };
+        return row;
+      }),
+      markDirectDelivered: jest.fn(async () => {
+        row = { ...row, delivered_at: new Date().toISOString() };
+        return row;
+      }),
+    };
+
+    const ws1 = makeFakeWs();
+    wss.emit('connection', ws1, { headers: {} }, 'user-1');
+    await sendFrame(ws1, {
+      type: 'session_start',
+      sessionId: 'sess-hybrid-restart',
+      jobId: 'job-hybrid-restart',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-hybrid-restart');
+    entry.session.stateSnapshot.circuits = {
+      0: { address: '137 Large Lane', county: 'Essex', client_postcode: 'HB1 1AA' },
+    };
+    // Durable-mode controller bound to the persisted store (the production
+    // entry binds the real DB; the double carries the same CAS/lease shape).
+    entry.addressMirrorController = createAddressMirrorController({
+      userId: 'user-1',
+      jobId: 'job-hybrid-restart',
+      session: entry.session,
+      store,
+    });
+    await entry.addressMirrorController.rehydrate();
+
+    // "Restart": a fresh socket reconnects the same session — the real
+    // reconnect path drains the address-mirror outbox.
+    const ws2 = makeFakeWs();
+    wss.emit('connection', ws2, { headers: {} }, 'user-1');
+    await sendFrame(ws2, {
+      type: 'session_start',
+      sessionId: 'sess-hybrid-restart',
+      jobId: 'job-hybrid-restart',
+      jobState: { certificateType: 'eicr' },
+    });
+
+    const blockerText =
+      'The client address already has a postcode — dictate the site postcode and ask me again.';
+    const framesWithBlocker = ws2._sent.filter((frame) =>
+      JSON.stringify(frame).includes(blockerText)
+    );
+    expect(framesWithBlocker).toHaveLength(1);
+    // No model fallthrough, zero copy, and the outbox row is now delivered.
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+    expect(entry.session.stateSnapshot.circuits[0].client_address).toBeUndefined();
+    expect(row.delivered_at).toBeTruthy();
+  });
 });

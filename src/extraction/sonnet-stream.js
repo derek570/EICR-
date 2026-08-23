@@ -566,7 +566,14 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
   if (Array.isArray(directResult.extracted_board_readings)) {
     result.extracted_board_readings.push(...directResult.extracted_board_readings);
   }
-  if (!result.spoken_response && directResult.spoken_response) {
+  if (directFinal.outcome === 'blocked' && directResult.spoken_response) {
+    // The hybrid-blocked terminal owns the turn's spoken response (id 126):
+    // its delivery token is attached below and ACKed on playback, so letting
+    // pre-existing model prose keep the slot would mark the token delivered
+    // while the mandatory persisted blocker was never spoken. Ordinary
+    // outcomes keep the fill-only behaviour.
+    result.spoken_response = directResult.spoken_response;
+  } else if (!result.spoken_response && directResult.spoken_response) {
     result.spoken_response = directResult.spoken_response;
   }
   if (typeof directFinal.question === 'string' || directFinal.clearAskId) {
@@ -3083,7 +3090,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
                   recovered.handled &&
                   (recovered.outcome === 'yes' ||
                     recovered.outcome === 'no' ||
-                    recovered.outcome === 'conflict')
+                    recovered.outcome === 'conflict' ||
+                    // Hybrid-blocked terminal (id 126): the late race resolved
+                    // through the answer-frame path terminalises + leases
+                    // exactly like a conflict — without this arm the staged
+                    // blocker ledger would be discarded unspoken.
+                    recovered.outcome === 'blocked')
                 ) {
                   const result = attachAddressMirrorDelivery(
                     bundleToolCallsIntoResult(mirrorWrites, null, {
@@ -5765,7 +5777,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             'blocked',
           ]);
           const isTerminalMirrorOutcome =
-            terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
+            // A question-carrying outcome must reach the question branch
+            // below (id 126: already_pending now replays the pending
+            // clarification instead of consuming the utterance silently).
+            (terminalMirrorOutcome.has(mirrorOutcome.outcome) &&
+              typeof mirrorOutcome.question !== 'string') ||
             (mirrorOutcome.outcome === 'conflict' &&
               (mirrorOutcome.clearAskId || typeof mirrorOutcome.question !== 'string'));
           if (mirrorOutcome.handled && isTerminalMirrorOutcome) {
@@ -5776,14 +5792,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             }
             // Plan 00B-2 C2.4 — the controller transition accepted a matching
             // answer to a live address-mirror ask: close that ask. Only when
-            // an ask anchor actually resolved (yes/no/conflict on an anchored
-            // question) — a direct command with no open ask closes nothing.
+            // an ask anchor actually resolved (yes/no/conflict/blocked on an
+            // anchored question) — a direct command with no open ask closes
+            // nothing. 'blocked' (id 126) clears the client ask exactly like
+            // conflict, so the evidence ledger must close with it too.
             if (
               (hasRecoveredAnswerAnchor || hasDirectClarificationAnchor) &&
               (mirrorOutcome.clearAskId || recoveredAskId) &&
               (mirrorOutcome.outcome === 'yes' ||
                 mirrorOutcome.outcome === 'no' ||
-                mirrorOutcome.outcome === 'conflict')
+                mirrorOutcome.outcome === 'conflict' ||
+                mirrorOutcome.outcome === 'blocked')
             ) {
               entry[EVALUATION_CONTEXT]?.recordAskResolved?.({
                 runtimeId: mirrorOutcome.clearAskId ?? recoveredAskId,

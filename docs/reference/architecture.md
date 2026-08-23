@@ -287,7 +287,9 @@ Merely writing a source field is not evidence that it will be heard: current
 source writes suppress the acknowledgement only when confirmation mode will
 actually speak them, while crash-replayed source writes use the explicit
 forced-confirmation marker. With confirmation mode off, completing a deciding
-address/postcode ask therefore still produces the short truthful terminal.
+source-completion ask (a street address, or its corroborating
+postcode/town/county — relaxed completeness, id 126) therefore still produces
+the short truthful terminal.
 
 Direct commands use a separate append-only
 `address_mirror_direct_intents` operation ledger, keyed by the occurrence

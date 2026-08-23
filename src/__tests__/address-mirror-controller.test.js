@@ -1757,3 +1757,180 @@ describe('hybrid-address guard (id 126 — fail-closed, zero new durable state)'
     expect(restartedSession.stateSnapshot.circuits[0].client_address).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Codex diff-review cycle 1 (id 126) — the mirror is directional BOTH ways:
+// every hybrid-guard behaviour and the legacy claim pinned in the
+// client→site direction too, plus the blocked-terminal shared-CAS race.
+// ---------------------------------------------------------------------------
+describe('hybrid-address guard — client→site direction (id 126)', () => {
+  // Source = CLIENT family (address+county), target = SITE family.
+  const clientSourceSession = (targetComponents = {}) =>
+    sessionWith(targetComponents, { address: '9 Client Road', county: 'Essex' });
+
+  test('legacy claim accepts a client-source address+county shape', async () => {
+    const store = {
+      claim: jest.fn(async (_user, _job, intent) => ({ claimed: true, intent })),
+    };
+    const controller = createAddressMirrorController({
+      userId: 'owner-legacy-client',
+      jobId: 'job-legacy-client',
+      session: clientSourceSession(),
+      store,
+    });
+    await expect(
+      controller.claimLegacyQuestion(
+        {
+          type: 'address_mirror',
+          purpose: 'address_mirror',
+          field: 'address',
+          id: 'ask-legacy-client',
+          question: 'Use it for the site?',
+        },
+        sourceTurnWrites({ client_county: 'Essex' })
+      )
+    ).resolves.toBe(true);
+    expect(store.claim.mock.calls[0][2].sourceFamily).toBe('client');
+  });
+
+  test('convenience ask is suppressed when the SITE target holds a component the client source lacks', async () => {
+    const store = {
+      claim: jest.fn(async (_user, _job, intent) => ({ claimed: true, intent })),
+    };
+    const controller = createAddressMirrorController({
+      userId: 'owner-hybrid-cs',
+      jobId: 'job-hybrid-cs',
+      session: clientSourceSession({ postcode: 'HB1 1AA' }),
+      store,
+    });
+    const out = await controller.claimLiveAsk({
+      input: { purpose: 'address_mirror', question: 'Use it for the site?' },
+      askId: 'ask-hybrid-cs',
+      perTurnWrites: sourceTurnWrites({ client_address: '9 Client Road', client_county: 'Essex' }),
+    });
+    expect(out).toEqual({ ok: false, reason: 'source_missing_target_components' });
+    expect(store.claim).not.toHaveBeenCalled();
+  });
+
+  test('direct client→site command against a postcode-only site target terminates with the reversed-family blocker wording', async () => {
+    const session = clientSourceSession({ postcode: 'HB1 1AA' });
+    const controller = createAddressMirrorController({ session });
+    const writes = createPerTurnWrites();
+    const out = await controller.applyDirectCommand(
+      'use the client address for the site',
+      writes,
+      'utt-hybrid-cs-direct'
+    );
+    expect(out).toMatchObject({ handled: true, outcome: 'blocked', changed: [] });
+    expect(writes.answer.stagedText).toBe(
+      'The site address already has a postcode — dictate the client postcode and ask me again.'
+    );
+    // Never a silent merge — the site keeps only its postcode.
+    expect(session.stateSnapshot.circuits[0].address).toBeUndefined();
+    expect(session.stateSnapshot.circuits[0].postcode).toBe('HB1 1AA');
+    // Follow the instruction: dictate the client postcode, fresh command copies.
+    session.stateSnapshot.circuits[0].client_postcode = 'HB1 1AA';
+    const retried = await controller.applyDirectCommand(
+      'use the client address for the site',
+      createPerTurnWrites(),
+      'utt-hybrid-cs-direct-2'
+    );
+    expect(retried).toMatchObject({ handled: true, outcome: 'copied' });
+    expect(session.stateSnapshot.circuits[0]).toMatchObject({
+      address: '9 Client Road',
+      postcode: 'HB1 1AA',
+      county: 'Essex',
+    });
+  });
+
+  test('late race (a) client→site: a site component added after the claim blocks the yes with the reversed convenience wording', async () => {
+    const session = clientSourceSession();
+    const turnWrites = sourceTurnWrites({
+      client_address: '9 Client Road',
+      client_county: 'Essex',
+    });
+    const controller = createAddressMirrorController({ session });
+    expect(
+      await controller.claimLiveAsk({
+        input: { purpose: 'address_mirror', question: 'Use it for the site?' },
+        askId: 'ask-late-cs',
+        perTurnWrites: turnWrites,
+      })
+    ).toMatchObject({ ok: true });
+    session.stateSnapshot.circuits[0].town = 'Reading';
+    const answerWrites = createPerTurnWrites();
+    const resolved = await controller.resolveLiveAnswer({
+      input: { purpose: 'address_mirror' },
+      outcome: { answered: true, user_text: 'yes' },
+      askId: 'ask-late-cs',
+      perTurnWrites: answerWrites,
+    });
+    expect(resolved).toMatchObject({ handled: true, outcome: 'blocked', changed: [] });
+    expect(answerWrites.answer.stagedText).toBe(
+      'The site address already has a town, so I haven\'t copied the client address. Dictate the client town, then say "use the same address for the site".'
+    );
+    expect([...answerWrites.boardReadings.values()]).toHaveLength(0);
+    expect(session.stateSnapshot.circuits[0].address).toBeUndefined();
+  });
+});
+
+describe('blocked terminal shared-CAS race (id 126)', () => {
+  test('two controllers recovering one blocked direct terminal produce exactly one spoken blocker', async () => {
+    let row = {
+      status: 'conflict',
+      clarification_kind: 'direct',
+      source_family: 'site',
+      target_family: 'client',
+      operation_token: 'direct-blocked-race',
+      question_id: 'address-mirror-direct-blocked-race',
+      source_snapshot: { address: '137 Large Lane', county: 'Essex' },
+      source_writes: [],
+      terminal_outcome: {
+        outcome: 'blocked',
+        reason: 'source_missing_target_components',
+        missing_source_keys: ['postcode'],
+        source_family: 'site',
+        target_family: 'client',
+      },
+      delivered_at: null,
+    };
+    const store = {
+      load: jest.fn(async () => null),
+      loadRecoverableDirect: jest.fn(async () => [row]),
+      claimDirectDelivery: jest.fn(async (_user, _job, _token, claimToken) => {
+        if (row.delivery_claim_token) return null;
+        row = { ...row, delivery_claim_token: claimToken };
+        return row;
+      }),
+    };
+    const makeSession = () =>
+      sessionWith({ address: '137 Large Lane', county: 'Essex' }, { postcode: 'HB1 1AA' });
+    const a = createAddressMirrorController({
+      userId: 'owner-blocked-race',
+      jobId: 'job-blocked-race',
+      session: makeSession(),
+      store,
+    });
+    const b = createAddressMirrorController({
+      userId: 'owner-blocked-race',
+      jobId: 'job-blocked-race',
+      session: makeSession(),
+      store,
+    });
+    await Promise.all([a.rehydrate(), b.rehydrate()]);
+    const writesA = createPerTurnWrites();
+    const writesB = createPerTurnWrites();
+    const outcomes = await Promise.all([
+      a.recoverUndelivered(writesA),
+      b.recoverUndelivered(writesB),
+    ]);
+    const blocker =
+      'The client address already has a postcode — dictate the site postcode and ask me again.';
+    const spoken = [writesA, writesB].filter((writes) => writes.answer.stagedText === blocker);
+    expect(spoken).toHaveLength(1);
+    const winner = outcomes.find((outcome) => outcome.outcome === 'blocked');
+    expect(winner).toMatchObject({ handled: true, changed: [] });
+    const loser = outcomes.find((outcome) => outcome !== winner);
+    expect(loser.handled === false || loser.outcome === 'duplicate').toBe(true);
+  });
+});

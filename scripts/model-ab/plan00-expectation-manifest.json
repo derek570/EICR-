@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "ea9de3f6d2569deb1be31262240af6992324f49a6c256a30f9df18eb5df9c8ab",
+  "semantic_oracle_digest": "04e73cbfc9f2efd0365d5d7022d9081cfa2c3f1b242398bebb11edb193e70afb",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -517,7 +517,7 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "a74a047e2350703c1b45e71d5db388319c498607041299d811982934709846dc"
+      "sha256": "dab237348c4107a40cf3bf91cf2d48af330c1fb964d5b5a853cb8af113b1f3e3"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -601,7 +601,7 @@
     },
     {
       "path": "src/extraction/address-mirror-controller.js",
-      "sha256": "36730c4c57d0a21827920b5d92263e2540eb5222f5d5aa211720905544fd1d31"
+      "sha256": "d3e1140481d5d3de4936a318022621d9a8163e14b18b2d577703b9cc3c20a654"
     },
     {
       "path": "src/extraction/cost-tracker.js",
