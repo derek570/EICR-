@@ -34,6 +34,10 @@
 import { createRequire } from 'node:module';
 import { isEvasionMarker, isValidSentinel } from './value-normalise.js';
 import { NUMERIC_READING_FIELDS, canonicaliseNumericReadingField } from './value-enum-validator.js';
+// PLAN-B B3 (feedback ids 128 + 131) — edge-token designation hygiene for
+// the resolver's OWN designation-matching stack (see the census-decoration
+// section below).
+import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
 
 // JSON-import via createRequire mirrors the canonical pattern used by
 // stage6-tool-schemas.js (lines 33-42) — under this project's ES-modules +
@@ -282,6 +286,141 @@ const CANCEL_PHRASES = [
 ];
 
 // ---------------------------------------------------------------------------
+// PLAN-B B3 (feedback ids 128 + 131) — designation-match census decoration.
+//
+// The circuit census (`collectAvailableCircuits` in stage6-dispatcher-ask.js)
+// is the authority for "all circuits" fan-out, explicit-ref ("circuit N")
+// validation, multi-description follow-ups, and escalation metadata — so a
+// row must NEVER be removed at census construction. Instead each row is
+// DECORATED with its canonical match value (edge `circuit`/`circuits` tokens
+// dropped by the shared B1 helper) plus a designation-match-eligibility flag,
+// and the designation-matching lanes below FILTER on that flag:
+//
+//   'ineligible'     canonicalises to empty (bare "Circuit"/"Circuits", or a
+//                    blank label) — the row never participates in designation
+//                    matching. Raw "circuit" would otherwise auto-resolve
+//                    generic replies ("Circuit", "the circuit") via the
+//                    raw-exact lane and substring-match nearly anything.
+//   'bounded_only'   single-letter or numeric-only canonical remainder
+//                    ("Circuit A" → "A") — after case-normalisation "a" is
+//                    indistinguishable from the article and a numeric
+//                    remainder collides with dictated values, so only the
+//                    whole-reply exact lanes (bounded whole-designation reply
+//                    or wrapper-stripped circuit-noun-adjacent forms) may
+//                    match. Fail CLOSED in the substring/fuzzy lanes.
+//   'token_boundary' canonical remainder under 3 characters ("EV") —
+//                    participates in the substring lane only via whole-token
+//                    comparison (character-level .includes() lights up on
+//                    "seven").
+//   'full'           ordinary remainder — existing lane behaviour, run over
+//                    the canonical value.
+//
+// Raw designation/ref data stays untouched on every row for broadcast,
+// explicit numeric/list resolution, writes, escalation, and display.
+// ---------------------------------------------------------------------------
+
+// Token delimiters — MUST match designation-canonicaliser.js DELIMITER_RE
+// (hyphen deliberately absent there: "Short-circuit" is ONE token).
+const DESIGNATION_TOKEN_DELIMITER_RE = /[\s.,!?;:'"()[\]]+/;
+
+function computeDesignationMatchInfo(rawDesignation) {
+  const raw = typeof rawDesignation === 'string' ? rawDesignation : String(rawDesignation ?? '');
+  if (!raw.trim()) return { value: '', eligibility: 'ineligible' };
+  const canonicalRaw = canonicaliseCircuitDesignation(raw);
+  const canonical = typeof canonicalRaw === 'string' ? canonicalRaw.trim() : '';
+  if (!canonical) return { value: '', eligibility: 'ineligible' };
+  const tokens = canonical.toLowerCase().split(DESIGNATION_TOKEN_DELIMITER_RE).filter(Boolean);
+  if (tokens.length === 0) return { value: '', eligibility: 'ineligible' };
+  if (tokens.length === 1 && (/^[a-z]$/.test(tokens[0]) || /^[0-9]+$/.test(tokens[0]))) {
+    return { value: canonical, eligibility: 'bounded_only' };
+  }
+  if (canonical.length < 3) return { value: canonical, eligibility: 'token_boundary' };
+  return { value: canonical, eligibility: 'full' };
+}
+
+/**
+ * Decorate one authoritative census row with its canonical match value and
+ * eligibility flag. Pure; the raw `circuit_ref`/`circuit_designation` fields
+ * are preserved verbatim. Called at census construction
+ * (collectAvailableCircuits) so every resolver lane sees one consistent
+ * verdict; the lanes below recompute on the fly for undecorated arrays
+ * (tests / legacy callers), so decoration is an optimisation + a contract,
+ * never a prerequisite.
+ */
+export function decorateCircuitCensusRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  const info = computeDesignationMatchInfo(row.circuit_designation ?? row.designation ?? '');
+  return {
+    ...row,
+    designation_match_value: info.value,
+    designation_match_eligibility: info.eligibility,
+  };
+}
+
+function designationMatchInfo(circuit) {
+  if (
+    circuit &&
+    typeof circuit === 'object' &&
+    typeof circuit.designation_match_value === 'string' &&
+    typeof circuit.designation_match_eligibility === 'string'
+  ) {
+    return {
+      value: circuit.designation_match_value,
+      eligibility: circuit.designation_match_eligibility,
+    };
+  }
+  return computeDesignationMatchInfo(circuit?.circuit_designation ?? circuit?.designation ?? '');
+}
+
+/**
+ * The exact-match lanes compare a reply key against per-row designation
+ * keys. An ELIGIBLE row exposes its raw designation key AND its canonical
+ * match value as an additional exact-match key ("Upstairs lighting circuit"
+ * also answers to "upstairs lighting") — EXCEPT a numeric-only short
+ * remainder ("Circuit 7" → "7"), which would collide with the numeric
+ * circuit-ref grammar and dictated values; that row stays matchable through
+ * its full raw designation only. An ineligible row exposes NO keys.
+ */
+function designationMatchKeys(circuit, keyFn) {
+  const info = designationMatchInfo(circuit);
+  if (info.eligibility === 'ineligible') return [];
+  const keys = new Set();
+  const rawKey = keyFn(circuit?.circuit_designation ?? circuit?.designation ?? '');
+  if (rawKey) keys.add(rawKey);
+  if (!(info.eligibility === 'bounded_only' && /^[0-9]+$/.test(info.value.trim()))) {
+    const valueKey = keyFn(info.value);
+    if (valueKey) keys.add(valueKey);
+  }
+  return [...keys];
+}
+
+/**
+ * Whole-token containment in either direction (token_boundary tier): TRUE
+ * when one side's token sequence appears as a contiguous run inside the
+ * other's.
+ */
+function hasWholeTokenHit(replyText, canonicalDesignation) {
+  const replyTokens = replyText.split(DESIGNATION_TOKEN_DELIMITER_RE).filter(Boolean);
+  const desTokens = canonicalDesignation.split(DESIGNATION_TOKEN_DELIMITER_RE).filter(Boolean);
+  return containsTokenRun(replyTokens, desTokens) || containsTokenRun(desTokens, replyTokens);
+}
+
+function containsTokenRun(haystack, needle) {
+  if (needle.length === 0 || needle.length > haystack.length) return false;
+  for (let i = 0; i + needle.length <= haystack.length; i++) {
+    let hit = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
 // Designation matching
 // ---------------------------------------------------------------------------
 //
@@ -352,8 +491,14 @@ function matchDesignation(cleaned, circuits) {
   const exact = [];
   const substr = [];
   for (const c of circuits) {
-    const desig = (c.circuit_designation ?? c.designation ?? '').toLowerCase().trim();
+    // PLAN-B B3 — match against the CANONICAL value; filter by eligibility.
+    // Ineligible rows (bare "Circuit") never participate; numeric-only short
+    // remainders collide with dictated values and never match here either.
+    const info = designationMatchInfo(c);
+    if (info.eligibility === 'ineligible') continue;
+    const desig = info.value.toLowerCase().trim();
     if (!desig) continue;
+    if (info.eligibility === 'bounded_only' && /^[0-9]+$/.test(desig)) continue;
     const ref =
       typeof c.circuit_ref === 'number'
         ? c.circuit_ref
@@ -363,6 +508,13 @@ function matchDesignation(cleaned, circuits) {
       exact.push(ref);
       continue;
     }
+    if (info.eligibility === 'token_boundary') {
+      // Sub-3-char remainders ("EV") participate only via whole-token
+      // comparison — character-level .includes() would light up on "seven".
+      if (hasWholeTokenHit(lc, desig)) substr.push(ref);
+      continue;
+    }
+    if (info.eligibility !== 'full') continue; // bounded_only: exact-equality only
     if (desig.includes(lc) || lc.includes(desig)) {
       substr.push(ref);
     }
@@ -390,7 +542,12 @@ function matchDesignation(cleaned, circuits) {
     let best = null; // {ref, dist}
     let secondBestDist = Infinity;
     for (const c of circuits) {
-      const desig = (c.circuit_designation ?? c.designation ?? '').toLowerCase().trim();
+      // PLAN-B B3 — the fuzzy pass receives the CLEANED (canonical) stored
+      // value; ineligible and bounded_only rows never participate (a 1-char
+      // remainder has fuzzy budget 0 anyway and must not resolve prose).
+      const info = designationMatchInfo(c);
+      if (info.eligibility === 'ineligible' || info.eligibility === 'bounded_only') continue;
+      const desig = info.value.toLowerCase().trim();
       if (!desig) continue;
       const ref =
         typeof c.circuit_ref === 'number'
@@ -439,11 +596,16 @@ function matchQuantifiedDesignations(spokenSpan, circuits) {
   const exact = [];
   const substring = [];
   for (const circuit of circuits) {
-    const designation = (circuit?.circuit_designation ?? circuit?.designation ?? '')
-      .toLowerCase()
-      .trim();
+    // PLAN-B B3 — quantified matching runs over the CANONICAL value;
+    // ineligible rows and numeric-only short remainders never participate,
+    // and non-'full' rows may only claim exact whole-span equality.
+    const info = designationMatchInfo(circuit);
+    if (info.eligibility === 'ineligible') continue;
+    const designation = info.value.toLowerCase().trim();
     if (!designation) continue;
+    if (info.eligibility === 'bounded_only' && /^[0-9]+$/.test(designation)) continue;
     const canonicalDesignation = canonicalSeparatorDesignation(designation);
+    if (!canonicalDesignation) continue;
     const ref =
       typeof circuit?.circuit_ref === 'number'
         ? circuit.circuit_ref
@@ -451,7 +613,7 @@ function matchQuantifiedDesignations(spokenSpan, circuits) {
     if (!Number.isInteger(ref)) continue;
     if (canonicalDesignation === canonicalSpoken) {
       exact.push(ref);
-    } else if (canonicalDesignation.includes(canonicalSpoken)) {
+    } else if (info.eligibility === 'full' && canonicalDesignation.includes(canonicalSpoken)) {
       // A separator-bearing designation is one server-owned target, not a
       // bag of independently claimable components. Let its raw/exact whole
       // form win in the whole-designation pass, but do not let a quantified
@@ -981,8 +1143,12 @@ function matchCanonicalExactDesignation(text, circuits) {
   }
   const refs = [];
   for (const circuit of circuits) {
-    const designation = circuit?.circuit_designation ?? circuit?.designation ?? '';
-    if (!designation || canonicalSeparatorDesignation(designation) !== canonical) continue;
+    // PLAN-B B3 — per-row keys: raw designation + canonical value for
+    // eligible rows, NOTHING for ineligible rows (a stored bare "Circuit"
+    // must not auto-resolve replies "Circuit"/"the circuit").
+    if (!designationMatchKeys(circuit, canonicalSeparatorDesignation).includes(canonical)) {
+      continue;
+    }
     const ref =
       typeof circuit?.circuit_ref === 'number'
         ? circuit.circuit_ref
@@ -1002,8 +1168,11 @@ function matchRawCanonicalExactDesignation(text, circuits) {
   }
   const refs = [];
   for (const circuit of circuits) {
-    const designation = circuit?.circuit_designation ?? circuit?.designation ?? '';
-    if (!designation || canonicalRawSeparatorDesignation(designation) !== canonical) continue;
+    // PLAN-B B3 — see matchCanonicalExactDesignation: eligibility-filtered
+    // per-row keys (raw + canonical value; ineligible rows expose none).
+    if (!designationMatchKeys(circuit, canonicalRawSeparatorDesignation).includes(canonical)) {
+      continue;
+    }
     const ref =
       typeof circuit?.circuit_ref === 'number'
         ? circuit.circuit_ref
@@ -1055,8 +1224,12 @@ function matchBoundedRawExactDesignation(text, circuits) {
 
   const refs = [];
   for (const circuit of circuits) {
-    const designation = circuit?.circuit_designation ?? circuit?.designation ?? '';
-    if (!designation || !candidateKeys.has(canonicalRawSeparatorDesignation(designation))) continue;
+    // PLAN-B B3 — the bounded candidates are wrapper-stripped WHOLE replies
+    // ("the A circuit" → "a"), so matching a short canonical remainder here
+    // is exactly the permitted bounded/circuit-noun-adjacent form. Ineligible
+    // rows expose no keys; numeric-only remainders keep raw-designation-only.
+    const keys = designationMatchKeys(circuit, canonicalRawSeparatorDesignation);
+    if (!keys.some((key) => candidateKeys.has(key))) continue;
     const ref =
       typeof circuit?.circuit_ref === 'number'
         ? circuit.circuit_ref
