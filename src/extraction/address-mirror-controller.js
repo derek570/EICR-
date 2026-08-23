@@ -1727,6 +1727,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         outcome: 'conflict',
         question: directQuestion(directIntent),
         questionId: directIntent.question_id,
+        expectedAnswerShape: directAnswerShape(directIntent),
       };
     }
     const terminal = await terminaliseDirect(

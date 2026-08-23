@@ -640,7 +640,11 @@ describe('address mirror controller', () => {
       createPerTurnWrites(),
       'utt-conflict'
     );
-    expect(first).toMatchObject({ handled: true, outcome: 'conflict' });
+    expect(first).toMatchObject({
+      handled: true,
+      outcome: 'conflict',
+      expectedAnswerShape: 'yes_no',
+    });
     expect(first.question).toMatch(/already different/i);
     expect(session.stateSnapshot.circuits[0].client_address).toBe('9 Other Road');
 

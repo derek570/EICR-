@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "8a5cd0e1051638a8a55a4fc001b25be97dd5249292c4e91ae92188de59e26b7a",
+  "semantic_oracle_digest": "53d3228b6ebffaef39e3a04dd46414ef90ad6255b960476e59b2e4f715f37a6f",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -601,7 +601,7 @@
     },
     {
       "path": "src/extraction/address-mirror-controller.js",
-      "sha256": "c5dea4a1642f59fd828eb2f83640b3480e11fea151b9e0444054222086c3cbef"
+      "sha256": "147256cc1d8a134c66c84a4bb9bf31ab6d7dc066742e312486234932621a4a17"
     },
     {
       "path": "src/extraction/cost-tracker.js",
