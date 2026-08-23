@@ -1874,6 +1874,63 @@ describe('hybrid-address guard — client→site direction (id 126)', () => {
   });
 });
 
+describe('lease-expiry reclaim race (id 126 mini-review)', () => {
+  test('a materialiser whose lease was reclaimed before the blocked persist stages nothing — no speech, no replays, no snapshot mutation', async () => {
+    // The fenced conflict UPDATE misses (another emitter reclaimed the
+    // expired lease), so THIS materialiser must leave the per-turn ledger
+    // and the session snapshot untouched even though it had already
+    // collected replay candidates for the missing source values.
+    let row = {
+      status: 'resolved_yes',
+      clarification_kind: 'direct',
+      source_family: 'site',
+      target_family: 'client',
+      operation_token: 'direct-lease-race',
+      question_id: 'address-mirror-direct-lease-race',
+      source_snapshot: { address: '137 Large Lane', county: 'Essex' },
+      source_writes: [
+        { field: 'county', value: 'Essex', confidence: 1, source_turn_id: 't-lease' },
+      ],
+      terminal_outcome: {
+        outcome: 'copied',
+        replacement: false,
+        target_snapshot: {},
+      },
+      delivered_at: null,
+    };
+    const store = {
+      load: jest.fn(async () => null),
+      loadRecoverableDirect: jest.fn(async () => [row]),
+      claimDirectDelivery: jest.fn(async (_user, _job, _token, claimToken) => {
+        row = { ...row, delivery_claim_token: claimToken };
+        return row;
+      }),
+      // The reclaimer swapped the lease between acquire and persist: the
+      // fenced UPDATE returns no row for the stale owner.
+      conflictDirect: jest.fn(async () => null),
+    };
+    // Source values are ABSENT from the live snapshot (replay candidates
+    // exist) and the target holds a postcode the source lacks (blocked).
+    const session = sessionWith({}, { postcode: 'HB1 1AA' });
+    const controller = createAddressMirrorController({
+      userId: 'owner-lease-race',
+      jobId: 'job-lease-race',
+      session,
+      store,
+    });
+    await controller.rehydrate();
+    const writes = createPerTurnWrites();
+    const out = await controller.recoverUndelivered(writes);
+    expect(out).toMatchObject({ handled: true, outcome: 'duplicate', changed: [] });
+    // NOTHING staged by the loser.
+    expect(writes.answer.stagedText).toBeNull();
+    expect([...writes.boardReadings.values()]).toHaveLength(0);
+    expect(session.stateSnapshot.circuits[0].address).toBeUndefined();
+    expect(session.stateSnapshot.circuits[0].county).toBeUndefined();
+    expect(session.stateSnapshot.circuits[0].client_address).toBeUndefined();
+  });
+});
+
 describe('blocked terminal shared-CAS race (id 126)', () => {
   test('two controllers recovering one blocked direct terminal produce exactly one spoken blocker', async () => {
     let row = {

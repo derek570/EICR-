@@ -705,13 +705,17 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           };
         }
       } else if (claimedRecoveryIntent && intent.status !== 'conflict') {
+        // Every post-claim conflict persistence is fenced to the caller's
+        // delivery lease (mini-review widening: not only the hybrid-blocked
+        // shape — an answer_changed/source_drift recovery under an expired
+        // lease must not overwrite the new owner's terminal or double-speak).
         const persisted = await persistConvenienceDeliveryConflict(
           intent,
           reason,
           blockedPayload,
-          Boolean(blockedPayload)
+          true
         );
-        if (blockedPayload && !persisted) {
+        if (!persisted) {
           return {
             handled: true,
             outcome: 'duplicate',
@@ -721,7 +725,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
             clearAskId: intent.ask_id ?? null,
           };
         }
-        intent = persisted ?? intent;
+        intent = persisted;
       }
       // Prefer the payload persisted at the winning CAS (restart-stable);
       // fall back to the freshly-built one for store doubles that echo the
@@ -1181,7 +1185,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       );
       return directIntent;
     }
-    directIntent = normaliseDirectRow(
+    const rebound = normaliseDirectRow(
       await db.rebindDirect(
         userId,
         jobId,
@@ -1191,6 +1195,15 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         sourceSnapshot,
         sourceWrites
       )
+    );
+    // A null row means the pending intent was concurrently resolved or
+    // replaced (lost CAS) — keep the prior in-memory intent rather than
+    // nulling it out from under callers, and report the loss so they can
+    // decline to re-ask instead of dereferencing a missing generation.
+    if (!rebound) return null;
+    directIntent = rebound;
+    recoverableDirectIntents = recoverableDirectIntents.map((row) =>
+      row.operation_token === rebound.operation_token ? rebound : row
     );
     return directIntent;
   }
@@ -1348,7 +1361,16 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       const value = source[key];
       if (!meaningful(value)) continue;
       if (meaningful(currentSource[key]) && String(currentSource[key]) !== String(value)) {
-        intent = await persistDirectDeliveryConflict(intent, 'source_drift');
+        const persisted = await persistDirectDeliveryConflict(intent, 'source_drift', null, true);
+        if (!persisted) {
+          return {
+            handled: true,
+            outcome: 'duplicate',
+            changed: [],
+            ...(clearAskId ? { clearAskId } : {}),
+          };
+        }
+        intent = persisted;
         stageOwnedDelivery();
         stageAcknowledgement(
           perTurnWrites,
@@ -1371,33 +1393,43 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       }
     }
     const replayedSource = sourceReplay.length;
-    const replayedAudibleSource = sourceReplay.filter((write) => write.ledgerEntry).length;
-    if (replayedAudibleSource > 0) {
-      Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
-        value: true,
-        enumerable: false,
-        configurable: true,
-      });
-      Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
-        value: intent.operation_token,
-        enumerable: false,
-        configurable: true,
-      });
-    }
-    for (const write of sourceReplay) {
-      const { ledgerEntry } = write;
-      stageBoardWrite(session, perTurnWrites, write.field, write.value, {
-        confidence: ledgerEntry?.confidence ?? 1,
-        source_turn_id:
-          ledgerEntry?.source_turn_id ??
-          ledgerEntry?.operation_token ??
-          `::address_mirror_direct_source::${intent.operation_token}`,
-        derived: ledgerEntry == null,
-        replayed: ledgerEntry != null,
-        ordinal: write.ordinal,
-      });
-    }
+    // Collection above is PURE; staging is deferred until this materialiser
+    // has confirmed it still owns the delivery lease (mini-review finding:
+    // a fenced persist that loses the lease must leave the per-turn ledger
+    // AND the session snapshot untouched — a loser that had already staged
+    // replays would still get them bundled onto the wire).
+    const stageCollectedReplays = () => {
+      const replayedAudibleSource = sourceReplay.filter((write) => write.ledgerEntry).length;
+      if (replayedAudibleSource > 0) {
+        Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
+          value: true,
+          enumerable: false,
+          configurable: true,
+        });
+        Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
+          value: intent.operation_token,
+          enumerable: false,
+          configurable: true,
+        });
+      }
+      for (const write of sourceReplay) {
+        const { ledgerEntry } = write;
+        stageBoardWrite(session, perTurnWrites, write.field, write.value, {
+          confidence: ledgerEntry?.confidence ?? 1,
+          source_turn_id:
+            ledgerEntry?.source_turn_id ??
+            ledgerEntry?.operation_token ??
+            `::address_mirror_direct_source::${intent.operation_token}`,
+          derived: ledgerEntry == null,
+          replayed: ledgerEntry != null,
+          ordinal: write.ordinal,
+        });
+      }
+    };
     if (replayPersistedTargetConflict) {
+      // Terminal already persisted; delivery already leased by the caller —
+      // ownership is settled, so the owed source restoration stages now.
+      stageCollectedReplays();
       stageOwnedDelivery();
       stageAcknowledgement(
         perTurnWrites,
@@ -1435,7 +1467,8 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       );
       if (!persisted) {
         // Lost the delivery lease mid-materialisation (10s expiry, another
-        // emitter reclaimed the row). Stage nothing — the new owner speaks.
+        // emitter reclaimed the row). Nothing was staged — the new owner
+        // speaks.
         return {
           handled: true,
           outcome: 'duplicate',
@@ -1454,11 +1487,15 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         hybridBlockerSpeech(spokenPayload) ??
           "The address changed before I could finish, so I haven't copied it."
       );
+      // Deliberately NO source replay on a blocked terminal: exactly one
+      // spoken blocker, zero writes — the named missing component is the
+      // recovery instruction, and owed source restoration recurs on the
+      // fresh command that follows it.
       return {
         handled: true,
         outcome: 'blocked',
         changed: [],
-        replayedSource,
+        replayedSource: 0,
         resolutionToken: intent.operation_token,
         clearAskId,
         delivery: { kind: 'direct', token: intent.operation_token },
@@ -1471,7 +1508,17 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       if (!meaningful(current) || String(current) === String(sourceValue ?? '')) continue;
       const authorised = authorisedTarget[key];
       if (meaningful(authorised) && String(current) === String(authorised)) continue;
-      intent = await persistDirectDeliveryConflict(intent, 'target_drift');
+      const persisted = await persistDirectDeliveryConflict(intent, 'target_drift', null, true);
+      if (!persisted) {
+        return {
+          handled: true,
+          outcome: 'duplicate',
+          changed: [],
+          ...(clearAskId ? { clearAskId } : {}),
+        };
+      }
+      intent = persisted;
+      stageCollectedReplays();
       stageOwnedDelivery();
       stageAcknowledgement(
         perTurnWrites,
@@ -1487,6 +1534,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         delivery: { kind: 'direct', token: intent.operation_token },
       };
     }
+    stageCollectedReplays();
     stageOwnedDelivery();
     const changed = [];
     for (const key of Object.keys(FAMILIES[intent.target_family])) {
@@ -1765,12 +1813,15 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
             directIntent.source_family,
             directIntent.operation_token
           );
-      await rebindDirectIncomplete(source, progressWrites);
+      const rebound = await rebindDirectIncomplete(source, progressWrites);
+      // Lost CAS: the clarification was concurrently resolved or replaced —
+      // don't re-ask against a generation that no longer exists.
+      if (!rebound) return { handled: false };
       return {
         handled: true,
         outcome: 'source_incomplete',
-        question: directQuestion(directIntent),
-        questionId: directIntent.question_id,
+        question: directQuestion(rebound),
+        questionId: rebound.question_id,
       };
     }
     const target = stableSnapshot(session.stateSnapshot, directIntent.target_family);
@@ -1813,12 +1864,15 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
               directIntent.source_family,
               directIntent.operation_token
             );
-        await rebindDirectConflict(source, capturedWrites);
+        const reboundConflict = await rebindDirectConflict(source, capturedWrites);
+        // Same lost-CAS guard as the incomplete rebind: a null row means the
+        // clarification generation no longer exists — never dereference it.
+        if (!reboundConflict) return { handled: false };
         return {
           handled: true,
           outcome: 'conflict',
-          question: directQuestion(directIntent),
-          questionId: directIntent.question_id,
+          question: directQuestion(reboundConflict),
+          questionId: reboundConflict.question_id,
         };
       }
     }

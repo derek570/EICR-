@@ -828,12 +828,19 @@ export async function conflictAddressMirrorIntent(
 ) {
   if (!usePostgres()) return null;
   const db = getPool();
+  // A fenced write also requires the lease to still be FRESH (same 10s window
+  // claimAddressMirrorIntentDelivery reclaims on) and atomically renews it —
+  // an expired owner persisting-then-speaking while a reclaimer materialises
+  // is exactly the double-terminal this fence exists to prevent.
   const result = await db.query(
     `UPDATE address_mirror_intents
-        SET status = 'conflict', terminal_outcome = $4::jsonb, resolved_at = NOW()
+        SET status = 'conflict', terminal_outcome = $4::jsonb, resolved_at = NOW(),
+            delivery_claimed_at = CASE WHEN $5::text IS NULL THEN delivery_claimed_at ELSE NOW() END
       WHERE user_id = $1 AND job_id = $2 AND resolution_token = $3
         AND delivered_at IS NULL AND status <> 'pending'
-        AND ($5::text IS NULL OR delivery_claim_token = $5)
+        AND ($5::text IS NULL
+             OR (delivery_claim_token = $5
+                 AND delivery_claimed_at >= NOW() - INTERVAL '10 seconds'))
       RETURNING *`,
     [userId, jobId, resolutionToken, JSON.stringify(terminalOutcome), expectedDeliveryClaimToken]
   );
@@ -1088,12 +1095,17 @@ export async function conflictAddressMirrorDirectIntent(
 ) {
   if (!usePostgres()) return null;
   const db = getPool();
+  // Fenced writes require a FRESH lease and renew it atomically — see
+  // conflictAddressMirrorIntent.
   const result = await db.query(
     `UPDATE address_mirror_direct_intents
-        SET status = 'conflict', terminal_outcome = $4::jsonb, resolved_at = NOW()
+        SET status = 'conflict', terminal_outcome = $4::jsonb, resolved_at = NOW(),
+            delivery_claimed_at = CASE WHEN $5::text IS NULL THEN delivery_claimed_at ELSE NOW() END
       WHERE user_id = $1 AND job_id = $2 AND operation_token = $3
         AND delivered_at IS NULL AND status <> 'pending'
-        AND ($5::text IS NULL OR delivery_claim_token = $5)
+        AND ($5::text IS NULL
+             OR (delivery_claim_token = $5
+                 AND delivery_claimed_at >= NOW() - INTERVAL '10 seconds'))
       RETURNING *`,
     [userId, jobId, operationToken, JSON.stringify(terminalOutcome), expectedDeliveryClaimToken]
   );
