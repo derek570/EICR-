@@ -447,7 +447,7 @@ and Swift pins the byte-identical fixture digest.
 Sonnet's `ask_user` tool carries an OPTIONAL `pending_write` property. When the inspector says a value without enough context (e.g. "Number of points is 4" with no circuit), Sonnet attaches the buffered write to its ask. The server then:
 
 1. Holds the user's reply.
-2. Runs the deterministic answer resolver (`src/extraction/stage6-answer-resolver.js`) against the pending write + available circuits.
+2. Runs the deterministic answer resolver (`src/extraction/stage6-answer-resolver.js`) against the pending write + available circuits. **Designation hygiene (PLAN-B, 2026-08-23):** the census keeps every circuit raw (broadcast "all circuits", explicit "circuit N" and multi-ref writes see every row) but each row is DECORATED with its edge-canonical designation + a match-eligibility flag; the designation-matching lanes filter on that flag, so a stored bare-"Circuit" row (canonical-empty) can never auto-resolve a reply by designation, and short/single-letter canonical remainders match only under the bounded/token-boundary guard.
 3. **High-confidence match** → server auto-emits the write through the normal write path (`createAutoResolveWriteHook` in `src/extraction/stage6-dispatchers.js`). Tool result body: `match_status: "auto_resolved", resolved_writes: [...]`. Sonnet doesn't write again.
 4. **Low-confidence / ambiguous** → tool result echoes back `pending_write` + `available_circuits` + `parsed_hint`. Sonnet writes itself in the next turn.
 
