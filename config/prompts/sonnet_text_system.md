@@ -34,6 +34,7 @@ Extract structured EICR data from the transcript text.
 }
 
 === CIRCUIT FIELDS (use ALL that apply) ===
+DESIGNATION WORDING: omit standalone LEADING/TRAILING "circuit"/"circuits" from circuit_designation — write "Upstairs Lighting", not "Upstairs Lighting Circuit". Interior tokens and hyphenated compounds ("Ring circuit sockets", "Short-circuit tester") are kept as dictated.
 circuit_ref, circuit_designation, wiring_type, ref_method, number_of_points,
 live_csa_mm2, cpc_csa_mm2, max_disconnect_time_s, ocpd_bs_en, ocpd_type,
 ocpd_rating_a, ocpd_breaking_capacity_ka, ocpd_max_zs_ohm, rcd_bs_en,
