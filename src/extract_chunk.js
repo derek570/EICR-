@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import logger from './logger.js';
+import { repairCircuitDesignation } from './extraction/designation-canonicaliser.js';
 
 function extractFirstJsonObject(text) {
   const start = text.indexOf('{');
@@ -16,6 +17,7 @@ const SYSTEM_PROMPT = `Extract EICR data from transcript. Return STRICT JSON ONL
 {"circuits":[],"observations":[],"board":{},"installation":{},"supply_characteristics":{}}
 
 circuit_ref must be a number (1,2,3...). Interpret "first/second/third" or "number one/two" as 1/2/3.
+circuit_designation: omit standalone leading/trailing "circuit"/"circuits" — write "Upstairs Lighting", not "Upstairs Lighting Circuit"; interior tokens and hyphenated compounds ("Ring circuit sockets", "Short-circuit tester") stay as dictated.
 Circuit: circuit_ref, circuit_designation, wiring_type, ref_method, number_of_points, live_csa_mm2, cpc_csa_mm2, max_disconnect_time_s, ocpd_bs_en, ocpd_type, ocpd_rating_a, ocpd_breaking_capacity_ka, ocpd_max_zs_ohm, rcd_bs_en, rcd_type, rcd_operating_current_ma, ring_r1_ohm, ring_rn_ohm, ring_r2_ohm, r1_r2_ohm, r2_ohm, ir_test_voltage_v, ir_live_live_mohm, ir_live_earth_mohm, polarity_confirmed, measured_zs_ohm, rcd_time_ms, rcd_button_confirmed, afdd_button_confirmed
 Board: name, location, manufacturer, phases, earthing_arrangement, ze, zs_at_db, ipf_at_db
 Installation: client_name, address, postcode, premises_description, date_of_inspection (DD/MM/YYYY), date_of_previous_inspection (DD/MM/YYYY), next_inspection_years, extent, agreed_limitations, agreed_with, operational_limitations
@@ -202,8 +204,19 @@ export async function extractChunk(
         Object.values(obj).every((v) => v === '' || v === null || v === undefined);
 
       return {
+        // PLAN-B (feedback id 128, 2026-08-23) — designation repair at this
+        // extraction egress (live /api/recording chunk path; bypasses
+        // Stage-6 and circuitsToCSV). Repair semantics: banned-token-only
+        // preserved, never reject; the shared canonicaliser is the single
+        // source of truth.
         circuits: Array.isArray(parsed.circuits)
-          ? parsed.circuits.filter((c) => !isEmptyObj(c))
+          ? parsed.circuits
+              .filter((c) => !isEmptyObj(c))
+              .map((c) =>
+                c && typeof c === 'object' && 'circuit_designation' in c
+                  ? { ...c, circuit_designation: repairCircuitDesignation(c.circuit_designation) }
+                  : c
+              )
           : [],
         observations: Array.isArray(parsed.observations)
           ? parsed.observations.filter((o) => !isEmptyObj(o))

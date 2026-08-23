@@ -1,0 +1,139 @@
+# PLAN-B (feedback id 131, with its id-128 interaction) — IR-script entry
+# asked "Which circuit is the insulation resistance for?" despite the circuit
+# being NAMED in the utterance. EXECUTABLE via the dialogue_ingress lane.
+#
+# From the 2026-08-23 field session (feedback ids 128/131; raw session id
+# mapping in the private archive only — the executable id-128 write-side
+# sibling is frc_6600a62a…). The circuit had been created ~8 minutes earlier
+# with the dirty designation "Upstairs lighting circuit" (id 128's pre-fix
+# output — seeded here VERBATIM as job_state, exactly the stored state the
+# defective turn ran against). The inspector then said "insulation
+# resistance for upstairs lighting live to live is LIM." — the
+# dialogue-engine IR script entered with circuit_ref:null,
+# entry_designation_matched:false, designation_candidates:[]; LIM was parsed
+# and QUEUED (not written), and a SERVER-SYNTHESIZED ask (tool_call_id
+# `srv-irs-…-which-…`, NO model round) asked "Which circuit is the
+# insulation resistance for?" — an Audio-First §2 violation (an ask with no
+# structural gap). Root cause: the stored trailing "circuit" token defeats
+# BOTH matcher passes on the long entry sentence (pass 1 needs the ENTIRE
+# stored designation inside the utterance; pass 2 needs the folded token run
+# [upstairs, light, circuit] contiguous — the utterance has [upstairs,
+# light, live, …]).
+#
+# INGRESS-lane semantics (Codex pre-merge, both reviewers): this turn runs
+# entirely PRE-harness — processInsulationResistanceTurn is invoked from
+# sonnet-stream's handleTranscript before runShadowHarness, and a handled
+# turn never reaches the model — so the runner's `dialogue_ingress` lane
+# drives that EXACT exported production function (never a reimplementation)
+# with this transcript against the seeded session. NO model rounds exist,
+# faithfully: the field turn had none.
+#
+# The fix under lock is BACKEND-deterministic (PLAN-B B3): pass 1 of
+# `findCircuitsByDesignation` compares the CANONICAL stored form (edge
+# `circuit`/`circuits` tokens dropped via the shared canonicaliser) in both
+# directions, so "upstairs lighting" ⊂ the entry sentence resolves ref 2 AT
+# ENTRY. Post-fix behaviour, all under ONE joint failure id
+# (`script_entry_resolution.op_ir_entry`):
+#   - the engine's `_entered` row shows circuit_ref 2 with
+#     entry_designation_matched:true (the defect was null + false);
+#   - ir_live_live_mohm = LIM is WRITTEN to circuit 2's stored state AND
+#     emitted exactly once on the wire (legacy wire name
+#     insulation_resistance_l_l);
+#   - ZERO which-circuit asks;
+#   - exactly ONE audible script ask, and it is the NEXT-slot ask
+#     (ir_live_earth_mohm, circuit 2) — the script advanced past the
+#     resolved circuit. (The dictated value's spoken read-back is the
+#     script FINISH summary by design — PLAN-A2 script-owned coverage —
+#     emitted at completion, beyond this single-turn fixture; asserting a
+#     mid-walk value confirmation would pin behaviour production does not
+#     have.)
+#
+# Why a single entry turn (not the full 3-turn walk): on PRE-FIX code the
+# which-circuit ask derails every subsequent turn ("10." would be consumed
+# as a circuit-DIGIT answer, not a reading), so a multi-turn fixture REDs
+# with divergent multi-id failures across turns — violating the exact
+# expected_failure_id contract. The single entry turn holds the RED to
+# exactly one id while locking every leg of the evidenced defect.
+#
+# RED proof — EXECUTED, not just documented:
+# src/__tests__/field-replay/designation-hygiene-red-proof.test.js mocks the
+# designation canonicaliser to its pre-PLAN-B semantics (identity — which
+# reverts B3's canonical matcher tolerance, the fix under lock) and replays
+# THIS fixture through the REAL engine via the same ingress lane — the run
+# fails EXACTLY `script_entry_resolution.op_ir_entry` (entry circuit_ref
+# null, LIM unwritten, zero wire emission, the which-circuit ask fired, the
+# single ask is not the next-slot ask), all clean FAILs. Equivalent
+# tree-level procedure: git checkout <pre-PLAN-B base> --
+# src/extraction/designation-canonicaliser.js
+# src/extraction/dialogue-engine/helpers/circuit-resolution.js, then
+# `npm run replay:field-corpus` fails the same single id.
+#
+# Provenance: HAND-AUTHORED regression fixture derived from the backend
+# CloudWatch reconstruction (EVIDENCE.md, agent rc-ir; log-proven, both
+# matcher passes hand-simulated, ≈95% confidence). The seeded dirty
+# designation is the field session's actual stored state; the transcript is
+# the logged textPreview verbatim. recorded_full provenance labels on
+# confirmations_enabled / in_response_to are SCHEMA-MANDATED for
+# non-keystone fixtures and model the product defaults this turn ran under.
+# No captured PII: generic room/function text only.
+schema_version: 1
+corpus_id: frc_db9ad2a81993be17a38cc196c7ac8ec5
+purpose: regression
+gate_state: required_green
+red_proof_failure_id: script_entry_resolution.op_ir_entry
+owner: Derek Beckley
+introduced_at: '2026-08-23T18:00:00Z'
+fix_reference: fix_7afdddb5f397c9c5469ca04c64db725e
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  IR entry designation resolution (id 131): with the dirty legacy-stored
+  designation "Upstairs lighting circuit" seeded, the entry utterance
+  "insulation resistance for upstairs lighting live to live is LIM." must
+  resolve circuit 2 AT ENTRY via the canonical matcher tolerance, write LIM,
+  fire NO which-circuit ask, and speak exactly one next-slot ask — the
+  Audio-First §2 ask-with-no-structural-gap class, locked through the REAL
+  pre-harness engine path.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits:
+    - number: 2
+      designation: Upstairs lighting circuit
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: insulation resistance for upstairs lighting live to live is LIM.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    dialogue_ingress:
+      family: insulation_resistance
+    expected_operations:
+      - operation_id: op_ir_entry
+        kind: script_entry_resolution
+        family: insulation_resistance
+        circuit: 2
+        field: ir_live_live_mohm
+        value: LIM
+        next_ask_context_field: ir_live_earth_mohm
+        audibility: exactly_once

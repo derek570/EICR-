@@ -16,7 +16,9 @@ import {
   projectFixtureExpectation,
   loadFixture,
   listCorpusIds,
+  listVendorLaneCorpusIds,
   VENDOR_LIVE_FIXTURE_IDS,
+  POST_00B_CORPUS_FIXTURE_IDS,
   DETERMINISTIC_EGRESS_CASES,
   STRATA_NAMED_GAPS,
   EXPECTATION_STATUS,
@@ -28,11 +30,19 @@ const manifestPath = path.join(repoRoot, 'scripts', 'model-ab', 'plan00-expectat
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 
 describe('lane partition (§B6)', () => {
-  test('every corpus fixture belongs to EXACTLY one executable lane', () => {
+  test('every corpus fixture belongs to EXACTLY one lane (vendor-live OR declared post-00B)', () => {
+    // PLAN-B 2026-08-23 — the corpus now also carries fixtures owned by the
+    // merge-blocking field-replay gate, added AFTER the 00B evidence cohort
+    // froze (POST_00B_CORPUS_FIXTURE_IDS). The partition stays FAIL-CLOSED:
+    // vendor-live ∪ post-00B must equal the raw inventory exactly and be
+    // disjoint, so an unlisted new fixture still fails here.
     const corpusIds = listCorpusIds(repoRoot);
     const vendorSet = new Set(VENDOR_LIVE_FIXTURE_IDS);
-    // vendor lane covers each corpus fixture exactly once…
-    expect([...vendorSet].sort()).toEqual(corpusIds);
+    const postSet = new Set(POST_00B_CORPUS_FIXTURE_IDS);
+    for (const id of postSet) expect(vendorSet.has(id)).toBe(false);
+    expect([...vendorSet, ...postSet].sort()).toEqual(corpusIds);
+    // …the vendor-lane VIEW is exactly the declared vendor cohort…
+    expect(listVendorLaneCorpusIds(repoRoot)).toEqual([...vendorSet].sort());
     // …and the egress lane is a disjoint named-case inventory (no frc ids).
     for (const c of DETERMINISTIC_EGRESS_CASES) {
       expect(vendorSet.has(c.case_id)).toBe(false);

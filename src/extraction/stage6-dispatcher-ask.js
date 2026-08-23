@@ -109,6 +109,7 @@ import {
   resolveEnumAnswer,
   resolveBoardIdAnswer,
   extractCircuitRef,
+  decorateCircuitCensusRow,
 } from './stage6-answer-resolver.js';
 // §A4 (field-feedback-2026-07-14, F8) — pending-value capture + field-name
 // resolution + the typed detector for the write-or-reask guarantee.
@@ -2367,7 +2368,13 @@ function collectAvailableCircuits(session, boardId = null) {
     // Keep unnamed refs in the census: designation matching ignores a blank
     // label, while a later explicit "circuit N" answer still needs the
     // server-owned ref to be recognised as valid.
-    return [{ circuit_ref: ref, circuit_designation: designation }];
+    // PLAN-B B3 (feedback ids 128 + 131) — every circuit STAYS in the
+    // authoritative raw census (broadcast, "circuit N" validation,
+    // multi-description follow-ups and escalation all depend on it);
+    // decoration only adds the canonical match value + eligibility flag the
+    // resolver's designation-matching lanes filter on (a stored bare
+    // "Circuit" must not auto-resolve replies "Circuit"/"the circuit").
+    return [decorateCircuitCensusRow({ circuit_ref: ref, circuit_designation: designation })];
   });
 }
 

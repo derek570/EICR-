@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "53d3228b6ebffaef39e3a04dd46414ef90ad6255b960476e59b2e4f715f37a6f",
+  "semantic_oracle_digest": "b9de8fb4e74f4832f5a430f737ee48b51ec3a866a607d30857627285d49dbc34",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -517,7 +517,7 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "42ad963d5ea99a3211aa8052529e52c4f92c5bb8651ac55119dcbbea987b7b14"
+      "sha256": "b7f182f9601c22d4068a20386ecd88e7755a329ac6f65d5ba0afdac84e1b4f6e"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -525,11 +525,11 @@
     },
     {
       "path": "src/extraction/eicr-extraction-session.js",
-      "sha256": "3b11c3a56e4bf997eb250d82420102eb9e62e4881ef4a30ec71a2c1cc566082c"
+      "sha256": "d728fa41b5f67f71be38bfda4b23da2bdab918cbfaf786bab395ccb8bbff1b5a"
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "995bb8480fabf078719f81283ac0ff90ec557f1548f36d8c257fd0d096d32f13"
+      "sha256": "95599e524bf611cf061118cf9dfc88c454f8110e881e1a96915a293231bf47aa"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -561,7 +561,7 @@
     },
     {
       "path": "scripts/model-ab/lib/expectation-projection.mjs",
-      "sha256": "cdd3e27559f538abbdc6da9d64a4c4cc1f7f9ddb01b7c20a8f8f487539b0a76c"
+      "sha256": "05b3dc234f649a9d2897d3796e23717fce1047d23963a42c7e69d67b63f14109"
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
@@ -569,7 +569,7 @@
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
-      "sha256": "cb2fcf7dcc1436060028687d89088716578f63d8c0412d169d018e0a0afed58d"
+      "sha256": "fe8ccd555609f78065c1144f6b92ed179330b5c7704ff93018684a5d76acc447"
     },
     {
       "path": "scripts/model-ab/run-semantic-lane.mjs",
@@ -577,11 +577,11 @@
     },
     {
       "path": "scripts/model-ab/lib/lane-driver.mjs",
-      "sha256": "e8d48c123b99a08cf30c3626bad1a4e6828187ead9c2efccc2fe6f6b76557f05"
+      "sha256": "36c2322d26fca1276e444e3d5fe265679828ac3312a67f1d7c2dc6e5fe55eaa6"
     },
     {
       "path": "scripts/field-replay/lib/replay-runner-core.mjs",
-      "sha256": "33e1533f53d183dac9510338f72250ce1be6be7ff7bebe73279ba488175dffe4"
+      "sha256": "68547b395419d3f190e30b9efcd1b7857b6bb334c0427cf2b98f5b9dd06df72a"
     },
     {
       "path": "scripts/field-replay/lib/replay-clock.mjs",
@@ -597,7 +597,7 @@
     },
     {
       "path": "src/extraction/stage6-dispatcher-ask.js",
-      "sha256": "2e0c27066252b3f172942caacb4ec1fa0e4a9caf5480b9308fee20aad6fb4de8"
+      "sha256": "08169ec5676a01edf60df7f31acce22d30da36b96dda364ddcb63d830b1b21ec"
     },
     {
       "path": "src/extraction/address-mirror-controller.js",

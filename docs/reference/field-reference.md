@@ -141,7 +141,7 @@ client advertises.
 | Field | AI Extraction Guidance |
 |-------|----------------------|
 | `circuit_ref` | Sequential numbers: 1, 2, 3... |
-| `circuit_designation` | Brief description: "Lights Kitchen", "Sockets Ring", "Cooker" |
+| `circuit_designation` | Brief description: "Lights Kitchen", "Sockets Ring", "Cooker". **Designation hygiene (PLAN-B, 2026-08-23):** the word "circuit"/"circuits" is never stored as a standalone leading/trailing token (the certificate column is already headed "Circuit description") — write dispatchers strip it, persistence repairs it, and interactive paths reject a banned-token-only value; interior tokens ("Ring circuit sockets") and hyphen compounds are kept. |
 | `wiring_type` | Usually "A" for domestic |
 | `ref_method` | Usually "A" for domestic |
 | `number_of_points` | Count of outlets: 1-12 lighting, 4-8 sockets |

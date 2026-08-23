@@ -298,6 +298,8 @@ describe('§5.A4 — stagePartialFailureNotice: guards + aggregation', () => {
     expect(ptw.partialFailureNotices).toHaveLength(0);
     stagePartialFailureNotice(ptw, spec({ reason: 'lim_capability_gated', target: SCOPE_TARGET }));
     expect(ptw.partialFailureNotices).toHaveLength(1);
+    // PLAN-B's invalid_designation stages CONCRETE circuit targets (Codex
+    // cycle 2), so the scope set stays exactly the LIM family.
     expect([...PARTIAL_FAILURE_SCOPE_FAMILIES]).toEqual(['lim_capability_gated']);
   });
 

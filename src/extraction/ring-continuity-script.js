@@ -72,6 +72,14 @@ import { detectStructuredReading } from './stage6-pending-value.js';
 // pre-filter (a non-destructive broadcast during confirmation must clear
 // and fall through, never become a single-circuit amend).
 import { detectBroadcastIntent } from './dialogue-engine/parsers/circuit-range.js';
+// PLAN-B B3 (feedback id 131) — edge-token designation tolerance for the
+// script's hand-duplicated pass-1 designation matcher (see the B3 helper
+// block above findCircuitByDesignation).
+import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
+// PLAN-B B3 Codex cycle-1 #3 — board-scoped circuit walk (see
+// findCircuitByDesignation): sub-board circuits live under composite keys
+// that a naive Object.entries + Number(refKey) walk silently skips.
+import { getCircuitBucket, listCircuitRefsInBoard } from './stage6-multi-board-shape.js';
 
 /**
  * Hard cap on script duration. If the inspector enters the script, walks
@@ -1884,6 +1892,94 @@ export function processRingContinuityTurn(ctx) {
   return { handled: true, fallthrough: false };
 }
 
+// ---------------------------------------------------------------------------
+// PLAN-B B3 (feedback id 131, field session 17821FFA) — edge-token
+// designation tolerance for this script's hand-duplicated PASS-1-ONLY
+// matcher. KEEP the helpers below BYTE-IDENTICAL with the same block in
+// insulation-resistance-script.js (the two scripts deliberately mirror each
+// other's designation lookup). Deliberately NOT ported: the dialogue-engine
+// matcher's pass-2 fold table — edge-token tolerance only, applied minimally
+// to the existing code shape. Replacing the twins with the shared matcher is
+// a separately-reviewable follow-up.
+// ---------------------------------------------------------------------------
+
+// Token delimiters — MUST match designation-canonicaliser.js DELIMITER_RE
+// (hyphen deliberately absent there: "Short-circuit" is ONE token).
+const DESIGNATION_TOKEN_DELIMITER_RE = /[\s.,!?;:'"()[\]]+/;
+
+/**
+ * Classify a CANONICAL (edge-token-stripped, lowercased) stored designation
+ * for matching purposes:
+ *   - 'ineligible'     empty remainder (bare "Circuit"/"Circuits") — the row
+ *                      never participates in designation matching; raw
+ *                      "circuit" would substring-match nearly any utterance
+ *                      that mentions the word.
+ *   - 'bounded_only'   single-letter or numeric-only remainder ("Circuit A"
+ *                      → "a") — indistinguishable from an article / dictated
+ *                      value in prose, so only bounded whole-designation
+ *                      replies or circuit-noun-adjacent forms may match.
+ *   - 'token_boundary' remainder under 3 characters ("EV") — participates
+ *                      only via whole-token comparison; character-level
+ *                      .includes() would light up on "seven".
+ *   - 'full'           ordinary remainder — bidirectional substring match.
+ */
+function designationMatchEligibility(canonical) {
+  const tokens = canonical.split(DESIGNATION_TOKEN_DELIMITER_RE).filter(Boolean);
+  if (tokens.length === 0) return 'ineligible';
+  if (tokens.length === 1 && (/^[a-z]$/.test(tokens[0]) || /^[0-9]+$/.test(tokens[0]))) {
+    return 'bounded_only';
+  }
+  if (canonical.length < 3) return 'token_boundary';
+  return 'full';
+}
+
+/**
+ * Short-remainder guard (bounded_only tier). The RAW query may match only
+ * through the CLOSED sanctioned grammar:
+ *   - a bounded whole-designation reply ("A", "A."), or
+ *   - "circuit A", "the A circuit", "A way" — EXACT forms only. The generic
+ *     phrase "a circuit" (Codex cycle-1 #1) must NOT match: an unrestricted
+ *     `A circuit(s)` alternative admitted it, so the trailing-noun form now
+ *     requires the literal "the ... circuit(s)" shape.
+ * Fail CLOSED for a bare short token embedded in longer prose — a missed
+ * match costs one legitimate ask; a false match mis-files a reading on a
+ * legally-significant certificate.
+ */
+function shortDesignationQueryPermits(normalisedQuery, canonicalToken) {
+  const bounded = normalisedQuery.replace(/^[\s.,!?;:'"()[\]]+|[\s.,!?;:'"()[\]]+$/g, '');
+  if (bounded === canonicalToken) return true;
+  const escaped = canonicalToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `\\bcircuits?\\s+${escaped}\\b|\\bthe\\s+${escaped}\\s+circuits?\\b|\\b${escaped}\\s+way\\b`
+  ).test(normalisedQuery);
+}
+
+/**
+ * Whole-token containment in either direction (token_boundary tier):
+ * TRUE when one side's token sequence appears as a contiguous run inside
+ * the other's.
+ */
+function hasWholeTokenHit(canonicalQuery, canonicalDesignation) {
+  const queryTokens = canonicalQuery.split(DESIGNATION_TOKEN_DELIMITER_RE).filter(Boolean);
+  const desTokens = canonicalDesignation.split(DESIGNATION_TOKEN_DELIMITER_RE).filter(Boolean);
+  return containsTokenRun(queryTokens, desTokens) || containsTokenRun(desTokens, queryTokens);
+}
+
+function containsTokenRun(haystack, needle) {
+  if (needle.length === 0 || needle.length > haystack.length) return false;
+  for (let i = 0; i + needle.length <= haystack.length; i++) {
+    let hit = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) {
+        hit = false;
+        break;
+      }
+    }
+    if (hit) return true;
+  }
+  return false;
+}
+
 /**
  * Look up a circuit by its designation in the snapshot. Used when the
  * inspector answers a "Which circuit is the ring continuity for?" prompt
@@ -1926,11 +2022,37 @@ function findCircuitByDesignation(session, text) {
   if (!snapshot?.circuits) return null;
   const normalised = text.toLowerCase().replace(/\s+/g, ' ').trim();
   if (!normalised) return null;
+  // PLAN-B B3 — canonicalise the USER query with the same edge-only helper:
+  // a reply that is nothing but banned tokens ("circuit", "circuits.") names
+  // no circuit at all → zero candidates; otherwise the canonical query feeds
+  // BOTH substring directions so a query-side edge "circuit" token cannot
+  // defeat the stored-side canonical comparison.
+  const canonicalQueryRaw = canonicaliseCircuitDesignation(normalised);
+  if (typeof canonicalQueryRaw !== 'string' || !canonicalQueryRaw.trim()) return null;
+  const canonicalQuery = canonicalQueryRaw.trim();
+  // Codex cycle-1 #2 — classify the canonical QUERY with the SAME tiers as
+  // stored rows: a strict (single-letter/numeric) or short (<3 chars) query
+  // must never enter normal substring comparison in either direction
+  // ("garage".includes("a") would false-match / manufacture ambiguity).
+  // M4 letter/numeric split: a NUMERIC strict query ("56") and a short query
+  // ("EV") keep whole-token matching against normal rows ("56 sockets");
+  // a SINGLE-LETTER strict query fails closed against normal rows even as a
+  // whole token ("A garage radial" carries a standalone "a" token) and can
+  // only reach strict STORED rows via the sanctioned grammar.
+  const queryEligibility = designationMatchEligibility(canonicalQuery);
+  const queryWholeTokenOnly =
+    queryEligibility === 'token_boundary' ||
+    (queryEligibility === 'bounded_only' && /^[0-9]+$/.test(canonicalQuery));
 
   const circuits = snapshot.circuits;
+  // Codex cycle-1 #3 — board-scoped walk for object-shaped snapshots: the
+  // shared dual-shape helpers resolve the CURRENT board (main = legacy
+  // bare-numeric keys, sub-boards = composite `${board_id}::${ref}` keys),
+  // so a selected sub-board can never match a MAIN-board designation and
+  // misroute the ref. Array-shaped snapshots keep the original walk.
   const entries = Array.isArray(circuits)
     ? circuits.map((c) => [c?.circuit_ref, c])
-    : Object.entries(circuits);
+    : listCircuitRefsInBoard(snapshot).map((ref) => [ref, getCircuitBucket(snapshot, ref)]);
 
   const matches = [];
   for (const [refKey, bucket] of entries) {
@@ -1953,11 +2075,34 @@ function findCircuitByDesignation(session, text) {
     if (typeof designation !== 'string' || !designation.trim()) continue;
     const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
     if (!normDes) continue;
+    // PLAN-B B3 — compare using the CANONICAL stored form (edge
+    // `circuit`/`circuits` tokens dropped) so stored "Upstairs lighting
+    // circuit" matches "ring continuity for upstairs lighting is 0.5". A
+    // stored designation that canonicalises to EMPTY is EXCLUDED from
+    // designation matching entirely (raw AND canonical).
+    const canonDes = canonicaliseCircuitDesignation(normDes);
+    if (typeof canonDes !== 'string' || !canonDes.trim()) continue;
+    const eligibility = designationMatchEligibility(canonDes);
+    if (eligibility === 'bounded_only') {
+      if (shortDesignationQueryPermits(normalised, canonDes)) matches.push(ref);
+      continue;
+    }
+    if (eligibility === 'token_boundary') {
+      if (hasWholeTokenHit(canonicalQuery, canonDes)) matches.push(ref);
+      continue;
+    }
+    // Codex cycle-1 #2 + M4 split — short and numeric-strict queries use
+    // whole-token comparison; a single-letter strict query fails closed.
+    if (queryWholeTokenOnly) {
+      if (hasWholeTokenHit(canonicalQuery, canonDes)) matches.push(ref);
+      continue;
+    }
+    if (queryEligibility !== 'full') continue;
     // Bidirectional substring — user may say more or less than the
     // canonical designation. Both directions are intentional reference
     // forms ("the downstairs sockets one" or "downstairs" → "downstairs
     // sockets").
-    if (normalised.includes(normDes) || normDes.includes(normalised)) {
+    if (canonicalQuery.includes(canonDes) || canonDes.includes(canonicalQuery)) {
       matches.push(ref);
     }
   }

@@ -1274,7 +1274,10 @@ function loadCorpusTarget(projectionMod, fixtureId) {
  * against a stale rendered manifest, would report a complete run it never did.
  */
 function assertCorpusProjectionIntegrity(projectionMod, manifest) {
-  const inventory = projectionMod.listCorpusIds(REPO_ROOT);
+  // PLAN-B 2026-08-23 — join over the VENDOR-LANE view of the corpus (raw
+  // inventory minus the declared post-00B field-replay-gate fixtures; see
+  // POST_00B_CORPUS_FIXTURE_IDS in expectation-projection.mjs).
+  const inventory = projectionMod.listVendorLaneCorpusIds(REPO_ROOT);
   const declared = [...projectionMod.VENDOR_LIVE_FIXTURE_IDS].sort();
   const joinOk =
     inventory.length === declared.length && declared.every((id, i) => inventory[i] === id);

@@ -12,6 +12,7 @@ import { analyzePhotos } from './analyze_photos.js';
 import { generateTestResultsPDF } from './generate_pdf.js';
 import logger, { createJobLogger } from './logger.js';
 import { createTokenAccumulator, logTokenUsage } from './token_logger.js';
+import { repairCircuitDesignation } from './extraction/designation-canonicaliser.js';
 
 /* ---------------- helpers ---------------- */
 
@@ -484,6 +485,21 @@ export async function processJob({ jobDir, outDir, dryRun = false, jobId: provid
 
   // Track token usage from extraction
   tokenAccumulator.add(extractResult.usage, extractResult.model);
+
+  // PLAN-B (feedback id 128, 2026-08-23) — designation hygiene at the SECOND
+  // persistence boundary (this pipeline builds test_results.csv directly and
+  // never routes through circuitsToCSV). Repair the extracted rows BEFORE
+  // salvage merge / CSV generation / PDF consumption so a dictated
+  // "upstairs lighting circuit" persists as "upstairs lighting". Repair
+  // semantics (never reject, banned-token-only left unchanged) — a batch
+  // pipeline has no inspector to re-ask.
+  if (Array.isArray(rows)) {
+    for (const row of rows) {
+      if (row && typeof row === 'object' && 'circuit_designation' in row) {
+        row.circuit_designation = repairCircuitDesignation(row.circuit_designation);
+      }
+    }
+  }
 
   // Enrich installation details with town/county from postcode lookup
   let enrichedInstallation = installation;

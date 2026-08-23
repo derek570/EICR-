@@ -685,7 +685,7 @@ export async function runVendorLaneMock({ repoRoot, log = () => {} }) {
     ).href;
     const {
       VENDOR_LIVE_FIXTURE_IDS,
-      listCorpusIds,
+      listVendorLaneCorpusIds,
       loadFixture,
       projectFixtureExpectation,
       renderExpectationManifests,
@@ -694,8 +694,10 @@ export async function runVendorLaneMock({ repoRoot, log = () => {} }) {
 
     // ── fixture input vs projection target: one-to-one join, inventory
     // equality and source/projection digest agreement — fail BEFORE any
-    // sample runs.
-    const inventory = listCorpusIds(repoRoot);
+    // sample runs. PLAN-B 2026-08-23: the join runs over the VENDOR-LANE
+    // view of the corpus (raw inventory minus the declared post-00B
+    // field-replay-gate fixtures — see POST_00B_CORPUS_FIXTURE_IDS).
+    const inventory = listVendorLaneCorpusIds(repoRoot);
     const joinOk =
       inventory.length === VENDOR_LIVE_FIXTURE_IDS.length &&
       [...VENDOR_LIVE_FIXTURE_IDS].sort().every((id, i) => inventory[i] === id);

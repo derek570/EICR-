@@ -111,7 +111,40 @@ export const FIXTURE_ERROR_CODES = Object.freeze({
   RECENT_ORDER_MISSING: 'recent_circuit_order_missing',
   ORPHAN_NET_UNATTESTED: 'orphan_net_dependency_unattested',
   CLEAR_THEN_WRITE_BAD_SHAPE: 'clear_then_write_bad_shape',
+  DESIGNATION_HYGIENE_BAD_SHAPE: 'designation_hygiene_bad_shape',
+  DIALOGUE_INGRESS_BAD_TURN: 'dialogue_ingress_bad_turn',
+  SCRIPT_ENTRY_RESOLUTION_BAD_SHAPE: 'script_entry_resolution_bad_shape',
 });
+
+/**
+ * PLAN-B (feedback ids 128+131, 2026-08-23) — the CLOSED banned-edge-token
+ * list for the `designation_hygiene` expected-operation shape guard. This is
+ * a SCHEMA-side declaration check only (a hygiene fixture must not declare a
+ * DIRTY expected value — that would lock the very defect the fixture
+ * exists to prevent); the production canonicaliser
+ * (src/extraction/designation-canonicaliser.js) is deliberately NOT imported
+ * here — this module sits on the recorded lane's pre-fake-clock static
+ * import graph, which must stay free of extraction imports. Delimiter
+ * grammar, not regex `\b`: a hyphen-adjacent token ("Short-circuit tester")
+ * is NOT standalone and must pass.
+ */
+const BANNED_DESIGNATION_EDGE_TOKENS = new Set(['circuit', 'circuits']);
+
+// The SAME closed delimiter set as designation-canonicaliser.js's
+// DELIMITER_RE (Codex diff-review: a whitespace-only split let dirty
+// expectations like "Circuit,lighting" pass validation although production
+// strips them). Hyphen and slash are DELIBERATELY absent — "Short-circuit"
+// / "Ring/circuit" tokenise as ONE token, so the edge check never fires on
+// a compound, byte-for-byte matching the production grammar.
+const DESIGNATION_DELIMITER_SPLIT_RE = /[\s.,!?;:'"()[\]]+/;
+
+function designationValueHasBannedEdgeToken(value) {
+  const tokens = String(value).split(DESIGNATION_DELIMITER_SPLIT_RE).filter((t) => t !== '');
+  if (tokens.length === 0) return false;
+  const first = tokens[0].toLowerCase();
+  const last = tokens[tokens.length - 1].toLowerCase();
+  return BANNED_DESIGNATION_EDGE_TOKENS.has(first) || BANNED_DESIGNATION_EDGE_TOKENS.has(last);
+}
 
 /** Ajv structural schema for fixture.yaml. */
 export const FIXTURE_JSON_SCHEMA = {
@@ -336,6 +369,26 @@ export const FIXTURE_JSON_SCHEMA = {
             'clear',
             'rename',
             'create_circuit',
+            // PLAN-B (ids 128+131, 2026-08-23) — the atomic designation-
+            // hygiene joint oracle. ONE failure id
+            // (`designation_hygiene.<operation_id>`) jointly asserts:
+            // cleaned designation projection, cleaned post-turn stored
+            // state, byte-exact single state-change confirmation, and
+            // (optionally) the absence of a forbidden clarification ask —
+            // so the pre-fix world REDs with EXACTLY one id instead of a
+            // multi-id baseline that violates the expected_failure_id rule.
+            'designation_hygiene',
+            // PLAN-B (id 131, Codex pre-merge) — the dialogue-script ENTRY
+            // resolution joint oracle, paired with the turn-level
+            // `dialogue_ingress` lane (the REAL pre-harness
+            // processDialogueTurn path, injected like runShadowHarness). ONE
+            // failure id (`script_entry_resolution.<operation_id>`) jointly
+            // asserts: entry resolved the declared circuit (engine
+            // `_entered` log row, entry_designation_matched), the dictated
+            // value WRITTEN to stored state AND emitted on the wire exactly
+            // once, ZERO which-circuit asks, and exactly one audible script
+            // ask which must be the declared NEXT-slot ask.
+            'script_entry_resolution',
           ],
         },
         tool: { type: 'string' },
@@ -359,6 +412,19 @@ export const FIXTURE_JSON_SCHEMA = {
         dedupe_token_expected: { type: 'boolean' },
         wire_identity: { type: 'object' },
         audibility: { enum: ['exactly_once', 'derived_exempt'] },
+        // PLAN-B designation_hygiene shape (cross-field guarded below):
+        // the byte-exact spoken state-change confirmation ("Circuit 2 is
+        // now the Upstairs lighting") and the forbidden-ask fragment
+        // ("which circuit"). Both follow the field_null_fallback
+        // already-trimmed byte-exactness discipline.
+        confirmation_text_exact: { type: 'string' },
+        no_ask_question_contains: { type: 'string' },
+        // PLAN-B script_entry_resolution shape (cross-field guarded below):
+        // the dialogue-schema family (closed enum, must match the turn's
+        // dialogue_ingress family) and the canonical field of the NEXT-slot
+        // ask the entry must advance to.
+        family: { enum: ['insulation_resistance'] },
+        next_ask_context_field: { type: 'string' },
       },
     },
     expectedAudibleOutput: {
@@ -427,6 +493,24 @@ export const FIXTURE_JSON_SCHEMA = {
         model_rounds: { type: 'array', items: { $ref: '#/$defs/modelRound' } },
         branches: { type: 'array', items: { $ref: '#/$defs/branch' } },
         ask_answers: { type: 'array', items: { $ref: '#/$defs/askAnswer' } },
+        // PLAN-B (id 131) — a PRE-HARNESS dialogue-script ingress turn: the
+        // runner drives the REAL processDialogueTurn family wrapper (e.g.
+        // processInsulationResistanceTurn — the exact function sonnet-stream's
+        // handleTranscript calls BEFORE runShadowHarness) with this turn's
+        // transcript against the seeded session, instead of the model/harness
+        // path. The engine must CONSUME the turn (handled, no fallthrough) or
+        // the runner latches infrastructure. Cross-field: such a turn carries
+        // NO model_rounds / branches / ask_answers (a script-consumed turn
+        // never reaches the model; srv-* engine asks are answered by
+        // subsequent transcripts, never the pending-ask registry).
+        dialogue_ingress: {
+          type: 'object',
+          required: ['family'],
+          additionalProperties: false,
+          properties: {
+            family: { enum: ['insulation_resistance'] },
+          },
+        },
         expected_operations: { type: 'array', items: { $ref: '#/$defs/expectedOperation' } },
         expected_audible_outputs: {
           type: 'array',
@@ -474,6 +558,9 @@ function operationIsStateDependent(op) {
     op.kind === 'observation_update' ||
     op.kind === 'clear' ||
     op.kind === 'rename' ||
+    // PLAN-B (id 131) — entry resolution matches the seeded STORED
+    // designation; without hand-authored state the assertion is meaningless.
+    op.kind === 'script_entry_resolution' ||
     op.state_transition != null
   );
 }
@@ -583,6 +670,21 @@ export async function validateFixtureDocument(doc, opts = {}) {
 
   for (const [ti, turn] of turns.entries()) {
     const tPath = `/turns/${ti}`;
+
+    // PLAN-B (id 131) — a dialogue_ingress turn is consumed by the REAL
+    // pre-harness script engine and never reaches the model: declaring
+    // model_rounds / branches / ask_answers on one is a contradiction the
+    // runner could not honour (the engine owns the turn end-to-end; srv-*
+    // engine asks are answered by subsequent transcripts, not the registry).
+    if (turn.dialogue_ingress != null) {
+      const offending = [];
+      if ((turn.model_rounds ?? []).length > 0) offending.push('model_rounds');
+      if ((turn.branches ?? []).length > 0) offending.push('branches');
+      if ((turn.ask_answers ?? []).length > 0) offending.push('ask_answers');
+      if (offending.length) {
+        errors.push(err(FIXTURE_ERROR_CODES.DIALOGUE_INGRESS_BAD_TURN, tPath, `dialogue_ingress turn must not declare ${offending.join(', ')} — the script engine consumes the turn before the model`));
+      }
+    }
 
     // Postcode PROHIBITION (v1): no deterministic fixture may carry
     // postcode-lookup hints — rejection happens BEFORE any extraction import.
@@ -702,6 +804,79 @@ export async function validateFixtureDocument(doc, opts = {}) {
         if (bad.length) {
           errors.push(err(FIXTURE_ERROR_CODES.CLEAR_THEN_WRITE_BAD_SHAPE, oPath, `clear_then_write op malformed: ${bad.join('; ')}`));
         }
+      }
+      // PLAN-B (id 131, Codex pre-merge) — fail-closed shape for a
+      // script_entry_resolution op. Every leg's declaration must be
+      // well-formed; the op is only meaningful on a dialogue_ingress turn of
+      // the SAME family (the oracle derives the engine log-event name and
+      // srv-* ask prefix from it). Falls through (no `continue`) so the
+      // generic circuit/board existence checks still apply — entry
+      // resolution targets a circuit that must be SEEDED in job_state.
+      if (op.kind === 'script_entry_resolution') {
+        const bad = [];
+        if (op.family == null) bad.push('"family" required');
+        else if (turn.dialogue_ingress?.family !== op.family) bad.push(`op family ${JSON.stringify(op.family)} must match the turn's dialogue_ingress family (${JSON.stringify(turn.dialogue_ingress?.family ?? null)})`);
+        if (op.circuit == null) bad.push('singular non-null "circuit" required');
+        if (op.circuits != null) bad.push('"circuits[]" is not allowed (singular circuit only)');
+        if (typeof op.field !== 'string' || op.field === '') bad.push('non-empty string "field" (canonical reading field) required');
+        if (!Object.hasOwn(op, 'value') || typeof op.value !== 'string' || op.value.trim() === '') bad.push('non-empty string "value" required');
+        if (typeof op.next_ask_context_field !== 'string' || op.next_ask_context_field === '') bad.push('non-empty string "next_ask_context_field" required');
+        if (op.state_transition != null) bad.push('"state_transition" is not allowed on script_entry_resolution');
+        if (op.confirmation_text_exact !== undefined) bad.push('"confirmation_text_exact" is not allowed (the entry turn speaks the next-slot ask; value read-back is the script finish summary)');
+        if (op.audibility !== 'exactly_once') bad.push('audibility must be "exactly_once" (the joint oracle asserts exactly one audible script ask)');
+        if (bad.length) {
+          errors.push(err(FIXTURE_ERROR_CODES.SCRIPT_ENTRY_RESOLUTION_BAD_SHAPE, oPath, `script_entry_resolution op malformed: ${bad.join('; ')}`));
+        }
+      }
+      // PLAN-B (ids 128+131, 2026-08-23) — fail-closed shape for a
+      // designation_hygiene op. It is an ATOMIC joint oracle (one failure id
+      // covering: cleaned projection, cleaned stored state, byte-exact single
+      // confirmation, no forbidden ask), so every leg's declaration must be
+      // well-formed or the fixture is rejected — a malformed hygiene op can
+      // never GREEN a half-checked expectation. `value` is the expected CLEAN
+      // designation and must ITSELF be clean: a fixture declaring a dirty
+      // expected value would LOCK the very defect the type exists to prevent.
+      if (op.kind === 'designation_hygiene') {
+        const bad = [];
+        if (
+          !Object.hasOwn(op, 'value') ||
+          typeof op.value !== 'string' ||
+          op.value.trim() === '' ||
+          op.value !== op.value.trim()
+        ) {
+          bad.push('non-empty, already-trimmed string "value" (the expected CLEAN designation) required');
+        } else if (designationValueHasBannedEdgeToken(op.value)) {
+          bad.push('expected "value" itself carries a banned leading/trailing circuit/circuits token — a hygiene fixture cannot lock a dirty expectation');
+        }
+        if (op.circuit == null) bad.push('singular non-null "circuit" required');
+        if (op.circuits != null) bad.push('"circuits[]" is not allowed (singular circuit only)');
+        if (
+          typeof op.confirmation_text_exact !== 'string' ||
+          op.confirmation_text_exact.trim() === '' ||
+          op.confirmation_text_exact !== op.confirmation_text_exact.trim()
+        ) {
+          bad.push('non-empty, already-trimmed byte-exact "confirmation_text_exact" required (runtime compares the TRIMMED candidate text — a padded matcher is unsatisfiable)');
+        }
+        if (
+          op.no_ask_question_contains !== undefined &&
+          (typeof op.no_ask_question_contains !== 'string' || op.no_ask_question_contains.trim() === '')
+        ) {
+          bad.push('"no_ask_question_contains", when declared, must be a non-empty string');
+        }
+        if (op.state_transition != null) bad.push('"state_transition" is not allowed on designation_hygiene');
+        if (op.field !== undefined) bad.push('"field" is not allowed (the designation slot is implied)');
+        if (op.audibility !== 'exactly_once') bad.push('audibility must be "exactly_once" (the joint oracle asserts exactly one confirmation)');
+        if (bad.length) {
+          errors.push(err(FIXTURE_ERROR_CODES.DESIGNATION_HYGIENE_BAD_SHAPE, oPath, `designation_hygiene op malformed: ${bad.join('; ')}`));
+        }
+        if (op.board_id != null && jobBoards.size > 0 && !jobBoards.has(String(op.board_id))) {
+          errors.push(err(FIXTURE_ERROR_CODES.STATE_DEP_MISSING, oPath, `referenced board ${op.board_id} not present in job_state`));
+        }
+        // The hygiene op's circuit is CREATED this turn (the create_circuit
+        // tool call it verifies) — register the ref for later ops, mirroring
+        // the create_circuit registration below.
+        if (op.circuit != null) jobCircuits.add(String(op.circuit));
+        continue;
       }
       // Referenced circuits/boards must exist in job_state (unless the same
       // fixture creates them earlier — creation ops register their refs).

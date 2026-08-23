@@ -404,7 +404,8 @@ const createCircuit = makeTool({
       // `anyOf: [{type: 'X', ...}, {type: 'null'}]`. anyOf IS supported in
       // strict mode (with limits — currently 16 union types per request).
       anyOf: [{ type: 'string' }, { type: 'null' }],
-      description: 'Human-readable circuit name (e.g. "Upstairs lighting"). Null if unknown.',
+      description:
+        'Human-readable circuit name (e.g. "Upstairs lighting"). Omit standalone leading/trailing "circuit"/"circuits" — write "Upstairs lighting", never "Upstairs lighting circuit"; interior tokens and hyphenated compounds ("Ring circuit sockets", "Short-circuit tester") are kept as dictated. Null if unknown.',
     },
     phase: {
       anyOf: [{ type: 'string', enum: enumerations.circuit_phase }, { type: 'null' }],

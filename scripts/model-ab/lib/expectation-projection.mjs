@@ -127,6 +127,44 @@ export const VENDOR_LIVE_FIXTURE_IDS = Object.freeze([
   'frc_e94d9854ba728621ade73126161023da',
 ]);
 
+/**
+ * Corpus fixtures added AFTER the 00B evidence cohort froze (the Plan 00
+ * evidence-gate program closed 2026-08-07, superseded by informal field
+ * testing). These are owned by the merge-blocking FIELD-REPLAY gate and
+ * its own oracles (e.g. the PLAN-B designation_hygiene assertion,
+ * 2026-08-23) — they are NOT part of the reviewed, safety-classified
+ * vendor-live semantic lane, and pulling them into the frozen cohort
+ * would require a fresh reviewed 00B successor for a lane that will not
+ * run again. The partition stays FAIL-CLOSED: a new corpus fixture that
+ * is listed in NEITHER inventory still fails the one-to-one join at the
+ * test, the lane driver, and the evidence CLI (via
+ * `listVendorLaneCorpusIds`, which also refuses if an id listed here has
+ * vanished from the corpus — a typo can never silently shrink a lane).
+ */
+export const POST_00B_CORPUS_FIXTURE_IDS = Object.freeze([
+  'frc_6600a62a7807c94766e10288526f733d',
+  'frc_db9ad2a81993be17a38cc196c7ac8ec5',
+]);
+
+/**
+ * The corpus inventory as the 00B lanes see it: every frc_* directory
+ * minus the declared post-00B field-replay-gate fixtures. Throws when a
+ * declared post-00B id is absent from the raw inventory (fail-closed).
+ */
+export function listVendorLaneCorpusIds(repoRoot) {
+  const inventory = listCorpusIds(repoRoot);
+  const present = new Set(inventory);
+  for (const id of POST_00B_CORPUS_FIXTURE_IDS) {
+    if (!present.has(id)) {
+      throw new Error(
+        `expectation-projection: post-00B corpus fixture ${id} is declared but absent from the corpus inventory`
+      );
+    }
+  }
+  const excluded = new Set(POST_00B_CORPUS_FIXTURE_IDS);
+  return inventory.filter((id) => !excluded.has(id));
+}
+
 export const DETERMINISTIC_EGRESS_CASES = Object.freeze([
   {
     case_id: 'egress_neutral_update_silent',

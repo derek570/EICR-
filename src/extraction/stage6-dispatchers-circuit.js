@@ -87,6 +87,10 @@ import { logToolCall, logReadingFieldGuessedFromValue } from './stage6-dispatche
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { coerceRecordReadingValue } from './record-reading-coercion.js';
 import {
+  canonicaliseCircuitDesignation,
+  designationCanonicalisesToEmpty,
+} from './designation-canonicaliser.js';
+import {
   validateNumericReadingValue,
   canonicaliseNumericReadingField,
   isCapabilityGatedLimWrite,
@@ -405,7 +409,52 @@ export async function dispatchRecordReading(call, ctx) {
   // "Y" downstream. Pre-fix the coercion ran post-validate; the validator
   // only checked circuit existence + confidence so the ordering didn't
   // matter. With the enum gate added, ordering is load-bearing.
+  // PLAN-B (id 128) — capture the raw designation BEFORE coercion mutates
+  // input.value in place; the reject-empty gate below distinguishes a raw
+  // banned-token-only input ("Circuit") from a legitimately-empty one.
+  const rawDesignationValue = input.field === 'circuit_designation' ? input.value : null;
   input.value = coerceRecordReadingValue(input.field, input.value);
+
+  // PLAN-B (id 128) — explicit post-canonicalisation, pre-validation gate.
+  // Today's validators accept an empty circuit_designation (free text), so
+  // without this named gate "Circuit" → '' would pass validation and WRITE
+  // the empty string — and an EMPTY designation classifies the circuit as a
+  // SPARE on both clients (the empty=spare hazard the plan explicitly
+  // rejects). Fires ONLY on non-empty-raw → empty-canonical; pre-existing
+  // null/omitted/deliberately-empty semantics are untouched.
+  if (
+    input.field === 'circuit_designation' &&
+    designationCanonicalisesToEmpty(rawDesignationValue)
+  ) {
+    const desigErr = {
+      code: 'invalid_designation',
+      field: 'value',
+      message:
+        'A circuit designation cannot be just the word "circuit"/"circuits". Provide the descriptive name only (e.g. "Upstairs Lighting"), or ask the inspector for the name.',
+    };
+    // Codex diff-review sanctioned deviation (Audio-First) — a MIXED turn's
+    // sibling success would otherwise stand the catch-all down and this
+    // rejection would be silent. Same family mechanics as circuit_not_found.
+    stageCircuitPartialFailure(ctx, {
+      reason: 'invalid_designation',
+      field: input.field,
+      circuit: input.circuit,
+      boardId: input.board_id,
+      producer: 'record_reading_invalid_designation',
+    });
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: { code: 'invalid_designation', field: 'value' },
+      input_summary: { field: input.field, circuit: input.circuit ?? null },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: desigErr }, true);
+  }
 
   // Plan D (2026-07-25, feedback id 100(b)) — SERVER-AUTHORITATIVE impedance
   // clamp. Ordering is load-bearing and matches the coercion above: coerce
@@ -1180,6 +1229,52 @@ export async function dispatchCreateCircuit(call, ctx) {
     }
   }
 
+  // PLAN-B (id 128) — canonicalise + reject-empty AFTER the raw validation
+  // and prompt-leak scan above, BEFORE the duplicate-designation check and
+  // any mutation. Mutating the AUTHORITATIVE input.designation is deliberate:
+  // every downstream consumer — snapshot upsert, circuitOps.meta, applied
+  // results, spoken confirmation — receives the same cleaned value (storage
+  // and speech must never disagree).
+  if (typeof input.designation === 'string' && input.designation.length > 0) {
+    if (designationCanonicalisesToEmpty(input.designation)) {
+      // Codex diff-review sanctioned deviation (Audio-First) — see the
+      // record_reading gate; mixed-turn rejections must stay audible.
+      stageCircuitPartialFailure(ctx, {
+        reason: 'invalid_designation',
+        field: 'circuit_designation',
+        circuit: input.circuit_ref,
+        boardId: input.board_id,
+        producer: 'create_circuit_invalid_designation',
+      });
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'create_circuit',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: { code: 'invalid_designation', field: 'designation' },
+        // PII: circuit_ref only. Never log designation.
+        input_summary: { circuit_ref: input.circuit_ref },
+      });
+      return envelope(
+        call.tool_call_id,
+        {
+          ok: false,
+          error: {
+            code: 'invalid_designation',
+            field: 'designation',
+            message:
+              'A circuit designation cannot be just the word "circuit"/"circuits". Provide the descriptive name only (e.g. "Upstairs Lighting"), or ask the inspector for the name.',
+          },
+        },
+        true
+      );
+    }
+    input.designation = canonicaliseCircuitDesignation(input.designation);
+  }
+
   // 2026-05-24 phantom-circuit guard (regression scenario
   // hallucinated_phantom_circuit + prod 286D500D-2026-05-24 follow-up).
   // Reject when another circuit on the SAME board already carries this
@@ -1195,6 +1290,16 @@ export async function dispatchCreateCircuit(call, ctx) {
   // case-insensitive + trim only; no synonym/substring softening, to
   // avoid false positives on genuinely-different circuits sharing a
   // word ("Lighting" vs "Outside Lighting").
+  //
+  // PLAN-B (id 128) — the comparison is over TRIMMED, CASE-INSENSITIVE
+  // CANONICAL forms on BOTH sides (input.designation is already canonical
+  // by here; the stored side is canonicalised below). Without this,
+  // existing dirty "Upstairs Lighting Circuit" vs new "Upstairs Lighting"
+  // (either orientation) would slip past today's case-insensitive guard.
+  // Deliberately NOTHING more this wave: rename_circuit and the reading/
+  // bulk designation writes keep their no-guard semantics — duplicates
+  // there resolve through the matcher's existing ambiguity handling (see
+  // the plan's cross-write collision follow-up).
   if (typeof input.designation === 'string') {
     const wantedDesig = input.designation.trim().toLowerCase();
     // "Spare" carve-out: a board legitimately has many spare ways, so the same
@@ -1213,7 +1318,14 @@ export async function dispatchCreateCircuit(call, ctx) {
       for (const existingRef of sameBoardRefs) {
         if (existingRef === input.circuit_ref) continue;
         const bucket = getCircuitBucket(session.stateSnapshot, existingRef, input.board_id);
-        const existingDesig = String(bucket?.circuit_designation ?? bucket?.designation ?? '')
+        // PLAN-B (id 128) — canonicalise the STORED side too (it may carry
+        // a pre-fix / CCU-imported / manually-typed banned edge token) so
+        // both orientations collide on the canonical form.
+        const existingDesig = String(
+          canonicaliseCircuitDesignation(
+            String(bucket?.circuit_designation ?? bucket?.designation ?? '')
+          )
+        )
           .trim()
           .toLowerCase();
         if (existingDesig && existingDesig === wantedDesig) {
@@ -1397,6 +1509,54 @@ export async function dispatchRenameCircuit(call, ctx) {
         true
       );
     }
+  }
+
+  // PLAN-B (id 128) — canonicalise + reject-empty AFTER raw validation and
+  // the prompt-leak scan, BEFORE any mutation. Same rationale as
+  // dispatchCreateCircuit: the mutated authoritative input.designation is
+  // what the snapshot upsert, circuitOps.meta and the spoken confirmation
+  // all read. NO duplicate-designation guard is added here — rename has
+  // none in production (validateRenameCircuit checks only target_exists),
+  // and adding one would break the documented SWAP/REORDER contract (two
+  // same-round renames); duplicates resolve via the matcher's ambiguity
+  // handling. See the plan's cross-write collision follow-up.
+  if (typeof input.designation === 'string' && input.designation.length > 0) {
+    if (designationCanonicalisesToEmpty(input.designation)) {
+      // Codex diff-review sanctioned deviation (Audio-First) — see the
+      // record_reading gate; mixed-turn rejections must stay audible.
+      stageCircuitPartialFailure(ctx, {
+        reason: 'invalid_designation',
+        field: 'circuit_designation',
+        circuit: input.circuit_ref,
+        boardId: input.board_id,
+        producer: 'rename_circuit_invalid_designation',
+      });
+      logToolCall(logger, {
+        sessionId: session.sessionId,
+        turnId,
+        tool_use_id: call.tool_call_id,
+        tool: 'rename_circuit',
+        round,
+        is_error: true,
+        outcome: 'rejected',
+        validation_error: { code: 'invalid_designation', field: 'designation' },
+        input_summary: { from_ref: input.from_ref, circuit_ref: input.circuit_ref },
+      });
+      return envelope(
+        call.tool_call_id,
+        {
+          ok: false,
+          error: {
+            code: 'invalid_designation',
+            field: 'designation',
+            message:
+              'A circuit designation cannot be just the word "circuit"/"circuits". Provide the descriptive name only (e.g. "Upstairs Lighting"), or ask the inspector for the name.',
+          },
+        },
+        true
+      );
+    }
+    input.designation = canonicaliseCircuitDesignation(input.designation);
   }
 
   const metaSupplied =
@@ -2366,7 +2526,17 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // (never persisted to N circuits). Field name alias-normalised for the
   // membership/validation check. Only numeric reading fields are affected;
   // select fields are already enforced by validateSetFieldForAllCircuits.
+  // PLAN-B (id 128) — capture raw before coercion (which canonicalises a
+  // circuit_designation value in place via the shared coercion helper) so
+  // the reject-empty gate can tell banned-token-only from genuinely empty.
+  const rawBulkDesignationValue = input.field === 'circuit_designation' ? input.value : null;
   input.value = coerceRecordReadingValue(input.field, input.value);
+  // PLAN-B (id 128) — the bulk reject-empty gate itself moved BELOW
+  // `resolveBulkCandidates` (Codex cycle 2): the rejection must stage the
+  // CONCRETE intended refs so the drain's per-slot subtraction can remove
+  // exactly the targets a corrected retry later covers — a scope target
+  // proved only partial overlap. `rawBulkDesignationValue` stays captured
+  // here, before coercion mutates input.value in place.
   const canonicalBulkField = canonicaliseNumericReadingField(input.field);
   // id-100(b) (2026-07-25) — SERVER-AUTHORITATIVE impedance clamp, second of
   // the three pre-write seams. Ordering is coerce → clamp → validate: the
@@ -2464,6 +2634,54 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     selector,
     effectiveSparePolicy,
   });
+  // PLAN-B (id 128, moved here by Codex cycle 2) — reject-empty gate for
+  // the bulk designation write. Positioned AFTER the side-effect-free
+  // candidate resolution so the rejection stages the CONCRETE intended
+  // refs (one circuit target per eligible candidate): the drain's per-slot
+  // subtraction then removes exactly the targets a corrected same-turn
+  // retry covers, and a PARTIAL retry (one circuit renamed of a whole-board
+  // instruction) keeps a residual notice for the still-unwritten refs — a
+  // scope target could only prove overlap, not coverage. Nothing between
+  // the old and new position mutates state or rejects a free-text value.
+  if (
+    input.field === 'circuit_designation' &&
+    designationCanonicalisesToEmpty(rawBulkDesignationValue)
+  ) {
+    const desigErr = {
+      code: 'invalid_designation',
+      field: 'value',
+      message:
+        'A circuit designation cannot be just the word "circuit"/"circuits". Provide the descriptive name only (e.g. "Upstairs Lighting"), or ask the inspector for the name.',
+    };
+    // Codex diff-review sanctioned deviation (Audio-First) — mixed-turn
+    // rejections must stay audible; one circuit target per intended ref.
+    for (const candidate of bulkCandidates) {
+      if (!candidate?.bucket || candidate.excluded || candidate.eligible === false) continue;
+      stageCircuitPartialFailure(ctx, {
+        reason: 'invalid_designation',
+        field: 'circuit_designation',
+        circuit: candidate.ref,
+        boardId: candidate.boardId,
+        producer: 'set_field_for_all_circuits_invalid_designation',
+      });
+    }
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'set_field_for_all_circuits',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: { code: 'invalid_designation', field: 'value' },
+      input_summary: {
+        field: input.field,
+        scope: input.scope ?? null,
+        spare_policy: input.spare_policy ?? null,
+      },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: desigErr }, true);
+  }
   if (
     hasApplicableBulkCandidate(bulkCandidates) &&
     (isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true) &&

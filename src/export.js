@@ -4,6 +4,7 @@
  */
 
 import XLSX from 'xlsx';
+import { repairCircuitDesignation } from './extraction/designation-canonicaliser.js';
 
 // Human-readable column headers for circuit fields
 const CIRCUIT_HEADERS = {
@@ -155,7 +156,22 @@ export function circuitsToCSV(circuits) {
   const headerLine = CIRCUIT_FIELD_ORDER.join(',');
   const rows = circuits.map((circuit) => {
     return CIRCUIT_FIELD_ORDER.map((field) => {
-      const value = circuit[field] ?? '';
+      let value = circuit[field] ?? '';
+      // PLAN-B (feedback id 128, 2026-08-23) — designation hygiene at the
+      // COMMON persistence boundary. Every save path funnels through this
+      // serializer (jobs PUT save, job clone, address migration, recording
+      // CSV upload/enrichment, export, OCR create-job), so repairing the
+      // circuit_designation cell HERE makes persistence enforcement
+      // exhaustive at one boundary instead of per-route — manual grid edits
+      // and accepted CCU-photo / document-extraction imports included.
+      // REPAIR-never-reject (a save path has no human to re-ask): strip
+      // standalone edge "circuit"/"circuits" tokens where a meaningful
+      // remainder exists; leave a banned-token-only value UNCHANGED (an
+      // empty designation classifies the circuit as SPARE on both clients —
+      // blanking would be worse corruption); never bounce a save.
+      if (field === 'circuit_designation') {
+        value = repairCircuitDesignation(value);
+      }
       // Escape values containing commas, quotes, or newlines
       const strValue = String(value);
       if (strValue.includes(',') || strValue.includes('"') || strValue.includes('\n')) {

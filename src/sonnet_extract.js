@@ -14,6 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAnthropicKey, getDeepgramKey } from './services/secrets.js';
 import logger from './logger.js';
+import { repairCircuitDesignation } from './extraction/designation-canonicaliser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -132,8 +133,24 @@ Extract structured EICR data from the transcript above. Only extract NEW values 
         transcriptLen: transcriptText.length,
       });
 
+      // PLAN-B (feedback id 128, 2026-08-23) — designation hygiene at this
+      // endpoint's egress. This path returns result.circuits DIRECTLY to the
+      // /api/recording/stream WS handler (ws-recording.js) and, via
+      // sonnetExtractFromAudio, to POST /api/recording/sonnet-extract —
+      // bypassing Stage-6 AND circuitsToCSV, so it needs its own repair.
+      // Canonicalising HERE covers both routes transitively. Repair
+      // semantics (banned-token-only preserved, never reject) per the
+      // settled persistence policy; the prompt carries the matching
+      // edge-only rule as belt-and-braces.
+      const circuits = (parsed.circuits || []).map((c) => {
+        if (c && typeof c === 'object' && 'circuit_designation' in c) {
+          return { ...c, circuit_designation: repairCircuitDesignation(c.circuit_designation) };
+        }
+        return c;
+      });
+
       return {
-        circuits: parsed.circuits || [],
+        circuits,
         supply: parsed.supply || {},
         installation: parsed.installation || {},
         board: parsed.board || {},

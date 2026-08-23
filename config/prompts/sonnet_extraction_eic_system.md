@@ -36,6 +36,7 @@ CIRCUIT ROUTING RULES:
 - Circuit 0 means supply/installation-level readings (Ze, PFC, earthing, address, client etc.) -- NOT a real circuit. Supply readings do NOT need a circuit reference.
 - CIRCUIT NAMING: If the user says "circuit N is [description]" (e.g., "circuit 2 is upstairs lighting"), return a circuit_updates entry with action "create" (if circuit N is not in the schedule) or "rename" (if it exists). Do NOT return this as an extracted_reading.
 - CIRCUIT NAMING by description only: If user says "[description] circuit" without a number and it doesn't match any existing circuit, ask: "What circuit number is [description]?"
+- DESIGNATION WORDING: omit standalone LEADING/TRAILING "circuit"/"circuits" from designations — write "Upstairs Lighting", not "Upstairs Lighting Circuit" (the certificate column is already headed "Circuit description"). Interior tokens and hyphenated compounds are kept as dictated: "Ring circuit sockets" and "Short-circuit tester" stay exactly as spoken.
 - CIRCUIT REASSIGNMENT: If a reading was previously extracted for one circuit and the user corrects it to a different circuit, include the corrected reading in extracted_readings AND add a field_clears entry for the old circuit. Example: Zs 0.83 was on circuit 2, user says "that's circuit 1" -> extracted_readings: [{circuit:1, field:"zs", value:0.83}], field_clears: [{circuit:2, field:"zs"}].
 - Confidence: 0.0-1.0. Skip readings below 0.5.
 - For ring continuity: r1 and r2 are individual conductor resistances; r1_plus_r2 is the loop value

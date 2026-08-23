@@ -34,6 +34,7 @@
  */
 
 import { buildReplaySession } from './session-builder.mjs';
+import { mintUtteranceId } from './canonical-crypto.mjs';
 import { evaluateTurn, evaluateGateState, OUTCOME } from './replay-assertions.mjs';
 import { mockStream } from '../../../src/__tests__/helpers/mockStream.js';
 import { toolUseRound, endTurnRound } from '../../../src/__tests__/helpers/f7-audibility-core.js';
@@ -398,6 +399,84 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         return true;
       };
 
+      let result = null;
+      let harnessError = null;
+
+      // PLAN-B (id 131, Codex pre-merge) — the PRE-HARNESS dialogue-script
+      // ingress lane. Production consumes a script turn in sonnet-stream's
+      // handleTranscript BEFORE runShadowHarness: the family wrapper
+      // (processInsulationResistanceTurn → processDialogueTurn) runs the
+      // entry-designation lookup, applies volunteered writes, and emits the
+      // srv-* asks — a turn it handles NEVER reaches the model. This branch
+      // drives that EXACT exported function (dynamically injected via
+      // `modules.dialogueScriptIngress`, same rule as runShadowHarness —
+      // never a reimplementation) with the fixture transcript against the
+      // seeded session, using the production argument shape
+      // (transcriptText === rawReplyText for a non-answer turn; a
+      // deterministic minted responseEpoch standing in for msg.utterance_id;
+      // suppressDestructiveEntry false — the arm/consume seam is ingress
+      // state no fixture turn arms). The engine MUST consume the turn
+      // (handled && !fallthrough) — anything else latches infrastructure:
+      // the fixture's ingress premise did not hold, so no assertion about
+      // the turn can be trusted (and it can never masquerade as a RED).
+      if (turn.dialogue_ingress?.family) {
+        const family = turn.dialogue_ingress.family;
+        const runIngress = modules?.dialogueScriptIngress?.[family];
+        if (typeof runIngress !== 'function') {
+          violations.push(`dialogue-script ingress runner for family '${family}' unavailable (modules.dialogueScriptIngress not injected)`);
+        } else {
+          let outcome = null;
+          let ingressThrew = false;
+          try {
+            outcome = runIngress({
+              ws,
+              session: built.session,
+              sessionId: built.sessionId,
+              transcriptText: turn.transcript,
+              rawReplyText: turn.transcript,
+              logger,
+              responseEpoch: mintUtteranceId(fixture.corpus_id, turn.turn_index),
+              suppressDestructiveEntry: false,
+            });
+          } catch (err) {
+            ingressThrew = true;
+            violations.push(`dialogue-script ingress threw: ${err.message}`);
+          }
+          // Mini-review M5 — a null/undefined RETURN (no throw) is just as
+          // unverifiable as a throw: the engine reported nothing, so no
+          // assertion about the turn can be trusted. Latch INFRASTRUCTURE
+          // unconditionally on any outcome that is not an explicit
+          // handled-and-consumed envelope — an invalid ingress premise must
+          // never fall through to the semantic oracle's ordinary FAILs, where
+          // it could masquerade as the expected RED.
+          if (!ingressThrew && (outcome == null || outcome.handled !== true || outcome.fallthrough === true)) {
+            violations.push(`dialogue-script ingress did not consume the turn (outcome=${outcome == null ? 'null' : `handled=${outcome?.handled ?? null}, fallthrough=${outcome?.fallthrough ?? null}`}) — the fixture's ingress premise did not hold`);
+          }
+        }
+        const captured = {
+          result,
+          wsFrames: ws.sent,
+          logRows: rows.slice(rowStart),
+          askOrigins,
+          infrastructureViolations: violations,
+          validateToolInput,
+          toClearWireField: modules?.toClearWireField ?? null,
+          toReadingWireField: modules?.toReadingWireField ?? null,
+          readCircuitDesignation:
+            typeof modules?.readCircuitDesignation === 'function'
+              ? (circuitRef, boardId) => modules.readCircuitDesignation(built.session, circuitRef, boardId)
+              : null,
+          readCircuitField:
+            typeof modules?.readCircuitField === 'function'
+              ? (circuitRef, boardId, field) => modules.readCircuitField(built.session, circuitRef, boardId, field)
+              : null,
+        };
+        const failures = evaluateTurn(turn, captured);
+        turnResults.push({ turn: turn.turn_index, failures, frames: ws.sent.length });
+        allFailures.push(...failures);
+        continue;
+      }
+
       const client = makeTurnClient({
         baseRounds: turn.model_rounds ?? [],
         branches: turn.branches ?? [],
@@ -416,8 +495,6 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         signal: new AbortController().signal,
       });
 
-      let result = null;
-      let harnessError = null;
       const harnessPromise = modules
         .runShadowHarness(built.session, turn.transcript, turn.regex_results ?? [], opts)
         .then((r) => {
@@ -531,6 +608,26 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         // absent → the oracle latches INFRASTRUCTURE rather than passing
         // un-checked. Kept off the static import graph on purpose.
         toClearWireField: modules?.toClearWireField ?? null,
+        // PLAN-B (ids 128+131, 2026-08-23) — the post-turn stored-designation
+        // reader for the designation_hygiene joint oracle, DYNAMICALLY
+        // injected via `modules` exactly like toClearWireField (the fake
+        // clock installs before the extraction graph loads, so the dual-shape
+        // snapshot reader getCircuitBucket must never be statically imported
+        // here). Bound to THIS fixture's live session; evaluateTurn runs
+        // before the next turn mutates it and before teardown. Absent → the
+        // oracle latches INFRASTRUCTURE rather than passing un-checked.
+        readCircuitDesignation:
+          typeof modules?.readCircuitDesignation === 'function'
+            ? (circuitRef, boardId) => modules.readCircuitDesignation(built.session, circuitRef, boardId)
+            : null,
+        // PLAN-B (id 131) — symmetric injection on the harness path too (the
+        // script_entry_resolution oracle is schema-bound to dialogue_ingress
+        // turns, but captured stays uniform across both lanes).
+        toReadingWireField: modules?.toReadingWireField ?? null,
+        readCircuitField:
+          typeof modules?.readCircuitField === 'function'
+            ? (circuitRef, boardId, field) => modules.readCircuitField(built.session, circuitRef, boardId, field)
+            : null,
       };
       const failures = evaluateTurn(turn, captured);
       turnResults.push({ turn: turn.turn_index, failures, frames: ws.sent.length });

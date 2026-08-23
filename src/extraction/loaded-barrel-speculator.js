@@ -114,6 +114,7 @@ import {
   coerceRecordReadingValue,
   coerceRecordBoardReadingValue,
 } from './record-reading-coercion.js';
+import { designationCanonicalisesToEmpty } from './designation-canonicaliser.js';
 import {
   BOARD_FIELD_VALUE_ENUMS,
   CIRCUIT_FIELD_VALUE_ENUMS,
@@ -1588,6 +1589,24 @@ export function createSpeculator({
       record.name === 'record_board_reading'
         ? coerceRecordBoardReadingValue(field, rawValue)
         : coerceRecordReadingValue(field, rawValue);
+
+    // PLAN-B (id 128) — a banned-token-only designation ("Circuit") will be
+    // REJECTED by the dispatcher's invalid_designation gate, so speculating
+    // on it is wasted synth spend AND would observe/speak a value that never
+    // lands. Skip BEFORE _observeDesignation so perTurnDesignations never
+    // carries it either.
+    if (
+      record.name === 'record_reading' &&
+      field === 'circuit_designation' &&
+      designationCanonicalisesToEmpty(rawValue)
+    ) {
+      logger?.info?.('voice_latency.speculator_skipped_banned_designation', {
+        sessionId,
+        turnId: ctx.turnId,
+        circuit,
+      });
+      return;
+    }
 
     // id-100(b) (2026-07-25) — apply the dispatcher's impedance clamp, in the
     // dispatcher's order (coerce → clamp), for the same drift reason as the
