@@ -521,6 +521,33 @@ describe('D4 — Codex cycle-1 regressions', () => {
   });
 });
 
+describe('D4 — Codex mini-review c1: post-arm ambiguity recompute', () => {
+  test('two same-slot twins both rejected post-arm → converted canonicals classify AMBIGUOUS, never exact', () => {
+    seedSession(IOS_SUPPORTS, { correlations: ['corr-1', 'corr-2'] });
+    turnSummary.startAudioFinalizer(SESS, TURN, {
+      bundlerEmittedCount: 2,
+      attemptedFastTtsCount: 2,
+      ackEligibleConfirmations: [
+        canonical({ fastCorrelationId: 'corr-1' }),
+        canonical({ fastCorrelationId: 'corr-2' }),
+      ],
+      fastAttempts: [
+        { correlationId: 'corr-1', field: 'measured_zs_ohm', circuit: 1, boardId: 'board-main' },
+        { correlationId: 'corr-2', field: 'measured_zs_ohm', circuit: 1, boardId: 'board-main' },
+      ],
+    });
+    turnSummary.decrementExpectedAcksByCorrelation(SESS, 'corr-1');
+    turnSummary.decrementExpectedAcksByCorrelation(SESS, 'corr-2');
+    jest.advanceTimersByTime(9000);
+    const row = audioSummary();
+    // Both twins lost their fast legs — the surviving canonicals share a
+    // slot and carry no correlation identity: genuinely indistinguishable
+    // by iOS slot ACKs.
+    expect(row.unacked_confirmations).toEqual([]);
+    expect(row.ambiguous_confirmations).toHaveLength(2);
+  });
+});
+
 describe('D4 — no speech path from the finalizer (assert absence)', () => {
   test('the module has no send/synthesis capability — telemetry only', () => {
     const src = fs.readFileSync(

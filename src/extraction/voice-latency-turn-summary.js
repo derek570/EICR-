@@ -174,14 +174,27 @@ function buildAckObligations(fastAttempts, ackEligibleConfirmations, rejectedIds
       obligations.set(`canon:${canonOrdinal++}`, ob);
     }
   }
-  // Same-slot multiplicity → AMBIGUOUS — but ONLY for obligations that lack
-  // a correlation identity (Codex diff-review cycle 1, edge lens): a
-  // fast/twin obligation is uniquely addressable by its correlation id
-  // regardless of shared slots, so a missing ACK on it is an EXACT loss
-  // (report unacked), never ambiguous. Only correlation-less canonicals —
-  // e.g. designationOps' same-slot entries distinguished solely by
-  // dedupe_token, which iOS ACKs do not carry — are genuinely
-  // indistinguishable.
+  recomputeSlotAmbiguity(obligations);
+  return obligations;
+}
+
+/**
+ * Same-slot multiplicity → AMBIGUOUS — but ONLY for obligations that lack a
+ * correlation identity (Codex diff-review cycle 1, edge lens): a fast/twin
+ * obligation is uniquely addressable by its correlation id regardless of
+ * shared slots, so a missing ACK on it is an EXACT loss (report unacked),
+ * never ambiguous. Only correlation-less canonicals — e.g. designationOps'
+ * same-slot entries distinguished solely by dedupe_token, which iOS ACKs do
+ * not carry — are genuinely indistinguishable.
+ *
+ * Codex mini-review c1 — extracted so post-arm mutations RECOMPUTE it: a
+ * rejected twin becomes a correlation-less canonical, and two such
+ * conversions (or a conversion colliding with an existing canonical) are
+ * genuinely indistinguishable by slot ACKs; flags reset before rebuilding
+ * so a removed obligation also releases its partners' ambiguity.
+ */
+function recomputeSlotAmbiguity(obligations) {
+  for (const ob of obligations.values()) ob.slotAmbiguous = false;
   const aliasOwners = new Map();
   for (const [id, ob] of obligations) {
     for (const alias of ob.slotAliases) {
@@ -197,7 +210,6 @@ function buildAckObligations(fastAttempts, ackEligibleConfirmations, rejectedIds
       }
     }
   }
-  return obligations;
 }
 
 /**
@@ -980,6 +992,11 @@ export function decrementExpectedAcksByCorrelation(sessionId, correlationId) {
             }
           }
         }
+        // Codex mini-review c1 — the mutation can change WHICH obligations
+        // are slot-distinguishable (a twin converted to a correlation-less
+        // canonical may now collide with another canonical): rebuild the
+        // ambiguity classification from the mutated map.
+        recomputeSlotAmbiguity(pending.obligations);
         // Recompute the public counters from the mutated ledger — never
         // count arithmetic on the ledger path. A turn whose LAST obligation
         // was just rejected owes nothing: it must also drop eligibility, or
