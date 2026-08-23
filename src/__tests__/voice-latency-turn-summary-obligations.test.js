@@ -575,6 +575,60 @@ describe('D4 — Codex cycle 4: duplicate correlated ACK never satisfies a sibli
   });
 });
 
+describe('D4 — Codex cycle 5: arrival-order-independent reconciliation', () => {
+  function armTwoSameSlotTwins() {
+    seedSession(IOS_SUPPORTS, { correlations: ['corr-1', 'corr-2'] });
+    turnSummary.startAudioFinalizer(SESS, TURN, {
+      bundlerEmittedCount: 2,
+      attemptedFastTtsCount: 2,
+      ackEligibleConfirmations: [
+        canonical({ fastCorrelationId: 'corr-1' }),
+        canonical({ fastCorrelationId: 'corr-2' }),
+      ],
+      fastAttempts: [
+        { correlationId: 'corr-1', field: 'measured_zs_ohm', circuit: 1, boardId: 'board-main' },
+        { correlationId: 'corr-2', field: 'measured_zs_ohm', circuit: 1, boardId: 'board-main' },
+      ],
+    });
+  }
+  const slotAck = {
+    source: 'bundler',
+    slot: { field: 'measured_zs_ohm', circuit: 1, boardId: null },
+    at_ms: 1,
+  };
+  const corrAck = { source: 'fast_tts', correlation_id: 'corr-2', at_ms: 2 };
+
+  test('slot ACK BEFORE correlated ACK: rejection converts twin-1, both clips reconcile, finalizer completes', () => {
+    armTwoSameSlotTwins();
+    // twin-1's fast leg dies post-arm → correlation-less canonical remains.
+    turnSummary.decrementExpectedAcksByCorrelation(SESS, 'corr-1');
+    // The canonical fallback's slot-only ACK arrives FIRST (2 sharers at
+    // that moment — attributes nothing yet)…
+    turnSummary.recordPlaybackAck(SESS, TURN, slotAck);
+    expect(audioSummary()).toBeNull();
+    // …then twin-2's correlated ACK. The full-rebuild reconciliation now
+    // attributes BOTH: corr-2 by correlation, the slot ACK uniquely to the
+    // converted canonical.
+    turnSummary.recordPlaybackAck(SESS, TURN, corrAck);
+    const row = audioSummary();
+    expect(row).not.toBeNull();
+    expect(row.audio_finalizer_timeout_fired).toBe(false);
+    expect(row.ack_obligations_acked).toBe(2);
+  });
+
+  test('correlated ACK BEFORE slot ACK: same completion', () => {
+    armTwoSameSlotTwins();
+    turnSummary.decrementExpectedAcksByCorrelation(SESS, 'corr-1');
+    turnSummary.recordPlaybackAck(SESS, TURN, corrAck);
+    expect(audioSummary()).toBeNull();
+    turnSummary.recordPlaybackAck(SESS, TURN, slotAck);
+    const row = audioSummary();
+    expect(row).not.toBeNull();
+    expect(row.audio_finalizer_timeout_fired).toBe(false);
+    expect(row.ack_obligations_acked).toBe(2);
+  });
+});
+
 describe('D4 — no speech path from the finalizer (assert absence)', () => {
   test('the module has no send/synthesis capability — telemetry only', () => {
     const src = fs.readFileSync(

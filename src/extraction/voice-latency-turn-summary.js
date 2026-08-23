@@ -217,31 +217,69 @@ function recomputeSlotAmbiguity(obligations) {
  * second, and only on a UNIQUE pending candidate (an ambiguous slot never
  * claims exact attribution).
  */
-function matchAckToObligations(obligations, ack) {
+/**
+ * Reconcile the COMPLETE received-ACK set against the obligation ledger.
+ *
+ * Codex cycle 5 — attribution must be ARRIVAL-ORDER INDEPENDENT: a slot-only
+ * ACK arriving while two obligations still share its slot matched nothing,
+ * and was never reconsidered after a later correlated ACK (or a post-arm
+ * rejection) made it uniquely attributable — the finalizer then timed out
+ * even though every clip was heard. Rebuilding from scratch on every ledger
+ * change fixes that:
+ *   1. attribution flags reset;
+ *   2. correlation-owned ACKs consume their owners UNCONDITIONALLY (a
+ *      duplicate collapses onto the same owner and never falls through to
+ *      slot matching — the cycle-4 rule, preserved);
+ *   3. remaining slot ACKs apply iteratively to UNIQUELY-pending
+ *      obligations until a fixpoint (uniqueness can emerge as siblings are
+ *      consumed); an ACK whose slot still has >1 pending sharers attributes
+ *      nothing (same-slot multiplicity stays AMBIGUOUS).
+ */
+function reconcileObligations(obligations, receivedAcks) {
   if (!(obligations instanceof Map) || obligations.size === 0) return;
-  if (typeof ack?.correlation_id === 'string' && ack.correlation_id) {
-    // Codex cycle 4 — a correlation-addressed ACK is CONSUMED by its owner
-    // unconditionally, even when that owner is already acked: falling
-    // through to slot matching would let a DUPLICATE correlated ACK mark an
-    // unrelated same-slot canonical as heard and falsely complete the
-    // finalizer. Slot matching is only for ACKs whose correlation no
-    // obligation owns (or that carry none).
-    for (const ob of obligations.values()) {
-      if (ob.correlationId === ack.correlation_id) {
-        ob.acked = true;
-        return;
+  for (const ob of obligations.values()) ob.acked = false;
+  const slotAcks = [];
+  for (const ack of Array.isArray(receivedAcks) ? receivedAcks : []) {
+    const cid =
+      typeof ack?.correlation_id === 'string' && ack.correlation_id ? ack.correlation_id : null;
+    let owned = false;
+    if (cid) {
+      for (const ob of obligations.values()) {
+        if (ob.correlationId === cid) {
+          ob.acked = true;
+          owned = true;
+          break;
+        }
       }
     }
+    if (!owned) slotAcks.push(ack);
   }
-  const slot = ack?.slot;
-  if (slot && typeof slot.field === 'string' && slot.field) {
-    const key = obligationSlotKey(slot.field, slot.circuit, slot.boardId);
-    const candidates = [];
-    for (const ob of obligations.values()) {
-      if (!ob.acked && ob.slotAliases.has(key)) candidates.push(ob);
+  const used = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < slotAcks.length; i += 1) {
+      if (used.has(i)) continue;
+      const slot = slotAcks[i]?.slot;
+      if (!slot || typeof slot.field !== 'string' || !slot.field) {
+        used.add(i);
+        continue;
+      }
+      const key = obligationSlotKey(slot.field, slot.circuit, slot.boardId);
+      const candidates = [];
+      for (const ob of obligations.values()) {
+        if (!ob.acked && ob.slotAliases.has(key)) candidates.push(ob);
+      }
+      if (candidates.length === 1) {
+        candidates[0].acked = true;
+        used.add(i);
+        changed = true;
+      } else if (candidates.length === 0) {
+        used.add(i);
+      }
+      // >1 candidates → leave for a later pass; if multiplicity never
+      // collapses, the obligations stay AMBIGUOUS at timeout.
     }
-    if (candidates.length === 1) candidates[0].acked = true;
-    // >1 candidates → same-slot multiplicity: no exact attribution.
   }
 }
 
@@ -667,7 +705,7 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
     // ACK completion path (recordPlaybackAck) carries it onto the emit too.
     eligible_for_validation,
     // PLAN-D (D4) — identity ledger + observability class, read by
-    // matchAckToObligations / maybeFlushFinalizer / the emits above.
+    // reconcileObligations / maybeFlushFinalizer / the emits above.
     obligations,
     observability,
   });
@@ -679,9 +717,9 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
     const pending = pendingFinalizers.get(key);
     pending.received_acks.push(...drained);
     // PLAN-D (D4) — drained pre-arm ACKs reconcile against the obligation
-    // ledger exactly like live ones.
+    // ledger exactly like live ones (full order-independent rebuild).
     if (pending.obligations) {
-      for (const ack of drained) matchAckToObligations(pending.obligations, ack);
+      reconcileObligations(pending.obligations, pending.received_acks);
     }
     maybeFlushFinalizer(key, pending, decrementCount);
   }
@@ -856,9 +894,9 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
 
   if (pending) {
     pending.received_acks.push({ ...ack, received_at_ms });
-    // PLAN-D (D4) — reconcile against the identity ledger (correlation
-    // first, unique-slot second) before evaluating completion.
-    if (pending.obligations) matchAckToObligations(pending.obligations, ack);
+    // PLAN-D (D4) — reconcile the FULL received set against the identity
+    // ledger (order-independent rebuild) before evaluating completion.
+    if (pending.obligations) reconcileObligations(pending.obligations, pending.received_acks);
     maybeFlushFinalizer(`${sessionId}::${resolvedTurnId}`, pending);
     return;
   }
