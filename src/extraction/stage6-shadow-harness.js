@@ -2776,7 +2776,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         perTurnWrites,
         sourceAudible: options.confirmationsEnabled === true,
       });
-      if (directFinal?.handled && typeof directFinal.question === 'string') {
+      // Retain the followup when directFinal carries EITHER a question or a
+      // clearAskId. A question-less terminal (the hybrid-blocked terminal,
+      // id 126) carries only clearAskId, and dropping it here meant
+      // buildResultFrameLedger never emitted its cancel_pending_tts on the
+      // live path — the legacy finalizer already handled question||clearAskId;
+      // this closes the asymmetry.
+      if (
+        directFinal?.handled &&
+        (typeof directFinal.question === 'string' ||
+          (typeof directFinal.clearAskId === 'string' && directFinal.clearAskId))
+      ) {
         addressMirrorDirectFollowup = directFinal;
       }
     }

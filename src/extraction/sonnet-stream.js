@@ -5759,6 +5759,10 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             'copied',
             'duplicate',
             'already_pending',
+            // Hybrid-blocked terminal (id 126): a fail-closed spoken
+            // explanation with zero copy and no pending question — terminal
+            // for the utterance exactly like a copied/no outcome.
+            'blocked',
           ]);
           const isTerminalMirrorOutcome =
             terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
