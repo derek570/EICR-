@@ -20,6 +20,7 @@
  */
 
 import { getCircuitBucket, listCircuitRefsInBoard } from '../../stage6-multi-board-shape.js';
+import { canonicaliseCircuitDesignation } from '../../designation-canonicaliser.js';
 
 /**
  * Try the digit-form regex against a transcript. Recognises:
@@ -194,6 +195,20 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
   const normalised = stripDesignationFiller(text);
   if (!normalised) return empty;
 
+  // PLAN-B (id 131, 2026-08-23) — QUERY-side edge-token canonicalisation.
+  // Interior banned tokens are RETAINED by design ("Ring circuit sockets"),
+  // so canonicalising only the stored side is insufficient: a generic reply
+  // "circuit"/"the circuit" would still substring-match a stored interior
+  // token and uniquely misroute a pending safety reading. A reply whose
+  // canonical remainder is EMPTY (nothing but banned tokens) yields ZERO
+  // candidates; both pass directions compare the CANONICAL query, while the
+  // raw text is retained for spans/display.
+  const canonQuery = String(canonicaliseCircuitDesignation(normalised))
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!canonQuery) return empty;
+
   // Hotfix slice 4 — designation matching scopes to the ACTIVE board so
   // a sub-board flow doesn't false-match against main's designations.
   // listCircuitRefsInBoard returns refs filtered to currentBoardId under
@@ -206,12 +221,37 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
       ? new Set(opts.restrictToRefs.map(Number))
       : null;
 
-  const matches = [];
-  const designationsByRef = new Map();
-  // Eligible (ref, normDes) pairs collected during the pass-1 walk so
-  // pass 2 (the id-116 fold-table pass) can re-scan the SAME set without
-  // re-deriving the board-scoping / restrict / type-check rules.
-  const eligible = [];
+  // PLAN-B (id 131) — per-row canonical decoration, computed once during
+  // the board-scoped walk so BOTH passes share the same edge-token rule:
+  //   - canonDes: the stored designation with standalone leading/trailing
+  //     circuit/circuits tokens dropped (normalised lowercase). The
+  //     comparison form for both passes; the RAW form is kept for
+  //     display/sharedDesignation only.
+  //   - EMPTY canonical (a stored bare "Circuit" — reachable, the
+  //     persistence path deliberately leaves them unchanged) EXCLUDES the
+  //     row from designation matching entirely: not just the canonical
+  //     variant (JS includes('') is always true) but the RAW comparison
+  //     too — a raw "circuit" designation would substring-match nearly any
+  //     utterance mentioning the word.
+  //   - tier 'strict' (single-letter or numeric-only canonical remainder,
+  //     e.g. "Circuit A" → "A"): indistinguishable from an article/dictated
+  //     value after case-normalisation, so it matches ONLY a bounded
+  //     whole-designation reply or an explicit circuit-noun-adjacent form.
+  //   - tier 'short' (< 3 chars otherwise): token-boundary comparison only
+  //     (a 1-2 char substring matches almost any transcript).
+  //   Fail CLOSED: a missed match costs one legitimate ask; a false match
+  //   mis-files a reading on a legally-significant certificate.
+  const rows = [];
+  const collectRow = (ref, designation) => {
+    const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (!normDes) return;
+    const canonDes = String(canonicaliseCircuitDesignation(normDes)).replace(/\s+/g, ' ').trim();
+    if (!canonDes) return; // empty-canonical row: excluded from BOTH passes
+    let tier = 'normal';
+    if (/^[\p{L}]$/u.test(canonDes) || /^[\p{N}]+$/u.test(canonDes)) tier = 'strict';
+    else if (canonDes.length < 3) tier = 'short';
+    rows.push({ ref, normDes, canonDes, tier });
+  };
 
   if (Array.isArray(snapshot.circuits)) {
     // Array-shape — walk verbatim (legacy fixture compat).
@@ -222,13 +262,7 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
       if (restrict && !restrict.has(ref)) continue;
       const designation = c.circuit_designation || c.designation;
       if (typeof designation !== 'string' || !designation.trim()) continue;
-      const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
-      if (!normDes) continue;
-      eligible.push({ ref, normDes });
-      if (normalised.includes(normDes) || normDes.includes(normalised)) {
-        matches.push(ref);
-        designationsByRef.set(ref, normDes);
-      }
+      collectRow(ref, designation);
     }
   } else {
     // Dual-shape — use the active-board-aware helpers.
@@ -241,39 +275,109 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
       if (!bucket || typeof bucket !== 'object') continue;
       const designation = bucket.circuit_designation || bucket.designation;
       if (typeof designation !== 'string' || !designation.trim()) continue;
-      const normDes = designation.toLowerCase().replace(/\s+/g, ' ').trim();
-      if (!normDes) continue;
-      eligible.push({ ref, normDes });
-      if (normalised.includes(normDes) || normDes.includes(normalised)) {
-        matches.push(ref);
-        designationsByRef.set(ref, normDes);
-      }
+      collectRow(ref, designation);
     }
   }
 
-  // Pass 2 (feedback id 116, 2026-08-12) — fold-table token-sequence pass,
-  // consulted ONLY when pass 1 (the normalisation + bidirectional substring
-  // test above, byte-for-byte the pre-116 behaviour) yielded ZERO
-  // candidates. "Upstairs lights" vs designation "Upstairs Lighting" has no
-  // substring relation in either direction, but folds to the same token
-  // sequence. Tokenises the ORIGINAL caller text so raw offsets survive
-  // into `matchedUserSpan` (consumed by the engine's designation-mask
-  // branch — a pass-2 matched designation is NOT literally findable in the
-  // reply, and without the span the mask would blank the ENTIRE reply and
-  // drop a co-dictated voltage).
+  const matches = [];
+  // Comparison metadata: designationsByRef carries the CANONICAL form (it
+  // drives `matchedDesignation`, which the engine's mask branch searches
+  // for literally in the reply — the canonical variant IS the findable
+  // text); rawDesignationsByRef keeps the original normalised stored form
+  // for sharedDesignation/display (the quote-back speaks what is stored).
+  const designationsByRef = new Map();
+  const rawDesignationsByRef = new Map();
+  // TRUE when at least one pass-1 admission exists ONLY through the
+  // canonicalised stored/query variant (the raw bidirectional comparison
+  // would NOT have matched). Pass 2 must then also run: a
+  // canonicalisation-created pass-1 match could otherwise SUPPRESS a pass-2
+  // morphology match that is the true target — a silent retarget instead
+  // of an ask (PLAN-B round-19 finding).
+  let pass1HasCanonicalOnlyAdmission = false;
+
+  // Tokenised canonical query for the short-tier token-boundary rule.
+  const canonQueryTokens = canonQuery.split(' ');
+
+  for (const row of rows) {
+    let hit = false;
+    if (row.tier === 'strict') {
+      // Bounded whole-designation reply ("A", "A." — filler/punctuation
+      // already stripped from `normalised`), or explicitly adjacent to a
+      // circuit noun. The three sanctioned adjacency shapes only:
+      // "circuit A", "the A circuit", "A way". Nothing broader — a bare
+      // "a"/number inside longer prose must never match.
+      const tok = row.canonDes.toLowerCase();
+      const esc = tok.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Adjacency is tested against the RAW lowercased text, not the
+      // filler-stripped form: stripDesignationFiller eats the leading
+      // "the", which is load-bearing for the "the A circuit" shape (and
+      // what distinguishes it from a bare article in prose).
+      const rawLower = text.toLowerCase().replace(/\s+/g, ' ').trim();
+      const adjacency = new RegExp(
+        `(?:^|\\s)circuits?\\s+${esc}(?=\\s|$|[.,!?])|(?:^|\\s)the\\s+${esc}\\s+circuits?(?=\\s|$|[.,!?])|(?:^|\\s)${esc}\\s+way(?=\\s|$|[.,!?])`
+      );
+      hit = normalised === tok || adjacency.test(rawLower);
+    } else if (row.tier === 'short') {
+      // Token-boundary only: the canonical remainder must appear as a
+      // contiguous token run of the canonical query — never a raw
+      // character-level substring.
+      hit = findTokenRun(canonQueryTokens, row.canonDes.split(' ')) !== -1;
+    } else {
+      hit = canonQuery.includes(row.canonDes) || row.canonDes.includes(canonQuery);
+    }
+    if (!hit) continue;
+    matches.push(row.ref);
+    designationsByRef.set(row.ref, row.canonDes);
+    rawDesignationsByRef.set(row.ref, row.normDes);
+    // Would today's RAW bidirectional comparison have admitted this row?
+    // (Pass-1 precedence over pass 2 is preserved only when EVERY pass-1
+    // match existed under the raw comparison.)
+    const rawHit = normalised.includes(row.normDes) || row.normDes.includes(normalised);
+    if (!rawHit) pass1HasCanonicalOnlyAdmission = true;
+  }
+
+  // Pass 2 (feedback id 116, 2026-08-12) — fold-table token-sequence pass.
+  // Consulted when pass 1 yielded ZERO candidates (the pre-116 rule), AND
+  // ALSO (PLAN-B round-19) when pass 1 admitted a candidate only through a
+  // newly-canonicalised variant — the union + dedup below then applies
+  // normal uniqueness handling (unique → match; multiple → ambiguity ask).
+  // "Upstairs lights" vs designation "Upstairs Lighting" has no substring
+  // relation in either direction, but folds to the same token sequence.
+  // Tokenises the ORIGINAL caller text so raw offsets survive into
+  // `matchedUserSpan` (consumed by the engine's designation-mask branch —
+  // a pass-2 matched designation is NOT literally findable in the reply,
+  // and without the span the mask would blank the ENTIRE reply and drop a
+  // co-dictated voltage).
   const spansByRef = new Map();
-  if (matches.length === 0 && eligible.length > 0) {
+  if ((matches.length === 0 || pass1HasCanonicalOnlyAdmission) && rows.length > 0) {
     let userRecords = tokeniseWithOffsets(text);
     // Drop LEADING filler records (token-level analogue of
     // stripDesignationFiller — drop records, never rewrite).
     while (userRecords.length > 0 && PASS2_LEADING_FILLER.has(userRecords[0].folded)) {
       userRecords = userRecords.slice(1);
     }
+    // PLAN-B (id 131) — drop standalone LEADING and TRAILING banned edge
+    // tokens from the user token sequence too (the pass-2 analogue of the
+    // canonical query): stored "Ring circuit sockets" vs a bare "circuit"
+    // reply must not produce a one-token containment run.
+    const BANNED_EDGE = new Set(['circuit', 'circuits']);
+    while (userRecords.length > 0 && BANNED_EDGE.has(userRecords[0].folded)) {
+      userRecords = userRecords.slice(1);
+    }
+    while (userRecords.length > 0 && BANNED_EDGE.has(userRecords[userRecords.length - 1].folded)) {
+      userRecords = userRecords.slice(0, -1);
+    }
     const userFolded = userRecords.map((r) => foldToken(r.folded));
     if (userFolded.length > 0) {
-      for (const { ref, normDes } of eligible) {
-        if (designationsByRef.has(ref)) continue;
-        const desFolded = tokeniseWithOffsets(normDes).map((r) => foldToken(r.folded));
+      for (const row of rows) {
+        if (designationsByRef.has(row.ref)) continue;
+        // strict-tier rows never participate in pass-2 containment either —
+        // a single-letter/numeric folded token would match any article or
+        // dictated value at token level (same fail-closed rationale).
+        if (row.tier === 'strict') continue;
+        // Both passes use the SAME edge-token rule: comparison tokens come
+        // from the CANONICALISED stored variant.
+        const desFolded = tokeniseWithOffsets(row.canonDes).map((r) => foldToken(r.folded));
         if (desFolded.length === 0) continue;
         // Token-SEQUENCE containment in both directions (mirrors pass 1's
         // bidirectional substring semantics at token granularity).
@@ -281,18 +385,20 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
         if (runIdx !== -1) {
           // Designation ⊂ user text: span = the matched contiguous run's
           // raw extent in the original text.
-          matches.push(ref);
-          designationsByRef.set(ref, normDes);
-          spansByRef.set(ref, {
+          matches.push(row.ref);
+          designationsByRef.set(row.ref, row.canonDes);
+          rawDesignationsByRef.set(row.ref, row.normDes);
+          spansByRef.set(row.ref, {
             start: userRecords[runIdx].start,
             end: userRecords[runIdx + desFolded.length - 1].end,
           });
         } else if (findTokenRun(desFolded, userFolded) !== -1) {
           // User text ⊂ designation: the whole (filler-dropped) reply IS
           // the resolution text.
-          matches.push(ref);
-          designationsByRef.set(ref, normDes);
-          spansByRef.set(ref, {
+          matches.push(row.ref);
+          designationsByRef.set(row.ref, row.canonDes);
+          rawDesignationsByRef.set(row.ref, row.normDes);
+          spansByRef.set(row.ref, {
             start: userRecords[0].start,
             end: userRecords[userRecords.length - 1].end,
           });
@@ -311,10 +417,12 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
   // × 2) — the engine quotes that shared label back to the inspector
   // ("Which 'sockets' — circuit 2, 4 or 7?"). When candidates have
   // distinct designations, no single quote-back is honest.
+  // PLAN-B (id 131) — computed over the RAW stored forms (the quote-back
+  // speaks what is stored; the canonical form is comparison metadata).
   let sharedDesignation = null;
   if (candidates.length >= 1) {
-    const first = designationsByRef.get(candidates[0]) ?? null;
-    if (first && candidates.every((r) => designationsByRef.get(r) === first)) {
+    const first = rawDesignationsByRef.get(candidates[0]) ?? null;
+    if (first && candidates.every((r) => rawDesignationsByRef.get(r) === first)) {
       sharedDesignation = first;
     }
   }
@@ -324,11 +432,18 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
     candidates,
     sharedDesignation,
     // Feedback id 105 (2026-07-29, group C fix 1) — ADDITIVE resolution
-    // metadata: the normalised designation string of the UNIQUE match (null
+    // metadata: the designation string of the UNIQUE match (null
     // otherwise). The IR exclusive-voltage masking rule blanks this text out
     // of the reply before parseVoltage runs on the remainder, so a
     // designation answer that ALSO carries "tested at 500" keeps the
     // voltage parseable while the resolution text itself cannot be misread.
+    // PLAN-B (id 131) — this is now the CANONICAL variant (edge circuit
+    // tokens dropped): a canonicalised match's stored form is no longer
+    // literally present in the reply, and returning the original would make
+    // the engine's mask branch blank the WHOLE reply and drop a co-dictated
+    // value ("Upstairs lighting, tested at 500" would lose the 500). The
+    // canonical variant IS the findable text; the ORIGINAL stored form
+    // stays available via sharedDesignation for quote-back/display.
     matchedDesignation:
       candidates.length === 1 ? (designationsByRef.get(candidates[0]) ?? null) : null,
     // Feedback id 116 (2026-08-12) — raw-offset span of the user text that
