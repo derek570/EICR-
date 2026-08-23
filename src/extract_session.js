@@ -4,6 +4,7 @@
 // This is the HEAVY LIFTER — regex on-device does quick snipes, GPT here unpicks messy audio.
 
 import { getAnthropicKey } from './services/secrets.js';
+import { repairCircuitDesignation } from './extraction/designation-canonicaliser.js';
 
 const SONNET_MODEL = (process.env.EXTRACTION_MODEL || 'claude-sonnet-4-6').trim();
 
@@ -43,6 +44,7 @@ on-device WhisperKit speech recognition on a busy job site — expect these arte
 (spd_* = DNO supply cutout / main fuse; surge_* = a separate Surge Protection Device, BS EN 61643-11.)
 
 === CIRCUIT FIELDS (use ALL that apply) ===
+DESIGNATION WORDING: omit standalone LEADING/TRAILING "circuit"/"circuits" from circuit_designation — write "Upstairs Lighting", not "Upstairs Lighting Circuit". Interior tokens and hyphenated compounds ("Ring circuit sockets", "Short-circuit tester") are kept as dictated.
 circuit_ref, circuit_designation, wiring_type, ref_method, number_of_points,
 live_csa_mm2, cpc_csa_mm2, max_disconnect_time_s, ocpd_bs_en, ocpd_type,
 ocpd_rating_a, ocpd_breaking_capacity_ka, ocpd_max_zs_ohm, rcd_bs_en,
@@ -161,7 +163,15 @@ export async function extractSession(fullTranscript, existingData = null) {
 
       return {
         ...parsed,
-        circuits: parsed.circuits || [],
+        // PLAN-B (feedback id 128, 2026-08-23) — designation repair at this
+        // extraction egress (full-session transcript path; bypasses Stage-6
+        // and circuitsToCSV). Repair semantics: banned-token-only preserved,
+        // never reject.
+        circuits: (parsed.circuits || []).map((c) =>
+          c && typeof c === 'object' && 'circuit_designation' in c
+            ? { ...c, circuit_designation: repairCircuitDesignation(c.circuit_designation) }
+            : c
+        ),
         observations: parsed.observations || [],
         board: parsed.board || {},
         installation: parsed.installation || {},
