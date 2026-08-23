@@ -54,6 +54,7 @@
 
 import { parseBsCode } from './dialogue-engine/parsers/bs-code.js';
 import { NUMERIC_READING_FIELDS, isLimForm } from './value-enum-validator.js';
+import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
 
 // Fields whose value is coerced to the {Y, N, OK} subset of the schema
 // enum. Every member's options array shares the shape ["", "OK", "Y", "N", ...].
@@ -165,7 +166,10 @@ const REF_METHOD_WORD_NUMBERS = new Map([
  */
 export function coerceRefMethodValue(value) {
   if (typeof value !== 'string') return value;
-  let v = value.trim().toLowerCase().replace(/[.,!?]+$/g, '');
+  let v = value
+    .trim()
+    .toLowerCase()
+    .replace(/[.,!?]+$/g, '');
   v = v.replace(/^(?:it['’]s|it is|the)\s+/, '');
   v = v.replace(/^(?:reference\s+method|ref\s+method|method)\s+/, '');
   v = v.trim();
@@ -246,6 +250,22 @@ export function coerceRecordReadingValue(field, value) {
     return value ? 'Y' : 'N';
   }
   if (typeof value !== 'string') return value;
+
+  // PLAN-B (feedback id 128, 2026-08-23) — circuit_designation edge-token
+  // canonicalisation lives HERE (not in the dispatcher alone) because the
+  // Loaded Barrel speculator consumes the streamed tool call through this
+  // same helper: its `_observeDesignation` feeds perTurnDesignations, later
+  // used for speculative TTS text. Coercion-layer placement gives the
+  // dispatcher, the bulk dispatcher, and the speculator ONE cleaned value —
+  // otherwise the speculator would observe/speak the raw designation before
+  // the dispatcher cleans it (parity-mismatch cache miss at best, an audible
+  // banned word at worst). A banned-token-only input returns '' — the
+  // dispatchers' reject-empty gate (which sees the RAW value) turns that
+  // into an `invalid_designation` rejection, and the speculator skips
+  // speculation for it.
+  if (field === 'circuit_designation') {
+    return canonicaliseCircuitDesignation(value);
+  }
 
   if (BS_EN_FIELDS.has(field)) {
     const canonical = parseBsCode(value);
