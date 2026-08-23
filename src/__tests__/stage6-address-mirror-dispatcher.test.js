@@ -2,6 +2,12 @@ import { jest } from '@jest/globals';
 
 import { createAskDispatcher } from '../extraction/stage6-dispatcher-ask.js';
 import { createPendingAsksRegistry } from '../extraction/stage6-pending-asks-registry.js';
+import { createAddressMirrorController } from '../extraction/address-mirror-controller.js';
+import {
+  createPerTurnWrites,
+  encodeBoardReadingKey,
+  recordBoardReadingWrite,
+} from '../extraction/stage6-per-turn-writes.js';
 
 function mirrorCall(id = 'toolu-mirror-1') {
   return {
@@ -136,6 +142,59 @@ describe('address mirror ask dispatcher boundary', () => {
       type: 'cancel_pending_tts',
       prefix: 'toolu-mirror-terminal',
       sessionId: 'sess-mirror',
+    });
+  });
+
+  test('hybrid target surfaces the closed source_missing_target_components disposition with zero ask emission (id 126)', async () => {
+    // Production tool-loop shape with the REAL controller: relaxed-complete
+    // source (address+county) but the target already holds a postcode the
+    // source lacks. The candidate is rejected BEFORE any claim, registration,
+    // or wire emit — the model sees the exact closed disposition the prompt
+    // documents as terminal-for-snapshot, and no ask_user reaches the client.
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = openWs();
+    const session = {
+      sessionId: 'sess-mirror-hybrid',
+      stateSnapshot: {
+        circuits: {
+          0: {
+            address: '137 Large Lane',
+            county: 'Essex',
+            client_postcode: 'HB1 1AA',
+          },
+        },
+      },
+    };
+    const perTurnWrites = createPerTurnWrites();
+    for (const [field, value] of Object.entries({ address: '137 Large Lane', county: 'Essex' })) {
+      recordBoardReadingWrite(perTurnWrites, encodeBoardReadingKey(field), {
+        value,
+        confidence: 1,
+        source_turn_id: 'turn-hybrid',
+      });
+    }
+    const real = createAddressMirrorController({ session });
+    // Production threads the turn's writes through the shadow-harness wrapper
+    // (stage6-shadow-harness.js ~:1974) — mirror that exact shape.
+    const controller = {
+      ...real,
+      claimLiveAsk: (args) => real.claimLiveAsk({ ...args, perTurnWrites }),
+    };
+    const dispatcher = createAskDispatcher(
+      session,
+      { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      'turn-hybrid',
+      pendingAsks,
+      ws,
+      { addressMirrorController: controller }
+    );
+    const envelope = await dispatcher(mirrorCall('toolu-mirror-hybrid'), perTurnWrites);
+    expect(pendingAsks.size).toBe(0);
+    expect(ws.sent).toEqual([]);
+    expect(JSON.parse(envelope.content)).toMatchObject({
+      answered: false,
+      reason: 'address_mirror_not_claimed',
+      disposition: 'source_missing_target_components',
     });
   });
 });

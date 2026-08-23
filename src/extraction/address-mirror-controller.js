@@ -93,8 +93,72 @@ function stableSnapshot(snapshot, family) {
   };
 }
 
+/**
+ * Family completeness (feedback id 126, 2026-08-23): a meaningful street
+ * address plus AT LEAST ONE corroborating component (postcode, town, or
+ * county). Inspectors frequently dictate street + town/county and never a
+ * postcode; requiring the postcode specifically deleted the mirror ask in
+ * practice. Address alone stays incomplete — a lone street line is often a
+ * garbled fragment (evidence session 17821FFA produced "13710" as an address
+ * candidate). ONE shared predicate on purpose: the convenience-ask gate, the
+ * answer-time revalidation, and the direct-command path must all agree, or a
+ * relaxed ask would be followed by a strict refusal to copy.
+ */
 function complete(source) {
-  return meaningful(source?.address) && meaningful(source?.postcode);
+  return (
+    meaningful(source?.address) &&
+    (meaningful(source?.postcode) || meaningful(source?.town) || meaningful(source?.county))
+  );
+}
+
+const SNAPSHOT_KEY_ORDER = Object.freeze(['address', 'postcode', 'town', 'county']);
+
+/**
+ * Hybrid-address guard (id 126 round-2 finding). With a relaxed source (e.g.
+ * address+county, no postcode) a partially-populated TARGET can hold
+ * components the source lacks; the copy loops only compare POPULATED source
+ * keys, so a copy would silently merge the source onto the target's unrelated
+ * component — a fabricated hybrid address on a certificate. Any populated
+ * target component absent from the source blocks the copy fail-closed.
+ * Returned in stable SNAPSHOT_KEY_ORDER so persisted payloads and spoken
+ * wording are deterministic across restart and replay.
+ */
+function missingSourceKeys(source, target) {
+  return SNAPSHOT_KEY_ORDER.filter(
+    (key) => meaningful(target?.[key]) && !meaningful(source?.[key])
+  );
+}
+
+function blockedTerminalOutcome(sourceFamily, targetFam, missingKeys) {
+  return {
+    outcome: 'blocked',
+    reason: 'source_missing_target_components',
+    missing_source_keys: [...missingKeys],
+    source_family: sourceFamily,
+    target_family: targetFam,
+  };
+}
+
+/**
+ * Spoken explanation for a hybrid-blocked terminal, generated SOLELY from the
+ * persisted terminal payload (never a live snapshot — the wording must be
+ * byte-stable across emission, restart, and recovery replay). Names every
+ * missing SOURCE component; never offers "the full <target> address", which
+ * only adds target fields and cannot recover. The convenience variant states
+ * that recovery is a fresh DIRECT command because the one-shot ask is consumed.
+ */
+function hybridBlockerSpeech(payload, { convenience = false } = {}) {
+  const sourceLabel = payload?.source_family === 'client' ? 'client' : 'site';
+  const targetLabel = payload?.target_family === 'site' ? 'site' : 'client';
+  const keys = Array.isArray(payload?.missing_source_keys)
+    ? payload.missing_source_keys.filter((key) => SNAPSHOT_KEY_ORDER.includes(key))
+    : [];
+  if (keys.length === 0) return null;
+  const list = keys.join(' and ');
+  if (convenience) {
+    return `The ${targetLabel} address already has a ${list}, so I haven't copied the ${sourceLabel} address. Dictate the ${sourceLabel} ${list}, then say "use the same address for the ${targetLabel}".`;
+  }
+  return `The ${targetLabel} address already has a ${list} — dictate the ${sourceLabel} ${list} and ask me again.`;
 }
 
 function parseJsonObject(value) {
@@ -168,6 +232,28 @@ function stageAcknowledgement(perTurnWrites, text) {
   perTurnWrites.answer.outcomes.push({ tool: 'address_mirror', code: 'ok' });
 }
 
+/**
+ * The hybrid-blocked terminal OWNS the turn's spoken response. Unlike the
+ * first-wins stageAcknowledgement (correct for ordinary terminals, where an
+ * audible source read-back already covers the turn), the blocked terminal is
+ * mandatory: its delivery token will be attached and ACKed on playback, so if
+ * model prose (e.g. an answer_user call in the deciding-write turn) were
+ * allowed to keep the slot, the token would be marked delivered while the
+ * required persisted blocker was never spoken — permanently, since delivery
+ * is exactly-once. Replacing is safe: the blocker turn performs no copy, so
+ * the only competing prose is model chatter about the very command that was
+ * just refused.
+ */
+function stageBlockedTerminal(perTurnWrites, text) {
+  if (!perTurnWrites?.answer || typeof text !== 'string' || !text) {
+    return stageAcknowledgement(perTurnWrites, text);
+  }
+  perTurnWrites.answer.featureTouched = true;
+  perTurnWrites.answer.stagedText = text;
+  perTurnWrites.answer.stagedMeta = { truncated: false, chars: text.length };
+  perTurnWrites.answer.outcomes.push({ tool: 'address_mirror', code: 'blocked' });
+}
+
 function buildCandidate({ session, perTurnWrites, askId, question, sourceFamily }) {
   const family = sourceFamily ?? sourceFamilyFromWrites(perTurnWrites);
   if (!family) return { ok: false, reason: 'source_family_ambiguous' };
@@ -175,6 +261,13 @@ function buildCandidate({ session, perTurnWrites, askId, question, sourceFamily 
   if (!complete(source)) return { ok: false, reason: 'source_incomplete' };
   const target = stableSnapshot(session.stateSnapshot, targetFamily(family));
   if (complete(target)) return { ok: false, reason: 'target_already_complete' };
+  // Hybrid guard, candidate-build time: a populated target component the
+  // source lacks means a "yes" would fabricate a merged address. Refuse the
+  // ask WITHOUT burning the one-shot; the dispatcher surfaces this closed
+  // reason as the tool-result disposition (terminal for the current snapshot).
+  if (missingSourceKeys(source, target).length > 0) {
+    return { ok: false, reason: 'source_missing_target_components' };
+  }
   const resolutionToken = randomUUID();
   return {
     ok: true,
@@ -479,8 +572,19 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     return claimed;
   }
 
-  async function persistConvenienceDeliveryConflict(intent, reason) {
-    const terminalOutcome = { outcome: 'conflict', reason };
+  async function persistConvenienceDeliveryConflict(
+    intent,
+    reason,
+    terminalPayload = null,
+    fenceToLease = false
+  ) {
+    // terminalPayload lets the hybrid-blocked terminal persist its FULL
+    // restart-stable payload (ordered missing_source_keys + families) on the
+    // crash-recovery path too — without it, a resolved_yes crash followed by
+    // a target-only component would persist a bare {outcome:'conflict'} and
+    // every later recovery would speak the generic drift wording instead of
+    // the blocker.
+    const terminalOutcome = terminalPayload ?? { outcome: 'conflict', reason };
     if (!useDurableStore || customConvenienceStoreWithoutLease) {
       const conflicted = { ...intent, status: 'conflict', terminal_outcome: terminalOutcome };
       localIntent = conflicted;
@@ -488,9 +592,18 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       return conflicted;
     }
     const row = normaliseRow(
-      await db.conflict(userId, jobId, intent.resolution_token, terminalOutcome)
+      await db.conflict(
+        userId,
+        jobId,
+        intent.resolution_token,
+        terminalOutcome,
+        fenceToLease ? (intent.delivery_claim_token ?? null) : null
+      )
     );
     if (row) durableIntent = row;
+    // Fenced (blocked-terminal) callers treat a missed UPDATE as a lost
+    // delivery lease — stage nothing, the new owner speaks.
+    if (fenceToLease && !row) return null;
     return row ?? intent;
   }
 
@@ -563,9 +676,13 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       }
       return replayWithProvenance.length;
     };
-    const conflict = async (reason, sourceReplay = []) => {
+    const conflict = async (reason, sourceReplay = [], blockedPayload = null) => {
       if (intent.status === 'pending') {
-        const transition = await terminalise(intent, 'conflict', { outcome: 'conflict', reason });
+        const transition = await terminalise(
+          intent,
+          'conflict',
+          blockedPayload ?? { outcome: 'conflict', reason }
+        );
         if (!transition.won) {
           return {
             handled: true,
@@ -588,13 +705,48 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           };
         }
       } else if (claimedRecoveryIntent && intent.status !== 'conflict') {
-        intent = await persistConvenienceDeliveryConflict(intent, reason);
+        // Every post-claim conflict persistence is fenced to the caller's
+        // delivery lease (mini-review widening: not only the hybrid-blocked
+        // shape — an answer_changed/source_drift recovery under an expired
+        // lease must not overwrite the new owner's terminal or double-speak).
+        const persisted = await persistConvenienceDeliveryConflict(
+          intent,
+          reason,
+          blockedPayload,
+          true
+        );
+        if (!persisted) {
+          return {
+            handled: true,
+            outcome: 'duplicate',
+            changed: [],
+            replayedSource: 0,
+            resolutionToken: intent.resolution_token,
+            clearAskId: intent.ask_id ?? null,
+          };
+        }
+        intent = persisted;
       }
+      // Prefer the payload persisted at the winning CAS (restart-stable);
+      // fall back to the freshly-built one for store doubles that echo the
+      // status without round-tripping terminal_outcome.
+      const persistedBlocked =
+        (intent?.terminal_outcome?.reason === 'source_missing_target_components'
+          ? intent.terminal_outcome
+          : null) ?? blockedPayload;
+      const blockedSpeech = persistedBlocked
+        ? hybridBlockerSpeech(persistedBlocked, { convenience: true })
+        : null;
       const question =
         reason === 'answer_changed'
           ? "That answer conflicts with the one already recorded, so I haven't changed the addresses."
-          : "The address changed after I asked, so I haven't copied it. Please tell me which address to use.";
-      stageAcknowledgement(perTurnWrites, question);
+          : (blockedSpeech ??
+            "The address changed after I asked, so I haven't copied it. Please tell me which address to use.");
+      if (blockedSpeech) {
+        stageBlockedTerminal(perTurnWrites, question);
+      } else {
+        stageAcknowledgement(perTurnWrites, question);
+      }
       stageDelivery(
         perTurnWrites,
         'convenience',
@@ -604,7 +756,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       const replayedSource = stageSourceReplay(sourceReplay);
       return {
         handled: true,
-        outcome: 'conflict',
+        outcome: blockedSpeech ? 'blocked' : 'conflict',
         changed: [],
         replayedSource,
         clearAskId: intent.ask_id ?? null,
@@ -614,6 +766,17 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     };
     if (terminalAnswer && terminalAnswer !== answer) {
       return conflict('answer_changed');
+    }
+    // Hybrid-blocked replay short-circuits BEFORE any live-snapshot drift
+    // checks: the spoken terminal must be materialised solely from the
+    // persisted payload, and a post-block source dictation (the organic
+    // recovery) must not reroute the replay into a generic drift conflict
+    // that would overwrite the blocked terminal_outcome.
+    if (
+      intent.status === 'conflict' &&
+      intent.terminal_outcome?.reason === 'source_missing_target_components'
+    ) {
+      return conflict('source_missing_target_components', [], intent.terminal_outcome);
     }
     const source = intent.source_snapshot;
     if (!complete(source)) return { handled: false, reason: 'source_incomplete' };
@@ -651,6 +814,21 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
 
     if (answer === 'yes') {
       const currentTarget = stableSnapshot(session.stateSnapshot, targetFamily(sourceFamily));
+      // Hybrid guard, answer time (late race): a target-only component that
+      // appeared after the ask was claimed would survive the populated-keys
+      // copy loop below and fabricate a merged address. Fail closed and
+      // consume the one-shot; recovery is a fresh DIRECT command after the
+      // named source component is dictated. Checked BEFORE target_drift —
+      // the generic conflict's recovery replays "yes", which would authorise
+      // the hybrid.
+      const blockers = missingSourceKeys(source, currentTarget);
+      if (blockers.length > 0) {
+        return conflict(
+          'source_missing_target_components',
+          [],
+          blockedTerminalOutcome(sourceFamily, targetFamily(sourceFamily), blockers)
+        );
+      }
       for (const key of Object.keys(targetFields)) {
         const captured = source[key];
         if (!meaningful(captured) || !meaningful(currentTarget[key])) continue;
@@ -775,7 +953,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     const claimed = await acquireConvenienceDelivery(intent);
     if (!claimed) return { handled: false, reason: 'delivery_claimed' };
     const out =
-      answer === 'conflict'
+      answer === 'conflict' || answer === 'blocked'
         ? await resolveIntentAnswer({
             text: 'yes',
             perTurnWrites,
@@ -864,13 +1042,35 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     return resolveIntentAnswer({ text: 'yes', perTurnWrites });
   }
 
+  /**
+   * PURE function of the intent's PERSISTED source_snapshot — never the live
+   * session snapshot. The same helper renders the initial emission, durable
+   * replay/re-ask, and the legacy answer-equality check, so the text must be
+   * byte-deterministic across emission, restart, and answer resolution; a
+   * live-snapshot derivation would drift between ask and answer and reject
+   * every legacy/replay answer as stale_direct_question. It asks for what is
+   * actually MISSING: a static "What is the address?" would solicit the
+   * component the inspector already gave and loop forever on the
+   * address-alone shape.
+   */
+  // id 126 — the answer shape is a property of the persisted clarification
+  // kind, stated by the controller so every emitter (initial send, durable
+  // replay, already_pending re-send, frame ledger, evidence key) agrees.
+  function directAnswerShape(intent) {
+    return intent?.clarification_kind === 'conflict' ? 'yes_no' : 'free_text';
+  }
+
   function directQuestion(intent) {
     if (!intent) return null;
-    return intent.clarification_kind === 'conflict'
-      ? `The ${intent.target_family} address is already different. Should I replace it?`
-      : intent.clarification_kind === 'incomplete'
-        ? `What is the ${intent.source_family} address and postcode?`
-        : null;
+    if (intent.clarification_kind === 'conflict') {
+      return `The ${intent.target_family} address is already different. Should I replace it?`;
+    }
+    if (intent.clarification_kind !== 'incomplete') return null;
+    const source = intent.source_snapshot ?? {};
+    if (!meaningful(source.address)) {
+      return `What is the ${intent.source_family} address, including a town, county, or postcode?`;
+    }
+    return `What is the ${intent.source_family} postcode, town, or county?`;
   }
 
   async function saveDirectIntent(
@@ -970,6 +1170,51 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     return { won: transition.won, row: directIntent };
   }
 
+  /**
+   * Refresh an INCOMPLETE clarification's persisted source snapshot after a
+   * partial-progress write (id 126 — e.g. the street address arrives on a
+   * no-address ask but no corroborator yet). The kind and question_id are
+   * PRESERVED — this is the same ask generation; only its derived wording
+   * progresses, so a later replay (reconnect, duplicate command) asks for
+   * what is NOW missing instead of re-soliciting the component the inspector
+   * already gave.
+   */
+  async function rebindDirectIncomplete(sourceSnapshot, sourceWrites) {
+    if (!directIntent) return null;
+    if (!useDurableStore) {
+      directIntent = {
+        ...directIntent,
+        source_snapshot: sourceSnapshot ?? directIntent.source_snapshot,
+        source_writes: sourceWrites ?? directIntent.source_writes,
+      };
+      recoverableDirectIntents = recoverableDirectIntents.map((row) =>
+        row.operation_token === directIntent.operation_token ? directIntent : row
+      );
+      return directIntent;
+    }
+    const rebound = normaliseDirectRow(
+      await db.rebindDirect(
+        userId,
+        jobId,
+        directIntent.operation_token,
+        'incomplete',
+        directIntent.question_id,
+        sourceSnapshot,
+        sourceWrites
+      )
+    );
+    // A null row means the pending intent was concurrently resolved or
+    // replaced (lost CAS) — keep the prior in-memory intent rather than
+    // nulling it out from under callers, and report the loss so they can
+    // decline to re-ask instead of dereferencing a missing generation.
+    if (!rebound) return null;
+    directIntent = rebound;
+    recoverableDirectIntents = recoverableDirectIntents.map((row) =>
+      row.operation_token === rebound.operation_token ? rebound : row
+    );
+    return directIntent;
+  }
+
   async function rebindDirectConflict(sourceSnapshot, sourceWrites) {
     if (!directIntent) return null;
     const questionId = `address-mirror-direct-conflict-${directIntent.operation_token}`;
@@ -997,8 +1242,13 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     return directIntent;
   }
 
-  async function persistDirectDeliveryConflict(intent, reason) {
-    const terminalOutcome = { outcome: 'conflict', reason };
+  async function persistDirectDeliveryConflict(
+    intent,
+    reason,
+    terminalPayload = null,
+    fenceToLease = false
+  ) {
+    const terminalOutcome = terminalPayload ?? { outcome: 'conflict', reason };
     if (!useDurableStore) {
       const conflicted = { ...intent, status: 'conflict', terminal_outcome: terminalOutcome };
       directIntent = conflicted;
@@ -1008,7 +1258,13 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       return conflicted;
     }
     const row = normaliseDirectRow(
-      await db.conflictDirect(userId, jobId, intent.operation_token, terminalOutcome)
+      await db.conflictDirect(
+        userId,
+        jobId,
+        intent.operation_token,
+        terminalOutcome,
+        fenceToLease ? (intent.delivery_claim_token ?? null) : null
+      )
     );
     if (row) {
       directIntent = row;
@@ -1016,6 +1272,11 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         item.operation_token === row.operation_token ? row : item
       );
     }
+    // Fenced callers (the hybrid-blocked terminal) treat a missed UPDATE as a
+    // LOST delivery lease — another emitter owns the row now, so this one
+    // must stage neither writes nor speech. Legacy callers keep the old
+    // best-effort fallback.
+    if (fenceToLease && !row) return null;
     return row ?? intent;
   }
 
@@ -1036,6 +1297,32 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     const clearAskId = intent.clarification_kind === 'direct' ? null : (intent.question_id ?? null);
     const stageOwnedDelivery = () =>
       stageDelivery(perTurnWrites, 'direct', intent.operation_token, intent.delivery_claim_token);
+    // Hybrid-blocked terminal: speech comes SOLELY from the persisted payload
+    // (restart-stable), the copy never runs, and the ask — when one existed —
+    // is still cleared via clearAskId. Checked before the generic conflict
+    // branch because blocked terminals persist under status 'conflict' (the
+    // status CHECK constraint's closed set).
+    const persistedBlocked =
+      intent.terminal_outcome?.reason === 'source_missing_target_components'
+        ? intent.terminal_outcome
+        : null;
+    if (persistedBlocked) {
+      stageOwnedDelivery();
+      stageBlockedTerminal(
+        perTurnWrites,
+        hybridBlockerSpeech(persistedBlocked) ??
+          "The address changed before I could finish, so I haven't copied it."
+      );
+      return {
+        handled: true,
+        outcome: 'blocked',
+        changed: [],
+        replayedSource: 0,
+        resolutionToken: intent.operation_token,
+        clearAskId,
+        delivery: { kind: 'direct', token: intent.operation_token },
+      };
+    }
     if (terminalOutcome === 'no') {
       stageOwnedDelivery();
       stageAcknowledgement(
@@ -1081,7 +1368,16 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       const value = source[key];
       if (!meaningful(value)) continue;
       if (meaningful(currentSource[key]) && String(currentSource[key]) !== String(value)) {
-        intent = await persistDirectDeliveryConflict(intent, 'source_drift');
+        const persisted = await persistDirectDeliveryConflict(intent, 'source_drift', null, true);
+        if (!persisted) {
+          return {
+            handled: true,
+            outcome: 'duplicate',
+            changed: [],
+            ...(clearAskId ? { clearAskId } : {}),
+          };
+        }
+        intent = persisted;
         stageOwnedDelivery();
         stageAcknowledgement(
           perTurnWrites,
@@ -1104,33 +1400,43 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       }
     }
     const replayedSource = sourceReplay.length;
-    const replayedAudibleSource = sourceReplay.filter((write) => write.ledgerEntry).length;
-    if (replayedAudibleSource > 0) {
-      Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
-        value: true,
-        enumerable: false,
-        configurable: true,
-      });
-      Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
-        value: intent.operation_token,
-        enumerable: false,
-        configurable: true,
-      });
-    }
-    for (const write of sourceReplay) {
-      const { ledgerEntry } = write;
-      stageBoardWrite(session, perTurnWrites, write.field, write.value, {
-        confidence: ledgerEntry?.confidence ?? 1,
-        source_turn_id:
-          ledgerEntry?.source_turn_id ??
-          ledgerEntry?.operation_token ??
-          `::address_mirror_direct_source::${intent.operation_token}`,
-        derived: ledgerEntry == null,
-        replayed: ledgerEntry != null,
-        ordinal: write.ordinal,
-      });
-    }
+    // Collection above is PURE; staging is deferred until this materialiser
+    // has confirmed it still owns the delivery lease (mini-review finding:
+    // a fenced persist that loses the lease must leave the per-turn ledger
+    // AND the session snapshot untouched — a loser that had already staged
+    // replays would still get them bundled onto the wire).
+    const stageCollectedReplays = () => {
+      const replayedAudibleSource = sourceReplay.filter((write) => write.ledgerEntry).length;
+      if (replayedAudibleSource > 0) {
+        Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
+          value: true,
+          enumerable: false,
+          configurable: true,
+        });
+        Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
+          value: intent.operation_token,
+          enumerable: false,
+          configurable: true,
+        });
+      }
+      for (const write of sourceReplay) {
+        const { ledgerEntry } = write;
+        stageBoardWrite(session, perTurnWrites, write.field, write.value, {
+          confidence: ledgerEntry?.confidence ?? 1,
+          source_turn_id:
+            ledgerEntry?.source_turn_id ??
+            ledgerEntry?.operation_token ??
+            `::address_mirror_direct_source::${intent.operation_token}`,
+          derived: ledgerEntry == null,
+          replayed: ledgerEntry != null,
+          ordinal: write.ordinal,
+        });
+      }
+    };
     if (replayPersistedTargetConflict) {
+      // Terminal already persisted; delivery already leased by the caller —
+      // ownership is settled, so the owed source restoration stages now.
+      stageCollectedReplays();
       stageOwnedDelivery();
       stageAcknowledgement(
         perTurnWrites,
@@ -1147,6 +1453,61 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       };
     }
     const target = stableSnapshot(session.stateSnapshot, intent.target_family);
+    // Hybrid guard, materialisation time (late race): a target-only component
+    // can appear after a direct terminal is authorised but before recovery
+    // materialises it — the authorised target_snapshot would then bless the
+    // component and the copy below would merge around it. Fail closed BEFORE
+    // the authorised-drift loop; recovery is a fresh direct command once the
+    // named source component is dictated.
+    const lateBlockers = missingSourceKeys(source, target);
+    if (lateBlockers.length > 0) {
+      const payload = blockedTerminalOutcome(
+        intent.source_family,
+        intent.target_family,
+        lateBlockers
+      );
+      const persisted = await persistDirectDeliveryConflict(
+        intent,
+        'source_missing_target_components',
+        payload,
+        true
+      );
+      if (!persisted) {
+        // Lost the delivery lease mid-materialisation (10s expiry, another
+        // emitter reclaimed the row). Nothing was staged — the new owner
+        // speaks.
+        return {
+          handled: true,
+          outcome: 'duplicate',
+          changed: [],
+          ...(clearAskId ? { clearAskId } : {}),
+        };
+      }
+      intent = persisted;
+      const spokenPayload =
+        intent.terminal_outcome?.reason === 'source_missing_target_components'
+          ? intent.terminal_outcome
+          : payload;
+      stageOwnedDelivery();
+      stageBlockedTerminal(
+        perTurnWrites,
+        hybridBlockerSpeech(spokenPayload) ??
+          "The address changed before I could finish, so I haven't copied it."
+      );
+      // Deliberately NO source replay on a blocked terminal: exactly one
+      // spoken blocker, zero writes — the named missing component is the
+      // recovery instruction, and owed source restoration recurs on the
+      // fresh command that follows it.
+      return {
+        handled: true,
+        outcome: 'blocked',
+        changed: [],
+        replayedSource: 0,
+        resolutionToken: intent.operation_token,
+        clearAskId,
+        delivery: { kind: 'direct', token: intent.operation_token },
+      };
+    }
     const authorisedTarget = parseJsonObject(intent.terminal_outcome?.target_snapshot) ?? {};
     for (const key of Object.keys(FAMILIES[intent.target_family])) {
       const current = target[key];
@@ -1154,7 +1515,17 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       if (!meaningful(current) || String(current) === String(sourceValue ?? '')) continue;
       const authorised = authorisedTarget[key];
       if (meaningful(authorised) && String(current) === String(authorised)) continue;
-      intent = await persistDirectDeliveryConflict(intent, 'target_drift');
+      const persisted = await persistDirectDeliveryConflict(intent, 'target_drift', null, true);
+      if (!persisted) {
+        return {
+          handled: true,
+          outcome: 'duplicate',
+          changed: [],
+          ...(clearAskId ? { clearAskId } : {}),
+        };
+      }
+      intent = persisted;
+      stageCollectedReplays();
       stageOwnedDelivery();
       stageAcknowledgement(
         perTurnWrites,
@@ -1170,6 +1541,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         delivery: { kind: 'direct', token: intent.operation_token },
       };
     }
+    stageCollectedReplays();
     stageOwnedDelivery();
     const changed = [];
     for (const key of Object.keys(FAMILIES[intent.target_family])) {
@@ -1242,14 +1614,20 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     if (!command) return { handled: false };
     const source = stableSnapshot(session.stateSnapshot, command.sourceFamily);
     const target = stableSnapshot(session.stateSnapshot, command.targetFamily);
-    const hasConflict = complete(source)
-      ? Object.keys(FAMILIES[command.targetFamily]).some(
-          (key) =>
-            meaningful(source[key]) &&
-            meaningful(target[key]) &&
-            String(source[key]) !== String(target[key])
-        )
-      : false;
+    // Hybrid guard dominates the conflict clarification: a conflict-question
+    // "yes" authorises the current target snapshot wholesale, which would
+    // preserve the source-absent component and ship the hybrid. Blocked
+    // commands terminate with a spoken explanation instead of any question.
+    const hybridBlockers = complete(source) ? missingSourceKeys(source, target) : [];
+    const hasConflict =
+      complete(source) && hybridBlockers.length === 0
+        ? Object.keys(FAMILIES[command.targetFamily]).some(
+            (key) =>
+              meaningful(source[key]) &&
+              meaningful(target[key]) &&
+              String(source[key]) !== String(target[key])
+          )
+        : false;
     const clarificationKind = !complete(source)
       ? 'incomplete'
       : hasConflict
@@ -1298,6 +1676,27 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           outcome: existing?.clarification_kind === 'conflict' ? 'conflict' : 'source_incomplete',
           question: directQuestion(existing),
           questionId: existing?.question_id,
+          expectedAnswerShape: directAnswerShape(existing),
+        };
+      }
+      // A NEW command colliding with a still-pending clarification (id 126):
+      // replay the pending question instead of consuming the utterance
+      // silently — the hands-free inspector otherwise hears nothing at all.
+      const pendingClarification =
+        claimed?.reason === 'clarification_already_pending'
+          ? normaliseDirectRow(claimed.intent)
+          : null;
+      if (
+        pendingClarification?.status === 'pending' &&
+        pendingClarification.clarification_kind !== 'direct'
+      ) {
+        return {
+          handled: true,
+          outcome: 'already_pending',
+          changed: [],
+          question: directQuestion(pendingClarification),
+          questionId: pendingClarification.question_id,
+          expectedAnswerShape: directAnswerShape(pendingClarification),
         };
       }
       return { handled: true, outcome: 'already_pending', changed: [] };
@@ -1306,9 +1705,21 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       return {
         handled: true,
         outcome: 'source_incomplete',
-        question: `What is the ${command.sourceFamily === 'site' ? 'site' : 'client'} address and postcode?`,
+        // Same helper as durable replay/re-ask — byte-identical text at
+        // emission and every later derivation from the persisted snapshot.
+        question: directQuestion(directIntent),
         questionId: directIntent.question_id,
+        expectedAnswerShape: directAnswerShape(directIntent),
       };
+    }
+    if (hybridBlockers.length > 0) {
+      const terminal = await terminaliseDirect(
+        'conflict',
+        blockedTerminalOutcome(command.sourceFamily, command.targetFamily, hybridBlockers),
+        source,
+        []
+      );
+      return materializeWonDirectTransition(terminal, perTurnWrites);
     }
     if (hasConflict) {
       return {
@@ -1316,6 +1727,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         outcome: 'conflict',
         question: directQuestion(directIntent),
         questionId: directIntent.question_id,
+        expectedAnswerShape: directAnswerShape(directIntent),
       };
     }
     const terminal = await terminaliseDirect(
@@ -1392,39 +1804,101 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     if (touchedFamilies.size !== 1 || !touchedFamilies.has(directIntent.source_family)) {
       return { handled: false };
     }
-    const source = stableSnapshot(session.stateSnapshot, directIntent.source_family);
-    if (!complete(source)) return { handled: false };
+    // Effective source (cycle-2 finding): the LIVE snapshot wins where it
+    // holds a value (mid-session address authority), but a component the
+    // process persisted onto the intent before a crash — and which a
+    // blank-restart snapshot no longer carries — is PRESERVED, never
+    // regressed to null. Same for the dictated-write provenance ledger:
+    // prior persisted entries survive unless this turn superseded the field.
+    const liveSource = stableSnapshot(session.stateSnapshot, directIntent.source_family);
+    const persistedSource = directIntent.source_snapshot ?? {};
+    const source = Object.fromEntries(
+      SNAPSHOT_KEY_ORDER.map((key) => [
+        key,
+        meaningful(liveSource[key])
+          ? liveSource[key]
+          : meaningful(persistedSource[key])
+            ? persistedSource[key]
+            : null,
+      ])
+    );
+    const currentTurnWrites = Array.isArray(sourceWrites)
+      ? sourceWrites
+      : sourceWriteLedger(perTurnWrites, directIntent.source_family, directIntent.operation_token);
+    const mergedSourceWrites = [
+      ...(Array.isArray(directIntent.source_writes) ? directIntent.source_writes : []).filter(
+        (prior) => !currentTurnWrites.some((write) => write?.field === prior?.field)
+      ),
+      ...currentTurnWrites,
+    ];
+    if (!complete(source)) {
+      // Partial progress (id 126): the write advanced the source family but
+      // it is still incomplete under the relaxed rule (e.g. the street
+      // address arrived on a no-address ask, corroborator still missing).
+      // Refresh the intent's persisted snapshot so every later derivation of
+      // the clarification asks for what is NOW missing, and re-emit the
+      // progressed question this turn — otherwise a replay would re-solicit
+      // the component the inspector just gave.
+      const progressed = SNAPSHOT_KEY_ORDER.some(
+        (key) => meaningful(source[key]) && !meaningful(directIntent.source_snapshot?.[key])
+      );
+      if (!progressed) return { handled: false };
+      const rebound = await rebindDirectIncomplete(source, mergedSourceWrites);
+      // Lost CAS: the clarification was concurrently resolved or replaced —
+      // don't re-ask against a generation that no longer exists.
+      if (!rebound) return { handled: false };
+      return {
+        handled: true,
+        outcome: 'source_incomplete',
+        question: directQuestion(rebound),
+        questionId: rebound.question_id,
+        expectedAnswerShape: directAnswerShape(rebound),
+      };
+    }
     const target = stableSnapshot(session.stateSnapshot, directIntent.target_family);
+    // Hybrid guard on the deciding-write path: the source just became
+    // complete, but the target holds a component the source still lacks —
+    // terminate fail-closed (spoken blocker, ask cleared via clearAskId,
+    // zero copy) rather than asking the generic conflict question whose
+    // "yes" would authorise the merged hybrid.
+    const hybridBlockers = missingSourceKeys(source, target);
+    if (hybridBlockers.length > 0) {
+      const terminal = await terminaliseDirect(
+        'conflict',
+        blockedTerminalOutcome(
+          directIntent.source_family,
+          directIntent.target_family,
+          hybridBlockers
+        ),
+        source,
+        mergedSourceWrites
+      );
+      return materializeWonDirectTransition(terminal, perTurnWrites, sourceAudible);
+    }
     for (const key of Object.keys(FAMILIES[directIntent.target_family])) {
       if (
         meaningful(source[key]) &&
         meaningful(target[key]) &&
         String(source[key]) !== String(target[key])
       ) {
-        const capturedWrites = Array.isArray(sourceWrites)
-          ? sourceWrites
-          : sourceWriteLedger(
-              perTurnWrites,
-              directIntent.source_family,
-              directIntent.operation_token
-            );
-        await rebindDirectConflict(source, capturedWrites);
+        const reboundConflict = await rebindDirectConflict(source, mergedSourceWrites);
+        // Same lost-CAS guard as the incomplete rebind: a null row means the
+        // clarification generation no longer exists — never dereference it.
+        if (!reboundConflict) return { handled: false };
         return {
           handled: true,
           outcome: 'conflict',
-          question: directQuestion(directIntent),
-          questionId: directIntent.question_id,
+          question: directQuestion(reboundConflict),
+          questionId: reboundConflict.question_id,
+          expectedAnswerShape: directAnswerShape(reboundConflict),
         };
       }
     }
-    const writes = Array.isArray(sourceWrites)
-      ? sourceWrites
-      : sourceWriteLedger(perTurnWrites, directIntent.source_family, directIntent.operation_token);
     const terminal = await terminaliseDirect(
       'resolved_yes',
       { outcome: 'copied', replacement: false, target_snapshot: target },
       source,
-      writes
+      mergedSourceWrites
     );
     return materializeWonDirectTransition(terminal, perTurnWrites, sourceAudible);
   }
@@ -1441,6 +1915,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       outcome: directIntent.clarification_kind === 'conflict' ? 'conflict' : 'source_incomplete',
       question: directQuestion(directIntent),
       questionId: directIntent.question_id,
+      expectedAnswerShape: directAnswerShape(directIntent),
     };
   }
 

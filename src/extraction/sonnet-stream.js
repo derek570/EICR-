@@ -430,6 +430,11 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry
   // successful send below. Dormant single-Symbol lookup.
   const evalCtx = entry?.[EVALUATION_CONTEXT] ?? null;
   const questionId = followup.questionId ?? null;
+  // id 126 — the controller states the shape from the persisted
+  // clarification_kind; outcome-derivation is only the legacy fallback (an
+  // already_pending replay of a CONFLICT question is NOT free_text).
+  const answerShape =
+    followup.expectedAnswerShape ?? (followup.outcome === 'conflict' ? 'yes_no' : 'free_text');
   if (evalCtx && questionId && !evalCtx.askRuntimeBindings.has(questionId)) {
     evalCtx.recordAskProduced({
       producerId: 'address_mirror_ask',
@@ -441,7 +446,7 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry
         contextField: null,
         boardId: null,
         circuits: [],
-        expectedAnswerShape: followup.outcome === 'conflict' ? 'yes_no' : 'free_text',
+        expectedAnswerShape: answerShape,
         observationClarificationKind: null,
         pendingWrite: null,
         chainRole: null,
@@ -456,7 +461,7 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry
       question: followup.question,
       field: null,
       circuit: null,
-      expected_answer_shape: followup.outcome === 'conflict' ? 'yes_no' : 'free_text',
+      expected_answer_shape: answerShape,
       utterance_id: typeof utteranceId === 'string' ? utteranceId : null,
     })
   );
@@ -566,7 +571,14 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
   if (Array.isArray(directResult.extracted_board_readings)) {
     result.extracted_board_readings.push(...directResult.extracted_board_readings);
   }
-  if (!result.spoken_response && directResult.spoken_response) {
+  if (directFinal.outcome === 'blocked' && directResult.spoken_response) {
+    // The hybrid-blocked terminal owns the turn's spoken response (id 126):
+    // its delivery token is attached below and ACKed on playback, so letting
+    // pre-existing model prose keep the slot would mark the token delivered
+    // while the mandatory persisted blocker was never spoken. Ordinary
+    // outcomes keep the fill-only behaviour.
+    result.spoken_response = directResult.spoken_response;
+  } else if (!result.spoken_response && directResult.spoken_response) {
     result.spoken_response = directResult.spoken_response;
   }
   if (typeof directFinal.question === 'string' || directFinal.clearAskId) {
@@ -575,6 +587,26 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
       enumerable: false,
       configurable: false,
     });
+    // A question-less ask-clearing terminal (the hybrid-blocked terminal,
+    // id 126) resolves its ask in the Plan-00 evidence ledger here — the
+    // legacy deciding-write path never reaches the ingress-side
+    // recordAskResolved branches, so without this the ask stays open and
+    // invalidates quiescence despite correct user-visible speech.
+    if (typeof directFinal.question !== 'string' && directFinal.clearAskId) {
+      try {
+        entry?.[EVALUATION_CONTEXT]?.recordAskResolved?.({
+          runtimeId: directFinal.clearAskId,
+          terminal: 'answered',
+          detail: {
+            answer_frame_id: directFinal.clearAskId,
+            transcript_resolved: true,
+            outcome: directFinal.outcome,
+          },
+        });
+      } catch {
+        // evidence capture never breaks the live audible turn
+      }
+    }
   }
   if (directWrites[ADDRESS_MIRROR_DELIVERY]) {
     Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
@@ -1523,7 +1555,9 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
         question: directFollowup.question,
         field: null,
         circuit: null,
-        expected_answer_shape: 'yes_no',
+        expected_answer_shape:
+          directFollowup.expectedAnswerShape ??
+          (directFollowup.outcome === 'conflict' ? 'yes_no' : 'free_text'),
         utterance_id:
           typeof result.utterance_id === 'string' && result.utterance_id
             ? result.utterance_id
@@ -1881,7 +1915,9 @@ export function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptO
               contextField: null,
               boardId: null,
               circuits: [],
-              expectedAnswerShape: followup?.outcome === 'conflict' ? 'yes_no' : 'free_text',
+              expectedAnswerShape:
+                followup?.expectedAnswerShape ??
+                (followup?.outcome === 'conflict' ? 'yes_no' : 'free_text'),
               observationClarificationKind: null,
               pendingWrite: null,
               chainRole: null,
@@ -3083,7 +3119,12 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
                   recovered.handled &&
                   (recovered.outcome === 'yes' ||
                     recovered.outcome === 'no' ||
-                    recovered.outcome === 'conflict')
+                    recovered.outcome === 'conflict' ||
+                    // Hybrid-blocked terminal (id 126): the late race resolved
+                    // through the answer-frame path terminalises + leases
+                    // exactly like a conflict — without this arm the staged
+                    // blocker ledger would be discarded unspoken.
+                    recovered.outcome === 'blocked')
                 ) {
                   const result = attachAddressMirrorDelivery(
                     bundleToolCallsIntoResult(mirrorWrites, null, {
@@ -5759,9 +5800,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             'copied',
             'duplicate',
             'already_pending',
+            // Hybrid-blocked terminal (id 126): a fail-closed spoken
+            // explanation with zero copy and no pending question — terminal
+            // for the utterance exactly like a copied/no outcome.
+            'blocked',
           ]);
           const isTerminalMirrorOutcome =
-            terminalMirrorOutcome.has(mirrorOutcome.outcome) ||
+            // A question-carrying outcome must reach the question branch
+            // below (id 126: already_pending now replays the pending
+            // clarification instead of consuming the utterance silently).
+            (terminalMirrorOutcome.has(mirrorOutcome.outcome) &&
+              typeof mirrorOutcome.question !== 'string') ||
             (mirrorOutcome.outcome === 'conflict' &&
               (mirrorOutcome.clearAskId || typeof mirrorOutcome.question !== 'string'));
           if (mirrorOutcome.handled && isTerminalMirrorOutcome) {
@@ -5772,14 +5821,17 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             }
             // Plan 00B-2 C2.4 — the controller transition accepted a matching
             // answer to a live address-mirror ask: close that ask. Only when
-            // an ask anchor actually resolved (yes/no/conflict on an anchored
-            // question) — a direct command with no open ask closes nothing.
+            // an ask anchor actually resolved (yes/no/conflict/blocked on an
+            // anchored question) — a direct command with no open ask closes
+            // nothing. 'blocked' (id 126) clears the client ask exactly like
+            // conflict, so the evidence ledger must close with it too.
             if (
               (hasRecoveredAnswerAnchor || hasDirectClarificationAnchor) &&
               (mirrorOutcome.clearAskId || recoveredAskId) &&
               (mirrorOutcome.outcome === 'yes' ||
                 mirrorOutcome.outcome === 'no' ||
-                mirrorOutcome.outcome === 'conflict')
+                mirrorOutcome.outcome === 'conflict' ||
+                mirrorOutcome.outcome === 'blocked')
             ) {
               entry[EVALUATION_CONTEXT]?.recordAskResolved?.({
                 runtimeId: mirrorOutcome.clearAskId ?? recoveredAskId,

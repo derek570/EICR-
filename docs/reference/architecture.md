@@ -200,6 +200,36 @@ That provenance survives board/circuit projection and the additive wire field,
 so clients can apply a derived non-empty correction without synthesising their
 generic local correction confirmation when Voice confirmations are disabled.
 
+**Relaxed family completeness + hybrid-address guard (PLAN-A, 2026-08-23,
+feedback id 126).** A family is COMPLETE when it has a meaningful street
+address plus AT LEAST ONE corroborating component — postcode, town, or county.
+The old address+postcode definition gated the mirror on the one component
+inspectors least often dictate (field session 17821FFA: street + county, no
+postcode ever — the ask was structurally unfireable). Address alone stays
+incomplete (a lone street line is frequently a garble fragment). The predicate
+is ONE shared function across the convenience-ask source gate, the
+target-family suppression check, the answer-time revalidation, and the whole
+direct-command path — an explicit "use the same address" command is never
+stricter than the convenience ask, and its incomplete-source clarification is
+snapshot-aware, asking only for what is actually missing ("What is the site
+postcode, town, or county?" — never re-soliciting the address the inspector
+already gave). All three prompts (agentic + both legacy extraction prompts,
+which drive the `SONNET_TOOL_CALLS=off` rollback path) state the same
+definition. The relaxation's one data hazard is guarded fail-closed with zero
+new durable state: when any populated TARGET component is absent from the
+source (e.g. a client postcode while the site has none), a copy would fabricate
+a merged hybrid address, so the convenience candidate is rejected with the
+closed disposition `source_missing_target_components` (terminal for the current
+snapshot — the prompts teach no same-turn retry), and a direct command — or a
+late race at answer/materialisation time — TERMINATES with a spoken explanation
+generated solely from the persisted `terminal_outcome` payload (ordered
+`missing_source_keys` + family direction, persisted under status `conflict`),
+naming every missing SOURCE component. A late-blocked convenience ask consumes
+the one-shot; recovery is organic — dictate the named source component, then
+issue a fresh direct command. Blocked terminals clear any pending direct
+question via `clearAskId` (the live shadow-harness seam retains the followup on
+question OR clearAskId, so `cancel_pending_tts` precedes the spoken blocker).
+
 **Installation snapshot seeding + postcode mapping (Plan E, 2026-08-12,
 feedback id 125).** The 2026-08-01 single-authority design above never fed
 the snapshot the job's EXISTING installation address — `_seedStateFromJobState`
@@ -257,7 +287,9 @@ Merely writing a source field is not evidence that it will be heard: current
 source writes suppress the acknowledgement only when confirmation mode will
 actually speak them, while crash-replayed source writes use the explicit
 forced-confirmation marker. With confirmation mode off, completing a deciding
-address/postcode ask therefore still produces the short truthful terminal.
+source-completion ask (a street address, or its corroborating
+postcode/town/county — relaxed completeness, id 126) therefore still produces
+the short truthful terminal.
 
 Direct commands use a separate append-only
 `address_mirror_direct_intents` operation ledger, keyed by the occurrence
@@ -327,8 +359,9 @@ resolve the current question merely because its prose still resembles it.
 The transcript recovery lane forwards that exact id into the durable
 controller and consumes a stale explicit generation before model extraction;
 purpose/type metadata cannot silently select a newer ask. When a deciding
-address/postcode answer completes an incomplete direct command, its terminal
-ledger includes a prompt-clear frame before the audible terminal. The client
+address answer (street address, or a corroborating postcode/town/county —
+relaxed completeness, id 126) completes an incomplete direct command, its
+terminal ledger includes a prompt-clear frame before the audible terminal. The client
 therefore leaves answer mode immediately instead of parking the confirmation
 behind a resolved prompt until timeout.
 For both address question types, the backend owns terminal speech; web/iOS tap

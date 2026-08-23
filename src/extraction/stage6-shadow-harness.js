@@ -2776,8 +2776,40 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         perTurnWrites,
         sourceAudible: options.confirmationsEnabled === true,
       });
-      if (directFinal?.handled && typeof directFinal.question === 'string') {
+      // Retain the followup when directFinal carries EITHER a question or a
+      // clearAskId. A question-less terminal (the hybrid-blocked terminal,
+      // id 126) carries only clearAskId, and dropping it here meant
+      // buildResultFrameLedger never emitted its cancel_pending_tts on the
+      // live path — the legacy finalizer already handled question||clearAskId;
+      // this closes the asymmetry.
+      if (
+        directFinal?.handled &&
+        (typeof directFinal.question === 'string' ||
+          (typeof directFinal.clearAskId === 'string' && directFinal.clearAskId))
+      ) {
         addressMirrorDirectFollowup = directFinal;
+        // A question-LESS terminal that clears an ask (the hybrid-blocked
+        // terminal) resolves that ask in the Plan-00 evidence ledger here —
+        // this deciding-write path runs AFTER the tool loop, so none of the
+        // ingress-side recordAskResolved branches ever see it, and the ask
+        // would otherwise stay open and invalidate quiescence. Question-
+        // bearing followups are NOT resolved (the ask is being re-asked or
+        // replaced, not answered).
+        if (typeof directFinal.question !== 'string' && directFinal.clearAskId) {
+          try {
+            entry[EVALUATION_CONTEXT]?.recordAskResolved?.({
+              runtimeId: directFinal.clearAskId,
+              terminal: 'answered',
+              detail: {
+                answer_frame_id: directFinal.clearAskId,
+                transcript_resolved: true,
+                outcome: directFinal.outcome,
+              },
+            });
+          } catch {
+            // evidence capture never breaks the live audible turn
+          }
+        }
       }
     }
 

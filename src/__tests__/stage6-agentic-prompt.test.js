@@ -491,8 +491,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // VALUES line — a declined pending value (match_status:"user_declined")
       // is dropped, never re-asked. Shared region; measured 24489 and cap
       // retains ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-08-23 (PLAN-A, feedback id 126): mirror-ask completeness relaxed
+      // to address + one of postcode/town/county, HYBRID ELIGIBILITY rule +
+      // source_missing_target_components disposition, DEFER wording made
+      // satisfiable, one deferred-fire worked example. Shared region; measured
+      // 24954 and cap retains ~100-token headroom (measured + ~100, P8
+      // precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(24589);
+      expect(estimate).toBeLessThanOrEqual(25054);
     });
   });
 
@@ -1251,8 +1257,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // pending-value line (see the Group 1 combined-cap comment). Measured
       // 19239; cap 19339 leaves ~100-token headroom (measured + ~100, P8
       // precedent).
+      // 2026-08-23 (PLAN-A, feedback id 126): mirror-ask completeness
+      // relaxation + hybrid eligibility + deferred-fire worked example (see
+      // the Group 1 combined-cap comment). Measured 19705; cap 19805 leaves
+      // ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(19339);
+      expect(estimate).toBeLessThanOrEqual(19805);
     });
   });
 
@@ -1706,6 +1716,66 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // indicate a half-applied refactor.
       const matches = prompt.match(/address_mirror_asked/g) ?? [];
       expect(matches.length).toBe(1);
+    });
+
+    test('PLAN-A id-126 — completeness is address + one of postcode/town/county; address alone defers; the deferred example fires on a later county write', () => {
+      // Field session 17821FFA: street + county dictated, no postcode ever.
+      // The old rule gated the ask on address + postcode specifically, so the
+      // trigger was structurally unsatisfiable on real dictation and the
+      // model's own reasoning declined forever ("Completeness calls for a
+      // postcode, which is absent"). The prompt and the server complete()
+      // predicate are a MATCHED PAIR — this pins the prompt half.
+      const idx = prompt.search(/CLIENT BILLING ADDRESS — SITE COPY RULE/);
+      const end = prompt.indexOf('OBSERVATIONS (eight rules)', idx);
+      const block = prompt.slice(idx, end);
+
+      // The relaxed definition, stated in the same terms the server enforces.
+      expect(block).toMatch(
+        /`address` plus AT LEAST ONE corroborating component \(`postcode`, `town`, or `county`\)/
+      );
+      // Address alone stays incomplete — a bare street line is often a garble.
+      expect(block).toMatch(/a bare street line alone is NOT complete/);
+      // The DEFER fallback is REWRITTEN to be satisfiable: it names the
+      // corroborating components rather than demanding "the missing
+      // address/postcode". No strict address+postcode completeness phrasing
+      // may survive anywhere in the block, in either direction's example.
+      expect(block).toMatch(
+        /DEFER until a later turn adds the missing corroborating component \(postcode, town, or county\)/
+      );
+      expect(block).not.toMatch(/\(`address` \+ `postcode`\)/);
+      expect(block).not.toMatch(/missing address\/postcode/);
+      // The deferred-fire worked example: address alone in turn N defers,
+      // a later county write completes the family and fires the ask.
+      expect(block).toMatch(/corroborator arrives later, the DEFERRED ask fires/i);
+      expect(block).toMatch(/137 Large Lane/);
+      expect(block).toMatch(/County is Essex/);
+      expect(block).toMatch(/`address` \+ `county` — no postcode needed/);
+      // Both directions' worked examples satisfy the relaxed definition
+      // (site: address+postcode+town+county; client: address+town).
+      expect(block).toMatch(/71 Hexham Road, Reading, RG30 6PT, Berkshire/);
+      expect(block).toMatch(/1 High Street, Bristol/);
+    });
+
+    test('PLAN-A id-126 — hybrid eligibility rule and the source_missing_target_components terminal disposition are stated', () => {
+      // The relaxation's one new data hazard: a populated target component
+      // the source lacks would be silently preserved through a copy,
+      // fabricating a hybrid address on a certificate. The server refuses
+      // the claim; the prompt must teach that the disposition is TERMINAL
+      // for the current snapshot so the model never burns a retry loop
+      // against a rejection it cannot change (the 08B vocabulary lesson).
+      const idx = prompt.search(/CLIENT BILLING ADDRESS — SITE COPY RULE/);
+      const end = prompt.indexOf('OBSERVATIONS (eight rules)', idx);
+      const block = prompt.slice(idx, end);
+
+      expect(block).toMatch(/HYBRID ELIGIBILITY/);
+      expect(block).toMatch(
+        /every populated component of the OTHER family also exists in the source family/
+      );
+      const dispositionMentions = block.match(/source_missing_target_components/g) ?? [];
+      expect(dispositionMentions.length).toBeGreaterThanOrEqual(2);
+      expect(block).toMatch(
+        /`source_missing_target_components` is TERMINAL for the current snapshot: do NOT retry the ask in the same turn/
+      );
     });
   });
 
