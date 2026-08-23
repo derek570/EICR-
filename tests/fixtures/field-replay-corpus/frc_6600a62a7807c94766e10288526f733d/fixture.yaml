@@ -1,0 +1,135 @@
+# PLAN-B (feedback id 128, with the id-131 interaction) — "the word 'circuit'
+# must never be stored in a circuit designation".
+#
+# From the 2026-08-23 field session (feedback ids 128/131). The raw session
+# id <-> this opaque corpus id mapping is deliberately NOT recorded here
+# (private-mapping convention, mirroring the marker-① keystone). The
+# inspector said "circuit number 2 is a upstairs lighting circuit"; the model
+# faithfully echoed the dictation and called
+# create_circuit{circuit_ref:2, designation:"Upstairs lighting circuit"} —
+# the backend stored the designation VERBATIM, trailing "circuit" included.
+# Eight minutes later that stored suffix defeated BOTH passes of the
+# dialogue-engine designation matcher at IR-script entry, producing a
+# "Which circuit is the insulation resistance for?" ask with no structural
+# gap (feedback id 131 — that ingress-side half is frozen separately as the
+# unsupported_pending sibling fixture, corpus id frc_db9ad2a8…; the entry
+# runs pre-harness in sonnet-stream, outside the v1 replay boundary).
+#
+# RECORDED-lane semantics: the model response is frozen (the create_circuit
+# call carrying the dirty dictation-faithful designation — unchanged by the
+# fix; the fix is NOT "prompt the model to omit 'circuit'"). The fix under
+# lock is BACKEND-deterministic: dispatchCreateCircuit canonicalises the
+# authoritative input.designation (PLAN-B B1, edge-token strip via
+# canonicaliseCircuitDesignation) BEFORE any mutation, so snapshot state,
+# the folded designation projection, the legacy-shape circuit_updates
+# projection, and the spoken state-change confirmation ALL carry
+# "Upstairs lighting" — never "Upstairs lighting circuit".
+#
+# Why a designation_hygiene op (not a plain reading op + audible-output
+# matcher): on PRE-FIX code the dirty write produces THREE independent
+# failures under a naive decomposition (missing clean projection, unmatched
+# confirmation matcher, unclaimed-confirmation accounting) — violating the
+# corpus's exact expected_failure_id contract. The atomic joint oracle REDs
+# with EXACTLY `designation_hygiene.op_desig_cc`. Its confirmation leg is
+# byte-exact deliberately: the clean "Upstairs lighting" IS a substring of
+# the dirty "Circuit 2 is now the Upstairs lighting circuit" read-back, so
+# any contains-test would false-pass on broken code.
+#
+# RED proof — EXECUTED, not just documented:
+# src/__tests__/field-replay/designation-hygiene-red-proof.test.js mocks the
+# designation canonicaliser to its pre-PLAN-B semantics (identity strip,
+# nothing banned-only) and replays THIS fixture through the REAL dispatcher
+# graph + harness — the run fails EXACTLY `designation_hygiene.op_desig_cc`
+# (dirty projection + dirty stored state + confirmation-text mismatch, one
+# joint id, clean FAILs). Equivalent tree-level procedure: git checkout
+# <pre-PLAN-B base> -- src/extraction/stage6-dispatchers-circuit.js
+# src/extraction/designation-canonicaliser.js
+# src/extraction/record-reading-coercion.js, then `npm run
+# replay:field-corpus` fails the same single id; restoring the
+# canonicalisation takes the corpus back to green. The oracle's single-id
+# collapse is additionally pinned leg-by-leg in
+# src/__tests__/field-replay/designation-hygiene-oracle.test.js.
+#
+# audibility note (deliberate): chime_observed is FALSE, so the generic
+# audibility.turn oracle does not run; no expected_audible_outputs[] are
+# declared, so the one-to-one bipartite matcher + unclaimed accounting do not
+# run either — the confirmation contract lives INSIDE the atomic op (exactly
+# one circuit_op confirmation, byte-exact text), which is what keeps the
+# pre-fix failure surface to a single id.
+#
+# Provenance: HAND-AUTHORED regression fixture derived from the backend
+# CloudWatch reconstruction of the field session (EVIDENCE.md, agent rc-ir;
+# log-proven, ≈95% confidence). The create_circuit round is frozen from the
+# logged `tool: create_circuit … raw_input` row; exact tool ordering within
+# the turn is single-call, so no correlation was needed. The recorded_full
+# provenance labels on confirmations_enabled / in_response_to are
+# SCHEMA-MANDATED for non-keystone fixtures and model the product defaults
+# this turn ran under (confirmations on; not an answer turn). No captured
+# PII: the designation is generic room/function text.
+schema_version: 1
+corpus_id: frc_6600a62a7807c94766e10288526f733d
+purpose: regression
+gate_state: required_green
+red_proof_failure_id: designation_hygiene.op_desig_cc
+owner: Derek Beckley
+introduced_at: '2026-08-23T18:00:00Z'
+fix_reference: fix_7afdddb5f397c9c5469ca04c64db725e
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  Designation hygiene (id 128): a dictated "circuit number 2 is a upstairs
+  lighting circuit" whose model call carries designation "Upstairs lighting
+  circuit" must STORE, PROJECT and SPEAK "Upstairs lighting" — the
+  dispatcher-level edge-token canonicalisation is the fix under lock; the
+  joint oracle also pins exactly-once confirmation and the absence of any
+  "which circuit" ask this turn.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits: []
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: Circuit number 2 is a upstairs lighting circuit.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: false
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: sym_tc_desig_cc
+            name: create_circuit
+            input:
+              circuit_ref: 2
+              designation: Upstairs lighting circuit
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_operations:
+      - operation_id: op_desig_cc
+        kind: designation_hygiene
+        circuit: 2
+        value: Upstairs lighting
+        confirmation_text_exact: Circuit 2 is now the Upstairs lighting
+        no_ask_question_contains: which circuit
+        audibility: exactly_once

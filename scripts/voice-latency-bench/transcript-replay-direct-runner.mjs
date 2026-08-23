@@ -1089,6 +1089,7 @@ async function importExtractionModules() {
     { runShadowHarness },
     { CLEAR_WIRE_EXEMPT },
     { FIELD_CORRECTIONS },
+    { getCircuitBucket },
   ] = await Promise.all([
     import('../../src/extraction/eicr-extraction-session.js'),
     import('../../src/extraction/active-sessions.js'),
@@ -1107,9 +1108,25 @@ async function importExtractionModules() {
     // field_corrected wire field for a clear_then_write op.
     import('../../src/extraction/stage6-event-bundler.js'),
     import('../../src/extraction/field-name-corrections.js'),
+    // PLAN-B (ids 128+131, 2026-08-23) — the dual-shape snapshot bucket
+    // reader backing the designation_hygiene oracle's post-turn state leg.
+    // Same dynamic-injection rationale as toClearWireField above: imported
+    // HERE (after the fake-clock install) so it never enters the recorded
+    // lane's pre-clock static import graph.
+    import('../../src/extraction/stage6-multi-board-shape.js'),
   ]);
   const toClearWireField = (raw) =>
     CLEAR_WIRE_EXEMPT.has(raw) ? raw : (FIELD_CORRECTIONS[raw] ?? raw);
+  // PLAN-B — resolve the AUTHORITATIVE stored designation for a circuit on a
+  // board (null board → the snapshot's current board, matching
+  // getCircuitBucket's own fallback). Reads BOTH bucket spellings the
+  // production dispatchers consult (`circuit_designation` first, then
+  // `designation`) so the oracle sees exactly what a next-turn matcher would.
+  const readCircuitDesignation = (session, circuitRef, boardId) => {
+    const bucket = getCircuitBucket(session?.stateSnapshot, Number(circuitRef), boardId ?? null);
+    const v = bucket?.circuit_designation ?? bucket?.designation ?? null;
+    return typeof v === 'string' ? v : null;
+  };
   return {
     EICRExtractionSession,
     activeSessions,
@@ -1120,6 +1137,7 @@ async function importExtractionModules() {
     createFilledSlotsShadowLogger,
     runShadowHarness,
     toClearWireField,
+    readCircuitDesignation,
   };
 }
 

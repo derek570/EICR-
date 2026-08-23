@@ -1,0 +1,85 @@
+# PLAN-B (feedback id 131) — IR-script entry asked "Which circuit is the
+# insulation resistance for?" despite the circuit being NAMED in the
+# utterance. NON-EXECUTABLE (unsupported_pending): the defective turn runs
+# entirely in pre-harness INGRESS, a declared v1 capability exclusion.
+#
+# From the 2026-08-23 field session (feedback ids 128/131; raw session id
+# mapping in the private archive only — see the executable sibling
+# frc_6600a62a…, which locks the id-128 write-side half of the same causal
+# chain). Timeline: the circuit had been created ~8 minutes earlier with the
+# dirty designation "Upstairs lighting circuit" (id 128). The inspector then
+# said "insulation resistance for upstairs lighting live to live is LIM." —
+# the dialogue-engine IR script entered with circuit_ref:null,
+# entry_designation_matched:false, designation_candidates:[]; LIM was parsed
+# and queued, and a SERVER-SYNTHESIZED ask (tool_call_id prefix `srv-irs-`,
+# NO model round) asked "Which circuit is the insulation resistance for?" —
+# an Audio-First §2 violation (an ask with no structural gap). Root cause:
+# the stored trailing "circuit" token defeats BOTH matcher passes on the
+# long entry sentence (pass 1 needs the ENTIRE stored designation inside the
+# utterance; pass 2 needs the folded token run [upstairs, light, circuit]
+# contiguous — the utterance has [upstairs, light, live, …]). The short
+# answer "Upstairs lighting." then matched via pass 1's reverse direction,
+# which is why the recovery worked.
+#
+# WHY unsupported_pending, not expected_red/required_green: the recorded
+# lane enters and exits at the runShadowHarness boundary, and the IR-script
+# transcript entry runs BEFORE that boundary —
+# processInsulationResistanceTurn is invoked from sonnet-stream's
+# handleTranscript (pre-model, pre-harness), and on `handled &&
+# !fallthrough` the turn NEVER reaches runShadowHarness. The srv-irs- ask,
+# the designation lookup (findCircuitsByDesignation), and the LIM
+# write/drain are therefore all outside the v1 replay closure ("ingress"
+# capability exclusion; the answer half is additionally the excluded
+# `dialogue_answer_ingress`). The only IN-boundary route into the engine —
+# the start_dialogue_script dispatcher (enterScriptByName) — deliberately
+# does NOT run the entry designation lookup (it hard-codes
+# entry_designation_matched:false), so a fixture faking entry through it
+# would exercise a DIFFERENT code path than the defect and prove nothing
+# about the matcher. Rather than weaken the boundary or author an
+# unfaithful replay, the evidence is frozen here per the corpus's designed
+# parking state, and the fixes are covered elsewhere:
+#   - the write-side half (id 128) is LOCKED by the executable sibling
+#     frc_6600a62a… (dispatcher canonicalisation, joint oracle);
+#   - the matcher-side half (id 131, B3 tolerance in
+#     circuit-resolution.js + the legacy twins) is covered by PLAN-B's unit
+#     suites against the EXACT evidence strings (the matcher is a pure
+#     function — see the plan's Tests item 2), pending this fixture's
+#     promotion when ingress replay lands.
+schema_version: 1
+corpus_id: frc_db9ad2a81993be17a38cc196c7ac8ec5
+purpose: regression
+gate_state: unsupported_pending
+owner: Derek Beckley
+capability_exclusion: ingress
+named_followup: >-
+  field-replay-hardening-followups: dialogue-script ingress replay — a
+  fixture-controlled pre-harness lane that can drive
+  processInsulationResistanceTurn (transcript entry, designation lookup,
+  srv-* ask emission, next-transcript answer drain) deterministically. On
+  landing, promote this fixture per the gate state machine
+  (unsupported_pending → expected_red needs a new attestation; the fix is
+  already shipped, so the dual RED+GREEN-proof promotion straight to
+  required_green is the expected route: RED against the pre-PLAN-B tree,
+  GREEN against the fixed tree).
+sanitized_transcript:
+  - Circuit number 2 is a upstairs lighting circuit.
+  - insulation resistance for upstairs lighting live to live is LIM.
+  - Upstairs lighting.
+human_expectations: >-
+  Post-fix (PLAN-B B1 write hygiene + B3 matcher tolerance): with the
+  circuit stored as "Upstairs lighting" (or even a legacy-stored "Upstairs
+  lighting circuit", via the B3 canonical-both-directions pass-1 tolerance),
+  the IR entry utterance "insulation resistance for upstairs lighting live
+  to live is LIM." must resolve circuit_ref 2 AT ENTRY
+  (entry_designation_matched:true), write ir_live_live_mohm = LIM to
+  circuit 2, emit NO "Which circuit is the insulation resistance for?" ask
+  (no srv-irs-*-which-* tool_call_id), and speak EXACTLY ONE confirmation
+  for the applied IR value. The follow-up ask for the next missing slot
+  (live-to-earth) is legitimate script sequencing and NOT part of this
+  expectation. Pre-fix behaviour to RED-prove: circuit_ref:null entry,
+  designation_candidates:[], the which-circuit ask fires, and LIM stays
+  queued until the answer turn drains it.
+notes: >-
+  IR entry which-circuit ask (id 131): evidence frozen for the ingress-lane
+  follow-up; the executable write-side sibling is frc_6600a62a… and the
+  matcher fix is unit-locked (pure function) until ingress replay exists.

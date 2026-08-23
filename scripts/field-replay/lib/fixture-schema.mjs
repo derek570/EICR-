@@ -111,7 +111,31 @@ export const FIXTURE_ERROR_CODES = Object.freeze({
   RECENT_ORDER_MISSING: 'recent_circuit_order_missing',
   ORPHAN_NET_UNATTESTED: 'orphan_net_dependency_unattested',
   CLEAR_THEN_WRITE_BAD_SHAPE: 'clear_then_write_bad_shape',
+  DESIGNATION_HYGIENE_BAD_SHAPE: 'designation_hygiene_bad_shape',
 });
+
+/**
+ * PLAN-B (feedback ids 128+131, 2026-08-23) — the CLOSED banned-edge-token
+ * list for the `designation_hygiene` expected-operation shape guard. This is
+ * a SCHEMA-side declaration check only (a hygiene fixture must not declare a
+ * DIRTY expected value — that would lock the very defect the fixture
+ * exists to prevent); the production canonicaliser
+ * (src/extraction/designation-canonicaliser.js) is deliberately NOT imported
+ * here — this module sits on the recorded lane's pre-fake-clock static
+ * import graph, which must stay free of extraction imports. Delimiter
+ * grammar, not regex `\b`: a hyphen-adjacent token ("Short-circuit tester")
+ * is NOT standalone and must pass.
+ */
+const BANNED_DESIGNATION_EDGE_TOKENS = new Set(['circuit', 'circuits']);
+
+function designationValueHasBannedEdgeToken(value) {
+  const tokens = String(value).trim().split(/\s+/);
+  if (tokens.length === 0) return false;
+  const stripPunct = (t) => t.replace(/^[,.;:!?'"()]+/, '').replace(/[,.;:!?'"()]+$/, '');
+  const first = stripPunct(tokens[0]).toLowerCase();
+  const last = stripPunct(tokens[tokens.length - 1]).toLowerCase();
+  return BANNED_DESIGNATION_EDGE_TOKENS.has(first) || BANNED_DESIGNATION_EDGE_TOKENS.has(last);
+}
 
 /** Ajv structural schema for fixture.yaml. */
 export const FIXTURE_JSON_SCHEMA = {
@@ -336,6 +360,15 @@ export const FIXTURE_JSON_SCHEMA = {
             'clear',
             'rename',
             'create_circuit',
+            // PLAN-B (ids 128+131, 2026-08-23) — the atomic designation-
+            // hygiene joint oracle. ONE failure id
+            // (`designation_hygiene.<operation_id>`) jointly asserts:
+            // cleaned designation projection, cleaned post-turn stored
+            // state, byte-exact single state-change confirmation, and
+            // (optionally) the absence of a forbidden clarification ask —
+            // so the pre-fix world REDs with EXACTLY one id instead of a
+            // multi-id baseline that violates the expected_failure_id rule.
+            'designation_hygiene',
           ],
         },
         tool: { type: 'string' },
@@ -359,6 +392,13 @@ export const FIXTURE_JSON_SCHEMA = {
         dedupe_token_expected: { type: 'boolean' },
         wire_identity: { type: 'object' },
         audibility: { enum: ['exactly_once', 'derived_exempt'] },
+        // PLAN-B designation_hygiene shape (cross-field guarded below):
+        // the byte-exact spoken state-change confirmation ("Circuit 2 is
+        // now the Upstairs lighting") and the forbidden-ask fragment
+        // ("which circuit"). Both follow the field_null_fallback
+        // already-trimmed byte-exactness discipline.
+        confirmation_text_exact: { type: 'string' },
+        no_ask_question_contains: { type: 'string' },
       },
     },
     expectedAudibleOutput: {
@@ -702,6 +742,56 @@ export async function validateFixtureDocument(doc, opts = {}) {
         if (bad.length) {
           errors.push(err(FIXTURE_ERROR_CODES.CLEAR_THEN_WRITE_BAD_SHAPE, oPath, `clear_then_write op malformed: ${bad.join('; ')}`));
         }
+      }
+      // PLAN-B (ids 128+131, 2026-08-23) — fail-closed shape for a
+      // designation_hygiene op. It is an ATOMIC joint oracle (one failure id
+      // covering: cleaned projection, cleaned stored state, byte-exact single
+      // confirmation, no forbidden ask), so every leg's declaration must be
+      // well-formed or the fixture is rejected — a malformed hygiene op can
+      // never GREEN a half-checked expectation. `value` is the expected CLEAN
+      // designation and must ITSELF be clean: a fixture declaring a dirty
+      // expected value would LOCK the very defect the type exists to prevent.
+      if (op.kind === 'designation_hygiene') {
+        const bad = [];
+        if (
+          !Object.hasOwn(op, 'value') ||
+          typeof op.value !== 'string' ||
+          op.value.trim() === '' ||
+          op.value !== op.value.trim()
+        ) {
+          bad.push('non-empty, already-trimmed string "value" (the expected CLEAN designation) required');
+        } else if (designationValueHasBannedEdgeToken(op.value)) {
+          bad.push('expected "value" itself carries a banned leading/trailing circuit/circuits token — a hygiene fixture cannot lock a dirty expectation');
+        }
+        if (op.circuit == null) bad.push('singular non-null "circuit" required');
+        if (op.circuits != null) bad.push('"circuits[]" is not allowed (singular circuit only)');
+        if (
+          typeof op.confirmation_text_exact !== 'string' ||
+          op.confirmation_text_exact.trim() === '' ||
+          op.confirmation_text_exact !== op.confirmation_text_exact.trim()
+        ) {
+          bad.push('non-empty, already-trimmed byte-exact "confirmation_text_exact" required (runtime compares the TRIMMED candidate text — a padded matcher is unsatisfiable)');
+        }
+        if (
+          op.no_ask_question_contains !== undefined &&
+          (typeof op.no_ask_question_contains !== 'string' || op.no_ask_question_contains.trim() === '')
+        ) {
+          bad.push('"no_ask_question_contains", when declared, must be a non-empty string');
+        }
+        if (op.state_transition != null) bad.push('"state_transition" is not allowed on designation_hygiene');
+        if (op.field !== undefined) bad.push('"field" is not allowed (the designation slot is implied)');
+        if (op.audibility !== 'exactly_once') bad.push('audibility must be "exactly_once" (the joint oracle asserts exactly one confirmation)');
+        if (bad.length) {
+          errors.push(err(FIXTURE_ERROR_CODES.DESIGNATION_HYGIENE_BAD_SHAPE, oPath, `designation_hygiene op malformed: ${bad.join('; ')}`));
+        }
+        if (op.board_id != null && jobBoards.size > 0 && !jobBoards.has(String(op.board_id))) {
+          errors.push(err(FIXTURE_ERROR_CODES.STATE_DEP_MISSING, oPath, `referenced board ${op.board_id} not present in job_state`));
+        }
+        // The hygiene op's circuit is CREATED this turn (the create_circuit
+        // tool call it verifies) — register the ref for later ops, mirroring
+        // the create_circuit registration below.
+        if (op.circuit != null) jobCircuits.add(String(op.circuit));
+        continue;
       }
       // Referenced circuits/boards must exist in job_state (unless the same
       // fixture creates them earlier — creation ops register their refs).

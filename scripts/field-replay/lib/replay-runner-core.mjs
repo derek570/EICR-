@@ -531,6 +531,18 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         // absent → the oracle latches INFRASTRUCTURE rather than passing
         // un-checked. Kept off the static import graph on purpose.
         toClearWireField: modules?.toClearWireField ?? null,
+        // PLAN-B (ids 128+131, 2026-08-23) — the post-turn stored-designation
+        // reader for the designation_hygiene joint oracle, DYNAMICALLY
+        // injected via `modules` exactly like toClearWireField (the fake
+        // clock installs before the extraction graph loads, so the dual-shape
+        // snapshot reader getCircuitBucket must never be statically imported
+        // here). Bound to THIS fixture's live session; evaluateTurn runs
+        // before the next turn mutates it and before teardown. Absent → the
+        // oracle latches INFRASTRUCTURE rather than passing un-checked.
+        readCircuitDesignation:
+          typeof modules?.readCircuitDesignation === 'function'
+            ? (circuitRef, boardId) => modules.readCircuitDesignation(built.session, circuitRef, boardId)
+            : null,
       };
       const failures = evaluateTurn(turn, captured);
       turnResults.push({ turn: turn.turn_index, failures, frames: ws.sent.length });

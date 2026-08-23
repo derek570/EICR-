@@ -148,7 +148,7 @@ export function matchAudibleOutputs(expectedOutputs, { result, wsFrames }) {
  *  Fail-closed: an operation kind the oracle cannot faithfully verify latches
  *  an INFRASTRUCTURE outcome (which can never satisfy required_green OR an
  *  expected_red) rather than silently passing an un-checked expectation. */
-export function matchOperations(expectedOps, { result, toClearWireField }) {
+export function matchOperations(expectedOps, { result, toClearWireField, wsFrames, readCircuitDesignation }) {
   const failures = [];
   const readings = result?.extracted_readings ?? [];
   const observations = [...(result?.observations ?? []), ...(result?.observationUpdates ?? [])];
@@ -209,6 +209,99 @@ export function matchOperations(expectedOps, { result, toClearWireField }) {
       }
       if (problems.length) {
         failures.push({ id, outcome: OUTCOME.FAIL, message: `clear_then_write: ${problems.join('; ')}` });
+      }
+      continue;
+    }
+    // PLAN-B (feedback ids 128+131, 2026-08-23) — the ATOMIC designation-
+    // hygiene joint oracle. A naive per-concern decomposition (a `reading` op
+    // for the projection + an audible-output matcher for the confirmation)
+    // REDs on pre-fix code with MULTIPLE independent failure ids (dirty
+    // projection, unmatched confirmation, unclaimed-confirmation accounting),
+    // violating the corpus's exact expected_failure_id contract. This branch
+    // mirrors the clear_then_write precedent: ONE
+    // `designation_hygiene.<operation_id>` failure covers every leg —
+    //   (a) exactly one CLEANED designation projection for the circuit
+    //       (`extracted_readings`, legacy fold name 'designation'; the raw
+    //       'circuit_designation' name space is scanned too, defensively),
+    //   (b) ZERO differing-value designation projections (the dirty write),
+    //   (c) any legacy-shape `circuit_updates` projection for the circuit
+    //       carries the cleaned designation,
+    //   (d) the post-turn AUTHORITATIVE stored designation is the cleaned
+    //       value — read through the INJECTED `readCircuitDesignation`
+    //       (same dynamic-injection rule as toClearWireField: the recorded
+    //       lane installs a fake clock before the extraction graph loads, so
+    //       a static import here is forbidden; absent → INFRASTRUCTURE,
+    //       never a spurious pass/fail),
+    //   (e) EXACTLY ONE circuit_op state-change confirmation for the
+    //       circuit, byte-exact trimmed spoken text (a substring test would
+    //       false-pass: the clean "Upstairs lighting" IS a substring of the
+    //       dirty "Upstairs lighting circuit" read-back),
+    //   (f) when declared, ZERO ask_user_started frames whose question
+    //       contains the forbidden fragment (the "Which circuit is the
+    //       insulation resistance for?" class — an ask with no structural
+    //       gap, Audio-First §2).
+    if (op.kind === 'designation_hygiene') {
+      const id = `designation_hygiene.${op.operation_id}`;
+      if (typeof readCircuitDesignation !== 'function') {
+        failures.push({
+          id,
+          outcome: OUTCOME.INFRASTRUCTURE,
+          message: 'designation_hygiene oracle needs the injected post-turn state reader (readCircuitDesignation) — unavailable',
+        });
+        continue;
+      }
+      const problems = [];
+      // (a)+(b) — the designation projection.
+      const desigEntries = readings.filter(
+        (r) =>
+          (r.field === 'designation' || r.field === 'circuit_designation') &&
+          norm(r.circuit) === norm(op.circuit) &&
+          (op.board_id == null || norm(r.board_id ?? null) === norm(op.board_id)),
+      );
+      const cleanHits = desigEntries.filter((r) => String(r.value) === op.value);
+      const dirtyHits = desigEntries.filter((r) => String(r.value) !== op.value);
+      if (cleanHits.length === 0) {
+        problems.push(`cleaned designation ${JSON.stringify(op.value)} not projected for c${op.circuit}`);
+      } else if (cleanHits.length > 1) {
+        problems.push(`expected exactly one cleaned designation projection for c${op.circuit}, found ${cleanHits.length}`);
+      }
+      for (const d of dirtyHits) {
+        problems.push(`designation projection for c${op.circuit} carries ${JSON.stringify(String(d.value))} instead of the cleaned ${JSON.stringify(op.value)}`);
+      }
+      // (c) — the legacy-shape circuit_updates projection, when present.
+      for (const cu of result?.circuit_updates ?? []) {
+        if (norm(cu?.circuit) !== norm(op.circuit)) continue;
+        if (cu?.action === 'delete') continue;
+        if (String(cu?.designation ?? '') !== op.value) {
+          problems.push(`circuit_updates projection for c${op.circuit} carries ${JSON.stringify(String(cu?.designation ?? ''))} instead of the cleaned ${JSON.stringify(op.value)}`);
+        }
+      }
+      // (d) — post-turn authoritative stored state.
+      const stored = readCircuitDesignation(op.circuit, op.board_id ?? null);
+      if (typeof stored !== 'string' || stored !== op.value) {
+        problems.push(`post-turn stored designation for c${op.circuit} is ${JSON.stringify(typeof stored === 'string' ? stored : null)}, expected ${JSON.stringify(op.value)}`);
+      }
+      // (e) — exactly one state-change confirmation, byte-exact spoken text.
+      const opConfs = audibleConfirmations(result).filter(
+        (c) => c.field === 'circuit_op' && norm(c.circuit) === norm(op.circuit),
+      );
+      if (opConfs.length !== 1) {
+        problems.push(`expected exactly one circuit_op confirmation for c${op.circuit}, found ${opConfs.length}`);
+      } else if (String(opConfs[0].text ?? '').trim() !== op.confirmation_text_exact) {
+        problems.push(`circuit_op confirmation text ${JSON.stringify(String(opConfs[0].text ?? '').trim())} !== expected ${JSON.stringify(op.confirmation_text_exact)}`);
+      }
+      // (f) — no forbidden clarification ask.
+      if (op.no_ask_question_contains) {
+        const needle = String(op.no_ask_question_contains).toLowerCase();
+        const forbidden = askStartedFrames(wsFrames ?? []).filter((f) =>
+          String(f?.question ?? '').toLowerCase().includes(needle),
+        );
+        if (forbidden.length > 0) {
+          problems.push(`${forbidden.length} ask(s) matched forbidden question fragment ${JSON.stringify(op.no_ask_question_contains)}`);
+        }
+      }
+      if (problems.length) {
+        failures.push({ id, outcome: OUTCOME.FAIL, message: `designation_hygiene: ${problems.join('; ')}` });
       }
       continue;
     }
