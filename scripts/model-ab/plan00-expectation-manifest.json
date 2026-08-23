@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "b9de8fb4e74f4832f5a430f737ee48b51ec3a866a607d30857627285d49dbc34",
+  "semantic_oracle_digest": "de2301e05594f92844c90252e4446c40fce5e8db6c3a2e8e1fb42e8311214019",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "95599e524bf611cf061118cf9dfc88c454f8110e881e1a96915a293231bf47aa"
+      "sha256": "95276c714007ca856a430e8a2d50deaa23dab8bbda2b4255df3d961e49d2864b"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -561,7 +561,7 @@
     },
     {
       "path": "scripts/model-ab/lib/expectation-projection.mjs",
-      "sha256": "05b3dc234f649a9d2897d3796e23717fce1047d23963a42c7e69d67b63f14109"
+      "sha256": "1aff82abab137d88b89fab937ae1a05eb5dfb9bb9692ff13e6d7cf203e498ada"
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
