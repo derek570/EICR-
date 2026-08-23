@@ -298,13 +298,9 @@ describe('§5.A4 — stagePartialFailureNotice: guards + aggregation', () => {
     expect(ptw.partialFailureNotices).toHaveLength(0);
     stagePartialFailureNotice(ptw, spec({ reason: 'lim_capability_gated', target: SCOPE_TARGET }));
     expect(ptw.partialFailureNotices).toHaveLength(1);
-    // PLAN-B (2026-08-23): invalid_designation joined — a bulk banned-
-    // token-only designation write is refused BEFORE the fan-out, which is
-    // the whole-instruction truth a scope target tells.
-    expect([...PARTIAL_FAILURE_SCOPE_FAMILIES].sort()).toEqual([
-      'invalid_designation',
-      'lim_capability_gated',
-    ]);
+    // PLAN-B's invalid_designation stages CONCRETE circuit targets (Codex
+    // cycle 2), so the scope set stays exactly the LIM family.
+    expect([...PARTIAL_FAILURE_SCOPE_FAMILIES]).toEqual(['lim_capability_gated']);
   });
 
   test('ordinal targets are accepted only for designation_no_match and coalesce', () => {

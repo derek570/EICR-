@@ -330,6 +330,55 @@ describe.each(CENSUS_SHAPES)('resolveCircuitAnswer over %s', (_shapeName, shape)
       expect(verdict.kind).toBe('auto_resolve');
       expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 1 })]);
     });
+
+    test('cycle-2 — strict same-canonical rows collide: {"A","Circuit A"} + reply "Circuit A" → ambiguous (scalar)', () => {
+      // Both rows canonicalise to "A"; the stop-word-stripping collision key
+      // is empty for both, so the namespaced raw-key fallback ('raw::a')
+      // must detect the collision instead of letting the raw match on
+      // "Circuit A" auto-resolve a genuine ambiguity.
+      const census = shape([
+        { circuit_ref: 1, circuit_designation: 'A' },
+        { circuit_ref: 2, circuit_designation: 'Circuit A' },
+      ]);
+      const verdict = resolveCircuitAnswer({
+        userText: 'Circuit A',
+        pendingWrite: PENDING,
+        availableCircuits: census,
+      });
+      expect(verdict.kind).toBe('escalate');
+      expect(verdict.parsed_hint).toMatch(/ambiguous_designation_match:1,2/);
+    });
+
+    test('cycle-2 — strict same-canonical rows collide (multi-description)', () => {
+      const census = shape([
+        { circuit_ref: 1, circuit_designation: 'A' },
+        { circuit_ref: 2, circuit_designation: 'Circuit A' },
+        { circuit_ref: 3, circuit_designation: 'Smoke alarm' },
+      ]);
+      const verdict = resolveCircuitAnswer({
+        userText: 'circuit A and the smoke alarm',
+        pendingWrite: PENDING,
+        availableCircuits: census,
+      });
+      expect(verdict.kind).toBe('partial_resolve');
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+      expect(verdict.unresolved).toEqual([
+        expect.objectContaining({ disposition: 'ask', candidates: [1, 2] }),
+      ]);
+    });
+
+    test('cycle-2 — a genuinely unique strict designation still resolves under the active guard', () => {
+      const verdict = resolveCircuitAnswer({
+        userText: 'circuit A',
+        pendingWrite: PENDING,
+        availableCircuits: shape([
+          { circuit_ref: 5, circuit_designation: 'Circuit A' },
+          { circuit_ref: 6, circuit_designation: 'Garage' },
+        ]),
+      });
+      expect(verdict.kind).toBe('auto_resolve');
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 5 })]);
+    });
   });
 });
 

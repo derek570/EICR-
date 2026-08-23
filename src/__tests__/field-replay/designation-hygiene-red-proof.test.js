@@ -48,29 +48,26 @@ const IR_FIXTURE_PATH = path.join(
 /** Build the full modules set over the MOCKED canonicaliser graph (all
  *  dynamic imports resolve after the unstable_mockModule registration). */
 async function buildModules() {
-  const [
-    { EICRExtractionSession },
-    { activeSessions },
-    { createPendingAsksRegistry },
-    { createAskBudget },
-    vlc,
-    { createFilledSlotsShadowLogger },
-    { runShadowHarness },
-    { getCircuitBucket },
-    { processInsulationResistanceTurn },
-    { FIELD_CORRECTIONS },
-  ] = await Promise.all([
-    import('../../extraction/eicr-extraction-session.js'),
-    import('../../extraction/active-sessions.js'),
-    import('../../extraction/stage6-pending-asks-registry.js'),
-    import('../../extraction/stage6-ask-budget.js'),
-    import('../../extraction/voice-latency-config.js'),
-    import('../../extraction/stage6-filled-slots-shadow.js'),
-    import('../../extraction/stage6-shadow-harness.js'),
-    import('../../extraction/stage6-multi-board-shape.js'),
-    import('../../extraction/dialogue-engine/index.js'),
-    import('../../extraction/field-name-corrections.js'),
-  ]);
+  // SEQUENTIAL imports, deliberately NOT Promise.all: under
+  // unstable_mockModule, concurrently linking overlapping ESM graphs races
+  // jest's linker ("request for './value-normalise.js' can not be resolved
+  // on module ... that is not linked") — the race surfaced when a second
+  // consumer of the mocked canonicaliser (circuit-resolution.js) joined the
+  // shared graph. One await per graph links each module tree fully before
+  // the next import starts; behaviour and assertions are unchanged.
+  const { EICRExtractionSession } = await import('../../extraction/eicr-extraction-session.js');
+  const { activeSessions } = await import('../../extraction/active-sessions.js');
+  const { createPendingAsksRegistry } =
+    await import('../../extraction/stage6-pending-asks-registry.js');
+  const { createAskBudget } = await import('../../extraction/stage6-ask-budget.js');
+  const vlc = await import('../../extraction/voice-latency-config.js');
+  const { createFilledSlotsShadowLogger } =
+    await import('../../extraction/stage6-filled-slots-shadow.js');
+  const { runShadowHarness } = await import('../../extraction/stage6-shadow-harness.js');
+  const { getCircuitBucket } = await import('../../extraction/stage6-multi-board-shape.js');
+  const { processInsulationResistanceTurn } =
+    await import('../../extraction/dialogue-engine/index.js');
+  const { FIELD_CORRECTIONS } = await import('../../extraction/field-name-corrections.js');
   return {
     activeSessions,
     modules: {

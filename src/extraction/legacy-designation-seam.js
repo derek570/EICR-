@@ -68,6 +68,7 @@ import {
 } from './designation-canonicaliser.js';
 import { buildConfirmationText } from './confirmation-text.js';
 import { getMainBoardId } from './stage6-multi-board-shape.js';
+import { spokenBoardOrdinal } from './refusal-notices.js';
 
 /**
  * The closed server-owned designation-hygiene question marker. BOTH keys
@@ -365,28 +366,31 @@ export function mergeDesignationConfirmations(
     // compares against the right slot.
     let text = buildConfirmationText('circuit_designation', op.value, op.circuit);
     if (typeof text !== 'string' || text.trim().length === 0) continue;
-    // Mini-review M1 — board-qualify the TEXT for a non-main effective
-    // board ("Circuit 2 on DB-2 is now the Cooker"): board/value metadata
-    // is non-enumerable (wire keys stay exactly {text, field, circuit}),
-    // so without a textual qualifier two same-(ref, value) operations on
-    // DIFFERENT boards would serialize byte-identically and the client's
-    // text-keyed 30s dedupe would silently swallow the second read-back.
-    // Text content is not a wire-shape change. Main-board (and unscoped
+    // Mini-review M1 + cycle-2 — board-qualify the TEXT for a non-main
+    // effective board: board/value metadata is non-enumerable (wire keys
+    // stay exactly {text, field, circuit}), so without a textual qualifier
+    // two same-(ref, value) operations on DIFFERENT boards would serialize
+    // byte-identically and the client's text-keyed 30s dedupe would
+    // silently swallow the second read-back. The qualifier is the
+    // server-owned INJECTIVE spoken board identifier — the board's ORDINAL
+    // via `spokenBoardOrdinal` ("Circuit 2 on board 2 is now the Cooker"),
+    // the SAME "on board N" clause the Stage-6 dispatchers speak — and
+    // deliberately NEVER the designation: `add_board` enforces no
+    // designation uniqueness, so two sub-boards both labelled "DB" would
+    // reproduce the identical-text collision (cycle-2 BLOCKER). Ordinal
+    // null (board unresolvable — only possible without a boards[] array,
+    // where a second board cannot exist) degrades to the unique board id.
+    // Text content is not a wire-shape change; main-board (and unscoped
     // single-board) confirmations keep today's exact wording.
     if (op.effectiveBoardId != null && op.effectiveBoardId !== mainBoardId) {
-      const boardRecord = Array.isArray(stateSnapshot?.boards)
-        ? stateSnapshot.boards.find((b) => b?.id === op.effectiveBoardId)
-        : null;
-      const boardLabel =
-        typeof boardRecord?.designation === 'string' && boardRecord.designation.trim()
-          ? boardRecord.designation.trim()
-          : String(op.effectiveBoardId);
+      const ordinal = spokenBoardOrdinal(stateSnapshot, op.effectiveBoardId);
+      const boardClause = ordinal == null ? `board ${op.effectiveBoardId}` : `board ${ordinal}`;
       const prefix = `Circuit ${op.circuit}`;
       // The circuit_designation builder branch always opens with
       // "Circuit N " — guard anyway so a future builder change degrades
       // to the unqualified (still correct) phrasing rather than mangling.
       if (text.startsWith(prefix)) {
-        text = `${prefix} on ${boardLabel}${text.slice(prefix.length)}`;
+        text = `${prefix} on ${boardClause}${text.slice(prefix.length)}`;
       }
     }
     // WIRE SHAPE (Codex cycle-1 #1): the legacy confirmation contract is

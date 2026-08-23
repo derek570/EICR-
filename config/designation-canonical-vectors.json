@@ -26,6 +26,8 @@
     { "input": "Upstairs lighting - Circuit", "expected": "Upstairs lighting" },
     { "input": "- Upstairs lighting", "expected": "- Upstairs lighting" },
     { "input": "Circuit - - Upstairs lighting", "expected": "Upstairs lighting" },
+    { "input": "Circuit — Upstairs lighting", "expected": "Upstairs lighting" },
+    { "input": "Upstairs lighting – Circuit", "expected": "Upstairs lighting" },
     { "input": "Circuit & Upstairs lighting", "expected": "& Upstairs lighting" },
     { "input": "Sockets & lighting", "expected": "Sockets & lighting" },
     { "input": "Spare", "expected": "Spare" },

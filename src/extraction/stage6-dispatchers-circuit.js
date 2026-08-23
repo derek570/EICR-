@@ -2531,46 +2531,12 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // the reject-empty gate can tell banned-token-only from genuinely empty.
   const rawBulkDesignationValue = input.field === 'circuit_designation' ? input.value : null;
   input.value = coerceRecordReadingValue(input.field, input.value);
-  // PLAN-B (id 128) — reject-empty gate for the bulk designation write:
-  // canonicalising ONCE here (before validation policy + fan-out) means
-  // snapshot writes, mirrors, applied results, and confirmations all carry
-  // the cleaned scalar. Same non-empty-raw → empty-canonical condition as
-  // the other interactive dispatchers.
-  if (
-    input.field === 'circuit_designation' &&
-    designationCanonicalisesToEmpty(rawBulkDesignationValue)
-  ) {
-    const desigErr = {
-      code: 'invalid_designation',
-      field: 'value',
-      message:
-        'A circuit designation cannot be just the word "circuit"/"circuits". Provide the descriptive name only (e.g. "Upstairs Lighting"), or ask the inspector for the name.',
-    };
-    // Codex diff-review sanctioned deviation (Audio-First) — whole-scope
-    // refusal before the fan-out, so a scope-level notice tells the truth.
-    stageScopePartialFailure(ctx, {
-      reason: 'invalid_designation',
-      field: 'circuit_designation',
-      boardId: input.board_id,
-      producer: 'set_field_for_all_circuits_invalid_designation',
-    });
-    logToolCall(logger, {
-      sessionId: session.sessionId,
-      turnId,
-      tool_use_id: call.tool_call_id,
-      tool: 'set_field_for_all_circuits',
-      round,
-      is_error: true,
-      outcome: 'rejected',
-      validation_error: { code: 'invalid_designation', field: 'value' },
-      input_summary: {
-        field: input.field,
-        scope: input.scope ?? null,
-        spare_policy: input.spare_policy ?? null,
-      },
-    });
-    return envelope(call.tool_call_id, { ok: false, error: desigErr }, true);
-  }
+  // PLAN-B (id 128) — the bulk reject-empty gate itself moved BELOW
+  // `resolveBulkCandidates` (Codex cycle 2): the rejection must stage the
+  // CONCRETE intended refs so the drain's per-slot subtraction can remove
+  // exactly the targets a corrected retry later covers — a scope target
+  // proved only partial overlap. `rawBulkDesignationValue` stays captured
+  // here, before coercion mutates input.value in place.
   const canonicalBulkField = canonicaliseNumericReadingField(input.field);
   // id-100(b) (2026-07-25) — SERVER-AUTHORITATIVE impedance clamp, second of
   // the three pre-write seams. Ordering is coerce → clamp → validate: the
@@ -2668,6 +2634,54 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     selector,
     effectiveSparePolicy,
   });
+  // PLAN-B (id 128, moved here by Codex cycle 2) — reject-empty gate for
+  // the bulk designation write. Positioned AFTER the side-effect-free
+  // candidate resolution so the rejection stages the CONCRETE intended
+  // refs (one circuit target per eligible candidate): the drain's per-slot
+  // subtraction then removes exactly the targets a corrected same-turn
+  // retry covers, and a PARTIAL retry (one circuit renamed of a whole-board
+  // instruction) keeps a residual notice for the still-unwritten refs — a
+  // scope target could only prove overlap, not coverage. Nothing between
+  // the old and new position mutates state or rejects a free-text value.
+  if (
+    input.field === 'circuit_designation' &&
+    designationCanonicalisesToEmpty(rawBulkDesignationValue)
+  ) {
+    const desigErr = {
+      code: 'invalid_designation',
+      field: 'value',
+      message:
+        'A circuit designation cannot be just the word "circuit"/"circuits". Provide the descriptive name only (e.g. "Upstairs Lighting"), or ask the inspector for the name.',
+    };
+    // Codex diff-review sanctioned deviation (Audio-First) — mixed-turn
+    // rejections must stay audible; one circuit target per intended ref.
+    for (const candidate of bulkCandidates) {
+      if (!candidate?.bucket || candidate.excluded || candidate.eligible === false) continue;
+      stageCircuitPartialFailure(ctx, {
+        reason: 'invalid_designation',
+        field: 'circuit_designation',
+        circuit: candidate.ref,
+        boardId: candidate.boardId,
+        producer: 'set_field_for_all_circuits_invalid_designation',
+      });
+    }
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'set_field_for_all_circuits',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: { code: 'invalid_designation', field: 'value' },
+      input_summary: {
+        field: input.field,
+        scope: input.scope ?? null,
+        spare_policy: input.spare_policy ?? null,
+      },
+    });
+    return envelope(call.tool_call_id, { ok: false, error: desigErr }, true);
+  }
   if (
     hasApplicableBulkCandidate(bulkCandidates) &&
     (isLimRangedWriteKilled() || ctx.hasLimRangedWriteV1 !== true) &&

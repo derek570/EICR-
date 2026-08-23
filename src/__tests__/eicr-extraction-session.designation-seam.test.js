@@ -287,12 +287,49 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     // wire text would be swallowed by the client's text-keyed dedupe
     // (silent loss of the sub-board read-back). Board/value metadata is
     // non-enumerable, so the text is the only wire-visible distinguisher.
+    // The qualifier is the INJECTIVE spoken board ordinal (cycle-2), the
+    // same "on board N" clause the Stage-6 dispatchers speak — db2 is
+    // boards[1] → ordinal 2.
     const serializedTexts = JSON.parse(JSON.stringify(result.confirmations)).map((c) => c.text);
     expect(serializedTexts).toEqual([
       'Circuit 2 is now the Cooker',
-      'Circuit 2 on DB-2 is now the Cooker',
+      'Circuit 2 on board 2 is now the Cooker',
     ]);
     expect(serializedTexts[0]).not.toBe(serializedTexts[1]);
+  });
+
+  test('cycle-2: two sub-boards with the SAME designation still serialize DISTINCT confirmation texts', async () => {
+    session = makeSession(mode);
+    // add_board enforces no designation uniqueness — both sub-boards are
+    // labelled "DB". A designation-based qualifier would render two
+    // byte-identical lines and the client's text-keyed dedupe would
+    // silently swallow the second (the cycle-2 BLOCKER).
+    session.stateSnapshot.boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'dbA', board_type: 'sub', designation: 'DB' },
+      { id: 'dbB', board_type: 'sub', designation: 'DB' },
+    ];
+    const result = await runTurn(
+      session,
+      legacyResult({
+        circuit_updates: [
+          { circuit: 2, designation: 'Cooker Circuit', action: 'create', board_id: 'dbA' },
+          { circuit: 2, designation: 'Cooker Circuit', action: 'create', board_id: 'dbB' },
+        ],
+      })
+    );
+
+    // Both board-scoped writes land...
+    expect(session.stateSnapshot.circuits['dbA::2'].circuit_designation).toBe('Cooker');
+    expect(session.stateSnapshot.circuits['dbB::2'].circuit_designation).toBe('Cooker');
+    // ...and the JSON-round-tripped texts differ via the injective ordinal
+    // (dbA = boards[1] → 2, dbB = boards[2] → 3).
+    const serializedTexts = JSON.parse(JSON.stringify(result.confirmations)).map((c) => c.text);
+    expect(serializedTexts).toEqual([
+      'Circuit 2 on board 2 is now the Cooker',
+      'Circuit 2 on board 3 is now the Cooker',
+    ]);
+    expect(new Set(serializedTexts).size).toBe(2);
   });
 
   test('Codex cycle-1 #4: sub-board rename dedupes against ITS board bucket, not the same-numbered main circuit', async () => {
@@ -323,9 +360,10 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     expect(session.stateSnapshot.circuits['db2::2'].circuit_designation).toBe('Cooker');
     expect(session.stateSnapshot.circuits[2].circuit_designation).toBe('Cooker');
     // Exactly one confirmation — audible, not silently deduped by main —
-    // and board-qualified (M1) since the effective board is not main.
+    // and ordinal-qualified (M1/cycle-2) since the effective board is not
+    // main (db2 = boards[1] → ordinal 2).
     expect(result.confirmations).toHaveLength(1);
-    expect(result.confirmations[0].text).toBe('Circuit 2 on DB-2 is now the Cooker');
+    expect(result.confirmations[0].text).toBe('Circuit 2 on board 2 is now the Cooker');
   });
 
   test('two valid operations across BOTH shapes (reading + circuit_updates) each confirm once', async () => {

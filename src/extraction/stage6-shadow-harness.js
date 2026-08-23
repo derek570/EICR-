@@ -4658,21 +4658,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               }
             }
             // A SCOPE target ("all circuits") can never acquire a per-circuit
-            // write, so it always survives rule (2) and always speaks — with
-            // ONE exception (PLAN-B mini-review c1): an invalid_designation
-            // scope refusal IS fixable by a corrected same-turn retry, so it
-            // subtracts when ANY surviving same-field write exists on the
-            // same board scope. lim_capability_gated keeps always-speak (a
-            // retry cannot fix a missing capability).
+            // write, so it always survives rule (2) and always speaks.
+            // (PLAN-B's invalid_designation stages CONCRETE circuit targets
+            // from the resolved bulk candidates — Codex cycle 2 — so the
+            // ordinary per-slot rule below arbitrates its retries.)
             const survivors = (Array.isArray(aggregate?.targets) ? aggregate.targets : []).filter(
               (t) => {
-                if (t?.kind === 'scope' && aggregate?.reason === 'invalid_designation') {
-                  const prefix = `${aggregate.field}::`;
-                  const suffix = `::${aggregate.boardId ?? ''}`;
-                  return ![...survivingReadingSlots].some(
-                    (slot) => slot.startsWith(prefix) && slot.endsWith(suffix)
-                  );
-                }
                 if (t?.kind !== 'circuit') return true;
                 return !survivingReadingSlots.has(
                   `${aggregate.field}::${t.ref}::${aggregate.boardId ?? ''}`

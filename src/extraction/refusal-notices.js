@@ -1025,14 +1025,12 @@ export const PARTIAL_FAILURE_FAMILIES = Object.freeze({
 });
 
 /**
- * The families a scope-level (ref-less) target may render under.
- * PLAN-B: `invalid_designation` joins because a bulk banned-token-only
- * designation write is refused BEFORE the fan-out — a whole-instruction
- * refusal, which is the truth "those circuits" tells.
+ * The one family a scope-level (ref-less) target may render under.
+ * (PLAN-B's `invalid_designation` stages CONCRETE circuit targets from the
+ * resolved bulk candidates instead — Codex cycle 2 — so it never needs
+ * scope eligibility.)
  */
-export const PARTIAL_FAILURE_SCOPE_FAMILIES = Object.freeze(
-  new Set(['lim_capability_gated', 'invalid_designation'])
-);
+export const PARTIAL_FAILURE_SCOPE_FAMILIES = Object.freeze(new Set(['lim_capability_gated']));
 /** The one family a server-owned segment ordinal may render under. */
 export const PARTIAL_FAILURE_ORDINAL_FAMILIES = Object.freeze(new Set(['designation_no_match']));
 

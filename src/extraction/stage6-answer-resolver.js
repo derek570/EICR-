@@ -1334,6 +1334,33 @@ function matchBoundedRawExactDesignation(text, circuits) {
  * form is unique among eligible rows; otherwise the union of colliding rows
  * is returned as ambiguous (ask).
  */
+/**
+ * Mini-review M4 — collision keys MUST use the SAME equivalence function as
+ * the canonical exact lane (canonicalSeparatorDesignation, the
+ * stop-word-STRIPPING one): {"Kitchen", "The Kitchen Circuit"} share the
+ * canonical-lane key "kitchen", which the stop-word-RETAINING raw function
+ * ("kitchen" vs "the kitchen") failed to detect.
+ *
+ * Cycle-2 BLOCKER fix — a strict name makes that stop-word-stripping key
+ * EMPTY ("A" → ""), and returning early there let census {"A", "Circuit A"}
+ * (BOTH canonicalise to "A") auto-resolve a raw match on "Circuit A" despite
+ * genuine ambiguity. When the canonical-lane key is empty, fall back to a
+ * NAMESPACED stop-word-RETAINING key over the canonical VALUE
+ * (`raw::` + canonicalRawSeparatorDesignation(info.value)) applied
+ * identically to winner and competitors: "A" and "Circuit A" both carry
+ * canonical value "A" → 'raw::a' → collide, while a genuinely unique strict
+ * designation still resolves. The prefixes keep the two key classes from
+ * ever cross-colliding.
+ */
+function collisionKeyForCircuit(circuit) {
+  const info = designationMatchInfo(circuit);
+  if (info.eligibility === 'ineligible') return null;
+  const canonicalKey = canonicalSeparatorDesignation(info.value);
+  if (canonicalKey) return `canon::${canonicalKey}`;
+  const rawKey = canonicalRawSeparatorDesignation(info.value);
+  return rawKey ? `raw::${rawKey}` : null;
+}
+
 function guardCanonicalExactCollision(match, circuits) {
   if (match.kind !== 'exact' || !Array.isArray(circuits)) return match;
   const winnerRef = match.circuitRefs[0];
@@ -1344,29 +1371,18 @@ function guardCanonicalExactCollision(match, circuits) {
         ? circuit.circuit_ref
         : Number.parseInt(String(circuit?.circuit_ref), 10);
     if (ref !== winnerRef) continue;
-    const info = designationMatchInfo(circuit);
-    // Mini-review M4 — collision keys MUST use the SAME equivalence function
-    // as the canonical exact lane (canonicalSeparatorDesignation, the
-    // stop-word-STRIPPING one): {"Kitchen", "The Kitchen Circuit"} share the
-    // canonical-lane key "kitchen", which the stop-word-RETAINING raw
-    // function ("kitchen" vs "the kitchen") failed to detect. An EMPTY key
-    // (literal stop-word-only names such as "A") skips guarding — the strict
-    // lanes already police those, and "" would false-collide every such row.
-    winnerKey =
-      info.eligibility === 'ineligible' ? null : canonicalSeparatorDesignation(info.value);
+    winnerKey = collisionKeyForCircuit(circuit);
     break;
   }
   if (!winnerKey) return match;
   const refs = new Set([winnerRef]);
   for (const circuit of circuits) {
-    const info = designationMatchInfo(circuit);
-    if (info.eligibility === 'ineligible') continue;
     const ref =
       typeof circuit?.circuit_ref === 'number'
         ? circuit.circuit_ref
         : Number.parseInt(String(circuit?.circuit_ref), 10);
     if (!Number.isInteger(ref) || refs.has(ref)) continue;
-    if (canonicalSeparatorDesignation(info.value) === winnerKey) refs.add(ref);
+    if (collisionKeyForCircuit(circuit) === winnerKey) refs.add(ref);
   }
   if (refs.size === 1) return match;
   return { kind: 'ambiguous', circuitRefs: [...refs].sort((a, b) => a - b) };

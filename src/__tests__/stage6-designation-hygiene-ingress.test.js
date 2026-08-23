@@ -423,9 +423,16 @@ describe('set_field_for_all_circuits(circuit_designation) hygiene (ingress 4)', 
     expect(session.stateSnapshot.circuits[1].circuit_designation).toBe('a');
     expect(session.stateSnapshot.circuits[2].circuit_designation).toBe('b');
     expect(writes.readings.size).toBe(0);
-    // Scope-level notice (whole fan-out refused before iteration).
+    // Concrete per-circuit targets from the resolved bulk candidates
+    // (Codex cycle 2) — one aggregate, one circuit target per intended
+    // ref, so the drain's per-slot rule can arbitrate a partial retry.
     expect(writes.partialFailureNotices).toHaveLength(1);
     expect(writes.partialFailureNotices[0].reason).toBe(INVALID_DESIGNATION);
+    const targetRefs = writes.partialFailureNotices[0].targets
+      .filter((t) => t.kind === 'circuit')
+      .map((t) => t.ref)
+      .sort();
+    expect(targetRefs).toEqual([1, 2]);
   });
 });
 

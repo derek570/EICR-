@@ -106,7 +106,7 @@ export function canonicaliseCircuitDesignation(designation) {
   // letter/digit" (mini-review c1): symbols like "&"/"+"/"⚡" are
   // meaningful designation content and must never be deleted — extend
   // this grammar only through contract vectors.
-  const isSeparatorOnly = (span) => /^[-/]+$/u.test(designation.slice(span.start, span.end));
+  const isSeparatorOnly = (span) => /^[-‐‑‒–—/]+$/u.test(designation.slice(span.start, span.end));
 
   let first = 0;
   let last = spans.length - 1;
