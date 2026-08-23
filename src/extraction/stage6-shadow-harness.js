@@ -110,6 +110,11 @@ import {
   resolveFastLedgerOutcomeForTurn,
   resolveAcceptedIdentity,
   buildFastAttemptSlotKey,
+  // PLAN-D 2026-08-23 (D4) — per-correlation slot metadata for the audio
+  // finalizer's obligation descriptors (never derived from the slot-keyed
+  // resolveFastAttemptSlotIdentities map, which overwrites same-slot
+  // correlations).
+  getFastAttemptRecord,
 } from './fast-path-accepted-identity.js';
 import { getElevenLabsKey } from '../services/secrets.js';
 import {
@@ -269,6 +274,14 @@ import {
   BUNDLER_PHASE,
   applyConfirmationDebounce,
   SAME_TURN_CLEAR_WRITE_COLLAPSED,
+  // PLAN-D 2026-08-23 (ids 127/130) — CREATE_ACK_SUBSTITUTION: the standalone
+  // create ack preserved on a merged creation carrier, substituted by the
+  // mid-stream filter instead of silencing the creation fact.
+  // CONFIRMATION_EFFECTIVE_BOARD: the synthesis-time effective-board alias
+  // the D4 audio-finalizer descriptors carry (wire board_id is omitted on
+  // ordinary selected-board turns).
+  CREATE_ACK_SUBSTITUTION,
+  CONFIRMATION_EFFECTIVE_BOARD,
 } from './stage6-event-bundler.js';
 import { compareSlots } from './stage6-slot-comparator.js';
 import { buildSessionTools } from './stage6-tool-schemas.js';
@@ -3324,9 +3337,18 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           const circStr = circ == null ? '0' : typeof circ === 'string' ? circ : String(circ);
           return `${c.field}::${circStr}::${c.board_id ?? ''}`;
         };
-        result.confirmations = result.confirmations.filter(
-          (c) => !midStreamEmittedSlots.has(confKeyOf(c))
-        );
+        // PLAN-D 2026-08-23 (id 130) — a removed carrier may be a MERGED
+        // creation carrier ("Created circuit 3, Downstairs light — wiring
+        // type A"): the preliminary mid-stream clip carried the READING
+        // only, so deleting the carrier outright would silence the creation
+        // fact. Substitute the preserved standalone create ack (kept, and
+        // bulk-disclosure-refreshed, as a non-enumerable sidecar by the
+        // bundler) instead of dropping the entry.
+        result.confirmations = result.confirmations.flatMap((c) => {
+          if (!midStreamEmittedSlots.has(confKeyOf(c))) return [c];
+          const substitution = c[CREATE_ACK_SUBSTITUTION];
+          return substitution ? [{ ...substitution }] : [];
+        });
       }
     } else if (midStreamEmittedSlots.size > 0) {
       log?.info?.('voice_latency.mid_stream_canonical_filter_skipped', {
@@ -5440,9 +5462,43 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // when it 4xx'd before runLiveMode minted this turnId. The drain is
         // done inside startAudioFinalizer; we just supply the two counts.
         const attemptedFastTtsCount = entry?.fastPathCorrelationIdByTurn?.get(turnId)?.size ?? 0;
+        // PLAN-D 2026-08-23 (D4) — structured ACK-eligible descriptors so the
+        // finalizer can build identity-matched audibility obligations instead
+        // of count arithmetic (the 127 timeout row said `expected_acks:1,
+        // acks:0` — a count, not a slot). The effective board rides the
+        // synthesis-time CONFIRMATION_EFFECTIVE_BOARD stamp (wire board_id is
+        // omitted on ordinary selected-board turns); fast slot metadata comes
+        // from the per-correlation ledger record, iterated PER CORRELATION ID
+        // (the slot-keyed resolver overwrites same-slot correlations).
+        const ackEligibleConfirmations = Array.isArray(result.confirmations)
+          ? result.confirmations
+              .filter((c) => c?.expects_ios_ack !== false)
+              .map((c) => ({
+                field: c.field ?? null,
+                circuit: Number.isInteger(c.circuit) ? c.circuit : null,
+                wireBoardId: c.board_id ?? null,
+                effectiveBoardId: c[CONFIRMATION_EFFECTIVE_BOARD] ?? c.board_id ?? null,
+                fastCorrelationId:
+                  typeof c.fast_correlation_id === 'string' && c.fast_correlation_id
+                    ? c.fast_correlation_id
+                    : null,
+              }))
+          : [];
+        const fastAttempts = [];
+        for (const cid of entry?.fastPathCorrelationIdByTurn?.get(turnId) ?? []) {
+          const attemptRecord = getFastAttemptRecord(cid, session.sessionId);
+          fastAttempts.push({
+            correlationId: cid,
+            field: attemptRecord?.field ?? null,
+            circuit: attemptRecord?.circuit ?? null,
+            boardId: attemptRecord?.boardId ?? null,
+          });
+        }
         startAudioFinalizer(session.sessionId, turnId, {
           bundlerEmittedCount,
           attemptedFastTtsCount,
+          ackEligibleConfirmations,
+          fastAttempts,
         });
       } catch (telemetryErr) {
         log?.warn?.('voice_latency.turn_summary_emit_error', {

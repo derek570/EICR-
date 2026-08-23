@@ -67,7 +67,199 @@ import {
  * @property {Array<Object>} received_acks  — accumulated ACKs
  * @property {ReturnType<typeof setTimeout>} timer
  * @property {bigint} armed_ns   — wall-time finalizer was armed
+ * @property {Map<string, AckObligation>|null} obligations — PLAN-D 2026-08-23
+ *   (id 127, D4): identity-matched audibility obligations. Present ONLY when
+ *   the caller supplied structured descriptors; null keeps the legacy
+ *   count-arithmetic path byte-identical for older call sites/tests.
+ * @property {'observable'|'unobservable'|'unknown'} observability
  */
+
+/**
+ * PLAN-D 2026-08-23 (feedback id 127, D4 — telemetry-only). One audibility
+ * obligation per thing the inspector should HEAR exactly once this turn.
+ *
+ * Built PER CORRELATION ID for fast attempts (never from the slot-keyed
+ * `resolveFastAttemptSlotIdentities` map, which silently overwrites earlier
+ * same-slot correlations — deriving obligations from it would omit some and
+ * falsely complete), plus one per ACK-eligible bundler confirmation. A
+ * canonical confirmation carrying `fast_correlation_id` COLLAPSES into its
+ * matching fast attempt (they are one heard clip — counting both makes every
+ * healthy fast-path turn look unacked); the collapsed twin retains BOTH slot
+ * aliases, because iOS bundler ACKs carry `ValueConfirmation.boardId` (nil on
+ * ordinary selected-board traffic → the wire alias) while the fast-attempt
+ * ledger stores the resolved EFFECTIVE board (→ the effective alias) — a
+ * strict single-slot join would falsely report a healthy fast-failure
+ * fallback as unacked.
+ *
+ * Reconciliation: correlation id first, slot second — and a slot match is
+ * only claimed when it is UNIQUE among pending obligations. When >1 pending
+ * obligation shares a normalised slot (designationOps can emit same-slot
+ * entries distinguished only by dedupe_token, which iOS ACKs do not carry),
+ * ALL of that slot's obligations are classified AMBIGUOUS — a distinct class
+ * from unacked; never exact completion, never exact loss.
+ *
+ * @typedef {Object} AckObligation
+ * @property {'fast'|'canonical'|'twin'} kind
+ * @property {string|null} correlationId
+ * @property {Set<string>} slotAliases — normalised `${field}::${circuit ?? 0}::${board ?? ''}` keys
+ * @property {{field: string|null, circuit: number, board: string|null}} slot — display identity
+ * @property {boolean} acked
+ * @property {boolean} slotAmbiguous
+ */
+
+/** Normalised obligation slot key. Circuit normalises `?? 0` (backend
+ *  board-level obligations use null; iOS ACKs serialize 0 — both sides fold
+ *  independently of the board alias). Board `?? ''` is the Plan-00 stable
+ *  null-board sentinel: null matches null, never a different board. */
+function obligationSlotKey(field, circuit, boardId) {
+  const circ = Number.isInteger(circuit) ? circuit : 0;
+  const board = typeof boardId === 'string' && boardId.length > 0 ? boardId : '';
+  return `${field}::${circ}::${board}`;
+}
+
+/**
+ * Build the obligation map from the caller-supplied descriptors. `rejectedIds`
+ * (fast-TTS rejections consumed at arm time) remove their exact fast
+ * obligations BEFORE twin collapse, so a rejected attempt's canonical sibling
+ * — if any — stays a standalone canonical obligation.
+ */
+function buildAckObligations(fastAttempts, ackEligibleConfirmations, rejectedIds) {
+  /** @type {Map<string, AckObligation>} */
+  const obligations = new Map();
+  if (Array.isArray(fastAttempts)) {
+    for (const fa of fastAttempts) {
+      if (typeof fa?.correlationId !== 'string' || !fa.correlationId) continue;
+      if (rejectedIds?.has(fa.correlationId)) continue; // rejected before arm — no clip to hear
+      obligations.set(`fast:${fa.correlationId}`, {
+        kind: 'fast',
+        correlationId: fa.correlationId,
+        slotAliases: new Set(fa.field ? [obligationSlotKey(fa.field, fa.circuit, fa.boardId)] : []),
+        slot: {
+          field: fa.field ?? null,
+          circuit: Number.isInteger(fa.circuit) ? fa.circuit : 0,
+          board: fa.boardId ?? null,
+        },
+        acked: false,
+        slotAmbiguous: false,
+      });
+    }
+  }
+  let canonOrdinal = 0;
+  if (Array.isArray(ackEligibleConfirmations)) {
+    for (const c of ackEligibleConfirmations) {
+      const wireKey = c.field ? obligationSlotKey(c.field, c.circuit, c.wireBoardId) : null;
+      const effKey = c.field ? obligationSlotKey(c.field, c.circuit, c.effectiveBoardId) : null;
+      const twin =
+        typeof c.fastCorrelationId === 'string' && c.fastCorrelationId
+          ? obligations.get(`fast:${c.fastCorrelationId}`)
+          : null;
+      if (twin) {
+        twin.kind = 'twin';
+        if (wireKey) twin.slotAliases.add(wireKey);
+        if (effKey) twin.slotAliases.add(effKey);
+        continue;
+      }
+      const ob = {
+        kind: 'canonical',
+        correlationId: null,
+        slotAliases: new Set([wireKey, effKey].filter(Boolean)),
+        slot: {
+          field: c.field ?? null,
+          circuit: Number.isInteger(c.circuit) ? c.circuit : 0,
+          board: c.effectiveBoardId ?? c.wireBoardId ?? null,
+        },
+        acked: false,
+        slotAmbiguous: false,
+      };
+      obligations.set(`canon:${canonOrdinal++}`, ob);
+    }
+  }
+  // Same-slot multiplicity → AMBIGUOUS for slot-based matching (correlation
+  // matches remain exact regardless).
+  const aliasOwners = new Map();
+  for (const [id, ob] of obligations) {
+    for (const alias of ob.slotAliases) {
+      if (!aliasOwners.has(alias)) aliasOwners.set(alias, []);
+      aliasOwners.get(alias).push(id);
+    }
+  }
+  for (const owners of aliasOwners.values()) {
+    if (owners.length > 1) {
+      for (const id of owners) obligations.get(id).slotAmbiguous = true;
+    }
+  }
+  return obligations;
+}
+
+/**
+ * Match one ACK against the pending obligations. Correlation first; slot
+ * second, and only on a UNIQUE pending candidate (an ambiguous slot never
+ * claims exact attribution).
+ */
+function matchAckToObligations(obligations, ack) {
+  if (!(obligations instanceof Map) || obligations.size === 0) return;
+  if (typeof ack?.correlation_id === 'string' && ack.correlation_id) {
+    for (const ob of obligations.values()) {
+      if (!ob.acked && ob.correlationId === ack.correlation_id) {
+        ob.acked = true;
+        return;
+      }
+    }
+  }
+  const slot = ack?.slot;
+  if (slot && typeof slot.field === 'string' && slot.field) {
+    const key = obligationSlotKey(slot.field, slot.circuit, slot.boardId);
+    const candidates = [];
+    for (const ob of obligations.values()) {
+      if (!ob.acked && ob.slotAliases.has(key)) candidates.push(ob);
+    }
+    if (candidates.length === 1) candidates[0].acked = true;
+    // >1 candidates → same-slot multiplicity: no exact attribution.
+  }
+}
+
+/** Every obligation either acked, or slot-ambiguous obligations block exact
+ *  completion (never claim it) — completion is identity-matched, never count
+ *  arithmetic. */
+function obligationsComplete(obligations) {
+  for (const ob of obligations.values()) {
+    if (!ob.acked) return false;
+  }
+  return true;
+}
+
+/** Project the obligation ledger onto row fields for the audio-summary emit.
+ *  UNOBSERVABLE sessions never report unacked slots — the absence of ACKs is
+ *  the expected state, not evidence of silence (the same false inference that
+ *  killed the audible orphan net). */
+function summariseObligations(obligations, observability) {
+  if (!(obligations instanceof Map)) return null;
+  const unacked = [];
+  const ambiguous = [];
+  let acked = 0;
+  for (const ob of obligations.values()) {
+    if (ob.acked) {
+      acked += 1;
+      continue;
+    }
+    const identity = {
+      kind: ob.kind,
+      field: ob.slot.field,
+      circuit: ob.slot.circuit,
+      board_id: ob.slot.board,
+      correlation_id: ob.correlationId,
+    };
+    if (ob.slotAmbiguous) ambiguous.push(identity);
+    else unacked.push(identity);
+  }
+  return {
+    ack_obligations_total: obligations.size,
+    ack_obligations_acked: acked,
+    unacked_confirmations: observability === 'observable' ? unacked : [],
+    ambiguous_confirmations: observability === 'observable' ? ambiguous : [],
+    unobservable_obligations: observability === 'observable' ? 0 : obligations.size - acked,
+  };
+}
 
 /** @type {Map<string, PendingFinalizer>} key = `${sessionId}::${turnId}` */
 const pendingFinalizers = new Map();
@@ -286,9 +478,28 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
   // carried `regex_fast_correlation_id`).
   const entry = getActiveSessionEntry(sessionId);
   const correlationIds = entry?.fastPathCorrelationIdByTurn?.get(turnId) ?? new Set();
-  const decrementCount = consumePendingDecrements(sessionId, correlationIds);
+  const { count: decrementCount, consumedIds: rejectedIds } = consumePendingDecrements(
+    sessionId,
+    correlationIds
+  );
 
   const expected_acks = Math.max(0, bundlerEmittedCount + attemptedFastTtsCount - decrementCount);
+
+  // PLAN-D 2026-08-23 (D4) — capability-conditioned observability. Gate on
+  // `client_playback_telemetry` (what current iOS actually advertises; the
+  // legacy voice_latency_ack flag is NOT advertised by current builds and
+  // gating on it would classify real iOS sessions as unobservable). A
+  // session whose parsed capabilities LACK the flag (web advertises no
+  // playback telemetry at all) is UNOBSERVABLE — its missing ACKs are the
+  // expected state, never evidence of unheard audio. A session with no
+  // parsed capability info at all (legacy callers, partial test sessions)
+  // stays 'unknown' and keeps the pre-D4 behaviour byte-identical.
+  const capabilities = entry?.voiceLatency?.capabilities;
+  const observability = capabilities
+    ? capabilities.hasClientPlaybackTelemetry === true
+      ? 'observable'
+      : 'unobservable'
+    : 'unknown';
 
   // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: a turn is
   // ACK-eligible if at least one bundler emit was expects_ios_ack-true OR
@@ -297,7 +508,24 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
   // "Apple-native fallback / no-context turns legitimately don't ACK".
   // Emitted as integer 0|1 (NOT boolean) because Logs Insights `max()`
   // over a boolean field is undefined in some configurations.
-  const eligible_for_validation = bundlerEmittedCount > 0 || attemptedFastTtsCount > 0;
+  //
+  // PLAN-D (D4): an UNOBSERVABLE session is never ACK-eligible — the client
+  // cannot POST playback ACKs, so eligibility would manufacture a false
+  // `no_audio_ack_at_ttl` diagnosis downstream on every web turn. Setting
+  // it false here keeps the canonical row and the perceived-latency store's
+  // derived rows in agreement (the store keys off expected_acks_eligible).
+  const eligible_for_validation =
+    observability !== 'unobservable' && (bundlerEmittedCount > 0 || attemptedFastTtsCount > 0);
+
+  // PLAN-D (D4) — identity-matched obligation ledger, built ONLY when the
+  // caller supplied structured descriptors (the live harness does; legacy
+  // call sites/tests fall back to the count-arithmetic path unchanged).
+  // Rejected-at-arm correlation ids are removed BEFORE twin collapse.
+  const hasDescriptors =
+    Array.isArray(options.ackEligibleConfirmations) || Array.isArray(options.fastAttempts);
+  const obligations = hasDescriptors
+    ? buildAckObligations(options.fastAttempts, options.ackEligibleConfirmations, rejectedIds)
+    : null;
 
   // Voice-latency plan 2026-06-03 Tier 1.3 — populate the durable
   // correlationToTurn index BEFORE entry.fastPathCorrelationIdByTurn is
@@ -351,6 +579,8 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
       expected_acks: 0,
       decrements_applied: decrementCount,
       eligible_for_validation,
+      observability,
+      ...(obligations ? summariseObligations(obligations, observability) : {}),
     });
     return;
   }
@@ -365,8 +595,15 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
       ios_playback_ack: pending.received_acks,
       audio_finalizer_timeout_fired: true,
       expected_acks: pending.expected_acks,
-      decrements_applied: decrementCount,
+      decrements_applied: pending.decrements_applied,
       eligible_for_validation: pending.eligible_for_validation,
+      // PLAN-D (D4) — the timeout row now names the exact slot identities
+      // still owed (127's row said only `expected_acks:1, acks:0` — a class,
+      // not a slot). Diagnosis without speech: NO recovery path exists here.
+      observability: pending.observability,
+      ...(pending.obligations
+        ? summariseObligations(pending.obligations, pending.observability)
+        : {}),
     });
   }, FINALIZER_TIMEOUT_MS);
   if (typeof timer.unref === 'function') timer.unref();
@@ -385,6 +622,10 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
     // Voice-latency Tier 1.1 sub-step 5: persist eligibility so the on-time
     // ACK completion path (recordPlaybackAck) carries it onto the emit too.
     eligible_for_validation,
+    // PLAN-D (D4) — identity ledger + observability class, read by
+    // matchAckToObligations / maybeFlushFinalizer / the emits above.
+    obligations,
+    observability,
   });
 
   // Voice-latency Tier 1.3 — drained ACKs that arrived before this
@@ -393,6 +634,11 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
   if (drained.length > 0) {
     const pending = pendingFinalizers.get(key);
     pending.received_acks.push(...drained);
+    // PLAN-D (D4) — drained pre-arm ACKs reconcile against the obligation
+    // ledger exactly like live ones.
+    if (pending.obligations) {
+      for (const ack of drained) matchAckToObligations(pending.obligations, ack);
+    }
     maybeFlushFinalizer(key, pending, decrementCount);
   }
 }
@@ -405,7 +651,17 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
  * for the 8s timeout when the stashed ACKs already complete the count).
  */
 function maybeFlushFinalizer(key, pending, decrementCountOverride) {
-  if (pending.received_acks.length >= pending.expected_acks) {
+  // PLAN-D 2026-08-23 (D4) — when the identity ledger exists, completion is
+  // determined from uniquely matched obligation identities, NEVER aggregate
+  // count arithmetic (a duplicate ACK + a missing one used to net out to
+  // "complete"). An un-acked slot-ambiguous obligation blocks early
+  // completion (never claim exact completion for it) — the turn runs to the
+  // timeout, whose row reports it AMBIGUOUS rather than unacked. Legacy
+  // callers (no ledger) keep the count comparison byte-identical.
+  const complete = pending.obligations
+    ? obligationsComplete(pending.obligations)
+    : pending.received_acks.length >= pending.expected_acks;
+  if (complete) {
     clearTimeout(pending.timer);
     pendingFinalizers.delete(key);
     emitTurnAudioSummary({
@@ -417,6 +673,10 @@ function maybeFlushFinalizer(key, pending, decrementCountOverride) {
       decrements_applied:
         decrementCountOverride !== undefined ? decrementCountOverride : pending.decrements_applied,
       eligible_for_validation: pending.eligible_for_validation,
+      observability: pending.observability,
+      ...(pending.obligations
+        ? summariseObligations(pending.obligations, pending.observability)
+        : {}),
     });
   }
 }
@@ -552,6 +812,9 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
 
   if (pending) {
     pending.received_acks.push({ ...ack, received_at_ms });
+    // PLAN-D (D4) — reconcile against the identity ledger (correlation
+    // first, unique-slot second) before evaluating completion.
+    if (pending.obligations) matchAckToObligations(pending.obligations, ack);
     maybeFlushFinalizer(`${sessionId}::${resolvedTurnId}`, pending);
     return;
   }
@@ -646,17 +909,52 @@ export function recordPlaybackAck(sessionId, turnId, ack) {
  */
 export function decrementExpectedAcksByCorrelation(sessionId, correlationId) {
   if (!sessionId || !correlationId) return;
-  // Try the live-finalizer path first.
-  for (const [, finalizer] of pendingFinalizers) {
-    if (finalizer.sessionId !== sessionId) continue;
-    // We don't carry correlation -> turnId index server-side at the
-    // finalizer level (correlation -> turnId is in
-    // session.fastPathCorrelationIdByTurn). Simpler: every fast-TTS
-    // rejection stashes; startAudioFinalizer drains on arm. This keeps
-    // the API surface predictable and avoids a per-correlation reverse
-    // index here.
-    // Falls through to stash path.
-    break;
+  // PLAN-D 2026-08-23 (D4) — POST-ARM rejection race. The old behaviour only
+  // ever stashed, and a stash is drained exclusively at arm time — so a
+  // rejection arriving AFTER startAudioFinalizer had armed never updated the
+  // armed finalizer and the turn timed out as a false UNACKED. The durable
+  // correlationToTurn index (populated at arm, 60s TTL) locates the armed
+  // finalizer; the exact rejected fast leg is removed immediately:
+  //   - a collapsed twin loses ONLY its fast leg (the canonical fallback the
+  //     bundler emitted is still owed a playback — it keeps both slot
+  //     aliases and reverts to a plain canonical obligation);
+  //   - a standalone fast obligation is removed outright;
+  // then completion is re-evaluated (the rejection may have been the last
+  // outstanding identity). The pre-arm stash path below stays byte-identical.
+  const indexed = correlationToTurn.get(correlationId);
+  if (indexed && indexed.sessionId === sessionId && indexed.expires_at_ms > Date.now()) {
+    const key = `${sessionId}::${indexed.turnId}`;
+    const pending = pendingFinalizers.get(key);
+    if (pending) {
+      pending.expected_acks = Math.max(0, pending.expected_acks - 1);
+      pending.decrements_applied = (pending.decrements_applied ?? 0) + 1;
+      if (pending.obligations) {
+        let target = pending.obligations.get(`fast:${correlationId}`) ?? null;
+        if (!target) {
+          for (const ob of pending.obligations.values()) {
+            if (ob.correlationId === correlationId) {
+              target = ob;
+              break;
+            }
+          }
+        }
+        if (target && !target.acked) {
+          if (target.kind === 'twin') {
+            target.kind = 'canonical';
+            target.correlationId = null;
+          } else if (target.kind === 'fast') {
+            for (const [id, ob] of pending.obligations) {
+              if (ob === target) {
+                pending.obligations.delete(id);
+                break;
+              }
+            }
+          }
+        }
+      }
+      maybeFlushFinalizer(key, pending);
+      return;
+    }
   }
   pendingAckDecrements.set(correlationId, {
     sessionId,
@@ -666,16 +964,20 @@ export function decrementExpectedAcksByCorrelation(sessionId, correlationId) {
 
 /**
  * Drain pending decrements for the given correlation ids, scoped to one
- * sessionId. Stale entries (>60s) silently dropped. Returns the count
- * applied.
+ * sessionId. Stale entries (>60s) silently dropped.
+ *
+ * PLAN-D 2026-08-23 (D4) — returns `{count, consumedIds}` instead of the bare
+ * count: the rejection path retains exact correlation IDs, and reducing them
+ * to arithmetic here is what made it impossible to remove the exact rejected
+ * fast obligations before twin collapse in `startAudioFinalizer`.
  *
  * Called by `startAudioFinalizer`. Not exported for general use — keep
  * the lifecycle contained.
  */
 function consumePendingDecrements(sessionId, correlationIds) {
-  if (!correlationIds || correlationIds.size === 0) return 0;
+  const consumedIds = new Set();
+  if (!correlationIds || correlationIds.size === 0) return { count: 0, consumedIds };
   const now = Date.now();
-  let count = 0;
   for (const cid of correlationIds) {
     const entry = pendingAckDecrements.get(cid);
     if (!entry) continue;
@@ -684,10 +986,10 @@ function consumePendingDecrements(sessionId, correlationIds) {
       pendingAckDecrements.delete(cid);
       continue;
     }
-    count += 1;
+    consumedIds.add(cid);
     pendingAckDecrements.delete(cid);
   }
-  return count;
+  return { count: consumedIds.size, consumedIds };
 }
 
 /**
