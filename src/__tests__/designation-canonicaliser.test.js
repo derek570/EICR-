@@ -20,7 +20,13 @@ import {
 } from '../extraction/designation-canonicaliser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const VECTORS_PATH = path.join(__dirname, '..', '..', 'config', 'designation-canonical-vectors.json');
+const VECTORS_PATH = path.join(
+  __dirname,
+  '..',
+  '..',
+  'config',
+  'designation-canonical-vectors.json'
+);
 
 describe('canonicaliseCircuitDesignation — golden vectors (cross-platform contract)', () => {
   const { vectors } = JSON.parse(readFileSync(VECTORS_PATH, 'utf8'));
@@ -58,6 +64,15 @@ describe('canonicaliseCircuitDesignation — behaviour beyond the vector table',
   it('does not treat hyphen as a token delimiter (no regex \\b shortcut)', () => {
     expect(canonicaliseCircuitDesignation('Sub-circuit monitor')).toBe('Sub-circuit monitor');
     expect(canonicaliseCircuitDesignation('tester short-circuit')).toBe('tester short-circuit');
+  });
+
+  it('drops a standalone dash ONLY when orphaned by a banned-edge removal (Codex cycle 1)', () => {
+    expect(canonicaliseCircuitDesignation('Circuit - Upstairs lighting')).toBe('Upstairs lighting');
+    expect(canonicaliseCircuitDesignation('Upstairs lighting - Circuit')).toBe('Upstairs lighting');
+    // No removal at the edge → the dash is content and stays.
+    expect(canonicaliseCircuitDesignation('- Upstairs lighting')).toBe('- Upstairs lighting');
+    // Banned token + orphaned dash only → banned-only semantics ('').
+    expect(canonicaliseCircuitDesignation('Circuit -')).toBe('');
   });
 });
 

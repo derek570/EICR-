@@ -11,9 +11,9 @@
 # Eight minutes later that stored suffix defeated BOTH passes of the
 # dialogue-engine designation matcher at IR-script entry, producing a
 # "Which circuit is the insulation resistance for?" ask with no structural
-# gap (feedback id 131 — that ingress-side half is frozen separately as the
-# unsupported_pending sibling fixture, corpus id frc_db9ad2a8…; the entry
-# runs pre-harness in sonnet-stream, outside the v1 replay boundary).
+# gap (feedback id 131 — that ingress-side half is locked separately by the
+# EXECUTABLE sibling fixture frc_db9ad2a8…, which drives the REAL pre-harness
+# entry path through the runner's dialogue_ingress lane).
 #
 # RECORDED-lane semantics: the model response is frozen (the create_circuit
 # call carrying the dirty dictation-faithful designation — unchanged by the

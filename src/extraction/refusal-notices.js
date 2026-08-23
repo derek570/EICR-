@@ -1007,10 +1007,32 @@ export const PARTIAL_FAILURE_FAMILIES = Object.freeze({
     (t) =>
       `No circuit matched ${t.subjectLower}, so ${t.fieldLabel} didn't go in for ${t.pronoun}.`,
   ]),
+  // PLAN-B designation hygiene (2026-08-23, Codex diff-review sanctioned
+  // deviation — Audio-First: a rejected write must never be silent even in a
+  // MIXED turn where a sibling success stands the catch-all down). The
+  // dispatcher rejected a designation because it was nothing but the word
+  // "circuit"/"circuits"; every variant invites the descriptive name, which
+  // is the actual fix. The dictated text itself never reaches these
+  // templates (PII discipline — designations are free text).
+  invalid_designation: Object.freeze([
+    (t) =>
+      `No ${t.fieldLabel} went in for ${t.subjectLower} — the name was just the word "circuit". Say the descriptive name on its own.`,
+    (t) =>
+      `${t.subject} ${t.wasWere} named — a bare "circuit" isn't usable as a ${t.fieldLabel}. Tell me what ${t.pronoun} feeds.`,
+    (t) =>
+      `I couldn't take that as the ${t.fieldLabel} for ${t.subjectLower} — "circuit" on its own names nothing. Give the descriptive name.`,
+  ]),
 });
 
-/** The one family a scope-level (ref-less) target may render under. */
-export const PARTIAL_FAILURE_SCOPE_FAMILIES = Object.freeze(new Set(['lim_capability_gated']));
+/**
+ * The families a scope-level (ref-less) target may render under.
+ * PLAN-B: `invalid_designation` joins because a bulk banned-token-only
+ * designation write is refused BEFORE the fan-out — a whole-instruction
+ * refusal, which is the truth "those circuits" tells.
+ */
+export const PARTIAL_FAILURE_SCOPE_FAMILIES = Object.freeze(
+  new Set(['lim_capability_gated', 'invalid_designation'])
+);
 /** The one family a server-owned segment ordinal may render under. */
 export const PARTIAL_FAILURE_ORDINAL_FAMILIES = Object.freeze(new Set(['designation_no_match']));
 
@@ -1214,6 +1236,8 @@ export const PARTIAL_FAILURE_TERMINALS = Object.freeze({
     `Attempt ${n}, and ${t.fieldLabel} for ${t.subjectLower} is still going to a board I'm not on — name the board before the value.`,
   designation_no_match: (t, n) =>
     `That's attempt ${n} — I still can't match ${t.subjectLower}, and ${t.fieldLabel} remains unrecorded for ${t.pronoun}.`,
+  invalid_designation: (t, n) =>
+    `Attempt ${n} — the ${t.fieldLabel} for ${t.subjectLower} still came through as just the word "circuit". Say only the descriptive name.`,
 });
 
 /**

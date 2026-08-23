@@ -76,6 +76,10 @@ import { detectBroadcastIntent } from './dialogue-engine/parsers/circuit-range.j
 // script's hand-duplicated pass-1 designation matcher (see the B3 helper
 // block above findCircuitByDesignation).
 import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
+// PLAN-B B3 Codex cycle-1 #3 — board-scoped circuit walk (see
+// findCircuitByDesignation): sub-board circuits live under composite keys
+// that a naive Object.entries + Number(refKey) walk silently skips.
+import { getCircuitBucket, listCircuitRefsInBoard } from './stage6-multi-board-shape.js';
 
 /**
  * Hard cap on script duration. If the inspector enters the script, walks
@@ -1930,10 +1934,13 @@ function designationMatchEligibility(canonical) {
 }
 
 /**
- * Short-remainder guard (bounded_only tier). The RAW query may match only:
- *   - as a bounded whole-designation reply ("A", "A."), or
- *   - with the token adjacent to an explicit circuit noun ("circuit A",
- *     "the A circuit", "A way").
+ * Short-remainder guard (bounded_only tier). The RAW query may match only
+ * through the CLOSED sanctioned grammar:
+ *   - a bounded whole-designation reply ("A", "A."), or
+ *   - "circuit A", "the A circuit", "A way" — EXACT forms only. The generic
+ *     phrase "a circuit" (Codex cycle-1 #1) must NOT match: an unrestricted
+ *     `A circuit(s)` alternative admitted it, so the trailing-noun form now
+ *     requires the literal "the ... circuit(s)" shape.
  * Fail CLOSED for a bare short token embedded in longer prose — a missed
  * match costs one legitimate ask; a false match mis-files a reading on a
  * legally-significant certificate.
@@ -1943,7 +1950,7 @@ function shortDesignationQueryPermits(normalisedQuery, canonicalToken) {
   if (bounded === canonicalToken) return true;
   const escaped = canonicalToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(
-    `\\bcircuits?\\s+${escaped}\\b|\\b${escaped}\\s+circuits?\\b|\\b${escaped}\\s+way\\b`
+    `\\bcircuits?\\s+${escaped}\\b|\\bthe\\s+${escaped}\\s+circuits?\\b|\\b${escaped}\\s+way\\b`
   ).test(normalisedQuery);
 }
 
@@ -2023,11 +2030,23 @@ function findCircuitByDesignation(session, text) {
   const canonicalQueryRaw = canonicaliseCircuitDesignation(normalised);
   if (typeof canonicalQueryRaw !== 'string' || !canonicalQueryRaw.trim()) return null;
   const canonicalQuery = canonicalQueryRaw.trim();
+  // Codex cycle-1 #2 — classify the canonical QUERY with the SAME tiers as
+  // stored rows: a strict (single-letter/numeric) or short (<3 chars) query
+  // must never enter normal substring comparison in either direction
+  // ("garage".includes("a") would false-match / manufacture ambiguity); it
+  // can only reach strict/short STORED rows through their own guarded
+  // branches below.
+  const queryEligibility = designationMatchEligibility(canonicalQuery);
 
   const circuits = snapshot.circuits;
+  // Codex cycle-1 #3 — board-scoped walk for object-shaped snapshots: the
+  // shared dual-shape helpers resolve the CURRENT board (main = legacy
+  // bare-numeric keys, sub-boards = composite `${board_id}::${ref}` keys),
+  // so a selected sub-board can never match a MAIN-board designation and
+  // misroute the ref. Array-shaped snapshots keep the original walk.
   const entries = Array.isArray(circuits)
     ? circuits.map((c) => [c?.circuit_ref, c])
-    : Object.entries(circuits);
+    : listCircuitRefsInBoard(snapshot).map((ref) => [ref, getCircuitBucket(snapshot, ref)]);
 
   const matches = [];
   for (const [refKey, bucket] of entries) {
@@ -2066,6 +2085,15 @@ function findCircuitByDesignation(session, text) {
       if (hasWholeTokenHit(canonicalQuery, canonDes)) matches.push(ref);
       continue;
     }
+    // Codex cycle-1 #2 — a STRICT canonical query never enters the normal
+    // substring comparison; a SHORT query (<3 chars, e.g. "EV") downgrades
+    // to whole-token comparison (kills "seven".includes("ev") while keeping
+    // a literal short-designation reference working).
+    if (queryEligibility === 'token_boundary') {
+      if (hasWholeTokenHit(canonicalQuery, canonDes)) matches.push(ref);
+      continue;
+    }
+    if (queryEligibility !== 'full') continue;
     // Bidirectional substring — user may say more or less than the
     // canonical designation. Both directions are intentional reference
     // forms ("the downstairs sockets one" or "downstairs" → "downstairs

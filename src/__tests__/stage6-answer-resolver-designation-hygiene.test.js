@@ -211,6 +211,91 @@ describe.each(CENSUS_SHAPES)('resolveCircuitAnswer over %s', (_shapeName, shape)
       expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
     });
   });
+
+  describe('Codex cycle-1 guards', () => {
+    const STRICT_CENSUS = shape([
+      { circuit_ref: 5, circuit_designation: 'Circuit A' },
+      { circuit_ref: 6, circuit_designation: 'Garage' },
+    ]);
+
+    test('#1 — generic "a circuit" / "for a circuit" match NOTHING (escalate)', () => {
+      for (const reply of ['a circuit', 'for a circuit']) {
+        const verdict = resolveCircuitAnswer({
+          userText: reply,
+          pendingWrite: PENDING,
+          availableCircuits: STRICT_CENSUS,
+        });
+        expect(verdict.kind).toBe('escalate');
+      }
+    });
+
+    test('#2 — bounded "A" resolves Circuit A uniquely, never ambiguous with Garage', () => {
+      const verdict = resolveCircuitAnswer({
+        userText: 'A',
+        pendingWrite: PENDING,
+        availableCircuits: STRICT_CENSUS,
+      });
+      expect(verdict.kind).toBe('auto_resolve');
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 5 })]);
+    });
+
+    test('#2 — "the A circuit" resolves Circuit A uniquely', () => {
+      const verdict = resolveCircuitAnswer({
+        userText: 'the A circuit',
+        pendingWrite: PENDING,
+        availableCircuits: STRICT_CENSUS,
+      });
+      expect(verdict.kind).toBe('auto_resolve');
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 5 })]);
+    });
+
+    const COLLISION_CENSUS = shape([
+      { circuit_ref: 1, circuit_designation: 'Upstairs lighting circuit' },
+      { circuit_ref: 2, circuit_designation: 'Upstairs lighting' },
+      { circuit_ref: 3, circuit_designation: 'Smoke alarm' },
+    ]);
+
+    test('#4 — raw-exact never defeats canonical ambiguity (scalar, dirty AND clean replies)', () => {
+      for (const reply of ['upstairs lighting circuit', 'upstairs lighting']) {
+        const verdict = resolveCircuitAnswer({
+          userText: reply,
+          pendingWrite: PENDING,
+          availableCircuits: COLLISION_CENSUS,
+        });
+        expect(verdict.kind).toBe('escalate');
+        expect(verdict.parsed_hint).toMatch(/ambiguous_designation_match:1,2/);
+      }
+    });
+
+    test('#4 — raw-exact never defeats canonical ambiguity (multi-description)', () => {
+      const verdict = resolveCircuitAnswer({
+        userText: 'upstairs lighting circuit and the smoke alarm',
+        pendingWrite: PENDING,
+        availableCircuits: COLLISION_CENSUS,
+      });
+      // The colliding span must become an ask (candidates 1,2), never a
+      // silent write to either colliding row; the unambiguous smoke-alarm
+      // span still resolves.
+      expect(verdict.kind).toBe('partial_resolve');
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
+      expect(verdict.unresolved).toEqual([
+        expect.objectContaining({ disposition: 'ask', candidates: [1, 2] }),
+      ]);
+    });
+
+    test('collision guard leaves a unique dirty designation resolving (no false ambiguity)', () => {
+      const verdict = resolveCircuitAnswer({
+        userText: 'upstairs lighting circuit',
+        pendingWrite: PENDING,
+        availableCircuits: shape([
+          { circuit_ref: 1, circuit_designation: 'Upstairs lighting circuit' },
+          { circuit_ref: 3, circuit_designation: 'Smoke alarm' },
+        ]),
+      });
+      expect(verdict.kind).toBe('auto_resolve');
+      expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 1 })]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

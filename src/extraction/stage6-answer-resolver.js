@@ -323,19 +323,33 @@ const CANCEL_PHRASES = [
 // (hyphen deliberately absent there: "Short-circuit" is ONE token).
 const DESIGNATION_TOKEN_DELIMITER_RE = /[\s.,!?;:'"()[\]]+/;
 
+/**
+ * Tier classifier shared by BOTH sides of every designation comparison
+ * (Codex cycle-1 #2): stored rows via computeDesignationMatchInfo, and the
+ * canonical QUERY at each lane's entry — a strict (single-letter /
+ * numeric-only) or short (<3 chars) query must never enter normal substring
+ * comparison in either direction ("garage".includes("a") would false-match
+ * or manufacture ambiguity).
+ */
+function classifyCanonicalDesignation(canonical) {
+  const tokens = canonical.toLowerCase().split(DESIGNATION_TOKEN_DELIMITER_RE).filter(Boolean);
+  if (tokens.length === 0) return 'ineligible';
+  if (tokens.length === 1 && (/^[a-z]$/.test(tokens[0]) || /^[0-9]+$/.test(tokens[0]))) {
+    return 'bounded_only';
+  }
+  if (canonical.length < 3) return 'token_boundary';
+  return 'full';
+}
+
 function computeDesignationMatchInfo(rawDesignation) {
   const raw = typeof rawDesignation === 'string' ? rawDesignation : String(rawDesignation ?? '');
   if (!raw.trim()) return { value: '', eligibility: 'ineligible' };
   const canonicalRaw = canonicaliseCircuitDesignation(raw);
   const canonical = typeof canonicalRaw === 'string' ? canonicalRaw.trim() : '';
   if (!canonical) return { value: '', eligibility: 'ineligible' };
-  const tokens = canonical.toLowerCase().split(DESIGNATION_TOKEN_DELIMITER_RE).filter(Boolean);
-  if (tokens.length === 0) return { value: '', eligibility: 'ineligible' };
-  if (tokens.length === 1 && (/^[a-z]$/.test(tokens[0]) || /^[0-9]+$/.test(tokens[0]))) {
-    return { value: canonical, eligibility: 'bounded_only' };
-  }
-  if (canonical.length < 3) return { value: canonical, eligibility: 'token_boundary' };
-  return { value: canonical, eligibility: 'full' };
+  const eligibility = classifyCanonicalDesignation(canonical);
+  if (eligibility === 'ineligible') return { value: '', eligibility: 'ineligible' };
+  return { value: canonical, eligibility };
 }
 
 /**
@@ -392,6 +406,29 @@ function designationMatchKeys(circuit, keyFn) {
     if (valueKey) keys.add(valueKey);
   }
   return [...keys];
+}
+
+/**
+ * Codex cycle-1 #1 — a STRICT short key (single letter or numeric-only) may
+ * be admitted by an exact lane ONLY when the reply text is one of the CLOSED
+ * sanctioned raw forms: a bounded whole-designation reply ("A", "A."),
+ * "circuit A", "the A circuit", or "A way". The generic phrase "a circuit"
+ * must NEVER reduce to key "a" — the trailing-noun form requires the literal
+ * "the ... circuit(s)" shape. Fail CLOSED for a bare short token embedded in
+ * longer prose.
+ */
+function isStrictShortKey(key) {
+  return /^[a-z]$/.test(key) || /^[0-9]+$/.test(key);
+}
+
+function strictShortReplyPermits(text, token) {
+  const lower = String(text ?? '').toLowerCase();
+  const bounded = stripPunct(lower);
+  if (bounded === token) return true;
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `\\bcircuits?\\s+${escaped}\\b|\\bthe\\s+${escaped}\\s+circuits?\\b|\\b${escaped}\\s+way\\b`
+  ).test(lower);
 }
 
 /**
@@ -488,6 +525,10 @@ function matchDesignation(cleaned, circuits) {
     return { kind: 'no_match', circuitRefs: [] };
   }
   const lc = cleaned;
+  // Codex cycle-1 #2 — classify the QUERY with the same tiers as stored
+  // rows: a strict/short cleaned reply never enters normal substring
+  // comparison in either direction.
+  const queryClass = classifyCanonicalDesignation(lc);
   const exact = [];
   const substr = [];
   for (const c of circuits) {
@@ -515,6 +556,16 @@ function matchDesignation(cleaned, circuits) {
       continue;
     }
     if (info.eligibility !== 'full') continue; // bounded_only: exact-equality only
+    // Codex cycle-1 #2 — a STRICT query (single letter/numeric) never
+    // reaches the substring lane; a SHORT query (<3 chars, e.g. "EV")
+    // downgrades to whole-token comparison, which keeps the locked P3-A
+    // "EV" → "EV charger" reference working while killing character-level
+    // false hits ("seven".includes("ev")).
+    if (queryClass === 'token_boundary') {
+      if (hasWholeTokenHit(lc, desig)) substr.push(ref);
+      continue;
+    }
+    if (queryClass !== 'full') continue;
     if (desig.includes(lc) || lc.includes(desig)) {
       substr.push(ref);
     }
@@ -593,6 +644,9 @@ function matchQuantifiedDesignations(spokenSpan, circuits) {
   }
   const canonicalSpoken = canonicalSeparatorDesignation(spokenSpan);
   const spokenHasSeparator = hasEnumeratedSeparator(spokenSpan);
+  // Codex cycle-1 #2 — a strict/short canonical spoken span never enters the
+  // substring branch (exact whole-span equality remains available).
+  const spokenClass = classifyCanonicalDesignation(canonicalSpoken);
   const exact = [];
   const substring = [];
   for (const circuit of circuits) {
@@ -613,7 +667,13 @@ function matchQuantifiedDesignations(spokenSpan, circuits) {
     if (!Number.isInteger(ref)) continue;
     if (canonicalDesignation === canonicalSpoken) {
       exact.push(ref);
-    } else if (info.eligibility === 'full' && canonicalDesignation.includes(canonicalSpoken)) {
+    } else if (
+      info.eligibility === 'full' &&
+      (spokenClass === 'full'
+        ? canonicalDesignation.includes(canonicalSpoken)
+        : spokenClass === 'token_boundary' &&
+          hasWholeTokenHit(canonicalSpoken, canonicalDesignation))
+    ) {
       // A separator-bearing designation is one server-owned target, not a
       // bag of independently claimable components. Let its raw/exact whole
       // form win in the whole-designation pass, but do not let a quantified
@@ -1141,6 +1201,12 @@ function matchCanonicalExactDesignation(text, circuits) {
   if (!canonical || !Array.isArray(circuits)) {
     return { kind: 'no_match', circuitRefs: [] };
   }
+  // Codex cycle-1 #1 — stop-word stripping can reduce "b circuit" to the
+  // strict key "b"; admit a strict reply key only via the sanctioned closed
+  // raw forms.
+  if (isStrictShortKey(canonical) && !strictShortReplyPermits(text, canonical)) {
+    return { kind: 'no_match', circuitRefs: [] };
+  }
   const refs = [];
   for (const circuit of circuits) {
     // PLAN-B B3 — per-row keys: raw designation + canonical value for
@@ -1224,12 +1290,18 @@ function matchBoundedRawExactDesignation(text, circuits) {
 
   const refs = [];
   for (const circuit of circuits) {
-    // PLAN-B B3 — the bounded candidates are wrapper-stripped WHOLE replies
-    // ("the A circuit" → "a"), so matching a short canonical remainder here
-    // is exactly the permitted bounded/circuit-noun-adjacent form. Ineligible
-    // rows expose no keys; numeric-only remainders keep raw-designation-only.
+    // PLAN-B B3 — ineligible rows expose no keys; numeric-only remainders
+    // keep raw-designation-only keys. Codex cycle-1 #1: the variant stripper
+    // reduces the GENERIC phrase "a circuit" to candidate "a" too, so a
+    // STRICT short key ("a", "7") is admitted only when the ORIGINAL reply
+    // is one of the sanctioned closed raw forms ("A"/"A.", "circuit A",
+    // "the A circuit", "A way") — never a bare article + noun.
     const keys = designationMatchKeys(circuit, canonicalRawSeparatorDesignation);
-    if (!keys.some((key) => candidateKeys.has(key))) continue;
+    const admitted = keys.some(
+      (key) =>
+        candidateKeys.has(key) && (!isStrictShortKey(key) || strictShortReplyPermits(text, key))
+    );
+    if (!admitted) continue;
     const ref =
       typeof circuit?.circuit_ref === 'number'
         ? circuit.circuit_ref
@@ -1242,10 +1314,56 @@ function matchBoundedRawExactDesignation(text, circuits) {
   return { kind: 'no_match', circuitRefs: [] };
 }
 
+/**
+ * Codex cycle-1 #4 — raw-exact priority must not defeat canonical ambiguity.
+ * Census rows "Upstairs lighting circuit" and "Upstairs lighting" share ONE
+ * canonical key (rename/bulk deliberately permit such collisions), so a
+ * reply "upstairs lighting circuit" raw-matching the first must NOT silently
+ * auto-resolve: raw priority holds ONLY while the raw winner's canonical
+ * form is unique among eligible rows; otherwise the union of colliding rows
+ * is returned as ambiguous (ask).
+ */
+function guardCanonicalExactCollision(match, circuits) {
+  if (match.kind !== 'exact' || !Array.isArray(circuits)) return match;
+  const winnerRef = match.circuitRefs[0];
+  let winnerKey = null;
+  for (const circuit of circuits) {
+    const ref =
+      typeof circuit?.circuit_ref === 'number'
+        ? circuit.circuit_ref
+        : Number.parseInt(String(circuit?.circuit_ref), 10);
+    if (ref !== winnerRef) continue;
+    const info = designationMatchInfo(circuit);
+    winnerKey =
+      info.eligibility === 'ineligible' ? null : canonicalRawSeparatorDesignation(info.value);
+    break;
+  }
+  if (!winnerKey) return match;
+  const refs = new Set([winnerRef]);
+  for (const circuit of circuits) {
+    const info = designationMatchInfo(circuit);
+    if (info.eligibility === 'ineligible') continue;
+    const ref =
+      typeof circuit?.circuit_ref === 'number'
+        ? circuit.circuit_ref
+        : Number.parseInt(String(circuit?.circuit_ref), 10);
+    if (!Number.isInteger(ref) || refs.has(ref)) continue;
+    if (canonicalRawSeparatorDesignation(info.value) === winnerKey) refs.add(ref);
+  }
+  if (refs.size === 1) return match;
+  return { kind: 'ambiguous', circuitRefs: [...refs].sort((a, b) => a - b) };
+}
+
 function matchExactDesignationWithRawPriority(text, circuits) {
-  const rawMatch = matchRawCanonicalExactDesignation(text, circuits);
+  const rawMatch = guardCanonicalExactCollision(
+    matchRawCanonicalExactDesignation(text, circuits),
+    circuits
+  );
   if (rawMatch.kind !== 'no_match') return rawMatch;
-  const boundedRawMatch = matchBoundedRawExactDesignation(text, circuits);
+  const boundedRawMatch = guardCanonicalExactCollision(
+    matchBoundedRawExactDesignation(text, circuits),
+    circuits
+  );
   return boundedRawMatch.kind === 'no_match'
     ? matchCanonicalExactDesignation(text, circuits)
     : boundedRawMatch;

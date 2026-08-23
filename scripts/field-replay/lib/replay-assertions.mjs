@@ -148,7 +148,7 @@ export function matchAudibleOutputs(expectedOutputs, { result, wsFrames }) {
  *  Fail-closed: an operation kind the oracle cannot faithfully verify latches
  *  an INFRASTRUCTURE outcome (which can never satisfy required_green OR an
  *  expected_red) rather than silently passing an un-checked expectation. */
-export function matchOperations(expectedOps, { result, toClearWireField, wsFrames, readCircuitDesignation }) {
+export function matchOperations(expectedOps, { result, toClearWireField, toReadingWireField, wsFrames, logRows, readCircuitDesignation, readCircuitField }) {
   const failures = [];
   const readings = result?.extracted_readings ?? [];
   const observations = [...(result?.observations ?? []), ...(result?.observationUpdates ?? [])];
@@ -212,6 +212,112 @@ export function matchOperations(expectedOps, { result, toClearWireField, wsFrame
       }
       continue;
     }
+    // PLAN-B (id 131, Codex pre-merge) — the ATOMIC dialogue-script ENTRY
+    // resolution joint oracle, paired with the runner's `dialogue_ingress`
+    // lane (which drives the REAL pre-harness processDialogueTurn family
+    // wrapper — the exact function sonnet-stream calls — never a
+    // reimplementation). ONE `script_entry_resolution.<operation_id>`
+    // failure covers every leg:
+    //   (a) the engine's `_entered` log row shows the entry resolved the
+    //       declared circuit BY DESIGNATION (circuit_ref === op.circuit,
+    //       entry_designation_matched === true) — the direct evidence of
+    //       the matcher fix (id 131's defect was circuit_ref:null,
+    //       designation_candidates:[]),
+    //   (b) the dictated value is WRITTEN to authoritative stored state
+    //       (injected readCircuitField — absent → INFRASTRUCTURE),
+    //   (c) the write is EMITTED exactly once on the wire (`extraction`
+    //       frame; field compared via the injected reading-wire mapping
+    //       toReadingWireField, because the engine emit path canonical→
+    //       legacy-renames reading fields — absent → INFRASTRUCTURE),
+    //   (d) ZERO which-circuit asks (`<prefix>-…-which-…` tool_call_id or
+    //       the family's which-circuit question text — the Audio-First §2
+    //       ask-with-no-structural-gap this fixture exists to prevent),
+    //   (e) EXACTLY ONE audible script ask this turn, and it is the
+    //       declared NEXT-slot ask (reason missing_value, context_field =
+    //       next_ask_context_field, context_circuit = op.circuit) — the
+    //       script advanced past the resolved circuit. (The dictated
+    //       value's spoken read-back is the script FINISH summary by
+    //       design — PLAN-A2 script-owned coverage — which lives beyond
+    //       this single-turn fixture's scope.)
+    if (op.kind === 'script_entry_resolution') {
+      const id = `script_entry_resolution.${op.operation_id}`;
+      const FAMILY_ORACLE = {
+        insulation_resistance: {
+          askPrefix: 'srv-irs',
+          enteredEvent: 'stage6.insulation_resistance_script_entered',
+          whichQuestion: 'which circuit',
+        },
+      };
+      const fam = FAMILY_ORACLE[op.family];
+      if (!fam) {
+        failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: `script_entry_resolution oracle has no family table entry for '${op.family}'` });
+        continue;
+      }
+      if (typeof readCircuitField !== 'function' || typeof toReadingWireField !== 'function') {
+        failures.push({ id, outcome: OUTCOME.INFRASTRUCTURE, message: 'script_entry_resolution oracle needs the injected readCircuitField + toReadingWireField — unavailable' });
+        continue;
+      }
+      const problems = [];
+      // (a) — entry resolution evidence from the REAL engine log row.
+      const enteredRows = (logRows ?? []).filter((r) => r.name === fam.enteredEvent);
+      if (enteredRows.length === 0) {
+        problems.push(`no ${fam.enteredEvent} row — the script never entered`);
+      } else {
+        const row = enteredRows[enteredRows.length - 1];
+        if (norm(row.meta?.circuit_ref) !== norm(op.circuit)) {
+          problems.push(`entry resolved circuit_ref ${JSON.stringify(row.meta?.circuit_ref ?? null)}, expected ${op.circuit}`);
+        }
+        if (row.meta?.entry_designation_matched !== true) {
+          problems.push('entry_designation_matched is not true — the circuit was not resolved by designation at entry');
+        }
+      }
+      // (b) — authoritative stored state.
+      const stored = readCircuitField(op.circuit, op.board_id ?? null, op.field);
+      if (norm(stored) !== norm(op.value)) {
+        problems.push(`stored ${op.field} for c${op.circuit} is ${JSON.stringify(stored ?? null)}, expected ${JSON.stringify(op.value)}`);
+      }
+      // (c) — the wire write, exactly once (legacy wire field name).
+      const wireField = toReadingWireField(op.field);
+      const wireHits = (wsFrames ?? [])
+        .filter((f) => f?.type === 'extraction')
+        .flatMap((f) => f.result?.readings ?? [])
+        .filter(
+          // WIRE name ONLY (no canonical-name fallback): the engine emit path
+          // always applies the canonical→legacy rename, so a canonical name
+          // on the wire would itself be a wire-contract regression — accepting
+          // it here would silently green exactly that bug.
+          (r) =>
+            r.field === wireField &&
+            norm(r.circuit) === norm(op.circuit) &&
+            norm(r.value) === norm(op.value),
+        );
+      if (wireHits.length !== 1) {
+        problems.push(`expected exactly one wire extraction of ${wireField} c${op.circuit} = ${JSON.stringify(op.value)}, found ${wireHits.length}`);
+      }
+      // (d) — zero which-circuit asks.
+      const asks = askStartedFrames(wsFrames ?? []);
+      const whichAsks = asks.filter(
+        (f) =>
+          (String(f.tool_call_id ?? '').startsWith(`${fam.askPrefix}-`) && String(f.tool_call_id ?? '').includes('-which-')) ||
+          String(f?.question ?? '').toLowerCase().includes(fam.whichQuestion),
+      );
+      if (whichAsks.length > 0) {
+        problems.push(`${whichAsks.length} which-circuit ask(s) fired despite the circuit being named (${JSON.stringify(String(whichAsks[0].question ?? '').slice(0, 60))})`);
+      }
+      // (e) — exactly one audible ask, and it is the declared next-slot ask.
+      if (asks.length !== 1) {
+        problems.push(`expected exactly one audible script ask this turn, found ${asks.length}`);
+      } else {
+        const a = asks[0];
+        if (a.reason !== 'missing_value' || a.context_field !== op.next_ask_context_field || norm(a.context_circuit) !== norm(op.circuit)) {
+          problems.push(`the turn's single ask is not the expected next-slot ask (${op.next_ask_context_field} c${op.circuit}) — got reason=${JSON.stringify(a.reason ?? null)} context_field=${JSON.stringify(a.context_field ?? null)} context_circuit=${JSON.stringify(a.context_circuit ?? null)}`);
+        }
+      }
+      if (problems.length) {
+        failures.push({ id, outcome: OUTCOME.FAIL, message: `script_entry_resolution: ${problems.join('; ')}` });
+      }
+      continue;
+    }
     // PLAN-B (feedback ids 128+131, 2026-08-23) — the ATOMIC designation-
     // hygiene joint oracle. A naive per-concern decomposition (a `reading` op
     // for the projection + an audible-output matcher for the confirmation)
@@ -269,8 +375,14 @@ export function matchOperations(expectedOps, { result, toClearWireField, wsFrame
         problems.push(`designation projection for c${op.circuit} carries ${JSON.stringify(String(d.value))} instead of the cleaned ${JSON.stringify(op.value)}`);
       }
       // (c) — the legacy-shape circuit_updates projection, when present.
+      // Board-scoped when the op declares a board (Codex diff-review: a
+      // multi-board fixture with the SAME ref on two boards must never have
+      // the other board's update inspected — the projection DOES carry the
+      // effective board_id, so the predicate is exact, mirroring the
+      // stored-state reader's board awareness).
       for (const cu of result?.circuit_updates ?? []) {
         if (norm(cu?.circuit) !== norm(op.circuit)) continue;
+        if (op.board_id != null && norm(cu?.board_id ?? null) !== norm(op.board_id)) continue;
         if (cu?.action === 'delete') continue;
         if (String(cu?.designation ?? '') !== op.value) {
           problems.push(`circuit_updates projection for c${op.circuit} carries ${JSON.stringify(String(cu?.designation ?? ''))} instead of the cleaned ${JSON.stringify(op.value)}`);
@@ -282,8 +394,22 @@ export function matchOperations(expectedOps, { result, toClearWireField, wsFrame
         problems.push(`post-turn stored designation for c${op.circuit} is ${JSON.stringify(typeof stored === 'string' ? stored : null)}, expected ${JSON.stringify(op.value)}`);
       }
       // (e) — exactly one state-change confirmation, byte-exact spoken text.
+      // Board-scoped when the op declares a board (Codex diff-review: same
+      // hazard as leg (c) — same ref on two boards must not double-count, and
+      // a same-designation twin on the OTHER board must not satisfy the
+      // count/text by accident). NOTE fail-closed asymmetry: today's bundler
+      // emits circuit_op confirmations WITHOUT a board_id key, so a
+      // board-scoped op's exact predicate (`null !== declared`) excludes them
+      // and the count leg fails LOUD — a board-scoped hygiene fixture
+      // therefore requires board-bearing confirmations (bundler enrichment)
+      // before it can go green. That is deliberate: a loud false-FAIL over a
+      // silent cross-board false-PASS. Unscoped ops (board_id omitted/null)
+      // are unchanged.
       const opConfs = audibleConfirmations(result).filter(
-        (c) => c.field === 'circuit_op' && norm(c.circuit) === norm(op.circuit),
+        (c) =>
+          c.field === 'circuit_op' &&
+          norm(c.circuit) === norm(op.circuit) &&
+          (op.board_id == null || norm(c.board_id ?? null) === norm(op.board_id)),
       );
       if (opConfs.length !== 1) {
         problems.push(`expected exactly one circuit_op confirmation for c${op.circuit}, found ${opConfs.length}`);

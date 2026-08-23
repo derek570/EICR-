@@ -432,6 +432,16 @@ export async function dispatchRecordReading(call, ctx) {
       message:
         'A circuit designation cannot be just the word "circuit"/"circuits". Provide the descriptive name only (e.g. "Upstairs Lighting"), or ask the inspector for the name.',
     };
+    // Codex diff-review sanctioned deviation (Audio-First) — a MIXED turn's
+    // sibling success would otherwise stand the catch-all down and this
+    // rejection would be silent. Same family mechanics as circuit_not_found.
+    stageCircuitPartialFailure(ctx, {
+      reason: 'invalid_designation',
+      field: input.field,
+      circuit: input.circuit,
+      boardId: input.board_id,
+      producer: 'record_reading_invalid_designation',
+    });
     logToolCall(logger, {
       sessionId: session.sessionId,
       turnId,
@@ -1227,6 +1237,15 @@ export async function dispatchCreateCircuit(call, ctx) {
   // and speech must never disagree).
   if (typeof input.designation === 'string' && input.designation.length > 0) {
     if (designationCanonicalisesToEmpty(input.designation)) {
+      // Codex diff-review sanctioned deviation (Audio-First) — see the
+      // record_reading gate; mixed-turn rejections must stay audible.
+      stageCircuitPartialFailure(ctx, {
+        reason: 'invalid_designation',
+        field: 'circuit_designation',
+        circuit: input.circuit_ref,
+        boardId: input.board_id,
+        producer: 'create_circuit_invalid_designation',
+      });
       logToolCall(logger, {
         sessionId: session.sessionId,
         turnId,
@@ -1503,6 +1522,15 @@ export async function dispatchRenameCircuit(call, ctx) {
   // handling. See the plan's cross-write collision follow-up.
   if (typeof input.designation === 'string' && input.designation.length > 0) {
     if (designationCanonicalisesToEmpty(input.designation)) {
+      // Codex diff-review sanctioned deviation (Audio-First) — see the
+      // record_reading gate; mixed-turn rejections must stay audible.
+      stageCircuitPartialFailure(ctx, {
+        reason: 'invalid_designation',
+        field: 'circuit_designation',
+        circuit: input.circuit_ref,
+        boardId: input.board_id,
+        producer: 'rename_circuit_invalid_designation',
+      });
       logToolCall(logger, {
         sessionId: session.sessionId,
         turnId,
@@ -2518,6 +2546,14 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       message:
         'A circuit designation cannot be just the word "circuit"/"circuits". Provide the descriptive name only (e.g. "Upstairs Lighting"), or ask the inspector for the name.',
     };
+    // Codex diff-review sanctioned deviation (Audio-First) — whole-scope
+    // refusal before the fan-out, so a scope-level notice tells the truth.
+    stageScopePartialFailure(ctx, {
+      reason: 'invalid_designation',
+      field: 'circuit_designation',
+      boardId: input.board_id,
+      producer: 'set_field_for_all_circuits_invalid_designation',
+    });
     logToolCall(logger, {
       sessionId: session.sessionId,
       turnId,

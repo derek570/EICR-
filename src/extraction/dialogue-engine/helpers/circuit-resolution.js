@@ -298,6 +298,22 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
   // Tokenised canonical query for the short-tier token-boundary rule.
   const canonQueryTokens = canonQuery.split(' ');
 
+  // PLAN-B Codex-review cycle 1 — QUERY-side tier classification. The
+  // short-remainder guard on the STORED side alone leaves a hole: a
+  // canonicalised query like "the A circuit" → "a" would enter the NORMAL
+  // character-substring comparison and match any designation CONTAINING
+  // "a" ("garage") — a false match/false ambiguity. A strict-class query
+  // (single letter or numeric-only) or a short query (< 3 chars) never
+  // enters character-substring comparison in either direction; against
+  // NORMAL rows it may match only as a whole-token run inside the stored
+  // canonical token sequence (which keeps today's legitimate reverse
+  // matches — reply "56" against stored "56 sockets" — alive), and pass 2
+  // is skipped entirely for it (a one-token fold containment would
+  // replicate the same hazard).
+  let queryTier = 'normal';
+  if (/^[\p{L}]$/u.test(canonQuery) || /^[\p{N}]+$/u.test(canonQuery)) queryTier = 'strict';
+  else if (canonQuery.length < 3) queryTier = 'short';
+
   for (const row of rows) {
     let hit = false;
     if (row.tier === 'strict') {
@@ -322,6 +338,11 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
       // contiguous token run of the canonical query — never a raw
       // character-level substring.
       hit = findTokenRun(canonQueryTokens, row.canonDes.split(' ')) !== -1;
+    } else if (queryTier !== 'normal') {
+      // Strict/short QUERY vs a normal row: whole-token-run containment of
+      // the query inside the stored canonical tokens only (see the
+      // query-tier note above) — never character substring.
+      hit = findTokenRun(row.canonDes.split(' '), canonQueryTokens) !== -1;
     } else {
       hit = canonQuery.includes(row.canonDes) || row.canonDes.includes(canonQuery);
     }
@@ -349,7 +370,11 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
   // and without the span the mask would blank the ENTIRE reply and drop a
   // co-dictated voltage).
   const spansByRef = new Map();
-  if ((matches.length === 0 || pass1HasCanonicalOnlyAdmission) && rows.length > 0) {
+  if (
+    (matches.length === 0 || pass1HasCanonicalOnlyAdmission) &&
+    rows.length > 0 &&
+    queryTier === 'normal' // strict/short queries never enter fold containment
+  ) {
     let userRecords = tokeniseWithOffsets(text);
     // Drop LEADING filler records (token-level analogue of
     // stripDesignationFiller — drop records, never rewrite).

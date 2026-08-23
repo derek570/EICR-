@@ -103,5 +103,69 @@ describe.each(TWINS)(
       });
       expect(find(session, 'upstairs lighting')).toBeNull();
     });
+
+    describe('Codex cycle-1 #1 — closed sanctioned grammar only', () => {
+      test('generic "a circuit" / "for a circuit" never match stored "Circuit A"', () => {
+        const session = sessionWith({ 3: 'Circuit A' });
+        expect(find(session, 'a circuit')).toBeNull();
+        expect(find(session, 'for a circuit')).toBeNull();
+      });
+    });
+
+    describe('Codex cycle-1 #2 — query-side short-token classification', () => {
+      const session = () => sessionWith({ 3: 'Circuit A', 4: 'Garage' });
+
+      test('"the A circuit" resolves Circuit A uniquely — never ambiguous with Garage', () => {
+        expect(find(session(), 'the a circuit')).toBe(3);
+      });
+
+      test('bounded "A" resolves uniquely — the strict query never substring-hits "Garage"', () => {
+        expect(find(session(), 'a')).toBe(3);
+      });
+
+      test('"a circuit" matches NOTHING', () => {
+        expect(find(session(), 'a circuit')).toBeNull();
+      });
+
+      test('short query "EV" whole-token-matches "EV charger" but never "Seven bells"', () => {
+        const s = sessionWith({ 1: 'EV charger', 2: 'Seven bells' });
+        expect(find(s, 'ev')).toBe(1);
+      });
+    });
+
+    describe('Codex cycle-1 #3 — board-scoped circuit walk', () => {
+      const multiBoardSession = () => ({
+        stateSnapshot: {
+          boards: [
+            { id: 'main', board_type: 'main' },
+            { id: 'db2', board_type: 'sub' },
+          ],
+          currentBoardId: 'db2',
+          circuits: {
+            // Main-board legacy bare-numeric key and a sub-board composite
+            // key SHARING ref 2, with different dirty designations.
+            2: { circuit_designation: 'Upstairs lighting circuit' },
+            'db2::2': {
+              board_id: 'db2',
+              circuit: 2,
+              circuit_designation: 'Garage sockets circuit',
+            },
+          },
+        },
+      });
+
+      test('on a sub-board the twin matches the SUB designation and never main’s', () => {
+        const session = multiBoardSession();
+        expect(find(session, 'garage sockets')).toBe(2);
+        expect(find(session, 'upstairs lighting is lim')).toBeNull();
+      });
+
+      test('on the main board the main designation matches and the sub row is invisible', () => {
+        const session = multiBoardSession();
+        session.stateSnapshot.currentBoardId = 'main';
+        expect(find(session, 'upstairs lighting is lim')).toBe(2);
+        expect(find(session, 'garage sockets')).toBeNull();
+      });
+    });
   }
 );

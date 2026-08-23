@@ -96,11 +96,34 @@ export function canonicaliseCircuitDesignation(designation) {
 
   const isBanned = (span) =>
     BANNED_TOKENS.has(designation.slice(span.start, span.end).toLowerCase());
+  // A pure-separator token ("-", "--", "/") holds no letter/digit. It is
+  // dropped ONLY when a banned-token removal has already happened at that
+  // edge (it was the removed token's separator, now orphaned): "Circuit -
+  // Upstairs lighting" → "Upstairs lighting". A dash with no adjacent
+  // banned edge token is content and stays ("- Upstairs" unchanged);
+  // "Short-circuit" is one token (contains letters) and is never touched.
+  const isSeparatorOnly = (span) => !/[\p{L}\p{N}]/u.test(designation.slice(span.start, span.end));
 
   let first = 0;
   let last = spans.length - 1;
-  while (first <= last && isBanned(spans[first])) first++;
-  while (last >= first && isBanned(spans[last])) last--;
+  let removedLeading = false;
+  while (first <= last) {
+    if (isBanned(spans[first])) {
+      first++;
+      removedLeading = true;
+    } else if (removedLeading && isSeparatorOnly(spans[first])) {
+      first++;
+    } else break;
+  }
+  let removedTrailing = false;
+  while (last >= first) {
+    if (isBanned(spans[last])) {
+      last--;
+      removedTrailing = true;
+    } else if (removedTrailing && isSeparatorOnly(spans[last])) {
+      last--;
+    } else break;
+  }
 
   if (first === 0 && last === spans.length - 1) return designation; // nothing removed
   if (first > last) return ''; // every token banned

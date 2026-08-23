@@ -184,6 +184,18 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     expect(result.confirmations).toHaveLength(1);
     expect(result.confirmations[0].text).toBe('Circuit 3 is now the Ring Final');
     expect(result.confirmations[0].field).toBe('circuit_designation');
+    // WIRE SHAPE (Codex cycle-1 #1): EXACTLY the legacy {text, field,
+    // circuit} enumerable keys — value/board metadata rides non-enumerably
+    // for the in-process dedup only and must never serialize.
+    expect(Object.keys(result.confirmations[0])).toEqual(['text', 'field', 'circuit']);
+    const serialized = JSON.parse(JSON.stringify(result.confirmations[0]));
+    expect(serialized).toEqual({
+      text: 'Circuit 3 is now the Ring Final',
+      field: 'circuit_designation',
+      circuit: 3,
+    });
+    // The non-enumerable dedupe metadata is still readable in-process.
+    expect(result.confirmations[0].value).toBe('Ring Final');
 
     // Next-turn snapshot serialization pinned: cleaned value present,
     // banned suffix absent.
@@ -230,6 +242,86 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     ]);
     // Snapshot final state is the LAST operation's value.
     expect(session.stateSnapshot.circuits[4].circuit_designation).toBe('Upstairs Lighting');
+  });
+
+  test('Codex cycle-1 #2: same-circuit ops with the SAME canonical value keep one confirmation PER OPERATION, in op order', async () => {
+    session = makeSession(mode);
+    const result = await runTurn(
+      session,
+      legacyResult({
+        circuit_updates: [
+          { circuit: 4, designation: 'Cooker Circuit', action: 'create' },
+          { circuit: 4, designation: 'Circuit Cooker', action: 'rename' },
+        ],
+      })
+    );
+
+    // Both ops canonicalise to 'Cooker' — a (circuit, value) collapse
+    // would silently drop the second applied operation's confirmation.
+    expect(result.confirmations.map((c) => c.text)).toEqual([
+      'Circuit 4 is now the Cooker',
+      'Circuit 4 is now the Cooker',
+    ]);
+    expect(session.stateSnapshot.circuits[4].circuit_designation).toBe('Cooker');
+  });
+
+  test('Codex cycle-1 #2: identical (circuit, value) ops on main AND a sub-board → two writes + two confirmations', async () => {
+    session = makeSession(mode);
+    session.stateSnapshot.boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'db2', board_type: 'sub', designation: 'DB-2' },
+    ];
+    const result = await runTurn(
+      session,
+      legacyResult({
+        circuit_updates: [
+          { circuit: 2, designation: 'Cooker Circuit', action: 'create' },
+          { circuit: 2, designation: 'Cooker Circuit', action: 'create', board_id: 'db2' },
+        ],
+      })
+    );
+
+    // Two distinct board-scoped writes...
+    expect(session.stateSnapshot.circuits[2].circuit_designation).toBe('Cooker');
+    expect(session.stateSnapshot.circuits['db2::2'].circuit_designation).toBe('Cooker');
+    // ...and two confirmations — a board-blind (ref, value) collapse would
+    // have silently swallowed the sub-board operation's read-back.
+    expect(result.confirmations.map((c) => c.text)).toEqual([
+      'Circuit 2 is now the Cooker',
+      'Circuit 2 is now the Cooker',
+    ]);
+  });
+
+  test('Codex cycle-1 #4: sub-board rename dedupes against ITS board bucket, not the same-numbered main circuit', async () => {
+    session = makeSession(mode);
+    session.stateSnapshot.boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'db2', board_type: 'sub', designation: 'DB-2' },
+    ];
+    // Main and the sub-board SHARE ref 2; main already holds the exact
+    // designation the sub-board rename resolves to. A main-bucket compare
+    // would suppress the confirmation of a real sub-board write.
+    session.stateSnapshot.circuits[2] = { circuit_designation: 'Cooker' };
+    session.stateSnapshot.circuits['db2::2'] = {
+      circuit: 2,
+      board_id: 'db2',
+      circuit_designation: 'Old Name',
+    };
+    const result = await runTurn(
+      session,
+      legacyResult({
+        circuit_updates: [
+          { circuit: 2, designation: 'Cooker Circuit', action: 'rename', board_id: 'db2' },
+        ],
+      })
+    );
+
+    // The mutation applies to the SUB-board bucket; main is untouched.
+    expect(session.stateSnapshot.circuits['db2::2'].circuit_designation).toBe('Cooker');
+    expect(session.stateSnapshot.circuits[2].circuit_designation).toBe('Cooker');
+    // Exactly one confirmation — audible, not silently deduped by main.
+    expect(result.confirmations).toHaveLength(1);
+    expect(result.confirmations[0].text).toBe('Circuit 2 is now the Cooker');
   });
 
   test('two valid operations across BOTH shapes (reading + circuit_updates) each confirm once', async () => {

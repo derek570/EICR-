@@ -116,6 +116,28 @@ describe('short-remainder guard', () => {
     ).toEqual([]);
   });
 
+  test('query-side tier guard: canonical query "a" (from "the A circuit") never substring-matches normal rows', () => {
+    // Codex cycle-1: without query-side classification, canonQuery "a"
+    // character-matches any designation containing "a" ("garage") — a
+    // false ambiguity beside the real "Circuit A".
+    const session = sessionWith({
+      7: { circuit_designation: 'Circuit A' },
+      8: { circuit_designation: 'Garage' },
+    });
+    const r = findCircuitsByDesignation(session, 'the A circuit');
+    expect(r.matched).toBe(7);
+    expect(r.candidates).toEqual([7]);
+  });
+
+  test('strict query still reverse-matches a stored designation as a WHOLE TOKEN ("56" vs "56 sockets")', () => {
+    const session = sessionWith({
+      3: { circuit_designation: '56 sockets' },
+      8: { circuit_designation: 'Garage' },
+    });
+    const r = findCircuitsByDesignation(session, '56');
+    expect(r.candidates).toEqual([3]);
+  });
+
   test('numeric remainder must NOT match a dictated value', () => {
     const session = sessionWith({ 9: { circuit_designation: 'Circuit 500' } });
     expect(findCircuitsByDesignation(session, 'tested at 500 volts').candidates).toEqual([]);

@@ -62,7 +62,7 @@ describe('create_circuit designation hygiene (ingress 1)', () => {
     expect(writes.circuitOps[0].meta.designation).toBe('Upstairs lighting');
   });
 
-  test('banned-token-only designation → invalid_designation reject, snapshot untouched', async () => {
+  test('banned-token-only designation → invalid_designation reject, snapshot untouched, AUDIBLE notice staged', async () => {
     const session = makeSession({ circuits: {} });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -82,6 +82,11 @@ describe('create_circuit designation hygiene (ingress 1)', () => {
     expect(body.error.code).toBe(INVALID_DESIGNATION);
     expect(session.stateSnapshot.circuits[3]).toBeUndefined();
     expect(writes.circuitOps).toHaveLength(0);
+    // Codex-review sanctioned deviation (Audio-First): the rejection stages
+    // a partial-failure notice so a MIXED turn (sibling success standing the
+    // catch-all down) can never leave this rejection silent.
+    expect(writes.partialFailureNotices).toHaveLength(1);
+    expect(writes.partialFailureNotices[0].reason).toBe(INVALID_DESIGNATION);
   });
 
   test("null / empty / whitespace designation keeps today's semantics (no reject)", async () => {
@@ -325,6 +330,8 @@ describe('record_reading(circuit_designation) hygiene (ingress 3, coercion layer
     expect(JSON.parse(result.content).error.code).toBe(INVALID_DESIGNATION);
     expect(session.stateSnapshot.circuits[2].circuit_designation).toBe('Cooker');
     expect(writes.readings.size).toBe(0);
+    expect(writes.partialFailureNotices).toHaveLength(1);
+    expect(writes.partialFailureNotices[0].reason).toBe(INVALID_DESIGNATION);
   });
 });
 
@@ -416,6 +423,9 @@ describe('set_field_for_all_circuits(circuit_designation) hygiene (ingress 4)', 
     expect(session.stateSnapshot.circuits[1].circuit_designation).toBe('a');
     expect(session.stateSnapshot.circuits[2].circuit_designation).toBe('b');
     expect(writes.readings.size).toBe(0);
+    // Scope-level notice (whole fan-out refused before iteration).
+    expect(writes.partialFailureNotices).toHaveLength(1);
+    expect(writes.partialFailureNotices[0].reason).toBe(INVALID_DESIGNATION);
   });
 });
 

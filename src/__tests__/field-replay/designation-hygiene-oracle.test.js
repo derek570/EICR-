@@ -64,6 +64,8 @@ import {
 import { createFilledSlotsShadowLogger } from '../../extraction/stage6-filled-slots-shadow.js';
 import { runShadowHarness } from '../../extraction/stage6-shadow-harness.js';
 import { getCircuitBucket } from '../../extraction/stage6-multi-board-shape.js';
+import { processInsulationResistanceTurn } from '../../extraction/dialogue-engine/index.js';
+import { FIELD_CORRECTIONS } from '../../extraction/field-name-corrections.js';
 
 // Mirrors the CLI's importExtractionModules readCircuitDesignation exactly
 // (transcript-replay-direct-runner.mjs) — both bucket spellings, null board
@@ -73,6 +75,14 @@ const readCircuitDesignation = (session, circuitRef, boardId) => {
   const v = bucket?.circuit_designation ?? bucket?.designation ?? null;
   return typeof v === 'string' ? v : null;
 };
+
+const readCircuitField = (session, circuitRef, boardId, field) => {
+  const bucket = getCircuitBucket(session?.stateSnapshot, Number(circuitRef), boardId ?? null);
+  const v = bucket?.[field];
+  return v == null ? null : String(v);
+};
+
+const toReadingWireField = (raw) => FIELD_CORRECTIONS[raw] ?? raw;
 
 const modules = {
   EICRExtractionSession,
@@ -84,6 +94,9 @@ const modules = {
   createFilledSlotsShadowLogger,
   runShadowHarness,
   readCircuitDesignation,
+  readCircuitField,
+  toReadingWireField,
+  dialogueScriptIngress: { insulation_resistance: processInsulationResistanceTurn },
 };
 
 const FIXTURE_PATH = path.join(
@@ -462,6 +475,278 @@ describe('END-TO-END through the REAL harness (committed fixture, fixed tree)', 
     const fixture = loadCommittedFixture();
     const { readCircuitDesignation: _omit, ...withoutReader } = modules;
     const run = await runFixture({ fixture, modules: withoutReader, wallClockNowMs: Date.now() });
+    expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('infrastructure_error');
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Codex pre-merge additions: schema delimiter parity (item 3), oracle
+// board-scoping (item 2), and the executable id-131 ingress lane (item 1).
+// ───────────────────────────────────────────────────────────────────────────
+
+describe('fixture-schema: banned-edge delimiter parity with the production canonicaliser', () => {
+  test.each([
+    ['comma-joined trailing token', 'lighting,circuit'],
+    ['comma-joined leading token', 'Circuit,lighting'],
+    ['period-joined trailing token', 'lighting.circuit'],
+    ['parenthesised leading token', '(circuit) lighting'],
+    ['bracketed trailing token', 'lighting [circuits]'],
+  ])('rejects dirty expectation the whitespace split used to miss: %s', async (_label, value) => {
+    const res = await validateFixtureDocument(
+      schemaDoc(hygieneOp({ value, confirmation_text_exact: `Circuit 2 is now the ${value}` }))
+    );
+    expect(res.ok).toBe(false);
+    expect(res.errors.map((e) => e.code)).toContain(
+      FIXTURE_ERROR_CODES.DESIGNATION_HYGIENE_BAD_SHAPE
+    );
+  });
+
+  test('hyphen and slash stay NON-delimiters (compounds tokenise whole, matching production)', async () => {
+    for (const value of ['Short-circuit tester', 'Ring/circuit sockets']) {
+      const res = await validateFixtureDocument(
+        schemaDoc(hygieneOp({ value, confirmation_text_exact: `Circuit 2 is now the ${value}` }))
+      );
+      expect(res.errors).toEqual([]);
+    }
+  });
+});
+
+describe('designation_hygiene oracle: board-scoping (same ref on two boards)', () => {
+  // Ref 2 exists on BOTH boards with DISTINCT designations; the op targets
+  // db-1. Every artefact carries its board so the exact predicate can bite.
+  const DB1_CLEAN = 'Garage lighting';
+  function twoBoardCaptured() {
+    return greenCaptured({
+      result: {
+        extracted_readings: [
+          { field: 'designation', circuit: 2, value: CLEAN, board_id: 'main' },
+          { field: 'designation', circuit: 2, value: DB1_CLEAN, board_id: 'db-1' },
+        ],
+        circuit_updates: [
+          { circuit: 2, designation: CLEAN, action: 'create', board_id: 'main' },
+          { circuit: 2, designation: DB1_CLEAN, action: 'create', board_id: 'db-1' },
+        ],
+        confirmations: [
+          {
+            text: `Circuit 2 is now the ${CLEAN}`,
+            field: 'circuit_op',
+            circuit: 2,
+            board_id: 'main',
+          },
+          {
+            text: `Circuit 2 is now the ${DB1_CLEAN}`,
+            field: 'circuit_op',
+            circuit: 2,
+            board_id: 'db-1',
+          },
+        ],
+      },
+      logRows: [
+        { name: 'ios_send_attempt', meta: {} },
+        { name: 'ios_send_attempt', meta: {} },
+      ],
+      readCircuitDesignation: (ref, boardId) => (boardId === 'db-1' ? DB1_CLEAN : CLEAN),
+    });
+  }
+
+  test('a db-1-scoped op inspects ONLY db-1 artefacts — green despite main-board twins', () => {
+    const op = hygieneOp({
+      board_id: 'db-1',
+      value: DB1_CLEAN,
+      confirmation_text_exact: `Circuit 2 is now the ${DB1_CLEAN}`,
+    });
+    const failures = matchOperations([op], twoBoardCaptured());
+    expect(failures).toEqual([]);
+  });
+
+  test('the OTHER board dirty does not leak into a scoped op; a scoped op DOES catch its own board dirty', () => {
+    // main board dirty, db-1 clean → db-1-scoped op stays green.
+    const captured = twoBoardCaptured();
+    captured.result.circuit_updates[0].designation = DIRTY;
+    captured.result.extracted_readings[0].value = DIRTY;
+    captured.result.confirmations[0].text = DIRTY_CONF;
+    const scoped = hygieneOp({
+      board_id: 'db-1',
+      value: DB1_CLEAN,
+      confirmation_text_exact: `Circuit 2 is now the ${DB1_CLEAN}`,
+    });
+    expect(matchOperations([scoped], captured)).toEqual([]);
+    // db-1 itself dirty → the scoped op fails under its single id.
+    const captured2 = twoBoardCaptured();
+    captured2.result.circuit_updates[1].designation = `${DB1_CLEAN} circuit`;
+    const failures = matchOperations([scoped], captured2);
+    expect([...new Set(failures.map((f) => f.id))]).toEqual(['designation_hygiene.op_x']);
+  });
+
+  test('confirmation counting is board-exact for a scoped op (no cross-board double-count)', () => {
+    // Without the predicate BOTH same-ref confirmations would be counted
+    // (count 2 → spurious fail) or a same-text twin could satisfy the wrong
+    // board. With it, exactly db-1's one confirmation matches.
+    const op = hygieneOp({
+      board_id: 'db-1',
+      value: DB1_CLEAN,
+      confirmation_text_exact: `Circuit 2 is now the ${DB1_CLEAN}`,
+    });
+    const captured = twoBoardCaptured();
+    // Same designation on both boards — the classic false-pass shape.
+    captured.result.confirmations[0].text = `Circuit 2 is now the ${DB1_CLEAN}`;
+    const failures = matchOperations([op], captured);
+    // db-1's own confirmation still matches exactly once → no failure from
+    // the count leg (the main twin is excluded by board, not by luck).
+    expect(failures.filter((f) => f.message.includes('exactly one circuit_op'))).toEqual([]);
+  });
+});
+
+describe('script_entry_resolution: schema shape (fail-closed)', () => {
+  function irOp(overrides = {}) {
+    return {
+      operation_id: 'op_ir',
+      kind: 'script_entry_resolution',
+      family: 'insulation_resistance',
+      circuit: 2,
+      field: 'ir_live_live_mohm',
+      value: 'LIM',
+      next_ask_context_field: 'ir_live_earth_mohm',
+      audibility: 'exactly_once',
+      ...overrides,
+    };
+  }
+  function irDoc(op = irOp(), turnOverrides = {}) {
+    return {
+      schema_version: 1,
+      corpus_id: 'frc_00000000000000000000000000000012',
+      purpose: 'regression',
+      gate_state: 'required_green',
+      red_proof_failure_id: `script_entry_resolution.${op.operation_id}`,
+      owner: 'Derek Beckley',
+      initial_state_fidelity: 'hand_authored',
+      job_state: {
+        certificateType: 'eicr',
+        boards: [{ id: 'main', board_type: 'main' }],
+        circuits: [{ number: 2, designation: 'Upstairs lighting circuit' }],
+      },
+      client_capabilities: { value: ['low_conf_readback_v1'], provenance: 'recorded_full' },
+      fallback_to_legacy: { value: false, provenance: 'recorded_full' },
+      turns: [
+        {
+          turn_index: 1,
+          at_ms: 0,
+          transcript: 'insulation resistance for upstairs lighting live to live is LIM.',
+          regex_results: [],
+          confirmations_enabled: { value: true, provenance: 'recorded_full' },
+          in_response_to: { value: false, provenance: 'recorded_full' },
+          ws_mode: 'open',
+          chime_observed: true,
+          dialogue_ingress: { family: 'insulation_resistance' },
+          expected_operations: [op],
+          ...turnOverrides,
+        },
+      ],
+    };
+  }
+
+  test('the COMMITTED id-131 fixture document validates', async () => {
+    const doc = yaml.load(
+      fs.readFileSync(
+        path.join(
+          process.cwd(),
+          'tests/fixtures/field-replay-corpus/frc_db9ad2a81993be17a38cc196c7ac8ec5/fixture.yaml'
+        ),
+        'utf8'
+      )
+    );
+    const res = await validateFixtureDocument(doc);
+    expect(res.errors).toEqual([]);
+  });
+
+  test('a well-formed script_entry_resolution op on a dialogue_ingress turn validates', async () => {
+    const res = await validateFixtureDocument(irDoc());
+    expect(res.errors).toEqual([]);
+  });
+
+  test.each([
+    ['missing family', { family: undefined }],
+    ['missing field', { field: undefined }],
+    ['missing value', { value: undefined }],
+    ['missing next_ask_context_field', { next_ask_context_field: undefined }],
+    ['circuits[] not allowed', { circuits: [2] }],
+    ['null circuit', { circuit: null }],
+    ['state_transition not allowed', { state_transition: 'clear_then_write' }],
+    ['confirmation_text_exact not allowed', { confirmation_text_exact: 'x' }],
+    ['audibility must be exactly_once', { audibility: 'derived_exempt' }],
+  ])('rejects malformed shape: %s', async (_label, overrides) => {
+    const res = await validateFixtureDocument(irDoc(irOp(overrides)));
+    expect(res.ok).toBe(false);
+    expect(res.errors.map((e) => e.code)).toContain(
+      FIXTURE_ERROR_CODES.SCRIPT_ENTRY_RESOLUTION_BAD_SHAPE
+    );
+  });
+
+  test('op family must match the turn dialogue_ingress family', async () => {
+    const doc = irDoc();
+    delete doc.turns[0].dialogue_ingress;
+    const res = await validateFixtureDocument(doc);
+    expect(res.ok).toBe(false);
+    expect(res.errors.map((e) => e.code)).toContain(
+      FIXTURE_ERROR_CODES.SCRIPT_ENTRY_RESOLUTION_BAD_SHAPE
+    );
+  });
+
+  test('a dialogue_ingress turn must not declare model_rounds (the engine consumes the turn)', async () => {
+    const doc = irDoc(irOp(), {
+      model_rounds: [{ stop_reason: 'end_turn', text: '' }],
+    });
+    const res = await validateFixtureDocument(doc);
+    expect(res.ok).toBe(false);
+    expect(res.errors.map((e) => e.code)).toContain(FIXTURE_ERROR_CODES.DIALOGUE_INGRESS_BAD_TURN);
+  });
+
+  test('entry resolution is state-dependent: prohibited under empty_fallback', async () => {
+    const doc = irDoc();
+    doc.initial_state_fidelity = 'empty_fallback';
+    const res = await validateFixtureDocument(doc);
+    expect(res.ok).toBe(false);
+    expect(res.errors.map((e) => e.code)).toContain(
+      FIXTURE_ERROR_CODES.EMPTY_FALLBACK_STATE_ASSERTION
+    );
+  });
+});
+
+describe('END-TO-END: the id-131 fixture through the REAL pre-harness engine (dialogue_ingress lane)', () => {
+  const IR_FIXTURE_PATH = path.join(
+    process.cwd(),
+    'tests/fixtures/field-replay-corpus/frc_db9ad2a81993be17a38cc196c7ac8ec5/fixture.yaml'
+  );
+  const loadIrFixture = () => yaml.load(fs.readFileSync(IR_FIXTURE_PATH, 'utf8'));
+
+  test('frc_db9ad2a8… passes required_green: entry resolves ref 2 through the dirty stored designation', async () => {
+    const fixture = loadIrFixture();
+    const run = await runFixture({ fixture, modules, wallClockNowMs: Date.now() });
+    expect(run.allFailures).toEqual([]);
+    expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('pass');
+  });
+
+  test('a mismatched expectation REDs with EXACTLY the single joint id against real engine output', async () => {
+    const fixture = loadIrFixture();
+    fixture.turns[0].expected_operations[0].value = '299';
+    fixture.turns[0].expected_operations[0].next_ask_context_field = 'ir_test_voltage_v';
+    const run = await runFixture({ fixture, modules, wallClockNowMs: Date.now() });
+    const ids = [...new Set(run.allFailures.map((f) => f.id))];
+    expect(ids).toEqual(['script_entry_resolution.op_ir_entry']);
+    expect(run.allFailures.every((f) => f.outcome === OUTCOME.FAIL)).toBe(true);
+  });
+
+  test('modules without the ingress runner resolve infrastructure_error (fail-closed, never a RED)', async () => {
+    const fixture = loadIrFixture();
+    const { dialogueScriptIngress: _omit, ...withoutIngress } = modules;
+    const run = await runFixture({ fixture, modules: withoutIngress, wallClockNowMs: Date.now() });
+    expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('infrastructure_error');
+  });
+
+  test('modules without readCircuitField/toReadingWireField latch INFRASTRUCTURE on the oracle', async () => {
+    const fixture = loadIrFixture();
+    const { readCircuitField: _a, toReadingWireField: _b, ...without } = modules;
+    const run = await runFixture({ fixture, modules: without, wallClockNowMs: Date.now() });
     expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('infrastructure_error');
   });
 });

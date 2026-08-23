@@ -40,11 +40,14 @@ const FIXTURE_PATH = path.join(
   process.cwd(),
   'tests/fixtures/field-replay-corpus/frc_6600a62a7807c94766e10288526f733d/fixture.yaml'
 );
+const IR_FIXTURE_PATH = path.join(
+  process.cwd(),
+  'tests/fixtures/field-replay-corpus/frc_db9ad2a81993be17a38cc196c7ac8ec5/fixture.yaml'
+);
 
-test('pre-fix tree REDs with EXACTLY red_proof_failure_id designation_hygiene.op_desig_cc', async () => {
-  const { runFixture } = await import('../../../scripts/field-replay/lib/replay-runner-core.mjs');
-  const { evaluateGateState, OUTCOME } =
-    await import('../../../scripts/field-replay/lib/replay-assertions.mjs');
+/** Build the full modules set over the MOCKED canonicaliser graph (all
+ *  dynamic imports resolve after the unstable_mockModule registration). */
+async function buildModules() {
   const [
     { EICRExtractionSession },
     { activeSessions },
@@ -54,6 +57,8 @@ test('pre-fix tree REDs with EXACTLY red_proof_failure_id designation_hygiene.op
     { createFilledSlotsShadowLogger },
     { runShadowHarness },
     { getCircuitBucket },
+    { processInsulationResistanceTurn },
+    { FIELD_CORRECTIONS },
   ] = await Promise.all([
     import('../../extraction/eicr-extraction-session.js'),
     import('../../extraction/active-sessions.js'),
@@ -63,22 +68,49 @@ test('pre-fix tree REDs with EXACTLY red_proof_failure_id designation_hygiene.op
     import('../../extraction/stage6-filled-slots-shadow.js'),
     import('../../extraction/stage6-shadow-harness.js'),
     import('../../extraction/stage6-multi-board-shape.js'),
+    import('../../extraction/dialogue-engine/index.js'),
+    import('../../extraction/field-name-corrections.js'),
   ]);
-  const modules = {
-    EICRExtractionSession,
+  return {
     activeSessions,
-    createPendingAsksRegistry,
-    createAskBudget,
-    snapshotFlagsForSession: vlc.snapshotFlagsForSession,
-    parseVoiceLatencyCapabilities: vlc.parseVoiceLatencyCapabilities,
-    createFilledSlotsShadowLogger,
-    runShadowHarness,
-    readCircuitDesignation: (session, circuitRef, boardId) => {
-      const bucket = getCircuitBucket(session?.stateSnapshot, Number(circuitRef), boardId ?? null);
-      const v = bucket?.circuit_designation ?? bucket?.designation ?? null;
-      return typeof v === 'string' ? v : null;
+    modules: {
+      EICRExtractionSession,
+      activeSessions,
+      createPendingAsksRegistry,
+      createAskBudget,
+      snapshotFlagsForSession: vlc.snapshotFlagsForSession,
+      parseVoiceLatencyCapabilities: vlc.parseVoiceLatencyCapabilities,
+      createFilledSlotsShadowLogger,
+      runShadowHarness,
+      readCircuitDesignation: (session, circuitRef, boardId) => {
+        const bucket = getCircuitBucket(
+          session?.stateSnapshot,
+          Number(circuitRef),
+          boardId ?? null
+        );
+        const v = bucket?.circuit_designation ?? bucket?.designation ?? null;
+        return typeof v === 'string' ? v : null;
+      },
+      readCircuitField: (session, circuitRef, boardId, field) => {
+        const bucket = getCircuitBucket(
+          session?.stateSnapshot,
+          Number(circuitRef),
+          boardId ?? null
+        );
+        const v = bucket?.[field];
+        return v == null ? null : String(v);
+      },
+      toReadingWireField: (raw) => FIELD_CORRECTIONS[raw] ?? raw,
+      dialogueScriptIngress: { insulation_resistance: processInsulationResistanceTurn },
     },
   };
+}
+
+test('pre-fix tree REDs with EXACTLY red_proof_failure_id designation_hygiene.op_desig_cc', async () => {
+  const { runFixture } = await import('../../../scripts/field-replay/lib/replay-runner-core.mjs');
+  const { evaluateGateState, OUTCOME } =
+    await import('../../../scripts/field-replay/lib/replay-assertions.mjs');
+  const { modules, activeSessions } = await buildModules();
 
   const fixture = yaml.load(fs.readFileSync(FIXTURE_PATH, 'utf8'));
   const run = await runFixture({ fixture, modules, wallClockNowMs: Date.now() });
@@ -99,6 +131,48 @@ test('pre-fix tree REDs with EXACTLY red_proof_failure_id designation_hygiene.op
   expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('fail');
   // …and had it been registered expected_red, the same run would have been
   // the RED confirmation — the dual-proof pair the state machine demands.
+  const asRed = {
+    ...fixture,
+    gate_state: 'expected_red',
+    expected_failure_id: fixture.red_proof_failure_id,
+  };
+  expect(evaluateGateState(asRed, run.allFailures).verdict).toBe('pass');
+
+  for (const [id] of activeSessions) {
+    if (String(id).startsWith('frsess_')) activeSessions.delete(id);
+  }
+});
+
+test('pre-fix tree REDs the id-131 ingress fixture with EXACTLY script_entry_resolution.op_ir_entry', async () => {
+  // The identity-mock reverts the shared canonicaliser, which is what B3's
+  // matcher tolerance is built on — findCircuitsByDesignation's canonical
+  // pass collapses to the raw pre-fix comparison, so the seeded dirty
+  // "Upstairs lighting circuit" defeats entry matching exactly as in the
+  // field: circuit_ref null, LIM queued not written, and the which-circuit
+  // ask fires. Every leg of the joint oracle fails under the ONE id — the
+  // executed RED half of the dual-proof required_green registration, run
+  // through the REAL processInsulationResistanceTurn via the ingress lane.
+  const { runFixture } = await import('../../../scripts/field-replay/lib/replay-runner-core.mjs');
+  const { evaluateGateState, OUTCOME } =
+    await import('../../../scripts/field-replay/lib/replay-assertions.mjs');
+  const { modules, activeSessions } = await buildModules();
+
+  const fixture = yaml.load(fs.readFileSync(IR_FIXTURE_PATH, 'utf8'));
+  const run = await runFixture({ fixture, modules, wallClockNowMs: Date.now() });
+
+  const ids = [...new Set(run.allFailures.map((f) => f.id))];
+  expect(ids).toEqual([fixture.red_proof_failure_id]);
+  expect(fixture.red_proof_failure_id).toBe('script_entry_resolution.op_ir_entry');
+  expect(run.allFailures.every((f) => f.outcome === OUTCOME.FAIL)).toBe(true);
+  // The joint message names the defect's every symptom: unresolved entry,
+  // unwritten value, missing wire emission, and the which-circuit ask.
+  const msg = run.allFailures.map((f) => f.message).join('; ');
+  expect(msg).toMatch(/entry resolved circuit_ref|entry_designation_matched/);
+  expect(msg).toMatch(/stored ir_live_live_mohm/);
+  expect(msg).toMatch(/wire extraction/);
+  expect(msg).toMatch(/which-circuit ask/);
+
+  expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('fail');
   const asRed = {
     ...fixture,
     gate_state: 'expected_red',

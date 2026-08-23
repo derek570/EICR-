@@ -266,18 +266,14 @@ export function normaliseLegacyDesignationResult(result, { sessionId = null, log
     });
   }
 
-  // Exact-duplicate collapse: one dictated name that the model emitted as
-  // BOTH a designation reading and a circuit_updates op (same circuit,
-  // same cleaned value) is ONE dictated reading — speaking it twice would
-  // violate Audio-First §1 exactly-once. Distinct values stay separate
-  // (the multi-op same-circuit contract).
-  const seen = new Set();
-  report.designationOps = report.designationOps.filter((op) => {
-    const key = `${op.circuit} ${op.value}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  // NO duplicate collapse (Codex cycle-1 #2): the ledger retains EVERY
+  // surviving operation — one rebuilt confirmation per operation, in
+  // operation order, is the plan contract. Collapsing on (circuit, value)
+  // would silently drop the confirmation of a second applied operation
+  // (create + rename canonicalising to the same value) and, board-blind,
+  // would collapse identical-(ref, value) operations on DIFFERENT boards.
+  // The snapshot confirmation-dedup downstream still suppresses genuine
+  // re-emissions of a value the (board-aware) snapshot already holds.
 
   // Confirmation ownership: with any designation operation present,
   // strip every designation-paired confirmation (both the banned-only
@@ -339,12 +335,31 @@ export function mergeDesignationConfirmations(result, seamReport, { confirmation
     // compares against the right slot.
     const text = buildConfirmationText('circuit_designation', op.value, op.circuit);
     if (typeof text !== 'string' || text.trim().length === 0) continue;
-    result.confirmations.push({
+    // WIRE SHAPE (Codex cycle-1 #1): the legacy confirmation contract is
+    // EXACTLY {text, field, circuit} — projectExtractionResultForWire
+    // passes confirmations through unchanged, so any extra enumerable key
+    // here would be a client-visible wire change (ZERO-wire-change
+    // violation). `value` and `board_id` are still needed by the
+    // board-aware snapshot confirmation-dedup upstream of egress, so they
+    // ride as NON-enumerable properties: readable by in-process property
+    // access, invisible to JSON.stringify and every spread/Object.keys.
+    const confirmation = {
       text,
       field: op.wireField,
       circuit: op.circuit,
+    };
+    Object.defineProperty(confirmation, 'value', {
       value: op.value,
-      ...(op.boardId == null ? {} : { board_id: op.boardId }),
+      enumerable: false,
+      configurable: true,
     });
+    if (op.boardId != null) {
+      Object.defineProperty(confirmation, 'board_id', {
+        value: op.boardId,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+    result.confirmations.push(confirmation);
   }
 }

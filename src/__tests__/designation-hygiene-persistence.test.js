@@ -15,6 +15,17 @@
  * `process_job.js` is the SECOND CSV writer (builds test_results.csv
  * directly) and repairs its extracted rows pre-salvage — covered by the
  * repair-helper unit tests plus the source-level pin below.
+ *
+ * The source pins here are the cheap belt. The ROUTE-level and
+ * ENDPOINT-level regressions (real supertest routes / real extract
+ * functions, asserting on persisted payloads) live in:
+ *   - designation-hygiene-route-jobs-export-ocr.test.js (PUT save, clone,
+ *     export CSV, OCR create-job)
+ *   - designation-hygiene-route-recording.test.js (recording finish :243 +
+ *     GPT-enrichment re-upload :491)
+ *   - designation-hygiene-extract-endpoints.test.js (sonnetExtractFromText,
+ *     extractSession, extractChunk egress)
+ *   - designation-hygiene-process-job.test.js (processJob → on-disk CSV)
  */
 
 import { readFileSync } from 'fs';

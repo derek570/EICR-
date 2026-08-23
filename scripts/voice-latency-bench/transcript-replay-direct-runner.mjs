@@ -1090,6 +1090,7 @@ async function importExtractionModules() {
     { CLEAR_WIRE_EXEMPT },
     { FIELD_CORRECTIONS },
     { getCircuitBucket },
+    { processInsulationResistanceTurn },
   ] = await Promise.all([
     import('../../src/extraction/eicr-extraction-session.js'),
     import('../../src/extraction/active-sessions.js'),
@@ -1114,6 +1115,11 @@ async function importExtractionModules() {
     // HERE (after the fake-clock install) so it never enters the recorded
     // lane's pre-clock static import graph.
     import('../../src/extraction/stage6-multi-board-shape.js'),
+    // PLAN-B (id 131, Codex pre-merge) — the REAL pre-harness dialogue-script
+    // entry function (the exact export sonnet-stream's handleTranscript
+    // calls) backing the runner's dialogue_ingress lane. Never reimplemented;
+    // dynamically imported post-fake-clock like every extraction module.
+    import('../../src/extraction/dialogue-engine/index.js'),
   ]);
   const toClearWireField = (raw) =>
     CLEAR_WIRE_EXEMPT.has(raw) ? raw : (FIELD_CORRECTIONS[raw] ?? raw);
@@ -1127,6 +1133,18 @@ async function importExtractionModules() {
     const v = bucket?.circuit_designation ?? bucket?.designation ?? null;
     return typeof v === 'string' ? v : null;
   };
+  // PLAN-B (id 131) — generic stored-field reader for the
+  // script_entry_resolution oracle (the IR write lands under its canonical
+  // field key in the bucket), plus the READING-path canonical→legacy wire
+  // rename (applyFieldNameCorrection's mapping — deliberately WITHOUT
+  // toClearWireField's r2_ohm clear-dialect exemption, which is a
+  // field_corrections-frame rule, not a reading-frame rule).
+  const readCircuitField = (session, circuitRef, boardId, field) => {
+    const bucket = getCircuitBucket(session?.stateSnapshot, Number(circuitRef), boardId ?? null);
+    const v = bucket?.[field];
+    return v == null ? null : String(v);
+  };
+  const toReadingWireField = (raw) => FIELD_CORRECTIONS[raw] ?? raw;
   return {
     EICRExtractionSession,
     activeSessions,
@@ -1138,6 +1156,13 @@ async function importExtractionModules() {
     runShadowHarness,
     toClearWireField,
     readCircuitDesignation,
+    readCircuitField,
+    toReadingWireField,
+    // Closed family registry for the dialogue_ingress lane — each entry is
+    // the REAL production wrapper sonnet-stream calls for that family.
+    dialogueScriptIngress: {
+      insulation_resistance: processInsulationResistanceTurn,
+    },
   };
 }
 

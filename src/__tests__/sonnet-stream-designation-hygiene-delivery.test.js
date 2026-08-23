@@ -138,8 +138,12 @@ jest.unstable_mockModule('../extraction/dialogue-engine/index.js', () => ({
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
-const { DESIGNATION_HYGIENE_QUESTION_TYPE, DESIGNATION_HYGIENE_QUESTION_PURPOSE } =
-  await import('../extraction/legacy-designation-seam.js');
+const {
+  DESIGNATION_HYGIENE_QUESTION_TYPE,
+  DESIGNATION_HYGIENE_QUESTION_PURPOSE,
+  normaliseLegacyDesignationResult,
+  mergeDesignationConfirmations,
+} = await import('../extraction/legacy-designation-seam.js');
 const { filterQuestionsAgainstFilledSlots } = await import('../extraction/filled-slots-filter.js');
 
 function emptyResult() {
@@ -404,6 +408,48 @@ describe('shadow-mode closed consumption', () => {
     expect(bypassLogged()).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wire shape — rebuilt legacy confirmations serialize as EXACTLY
+// {text, field, circuit} at the REAL egress (Codex cycle-1 #1)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe.each(['off', 'shadow'])(
+  'confirmation wire shape (mode=%s) — ZERO-wire-change contract',
+  (mode) => {
+    test('a seam-rebuilt confirmation crosses the wire with only text/field/circuit keys', async () => {
+      const { ws } = await startSession(`desig-wire-${mode}`, mode);
+
+      // Build the result through the REAL seam pipeline (normalise +
+      // post-sanitizer merge), exactly as the session does — then observe
+      // its serialized shape on the actual extraction frame.
+      const result = {
+        ...emptyResult(),
+        circuit_updates: [{ circuit: 3, designation: 'Ring Final Circuit', action: 'create' }],
+        turn_id: 'legacy-wire-turn',
+      };
+      const seamReport = normaliseLegacyDesignationResult(result, { sessionId: 'wire-test' });
+      mergeDesignationConfirmations(result, seamReport, { confirmationsEnabled: true });
+      runShadowHarnessSpy.mockImplementation(async () => result);
+
+      await sendFrame(ws, { type: 'transcript', text: 'Circuit three is the ring final.' });
+
+      const extraction = ws._sent.find((m) => m.type === 'extraction');
+      expect(extraction).toBeDefined();
+      const confs = extraction.result?.confirmations ?? extraction.confirmations;
+      expect(confs).toHaveLength(1);
+      // ws._sent holds JSON.parse(JSON.stringify(...)) frames — this IS the
+      // serialized wire object. The legacy contract is {text, field,
+      // circuit} and nothing else (no value, no board_id).
+      expect(confs[0]).toEqual({
+        text: 'Circuit 3 is now the Ring Final',
+        field: 'circuit_designation',
+        circuit: 3,
+      });
+      expect(Object.keys(confs[0]).sort()).toEqual(['circuit', 'field', 'text']);
+    });
+  }
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Filled-slot filter — explicit marker admission (unit level, REAL filter)

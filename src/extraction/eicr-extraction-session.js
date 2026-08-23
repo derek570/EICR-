@@ -3192,7 +3192,18 @@ export class EICRExtractionSession {
         const value = reading.value;
         // Pending (circuit -1) readings are never deduped
         if (circuit === -1) return true;
-        const circuitData = this.stateSnapshot.circuits[circuit];
+        // PLAN-B ingress 6 (Codex cycle-1 #4) — resolve the comparison
+        // bucket by the reading's EFFECTIVE board, not the bare numeric
+        // main-board key: a sub-board reading compared against the
+        // same-numbered MAIN circuit could be dropped whenever main
+        // happened to hold the same value (a silent write). Same
+        // effective-board identity as the apply path
+        // (_applyLegacyCircuitUpdatesToSnapshot / applyReadingFlagAware).
+        const circuitData = getCircuitBucket(
+          this.stateSnapshot,
+          circuit,
+          reading.board_id ?? this.stateSnapshot.currentBoardId
+        );
         if (!circuitData || !(field in circuitData)) return true; // new field, pass through
         const existingValue = circuitData[field];
         // Same value = true duplicate, suppress
@@ -3317,7 +3328,19 @@ export class EICRExtractionSession {
         const field = conf.field;
         const value = conf.value;
         if (!field || circuit == null) return true; // missing metadata, pass through
-        const circuitData = this.stateSnapshot.circuits[circuit];
+        // PLAN-B ingress 6 (Codex cycle-1 #4) — board-aware bucket lookup,
+        // mirroring the reading-dedup fix above: a sub-board designation
+        // confirmation must dedupe against ITS board's bucket, never the
+        // same-numbered main-board circuit (main holding the same value
+        // would otherwise suppress the confirmation of a real sub-board
+        // write — a silent designation write). `conf.board_id` rides
+        // non-enumerably on seam-rebuilt confirmations (wire shape stays
+        // {text, field, circuit}).
+        const circuitData = getCircuitBucket(
+          this.stateSnapshot,
+          circuit,
+          conf.board_id ?? this.stateSnapshot.currentBoardId
+        );
         if (!circuitData || !(field in circuitData)) return true; // new field, pass through
         const existingValue = circuitData[field];
         if (existingValue == value || String(existingValue) === String(value)) {
