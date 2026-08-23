@@ -527,8 +527,12 @@ function matchDesignation(cleaned, circuits) {
   const lc = cleaned;
   // Codex cycle-1 #2 — classify the QUERY with the same tiers as stored
   // rows: a strict/short cleaned reply never enters normal substring
-  // comparison in either direction.
+  // comparison in either direction. M4 letter/numeric split: numeric strict
+  // and short queries keep whole-token matching; single-letter strict
+  // queries fail closed against normal rows.
   const queryClass = classifyCanonicalDesignation(lc);
+  const queryWholeTokenOnly =
+    queryClass === 'token_boundary' || (queryClass === 'bounded_only' && /^[0-9]+$/.test(lc));
   const exact = [];
   const substr = [];
   for (const c of circuits) {
@@ -556,12 +560,15 @@ function matchDesignation(cleaned, circuits) {
       continue;
     }
     if (info.eligibility !== 'full') continue; // bounded_only: exact-equality only
-    // Codex cycle-1 #2 — a STRICT query (single letter/numeric) never
-    // reaches the substring lane; a SHORT query (<3 chars, e.g. "EV")
-    // downgrades to whole-token comparison, which keeps the locked P3-A
-    // "EV" → "EV charger" reference working while killing character-level
-    // false hits ("seven".includes("ev")).
-    if (queryClass === 'token_boundary') {
+    // Codex cycle-1 #2 + mini-review M4 letter/numeric split — a SHORT query
+    // (<3 chars, e.g. "EV") and a NUMERIC strict query ("56") downgrade to
+    // whole-token comparison (keeps the locked P3-A "EV" → "EV charger" and
+    // "56" → "56 sockets" references working while killing character-level
+    // false hits like "seven".includes("ev")). A SINGLE-LETTER strict query
+    // NEVER resolves a normal row, even as a whole token — after
+    // case-normalisation "a" is indistinguishable from the article, and
+    // "A garage radial" carries a standalone "a" token.
+    if (queryWholeTokenOnly) {
       if (hasWholeTokenHit(lc, desig)) substr.push(ref);
       continue;
     }
@@ -645,8 +652,13 @@ function matchQuantifiedDesignations(spokenSpan, circuits) {
   const canonicalSpoken = canonicalSeparatorDesignation(spokenSpan);
   const spokenHasSeparator = hasEnumeratedSeparator(spokenSpan);
   // Codex cycle-1 #2 — a strict/short canonical spoken span never enters the
-  // substring branch (exact whole-span equality remains available).
+  // substring branch (exact whole-span equality remains available). M4
+  // letter/numeric split: numeric strict + short spans keep whole-token
+  // matching; single-letter strict spans fail closed against normal rows.
   const spokenClass = classifyCanonicalDesignation(canonicalSpoken);
+  const spokenWholeTokenOnly =
+    spokenClass === 'token_boundary' ||
+    (spokenClass === 'bounded_only' && /^[0-9]+$/.test(canonicalSpoken));
   const exact = [];
   const substring = [];
   for (const circuit of circuits) {
@@ -671,8 +683,7 @@ function matchQuantifiedDesignations(spokenSpan, circuits) {
       info.eligibility === 'full' &&
       (spokenClass === 'full'
         ? canonicalDesignation.includes(canonicalSpoken)
-        : spokenClass === 'token_boundary' &&
-          hasWholeTokenHit(canonicalSpoken, canonicalDesignation))
+        : spokenWholeTokenOnly && hasWholeTokenHit(canonicalSpoken, canonicalDesignation))
     ) {
       // A separator-bearing designation is one server-owned target, not a
       // bag of independently claimable components. Let its raw/exact whole
@@ -1334,8 +1345,15 @@ function guardCanonicalExactCollision(match, circuits) {
         : Number.parseInt(String(circuit?.circuit_ref), 10);
     if (ref !== winnerRef) continue;
     const info = designationMatchInfo(circuit);
+    // Mini-review M4 — collision keys MUST use the SAME equivalence function
+    // as the canonical exact lane (canonicalSeparatorDesignation, the
+    // stop-word-STRIPPING one): {"Kitchen", "The Kitchen Circuit"} share the
+    // canonical-lane key "kitchen", which the stop-word-RETAINING raw
+    // function ("kitchen" vs "the kitchen") failed to detect. An EMPTY key
+    // (literal stop-word-only names such as "A") skips guarding — the strict
+    // lanes already police those, and "" would false-collide every such row.
     winnerKey =
-      info.eligibility === 'ineligible' ? null : canonicalRawSeparatorDesignation(info.value);
+      info.eligibility === 'ineligible' ? null : canonicalSeparatorDesignation(info.value);
     break;
   }
   if (!winnerKey) return match;
@@ -1348,7 +1366,7 @@ function guardCanonicalExactCollision(match, circuits) {
         ? circuit.circuit_ref
         : Number.parseInt(String(circuit?.circuit_ref), 10);
     if (!Number.isInteger(ref) || refs.has(ref)) continue;
-    if (canonicalRawSeparatorDesignation(info.value) === winnerKey) refs.add(ref);
+    if (canonicalSeparatorDesignation(info.value) === winnerKey) refs.add(ref);
   }
   if (refs.size === 1) return match;
   return { kind: 'ambiguous', circuitRefs: [...refs].sort((a, b) => a - b) };

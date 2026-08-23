@@ -749,4 +749,27 @@ describe('END-TO-END: the id-131 fixture through the REAL pre-harness engine (di
     const run = await runFixture({ fixture, modules: without, wallClockNowMs: Date.now() });
     expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('infrastructure_error');
   });
+
+  test('an ingress runner returning undefined (no throw) latches INFRASTRUCTURE — never RED (mini-review M5)', async () => {
+    // A null/undefined return reports NOTHING about the turn: without the
+    // latch, the semantic oracle would emit ordinary FAILs over the empty
+    // capture and an invalid ingress premise could masquerade as the
+    // expected RED. The sole classification must be infrastructure.
+    const fixture = loadIrFixture();
+    const withNullIngress = {
+      ...modules,
+      dialogueScriptIngress: { insulation_resistance: () => undefined },
+    };
+    const run = await runFixture({ fixture, modules: withNullIngress, wallClockNowMs: Date.now() });
+    expect(run.allFailures.length).toBeGreaterThan(0);
+    expect(run.allFailures.some((f) => f.outcome === OUTCOME.INFRASTRUCTURE)).toBe(true);
+    expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('infrastructure_error');
+    // Never satisfiable as an expected_red — the RED-masquerade this closes.
+    const asRed = {
+      ...fixture,
+      gate_state: 'expected_red',
+      expected_failure_id: fixture.red_proof_failure_id,
+    };
+    expect(evaluateGateState(asRed, run.allFailures).verdict).toBe('infrastructure_error');
+  });
 });

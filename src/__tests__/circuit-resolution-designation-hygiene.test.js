@@ -138,6 +138,22 @@ describe('short-remainder guard', () => {
     expect(r.candidates).toEqual([3]);
   });
 
+  test('LETTER-strict query never resolves a NORMAL row, even as a whole token (mini-review c1)', () => {
+    // "A garage radial" contains the token "a"; a letter-strict query is
+    // indistinguishable from the article, so it must match ONLY strict
+    // stored rows through the sanctioned grammar — with or without
+    // restrictToRefs.
+    const session = sessionWith({
+      7: { circuit_designation: 'Circuit A' },
+      9: { circuit_designation: 'A garage radial' },
+    });
+    const r = findCircuitsByDesignation(session, 'the A circuit');
+    expect(r.matched).toBe(7);
+    expect(r.candidates).toEqual([7]);
+    const restricted = findCircuitsByDesignation(session, 'A', { restrictToRefs: [9] });
+    expect(restricted.candidates).toEqual([]);
+  });
+
   test('numeric remainder must NOT match a dictated value', () => {
     const session = sessionWith({ 9: { circuit_designation: 'Circuit 500' } });
     expect(findCircuitsByDesignation(session, 'tested at 500 volts').candidates).toEqual([]);

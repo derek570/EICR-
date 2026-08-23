@@ -283,6 +283,41 @@ describe.each(CENSUS_SHAPES)('resolveCircuitAnswer over %s', (_shapeName, shape)
       ]);
     });
 
+    test('M4 — collision guard uses the canonical-lane (stop-word-stripping) equivalence', () => {
+      // {"Kitchen", "The Kitchen Circuit"} share the canonical-lane key
+      // "kitchen"; the stop-word-RETAINING raw function missed this
+      // collision and raw priority silently auto-resolved "Kitchen".
+      const census = shape([
+        { circuit_ref: 1, circuit_designation: 'Kitchen' },
+        { circuit_ref: 2, circuit_designation: 'The Kitchen Circuit' },
+      ]);
+      for (const reply of ['kitchen', 'the kitchen circuit']) {
+        const verdict = resolveCircuitAnswer({
+          userText: reply,
+          pendingWrite: PENDING,
+          availableCircuits: census,
+        });
+        expect(verdict.kind).toBe('escalate');
+        expect(verdict.parsed_hint).toMatch(/ambiguous_designation_match:1,2/);
+      }
+    });
+
+    test('M4 — single-letter strict reply never resolves a normal row ("A garage radial")', () => {
+      const census = shape([
+        { circuit_ref: 5, circuit_designation: 'Circuit A' },
+        { circuit_ref: 6, circuit_designation: 'A garage radial' },
+      ]);
+      for (const reply of ['A', 'the A circuit']) {
+        const verdict = resolveCircuitAnswer({
+          userText: reply,
+          pendingWrite: PENDING,
+          availableCircuits: census,
+        });
+        expect(verdict.kind).toBe('auto_resolve');
+        expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 5 })]);
+      }
+    });
+
     test('collision guard leaves a unique dirty designation resolving (no false ambiguity)', () => {
       const verdict = resolveCircuitAnswer({
         userText: 'upstairs lighting circuit',

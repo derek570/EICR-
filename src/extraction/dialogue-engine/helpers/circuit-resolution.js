@@ -310,8 +310,16 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
   // matches — reply "56" against stored "56 sockets" — alive), and pass 2
   // is skipped entirely for it (a one-token fold containment would
   // replicate the same hazard).
+  // Mini-review c1 split: a NUMERIC strict query keeps the legitimate
+  // whole-token reverse match against normal rows ("56" vs "56 sockets");
+  // a SINGLE-LETTER strict query does not — "A" as a token is
+  // indistinguishable from the article, so letting it uniquely resolve a
+  // normal row ("A garage radial") recreates the article false-target
+  // hazard. Letter-strict queries match ONLY strict stored rows through
+  // the sanctioned bounded/adjacency grammar.
   let queryTier = 'normal';
-  if (/^[\p{L}]$/u.test(canonQuery) || /^[\p{N}]+$/u.test(canonQuery)) queryTier = 'strict';
+  if (/^[\p{L}]$/u.test(canonQuery)) queryTier = 'strict_letter';
+  else if (/^[\p{N}]+$/u.test(canonQuery)) queryTier = 'strict_numeric';
   else if (canonQuery.length < 3) queryTier = 'short';
 
   for (const row of rows) {
@@ -338,11 +346,14 @@ export function findCircuitsByDesignation(session, text, opts = {}) {
       // contiguous token run of the canonical query — never a raw
       // character-level substring.
       hit = findTokenRun(canonQueryTokens, row.canonDes.split(' ')) !== -1;
-    } else if (queryTier !== 'normal') {
-      // Strict/short QUERY vs a normal row: whole-token-run containment of
-      // the query inside the stored canonical tokens only (see the
-      // query-tier note above) — never character substring.
+    } else if (queryTier === 'strict_numeric' || queryTier === 'short') {
+      // Numeric-strict/short QUERY vs a normal row: whole-token-run
+      // containment of the query inside the stored canonical tokens only
+      // (see the query-tier note above) — never character substring.
       hit = findTokenRun(row.canonDes.split(' '), canonQueryTokens) !== -1;
+    } else if (queryTier === 'strict_letter') {
+      // Letter-strict query vs a normal row: fail closed (article class).
+      hit = false;
     } else {
       hit = canonQuery.includes(row.canonDes) || row.canonDes.includes(canonQuery);
     }

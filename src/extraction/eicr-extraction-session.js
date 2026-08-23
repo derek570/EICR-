@@ -3098,6 +3098,9 @@ export class EICRExtractionSession {
     const designationSeam = normaliseLegacyDesignationResult(result, {
       sessionId: this.sessionId,
       logger,
+      // M1 — effective-board identity for unscoped ops (board-keyed
+      // same-outcome collapse) resolves against the live snapshot.
+      stateSnapshot: this.stateSnapshot,
     });
 
     // PLAN-2D: legacy record_extraction bypasses the live write dispatcher.
@@ -3318,6 +3321,9 @@ export class EICRExtractionSession {
     // below and the locality fold so the rebuilt entries flow through both.
     mergeDesignationConfirmations(result, designationSeam, {
       confirmationsEnabled: options.confirmationsEnabled === true,
+      // M1 — non-main-board confirmations get board-qualified TEXT so
+      // cross-board same-(ref, value) twins never serialize identically.
+      stateSnapshot: this.stateSnapshot,
     });
 
     // [TTS-DEDUP] Bug D fix: dedup confirmations against stateSnapshot

@@ -96,13 +96,17 @@ export function canonicaliseCircuitDesignation(designation) {
 
   const isBanned = (span) =>
     BANNED_TOKENS.has(designation.slice(span.start, span.end).toLowerCase());
-  // A pure-separator token ("-", "--", "/") holds no letter/digit. It is
-  // dropped ONLY when a banned-token removal has already happened at that
-  // edge (it was the removed token's separator, now orphaned): "Circuit -
-  // Upstairs lighting" → "Upstairs lighting". A dash with no adjacent
-  // banned edge token is content and stays ("- Upstairs" unchanged);
-  // "Short-circuit" is one token (contains letters) and is never touched.
-  const isSeparatorOnly = (span) => !/[\p{L}\p{N}]/u.test(designation.slice(span.start, span.end));
+  // A pure-separator token is a CLOSED grammar: hyphen/slash runs only
+  // ("-", "--", "/"). It is dropped ONLY when a banned-token removal has
+  // already happened at that edge (it was the removed token's separator,
+  // now orphaned): "Circuit - Upstairs lighting" → "Upstairs lighting".
+  // A dash with no adjacent banned edge token is content and stays
+  // ("- Upstairs" unchanged); "Short-circuit" is one token (contains
+  // letters) and is never touched. Deliberately NOT "any token without a
+  // letter/digit" (mini-review c1): symbols like "&"/"+"/"⚡" are
+  // meaningful designation content and must never be deleted — extend
+  // this grammar only through contract vectors.
+  const isSeparatorOnly = (span) => /^[-/]+$/u.test(designation.slice(span.start, span.end));
 
   let first = 0;
   let last = spans.length - 1;

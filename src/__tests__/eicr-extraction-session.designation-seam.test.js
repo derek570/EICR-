@@ -244,7 +244,7 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     expect(session.stateSnapshot.circuits[4].circuit_designation).toBe('Upstairs Lighting');
   });
 
-  test('Codex cycle-1 #2: same-circuit ops with the SAME canonical value keep one confirmation PER OPERATION, in op order', async () => {
+  test('M1: genuine same-board same-value twins (create+rename) confirm exactly ONCE', async () => {
     session = makeSession(mode);
     const result = await runTurn(
       session,
@@ -256,16 +256,15 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
       })
     );
 
-    // Both ops canonicalise to 'Cooker' — a (circuit, value) collapse
-    // would silently drop the second applied operation's confirmation.
-    expect(result.confirmations.map((c) => c.text)).toEqual([
-      'Circuit 4 is now the Cooker',
-      'Circuit 4 is now the Cooker',
-    ]);
+    // Both ops canonicalise to 'Cooker' on the SAME effective board — one
+    // audible outcome. Two byte-identical confirmations would be double
+    // speech (Audio-First §1 "not twice"): the snapshot dedupe cannot
+    // suppress the second because no mutation has landed yet.
+    expect(result.confirmations.map((c) => c.text)).toEqual(['Circuit 4 is now the Cooker']);
     expect(session.stateSnapshot.circuits[4].circuit_designation).toBe('Cooker');
   });
 
-  test('Codex cycle-1 #2: identical (circuit, value) ops on main AND a sub-board → two writes + two confirmations', async () => {
+  test('M1: identical (circuit, value) ops on main AND a sub-board → two writes + two DISTINCT confirmations', async () => {
     session = makeSession(mode);
     session.stateSnapshot.boards = [
       { id: 'main', board_type: 'main' },
@@ -284,12 +283,16 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     // Two distinct board-scoped writes...
     expect(session.stateSnapshot.circuits[2].circuit_designation).toBe('Cooker');
     expect(session.stateSnapshot.circuits['db2::2'].circuit_designation).toBe('Cooker');
-    // ...and two confirmations — a board-blind (ref, value) collapse would
-    // have silently swallowed the sub-board operation's read-back.
-    expect(result.confirmations.map((c) => c.text)).toEqual([
+    // ...and two confirmations whose SERIALIZED text differs — identical
+    // wire text would be swallowed by the client's text-keyed dedupe
+    // (silent loss of the sub-board read-back). Board/value metadata is
+    // non-enumerable, so the text is the only wire-visible distinguisher.
+    const serializedTexts = JSON.parse(JSON.stringify(result.confirmations)).map((c) => c.text);
+    expect(serializedTexts).toEqual([
       'Circuit 2 is now the Cooker',
-      'Circuit 2 is now the Cooker',
+      'Circuit 2 on DB-2 is now the Cooker',
     ]);
+    expect(serializedTexts[0]).not.toBe(serializedTexts[1]);
   });
 
   test('Codex cycle-1 #4: sub-board rename dedupes against ITS board bucket, not the same-numbered main circuit', async () => {
@@ -319,9 +322,10 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     // The mutation applies to the SUB-board bucket; main is untouched.
     expect(session.stateSnapshot.circuits['db2::2'].circuit_designation).toBe('Cooker');
     expect(session.stateSnapshot.circuits[2].circuit_designation).toBe('Cooker');
-    // Exactly one confirmation — audible, not silently deduped by main.
+    // Exactly one confirmation — audible, not silently deduped by main —
+    // and board-qualified (M1) since the effective board is not main.
     expect(result.confirmations).toHaveLength(1);
-    expect(result.confirmations[0].text).toBe('Circuit 2 is now the Cooker');
+    expect(result.confirmations[0].text).toBe('Circuit 2 on DB-2 is now the Cooker');
   });
 
   test('two valid operations across BOTH shapes (reading + circuit_updates) each confirm once', async () => {

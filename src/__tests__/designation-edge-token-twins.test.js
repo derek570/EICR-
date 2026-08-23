@@ -133,6 +133,21 @@ describe.each(TWINS)(
       });
     });
 
+    describe('M4 — strict-query letter/numeric split', () => {
+      test('single-letter strict query never resolves a normal row even as a whole token', () => {
+        const session = sessionWith({ 3: 'Circuit A', 4: 'A garage radial' });
+        // "A garage radial" carries a standalone "a" token — the letter
+        // class fails closed against it; only the strict stored row wins.
+        expect(find(session, 'the a circuit')).toBe(3);
+        expect(find(session, 'a')).toBe(3);
+      });
+
+      test('numeric strict query keeps whole-token matching against normal rows', () => {
+        const session = sessionWith({ 9: '56 sockets' });
+        expect(find(session, '56')).toBe(9);
+      });
+    });
+
     describe('Codex cycle-1 #3 — board-scoped circuit walk', () => {
       const multiBoardSession = () => ({
         stateSnapshot: {

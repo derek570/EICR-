@@ -2033,10 +2033,16 @@ function findCircuitByDesignation(session, text) {
   // Codex cycle-1 #2 — classify the canonical QUERY with the SAME tiers as
   // stored rows: a strict (single-letter/numeric) or short (<3 chars) query
   // must never enter normal substring comparison in either direction
-  // ("garage".includes("a") would false-match / manufacture ambiguity); it
-  // can only reach strict/short STORED rows through their own guarded
-  // branches below.
+  // ("garage".includes("a") would false-match / manufacture ambiguity).
+  // M4 letter/numeric split: a NUMERIC strict query ("56") and a short query
+  // ("EV") keep whole-token matching against normal rows ("56 sockets");
+  // a SINGLE-LETTER strict query fails closed against normal rows even as a
+  // whole token ("A garage radial" carries a standalone "a" token) and can
+  // only reach strict STORED rows via the sanctioned grammar.
   const queryEligibility = designationMatchEligibility(canonicalQuery);
+  const queryWholeTokenOnly =
+    queryEligibility === 'token_boundary' ||
+    (queryEligibility === 'bounded_only' && /^[0-9]+$/.test(canonicalQuery));
 
   const circuits = snapshot.circuits;
   // Codex cycle-1 #3 — board-scoped walk for object-shaped snapshots: the
@@ -2085,11 +2091,9 @@ function findCircuitByDesignation(session, text) {
       if (hasWholeTokenHit(canonicalQuery, canonDes)) matches.push(ref);
       continue;
     }
-    // Codex cycle-1 #2 — a STRICT canonical query never enters the normal
-    // substring comparison; a SHORT query (<3 chars, e.g. "EV") downgrades
-    // to whole-token comparison (kills "seven".includes("ev") while keeping
-    // a literal short-designation reference working).
-    if (queryEligibility === 'token_boundary') {
+    // Codex cycle-1 #2 + M4 split — short and numeric-strict queries use
+    // whole-token comparison; a single-letter strict query fails closed.
+    if (queryWholeTokenOnly) {
       if (hasWholeTokenHit(canonicalQuery, canonDes)) matches.push(ref);
       continue;
     }

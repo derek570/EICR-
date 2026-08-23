@@ -426,6 +426,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           violations.push(`dialogue-script ingress runner for family '${family}' unavailable (modules.dialogueScriptIngress not injected)`);
         } else {
           let outcome = null;
+          let ingressThrew = false;
           try {
             outcome = runIngress({
               ws,
@@ -438,10 +439,18 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
               suppressDestructiveEntry: false,
             });
           } catch (err) {
+            ingressThrew = true;
             violations.push(`dialogue-script ingress threw: ${err.message}`);
           }
-          if (outcome != null && !(outcome.handled === true && outcome.fallthrough !== true)) {
-            violations.push(`dialogue-script ingress did not consume the turn (handled=${outcome.handled ?? null}, fallthrough=${outcome.fallthrough ?? null}) — the fixture's ingress premise did not hold`);
+          // Mini-review M5 — a null/undefined RETURN (no throw) is just as
+          // unverifiable as a throw: the engine reported nothing, so no
+          // assertion about the turn can be trusted. Latch INFRASTRUCTURE
+          // unconditionally on any outcome that is not an explicit
+          // handled-and-consumed envelope — an invalid ingress premise must
+          // never fall through to the semantic oracle's ordinary FAILs, where
+          // it could masquerade as the expected RED.
+          if (!ingressThrew && (outcome == null || outcome.handled !== true || outcome.fallthrough === true)) {
+            violations.push(`dialogue-script ingress did not consume the turn (outcome=${outcome == null ? 'null' : `handled=${outcome?.handled ?? null}, fallthrough=${outcome?.fallthrough ?? null}`}) — the fixture's ingress premise did not hold`);
           }
         }
         const captured = {

@@ -67,6 +67,7 @@ import {
   designationCanonicalisesToEmpty,
 } from './designation-canonicaliser.js';
 import { buildConfirmationText } from './confirmation-text.js';
+import { getMainBoardId } from './stage6-multi-board-shape.js';
 
 /**
  * The closed server-owned designation-hygiene question marker. BOTH keys
@@ -164,9 +165,19 @@ function buildClarificationQuestion(removedCircuits) {
  *   removedCount: number,
  * }}
  */
-export function normaliseLegacyDesignationResult(result, { sessionId = null, logger = null } = {}) {
+export function normaliseLegacyDesignationResult(
+  result,
+  { sessionId = null, logger = null, stateSnapshot = null } = {}
+) {
   const report = { changed: false, designationOps: [], clarifications: [], removedCount: 0 };
   if (!result || typeof result !== 'object') return report;
+
+  // Effective-board identity for UNSCOPED operations — the SAME default the
+  // apply path resolves (op.board_id ?? currentBoardId ?? main). Stamped on
+  // every ledger op so the collapse below and the confirmation merge can
+  // reason about boards without re-deriving the rule.
+  const mainBoardId = getMainBoardId(stateSnapshot);
+  const defaultBoardId = stateSnapshot?.currentBoardId ?? mainBoardId;
 
   // Forged-marker strip — the marker is server-owned; anything already
   // carrying it came from the model and must not reach the shadow-mode
@@ -218,6 +229,7 @@ export function normaliseLegacyDesignationResult(result, { sessionId = null, log
           wireField: 'designation',
           circuit,
           boardId: reading.board_id ?? null,
+          effectiveBoardId: reading.board_id ?? defaultBoardId,
           value: canonical,
           action: null,
         });
@@ -258,6 +270,7 @@ export function normaliseLegacyDesignationResult(result, { sessionId = null, log
           wireField: 'circuit_designation',
           circuit,
           boardId: op.board_id ?? null,
+          effectiveBoardId: op.board_id ?? defaultBoardId,
           value: canonical,
           action,
         });
@@ -266,14 +279,26 @@ export function normaliseLegacyDesignationResult(result, { sessionId = null, log
     });
   }
 
-  // NO duplicate collapse (Codex cycle-1 #2): the ledger retains EVERY
-  // surviving operation — one rebuilt confirmation per operation, in
-  // operation order, is the plan contract. Collapsing on (circuit, value)
-  // would silently drop the confirmation of a second applied operation
-  // (create + rename canonicalising to the same value) and, board-blind,
-  // would collapse identical-(ref, value) operations on DIFFERENT boards.
-  // The snapshot confirmation-dedup downstream still suppresses genuine
-  // re-emissions of a value the (board-aware) snapshot already holds.
+  // BOARD-KEYED duplicate collapse (mini-review M1, superseding both the
+  // cycle-1 board-blind collapse and its full removal): genuine SAME-BOARD
+  // twins landing the same (circuit, canonical value) — e.g. a create +
+  // rename pair, or the same name emitted as both a reading and a
+  // circuit_update — are ONE audible outcome; before any snapshot mutation
+  // lands the downstream snapshot-dedup cannot suppress the second, so
+  // retaining both would speak byte-identical text twice (Audio-First §1
+  // "not twice"). Keying on the EFFECTIVE board keeps genuinely-distinct
+  // cross-board twins: those stay separate operations AND get
+  // board-distinguished confirmation text in mergeDesignationConfirmations
+  // (identical wire text would be swallowed by the client's text-keyed
+  // dedupe — silent loss). First occurrence wins; ops themselves all
+  // still apply to the snapshot.
+  const seenOutcomes = new Set();
+  report.designationOps = report.designationOps.filter((op) => {
+    const key = JSON.stringify([op.effectiveBoardId, op.circuit, op.value]);
+    if (seenOutcomes.has(key)) return false;
+    seenOutcomes.add(key);
+    return true;
+  });
 
   // Confirmation ownership: with any designation operation present,
   // strip every designation-paired confirmation (both the banned-only
@@ -316,7 +341,11 @@ export function normaliseLegacyDesignationResult(result, { sessionId = null, log
  *     ledger operation is appended in operation order via the existing
  *     builder. Other server-owned sanitizer confirmations are preserved.
  */
-export function mergeDesignationConfirmations(result, seamReport, { confirmationsEnabled } = {}) {
+export function mergeDesignationConfirmations(
+  result,
+  seamReport,
+  { confirmationsEnabled, stateSnapshot = null } = {}
+) {
   if (!result || !seamReport) return;
   const { designationOps, removedCount } = seamReport;
   if ((!designationOps || designationOps.length === 0) && !(removedCount > 0)) return;
@@ -328,13 +357,38 @@ export function mergeDesignationConfirmations(result, seamReport, { confirmation
 
   if (confirmationsEnabled !== true) return;
 
+  const mainBoardId = getMainBoardId(stateSnapshot);
   for (const op of designationOps) {
     // The builder's circuit_designation branch produces the designation
     // phrasing ("Circuit N is now the X"); the record's `field` carries
     // the key the operation actually writes so the snapshot dedup filter
     // compares against the right slot.
-    const text = buildConfirmationText('circuit_designation', op.value, op.circuit);
+    let text = buildConfirmationText('circuit_designation', op.value, op.circuit);
     if (typeof text !== 'string' || text.trim().length === 0) continue;
+    // Mini-review M1 — board-qualify the TEXT for a non-main effective
+    // board ("Circuit 2 on DB-2 is now the Cooker"): board/value metadata
+    // is non-enumerable (wire keys stay exactly {text, field, circuit}),
+    // so without a textual qualifier two same-(ref, value) operations on
+    // DIFFERENT boards would serialize byte-identically and the client's
+    // text-keyed 30s dedupe would silently swallow the second read-back.
+    // Text content is not a wire-shape change. Main-board (and unscoped
+    // single-board) confirmations keep today's exact wording.
+    if (op.effectiveBoardId != null && op.effectiveBoardId !== mainBoardId) {
+      const boardRecord = Array.isArray(stateSnapshot?.boards)
+        ? stateSnapshot.boards.find((b) => b?.id === op.effectiveBoardId)
+        : null;
+      const boardLabel =
+        typeof boardRecord?.designation === 'string' && boardRecord.designation.trim()
+          ? boardRecord.designation.trim()
+          : String(op.effectiveBoardId);
+      const prefix = `Circuit ${op.circuit}`;
+      // The circuit_designation builder branch always opens with
+      // "Circuit N " — guard anyway so a future builder change degrades
+      // to the unqualified (still correct) phrasing rather than mangling.
+      if (text.startsWith(prefix)) {
+        text = `${prefix} on ${boardLabel}${text.slice(prefix.length)}`;
+      }
+    }
     // WIRE SHAPE (Codex cycle-1 #1): the legacy confirmation contract is
     // EXACTLY {text, field, circuit} — projectExtractionResultForWire
     // passes confirmations through unchanged, so any extra enumerable key

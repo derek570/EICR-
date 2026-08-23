@@ -4598,6 +4598,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               }`
             );
           }
+          // PLAN-B mini-review c1 — designation successes ALSO live in
+          // circuitOps (create/rename carry meta.designation), never the
+          // reading journals. An invalid_designation rejection followed by
+          // a corrected create/rename in the SAME turn must subtract like
+          // any other sibling success — otherwise the turn speaks both
+          // "Circuit 3 is now the Cooker" and a false "wasn't named"
+          // notice. Same canonical-field/board keying as the reading slots.
+          const designationFieldIdentity =
+            canonicalPartialFailureFieldIdentity('circuit_designation');
+          for (const op of Array.isArray(perTurnWrites?.circuitOps)
+            ? perTurnWrites.circuitOps
+            : []) {
+            if (!op || (op.op !== 'create' && op.op !== 'rename')) continue;
+            const desig = op.meta?.designation;
+            if (typeof desig !== 'string' || desig.trim().length === 0) continue;
+            if (!Number.isInteger(op.circuit_ref)) continue;
+            survivingReadingSlots.add(
+              `${designationFieldIdentity}::${op.circuit_ref}::${readEffectiveOpBoard(op) ?? ''}`
+            );
+          }
           const survivingBoardReadingScopes = new Set();
           for (const w of projectBoardReadingWinners(perTurnWrites)) {
             const effectiveSlot = w?.value?.[EFFECTIVE_BOARD_SLOT];
@@ -4638,9 +4658,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               }
             }
             // A SCOPE target ("all circuits") can never acquire a per-circuit
-            // write, so it always survives rule (2) and always speaks.
+            // write, so it always survives rule (2) and always speaks — with
+            // ONE exception (PLAN-B mini-review c1): an invalid_designation
+            // scope refusal IS fixable by a corrected same-turn retry, so it
+            // subtracts when ANY surviving same-field write exists on the
+            // same board scope. lim_capability_gated keeps always-speak (a
+            // retry cannot fix a missing capability).
             const survivors = (Array.isArray(aggregate?.targets) ? aggregate.targets : []).filter(
               (t) => {
+                if (t?.kind === 'scope' && aggregate?.reason === 'invalid_designation') {
+                  const prefix = `${aggregate.field}::`;
+                  const suffix = `::${aggregate.boardId ?? ''}`;
+                  return ![...survivingReadingSlots].some(
+                    (slot) => slot.startsWith(prefix) && slot.endsWith(suffix)
+                  );
+                }
                 if (t?.kind !== 'circuit') return true;
                 return !survivingReadingSlots.has(
                   `${aggregate.field}::${t.ref}::${aggregate.boardId ?? ''}`
