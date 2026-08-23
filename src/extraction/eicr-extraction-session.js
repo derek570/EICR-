@@ -17,6 +17,7 @@ import { markOpenAIStableSystemPrefix } from './system-prompt-renderer.js';
 import {
   applyReadingFlagAware,
   clearReadingFlagAware,
+  upsertCircuitMetaFlagAware,
   appendLegacyObservationRecord,
 } from './stage6-snapshot-mutators.js';
 import {
@@ -50,6 +51,10 @@ import {
   resolvePostcodeHintState,
 } from './postcode-hint.js';
 import { sanitizeReadingFieldContractWithReport } from './reading-field-contract-sanitizer.js';
+import {
+  normaliseLegacyDesignationResult,
+  mergeDesignationConfirmations,
+} from './legacy-designation-seam.js';
 import logger from '../logger.js';
 
 // 2026-06-01 — single point of control for the ephemeral-cache TTL on
@@ -3081,6 +3086,20 @@ export class EICRExtractionSession {
       assistantHistoryText = JSON.stringify(toolUseBlock.input);
     }
 
+    // PLAN-B B1 ingress 6 (ids 128/131) — legacy designation-hygiene seam.
+    // Runs IMMEDIATELY after parsing / initial assistantHistoryText creation,
+    // BEFORE the field-contract sanitizer and BEFORE nonMirrorQuestions is
+    // computed (ordering pinned in review). Canonicalises BOTH legacy
+    // designation shapes (extracted_readings + circuit_updates create/rename)
+    // in place, removes banned-token-only operations with their paired
+    // confirmations, and returns (a) an ordered surviving-operation ledger
+    // and (b) any server-owned clarification SEPARATELY — both are folded
+    // back in after the sanitizer below, which would otherwise clobber them.
+    const designationSeam = normaliseLegacyDesignationResult(result, {
+      sessionId: this.sessionId,
+      logger,
+    });
+
     // PLAN-2D: legacy record_extraction bypasses the live write dispatcher.
     // Enforce the committed client-routing contract BEFORE metrics, question
     // bookkeeping, dedupe and—critically—updateStateSnapshot. The later
@@ -3091,6 +3110,18 @@ export class EICRExtractionSession {
       logger,
       confirmationsEnabled: options.confirmationsEnabled === true,
     });
+    // PLAN-B ingress 6 — clarification survival: the sanitizer above REPLACES
+    // questions_for_user with [] on any rejection, so the seam's server-owned
+    // designation clarification is appended HERE (exactly once, the single
+    // append site) — after the sanitizer, before nonMirrorQuestions /
+    // askedQuestions / the history rebuilds are computed. Deliverability is
+    // by construction: off mode's filled-slot filter explicitly admits the
+    // marker, and shadow mode's egress consumes exactly this tagged shape —
+    // so recording it in history/bookkeeping below is never
+    // asked-without-delivery.
+    if (designationSeam.clarifications.length > 0) {
+      result.questions_for_user.push(...designationSeam.clarifications);
+    }
     // The tool input was captured above before the field-contract boundary.
     // If that boundary rejected anything, retaining the raw JSON in assistant
     // history would replay the forbidden field/value/question/action into the
@@ -3111,6 +3142,21 @@ export class EICRExtractionSession {
       (q) => q?.purpose !== 'address_mirror' && q?.type !== 'address_mirror'
     );
     if (nonMirrorQuestions.length !== result.questions_for_user.length) {
+      assistantHistoryText = JSON.stringify({
+        ...result,
+        questions_for_user: nonMirrorQuestions,
+      });
+    }
+    // PLAN-B ingress 6 — history-rebuild trigger (pinned round 17): the two
+    // rebuilds above fire only on a sanitizer rejection or a removed mirror
+    // candidate, so an ordinary normalized designation change with NEITHER
+    // trigger would leave the RAW banned value in conversation history —
+    // teaching the next legacy turn it had been accepted. When the seam
+    // changed or removed any designation operation, rebuild from the
+    // normalized result using the SAME non-mirror question projection
+    // (never a blind stringify of raw questions_for_user, which would
+    // reintroduce the mirror candidates the projection excludes).
+    if (designationSeam.changed) {
       assistantHistoryText = JSON.stringify({
         ...result,
         questions_for_user: nonMirrorQuestions,
@@ -3246,6 +3292,22 @@ export class EICRExtractionSession {
         return false;
       });
     }
+
+    // PLAN-B ingress 6 — confirmation survival (the confirmations half of the
+    // clarification-survival rule): on any rejection the sanitizer fully
+    // replaced result.confirmations from accepted extracted_readings only —
+    // collapsing multiple same-slot designation confirmations to one winner
+    // and dropping circuit_updates designations (absent from acceptedReadings)
+    // entirely, a silent designation write. Merge back ONLY the
+    // designation-confirmation subset, rebuilt from the seam's ordered
+    // surviving-operation ledger (one confirmation per operation, in
+    // operation order, via the existing builder; none for removed banned-only
+    // operations). Gated by confirmationsEnabled; other server-owned
+    // sanitizer confirmations are preserved. Runs BEFORE the snapshot dedup
+    // below and the locality fold so the rebuilt entries flow through both.
+    mergeDesignationConfirmations(result, designationSeam, {
+      confirmationsEnabled: options.confirmationsEnabled === true,
+    });
 
     // [TTS-DEDUP] Bug D fix: dedup confirmations against stateSnapshot
     // Suppress confirmations where the field+circuit already has the same value in snapshot.
@@ -3877,6 +3939,14 @@ export class EICRExtractionSession {
       }
     }
 
+    // PLAN-B ingress 6 — snapshot application of legacy circuit_updates is a
+    // NAMED step, not implied: this method historically processed
+    // extracted_readings/clears/observations/alerts and NEVER circuit_updates,
+    // so a legacy create/rename designation reached the clients but not the
+    // authoritative server snapshot (and therefore not the next turn's
+    // matcher/prompt state).
+    this._applyLegacyCircuitUpdatesToSnapshot(result);
+
     // Process field clears — delegated to clearReadingInSnapshot. Shared
     // atom handles missing circuit / missing field noops.
     if (result.field_clears && result.field_clears.length > 0) {
@@ -3911,6 +3981,68 @@ export class EICRExtractionSession {
           this.stateSnapshot.validation_alerts.push(alert);
         }
       }
+    }
+  }
+
+  /**
+   * PLAN-B B1 ingress 6 — apply legacy `circuit_updates[]`
+   * `{circuit, designation, action}` create/rename shapes to the
+   * authoritative snapshot through the SAME flag-aware circuit-meta
+   * mutation atom the Stage-6 dispatchers use, so the cleaned designation
+   * is on the snapshot for the next turn (matcher, prompt state, dedup).
+   *
+   * The seam has already run by the time this executes (updateStateSnapshot
+   * is called on the normalized result), so:
+   *   - banned-token-only operations were REMOVED and never mutate;
+   *   - surviving designations are already canonical.
+   * Delete ops (and their `designation: ''` placeholders) never reach the
+   * atom — this step is designation create/rename ONLY. `circuit ??
+   * circuit_ref` / `action ?? op` alias spellings are accepted as the same
+   * defensive coding as the seam (unreachable today, retained for shape
+   * resilience).
+   *
+   * Evaluation provenance mirrors the extracted_readings branch above
+   * exactly: the atom emits a `circuit_upsert` mutation receipt but does
+   * NOT establish producer origin, so each mutation sets a `model_direct`
+   * origin frame (leg:'legacy', circuit_designation metadata) before the
+   * atom call and clears it in `finally` — otherwise recorded-oracle runs
+   * latch `commit_without_origin_frame` and HOLD.
+   *
+   * recentCircuitOrder is maintained the same way the reading branch does
+   * (a named/renamed circuit is a recently-touched circuit for snapshot
+   * windowing).
+   */
+  _applyLegacyCircuitUpdatesToSnapshot(result) {
+    if (!Array.isArray(result?.circuit_updates) || result.circuit_updates.length === 0) return;
+    for (const op of result.circuit_updates) {
+      if (!op || typeof op !== 'object') continue;
+      const action = op.action ?? op.op;
+      if (action !== 'create' && action !== 'rename') continue;
+      const circuitRef = Number(op.circuit ?? op.circuit_ref);
+      if (!Number.isInteger(circuitRef) || circuitRef <= 0) continue;
+      const designation = typeof op.designation === 'string' ? op.designation.trim() : '';
+      if (designation === '') continue; // placeholders / removed ops never mutate
+
+      const legacyObserver = this.stateSnapshot?.[MUTATION_OBSERVER] ?? null;
+      if (legacyObserver) {
+        legacyObserver.setOriginFrame({
+          origin: 'model_direct',
+          meta: { leg: 'legacy', field: 'circuit_designation' },
+        });
+      }
+      try {
+        upsertCircuitMetaFlagAware(this.stateSnapshot, {
+          circuit_ref: circuitRef,
+          designation,
+          ...(op.board_id == null ? {} : { boardId: op.board_id }),
+        });
+      } finally {
+        if (legacyObserver) legacyObserver.clearOriginFrame();
+      }
+      // Track recency for snapshot windowing — mirrors the reading branch.
+      const idx = this.recentCircuitOrder.indexOf(circuitRef);
+      if (idx !== -1) this.recentCircuitOrder.splice(idx, 1);
+      this.recentCircuitOrder.push(circuitRef);
     }
   }
 

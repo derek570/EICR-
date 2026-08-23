@@ -9,6 +9,7 @@
 
 import logger from '../logger.js';
 import { normaliseValue } from './value-normalise.js';
+import { isDesignationHygieneQuestion } from './legacy-designation-seam.js';
 
 /**
  * Sonnet question types that are "refill-style" — i.e. the model is asking
@@ -100,6 +101,19 @@ export function filterQuestionsAgainstFilledSlots(
   const thisTurn = resolvedFieldsThisTurn instanceof Set ? resolvedFieldsThisTurn : new Set();
   const kept = [];
   for (const q of questions) {
+    // PLAN-B B1 ingress 6 — EXPLICIT admit for the server-owned
+    // designation-hygiene clarification. A banned-only RENAME targets an
+    // already-populated `circuit_designation` slot, which is exactly the
+    // shape this filter exists to suppress — but this question is
+    // server-authored precisely BECAUSE the slot's populated value must
+    // not be silently overwritten, so it must always reach the inspector.
+    // Admission is by the closed marker pair (not by type falling through
+    // the default pass-through) so a future REFILL_QUESTION_TYPES change
+    // can never swallow it.
+    if (isDesignationHygieneQuestion(q)) {
+      kept.push(q);
+      continue;
+    }
     const field = q && q.field;
     const circuit = q && q.circuit;
     const qType = q && typeof q.type === 'string' ? q.type.toLowerCase() : '';

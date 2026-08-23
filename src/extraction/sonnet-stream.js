@@ -29,6 +29,12 @@ import { sanitizeReadingFieldContract } from './reading-field-contract-sanitizer
 // module so it can be unit-tested without loading storage.js. Docstring in
 // ./filled-slots-filter.js.
 import { filterQuestionsAgainstFilledSlots } from './filled-slots-filter.js';
+// PLAN-B B1 ingress 6 — the ONE closed server-owned designation-hygiene
+// question marker. Shadow mode refuses legacy questions_for_user wholesale
+// (consumeLegacyQuestionsForUser below); this tagged clarification is the
+// single seam-authored exception it consumes — never arbitrary
+// model-authored questions (the seam strips forged markers at parse time).
+import { isDesignationHygieneQuestion } from './legacy-designation-seam.js';
 // Stage 6 — shadow-harness wraps extractFromUtterance so SONNET_TOOL_CALLS=shadow
 // drives the stream assembler from the seam on every turn (ROADMAP Phase 1 SC #2).
 import {
@@ -4363,10 +4369,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // via ask_user tool calls, not questions_for_user, so counting them
         // here would give a misleading 0 and a log-reader hunting a
         // gate-resolution bug would waste time on the wrong signal.
+        // PLAN-B ingress 6 — a server-owned designation-hygiene clarification
+        // on the tool-call branch is NOT a prompt-regression leak (it is
+        // consumed below), so it must not trip the bypass diagnostic.
         const bypassOnBatch =
           !consumeLegacyQuestionsForUser(entryRef) &&
           Array.isArray(result.questions_for_user) &&
-          result.questions_for_user.length > 0;
+          result.questions_for_user.some((q) => !isDesignationHygieneQuestion(q));
         logger.info('Extraction result', {
           sessionId,
           path: 'onBatchResult',
@@ -4453,7 +4462,24 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           Array.isArray(result.questions_for_user) &&
           result.questions_for_user.length > 0
         ) {
-          logBypassOnce(entryRef, sessionId, 'onBatchResult');
+          // PLAN-B ingress 6 — shadow mode consumes ONLY the server-owned
+          // designation-hygiene clarification (closed marker pair; the seam
+          // strips forged markers at parse time, so anything tagged here is
+          // provably server-authored). Enqueued DIRECTLY: the filled-slot
+          // filter is the off-mode legacy surface (its STR-05 retirement
+          // warn must not fire for a tool-call-branch session) and its one
+          // designation-relevant behaviour — the populated-slot suppression
+          // — explicitly admits this marker anyway. All other legacy
+          // questions stay refused exactly as before.
+          const hygieneBatch = result.questions_for_user.filter(isDesignationHygieneQuestion);
+          if (hygieneBatch.length > 0) {
+            questionGate.enqueue(
+              stampQuestionsWithUtteranceId(hygieneBatch, result.utterance_id, result)
+            );
+          }
+          if (hygieneBatch.length < result.questions_for_user.length) {
+            logBypassOnce(entryRef, sessionId, 'onBatchResult');
+          }
         }
         // Drop pending observation_* / field-less unclear questions when Sonnet
         // has just extracted an observation — resolveByFields can't do this
@@ -7285,10 +7311,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       // the legacy JSON field here would misrepresent the actual ask count
       // at the ElevenLabs TTS boundary and send a prompt-regression diagnosis
       // down the wrong path.
+      // PLAN-B ingress 6 — same as the batched path: the server-owned
+      // designation-hygiene clarification is consumed on the tool-call
+      // branch below, so it is not a leak for the bypass diagnostic.
       const bypassOnSync =
         !consumeLegacyQuestionsForUser(entry) &&
         Array.isArray(result.questions_for_user) &&
-        result.questions_for_user.length > 0;
+        result.questions_for_user.some((q) => !isDesignationHygieneQuestion(q));
       logger.info('Extraction result', {
         sessionId,
         readings: result.extracted_readings.length,
@@ -7449,7 +7478,19 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         Array.isArray(result.questions_for_user) &&
         result.questions_for_user.length > 0
       ) {
-        logBypassOnce(entry, sessionId, 'handleTranscript');
+        // PLAN-B ingress 6 — shadow mode consumes ONLY the server-owned
+        // designation-hygiene clarification. See the symmetric comment on
+        // the onBatchResult path above (both call sites must stay in
+        // lockstep, same as the resolve-before-enqueue ordering).
+        const hygieneSync = result.questions_for_user.filter(isDesignationHygieneQuestion);
+        if (hygieneSync.length > 0) {
+          entry.questionGate.enqueue(
+            stampQuestionsWithUtteranceId(hygieneSync, result.utterance_id, result)
+          );
+        }
+        if (hygieneSync.length < result.questions_for_user.length) {
+          logBypassOnce(entry, sessionId, 'handleTranscript');
+        }
       }
 
       // Resolve observation-only questions when Sonnet extracted an observation.
