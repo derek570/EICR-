@@ -1053,6 +1053,13 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
    * component the inspector already gave and loop forever on the
    * address-alone shape.
    */
+  // id 126 — the answer shape is a property of the persisted clarification
+  // kind, stated by the controller so every emitter (initial send, durable
+  // replay, already_pending re-send, frame ledger, evidence key) agrees.
+  function directAnswerShape(intent) {
+    return intent?.clarification_kind === 'conflict' ? 'yes_no' : 'free_text';
+  }
+
   function directQuestion(intent) {
     if (!intent) return null;
     if (intent.clarification_kind === 'conflict') {
@@ -1669,6 +1676,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           outcome: existing?.clarification_kind === 'conflict' ? 'conflict' : 'source_incomplete',
           question: directQuestion(existing),
           questionId: existing?.question_id,
+          expectedAnswerShape: directAnswerShape(existing),
         };
       }
       // A NEW command colliding with a still-pending clarification (id 126):
@@ -1688,6 +1696,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           changed: [],
           question: directQuestion(pendingClarification),
           questionId: pendingClarification.question_id,
+          expectedAnswerShape: directAnswerShape(pendingClarification),
         };
       }
       return { handled: true, outcome: 'already_pending', changed: [] };
@@ -1700,6 +1709,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         // emission and every later derivation from the persisted snapshot.
         question: directQuestion(directIntent),
         questionId: directIntent.question_id,
+        expectedAnswerShape: directAnswerShape(directIntent),
       };
     }
     if (hybridBlockers.length > 0) {
@@ -1793,7 +1803,33 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     if (touchedFamilies.size !== 1 || !touchedFamilies.has(directIntent.source_family)) {
       return { handled: false };
     }
-    const source = stableSnapshot(session.stateSnapshot, directIntent.source_family);
+    // Effective source (cycle-2 finding): the LIVE snapshot wins where it
+    // holds a value (mid-session address authority), but a component the
+    // process persisted onto the intent before a crash — and which a
+    // blank-restart snapshot no longer carries — is PRESERVED, never
+    // regressed to null. Same for the dictated-write provenance ledger:
+    // prior persisted entries survive unless this turn superseded the field.
+    const liveSource = stableSnapshot(session.stateSnapshot, directIntent.source_family);
+    const persistedSource = directIntent.source_snapshot ?? {};
+    const source = Object.fromEntries(
+      SNAPSHOT_KEY_ORDER.map((key) => [
+        key,
+        meaningful(liveSource[key])
+          ? liveSource[key]
+          : meaningful(persistedSource[key])
+            ? persistedSource[key]
+            : null,
+      ])
+    );
+    const currentTurnWrites = Array.isArray(sourceWrites)
+      ? sourceWrites
+      : sourceWriteLedger(perTurnWrites, directIntent.source_family, directIntent.operation_token);
+    const mergedSourceWrites = [
+      ...(Array.isArray(directIntent.source_writes) ? directIntent.source_writes : []).filter(
+        (prior) => !currentTurnWrites.some((write) => write?.field === prior?.field)
+      ),
+      ...currentTurnWrites,
+    ];
     if (!complete(source)) {
       // Partial progress (id 126): the write advanced the source family but
       // it is still incomplete under the relaxed rule (e.g. the street
@@ -1806,14 +1842,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         (key) => meaningful(source[key]) && !meaningful(directIntent.source_snapshot?.[key])
       );
       if (!progressed) return { handled: false };
-      const progressWrites = Array.isArray(sourceWrites)
-        ? sourceWrites
-        : sourceWriteLedger(
-            perTurnWrites,
-            directIntent.source_family,
-            directIntent.operation_token
-          );
-      const rebound = await rebindDirectIncomplete(source, progressWrites);
+      const rebound = await rebindDirectIncomplete(source, mergedSourceWrites);
       // Lost CAS: the clarification was concurrently resolved or replaced —
       // don't re-ask against a generation that no longer exists.
       if (!rebound) return { handled: false };
@@ -1822,6 +1851,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         outcome: 'source_incomplete',
         question: directQuestion(rebound),
         questionId: rebound.question_id,
+        expectedAnswerShape: directAnswerShape(rebound),
       };
     }
     const target = stableSnapshot(session.stateSnapshot, directIntent.target_family);
@@ -1832,13 +1862,6 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     // "yes" would authorise the merged hybrid.
     const hybridBlockers = missingSourceKeys(source, target);
     if (hybridBlockers.length > 0) {
-      const writes = Array.isArray(sourceWrites)
-        ? sourceWrites
-        : sourceWriteLedger(
-            perTurnWrites,
-            directIntent.source_family,
-            directIntent.operation_token
-          );
       const terminal = await terminaliseDirect(
         'conflict',
         blockedTerminalOutcome(
@@ -1847,7 +1870,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           hybridBlockers
         ),
         source,
-        writes
+        mergedSourceWrites
       );
       return materializeWonDirectTransition(terminal, perTurnWrites, sourceAudible);
     }
@@ -1857,14 +1880,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         meaningful(target[key]) &&
         String(source[key]) !== String(target[key])
       ) {
-        const capturedWrites = Array.isArray(sourceWrites)
-          ? sourceWrites
-          : sourceWriteLedger(
-              perTurnWrites,
-              directIntent.source_family,
-              directIntent.operation_token
-            );
-        const reboundConflict = await rebindDirectConflict(source, capturedWrites);
+        const reboundConflict = await rebindDirectConflict(source, mergedSourceWrites);
         // Same lost-CAS guard as the incomplete rebind: a null row means the
         // clarification generation no longer exists — never dereference it.
         if (!reboundConflict) return { handled: false };
@@ -1873,17 +1889,15 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
           outcome: 'conflict',
           question: directQuestion(reboundConflict),
           questionId: reboundConflict.question_id,
+          expectedAnswerShape: directAnswerShape(reboundConflict),
         };
       }
     }
-    const writes = Array.isArray(sourceWrites)
-      ? sourceWrites
-      : sourceWriteLedger(perTurnWrites, directIntent.source_family, directIntent.operation_token);
     const terminal = await terminaliseDirect(
       'resolved_yes',
       { outcome: 'copied', replacement: false, target_snapshot: target },
       source,
-      writes
+      mergedSourceWrites
     );
     return materializeWonDirectTransition(terminal, perTurnWrites, sourceAudible);
   }
@@ -1900,6 +1914,7 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       outcome: directIntent.clarification_kind === 'conflict' ? 'conflict' : 'source_incomplete',
       question: directQuestion(directIntent),
       questionId: directIntent.question_id,
+      expectedAnswerShape: directAnswerShape(directIntent),
     };
   }
 

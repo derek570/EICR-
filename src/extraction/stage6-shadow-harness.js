@@ -2788,6 +2788,28 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           (typeof directFinal.clearAskId === 'string' && directFinal.clearAskId))
       ) {
         addressMirrorDirectFollowup = directFinal;
+        // A question-LESS terminal that clears an ask (the hybrid-blocked
+        // terminal) resolves that ask in the Plan-00 evidence ledger here —
+        // this deciding-write path runs AFTER the tool loop, so none of the
+        // ingress-side recordAskResolved branches ever see it, and the ask
+        // would otherwise stay open and invalidate quiescence. Question-
+        // bearing followups are NOT resolved (the ask is being re-asked or
+        // replaced, not answered).
+        if (typeof directFinal.question !== 'string' && directFinal.clearAskId) {
+          try {
+            entry[EVALUATION_CONTEXT]?.recordAskResolved?.({
+              runtimeId: directFinal.clearAskId,
+              terminal: 'answered',
+              detail: {
+                answer_frame_id: directFinal.clearAskId,
+                transcript_resolved: true,
+                outcome: directFinal.outcome,
+              },
+            });
+          } catch {
+            // evidence capture never breaks the live audible turn
+          }
+        }
       }
     }
 

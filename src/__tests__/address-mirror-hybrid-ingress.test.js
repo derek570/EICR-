@@ -325,4 +325,60 @@ describe('hybrid-blocked direct command at transcript ingress', () => {
     expect(entry.session.stateSnapshot.circuits[0].client_address).toBeUndefined();
     expect(row.delivered_at).toBeTruthy();
   });
+
+  test('already_pending replay of a CONFLICT clarification re-sends the question with expected_answer_shape yes_no (cycle-2 wire pin)', async () => {
+    const ws = makeFakeWs();
+    wss.emit('connection', ws, { headers: {} }, 'user-1');
+    await sendFrame(ws, {
+      type: 'session_start',
+      sessionId: 'sess-shape-replay',
+      jobId: 'job-shape-replay',
+      jobState: { certificateType: 'eicr' },
+    });
+    const entry = activeSessions.get('sess-shape-replay');
+    // Complete source, DIFFERENT fully-populated target on the shared keys —
+    // the conflict clarification ("Should I replace it?") is a yes/no ask.
+    entry.session.stateSnapshot.circuits = {
+      0: {
+        address: '2 Test Road',
+        postcode: 'TE1 1ST',
+        client_address: '9 Other Road',
+        client_postcode: 'TE1 1ST',
+      },
+    };
+    entry.addressMirrorController = createAddressMirrorController({
+      session: entry.session,
+    });
+
+    ws._sent.length = 0;
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Use the same address for the client.',
+      utterance_id: 'utt-shape-1',
+      regexResults: [],
+    });
+    const firstQuestion = ws._sent.find((frame) => frame.type === 'question');
+    expect(firstQuestion).toMatchObject({
+      question_type: 'address_mirror_direct',
+      expected_answer_shape: 'yes_no',
+    });
+
+    // A NEW colliding command (different utterance) replays the pending
+    // conflict question — the shape must STAY yes_no, not degrade to the
+    // outcome-derived free_text.
+    ws._sent.length = 0;
+    await sendFrame(ws, {
+      type: 'transcript',
+      text: 'Use the same address for the client.',
+      utterance_id: 'utt-shape-2',
+      regexResults: [],
+    });
+    const replayed = ws._sent.find((frame) => frame.type === 'question');
+    expect(replayed).toMatchObject({
+      question_type: 'address_mirror_direct',
+      question: firstQuestion.question,
+      expected_answer_shape: 'yes_no',
+    });
+    expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+  });
 });

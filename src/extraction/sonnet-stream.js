@@ -430,6 +430,11 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry
   // successful send below. Dormant single-Symbol lookup.
   const evalCtx = entry?.[EVALUATION_CONTEXT] ?? null;
   const questionId = followup.questionId ?? null;
+  // id 126 — the controller states the shape from the persisted
+  // clarification_kind; outcome-derivation is only the legacy fallback (an
+  // already_pending replay of a CONFLICT question is NOT free_text).
+  const answerShape =
+    followup.expectedAnswerShape ?? (followup.outcome === 'conflict' ? 'yes_no' : 'free_text');
   if (evalCtx && questionId && !evalCtx.askRuntimeBindings.has(questionId)) {
     evalCtx.recordAskProduced({
       producerId: 'address_mirror_ask',
@@ -441,7 +446,7 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry
         contextField: null,
         boardId: null,
         circuits: [],
-        expectedAnswerShape: followup.outcome === 'conflict' ? 'yes_no' : 'free_text',
+        expectedAnswerShape: answerShape,
         observationClarificationKind: null,
         pendingWrite: null,
         chainRole: null,
@@ -456,7 +461,7 @@ function sendAddressMirrorDirectQuestion(ws, followup, utteranceId = null, entry
       question: followup.question,
       field: null,
       circuit: null,
-      expected_answer_shape: followup.outcome === 'conflict' ? 'yes_no' : 'free_text',
+      expected_answer_shape: answerShape,
       utterance_id: typeof utteranceId === 'string' ? utteranceId : null,
     })
   );
@@ -582,6 +587,26 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
       enumerable: false,
       configurable: false,
     });
+    // A question-less ask-clearing terminal (the hybrid-blocked terminal,
+    // id 126) resolves its ask in the Plan-00 evidence ledger here — the
+    // legacy deciding-write path never reaches the ingress-side
+    // recordAskResolved branches, so without this the ask stays open and
+    // invalidates quiescence despite correct user-visible speech.
+    if (typeof directFinal.question !== 'string' && directFinal.clearAskId) {
+      try {
+        entry?.[EVALUATION_CONTEXT]?.recordAskResolved?.({
+          runtimeId: directFinal.clearAskId,
+          terminal: 'answered',
+          detail: {
+            answer_frame_id: directFinal.clearAskId,
+            transcript_resolved: true,
+            outcome: directFinal.outcome,
+          },
+        });
+      } catch {
+        // evidence capture never breaks the live audible turn
+      }
+    }
   }
   if (directWrites[ADDRESS_MIRROR_DELIVERY]) {
     Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
@@ -1530,7 +1555,9 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
         question: directFollowup.question,
         field: null,
         circuit: null,
-        expected_answer_shape: 'yes_no',
+        expected_answer_shape:
+          directFollowup.expectedAnswerShape ??
+          (directFollowup.outcome === 'conflict' ? 'yes_no' : 'free_text'),
         utterance_id:
           typeof result.utterance_id === 'string' && result.utterance_id
             ? result.utterance_id
@@ -1888,7 +1915,9 @@ export function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptO
               contextField: null,
               boardId: null,
               circuits: [],
-              expectedAnswerShape: followup?.outcome === 'conflict' ? 'yes_no' : 'free_text',
+              expectedAnswerShape:
+                followup?.expectedAnswerShape ??
+                (followup?.outcome === 'conflict' ? 'yes_no' : 'free_text'),
               observationClarificationKind: null,
               pendingWrite: null,
               chainRole: null,

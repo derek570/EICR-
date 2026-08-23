@@ -1991,3 +1991,387 @@ describe('blocked terminal shared-CAS race (id 126)', () => {
     expect(loser.handled === false || loser.outcome === 'duplicate').toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Codex diff-review cycle 2 (id 126) — restart-safe snapshot progression,
+// lost-lease losers on every fenced persist path, the DB fence contract, and
+// the remaining reverse-direction fixtures.
+// ---------------------------------------------------------------------------
+describe('clarification progression survives a blank-snapshot restart (id 126 cycle 2)', () => {
+  test('a crash-persisted address is preserved, replayed with provenance, and the operation completes on the later county', async () => {
+    let row = null;
+    const store = {
+      load: jest.fn(async () => null),
+      loadDirect: jest.fn(async () => (row?.status === 'pending' ? row : null)),
+      loadRecoverableDirect: jest.fn(async () => (row ? [row] : [])),
+      claimDirect: jest.fn(async (_user, _job, intent) => {
+        row = {
+          status: 'pending',
+          clarification_kind: intent.clarificationKind,
+          source_family: intent.sourceFamily,
+          target_family: intent.targetFamily,
+          operation_token: intent.operationToken,
+          question_id: intent.questionId,
+          source_snapshot: intent.sourceSnapshot,
+          source_writes: intent.sourceWrites,
+          delivered_at: null,
+        };
+        return { claimed: true, intent: row };
+      }),
+      rebindDirect: jest.fn(
+        async (_user, _job, _token, kind, questionId, sourceSnapshot, sourceWrites) => {
+          row = {
+            ...row,
+            clarification_kind: kind,
+            question_id: questionId,
+            source_snapshot: sourceSnapshot ?? row.source_snapshot,
+            source_writes: sourceWrites ?? row.source_writes,
+          };
+          return row;
+        }
+      ),
+      resolveDirect: jest.fn(
+        async (_user, _job, _token, status, terminalOutcome, sourceSnapshot, sourceWrites) => {
+          if (row.status !== 'pending') return { won: false, row };
+          row = {
+            ...row,
+            status,
+            terminal_outcome: terminalOutcome,
+            source_snapshot: sourceSnapshot ?? row.source_snapshot,
+            source_writes: sourceWrites ?? row.source_writes,
+          };
+          return { won: true, row };
+        }
+      ),
+      claimDirectDelivery: jest.fn(async (_user, _job, _token, claimToken) => {
+        row = { ...row, delivery_claim_token: claimToken };
+        return row;
+      }),
+    };
+
+    // Turn 1: command with an empty source → no-address clarification.
+    const session1 = sessionWith();
+    const first = createAddressMirrorController({
+      userId: 'owner-restart-progress',
+      jobId: 'job-restart-progress',
+      session: session1,
+      store,
+    });
+    const asked = await first.applyDirectCommand(
+      'use the installation address for the customer',
+      createPerTurnWrites(),
+      'utt-restart-progress'
+    );
+    expect(asked.question).toBe('What is the site address, including a town, county, or postcode?');
+
+    // Turn 2: the street address arrives — progressed re-ask, snapshot persisted.
+    session1.stateSnapshot.circuits[0].address = '137 Large Lane';
+    const progressWrites = sourceTurnWrites({ address: '137 Large Lane' });
+    const progressed = await first.finalizeDirectAfterWrites({
+      successfulFields: new Set(['address']),
+      perTurnWrites: progressWrites,
+    });
+    expect(progressed).toMatchObject({ handled: true, outcome: 'source_incomplete' });
+    expect(progressed.question).toBe('What is the site postcode, town, or county?');
+    expect(progressed.expectedAnswerShape).toBe('free_text');
+    expect(row.source_snapshot.address).toBe('137 Large Lane');
+
+    // CRASH: a new process rehydrates against a BLANK live snapshot — the
+    // persisted address must not regress to null.
+    const session2 = sessionWith();
+    const second = createAddressMirrorController({
+      userId: 'owner-restart-progress',
+      jobId: 'job-restart-progress',
+      session: session2,
+      store,
+    });
+    await second.rehydrate();
+
+    // The county arrives: merged source = persisted address + live county.
+    session2.stateSnapshot.circuits[0].county = 'Essex';
+    const decideWrites = sourceTurnWrites({ county: 'Essex' });
+    const completed = await second.finalizeDirectAfterWrites({
+      successfulFields: new Set(['county']),
+      perTurnWrites: decideWrites,
+    });
+    expect(completed).toMatchObject({ handled: true, outcome: 'copied' });
+    // The persisted address was preserved, restored to the live snapshot,
+    // replayed with its dictated provenance, and copied to the client.
+    expect(session2.stateSnapshot.circuits[0]).toMatchObject({
+      address: '137 Large Lane',
+      client_address: '137 Large Lane',
+      client_county: 'Essex',
+    });
+    const replayedAddress = [...decideWrites.boardReadings.entries()].find(([key]) =>
+      key.includes('address')
+    );
+    expect(replayedAddress).toBeDefined();
+    expect(row.source_writes.some((write) => write.field === 'address')).toBe(true);
+  });
+});
+
+describe('lost-lease losers stage nothing on every fenced persist path (id 126 cycle 2)', () => {
+  const directRow = (overrides = {}) => ({
+    status: 'resolved_yes',
+    clarification_kind: 'direct',
+    source_family: 'site',
+    target_family: 'client',
+    operation_token: 'direct-lost-lease',
+    question_id: 'address-mirror-direct-lost-lease',
+    source_snapshot: { address: '2 Test Road', postcode: 'TE1 1ST' },
+    source_writes: [],
+    terminal_outcome: { outcome: 'copied', replacement: false, target_snapshot: {} },
+    delivered_at: null,
+    ...overrides,
+  });
+
+  const directStore = (row) => ({
+    load: jest.fn(async () => null),
+    loadRecoverableDirect: jest.fn(async () => [row]),
+    claimDirectDelivery: jest.fn(async (_user, _job, _token, claimToken) => ({
+      ...row,
+      delivery_claim_token: claimToken,
+    })),
+    conflictDirect: jest.fn(async () => null),
+  });
+
+  test('direct source_drift loser: fenced persist misses → silent duplicate', async () => {
+    const row = directRow();
+    const session = sessionWith({ address: '999 Drifted Road', postcode: 'TE1 1ST' });
+    const controller = createAddressMirrorController({
+      userId: 'owner-lost-sd',
+      jobId: 'job-lost-sd',
+      session,
+      store: directStore(row),
+    });
+    await controller.rehydrate();
+    const writes = createPerTurnWrites();
+    const out = await controller.recoverUndelivered(writes);
+    expect(out).toMatchObject({ handled: true, outcome: 'duplicate' });
+    expect(writes.answer.stagedText).toBeNull();
+    expect([...writes.boardReadings.values()]).toHaveLength(0);
+  });
+
+  test('direct target_drift loser: fenced persist misses → silent duplicate, no replays staged', async () => {
+    const row = directRow({
+      source_writes: [
+        { field: 'postcode', value: 'TE1 1ST', confidence: 1, source_turn_id: 't-lease-td' },
+      ],
+    });
+    // Source postcode missing from the live snapshot (a replay candidate);
+    // the client target holds a DIFFERENT populated address (drift, not a
+    // missing-source component).
+    const session = sessionWith({ address: '2 Test Road' }, { address: '9 Other Road' });
+    const controller = createAddressMirrorController({
+      userId: 'owner-lost-td',
+      jobId: 'job-lost-td',
+      session,
+      store: directStore(row),
+    });
+    await controller.rehydrate();
+    const writes = createPerTurnWrites();
+    const out = await controller.recoverUndelivered(writes);
+    expect(out).toMatchObject({ handled: true, outcome: 'duplicate' });
+    expect(writes.answer.stagedText).toBeNull();
+    expect([...writes.boardReadings.values()]).toHaveLength(0);
+    expect(session.stateSnapshot.circuits[0].postcode).toBeUndefined();
+  });
+
+  test('claimed convenience recovery loser: fenced conflict persist misses → silent duplicate', async () => {
+    const row = {
+      status: 'resolved_yes',
+      ask_id: 'ask-lost-conv',
+      source_family: 'site',
+      source_snapshot: { address: '2 Test Road', postcode: 'TE1 1ST' },
+      source_version_hash: null,
+      source_writes: [],
+      resolution_token: 'resolution-lost-conv',
+      terminal_outcome: { outcome: 'yes' },
+      delivered_at: null,
+    };
+    const store = {
+      load: jest.fn(async () => row),
+      loadRecoverableDirect: jest.fn(async () => []),
+      claimDelivery: jest.fn(async (_user, _job, _token, claimToken) => ({
+        ...row,
+        delivery_claim_token: claimToken,
+      })),
+      conflict: jest.fn(async () => null),
+    };
+    // Live source drifted → the recovery replay routes to conflict(), whose
+    // fenced persist misses (lease reclaimed) → the loser stays silent.
+    const session = sessionWith({ address: '999 Drifted Road', postcode: 'TE1 1ST' });
+    const controller = createAddressMirrorController({
+      userId: 'owner-lost-conv',
+      jobId: 'job-lost-conv',
+      session,
+      store,
+    });
+    await controller.rehydrate();
+    const writes = createPerTurnWrites();
+    const out = await controller.recoverUndelivered(writes);
+    expect(out).toMatchObject({ handled: true, outcome: 'duplicate' });
+    expect(writes.answer.stagedText).toBeNull();
+    expect([...writes.boardReadings.values()]).toHaveLength(0);
+    expect(store.conflict).toHaveBeenCalledTimes(1);
+    // The fence token reached the store (5th argument).
+    expect(store.conflict.mock.calls[0][4]).toEqual(expect.any(String));
+  });
+});
+
+describe('db conflict-fence contract (id 126 cycle 2)', () => {
+  test('both conflict UPDATEs carry the token + freshness predicate and atomically renew the lease', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const dbSource = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'db.js'),
+      'utf8'
+    );
+    // The runtime suite has no Postgres, so the SQL text IS the contract
+    // (same stance as the surge-protection prompt pins): token equality,
+    // lease freshness, and atomic renewal must all survive on BOTH tables.
+    const fencePredicate =
+      /\(\$5::text IS NULL\s*\n\s*OR \(delivery_claim_token = \$5\s*\n\s*AND delivery_claimed_at >= NOW\(\) - INTERVAL '10 seconds'\)\)/g;
+    expect(dbSource.match(fencePredicate)).toHaveLength(2);
+    const renewal =
+      /delivery_claimed_at = CASE WHEN \$5::text IS NULL THEN delivery_claimed_at ELSE NOW\(\) END/g;
+    expect(dbSource.match(renewal)).toHaveLength(2);
+  });
+});
+
+describe('hybrid-address guard — remaining client→site fixtures (id 126 cycle 2)', () => {
+  const clientSourceSession = (targetComponents = {}) =>
+    sessionWith(targetComponents, { address: '9 Client Road', county: 'Essex' });
+
+  test.each([
+    // Source is client address+county: the site's county is present-but-
+    // different (conflict class); town/postcode are genuinely absent.
+    ['town/county-only', { town: 'Reading', county: 'Berkshire' }, ['town']],
+    ['multi-component', { postcode: 'HB1 1AA', town: 'Reading' }, ['postcode', 'town']],
+  ])(
+    'direct client→site command against a %s site target blocks and names the missing client components',
+    async (_label, targetComponents, missingKeys) => {
+      const session = clientSourceSession(targetComponents);
+      const controller = createAddressMirrorController({ session });
+      const writes = createPerTurnWrites();
+      const out = await controller.applyDirectCommand(
+        'use the client address for the site',
+        writes,
+        `utt-cs-${_label}`
+      );
+      expect(out).toMatchObject({ handled: true, outcome: 'blocked', changed: [] });
+      const list = missingKeys.join(' and ');
+      expect(writes.answer.stagedText).toBe(
+        `The site address already has a ${list} — dictate the client ${list} and ask me again.`
+      );
+      expect(session.stateSnapshot.circuits[0].address).toBeUndefined();
+    }
+  );
+
+  test.each([
+    ['town/county-only', { town: 'Reading', county: 'Berkshire' }],
+    ['multi-component', { postcode: 'HB1 1AA', town: 'Reading' }],
+  ])(
+    'convenience client→site ask is suppressed for a %s site target',
+    async (_label, targetComponents) => {
+      const store = {
+        claim: jest.fn(async (_user, _job, intent) => ({ claimed: true, intent })),
+      };
+      const controller = createAddressMirrorController({
+        userId: `owner-cs-conv-${_label}`,
+        jobId: `job-cs-conv-${_label}`,
+        session: clientSourceSession(targetComponents),
+        store,
+      });
+      const out = await controller.claimLiveAsk({
+        input: { purpose: 'address_mirror', question: 'Use it for the site?' },
+        askId: `ask-cs-conv-${_label}`,
+        perTurnWrites: sourceTurnWrites({
+          client_address: '9 Client Road',
+          client_county: 'Essex',
+        }),
+      });
+      expect(out).toEqual({ ok: false, reason: 'source_missing_target_components' });
+      expect(store.claim).not.toHaveBeenCalled();
+    }
+  );
+
+  test('equal on all populated-both-sides keys with no site-only components → client→site copy proceeds', async () => {
+    const session = sessionWith(
+      { address: '9 Client Road', county: 'Essex' },
+      { address: '9 Client Road', county: 'Essex' }
+    );
+    const controller = createAddressMirrorController({ session });
+    const out = await controller.applyDirectCommand(
+      'use the client address for the site',
+      createPerTurnWrites(),
+      'utt-cs-equal'
+    );
+    expect(out).toMatchObject({ handled: true, outcome: 'copied' });
+  });
+
+  test('late race (b) client→site: a recovered direct terminal against a site target that gained a client-absent component fails closed', async () => {
+    let directRow = null;
+    const store = {
+      load: jest.fn(async () => null),
+      loadDirect: jest.fn(async () => directRow),
+      claimDirect: jest.fn(async (_user, _job, intent) => {
+        directRow = {
+          status: 'pending',
+          clarification_kind: intent.clarificationKind,
+          source_family: intent.sourceFamily,
+          target_family: intent.targetFamily,
+          operation_token: intent.operationToken,
+          question_id: intent.questionId,
+          source_snapshot: intent.sourceSnapshot,
+          source_writes: intent.sourceWrites,
+        };
+        return { claimed: true, intent: directRow };
+      }),
+      resolveDirect: jest.fn(async (_user, _job, _token, status, terminalOutcome) => {
+        directRow = { ...directRow, status, terminal_outcome: terminalOutcome };
+        return directRow;
+      }),
+      conflictDirect: jest.fn(async (_user, _job, _token, terminalOutcome) => {
+        directRow = { ...directRow, status: 'conflict', terminal_outcome: terminalOutcome };
+        return directRow;
+      }),
+    };
+    const session = clientSourceSession();
+    const controller = createAddressMirrorController({
+      userId: 'owner-late-b-cs',
+      jobId: 'job-late-b-cs',
+      session,
+      store,
+    });
+    await controller.applyDirectCommand(
+      'use the client address for the site',
+      createPerTurnWrites(),
+      'utt-late-b-cs'
+    );
+    expect(directRow.status).toBe('resolved_yes');
+
+    const restartedSession = clientSourceSession({ postcode: 'HB1 1AA' });
+    const restarted = createAddressMirrorController({
+      userId: 'owner-late-b-cs',
+      jobId: 'job-late-b-cs',
+      session: restartedSession,
+      store,
+    });
+    await restarted.rehydrate();
+    const replayWrites = createPerTurnWrites();
+    const recovered = await restarted.recoverUndelivered(replayWrites);
+    expect(recovered).toMatchObject({ handled: true, outcome: 'blocked', changed: [] });
+    expect(replayWrites.answer.stagedText).toBe(
+      'The site address already has a postcode — dictate the client postcode and ask me again.'
+    );
+    expect(restartedSession.stateSnapshot.circuits[0].address).toBeUndefined();
+    expect(directRow.terminal_outcome).toMatchObject({
+      outcome: 'blocked',
+      missing_source_keys: ['postcode'],
+      source_family: 'client',
+      target_family: 'site',
+    });
+  });
+});

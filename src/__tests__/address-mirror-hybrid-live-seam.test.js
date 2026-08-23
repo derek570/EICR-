@@ -25,6 +25,7 @@ import {
   createAddressMirrorController,
 } from '../extraction/address-mirror-controller.js';
 import { _test_buildResultFrameLedger } from '../extraction/sonnet-stream.js';
+import { EVALUATION_CONTEXT } from '../extraction/plan00-lifecycle-hooks.js';
 import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 import { mockClient } from './helpers/mockStream.js';
 
@@ -122,7 +123,14 @@ test('deciding source write on the live path → cancel_pending_tts precedes exa
   expect(asked).toMatchObject({ handled: true, outcome: 'source_incomplete' });
   expect(asked.question).toBe('What is the site postcode, town, or county?');
 
-  activeSessions.set(SESSION_ID, { addressMirrorController: controller });
+  // Cycle-2 pin: the finalize-driven blocked terminal must resolve its ask
+  // in the Plan-00 evidence ledger exactly once (this path runs after the
+  // tool loop, past every ingress-side recordAskResolved branch).
+  const recordAskResolved = jest.fn();
+  activeSessions.set(SESSION_ID, {
+    addressMirrorController: controller,
+    [EVALUATION_CONTEXT]: { recordAskResolved },
+  });
 
   // The deciding write lands through the REAL live tool loop; the post-loop
   // mirror seam observes it, finds the target's postcode absent from the
@@ -160,4 +168,15 @@ test('deciding source write on the live path → cancel_pending_tts precedes exa
   const framesCarryingBlocker = frames.filter((frame) => frame.json.includes(blockerText));
   expect(framesCarryingBlocker.length).toBe(1);
   expect(frames.indexOf(framesCarryingBlocker[0])).toBeGreaterThan(0);
+
+  // The evidence ledger closed the cleared ask exactly once, with the
+  // blocked outcome.
+  expect(recordAskResolved).toHaveBeenCalledTimes(1);
+  expect(recordAskResolved).toHaveBeenCalledWith(
+    expect.objectContaining({
+      runtimeId: asked.questionId,
+      terminal: 'answered',
+      detail: expect.objectContaining({ outcome: 'blocked' }),
+    })
+  );
 });
