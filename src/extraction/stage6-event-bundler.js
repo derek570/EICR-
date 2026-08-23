@@ -111,6 +111,57 @@ export const SAME_TURN_CLEAR_WRITE_COLLAPSED = Symbol('stage6.sameTurnClearWrite
  */
 const BULK_OUTCOME_MATCH_IDENTITY = Symbol('stage6.bulkOutcomeMatchIdentity');
 
+/**
+ * PLAN-D 2026-08-23 (feedback id 130) — non-enumerable per-confirmation
+ * sidecars captured AT ORIGINAL SYNTHESIS, consumed by the create-ack merge
+ * pass in bundleToolCallsIntoResult (and, for the substitution sidecar, by
+ * the VOICE_MID_STREAM_FILTER in stage6-shadow-harness.js). None of these
+ * ever cross the wire (non-enumerable ⇒ invisible to JSON.stringify).
+ *
+ * WHY sidecars, not late re-renders: the first render passes
+ * `calculated`/clamp-`correction` options the confirmation entry does not
+ * retain — a bare late `buildConfirmationText(field, value, null, null)`
+ * would flatten "Zs calculated as …" to a plain reading and silently DROP
+ * the safety-critical "I corrected 16 to 1.6" clause from a clamped
+ * read-back. Rendering both variants while the options are still in scope
+ * preserves the semantics byte-for-byte.
+ *
+ *  - CONFIRMATION_VALUE_ONLY_TAIL: circuit:null, designation:null — the bare
+ *    value tail ("wiring type A") consumed by the merged creation carrier
+ *    ("Created circuit 3, Downstairs light — wiring type A").
+ *  - CONFIRMATION_CIRCUIT_PRESERVING_TEXT: original circuit,
+ *    designation:null — the designation-free but STILL circuit-attributable
+ *    form ("Circuit 3, wiring type A") consumed by fast-correlated canonical
+ *    siblings/fallbacks. A value-only fallback would lose circuit identity
+ *    and be unassignable by ear on a multi-circuit turn.
+ *  - CONFIRMATION_EFFECTIVE_BOARD: the dispatcher-resolved effective board
+ *    (`effectiveBoardOf(r)`), because the wire `board_id` is deliberately
+ *    omitted on ordinary selected-board turns — carrier identity for the
+ *    create merge, and the board alias the D4 audio-finalizer descriptors
+ *    carry.
+ *  - CREATE_ACK_SUBSTITUTION: the standalone create ack preserved on a
+ *    MERGED carrier so the mid-stream filter can substitute it instead of
+ *    silencing the creation fact when it removes the carrier (the
+ *    preliminary clip carried the READING only). Exported for
+ *    stage6-shadow-harness.js.
+ */
+export const CONFIRMATION_EFFECTIVE_BOARD = Symbol('stage6.confirmationEffectiveBoard');
+export const CONFIRMATION_VALUE_ONLY_TAIL = Symbol('stage6.confirmationValueOnlyTail');
+export const CONFIRMATION_CIRCUIT_PRESERVING_TEXT = Symbol(
+  'stage6.confirmationCircuitPreservingText'
+);
+export const CREATE_ACK_SUBSTITUTION = Symbol('stage6.createAckSubstitution');
+
+/** Attach a non-enumerable, non-wire transient to a confirmation entry. */
+function stampTransient(entry, symbol, value) {
+  Object.defineProperty(entry, symbol, {
+    value,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+}
+
 /*
  * A2-multiboard (2026-07-28) — `REPLACES_CLEARED_AMBIGUOUS_PROJECTION` (and its
  * `stage6.replaces_cleared_ambiguous_projection` telemetry row) lived here.
@@ -172,7 +223,8 @@ function synthesiseStateChangeConfirmations(
   boardOps,
   skipCircuitDesignations,
   boardDesignations,
-  turnId = null
+  turnId = null,
+  mergedCreateOps = null
 ) {
   const out = [];
   // A2-multiboard item 3 — a designation read-back only covers THIS op when it
@@ -192,6 +244,13 @@ function synthesiseStateChangeConfirmations(
       if (!Number.isInteger(ref) || ref <= 0) continue;
       let text = null;
       if (op.op === 'create') {
+        // PLAN-D 2026-08-23 (id 130) — this create's ack was MERGED into a
+        // same-turn reading confirmation ("Created circuit N, <designation>
+        // — <value>") by the merge pass in bundleToolCallsIntoResult; the
+        // standalone ack would double-announce the creation. The merged
+        // carrier keeps the ack as a substitution sidecar for the mid-stream
+        // filter, so the creation fact stays audible on every path.
+        if (mergedCreateOps && mergedCreateOps.has(op)) continue;
         if (designationCovered(op, ref)) continue; // covered by reading TTS
         const desig = op?.meta?.designation;
         if (typeof desig === 'string' && desig.trim()) {
@@ -843,6 +902,12 @@ function synthesiseConfirmations(
         writable: false,
       });
     }
+    // PLAN-D 2026-08-23 (D4) — effective-board alias for the audio-finalizer
+    // descriptors (grouped entries are ACK-eligible; the wire board_id is
+    // omitted on ordinary selected-board turns). Grouped entries get NO
+    // render sidecars: they are never create-merge carriers (a value-only
+    // re-render would erase their multi-circuit scope).
+    stampTransient(entry, CONFIRMATION_EFFECTIVE_BOARD, bucket.effectiveBoardId ?? null);
     out.push(entry);
     for (const idx of bucket.indices) consumedReadingIndices.add(idx);
   }
@@ -912,6 +977,30 @@ function synthesiseConfirmations(
         writable: false,
       });
     }
+    // PLAN-D 2026-08-23 (id 130) — capture the two designation-free render
+    // variants NOW, with the SAME calculated/correction options this entry's
+    // own text was built with (see the symbols' doc comment above for why a
+    // late re-render is wrong). `circuit_designation`'s value-only variant is
+    // null by construction (the builder's own special case rejects
+    // circuit:null) — which is exactly what the triple-shape merge relies on
+    // to never select a designation confirmation as a value carrier.
+    stampTransient(entry, CONFIRMATION_EFFECTIVE_BOARD, effectiveBoardOf(r) ?? null);
+    stampTransient(
+      entry,
+      CONFIRMATION_VALUE_ONLY_TAIL,
+      buildConfirmationText(r.field, r.value, null, null, {
+        calculated: isCalc(r),
+        correction: correctionOf(r),
+      })
+    );
+    stampTransient(
+      entry,
+      CONFIRMATION_CIRCUIT_PRESERVING_TEXT,
+      buildConfirmationText(r.field, r.value, r.circuit, null, {
+        calculated: isCalc(r),
+        correction: correctionOf(r),
+      })
+    );
     out.push(entry);
   }
   for (const r of boardReadings) {
@@ -953,6 +1042,9 @@ function synthesiseConfirmations(
     }
     // W1.4 transient confidence sidecar (board-level degenerate path).
     entry._confidence = typeof r.confidence === 'number' ? r.confidence : null;
+    // PLAN-D 2026-08-23 (D4) — effective-board alias for the audio-finalizer
+    // descriptors (board-level entries are ACK-eligible too).
+    stampTransient(entry, CONFIRMATION_EFFECTIVE_BOARD, effectiveBoardOf(r) ?? null);
     out.push(entry);
   }
   return out;
@@ -1873,6 +1965,177 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         entry.dedupe_token = `secfield_${identity.field}_${identity.scope}_${_confirmationDedupeTurnId}_ord${identity.ordinal}`;
       }
     }
+    // 2026-05-29 (construction MOVED UP by PLAN-D 2026-08-23 — the create-ack
+    // merge below and synthesiseStateChangeConfirmations further down both
+    // consume it; one construction, or they drift). A designation read-back
+    // only covers an op on the SAME effective board (A2-multiboard item 3):
+    // board-scoped readings contribute the pair key, unscoped readings the
+    // bare ref.
+    const skipDesignations = new Set();
+    for (const r of extracted_readings) {
+      if (r.field === 'circuit_designation' && Number.isInteger(r.circuit)) {
+        if (r.board_id != null && r.board_id !== '') {
+          skipDesignations.add(circuitDesignationKey(r.board_id, r.circuit));
+        } else {
+          skipDesignations.add(r.circuit);
+        }
+      }
+    }
+
+    // PLAN-D 2026-08-23 (feedback id 130) — merge the create ack into ONE
+    // non-fast same-turn reading confirmation. Session 17821FFA turn 14: the
+    // ask-driven create flow (create_circuit{designation} + same-turn
+    // record_reading) produced TWO clips both announcing "circuit 3 =
+    // Downstairs light" — the reading confirmation carries the designation
+    // prefix AND synthesiseStateChangeConfirmations adds the standalone
+    // create ack, because its skip-list is built ONLY from
+    // record_reading(circuit_designation), which the create-via-ask flow
+    // never emits. Fix: rewrite exactly ONE deterministically-chosen carrier
+    // — the FIRST true single-circuit, non-fast-correlated reading
+    // confirmation in original order — as "Created circuit N, <designation>
+    // — <value-only tail>", and drop the standalone ack (preserved as a
+    // non-enumerable substitution sidecar for the mid-stream filter).
+    //
+    // RUNS BEFORE the bulk-outcome augmentation below, so a later "skipping
+    // N spare ways" disclosure appends to the MERGED text (and refreshes the
+    // substitution sidecar — see the bulk branch).
+    //
+    // Shapes preserved / handled:
+    //  - create with NO same-turn readings (turn-9 dictated-designation
+    //    shape): untouched — exactly one standalone ack.
+    //  - ALL same-circuit readings fast-correlated: NO merge (correlation
+    //    may suppress the reading clip client-side; merging into a
+    //    suppressed clip would silence the creation fact) — standalone ack
+    //    retained, and the fast-correlated canonical siblings are rendered
+    //    DESIGNATION-FREE so a fast-FAILED fallback never re-announces the
+    //    designation next to the ack (round-15/16).
+    //  - TRIPLE (create + record_reading(circuit_designation) + measured
+    //    readings): the surviving circuit_designation confirmation IS the
+    //    creation carrier (never select a measured carrier instead); every
+    //    OTHER same-scope reading renders from the circuit-preserving
+    //    designation-free sidecar (round-17).
+    //  - Whenever ANY audible creation carrier exists (merged OR standalone),
+    //    EVERY same-scope fast-correlated canonical sibling is rendered
+    //    designation-free (round-16 mixed-carrier generalisation).
+    //
+    // Carrier identity is the EFFECTIVE board (the wire board_id is omitted
+    // on ordinary selected-board turns): entries carry the
+    // CONFIRMATION_EFFECTIVE_BOARD stamp from synthesis; create ops resolve
+    // via readEffectiveOpBoard. Grouped/range entries are NEVER carriers
+    // (value-only re-rendering would erase their multi-circuit scope) and
+    // never match `isTrueSingleCircuit`.
+    //
+    // Invariants: the carrier keeps its field and (absent) expects_ios_ack;
+    // NO dedupe_token is minted on it (its value-aware positional client key
+    // changes with the text BY DESIGN — fresh-circuit turn, no prior key
+    // exists for the slot, and expected_dedupe_key is projected post-rewrite
+    // in stage6-shadow-harness.js).
+    const mergedCreateOps = new Set();
+    if (
+      Array.isArray(perTurnWrites.circuitOps) &&
+      perTurnWrites.circuitOps.length > 0 &&
+      confirmations.length > 0
+    ) {
+      const opDesignationCovered = (op, ref) => {
+        const eff = readEffectiveOpBoard(op);
+        if (eff != null && skipDesignations.has(circuitDesignationKey(eff, ref))) return true;
+        return skipDesignations.has(ref);
+      };
+      const scopeMatches = (entry, opEff) => {
+        const entryEff = entry[CONFIRMATION_EFFECTIVE_BOARD] ?? entry.board_id ?? null;
+        return (entryEff ?? null) === (opEff ?? null);
+      };
+      const isTrueSingleCircuit = (entry, ref) =>
+        Number.isInteger(entry.circuit) &&
+        entry.circuit === ref &&
+        (!Array.isArray(entry.circuits) || entry.circuits.length === 0);
+      // Designation-free re-render from the sidecar captured at synthesis
+      // (never a late buildConfirmationText call — the calculated/correction
+      // options are not retained on the entry). No-op when the entry never
+      // had a designation prefix (sidecar text equals current text).
+      const renderDesignationFree = (entry) => {
+        const cp = entry[CONFIRMATION_CIRCUIT_PRESERVING_TEXT];
+        if (typeof cp === 'string' && cp && cp !== entry.text) {
+          entry.text = cp;
+          entry.expanded_text = expandForTTS(cp);
+        }
+      };
+      for (let opIdx = 0; opIdx < perTurnWrites.circuitOps.length; opIdx += 1) {
+        const op = perTurnWrites.circuitOps[opIdx];
+        if (op?.op !== 'create') continue;
+        const ref = op.circuit_ref;
+        if (!Number.isInteger(ref) || ref <= 0) continue;
+        const opEff = readEffectiveOpBoard(op);
+        const sameScope = confirmations.filter(
+          (c) => isTrueSingleCircuit(c, ref) && scopeMatches(c, opEff)
+        );
+        if (sameScope.length === 0) continue; // turn-9 / grouped-only — untouched
+        if (opDesignationCovered(op, ref)) {
+          // TRIPLE shape — the designation confirmation is the creation
+          // carrier; the existing skip-list already suppresses the standalone
+          // ack. Its text/dedupe token stay untouched; every OTHER same-scope
+          // reading goes designation-free so the designation is spoken
+          // exactly once across the turn.
+          const hasDesignationCarrier = sameScope.some((c) => c.field === 'circuit_designation');
+          if (hasDesignationCarrier) {
+            for (const c of sameScope) {
+              if (c.field === 'circuit_designation') continue;
+              renderDesignationFree(c);
+            }
+          }
+          continue;
+        }
+        const desig =
+          typeof op?.meta?.designation === 'string' && op.meta.designation.trim()
+            ? op.meta.designation.trim()
+            : null;
+        const carrier = sameScope.find(
+          (c) =>
+            c.field !== 'circuit_designation' &&
+            !c.fast_correlation_id &&
+            typeof c[CONFIRMATION_VALUE_ONLY_TAIL] === 'string' &&
+            c[CONFIRMATION_VALUE_ONLY_TAIL]
+        );
+        if (carrier) {
+          const tail = carrier[CONFIRMATION_VALUE_ONLY_TAIL];
+          // Designationless create speaks "Created circuit N — <tail>" (no
+          // dangling comma / empty name).
+          const mergedText = desig
+            ? `Created circuit ${ref}, ${desig} — ${tail}`
+            : `Created circuit ${ref} — ${tail}`;
+          carrier.text = mergedText;
+          carrier.expanded_text = expandForTTS(mergedText);
+          // Preserve the standalone ack (byte-identical to what
+          // synthesiseStateChangeConfirmations would have emitted, including
+          // its §A1a circop_ token) as the mid-stream-filter substitution —
+          // if the filter removes this carrier because the reading slot was
+          // already emitted preliminarily, the creation fact must not be
+          // silenced with it.
+          const ackText = desig ? `Circuit ${ref} is now the ${desig}` : `Circuit ${ref} created`;
+          stampTransient(carrier, CREATE_ACK_SUBSTITUTION, {
+            text: ackText,
+            expanded_text: expandForTTS(ackText),
+            field: 'circuit_op',
+            circuit: ref,
+            dedupe_token: `circop_${_turnId ?? 'noturn'}_${opIdx}_create_${ref}`,
+            expects_ios_ack: false,
+          });
+          mergedCreateOps.add(op);
+        }
+        // Round-16 generalisation — a creation carrier exists either way now
+        // (merged above, or the standalone ack this op will still synthesise
+        // because it was NOT added to mergedCreateOps): every same-scope
+        // fast-correlated canonical sibling renders designation-free, so the
+        // fast-FAILED fallback ordering can never re-announce the
+        // designation beside the creation carrier.
+        for (const c of sameScope) {
+          if (c === carrier) continue;
+          if (!c.fast_correlation_id) continue;
+          renderDesignationFree(c);
+        }
+      }
+    }
+
     // PLAN-F item 1 (2026-08-12, feedback id 115) — audible-skip disclosure.
     // dispatchSetFieldForAllCircuits does NOT compose confirmations itself
     // (it never sees `confirmations` — only perTurnWrites/legacyResultShape/
@@ -1992,6 +2255,15 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
           const match = confirmations[matchIdx];
           match.text = `${match.text}, ${appendClause}`;
           match.expanded_text = expandForTTS(match.text);
+          // PLAN-D 2026-08-23 (id 130) — the amended carrier may be a MERGED
+          // creation carrier: refresh its substitution sidecar to include the
+          // disclosure, so a later mid-stream-filter substitution never
+          // silently drops the skip disclosure along with the reading.
+          const substitution = match[CREATE_ACK_SUBSTITUTION];
+          if (substitution) {
+            substitution.text = `${substitution.text}, ${appendClause}`;
+            substitution.expanded_text = expandForTTS(substitution.text);
+          }
         } else if (
           bulkIdentityOwnsWinningReading.has(`${outcome.callId}|${outcome.effectiveBoardId}`)
         ) {
@@ -2133,22 +2405,15 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // (Audio-First #1). A board-scoped reading contributes ONLY its pair key;
     // an unscoped reading contributes the bare ref, which is what every
     // single-board turn produces — so single-board behaviour is unchanged.
-    const skipDesignations = new Set();
-    for (const r of extracted_readings) {
-      if (r.field === 'circuit_designation' && Number.isInteger(r.circuit)) {
-        if (r.board_id != null && r.board_id !== '') {
-          skipDesignations.add(circuitDesignationKey(r.board_id, r.circuit));
-        } else {
-          skipDesignations.add(r.circuit);
-        }
-      }
-    }
+    // (`skipDesignations` itself is constructed ONCE, further up, before the
+    // PLAN-D create-ack merge pass — both consumers share it.)
     const stateChanges = synthesiseStateChangeConfirmations(
       perTurnWrites.circuitOps,
       perTurnWrites.boardOps,
       skipDesignations,
       options.boardDesignations,
-      _turnId
+      _turnId,
+      mergedCreateOps
     );
     // 2026-06-01 Issue 8 — observations, observation deletions and
     // explicit clear_reading corrections were silent. Inspector
