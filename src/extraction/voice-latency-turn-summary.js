@@ -174,8 +174,14 @@ function buildAckObligations(fastAttempts, ackEligibleConfirmations, rejectedIds
       obligations.set(`canon:${canonOrdinal++}`, ob);
     }
   }
-  // Same-slot multiplicity → AMBIGUOUS for slot-based matching (correlation
-  // matches remain exact regardless).
+  // Same-slot multiplicity → AMBIGUOUS — but ONLY for obligations that lack
+  // a correlation identity (Codex diff-review cycle 1, edge lens): a
+  // fast/twin obligation is uniquely addressable by its correlation id
+  // regardless of shared slots, so a missing ACK on it is an EXACT loss
+  // (report unacked), never ambiguous. Only correlation-less canonicals —
+  // e.g. designationOps' same-slot entries distinguished solely by
+  // dedupe_token, which iOS ACKs do not carry — are genuinely
+  // indistinguishable.
   const aliasOwners = new Map();
   for (const [id, ob] of obligations) {
     for (const alias of ob.slotAliases) {
@@ -185,7 +191,10 @@ function buildAckObligations(fastAttempts, ackEligibleConfirmations, rejectedIds
   }
   for (const owners of aliasOwners.values()) {
     if (owners.length > 1) {
-      for (const id of owners) obligations.get(id).slotAmbiguous = true;
+      for (const id of owners) {
+        const ob = obligations.get(id);
+        if (ob.correlationId == null) ob.slotAmbiguous = true;
+      }
     }
   }
   return obligations;
@@ -483,23 +492,46 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
     correlationIds
   );
 
-  const expected_acks = Math.max(0, bundlerEmittedCount + attemptedFastTtsCount - decrementCount);
-
   // PLAN-D 2026-08-23 (D4) — capability-conditioned observability. Gate on
   // `client_playback_telemetry` (what current iOS actually advertises; the
   // legacy voice_latency_ack flag is NOT advertised by current builds and
   // gating on it would classify real iOS sessions as unobservable). A
   // session whose parsed capabilities LACK the flag (web advertises no
-  // playback telemetry at all) is UNOBSERVABLE — its missing ACKs are the
-  // expected state, never evidence of unheard audio. A session with no
-  // parsed capability info at all (legacy callers, partial test sessions)
-  // stays 'unknown' and keeps the pre-D4 behaviour byte-identical.
+  // playback telemetry at all; a LEGACY client sending no capabilities
+  // block parses to version-0/all-false — parseVoiceLatencyCapabilities
+  // never returns null) is UNOBSERVABLE — its missing ACKs are the
+  // expected state, never evidence of unheard audio. The 'unknown' branch
+  // below is unreachable for live sessions: session registration
+  // (sonnet-stream.js) always attaches `voiceLatency.capabilities` to the
+  // entry, so it exists solely for hand-built partial test sessions and
+  // keeps the pre-D4 descriptor-less path byte-identical for them.
   const capabilities = entry?.voiceLatency?.capabilities;
   const observability = capabilities
     ? capabilities.hasClientPlaybackTelemetry === true
       ? 'observable'
       : 'unobservable'
     : 'unknown';
+
+  // PLAN-D (D4) — identity-matched obligation ledger, built ONLY when the
+  // caller supplied structured descriptors (the live harness does; legacy
+  // call sites/tests fall back to the count-arithmetic path unchanged).
+  // Rejected-at-arm correlation ids are removed BEFORE twin collapse.
+  const hasDescriptors =
+    Array.isArray(options.ackEligibleConfirmations) || Array.isArray(options.fastAttempts);
+  const obligations = hasDescriptors
+    ? buildAckObligations(options.fastAttempts, options.ackEligibleConfirmations, rejectedIds)
+    : null;
+
+  // Codex diff-review cycle 1 (wire + edge lenses) — when the ledger
+  // exists, the PUBLIC counters derive from it too: a healthy fast/canonical
+  // twin is ONE heard clip, so `expected_acks: 2` alongside
+  // `ack_obligations_total: 1` would keep count-based dashboards diagnosing
+  // healthy twin turns as incomplete — the exact false inference D4 exists
+  // to kill. Legacy descriptor-less callers keep the count arithmetic
+  // byte-identical.
+  const expected_acks = obligations
+    ? obligations.size
+    : Math.max(0, bundlerEmittedCount + attemptedFastTtsCount - decrementCount);
 
   // Voice-latency plan 2026-06-03 Tier 1.1 sub-step 5: a turn is
   // ACK-eligible if at least one bundler emit was expects_ios_ack-true OR
@@ -514,18 +546,12 @@ export function startAudioFinalizer(sessionId, turnId, options = {}) {
   // `no_audio_ack_at_ttl` diagnosis downstream on every web turn. Setting
   // it false here keeps the canonical row and the perceived-latency store's
   // derived rows in agreement (the store keys off expected_acks_eligible).
+  // On the ledger path, eligibility additionally requires a LIVE obligation
+  // (a rejected-fast-only turn owes nothing and must not read as awaiting
+  // an ACK).
   const eligible_for_validation =
-    observability !== 'unobservable' && (bundlerEmittedCount > 0 || attemptedFastTtsCount > 0);
-
-  // PLAN-D (D4) — identity-matched obligation ledger, built ONLY when the
-  // caller supplied structured descriptors (the live harness does; legacy
-  // call sites/tests fall back to the count-arithmetic path unchanged).
-  // Rejected-at-arm correlation ids are removed BEFORE twin collapse.
-  const hasDescriptors =
-    Array.isArray(options.ackEligibleConfirmations) || Array.isArray(options.fastAttempts);
-  const obligations = hasDescriptors
-    ? buildAckObligations(options.fastAttempts, options.ackEligibleConfirmations, rejectedIds)
-    : null;
+    observability !== 'unobservable' &&
+    (obligations ? obligations.size > 0 : bundlerEmittedCount > 0 || attemptedFastTtsCount > 0);
 
   // Voice-latency plan 2026-06-03 Tier 1.3 — populate the durable
   // correlationToTurn index BEFORE entry.fastPathCorrelationIdByTurn is
@@ -926,7 +952,6 @@ export function decrementExpectedAcksByCorrelation(sessionId, correlationId) {
     const key = `${sessionId}::${indexed.turnId}`;
     const pending = pendingFinalizers.get(key);
     if (pending) {
-      pending.expected_acks = Math.max(0, pending.expected_acks - 1);
       pending.decrements_applied = (pending.decrements_applied ?? 0) + 1;
       if (pending.obligations) {
         let target = pending.obligations.get(`fast:${correlationId}`) ?? null;
@@ -940,6 +965,10 @@ export function decrementExpectedAcksByCorrelation(sessionId, correlationId) {
         }
         if (target && !target.acked) {
           if (target.kind === 'twin') {
+            // Only the fast LEG dies — the canonical fallback is still owed
+            // a playback, so the obligation count (and expected_acks) must
+            // NOT shrink (Codex diff-review cycle 1, edge lens: a blind
+            // decrement here contradicted the ledger).
             target.kind = 'canonical';
             target.correlationId = null;
           } else if (target.kind === 'fast') {
@@ -951,6 +980,17 @@ export function decrementExpectedAcksByCorrelation(sessionId, correlationId) {
             }
           }
         }
+        // Recompute the public counters from the mutated ledger — never
+        // count arithmetic on the ledger path. A turn whose LAST obligation
+        // was just rejected owes nothing: it must also drop eligibility, or
+        // the perceived-latency store would hold it to TTL and manufacture
+        // a false `no_audio_ack_at_ttl`.
+        pending.expected_acks = pending.obligations.size;
+        if (pending.obligations.size === 0) {
+          pending.eligible_for_validation = false;
+        }
+      } else {
+        pending.expected_acks = Math.max(0, pending.expected_acks - 1);
       }
       maybeFlushFinalizer(key, pending);
       return;

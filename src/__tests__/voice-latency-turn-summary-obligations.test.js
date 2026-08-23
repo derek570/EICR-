@@ -123,6 +123,9 @@ describe('D4 — twin collapse + healthy fast path', () => {
     expect(row.audio_finalizer_timeout_fired).toBe(false);
     expect(row.ack_obligations_total).toBe(1);
     expect(row.ack_obligations_acked).toBe(1);
+    // Codex cycle 1 — the PUBLIC counter derives from the ledger: a twin is
+    // ONE heard clip, never the raw transport-leg count of 2.
+    expect(row.expected_acks).toBe(1);
     expect(row.unacked_confirmations).toEqual([]);
     expect(row.observability).toBe('observable');
   });
@@ -309,6 +312,10 @@ describe('D4 — rejection identities, both orderings', () => {
     expect(row).not.toBeNull();
     expect(row.audio_finalizer_timeout_fired).toBe(false);
     expect(row.ack_obligations_total).toBe(0);
+    // Codex cycle 1 — the last obligation died: the turn owes nothing and
+    // must not read as awaiting an ACK downstream.
+    expect(row.expected_acks).toBe(0);
+    expect(row.expected_acks_eligible).toBe(0);
   });
 
   test('two same-slot fast correlations — one rejected + one ACKed completes; two-ACK ordering completes by correlation', () => {
@@ -449,6 +456,67 @@ describe('D4 — same-slot multiplicity + duplicate ACKs', () => {
     const row = audioSummary();
     expect(row).not.toBeNull();
     expect(row.ack_obligations_total).toBe(1); // corr-b removed pre-collapse
+    expect(row.unacked_confirmations).toEqual([]);
+  });
+});
+
+describe('D4 — Codex cycle-1 regressions', () => {
+  test('two same-slot fast correlations: corr-1 ACKs, corr-2 times out → corr-2 reported as EXACT unacked, never ambiguous', () => {
+    seedSession(IOS_SUPPORTS, { correlations: ['corr-1', 'corr-2'] });
+    turnSummary.startAudioFinalizer(SESS, TURN, {
+      bundlerEmittedCount: 0,
+      attemptedFastTtsCount: 2,
+      ackEligibleConfirmations: [],
+      fastAttempts: [
+        { correlationId: 'corr-1', field: 'measured_zs_ohm', circuit: 1, boardId: 'b' },
+        { correlationId: 'corr-2', field: 'measured_zs_ohm', circuit: 1, boardId: 'b' },
+      ],
+    });
+    turnSummary.recordPlaybackAck(SESS, TURN, {
+      source: 'fast_tts',
+      correlation_id: 'corr-1',
+      at_ms: 1,
+    });
+    jest.advanceTimersByTime(9000);
+    const row = audioSummary();
+    expect(row.audio_finalizer_timeout_fired).toBe(true);
+    // A correlation-addressable obligation is uniquely identifiable — its
+    // missing ACK is an exact loss, never same-slot ambiguity.
+    expect(row.ambiguous_confirmations).toEqual([]);
+    expect(row.unacked_confirmations).toEqual([
+      {
+        kind: 'fast',
+        field: 'measured_zs_ohm',
+        circuit: 1,
+        board_id: 'b',
+        correlation_id: 'corr-2',
+      },
+    ]);
+  });
+
+  test('LEGACY client shape (no capabilities block on session_start → version-0/all-false parse) classifies UNOBSERVABLE', () => {
+    // parseVoiceLatencyCapabilities never returns null — a legacy client
+    // that sends no capabilities at all still yields a parsed object with
+    // hasClientPlaybackTelemetry false. Production session registration
+    // always attaches it, so a real legacy session lands HERE, not on the
+    // hand-built-test 'unknown' branch.
+    const entry = {
+      session: { sessionId: SESS },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+      voiceLatency: { capabilities: parseVoiceLatencyCapabilities({}) },
+    };
+    activeSessions.set(SESS, entry);
+    turnSummary.startAudioFinalizer(SESS, TURN, {
+      bundlerEmittedCount: 1,
+      attemptedFastTtsCount: 0,
+      ackEligibleConfirmations: [canonical()],
+      fastAttempts: [],
+    });
+    jest.advanceTimersByTime(9000);
+    const row = audioSummary();
+    expect(row.observability).toBe('unobservable');
+    expect(row.expected_acks_eligible).toBe(0);
     expect(row.unacked_confirmations).toEqual([]);
   });
 });

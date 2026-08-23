@@ -1439,6 +1439,37 @@ export function resolveZeroToolCallDuplicateOutcome({
  * @param {string|string[]|null|undefined} rawCid
  * @returns {Set<string>} every valid non-empty string id, deduplicated
  */
+/**
+ * PLAN-D 2026-08-23 (id 130) — the mid-stream confirmations filter, extracted
+ * as a PURE helper so the substitution contract is directly executable in
+ * tests (Codex diff-review cycle 1: the plan's `VOICE_MID_STREAM_FILTER=true`
+ * regression must run the REAL filter path, and `onSlotAudioReady` is not
+ * wireable from a unit test).
+ *
+ * A removed entry may be a MERGED creation carrier ("Created circuit 3,
+ * Downstairs light — wiring type A"): the preliminary mid-stream clip carried
+ * the READING only, so deleting the carrier outright would silence the
+ * creation fact. Substitute the preserved standalone create ack (kept, and
+ * bulk-disclosure-refreshed, as the non-enumerable CREATE_ACK_SUBSTITUTION
+ * sidecar by the bundler) instead of dropping the entry.
+ *
+ * Slot-key coercion mirrors the readings filter above the call site
+ * byte-for-byte (bundler circuit "0" for board-level; board_id '' when
+ * absent).
+ */
+export function applyMidStreamConfirmationFilter(confirmations, midStreamEmittedSlots) {
+  const confKeyOf = (c) => {
+    const circ = c.circuit;
+    const circStr = circ == null ? '0' : typeof circ === 'string' ? circ : String(circ);
+    return `${c.field}::${circStr}::${c.board_id ?? ''}`;
+  };
+  return confirmations.flatMap((c) => {
+    if (!midStreamEmittedSlots.has(confKeyOf(c))) return [c];
+    const substitution = c[CREATE_ACK_SUBSTITUTION];
+    return substitution ? [{ ...substitution }] : [];
+  });
+}
+
 export function coerceFastPathCorrelationIds(rawCid) {
   const cids = new Set();
   if (typeof rawCid === 'string' && rawCid) {
@@ -3332,23 +3363,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         }
       }
       if (Array.isArray(result.confirmations)) {
-        const confKeyOf = (c) => {
-          const circ = c.circuit;
-          const circStr = circ == null ? '0' : typeof circ === 'string' ? circ : String(circ);
-          return `${c.field}::${circStr}::${c.board_id ?? ''}`;
-        };
-        // PLAN-D 2026-08-23 (id 130) — a removed carrier may be a MERGED
-        // creation carrier ("Created circuit 3, Downstairs light — wiring
-        // type A"): the preliminary mid-stream clip carried the READING
-        // only, so deleting the carrier outright would silence the creation
-        // fact. Substitute the preserved standalone create ack (kept, and
-        // bulk-disclosure-refreshed, as a non-enumerable sidecar by the
-        // bundler) instead of dropping the entry.
-        result.confirmations = result.confirmations.flatMap((c) => {
-          if (!midStreamEmittedSlots.has(confKeyOf(c))) return [c];
-          const substitution = c[CREATE_ACK_SUBSTITUTION];
-          return substitution ? [{ ...substitution }] : [];
-        });
+        result.confirmations = applyMidStreamConfirmationFilter(
+          result.confirmations,
+          midStreamEmittedSlots
+        );
       }
     } else if (midStreamEmittedSlots.size > 0) {
       log?.info?.('voice_latency.mid_stream_canonical_filter_skipped', {

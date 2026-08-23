@@ -407,3 +407,71 @@ describe('D3 — create-ack merge (id 130)', () => {
     expect(substitution.text).toBe('Circuit 3 is now the Downstairs light, skipping 1 spare way');
   });
 });
+
+// Codex diff-review cycle 1 (PLAN-D) — the plan's VOICE_MID_STREAM_FILTER
+// regression, executed through the REAL extracted filter helper (the
+// production call site delegates to it verbatim): when the filter removes a
+// MERGED creation carrier because its reading slot was already emitted
+// preliminarily, it SUBSTITUTES the preserved standalone create ack — the
+// reading is heard via the preliminary clip, the creation fact via the
+// substitution, each exactly once; a later bulk-outcome disclosure appended
+// to the carrier survives via the refreshed sidecar.
+describe('D3 — mid-stream filter substitution (VOICE_MID_STREAM_FILTER regression)', () => {
+  test('filter removes the merged carrier → the standalone create ack (with refreshed disclosure) is substituted, exactly once each', async () => {
+    const { applyMidStreamConfirmationFilter } =
+      await import('../extraction/stage6-shadow-harness.js');
+    const entry = { value: 'A', confidence: 0.9 };
+    Object.defineProperty(entry, BULK_OUTCOME_CALL_ID, {
+      value: 'call-88',
+      enumerable: false,
+    });
+    const res = bundle(
+      writes({
+        readings: [['wiring_type::3', entry]],
+        circuitOps: [createOp(3, 'Downstairs light')],
+        bulkOutcomes: [
+          {
+            callId: 'call-88',
+            field: 'wiring_type',
+            boardId: null,
+            effectiveBoardId: null,
+            appliedRefs: [3],
+            spareSkippedRefs: [7],
+          },
+        ],
+      }),
+      { circuitDesignations: new Map([[3, 'Downstairs light']]) }
+    );
+    expect(res.confirmations).toHaveLength(1);
+    // The reading slot was emitted preliminarily mid-stream (bundler slot
+    // coercion: circuit as string, board '' when absent).
+    const midStreamEmittedSlots = new Set(['wiring_type::3::']);
+    const filtered = applyMidStreamConfirmationFilter(res.confirmations, midStreamEmittedSlots);
+    expect(filtered).toHaveLength(1);
+    const substitution = filtered[0];
+    expect(substitution.field).toBe('circuit_op');
+    expect(substitution.text).toBe('Circuit 3 is now the Downstairs light, skipping 1 spare way');
+    expect(substitution.dedupe_token).toBe('circop_turn-1_0_create_3');
+    expect(substitution.expects_ios_ack).toBe(false);
+    // The merged reading text is GONE from the final wire set (the
+    // preliminary clip already carried the reading) — creation fact once,
+    // reading once, disclosure preserved.
+    expect(filtered.map((c) => c.text)).not.toContain(
+      'Created circuit 3, Downstairs light — wiring type A, skipping 1 spare way'
+    );
+  });
+
+  test('filter removal of a NON-carrier confirmation still deletes it outright (no substitution)', async () => {
+    const { applyMidStreamConfirmationFilter } =
+      await import('../extraction/stage6-shadow-harness.js');
+    const res = bundle(
+      writes({ readings: [['measured_zs_ohm::4', { value: '0.5', confidence: 0.9 }]] })
+    );
+    expect(res.confirmations).toHaveLength(1);
+    const filtered = applyMidStreamConfirmationFilter(
+      res.confirmations,
+      new Set(['measured_zs_ohm::4::'])
+    );
+    expect(filtered).toEqual([]);
+  });
+});
