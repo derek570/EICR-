@@ -220,8 +220,14 @@ function recomputeSlotAmbiguity(obligations) {
 function matchAckToObligations(obligations, ack) {
   if (!(obligations instanceof Map) || obligations.size === 0) return;
   if (typeof ack?.correlation_id === 'string' && ack.correlation_id) {
+    // Codex cycle 4 — a correlation-addressed ACK is CONSUMED by its owner
+    // unconditionally, even when that owner is already acked: falling
+    // through to slot matching would let a DUPLICATE correlated ACK mark an
+    // unrelated same-slot canonical as heard and falsely complete the
+    // finalizer. Slot matching is only for ACKs whose correlation no
+    // obligation owns (or that carry none).
     for (const ob of obligations.values()) {
-      if (!ob.acked && ob.correlationId === ack.correlation_id) {
+      if (ob.correlationId === ack.correlation_id) {
         ob.acked = true;
         return;
       }

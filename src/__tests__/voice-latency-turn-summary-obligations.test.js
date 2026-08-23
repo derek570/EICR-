@@ -548,6 +548,33 @@ describe('D4 — Codex mini-review c1: post-arm ambiguity recompute', () => {
   });
 });
 
+describe('D4 — Codex cycle 4: duplicate correlated ACK never satisfies a sibling slot', () => {
+  test('acked twin + unplayed same-slot canonical + duplicate correlated ACK → canonical stays outstanding, no early completion', () => {
+    seedSession(IOS_SUPPORTS, { correlations: ['corr-1'] });
+    turnSummary.startAudioFinalizer(SESS, TURN, {
+      bundlerEmittedCount: 2,
+      attemptedFastTtsCount: 1,
+      ackEligibleConfirmations: [
+        canonical({ fastCorrelationId: 'corr-1' }),
+        canonical(), // same slot, correlation-less — a distinct clip
+      ],
+      fastAttempts: [
+        { correlationId: 'corr-1', field: 'measured_zs_ohm', circuit: 1, boardId: 'board-main' },
+      ],
+    });
+    const ack = { source: 'fast_tts', correlation_id: 'corr-1', at_ms: 1 };
+    turnSummary.recordPlaybackAck(SESS, TURN, ack);
+    turnSummary.recordPlaybackAck(SESS, TURN, { ...ack, at_ms: 2 }); // duplicate
+    // The duplicate is consumed by its owner — never falls through to slot
+    // matching against the sibling canonical.
+    expect(audioSummary()).toBeNull();
+    jest.advanceTimersByTime(9000);
+    const row = audioSummary();
+    expect(row.audio_finalizer_timeout_fired).toBe(true);
+    expect(row.ack_obligations_acked).toBe(1);
+  });
+});
+
 describe('D4 — no speech path from the finalizer (assert absence)', () => {
   test('the module has no send/synthesis capability — telemetry only', () => {
     const src = fs.readFileSync(
