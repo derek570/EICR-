@@ -128,47 +128,6 @@ function resolveSlot(
   return null;
 }
 
-/**
- * Cycle-5 — shape-C boundary resolution is THREE-state, not two: a
- * boundary whose slot is positively the canonical designation (alias or
- * circuit-scoped model match) must STOP the iteration, or a later
- * boundary containing an edge "circuit" token inside the TAIL would be
- * pure-repaired into corrupted speech. And a slot that merely
- * pure-repairs is only a FALLBACK — for the legal canonical designation
- * "Garage circuit — outbuilding feed" (interior token, preserved by
- * design), the first boundary's fragment "Garage circuit" repairs to
- * "Garage", so accepting the first repairing fragment would strip a
- * token the canonicaliser deliberately keeps. Positive evidence at ANY
- * boundary therefore beats pure repair at any boundary; pure repair
- * applies only when the full scan produced no positive identification.
- */
-type ShapeCResolution =
-  | { kind: 'rewrite'; replacement: string }
-  | { kind: 'stop' }
-  | { kind: 'no_evidence' };
-
-function resolveShapeCSlot(
-  slot: string,
-  circuit: number,
-  { aliases, lookupCanonicalByCircuit }: RewriteOptions
-): ShapeCResolution {
-  const viaAlias = aliases.resolve(slot);
-  if (viaAlias != null) {
-    const capped = slotCap(viaAlias);
-    return capped === slot ? { kind: 'stop' } : { kind: 'rewrite', replacement: capped };
-  }
-  const viaModel = lookupCanonicalByCircuit(circuit);
-  if (viaModel != null && viaModel.trim() !== '') {
-    const capped = slotCap(viaModel);
-    if (capped === slot) return { kind: 'stop' };
-    const repairedSlot = repairCircuitDesignation(slot);
-    if (typeof repairedSlot === 'string' && slotCap(repairedSlot) === capped) {
-      return { kind: 'rewrite', replacement: capped };
-    }
-  }
-  return { kind: 'no_evidence' };
-}
-
 // Shape B — `Circuit <N> is now the <designation>`; the leading
 // "Circuit <N>" is STRUCTURAL and preserved verbatim (case-sensitive:
 // the builder always capitalises; a lowercase variant is not ours).
@@ -203,12 +162,25 @@ export function rewriteConfirmationDesignationText(
     const remainder = c[3];
     // Cycle-4 (C4-4) — a designation may itself contain " — "
     // ("Garage — outbuilding feed"), so a lazy first-boundary split
-    // mis-attributes its second half to the tail. Iterate every
-    // boundary left-to-right; positive evidence (alias / model) at any
-    // boundary wins immediately (rewrite or stop), and pure repair is
-    // only the fallback after the full scan (cycle-5 — see
-    // ShapeCResolution above).
-    let fallback: { replacement: string; tail: string } | null = null;
+    // mis-attributes its second half to the tail. Enumerate every
+    // candidate split, then resolve in strict EVIDENCE ORDER over the
+    // whole set (cycle-5/6):
+    //   1. circuit-scoped MODEL evidence — strongest, because it is
+    //      keyed to THIS circuit. A boundary whose slot IS the model
+    //      canonical ends the rewrite (no-op); a slot that repairs to
+    //      it rewrites. Cycle-6: this pass runs BEFORE the alias pass —
+    //      the alias store is session-GLOBAL, so an alias recorded for
+    //      another circuit ("Garage circuit"→"Garage") must not beat an
+    //      exact model match at a later boundary.
+    //   2. session ALIAS evidence (raw→canonical from observed
+    //      designation operations; unique-resolve multimap).
+    //   3. pure repair of the first repairing fragment — only when the
+    //      full scan produced NO positive identification, because for
+    //      the legal canonical "Garage circuit — outbuilding feed"
+    //      (interior token, preserved by design) the first fragment
+    //      "Garage circuit" repairs to "Garage" and would corrupt
+    //      speech.
+    const boundaries: Array<{ slot: string; tail: string }> = [];
     let searchFrom = 0;
     for (;;) {
       const idx = remainder.indexOf(SHAPE_C_BOUNDARY, searchFrom);
@@ -216,22 +188,38 @@ export function rewriteConfirmationDesignationText(
       const slot = remainder.slice(0, idx);
       const tail = remainder.slice(idx);
       if (slot !== '' && tail.length > SHAPE_C_BOUNDARY.length) {
-        const res = resolveShapeCSlot(slot, circuit, opts);
-        if (res.kind === 'rewrite' && res.replacement !== slot) {
-          return { text: `${c[1]}${res.replacement}${tail}`, changed: true };
-        }
-        if (res.kind === 'stop') return { text, changed: false };
-        if (fallback == null) {
-          const repaired = repairCircuitDesignation(slot);
-          if (typeof repaired === 'string' && repaired !== slot) {
-            fallback = { replacement: repaired, tail };
-          }
-        }
+        boundaries.push({ slot, tail });
       }
       searchFrom = idx + 1;
     }
-    if (fallback != null) {
-      return { text: `${c[1]}${fallback.replacement}${fallback.tail}`, changed: true };
+    const viaModel = opts.lookupCanonicalByCircuit(circuit);
+    if (viaModel != null && viaModel.trim() !== '') {
+      const capped = slotCap(viaModel);
+      for (const { slot, tail } of boundaries) {
+        if (slot === capped) return { text, changed: false };
+        const repairedSlot = repairCircuitDesignation(slot);
+        if (
+          typeof repairedSlot === 'string' &&
+          slotCap(repairedSlot) === capped &&
+          capped !== slot
+        ) {
+          return { text: `${c[1]}${capped}${tail}`, changed: true };
+        }
+      }
+    }
+    for (const { slot, tail } of boundaries) {
+      const viaAlias = opts.aliases.resolve(slot);
+      if (viaAlias != null) {
+        const capped = slotCap(viaAlias);
+        if (capped === slot) return { text, changed: false };
+        return { text: `${c[1]}${capped}${tail}`, changed: true };
+      }
+    }
+    for (const { slot, tail } of boundaries) {
+      const repaired = repairCircuitDesignation(slot);
+      if (typeof repaired === 'string' && repaired !== slot) {
+        return { text: `${c[1]}${repaired}${tail}`, changed: true };
+      }
     }
     return { text, changed: false };
   }

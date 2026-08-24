@@ -148,6 +148,32 @@ export function restoreDesignationJournalBatch(batch: DesignationJournalBatch): 
   }
 }
 
+/**
+ * Cycle-6 — sign-out purge. `clearAuth` wipes the IDB job cache/outbox
+ * so a shared device doesn't carry one inspector's data into the next
+ * login, but the localStorage journals (and the in-memory draft/
+ * recovery state) would otherwise survive and AUTO-COMMIT the previous
+ * user's abandoned draft when the next user opens the same job. Remove
+ * every prefixed journal entry and reset all module state.
+ */
+export function purgeDesignationDraftState(): void {
+  drafts.clear();
+  journalRevisions.clear();
+  committedJournalRevisions.clear();
+  recoveryReady = false;
+  pendingRecoveries.length = 0;
+  try {
+    const doomed: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (key != null && key.startsWith(JOURNAL_PREFIX)) doomed.push(key);
+    }
+    for (const key of doomed) window.localStorage.removeItem(key);
+  } catch {
+    /* best-effort — sign-out proceeds regardless */
+  }
+}
+
 // ── Journal-recovery gate (Codex mini-review c1, BLOCKER) ──────────────
 // A localStorage draft journal recovered at MOUNT would commit into an
 // un-hydrated cache doc, dirtying the provider so `safeToReplace`

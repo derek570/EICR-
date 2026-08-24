@@ -119,6 +119,22 @@ describe('shape C — PLAN-D merged create carrier', () => {
     expect(out.text).toBe(text);
   });
 
+  it('cycle-6: a session-global alias recorded for ANOTHER circuit cannot beat this circuit’s model match', () => {
+    // Another circuit's rename recorded "Garage circuit" → "Garage" in
+    // the session alias map. Circuit 5's canonical designation is the
+    // legal interior-token "Garage circuit — outbuilding feed" — the
+    // exact model match at boundary 2 must win over the alias hit at
+    // boundary 1 (the alias store is session-global, the model lookup
+    // is circuit-scoped: stronger evidence).
+    aliases.record('Garage circuit for circuit two', 'ignored'); // noise
+    aliases.record('Garage circuit', 'Garage');
+    circuits[5] = 'Garage circuit — outbuilding feed';
+    const text = 'Created circuit 5, Garage circuit — outbuilding feed — wiring type A';
+    const out = rewriteConfirmationDesignationText(text, opts);
+    expect(out.changed).toBe(false);
+    expect(out.text).toBe(text);
+  });
+
   it('cycle-5: a model-canonical boundary STOPS the scan before a tail fragment can pure-repair', () => {
     // Tail legally contains " — ring circuit — ": without the stop, the
     // boundary AFTER the canonical designation ("Garage — outbuilding

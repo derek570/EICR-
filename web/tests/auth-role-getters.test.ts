@@ -74,3 +74,17 @@ describe('auth — getUserRole / getCompanyRole', () => {
     expect(getCompanyRole(noRoles)).toBeNull();
   });
 });
+
+describe('auth — clearAuth purges designation-draft journals (cycle-6)', () => {
+  it('sign-out removes journals so the next login cannot auto-recover them', async () => {
+    const { clearAuth } = await import('@/lib/auth');
+    const { readDesignationJournal, writeDesignationJournal } =
+      await import('@/lib/designation-drafts');
+    writeDesignationJournal('job-1:designation:c1', 'Previous inspector draft');
+    clearAuth();
+    // The journal must not survive sign-out — an auto-recovered commit
+    // under the NEXT user's login would silently apply and save the
+    // previous user's abandoned draft (shared-device wipe policy).
+    expect(readDesignationJournal('job-1:designation:c1')).toBeNull();
+  });
+});

@@ -15,6 +15,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import {
   clearDesignationJournalBatch,
   markDesignationJournalCommitted,
+  purgeDesignationDraftState,
   readDesignationJournal,
   restoreDesignationJournalBatch,
   takeCommittedDesignationJournalBatch,
@@ -84,6 +85,18 @@ describe('designation journal batches', () => {
     clearDesignationJournalBatch(next);
     // Cleared at the NEW revision — the newer value was carried.
     expect(readDesignationJournal(KEY)).toBeNull();
+  });
+
+  it('cycle-6: sign-out purge removes every journal and resets the mark/revision state', () => {
+    writeDesignationJournal(KEY, 'Kitchen');
+    markDesignationJournalCommitted(KEY);
+    writeDesignationJournal('job2:designation:c9', 'Shower');
+    purgeDesignationDraftState();
+    // Journals gone — the next login's mount recovers nothing.
+    expect(readDesignationJournal(KEY)).toBeNull();
+    expect(readDesignationJournal('job2:designation:c9')).toBeNull();
+    // No marks survive for a later save to clear.
+    expect(takeCommittedDesignationJournalBatch()).toHaveLength(0);
   });
 
   it('a fresh keystroke supersedes an un-drained committed mark', () => {
