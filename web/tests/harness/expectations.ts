@@ -86,6 +86,31 @@ export function evaluateWebExpectations(
     if (!seen)
       failures.push(`applied_fields: "${field.key}" never landed with value "${field.value}"`);
   }
+  for (const field of expectations.not_applied_fields ?? []) {
+    // Suffix-tolerant on purpose: `flattenPatch` keys circuit writes as
+    // `circuits[<ref>].<field>`, and a bare `ocpd_type` here must fail on a
+    // write to ANY row — a bulk apply that leaks one bad value onto row 7 is
+    // exactly the failure this assertion exists to catch, and pinning a
+    // single ref would let it through.
+    const landed = trace.utterances.flatMap((u) =>
+      u.appliedFields.filter((f) => f.key === field.key || f.key.endsWith(`.${field.key}`))
+    );
+    if (landed.length > 0) {
+      failures.push(
+        `not_applied_fields: "${field.key}" was written (${landed
+          .map((f) => JSON.stringify(f.value))
+          .join(', ')})`
+      );
+    }
+  }
+  for (const played of expectations.confirmations_not_played ?? []) {
+    const seen = trace.totals.confirmationsPlayed.filter((t) => t.includes(played.contains));
+    if (seen.length > 0) {
+      failures.push(
+        `confirmations_not_played: spoke "${seen[0].slice(0, 80)}" containing "${played.contains}"`
+      );
+    }
+  }
 
   // Seed invariants (D1 1/3/5) run on EVERY scenario; gate_blocked doubles
   // as the chitchat declaration for invariant 5. Invariant 7 (feedback

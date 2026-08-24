@@ -46,6 +46,12 @@ export interface MockFrame {
    *  the web companion force-speaks it with the confirmation toggle OFF. */
   spoken_response?: string;
   understood?: boolean;
+  /** voice_command_response (PLAN-C, feedback id 129) — the iOS-canon
+   *  `{type, params}` action the frame carries. The harness previously
+   *  emitted VCR frames with `action: null` only, so no scenario could
+   *  exercise the CLIENT-LOCAL apply the frame actually drives — which is
+   *  precisely where this plan's guard lives. */
+  action?: { type?: string; params?: Record<string, unknown> };
 }
 
 export interface MockFrameEntry {
@@ -65,6 +71,15 @@ export interface WebExpectations {
   no_confirmation_permanently_deferred?: boolean;
   no_confirmation_discarded_without_replay?: boolean;
   applied_fields?: Array<{ key: string; value: unknown }>;
+  /** PLAN-C (feedback id 129) — the field must NOT have been written at
+   *  all during the run. `applied_fields` can only prove a write landed;
+   *  the guard's whole point is that a rejected value reaches NO row, and
+   *  a silent bad write is invisible to every other assertion here. */
+  not_applied_fields?: Array<{ key: string }>;
+  /** PLAN-C — no played confirmation may contain this text. Pins the
+   *  NEGATIVE half of the speak-seam precedence: the server's success
+   *  line for a rejected write must never be spoken. */
+  confirmations_not_played?: Array<{ contains: string }>;
   xfail_until_wave6?: {
     feedback_capture_started?: string[];
     feedback_utterances_not_sent_to_sonnet?: boolean;

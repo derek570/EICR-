@@ -1,0 +1,71 @@
+# PLAN-C (feedback id 129, 2026-08-24) — the OTHER half of the guard: a
+# legitimate alias is accepted, CANONICALISED, and read back as STORED.
+#
+# The inspector says "sixty eight ninety eight"; Flux hands the server
+# "60898", which is a real BS EN standard once expanded but is NOT the
+# literal option string. Rejecting it would be wrong (Audio-First §2 — a
+# structurally complete reading is written, not dropped), and storing it raw
+# would leave a non-schema string in the certificate.
+#
+# So the value is snapped to "BS EN 60898" and the SPEECH is rebuilt from the
+# stored value — PLAN-B2's store-and-speak-from-the-same-value discipline.
+# Speaking the server's "Set OCPD standard to 60898" would tell a hands-free
+# inspector the certificate says something it does not.
+
+name: plan-c-closed-enum-canonical
+description: |
+  A server voice_command_response carries `update_field{ocpd_bs_en: "60898"}`.
+  The client-local apply canonicalises it to "BS EN 60898", writes that, and
+  speaks the locally-built line naming the STORED value instead of the
+  server's raw echo.
+suite: pwa-replay-sessions
+
+metadata:
+  source: PLAN-C feedback id 129 (session 17821FFA), authored 2026-08-24
+  platform: web
+  initial_state_fidelity: hand_authored
+  synthetic_interims: true
+
+confirmation_mode: false
+
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      circuits:
+        - number: 3
+          designation: Upstairs lighting
+
+transcript:
+  - at_ms: 0
+    text: 'The device standard on circuit 3 is 60898.'
+    isFinal: true
+
+mock_frames:
+  - on_transcript: 'The device standard on circuit 3 is 60898.'
+    frames:
+      - type: extraction
+        readings: []
+        confirmations: []
+      - type: voice_command_response
+        understood: true
+        spoken_response: 'Set OCPD standard to 60898 on circuit 3.'
+        action:
+          type: update_field
+          params:
+            field: ocpd_bs_en
+            value: '60898'
+            circuit: 3
+
+expect:
+  web:
+    gate_passed:
+      - 'The device standard on circuit 3 is 60898.'
+    applied_fields:
+      - key: circuits[3].ocpd_bs_en
+        value: 'BS EN 60898'
+    confirmations_played:
+      - contains: 'Set OCPD BS EN to BS EN 60898 on circuit 3'
+    confirmations_not_played:
+      - contains: 'Set OCPD standard to 60898'
+    confirmation_played_exactly_once: true

@@ -314,6 +314,10 @@ function emitFrame(
     sonnet.emitVoiceCommandResponse({
       understood: frame.understood ?? true,
       spoken_response: frame.spoken_response ?? '',
+      // PLAN-C — forward the action so a scenario can drive the
+      // client-local apply (and its closed-enum guard), not just the
+      // spoken text. Omitted → `null`, the historical A1 shape.
+      ...(frame.action ? { action: frame.action } : {}),
     });
   }
 }
