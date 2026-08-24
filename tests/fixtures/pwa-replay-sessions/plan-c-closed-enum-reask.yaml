@@ -1,0 +1,84 @@
+# PLAN-C (feedback id 129, 2026-08-24) — the closed-enum guard at the
+# SERVER-ORIGINATED apply boundary, replayed through the real
+# RecordingProvider.
+#
+# Field session 17821FFA stored a Flux garble ("for") in `wiring_type` and a
+# device CLASS ("MCB") where a device STANDARD belongs, silently, in a
+# legally-significant certificate. Backend Stage-6 has rejected exactly these
+# for a long time (stage6-dispatch-validation.js:99/:198) — but a
+# `voice_command_response` action is applied CLIENT-side, and that mirror had
+# no validation at all.
+#
+# What this scenario pins, end to end:
+#   1. NO row is written for a value that is not a member of the field's
+#      option list (`not_applied_fields`).
+#   2. The inspector hears ONE complete-restatement re-ask, rendered from the
+#      command's ACTUAL target — audible with the confirmation toggle OFF
+#      (the web default), because a hands-free inspector who hears nothing
+#      believes the value landed.
+#   3. The server's own success line for that rejected write is NEVER spoken
+#      (`confirmations_not_played`). This is the half that made the field bug
+#      invisible: mutation dropped, success read back.
+
+name: plan-c-closed-enum-reask
+description: |
+  A server voice_command_response carries `update_field{ocpd_type: "MCB"}`.
+  "MCB" is a device class, not a member of the ocpd_type option list
+  (B/C/D/gG/gM/aM/HRC/Rew/N/A), so the client-local apply rejects the whole
+  command, writes nothing, and speaks one re-ask instead of the server's
+  "Set OCPD type to MCB" success line.
+suite: pwa-replay-sessions
+
+metadata:
+  source: PLAN-C feedback id 129 (session 17821FFA), authored 2026-08-24
+  platform: web
+  initial_state_fidelity: hand_authored
+  synthetic_interims: true
+
+# The web default. The re-ask must still be audible: `speakConfirmation`
+# mutes when the toggle is off, so the seam force-speaks (iOS parity — iOS
+# speaks VCR frames unconditionally).
+confirmation_mode: false
+
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      circuits:
+        - number: 3
+          designation: Upstairs lighting
+
+transcript:
+  - at_ms: 0
+    text: 'The breaker on circuit 3 is an MCB.'
+    isFinal: true
+
+mock_frames:
+  - on_transcript: 'The breaker on circuit 3 is an MCB.'
+    frames:
+      - type: extraction
+        readings: []
+        confirmations: []
+      - type: voice_command_response
+        understood: true
+        # Byte-shaped as the backend builds it: the model's own success
+        # text, written before any client validation exists.
+        spoken_response: 'Set OCPD type to MCB on circuit 3.'
+        action:
+          type: update_field
+          params:
+            field: ocpd_type
+            value: MCB
+            circuit: 3
+
+expect:
+  web:
+    gate_passed:
+      - 'The breaker on circuit 3 is an MCB.'
+    not_applied_fields:
+      - key: ocpd_type
+    confirmations_played:
+      - contains: "I heard OCPD type 'MCB', which isn't a valid option"
+    confirmations_not_played:
+      - contains: 'Set OCPD type to MCB'
+    confirmation_played_exactly_once: true

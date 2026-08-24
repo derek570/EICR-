@@ -28,6 +28,17 @@
  * TTS helper.
  */
 
+import {
+  canonicaliseClosedEnumValue,
+  cleanClosedEnumResidue,
+  GUARDED_CLOSED_ENUM_FIELDS,
+  isGuardedClosedEnumField,
+  reaskForClosedEnumOutcome,
+  renderClosedEnumReask,
+  type ClosedEnumSparePolicy,
+  type GuardedClosedEnumField,
+  type GuardedTarget,
+} from './closed-enum-guard';
 import { repairCircuitDesignation } from './designation-canonicaliser';
 
 // We use local structural types rather than pulling from @certmate/shared-types
@@ -150,6 +161,33 @@ export interface VoiceCommandOutcome {
    *  into the live-fill flash registry so voice-driven edits animate
    *  the same as Sonnet-driven ones. Empty / omitted for queries. */
   changedKeys?: string[];
+  /** PLAN-C (feedback id 129) — the command targeted one of the six
+   *  closed-enum circuit fields and the dictated value is NOT a member
+   *  of that field's option list (or the value/target was structurally
+   *  missing). `response` already holds the complete-restatement
+   *  re-ask; this flag is what lets the speak seam give it PRECEDENCE
+   *  over the server's own `spoken_response` and force it audible under
+   *  confirmations-OFF. NEVER infer rejection from an absent patch —
+   *  a legitimately no-op apply also has no patch. */
+  invalidClosedEnum?: boolean;
+  /** PLAN-C — the command targeted a closed-enum field and the dictated
+   *  value was CANONICALISED to a different string than the inspector
+   *  said ("60898" → "BS EN 60898", "twin and earth" → "A"). The
+   *  inspector must hear what was actually STORED, so `response` takes
+   *  precedence over the server's speech (below an enum re-ask, above
+   *  PLAN-B2's designation override). Absent when the dictated value
+   *  was already byte-identical to the canonical option. */
+  canonicalSuccess?: boolean;
+  /** PLAN-C (Codex cycle 1) — the command targeted a closed-enum field,
+   *  the VALUE was accepted, and the write still did not land because the
+   *  named circuit does not exist. Nothing was mutated, so the server's
+   *  "Set wiring type to A on circuit 12." would be read back over a
+   *  certificate that has no circuit 12 (the same lie PLAN-B2's Codex r1
+   *  closed for designations). `response` holds the truthful local line;
+   *  this flag gives it the same speak-seam precedence a re-ask gets.
+   *  Deliberately distinct from `invalidClosedEnum` — the value was fine
+   *  and the TARGET was not, and the telemetry must tell them apart. */
+  guardedWriteFailed?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -277,9 +315,63 @@ const SUPPLY_FIELD_ALIASES: Record<string, { section: 'supply' | 'installation';
     'client county': { section: 'installation', field: 'client_county' },
   };
 
+/** PLAN-C (feedback id 129) — the CANONICAL snake_case names the two
+ *  alias tables resolve TO, indexed for direct lookup.
+ *
+ *  The alias tables are keyed by SPOKEN phrases ("wiring type", "ocpd bs
+ *  en"); with one accidental exception (`circuit_designation`, whose
+ *  alias key happens to equal its canonical name) a canonical key like
+ *  `wiring_type` resolved to NOTHING. That mattered because the SERVER
+ *  speaks canon: `voice_command_response.action.params.field` carries
+ *  the snake_case field name straight from the Stage-6 tool call, so a
+ *  server-originated `update_field{field:"wiring_type"}` fell through to
+ *  `respondUnknown` — no write, and the guard below would never have
+ *  been reached on the very path that most needs it.
+ *
+ *  Codex cycle 3 — the list is the INTERSECTION with iOS, hand-held, not
+ *  `Object.values(CIRCUIT_FIELD_ALIASES)`. Deriving it from the alias
+ *  table looked like the drift-proof choice, but it admitted fifteen
+ *  further canonical keys — `measured_zs_ohm`, `r1_r2_ohm`,
+ *  `ocpd_rating_a`, `polarity_confirmed`, `cpc_csa_mm2`, … — that iOS's
+ *  `setCircuitField` has NO case for: it knows those same columns under
+ *  shorter names (`zs`, `r1_r2`, `ocpd_rating`, `polarity`, `cpc_csa`).
+ *  One identical `update_field{field:"measured_zs_ohm"}` frame would
+ *  have written on web and done nothing on iOS — a cross-client storage
+ *  divergence, on fields outside this plan's six, that nobody reviewed.
+ *
+ *  Narrowing all the way to the guarded six would have been the opposite
+ *  error: `number_of_points` and `max_disconnect_time_s` ARE iOS cases,
+ *  so refusing them here would invent a divergence in the other
+ *  direction. iOS is canon, so the rule is exactly "what iOS's
+ *  `setCircuitField` accepts under its canonical spelling".
+ *
+ *  Kept in sync by `web/tests/closed-enum-guard-appliers.test.ts`, which
+ *  asserts both halves: every name here writes, and a canonical name iOS
+ *  does not know still answers "I don't know the field". The wider
+ *  vocabulary UNION (teaching both clients the `_ohm`/`_mm2` spellings)
+ *  is a real question and a genuine both-clients decision — logged as a
+ *  follow-up, not smuggled in under a guard plan.
+ *
+ *  (`circuit_designation` is unaffected either way: its ALIAS key equals
+ *  its canonical name, so it never needed this fallback.) */
+const CANONICAL_CIRCUIT_FIELDS: ReadonlySet<string> = new Set<string>([
+  ...GUARDED_CLOSED_ENUM_FIELDS,
+  'number_of_points',
+  'max_disconnect_time_s',
+  'rcd_button_confirmed',
+  'afdd_button_confirmed',
+]);
+const CANONICAL_SUPPLY_ROUTES: Readonly<
+  Record<string, { section: 'supply' | 'installation'; field: string }>
+> = Object.fromEntries(Object.values(SUPPLY_FIELD_ALIASES).map((route) => [route.field, route]));
+
 /** Resolve a spoken field phrase against both vocabularies, preferring
  *  the circuit field when the command has an explicit circuit number.
- *  Returns the canonical field + routing section, or null if unknown. */
+ *  Returns the canonical field + routing section, or null if unknown.
+ *
+ *  Alias lookups run FIRST and are unchanged, so every spoken phrase
+ *  resolves byte-identically to before; the canonical fallbacks only
+ *  fire on strings no alias claims. */
 function resolveField(
   phrase: string,
   hasCircuit: boolean
@@ -300,6 +392,15 @@ function resolveField(
   if (circuitField) return { circuitField };
   const supplyRoute = SUPPLY_FIELD_ALIASES[normalised];
   if (supplyRoute) return { supplyRoute };
+  // Canonical snake_case (server-originated actions) — same precedence
+  // order as the alias passes above.
+  if (hasCircuit && CANONICAL_CIRCUIT_FIELDS.has(normalised)) {
+    return { circuitField: normalised };
+  }
+  const canonicalSupply = CANONICAL_SUPPLY_ROUTES[normalised];
+  if (!hasCircuit && canonicalSupply) return { supplyRoute: canonicalSupply };
+  if (CANONICAL_CIRCUIT_FIELDS.has(normalised)) return { circuitField: normalised };
+  if (canonicalSupply) return { supplyRoute: canonicalSupply };
   return null;
 }
 
@@ -364,8 +465,25 @@ export function parseVoiceCommand(transcript: string): VoiceCommand | null {
 
 /** Strip trailing "amps"/"amp"/"A"/"ohms"/"ohm" units from numeric values
  *  so a field like `ocpd_rating_a` receives `"32"` not `"32A"` — matches
- *  the circuit defaults schema which stores raw numbers. */
-function cleanValue(raw: string): string {
+ *  the circuit defaults schema which stores raw numbers.
+ *
+ *  PLAN-C (feedback id 129) — this mangler is field-UNAWARE by
+ *  construction, and on the six closed-enum fields it is actively
+ *  destructive: the unit strippers eat a trailing "A" (so `rcd_type` "A"
+ *  → `""` and `wiring_type` "SWA" → `"SW"`), the volts stripper eats a
+ *  trailing "V", and the `[.,!?]` peel turns "N/A." into "N/A" only by
+ *  luck of ordering. Every one of those produces a value the closed-enum
+ *  guard would then correctly REJECT — an audible re-ask for a reading
+ *  the inspector actually dictated correctly (Audio-First §2).
+ *
+ *  So callers now resolve the FIELD first and pass its canonical name:
+ *  guarded fields take the guard's own edge-only cleaner, which
+ *  preserves internal `/ - + &` (N/A, A-S, B+, T&E) and never strips a
+ *  unit-shaped letter. Unguarded fields are byte-identical to before. */
+function cleanValue(raw: string, canonicalField?: string): string {
+  if (canonicalField && isGuardedClosedEnumField(canonicalField)) {
+    return cleanClosedEnumResidue(raw);
+  }
   const noTrailingPunct = raw.replace(/[.,!?]+$/, '').trim();
   // Strip common electrical units inspectors dictate alongside numbers.
   const unitStripped = noTrailingPunct
@@ -549,8 +667,13 @@ function parseApplyFieldShape(
   if (isMatch) {
     const fieldPhrase = (isMatch[1] ?? '').trim();
     const scopeText = (isMatch[2] ?? '').trim();
-    const value = cleanValue((isMatch[3] ?? '').trim());
     const fieldHit = matchFieldPrefix(fieldPhrase);
+    // PLAN-C — resolve the FIELD before cleaning the value; `cleanValue`
+    // mangles closed-enum values when it doesn't know the field.
+    const value = cleanValue(
+      (isMatch[3] ?? '').trim(),
+      fieldHit ? CIRCUIT_FIELD_ALIASES[fieldHit.phrase] : undefined
+    );
     const scope = parseScopeText(scopeText);
     if (fieldHit && fieldHit.rest === '' && value && scope) {
       return { type: 'apply_field', field: fieldHit.phrase, value, scope };
@@ -565,7 +688,7 @@ function parseApplyFieldShape(
   if (trail) {
     const fieldHit = matchFieldPrefix(trail.before);
     if (fieldHit && fieldHit.rest.length > 0) {
-      const value = cleanValue(fieldHit.rest);
+      const value = cleanValue(fieldHit.rest, CIRCUIT_FIELD_ALIASES[fieldHit.phrase]);
       if (value) {
         return {
           type: 'apply_field',
@@ -757,6 +880,77 @@ function respondUnknown(reason: string): VoiceCommandOutcome {
   return { response: reason };
 }
 
+/**
+ * PLAN-C (feedback id 129) — validate-or-ask on the six closed-enum
+ * circuit fields, run ONCE per command at the write boundary.
+ *
+ * Placement matters and is deliberate: this runs BEFORE scope resolution
+ * and before any per-circuit iteration, never inside the row writer. A
+ * per-row guard on a 20-circuit `apply_field` would either speak twenty
+ * identical re-asks or write nineteen bad rows before noticing; the value
+ * is a property of the COMMAND, so it is judged once and the command
+ * either proceeds whole or mutates nothing at all.
+ *
+ * Backend Stage-6 has enforced exactly this for a long time
+ * (`src/extraction/stage6-dispatch-validation.js:99` / `:198`). The two
+ * CLIENT mirrors — this one and iOS `VoiceCommandExecutor` — wrote
+ * whatever they were handed, so a Flux garble ("for" heard as a wiring
+ * type, "MCB" as an OCPD standard) landed silently in a legally
+ * significant certificate. `unknown_field` cannot occur below (the
+ * `isGuardedClosedEnumField` gate has already passed) but is still
+ * routed to a rejection rather than a write: fail closed.
+ */
+type ClosedEnumGuardResult =
+  | { kind: 'not_guarded' }
+  | { kind: 'accepted'; value: string; canonicalised: boolean }
+  | { kind: 'rejected'; outcome: VoiceCommandOutcome };
+
+function guardClosedEnumWrite(
+  canonicalField: string,
+  rawValue: unknown,
+  target: GuardedTarget
+): ClosedEnumGuardResult {
+  if (!isGuardedClosedEnumField(canonicalField)) return { kind: 'not_guarded' };
+  const guarded = canonicalField as GuardedClosedEnumField;
+  const outcome = canonicaliseClosedEnumValue(guarded, rawValue);
+
+  const reask = reaskForClosedEnumOutcome(outcome, target);
+  if (reask) {
+    return { kind: 'rejected', outcome: { response: reask, invalidClosedEnum: true } };
+  }
+  if (outcome.kind !== 'valid') {
+    return {
+      kind: 'rejected',
+      outcome: {
+        response: renderClosedEnumReask(guarded, 'missing_value', '', target),
+        invalidClosedEnum: true,
+      },
+    };
+  }
+
+  // Structurally complete VALUE, structurally absent TARGET. Audio-First
+  // §2 asks only for structural gaps — this is one, and writing "wiring
+  // type A" to nothing at all while speaking a success line would be the
+  // silent-drop failure inverted.
+  if (target.kind === 'unknown') {
+    return {
+      kind: 'rejected',
+      outcome: {
+        response: renderClosedEnumReask(guarded, 'missing_target', outcome.value, target),
+        invalidClosedEnum: true,
+      },
+    };
+  }
+
+  return {
+    kind: 'accepted',
+    value: outcome.value,
+    // The inspector must hear what was STORED, not what they said, on any
+    // turn where the two differ ("60898" → "BS EN 60898").
+    canonicalised: !(typeof rawValue === 'string' && rawValue === outcome.value),
+  };
+}
+
 export function applyVoiceCommand(
   command: VoiceCommand,
   job: VoiceCommandJob
@@ -801,6 +995,32 @@ function applyUpdateField(
     return respondUnknown(`I don't know the field "${command.field}".`);
   }
 
+  // PLAN-C — validate the closed-enum value ONCE, before the circuit is
+  // even looked up. A positive integer circuit reference is the only
+  // structurally complete single-circuit target; anything else (absent,
+  // zero, negative, non-finite) is a missing target, NOT a reason to
+  // silently route the write into the supply branch.
+  let guardedValue: string | null = null;
+  let guardedCanonicalised = false;
+  if (resolved.circuitField && isGuardedClosedEnumField(resolved.circuitField)) {
+    const circuitRef = command.circuit;
+    const target: GuardedTarget =
+      // `Number.isInteger` (Codex cycle 1) — the comment above always said
+      // "positive INTEGER"; the code only checked finiteness, so a wire
+      // `circuit: 3.5` built a `single` target, missed every row, and
+      // reached the not-found branch. A fractional circuit reference is a
+      // structurally absent target, not a target that happens to be empty.
+      typeof circuitRef === 'number' && Number.isInteger(circuitRef) && circuitRef >= 1
+        ? { kind: 'single', circuit: circuitRef }
+        : { kind: 'unknown' };
+    const guard = guardClosedEnumWrite(resolved.circuitField, command.value, target);
+    if (guard.kind === 'rejected') return guard.outcome;
+    if (guard.kind === 'accepted') {
+      guardedValue = guard.value;
+      guardedCanonicalised = guard.canonicalised;
+    }
+  }
+
   // Per-circuit update
   if (hasCircuit && resolved.circuitField) {
     const ref = String(command.circuit);
@@ -809,7 +1029,13 @@ function applyUpdateField(
       (c) => c.circuit_ref === ref || c.number === ref || c.id === ref
     );
     if (idx === -1) {
-      return respondUnknown(`Circuit ${command.circuit} doesn't exist.`);
+      const missing = respondUnknown(`Circuit ${command.circuit} doesn't exist.`);
+      // PLAN-C (Codex cycle 1) — flag it so the speak seam prefers this
+      // truthful line over the server's success text. Only for the guarded
+      // columns: this plan owns those six, and widening the flag to every
+      // circuit field would change the spoken outcome of ~20 fields no plan
+      // has reviewed.
+      return guardedValue != null ? { ...missing, guardedWriteFailed: true } : missing;
     }
     // Normalise polarity_confirmed — inspectors dictate "pass"/"fail";
     // iOS converts to the ✓/✗ sigils used everywhere else in the app.
@@ -829,6 +1055,13 @@ function applyUpdateField(
       value = repairCircuitDesignation(command.value) as string;
       spokenValue = value;
     }
+    // PLAN-C — the canonical option is what gets STORED, so it is also
+    // what gets SPOKEN. Same storage-and-speech-from-one-value discipline
+    // PLAN-B2 established for designations directly above.
+    if (guardedValue != null) {
+      value = guardedValue;
+      spokenValue = guardedValue;
+    }
     const next: VoiceCommandCircuit[] = circuits.map((row, i) =>
       i === idx ? { ...row, [resolved.circuitField as string]: value } : row
     );
@@ -837,6 +1070,7 @@ function applyUpdateField(
       patch: { circuits: next },
       response: `Set ${label} to ${spokenValue} on circuit ${command.circuit}.`,
       changedKeys: [resolved.circuitField as string],
+      ...(guardedCanonicalised ? { canonicalSuccess: true } : {}),
     };
   }
 
@@ -1088,6 +1322,25 @@ function applyApplyField(
   if (!resolved || !resolved.circuitField) {
     return respondUnknown(`I don't know the field "${command.field}".`);
   }
+  // PLAN-C — validate ONCE, BEFORE scope resolution. A bulk apply of a
+  // garbled enum must mutate NOTHING and re-ask once, not write N bad
+  // rows or speak N identical re-asks. The re-ask echoes the command's
+  // ACTUAL target (including the spare policy) so the inspector can
+  // restate the whole instruction in one breath.
+  let guardedValue: string | null = null;
+  let guardedCanonicalised = false;
+  if (isGuardedClosedEnumField(resolved.circuitField)) {
+    const guard = guardClosedEnumWrite(
+      resolved.circuitField,
+      command.value,
+      guardedTargetForScope(command.scope, command.sparePolicy)
+    );
+    if (guard.kind === 'rejected') return guard.outcome;
+    if (guard.kind === 'accepted') {
+      guardedValue = guard.value;
+      guardedCanonicalised = guard.canonicalised;
+    }
+  }
   const circuits = [...(job.circuits ?? [])];
   const { indices, spareSkippedCount } = indicesForScope(command.scope, circuits, {
     fieldName: resolved.circuitField,
@@ -1098,13 +1351,20 @@ function applyApplyField(
   // policy" case (there is no success confirmation to append to); zero
   // applied with NO spares skipped is the pre-existing "range/circuit not
   // found" case. Distinct branches — the wording must not collide.
+  // PLAN-C (Codex cycle 1) — on a guarded field BOTH zero-applied branches
+  // must take the speak seam, for the same reason the value-rejection branch
+  // does: nothing was written, so the server's "Set wiring type to A for 6
+  // circuits." is a read-back of a certificate state that does not exist. A
+  // 0/negative/fractional circuit target from the wire lands here too.
+  const guardedZeroFlag = guardedValue != null ? { guardedWriteFailed: true as const } : {};
   if (indices.length === 0) {
     if (spareSkippedCount > 0) {
       return {
         response: `No non-spare circuits were updated; ${skipClause(spareSkippedCount, 'standalone')}.`,
+        ...guardedZeroFlag,
       };
     }
-    return respondUnknown('No circuits found in the specified range.');
+    return { ...respondUnknown('No circuits found in the specified range.'), ...guardedZeroFlag };
   }
   // Polarity normalisation — same sigil mapping as applyUpdateField.
   let value: string = command.value;
@@ -1120,6 +1380,11 @@ function applyApplyField(
     value = repairCircuitDesignation(command.value) as string;
     spokenValue = value;
   }
+  // PLAN-C — store and speak the SAME canonical option (see applyUpdateField).
+  if (guardedValue != null) {
+    value = guardedValue;
+    spokenValue = guardedValue;
+  }
   let updated = 0;
   const next: VoiceCommandCircuit[] = circuits.map((row, idx) => {
     if (!indices.includes(idx)) return row;
@@ -1128,7 +1393,7 @@ function applyApplyField(
   });
   const label = labelForField(resolved.circuitField);
   if (updated === 0) {
-    return { response: `No circuits found in the specified range.` };
+    return { response: `No circuits found in the specified range.`, ...guardedZeroFlag };
   }
   // iOS phrasing — VoiceCommandExecutor.swift around line 472. "Set X
   // for N circuits" / "for 1 circuit". Same direct-mutation semantics
@@ -1146,7 +1411,39 @@ function applyApplyField(
     patch: { circuits: next },
     response,
     changedKeys: [resolved.circuitField as string],
+    ...(guardedCanonicalised ? { canonicalSuccess: true } : {}),
   };
+}
+
+/** PLAN-C — the apply-field scope, in the shape the re-ask renderer echoes.
+ *  `sparePolicy` rides along because a restatement that drops "excluding
+ *  spares" would not reproduce the command the inspector actually gave. */
+function guardedTargetForScope(
+  scope: VoiceCommandScope,
+  sparePolicy: ClosedEnumSparePolicy | undefined
+): GuardedTarget {
+  // Codex cycle 2 — a single scope counts as RESOLVED only when it names a
+  // positive integer, which is exactly iOS's test (`guardedApplyTarget`,
+  // `VoiceCommandExecutor.swift:749`). `asNumber` in the action mapper only
+  // screens for finiteness, so `circuit: 0` and `circuit: 2.5` reached here
+  // as resolved single targets: web then fell through to the zero-applied
+  // branch and said "No circuits found in the specified range." for a
+  // command that named no valid circuit at all, where iOS asks "…but not
+  // which circuit". Both refuse the write, so nothing lands wrongly either
+  // way — but the shared fixture is a contract about what the two clients
+  // SAY, and iOS is canon. Narrowed here rather than in `scopeFromParams`
+  // deliberately: that resolver serves every field, and dropping a
+  // 0/fractional scope to null there would change unguarded behaviour this
+  // plan has no business touching.
+  if (scope.kind === 'single') {
+    return Number.isInteger(scope.circuit) && scope.circuit >= 1
+      ? { kind: 'single', circuit: scope.circuit }
+      : { kind: 'unknown' };
+  }
+  if (scope.kind === 'range') {
+    return { kind: 'range', from: scope.from, to: scope.to, sparePolicy };
+  }
+  return { kind: 'all', sparePolicy };
 }
 
 /**

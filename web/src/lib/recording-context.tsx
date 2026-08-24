@@ -3401,7 +3401,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // locally constructed response built from the canonical applied
         // value instead. Delivery-token / ACK / force-TTS mechanics are
         // unchanged — only the text source swaps.
-        let designationSpokenOverride: string | null = null;
+        //
+        // PLAN-C (feedback id 129) — the same seam now also carries the
+        // closed-enum guard's verdict. Strict precedence, most-specific
+        // first:
+        //   1. enum re-ask      — the write was REJECTED, so the server's
+        //      "Set OCPD type to MCB…" would be a false read-back of a
+        //      value that is NOT in the certificate.
+        //   2. canonical success — the write landed under a different
+        //      string than the inspector said ("60898" → "BS EN 60898");
+        //      speech must agree with storage (PLAN-B2 discipline).
+        //   3. designation override (PLAN-B2, below — unchanged).
+        //   4. the server's raw spoken_response.
+        // Rejection is read from the TYPED `invalidClosedEnum` outcome and
+        // never inferred from an absent patch: a legitimately no-op apply
+        // (value already set, empty scope) also has no patch.
+        let localSpokenOverride: string | null = null;
         if (response.understood && response.action) {
           const command = mapServerActionToVoiceCommand(response.action);
           if (command) {
@@ -3447,8 +3462,59 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             //     address terminal, and replacing it would ACK content
             //     the inspector never heard. The plan's own spec keeps
             //     delivery-token behaviour intact.
-            if (voiceCommandTargetsDesignation(command) && outcome.response && !deliveryToken) {
-              designationSpokenOverride = outcome.response;
+            //
+            // PLAN-C reuses guard (b) verbatim for the enum verdicts: a
+            // delivery-token frame carries the durable address terminal,
+            // and the ACK contract says the inspector must hear THAT.
+            //
+            // Codex cycle 2 — an earlier version of this comment claimed the
+            // combination was "structurally near-impossible". It is NOT:
+            // `src/extraction/sonnet-stream.js:1404` has a dedicated branch
+            // for a delivery result that ALSO carries `result.action`, and it
+            // merges the address terminal and the voice-command terminal into
+            // one `spoken_response`. So a turn that both mirrors an address
+            // and dispatches a guarded circuit write CAN occur, and on that
+            // turn a rejected enum is not re-asked — the inspector hears the
+            // merged server line instead. Left that way DELIBERATELY: the
+            // merged string carries no separator, so the client cannot
+            // replace the voice-command half without dropping the durable
+            // address terminal it is about to ACK, and appending the re-ask
+            // would speak a contradiction ("Set wiring type to A." followed
+            // by "I heard wiring type 'for'…"). The honest cure is
+            // server-side — do not merge a terminal for an action the client
+            // will refuse — which is a backend/wire change and outside this
+            // plan's client-local, zero-wire-change charter. Recorded as a
+            // follow-up rather than rationalised away.
+            if (outcome.invalidClosedEnum && outcome.response && !deliveryToken) {
+              localSpokenOverride = outcome.response;
+              clientDiagnostic('voice_command_closed_enum_reask', {
+                actionType: command.type,
+                field: 'field' in command ? command.field : 'none',
+                reaskPreview: outcome.response.slice(0, 80),
+              });
+            } else if (outcome.guardedWriteFailed && outcome.response && !deliveryToken) {
+              // Codex cycle 1 — value accepted, target absent from the job.
+              // Nothing was written, so the server's success line would be
+              // read back over a circuit the certificate does not have.
+              localSpokenOverride = outcome.response;
+              clientDiagnostic('voice_command_closed_enum_write_failed', {
+                actionType: command.type,
+                field: 'field' in command ? command.field : 'none',
+                overridePreview: outcome.response.slice(0, 80),
+              });
+            } else if (outcome.canonicalSuccess && outcome.response && !deliveryToken) {
+              localSpokenOverride = outcome.response;
+              clientDiagnostic('voice_command_closed_enum_canonicalised', {
+                actionType: command.type,
+                field: 'field' in command ? command.field : 'none',
+                overridePreview: outcome.response.slice(0, 80),
+              });
+            } else if (
+              voiceCommandTargetsDesignation(command) &&
+              outcome.response &&
+              !deliveryToken
+            ) {
+              localSpokenOverride = outcome.response;
               clientDiagnostic('voice_command_designation_spoken_override', {
                 actionType: command.type,
                 applied: Boolean(outcome.patch),
@@ -3461,7 +3527,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
           }
         }
-        const spokenText = designationSpokenOverride ?? response.spoken_response;
+        const spokenText = localSpokenOverride ?? response.spoken_response;
         if (spokenText) {
           // A1 agentic-voice web companion (2026-07-23) — force-speak the
           // voice_command_response. iOS speaks VCR frames UNCONDITIONALLY

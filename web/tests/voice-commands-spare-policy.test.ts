@@ -115,14 +115,21 @@ describe('applyVoiceCommand — apply_field_contradiction (local-consumed refusa
   });
 });
 
+// PLAN-C (feedback id 129) — `rcd_type` is one of the six closed-enum
+// fields. The parser lowercases the whole transcript, so the applier used
+// to STORE the lowercase residue "ac"; the guard's canonical-casing snap
+// now writes the schema option "AC" instead, and (per Audio-First §1) the
+// spoken confirmation reads back the stored value, not the heard one.
+// Those two facts are what changed in the expectations below — the spare
+// policy semantics this file exists to pin are untouched.
 describe('applyVoiceCommand — spare_policy truth table, device-attribute field (rcd_type)', () => {
   it('omitted (automatic) → include (spares written)', () => {
     const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK, SPARE_NAMED]);
     const cmd = parseVoiceCommand('rcd type AC for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
-    expect(updated.every((r) => r.rcd_type === 'ac')).toBe(true);
-    expect(out.response).toBe('Set RCD type to ac for 4 circuits.');
+    expect(updated.every((r) => r.rcd_type === 'AC')).toBe(true);
+    expect(out.response).toBe('Set RCD type to AC for 4 circuits.');
   });
 
   it('explicit "including spares" → include', () => {
@@ -130,7 +137,7 @@ describe('applyVoiceCommand — spare_policy truth table, device-attribute field
     const cmd = parseVoiceCommand('rcd type AC for all circuits including spares')!;
     const out = applyVoiceCommand(cmd, job);
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
-    expect(updated.every((r) => r.rcd_type === 'ac')).toBe(true);
+    expect(updated.every((r) => r.rcd_type === 'AC')).toBe(true);
   });
 
   it('explicit "excluding spares" → exclude, even on a device-attribute field', () => {
@@ -138,10 +145,10 @@ describe('applyVoiceCommand — spare_policy truth table, device-attribute field
     const cmd = parseVoiceCommand('rcd type AC for all circuits excluding spares')!;
     const out = applyVoiceCommand(cmd, job);
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
-    expect(updated[0].rcd_type).toBe('ac');
-    expect(updated[1].rcd_type).toBe('ac');
+    expect(updated[0].rcd_type).toBe('AC');
+    expect(updated[1].rcd_type).toBe('AC');
     expect(updated[2].rcd_type).toBeUndefined();
-    expect(out.response).toBe('Set RCD type to ac for 2 circuits, skipping 1 spare way.');
+    expect(out.response).toBe('Set RCD type to AC for 2 circuits, skipping 1 spare way.');
   });
 });
 
@@ -229,48 +236,56 @@ describe('calculate-impedance scope — unaffected by this plan (always spare-ex
 });
 
 describe('BS/EN field aliases (web previously had none)', () => {
+  // PLAN-C — the two `..._bs_en` fields are closed-enum guarded, so the
+  // placeholder value now has to be a real standard. A bare code is used
+  // rather than the full "BS EN 61009" phrasing because the longest-prefix
+  // field matcher partially re-consumes a value that echoes the field
+  // phrase; the guard canonicalises the bare code back to the full option,
+  // which is the ingress this plan is actually about.
   it.each([
-    ['ocpd bs en', 'ocpd_bs_en'],
-    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka'],
-    ['ocpd max zs', 'ocpd_max_zs_ohm'],
-    ['rcd bs en', 'rcd_bs_en'],
-  ])('"%s" maps to circuit field %s and includes spares by default', (phrase, canonical) => {
-    const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK]);
-    // Value deliberately doesn't echo any word from the field phrase
-    // itself (a prior version used "BS EN 61009" as the value for the
-    // "...bs en" fields, which the longest-prefix field matcher
-    // partially re-consumed as part of the field phrase).
-    const cmd = parseVoiceCommand(`${phrase} sixtyone for all circuits`)!;
-    expect(cmd).not.toBeNull();
-    const out = applyVoiceCommand(cmd, job);
-    const updated = out.patch?.circuits as Array<Record<string, unknown>>;
-    expect(updated.every((r) => r[canonical] === 'sixtyone')).toBe(true);
-  });
+    ['ocpd bs en', 'ocpd_bs_en', '60898', 'BS EN 60898'],
+    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka', 'sixtyone', 'sixtyone'],
+    ['ocpd max zs', 'ocpd_max_zs_ohm', 'sixtyone', 'sixtyone'],
+    ['rcd bs en', 'rcd_bs_en', '61008', 'BS EN 61008'],
+  ])(
+    '"%s" maps to circuit field %s and includes spares by default',
+    (phrase, canonical, spoken, stored) => {
+      const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK]);
+      const cmd = parseVoiceCommand(`${phrase} ${spoken} for all circuits`)!;
+      expect(cmd).not.toBeNull();
+      const out = applyVoiceCommand(cmd, job);
+      const updated = out.patch?.circuits as Array<Record<string, unknown>>;
+      expect(updated.every((r) => r[canonical] === stored)).toBe(true);
+    }
+  );
 });
 
 // Codex diff-review r1 (wire-contract + edge-interactions lenses) — the
 // plan requires one write-and-read-back test PER FIELD in the closed
 // 8-field list, not just the 4 fields this plan newly added aliases for.
 describe('all 8 DEVICE_ATTRIBUTE_FIELDS — write-and-read-back, spares included by default', () => {
+  // PLAN-C — four of these eight are closed-enum guarded and take a
+  // schema-valid dictated value; the other four keep the "nineteen"
+  // placeholder, which proves the guard leaves unguarded fields alone.
   it.each([
-    ['ocpd bs en', 'ocpd_bs_en'],
-    ['ocpd type', 'ocpd_type'],
-    ['ocpd rating', 'ocpd_rating_a'],
-    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka'],
-    ['ocpd max zs', 'ocpd_max_zs_ohm'],
-    ['rcd bs en', 'rcd_bs_en'],
-    ['rcd type', 'rcd_type'],
-    ['rcd operating current', 'rcd_operating_current_ma'],
+    ['ocpd bs en', 'ocpd_bs_en', '60898', 'BS EN 60898'],
+    ['ocpd type', 'ocpd_type', 'B', 'B'],
+    ['ocpd rating', 'ocpd_rating_a', 'nineteen', 'nineteen'],
+    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka', 'nineteen', 'nineteen'],
+    ['ocpd max zs', 'ocpd_max_zs_ohm', 'nineteen', 'nineteen'],
+    ['rcd bs en', 'rcd_bs_en', '61008', 'BS EN 61008'],
+    ['rcd type', 'rcd_type', 'AC', 'AC'],
+    ['rcd operating current', 'rcd_operating_current_ma', 'nineteen', 'nineteen'],
   ])(
     '"%s" (%s) writes to every circuit incl. the spare, response names the count',
-    (phrase, canonical) => {
+    (phrase, canonical, spoken, stored) => {
       const job = jobWithCircuits([...REAL_CIRCUITS, SPARE_BLANK]);
-      const cmd = parseVoiceCommand(`${phrase} nineteen for all circuits`)!;
+      const cmd = parseVoiceCommand(`${phrase} ${spoken} for all circuits`)!;
       expect(cmd).not.toBeNull();
       const out = applyVoiceCommand(cmd, job);
       const updated = out.patch?.circuits as Array<Record<string, unknown>>;
       expect(updated).toHaveLength(3);
-      expect(updated.every((r) => r[canonical] === 'nineteen')).toBe(true);
+      expect(updated.every((r) => r[canonical] === stored)).toBe(true);
       expect(out.response).toContain('for 3 circuits');
       expect(out.response).not.toContain('spare');
     }
@@ -308,7 +323,7 @@ describe('range/single scope composes with a spoken spare_policy modifier', () =
     expect(cmd.sparePolicy).toBeUndefined();
     const out = applyVoiceCommand(cmd, job);
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
-    expect(updated.filter((r) => r.rcd_type === 'ac')).toHaveLength(4);
+    expect(updated.filter((r) => r.rcd_type === 'AC')).toHaveLength(4);
     expect(out.response).toContain('for 4 circuits');
     expect(out.response).not.toContain('spare');
   });
@@ -324,7 +339,7 @@ describe('range/single scope composes with a spoken spare_policy modifier', () =
     expect(cmd.sparePolicy).toBe('exclude');
     const out = applyVoiceCommand(cmd, job);
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
-    expect(updated.filter((r) => r.rcd_type === 'ac')).toHaveLength(2);
+    expect(updated.filter((r) => r.rcd_type === 'AC')).toHaveLength(2);
     expect(out.response).toContain(', skipping 2 spare ways.');
   });
 
@@ -337,7 +352,7 @@ describe('range/single scope composes with a spoken spare_policy modifier', () =
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
     // Only the two REAL circuits (1, 2) got written; the two spares (3, 4)
     // did not.
-    expect(updated.filter((r) => r.rcd_type === 'ac')).toHaveLength(2);
+    expect(updated.filter((r) => r.rcd_type === 'AC')).toHaveLength(2);
     expect(updated.find((r) => r.circuit_ref === '3')?.rcd_type).toBeUndefined();
     expect(updated.find((r) => r.circuit_ref === '4')?.rcd_type).toBeUndefined();
     expect(out.response).toContain('for 2 circuits');
@@ -350,7 +365,7 @@ describe('range/single scope composes with a spoken spare_policy modifier', () =
     expect(cmd.sparePolicy).toBe('include');
     const out = applyVoiceCommand(cmd, job);
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
-    expect(updated.filter((r) => r.rcd_type === 'ac')).toHaveLength(2);
+    expect(updated.filter((r) => r.rcd_type === 'AC')).toHaveLength(2);
     expect(out.response).not.toContain('spare');
   });
 
@@ -369,7 +384,7 @@ describe('range/single scope composes with a spoken spare_policy modifier', () =
     const cmd = parseVoiceCommand('rcd type AC for circuit 1 excluding spares')!;
     const out = applyVoiceCommand(cmd, job);
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
-    expect(updated.find((r) => r.circuit_ref === '1')?.rcd_type).toBe('ac');
+    expect(updated.find((r) => r.circuit_ref === '1')?.rcd_type).toBe('AC');
     expect(out.response).not.toContain('spare');
   });
 });

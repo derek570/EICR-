@@ -109,6 +109,65 @@ designation's EDGES — the certificate column is already headed "Circuit descri
   preset imports (incoming copy repaired BEFORE matching), load-boundary repair of
   pre-existing dirty jobs, and PDF preflights on both clients' engines.
 
+## Closed-enum circuit fields — client-local validate-or-ask (PLAN-C, 2026-08-24)
+
+Feedback id 129, field session 17821FFA: a garbled dictation put `"FOR"` into
+`wiring_type` on two circuits and the ordinary success line was read back, so the
+inspector heard a confident confirmation of a value no dropdown offers. The
+CLIENT-LOCAL apply paths never validated against the closed option list — only the
+server-extraction lane did — and iOS's transport had already truncated the residue to
+a plausible-looking first word, destroying the evidence a guard would need.
+
+- **Guarded fields (6):** `wiring_type`, `ref_method`, `ocpd_bs_en`, `ocpd_type`,
+  `rcd_bs_en`, `rcd_type`. Derived from `config/field_schema.json` `circuit_fields`
+  where `type === 'select'`, MINUS the four boolean/confirmable selects
+  (`polarity_confirmed`, `rcd_button_confirmed`, `afdd_button_confirmed`,
+  `is_distribution_circuit` — spoken yes/no vocabulary, not closed code lists) and
+  MINUS the `''` blank option (blank is a `missing_value` re-ask, never a blanking
+  write).
+- **Contract:** a value outside the closed list is REFUSED — nothing written — and ONE
+  complete-restatement re-ask is spoken, naming the field, echoing what was heard, and
+  giving a concrete example. An accepted value is stored AND spoken from the SAME
+  canonical string (casing snapped by the guard, e.g. `gg` → `gG`). Recovery is a full
+  restatement through the normal parse path; there is deliberately no pending-correction
+  state machine.
+- **Placement discipline:** validate ONCE, before scope resolution/iteration — never
+  inside a per-circuit setter. A guard inside the loop would speak N times on a bulk
+  write, and the setter's zero-updates branch would clobber the spoken override.
+- **Transport:** the value residue crosses to the guard WHOLE — no first-word truncation
+  and no re-uppercasing. Both clients lowercase the transcript before matching
+  (`packages/shared-utils/src/voice-commands.ts`), so the residue reaching the guard is
+  lowercase on both and casing is exclusively the guard's business.
+- **Implementations (two, contract-locked):** web/shared
+  `packages/shared-utils/src/closed-enum-guard.ts`; iOS
+  `Sources/Utilities/ClosedEnumGuard.swift`. Both assert the shared fixture
+  `config/closed-enum-vectors.json` (option sets, accepted/rejected value vectors, and
+  the FROZEN re-ask render vectors); the iOS copy is pinned by a paired SHA-256 digest
+  and `scripts/check-closed-enum-fixture-sync.sh` (pre-TestFlight byte-compare). The
+  web suite re-derives the fixture's option lists from `field_schema.json`, so a schema
+  edit fails loudly in a required CI job instead of silently making a dictated value
+  unspeakable. The re-ask wordings join the backend spoken-string distinctness union
+  (`stage6-honest-refusal.test.js` §5.12) because the client TTS dedupe is family-blind
+  — a colliding re-ask would be swallowed as a repeat.
+- **Deliberately NOT ported from the backend BS-code parser:** its Levenshtein-1 fuzzy
+  fallback. That maps `1362` → `BS 1361`, a DIFFERENT protective device; a silently
+  substituted device standard on a certificate is exactly the failure this guard exists
+  to prevent.
+- **Guarded ingresses:** both client-local voice dispatchers on each platform
+  (`update_field` and `apply_field`), the wire-frame apply boundary, and web's regex
+  instant-fill (`applyRegexMatchToJob`) — the instant-fill path is GUARDED because it
+  writes ~40 ms before any server opinion exists. The legacy `extracted_readings` lane
+  is documented-unguarded and deferred (C2b): it is a server-extraction egress the
+  backend validator already constrains, and duplicating the guard there would risk a
+  second spoken refusal for a value the server already refused.
+- **Deliberate picker/schema divergence (queued as a Derek decision):** iOS's
+  `Constants.refMethods` offers the granular BS 7671 methods `A1/A2/B1/B2/D1/D2` and its
+  OCPD-type picker is a superset; `field_schema.json` carries neither. Those values are
+  therefore refused when DICTATED while remaining tappable — which matches what the
+  backend validator already does. Widening the schema is a separate backend + web
+  dropdown + PDF change; the divergence is pinned by named tests on BOTH clients so it
+  cannot be "fixed" one-sidedly.
+
 ## Installation Details Tab (`/job/[id]/installation`)
 
 | Field | Type | Options | AI Extraction Guidance |
