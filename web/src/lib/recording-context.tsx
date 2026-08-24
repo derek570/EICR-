@@ -137,6 +137,23 @@ import {
   type VoiceCommandJob,
 } from '@certmate/shared-utils';
 import { mapServerActionToVoiceCommand } from './recording/voice-command-action';
+import {
+  createDesignationAliasStore,
+  rewriteConfirmationDesignationText,
+  type DesignationAliasStore,
+  type RewriteOptions,
+} from './recording/confirmation-designation-rewrite';
+import { repairCircuitDesignation } from '@certmate/shared-utils';
+
+/** PLAN-B2 — reading field names that carry a circuit designation (the
+ *  wire uses the canonical name; legacy alias spellings included for
+ *  stale-frame safety). */
+const DESIGNATION_READING_FIELDS = new Set([
+  'circuit_designation',
+  'designation',
+  'description',
+  'circuit_description',
+]);
 import { useCurrentUser } from './use-current-user';
 import { useUserDefaults } from '@/hooks/use-user-defaults';
 import { toast } from 'sonner';
@@ -1362,6 +1379,42 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const confirmationDedupeStoreRef = React.useRef<ConfirmationDedupeStore>(
     new ConfirmationDedupeStore()
   );
+  // PLAN-B2 (feedback id 128) — SESSION-SCOPED raw-designation alias map
+  // for the confirmations[] slot rewrite. Populated from every
+  // designation operation observed (wire circuit_updates, designation
+  // readings, designation voice commands): raw → canonical. A later
+  // stale frame carrying only a measured reading still repairs because
+  // its designation-prefix slot resolves through this map (or the local
+  // model / pure repair as fallbacks). Cleared with the other
+  // session-scoped stores on session reset.
+  const designationAliasStoreRef = React.useRef<DesignationAliasStore>(
+    createDesignationAliasStore()
+  );
+  // Record a raw designation observed on ANY operation: when its repair
+  // differs, the raw→canonical pairing joins the session alias map.
+  const recordDesignationAliasRef = React.useRef((raw: unknown) => {
+    if (typeof raw !== 'string' || raw.length === 0) return;
+    const canonical = repairCircuitDesignation(raw);
+    if (typeof canonical === 'string' && canonical !== raw) {
+      designationAliasStoreRef.current.record(raw, canonical);
+    }
+  });
+  // Shared rewrite options — the by-circuit lookup reads the LIVE job
+  // ref so it always sees post-apply canonical designations.
+  const designationRewriteOptsRef = React.useRef<RewriteOptions | null>(null);
+  if (designationRewriteOptsRef.current === null) {
+    designationRewriteOptsRef.current = {
+      aliases: designationAliasStoreRef.current,
+      lookupCanonicalByCircuit: (circuit: number) => {
+        const rows = (jobRef.current?.circuits ?? []) as Array<Record<string, unknown>>;
+        const row = rows.find(
+          (r) => r.circuit_ref === String(circuit) || r.number === String(circuit)
+        );
+        const designation = row?.circuit_designation;
+        return typeof designation === 'string' && designation.trim() ? designation : null;
+      },
+    };
+  }
   // One release path for queue-side discards AND the rarer pre-enqueue
   // failures (TTS unavailable / empty terminal). Address operations reserve a
   // durable delivery token plus, sometimes, an ordinary confirmation key; the
@@ -2490,6 +2543,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         turn_id: result.turn_id ?? null,
         extraction_failed: Boolean(result.extraction_failed),
       });
+      // PLAN-B2 — record raw→canonical designation aliases from every
+      // designation operation in this envelope BEFORE the apply mutates
+      // the model (the mutation writes the canonical, so the raw is
+      // only observable here). The session alias map is what lets a
+      // LATER stale frame carrying only a measured reading repair its
+      // designation-prefix slot.
+      for (const upd of result.circuit_updates ?? []) {
+        recordDesignationAliasRef.current((upd as { designation?: unknown }).designation);
+      }
+      for (const reading of result.readings ?? []) {
+        const rfield = (reading as { field?: unknown }).field;
+        if (typeof rfield === 'string' && DESIGNATION_READING_FIELDS.has(rfield.toLowerCase())) {
+          recordDesignationAliasRef.current((reading as { value?: unknown }).value);
+        }
+      }
       let applied: ReturnType<typeof applyExtractionToJob>;
       try {
         applied = applyExtractionToJob(jobRef.current, result, {
@@ -2591,7 +2659,27 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // turn-10 broadcast silenced by turn-9's key). The text IS the
       // value discriminator, so "same field, different value" now reads
       // back — audio-first invariant #1 (exactly once, never zero).
-      const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
+      // PLAN-B2 — grammar-aware designation-slot rewrite on every
+      // confirmation text BEFORE dedupe/speech. Runs AFTER the apply
+      // above so the by-circuit lookup sees post-apply canonical
+      // designations. Only `.text` changes, on a copy — dedupe_token,
+      // board, ACK and every other identity field pass through
+      // untouched (a raw frame and its replay rewrite identically, so
+      // dedupe keys still collide as intended).
+      const rawConfirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
+      const confirmations = rawConfirmations.map((conf) => {
+        if (!conf || typeof conf.text !== 'string' || conf.text.length === 0) return conf;
+        const rewritten = rewriteConfirmationDesignationText(
+          conf.text,
+          designationRewriteOptsRef.current!
+        );
+        if (!rewritten.changed) return conf;
+        clientDiagnostic('confirmation_designation_slot_rewritten', {
+          before: conf.text.slice(0, 80),
+          after: rewritten.text.slice(0, 80),
+        });
+        return { ...conf, text: rewritten.text };
+      });
       const addressDeliveryToken = result.address_mirror_delivery_token ?? null;
       let addressTerminalIndex = -1;
       if (addressDeliveryToken) {
@@ -3254,6 +3342,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (response.understood && response.action) {
           const command = mapServerActionToVoiceCommand(response.action);
           if (command) {
+            // PLAN-B2 — a designation-bearing voice command also feeds
+            // the session alias map (raw → canonical), so a later stale
+            // wire frame naming this designation still repairs.
+            if (command.type === 'add_circuit') {
+              recordDesignationAliasRef.current(command.description);
+            } else if (
+              (command.type === 'update_field' || command.type === 'apply_field') &&
+              voiceCommandTargetsDesignation(command)
+            ) {
+              recordDesignationAliasRef.current(command.value);
+            }
             const outcome = applyVoiceCommand(
               command,
               jobRef.current as unknown as VoiceCommandJob
@@ -3898,6 +3997,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // into a new recording started within 30 s would suppress that
     // session's first apology.
     confirmationDedupeStoreRef.current.reset();
+    // PLAN-B2 — session-scoped designation aliases die with the session.
+    designationAliasStoreRef.current.clear();
     addressMirrorDeliveryStoreRef.current?.clearReservations();
     addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();
@@ -4145,6 +4246,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // field-nil TTL map + reservations) so the next session starts with
     // a clean slate.
     confirmationDedupeStoreRef.current.reset();
+    // PLAN-B2 — session-scoped designation aliases die with the session.
+    designationAliasStoreRef.current.clear();
     addressMirrorDeliveryStoreRef.current?.clearReservations();
     addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();
