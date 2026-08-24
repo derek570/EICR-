@@ -28,6 +28,8 @@
  * TTS helper.
  */
 
+import { repairCircuitDesignation } from './designation-canonicaliser';
+
 // We use local structural types rather than pulling from @certmate/shared-types
 // because the iOS-oriented shared-types `JobDetail` uses nested sections
 // (`installation_details`, `supply_characteristics`) while the web client
@@ -796,13 +798,24 @@ function applyUpdateField(
       if (value === 'PASS') value = '✓';
       else if (value === 'FAIL') value = '✗';
     }
+    // PLAN-B2 — designation hygiene, canonicalised ONCE at command entry.
+    // Repair semantics (never reject/blank: banned-token-only stays as
+    // dictated — empty designation = spare). The SAME canonical value is
+    // threaded to the mutation AND the spoken response below: cleaned
+    // storage + raw speech would leave the hands-free inspector hearing
+    // a value the certificate doesn't carry.
+    let spokenValue: string = command.value;
+    if (resolved.circuitField === 'circuit_designation') {
+      value = repairCircuitDesignation(command.value) as string;
+      spokenValue = value;
+    }
     const next: VoiceCommandCircuit[] = circuits.map((row, i) =>
       i === idx ? { ...row, [resolved.circuitField as string]: value } : row
     );
     const label = labelForField(resolved.circuitField);
     return {
       patch: { circuits: next },
-      response: `Set ${label} to ${command.value} on circuit ${command.circuit}.`,
+      response: `Set ${label} to ${spokenValue} on circuit ${command.circuit}.`,
       changedKeys: [resolved.circuitField as string],
     };
   }
@@ -1079,6 +1092,14 @@ function applyApplyField(
     if (value === 'PASS') value = '✓';
     else if (value === 'FAIL') value = '✗';
   }
+  // PLAN-B2 — designation hygiene at command entry (see applyUpdateField;
+  // apply_field can carry circuit_designation across a bulk scope). Same
+  // canonical value for the mutation and the spoken response.
+  let spokenValue: string = command.value;
+  if (resolved.circuitField === 'circuit_designation') {
+    value = repairCircuitDesignation(command.value) as string;
+    spokenValue = value;
+  }
   let updated = 0;
   const next: VoiceCommandCircuit[] = circuits.map((row, idx) => {
     if (!indices.includes(idx)) return row;
@@ -1099,8 +1120,8 @@ function applyApplyField(
   const skipSuffix = spareSkippedCount > 0 ? `, ${skipClause(spareSkippedCount, 'append')}` : '';
   const response =
     updated === 1
-      ? `Set ${label} to ${command.value} for 1 circuit${skipSuffix}.`
-      : `Set ${label} to ${command.value} for ${updated} circuits${skipSuffix}.`;
+      ? `Set ${label} to ${spokenValue} for 1 circuit${skipSuffix}.`
+      : `Set ${label} to ${spokenValue} for ${updated} circuits${skipSuffix}.`;
   return {
     patch: { circuits: next },
     response,
