@@ -572,6 +572,38 @@ describe('D4 — Codex cycle 4: duplicate correlated ACK never satisfies a sibli
     const row = audioSummary();
     expect(row.audio_finalizer_timeout_fired).toBe(true);
     expect(row.ack_obligations_acked).toBe(1);
+    // Codex cycle 6 — with the twin consumed, the sole remaining unheard
+    // same-slot canonical is an EXACT loss, never ambiguity.
+    expect(row.ambiguous_confirmations).toEqual([]);
+    expect(row.unacked_confirmations).toHaveLength(1);
+    expect(row.unacked_confirmations[0]).toMatchObject({ kind: 'canonical' });
+  });
+
+  test('slot ACK first, then a same-slot fast-only obligation is rejected post-arm → the canonical attributes retroactively and the finalizer completes', () => {
+    seedSession(IOS_SUPPORTS, { correlations: ['corr-1'] });
+    turnSummary.startAudioFinalizer(SESS, TURN, {
+      bundlerEmittedCount: 1,
+      attemptedFastTtsCount: 1,
+      ackEligibleConfirmations: [canonical()], // correlation-less, same slot as the fast attempt
+      fastAttempts: [
+        { correlationId: 'corr-1', field: 'measured_zs_ohm', circuit: 1, boardId: 'board-main' },
+      ],
+    });
+    // The canonical's slot ACK arrives while TWO obligations share the slot
+    // — attributes nothing yet.
+    turnSummary.recordPlaybackAck(SESS, TURN, {
+      source: 'bundler',
+      slot: { field: 'measured_zs_ohm', circuit: 1, boardId: null },
+      at_ms: 1,
+    });
+    expect(audioSummary()).toBeNull();
+    // The fast obligation is rejected post-arm — reconciliation re-runs and
+    // the earlier ACK now uniquely attributes to the canonical.
+    turnSummary.decrementExpectedAcksByCorrelation(SESS, 'corr-1');
+    const row = audioSummary();
+    expect(row).not.toBeNull();
+    expect(row.audio_finalizer_timeout_fired).toBe(false);
+    expect(row.ack_obligations_acked).toBe(1);
   });
 });
 

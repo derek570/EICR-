@@ -195,8 +195,13 @@ function buildAckObligations(fastAttempts, ackEligibleConfirmations, rejectedIds
  */
 function recomputeSlotAmbiguity(obligations) {
   for (const ob of obligations.values()) ob.slotAmbiguous = false;
+  // Codex cycle 6 — multiplicity counts only UNACKED obligations: once a
+  // twin is consumed by its correlation ACK, a sole remaining unheard
+  // same-slot canonical is an EXACT loss, not ambiguity (the plan defines
+  // ambiguity over multiple PENDING obligations).
   const aliasOwners = new Map();
   for (const [id, ob] of obligations) {
+    if (ob.acked) continue;
     for (const alias of ob.slotAliases) {
       if (!aliasOwners.has(alias)) aliasOwners.set(alias, []);
       aliasOwners.get(alias).push(id);
@@ -281,6 +286,9 @@ function reconcileObligations(obligations, receivedAcks) {
       // collapses, the obligations stay AMBIGUOUS at timeout.
     }
   }
+  // Classification follows attribution — recomputed on every rebuild so the
+  // summary always reflects the CURRENT pending set (Codex cycle 6).
+  recomputeSlotAmbiguity(obligations);
 }
 
 /** Every obligation either acked, or slot-ambiguous obligations block exact
@@ -1036,11 +1044,12 @@ export function decrementExpectedAcksByCorrelation(sessionId, correlationId) {
             }
           }
         }
-        // Codex mini-review c1 — the mutation can change WHICH obligations
-        // are slot-distinguishable (a twin converted to a correlation-less
-        // canonical may now collide with another canonical): rebuild the
-        // ambiguity classification from the mutated map.
-        recomputeSlotAmbiguity(pending.obligations);
+        // Codex cycle 6 — the mutation can make an EARLIER slot-only ACK
+        // uniquely attributable (the rejected fast sibling no longer shares
+        // the slot): re-run the full order-independent reconciliation
+        // against the received set, which also rebuilds the ambiguity
+        // classification from the mutated map.
+        reconcileObligations(pending.obligations, pending.received_acks);
         // Recompute the public counters from the mutated ledger — never
         // count arithmetic on the ledger path. A turn whose LAST obligation
         // was just rejected owes nothing: it must also drop eligibility, or
