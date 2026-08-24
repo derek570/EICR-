@@ -1,0 +1,871 @@
+{
+  "$comment": "PLAN-C (feedback id 129, 2026-08-23) — closed-enum guard golden vectors. CROSS-PLATFORM CONTRACT: this file is the single source of truth for the six guarded closed-list circuit fields on BOTH clients. web/ tests read this file directly; CertMateUnified keeps a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/closed-enum-vectors.json pinned by paired SHA-256 digest constants (each repo test asserts the SAME hex constant) and scripts/check-closed-enum-fixture-sync.sh byte-compares them as a named pre-TestFlight step. `options` is generated FROM config/field_schema.json (the guard vocabulary is the SCHEMA, not either client UI picker list — see PLAN-C C2b) with the empty-string sentinel stripped; a CI drift test re-derives it. Do NOT hand-edit `options`.",
+  "plan": "PLAN-C-final.md (feedback-2026-08-23 wave)",
+  "schema_source": "config/field_schema.json",
+  "guarded_fields": [
+    "wiring_type",
+    "ref_method",
+    "ocpd_bs_en",
+    "ocpd_type",
+    "rcd_bs_en",
+    "rcd_type"
+  ],
+  "options": {
+    "wiring_type": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "H",
+      "O"
+    ],
+    "ref_method": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E",
+      "F",
+      "G",
+      "100",
+      "101",
+      "102",
+      "103"
+    ],
+    "ocpd_bs_en": [
+      "BS EN 60898",
+      "BS EN 61009",
+      "BS EN 60947-2",
+      "BS EN 60947-3",
+      "BS EN 60269-2",
+      "BS 3036",
+      "BS 1361",
+      "N/A"
+    ],
+    "ocpd_type": [
+      "B",
+      "C",
+      "D",
+      "gG",
+      "gM",
+      "aM",
+      "HRC",
+      "Rew",
+      "N/A"
+    ],
+    "rcd_bs_en": [
+      "BS EN 61008",
+      "BS EN 61009",
+      "BS EN 62423",
+      "N/A"
+    ],
+    "rcd_type": [
+      "AC",
+      "A",
+      "F",
+      "B",
+      "S",
+      "A-S",
+      "B-S",
+      "B+",
+      "N/A"
+    ]
+  },
+  "labels": {
+    "wiring_type": "wiring type",
+    "ref_method": "reference method",
+    "ocpd_bs_en": "OCPD BS EN",
+    "ocpd_type": "OCPD type",
+    "rcd_bs_en": "RCD BS EN",
+    "rcd_type": "RCD type"
+  },
+  "nouns": {
+    "wiring_type": "code",
+    "ref_method": "reference method",
+    "ocpd_bs_en": "standard",
+    "ocpd_type": "option",
+    "rcd_bs_en": "standard",
+    "rcd_type": "option"
+  },
+  "example_phrases": {
+    "wiring_type": "wiring type A",
+    "ref_method": "reference method C",
+    "ocpd_bs_en": "OCPD standard BS EN 60898",
+    "ocpd_type": "OCPD type B",
+    "rcd_bs_en": "RCD standard BS EN 61008",
+    "rcd_type": "RCD type AC"
+  },
+  "wiring_type_description_to_code": {
+    "TWIN & EARTH": "A",
+    "TWIN AND EARTH": "A",
+    "T&E": "A",
+    "T+E": "A",
+    "SHEATHED": "A",
+    "PVC SHEATHED": "A",
+    "FLAT TWIN": "A",
+    "FLAT T&E": "A",
+    "PVC/PVC": "A",
+    "PVC-PVC": "A",
+    "XLPE T&E": "A",
+    "XLPE/PVC T&E": "A",
+    "METALLIC CONDUIT": "B",
+    "METAL CONDUIT": "B",
+    "STEEL CONDUIT": "B",
+    "PVC IN METALLIC CONDUIT": "B",
+    "PVC IN METAL CONDUIT": "B",
+    "NON-METALLIC CONDUIT": "C",
+    "NON METALLIC CONDUIT": "C",
+    "PLASTIC CONDUIT": "C",
+    "PVC CONDUIT": "C",
+    "PVC IN NON-METALLIC CONDUIT": "C",
+    "PVC IN PLASTIC CONDUIT": "C",
+    "CONDUIT": "C",
+    "IN CONDUIT": "C",
+    "SINGLE IN CONDUIT": "C",
+    "METALLIC TRUNKING": "D",
+    "METAL TRUNKING": "D",
+    "STEEL TRUNKING": "D",
+    "PVC IN METALLIC TRUNKING": "D",
+    "PVC IN METAL TRUNKING": "D",
+    "NON-METALLIC TRUNKING": "E",
+    "NON METALLIC TRUNKING": "E",
+    "PLASTIC TRUNKING": "E",
+    "PVC TRUNKING": "E",
+    "PVC IN NON-METALLIC TRUNKING": "E",
+    "PVC IN PLASTIC TRUNKING": "E",
+    "TRUNKING": "E",
+    "IN TRUNKING": "E",
+    "SINGLE IN TRUNKING": "E",
+    "SWA": "F",
+    "ARMOURED": "F",
+    "STEEL WIRE ARMOUR": "F",
+    "PVC SWA": "F",
+    "PVC/SWA": "F",
+    "PVC-SWA": "F",
+    "XLPE SWA": "G",
+    "XLPE/SWA": "G",
+    "XLPE-SWA": "G",
+    "XLPE ARMOURED": "G",
+    "XLPE": "G",
+    "MICC": "H",
+    "MINERAL": "H",
+    "MINERAL INSULATED": "H",
+    "MIMS": "H",
+    "PYRO": "H",
+    "PYROTENAX": "H",
+    "FP200": "O",
+    "FP 200": "O",
+    "FIRE RATED": "O",
+    "FIRE-RATED": "O",
+    "FLEX": "O",
+    "FLEXIBLE": "O",
+    "FLEXIBLE CORD": "O",
+    "SY": "O",
+    "YY": "O",
+    "CY": "O",
+    "OTHER": "O"
+  },
+  "accepted_value_vectors": [
+    {
+      "field": "wiring_type",
+      "input": "A",
+      "expected": "A"
+    },
+    {
+      "field": "wiring_type",
+      "input": "a",
+      "expected": "A"
+    },
+    {
+      "field": "wiring_type",
+      "input": " A. ",
+      "expected": "A"
+    },
+    {
+      "field": "wiring_type",
+      "input": "twin and earth",
+      "expected": "A"
+    },
+    {
+      "field": "wiring_type",
+      "input": "T&E",
+      "expected": "A"
+    },
+    {
+      "field": "wiring_type",
+      "input": "swa",
+      "expected": "F"
+    },
+    {
+      "field": "wiring_type",
+      "input": "XLPE",
+      "expected": "G"
+    },
+    {
+      "field": "wiring_type",
+      "input": "micc",
+      "expected": "H"
+    },
+    {
+      "field": "wiring_type",
+      "input": "pyro",
+      "expected": "H"
+    },
+    {
+      "field": "wiring_type",
+      "input": "fp200",
+      "expected": "O"
+    },
+    {
+      "field": "wiring_type",
+      "input": "other",
+      "expected": "O"
+    },
+    {
+      "field": "wiring_type",
+      "input": "O",
+      "expected": "O"
+    },
+    {
+      "field": "ref_method",
+      "input": "C",
+      "expected": "C"
+    },
+    {
+      "field": "ref_method",
+      "input": "c",
+      "expected": "C"
+    },
+    {
+      "field": "ref_method",
+      "input": "reference method c",
+      "expected": "C"
+    },
+    {
+      "field": "ref_method",
+      "input": "method C.",
+      "expected": "C"
+    },
+    {
+      "field": "ref_method",
+      "input": "100",
+      "expected": "100"
+    },
+    {
+      "field": "ref_method",
+      "input": "101",
+      "expected": "101"
+    },
+    {
+      "field": "ref_method",
+      "input": "1001",
+      "expected": "101"
+    },
+    {
+      "field": "ref_method",
+      "input": "1002",
+      "expected": "102"
+    },
+    {
+      "field": "ref_method",
+      "input": "1003",
+      "expected": "103"
+    },
+    {
+      "field": "ref_method",
+      "input": "100 and 1",
+      "expected": "101"
+    },
+    {
+      "field": "ref_method",
+      "input": "100 and 3",
+      "expected": "103"
+    },
+    {
+      "field": "ref_method",
+      "input": "one hundred and one",
+      "expected": "101"
+    },
+    {
+      "field": "ref_method",
+      "input": "one hundred",
+      "expected": "100"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "60898",
+      "expected": "BS EN 60898"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "bs en 60898",
+      "expected": "BS EN 60898"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "BS EN 60898-1",
+      "expected": "BS EN 60898"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "BS 60898",
+      "expected": "BS EN 60898"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "61009",
+      "expected": "BS EN 61009"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "BS EN 61009-1",
+      "expected": "BS EN 61009"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "60947-2",
+      "expected": "BS EN 60947-2"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "60947 3",
+      "expected": "BS EN 60947-3"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "60269-2",
+      "expected": "BS EN 60269-2"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "88-2",
+      "expected": "BS EN 60269-2"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "BS 88-3",
+      "expected": "BS EN 60269-2"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "3036",
+      "expected": "BS 3036"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "1361",
+      "expected": "BS 1361"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "n/a",
+      "expected": "N/A"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "N/A",
+      "expected": "N/A"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "na",
+      "expected": "N/A"
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "not applicable",
+      "expected": "N/A"
+    },
+    {
+      "field": "ocpd_type",
+      "input": "b",
+      "expected": "B"
+    },
+    {
+      "field": "ocpd_type",
+      "input": "B",
+      "expected": "B"
+    },
+    {
+      "field": "ocpd_type",
+      "input": "gg",
+      "expected": "gG"
+    },
+    {
+      "field": "ocpd_type",
+      "input": "gM",
+      "expected": "gM"
+    },
+    {
+      "field": "ocpd_type",
+      "input": "am",
+      "expected": "aM"
+    },
+    {
+      "field": "ocpd_type",
+      "input": "hrc",
+      "expected": "HRC"
+    },
+    {
+      "field": "ocpd_type",
+      "input": "rew",
+      "expected": "Rew"
+    },
+    {
+      "field": "ocpd_type",
+      "input": "n/a",
+      "expected": "N/A"
+    },
+    {
+      "field": "rcd_bs_en",
+      "input": "61008",
+      "expected": "BS EN 61008"
+    },
+    {
+      "field": "rcd_bs_en",
+      "input": "BS EN 61008-1",
+      "expected": "BS EN 61008"
+    },
+    {
+      "field": "rcd_bs_en",
+      "input": "61009",
+      "expected": "BS EN 61009"
+    },
+    {
+      "field": "rcd_bs_en",
+      "input": "BS EN 61009-1",
+      "expected": "BS EN 61009"
+    },
+    {
+      "field": "rcd_bs_en",
+      "input": "62423",
+      "expected": "BS EN 62423"
+    },
+    {
+      "field": "rcd_bs_en",
+      "input": "not applicable",
+      "expected": "N/A"
+    },
+    {
+      "field": "rcd_type",
+      "input": "ac",
+      "expected": "AC"
+    },
+    {
+      "field": "rcd_type",
+      "input": "AC",
+      "expected": "AC"
+    },
+    {
+      "field": "rcd_type",
+      "input": "a",
+      "expected": "A"
+    },
+    {
+      "field": "rcd_type",
+      "input": "a-s",
+      "expected": "A-S"
+    },
+    {
+      "field": "rcd_type",
+      "input": "b-s",
+      "expected": "B-S"
+    },
+    {
+      "field": "rcd_type",
+      "input": "b+",
+      "expected": "B+"
+    },
+    {
+      "field": "rcd_type",
+      "input": "s",
+      "expected": "S"
+    },
+    {
+      "field": "rcd_type",
+      "input": "n/a",
+      "expected": "N/A"
+    }
+  ],
+  "rejected_value_vectors": [
+    {
+      "field": "wiring_type",
+      "input": "for",
+      "reason": "invalid_value",
+      "why": "Field session 17821FFA — the garbled first-word residue that shipped wiring_type=\"FOR\" to two circuits."
+    },
+    {
+      "field": "wiring_type",
+      "input": "FOR",
+      "reason": "invalid_value",
+      "why": "Same residue, already uppercased."
+    },
+    {
+      "field": "wiring_type",
+      "input": "Z",
+      "reason": "invalid_value",
+      "why": "Single letter outside the closed list."
+    },
+    {
+      "field": "wiring_type",
+      "input": "twin and earth cable",
+      "reason": "invalid_value",
+      "why": "Curated description map is exact-match only — no fuzzy snapping."
+    },
+    {
+      "field": "wiring_type",
+      "input": "",
+      "reason": "missing_value",
+      "why": "Empty string reaches the applier so the APPLIER owns rejection."
+    },
+    {
+      "field": "wiring_type",
+      "input": "   ",
+      "reason": "missing_value",
+      "why": "Whitespace-only."
+    },
+    {
+      "field": "wiring_type",
+      "input": ".",
+      "reason": "missing_value",
+      "why": "Edge punctuation cleans to empty."
+    },
+    {
+      "field": "ref_method",
+      "input": "for",
+      "reason": "invalid_value",
+      "why": "Same garble class on the sibling field."
+    },
+    {
+      "field": "ref_method",
+      "input": "104",
+      "reason": "invalid_value",
+      "why": "Outside the 100-103 installation-method block."
+    },
+    {
+      "field": "ref_method",
+      "input": "A1",
+      "reason": "invalid_value",
+      "why": "iOS picker carries A1/A2/B1/B2/D1/D2; the SCHEMA (guard vocabulary, C2b) does not."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "1362",
+      "reason": "invalid_value",
+      "why": "CRITICAL — the backend Levenshtein-1 fallback would collapse 1362 to BS 1361 (a DIFFERENT device). Not ported; re-ask instead."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "6898",
+      "reason": "invalid_value",
+      "why": "Deepgram digit-drift; the backend fuzzy fallback recovers it, the client deliberately does not."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "60898 and 61009",
+      "reason": "invalid_value",
+      "why": "Full-consumption parser — a residue holding two codes never resolves to one."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "MCB",
+      "reason": "invalid_value",
+      "why": "Device class, not a standard."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "62423",
+      "reason": "invalid_value",
+      "why": "iOS picker carries BS EN 62423 on OCPD; the schema option set does not (C2b documented divergence)."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "input": "88-2 for circuit",
+      "reason": "invalid_value",
+      "why": "Trailing scope words must not be silently swallowed by an unanchored match."
+    },
+    {
+      "field": "ocpd_type",
+      "input": "MCB",
+      "reason": "invalid_value",
+      "why": "Device class, not a curve/fuse class."
+    },
+    {
+      "field": "ocpd_type",
+      "input": "RCBO",
+      "reason": "invalid_value",
+      "why": "Device class."
+    },
+    {
+      "field": "ocpd_type",
+      "input": "1",
+      "reason": "invalid_value",
+      "why": "iOS picker carries MCCB curves 1/2/3/K/Z; the schema does not (C2b documented divergence)."
+    },
+    {
+      "field": "rcd_bs_en",
+      "input": "60898",
+      "reason": "invalid_value",
+      "why": "Parses as a BS code but is not a member of the RCD option set — membership is per-field."
+    },
+    {
+      "field": "rcd_bs_en",
+      "input": "3036",
+      "reason": "invalid_value",
+      "why": "Same: OCPD-only standard."
+    },
+    {
+      "field": "rcd_type",
+      "input": "RCBO",
+      "reason": "invalid_value",
+      "why": "Device class, not an RCD sensitivity type."
+    },
+    {
+      "field": "rcd_type",
+      "input": "AC-S",
+      "reason": "invalid_value",
+      "why": "Not a schema option (only A-S / B-S / B+ carry suffixes)."
+    }
+  ],
+  "reask_render_vectors": [
+    {
+      "field": "wiring_type",
+      "reason": "invalid_value",
+      "heard": "FOR",
+      "target": {
+        "kind": "single",
+        "circuit": 3
+      },
+      "expected": "I heard wiring type 'FOR', which isn't a valid code — say, for example, 'wiring type A for circuit 3'."
+    },
+    {
+      "field": "wiring_type",
+      "reason": "invalid_value",
+      "heard": "FOR",
+      "target": {
+        "kind": "all"
+      },
+      "expected": "I heard wiring type 'FOR', which isn't a valid code — say, for example, 'wiring type A for all circuits'."
+    },
+    {
+      "field": "wiring_type",
+      "reason": "invalid_value",
+      "heard": "FOR",
+      "target": {
+        "kind": "range",
+        "from": 3,
+        "to": 5
+      },
+      "expected": "I heard wiring type 'FOR', which isn't a valid code — say, for example, 'wiring type A for circuits 3 to 5'."
+    },
+    {
+      "field": "wiring_type",
+      "reason": "invalid_value",
+      "heard": "FOR",
+      "target": {
+        "kind": "all",
+        "sparePolicy": "include"
+      },
+      "expected": "I heard wiring type 'FOR', which isn't a valid code — say, for example, 'wiring type A for all circuits, including spares'."
+    },
+    {
+      "field": "wiring_type",
+      "reason": "invalid_value",
+      "heard": "FOR",
+      "target": {
+        "kind": "range",
+        "from": 3,
+        "to": 5,
+        "sparePolicy": "exclude"
+      },
+      "expected": "I heard wiring type 'FOR', which isn't a valid code — say, for example, 'wiring type A for circuits 3 to 5, excluding spares'."
+    },
+    {
+      "field": "wiring_type",
+      "reason": "missing_value",
+      "heard": "",
+      "target": {
+        "kind": "single",
+        "circuit": 3
+      },
+      "expected": "I didn't get a value for wiring type — say, for example, 'wiring type A for circuit 3'."
+    },
+    {
+      "field": "wiring_type",
+      "reason": "missing_target",
+      "heard": "A",
+      "target": {
+        "kind": "unknown"
+      },
+      "expected": "I heard wiring type 'A' but not which circuit — say, for example, 'wiring type A for circuit 3'."
+    },
+    {
+      "field": "ref_method",
+      "reason": "invalid_value",
+      "heard": "104",
+      "target": {
+        "kind": "single",
+        "circuit": 3
+      },
+      "expected": "I heard reference method '104', which isn't a valid reference method — say, for example, 'reference method C for circuit 3'."
+    },
+    {
+      "field": "ref_method",
+      "reason": "missing_value",
+      "heard": "",
+      "target": {
+        "kind": "all"
+      },
+      "expected": "I didn't get a value for reference method — say, for example, 'reference method C for all circuits'."
+    },
+    {
+      "field": "ref_method",
+      "reason": "missing_target",
+      "heard": "C",
+      "target": {
+        "kind": "unknown"
+      },
+      "expected": "I heard reference method 'C' but not which circuit — say, for example, 'reference method C for circuit 3'."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "reason": "invalid_value",
+      "heard": "1362",
+      "target": {
+        "kind": "single",
+        "circuit": 3
+      },
+      "expected": "I heard OCPD BS EN '1362', which isn't a valid standard — say, for example, 'OCPD standard BS EN 60898 for circuit 3'."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "reason": "invalid_value",
+      "heard": "MCB",
+      "target": {
+        "kind": "all"
+      },
+      "expected": "I heard OCPD BS EN 'MCB', which isn't a valid standard — say, for example, 'OCPD standard BS EN 60898 for all circuits'."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "reason": "missing_value",
+      "heard": "",
+      "target": {
+        "kind": "range",
+        "from": 3,
+        "to": 5
+      },
+      "expected": "I didn't get a value for OCPD BS EN — say, for example, 'OCPD standard BS EN 60898 for circuits 3 to 5'."
+    },
+    {
+      "field": "ocpd_bs_en",
+      "reason": "missing_target",
+      "heard": "BS EN 60898",
+      "target": {
+        "kind": "unknown"
+      },
+      "expected": "I heard OCPD BS EN 'BS EN 60898' but not which circuit — say, for example, 'OCPD standard BS EN 60898 for circuit 3'."
+    },
+    {
+      "field": "ocpd_type",
+      "reason": "invalid_value",
+      "heard": "MCB",
+      "target": {
+        "kind": "single",
+        "circuit": 3
+      },
+      "expected": "I heard OCPD type 'MCB', which isn't a valid option — say, for example, 'OCPD type B for circuit 3'."
+    },
+    {
+      "field": "ocpd_type",
+      "reason": "missing_value",
+      "heard": "",
+      "target": {
+        "kind": "all",
+        "sparePolicy": "include"
+      },
+      "expected": "I didn't get a value for OCPD type — say, for example, 'OCPD type B for all circuits, including spares'."
+    },
+    {
+      "field": "ocpd_type",
+      "reason": "missing_target",
+      "heard": "B",
+      "target": {
+        "kind": "unknown"
+      },
+      "expected": "I heard OCPD type 'B' but not which circuit — say, for example, 'OCPD type B for circuit 3'."
+    },
+    {
+      "field": "rcd_bs_en",
+      "reason": "invalid_value",
+      "heard": "60898",
+      "target": {
+        "kind": "single",
+        "circuit": 3
+      },
+      "expected": "I heard RCD BS EN '60898', which isn't a valid standard — say, for example, 'RCD standard BS EN 61008 for circuit 3'."
+    },
+    {
+      "field": "rcd_bs_en",
+      "reason": "missing_value",
+      "heard": "",
+      "target": {
+        "kind": "all"
+      },
+      "expected": "I didn't get a value for RCD BS EN — say, for example, 'RCD standard BS EN 61008 for all circuits'."
+    },
+    {
+      "field": "rcd_bs_en",
+      "reason": "missing_target",
+      "heard": "BS EN 61008",
+      "target": {
+        "kind": "unknown"
+      },
+      "expected": "I heard RCD BS EN 'BS EN 61008' but not which circuit — say, for example, 'RCD standard BS EN 61008 for circuit 3'."
+    },
+    {
+      "field": "rcd_type",
+      "reason": "invalid_value",
+      "heard": "RCBO",
+      "target": {
+        "kind": "single",
+        "circuit": 3
+      },
+      "expected": "I heard RCD type 'RCBO', which isn't a valid option — say, for example, 'RCD type AC for circuit 3'."
+    },
+    {
+      "field": "rcd_type",
+      "reason": "invalid_value",
+      "heard": "RCBO",
+      "target": {
+        "kind": "range",
+        "from": 3,
+        "to": 5,
+        "sparePolicy": "exclude"
+      },
+      "expected": "I heard RCD type 'RCBO', which isn't a valid option — say, for example, 'RCD type AC for circuits 3 to 5, excluding spares'."
+    },
+    {
+      "field": "rcd_type",
+      "reason": "missing_value",
+      "heard": "",
+      "target": {
+        "kind": "single",
+        "circuit": 3
+      },
+      "expected": "I didn't get a value for RCD type — say, for example, 'RCD type AC for circuit 3'."
+    },
+    {
+      "field": "rcd_type",
+      "reason": "missing_target",
+      "heard": "AC",
+      "target": {
+        "kind": "unknown"
+      },
+      "expected": "I heard RCD type 'AC' but not which circuit — say, for example, 'RCD type AC for circuit 3'."
+    }
+  ]
+}

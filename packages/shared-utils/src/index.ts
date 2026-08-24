@@ -38,6 +38,26 @@ export type {
   VoiceCommandCircuit,
   VoiceCommandScope,
 } from './voice-commands';
+export {
+  GUARDED_CLOSED_ENUM_FIELDS,
+  CLOSED_ENUM_OPTIONS,
+  CLOSED_ENUM_LABELS,
+  WIRING_TYPE_DESCRIPTION_TO_CODE,
+  isGuardedClosedEnumField,
+  canonicaliseClosedEnumValue,
+  cleanClosedEnumResidue,
+  parseClosedEnumBsCode,
+  parseClosedEnumRefMethod,
+  renderClosedEnumReask,
+  reaskForClosedEnumOutcome,
+} from './closed-enum-guard';
+export type {
+  GuardedClosedEnumField,
+  ClosedEnumOutcome,
+  ClosedEnumReaskReason,
+  ClosedEnumSparePolicy,
+  GuardedTarget,
+} from './closed-enum-guard';
 export { matchCircuits, similarityScore, normaliseLabel } from './circuit-matcher';
 export type { CircuitMatch, MatcherNewCircuit, MatcherExistingCircuit } from './circuit-matcher';
 export { maxZsLookup, maxZsString } from './max-zs-lookup';
