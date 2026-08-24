@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { registerDesignationDraft } from './designation-drafts';
+import { registerDesignationDraft, whenDesignationRecoveryReady } from './designation-drafts';
 
 // Synchronous localStorage journal for an OPEN draft — survives process
 // kill where the async outbox write cannot. Best-effort: quota/private
@@ -109,14 +109,21 @@ export function useDesignationDraft(opts: {
     [commitNow]
   );
 
-  // Recover a journalled draft stranded by a killed session: commit it
-  // through the same canonicalise-and-commit route as a live draft.
+  // Recover a journalled draft stranded by a killed session — but ONLY
+  // once the provider doc is authoritative (mini-review c1: an immediate
+  // commit into an un-hydrated cache doc dirties the provider, rejects
+  // the fresh network doc, and can PUT stale circuits — the 851ba63e
+  // class). The journal is cleared only after the guarded commit runs;
+  // the commit itself is functional against the then-current job.
   React.useEffect(() => {
-    const stranded = readDraftJournal(draftKeyRef.current);
-    if (stranded != null && draftRef.current == null) {
-      clearDraftJournal(draftKeyRef.current);
-      commitFnRef.current(stranded);
-    }
+    const key = draftKeyRef.current;
+    whenDesignationRecoveryReady(() => {
+      const stranded = readDraftJournal(key);
+      if (stranded != null && draftRef.current == null) {
+        clearDraftJournal(key);
+        commitFnRef.current(stranded);
+      }
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

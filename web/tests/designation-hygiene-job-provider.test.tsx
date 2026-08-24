@@ -47,9 +47,10 @@ vi.mock('@/lib/auth', () => ({
 
 // The PDF gate's outbox-drain proof reads the real IDB outbox — stub it
 // (no IndexedDB in jsdom; an un-mocked call hangs under fake timers).
-let outboxRows: Array<{ jobId: string }> = [];
+let outboxRows: Array<{ jobId: string; poisoned?: boolean }> = [];
 vi.mock('@/lib/pwa/outbox', () => ({
   listPendingMutations: vi.fn(async () => outboxRows),
+  listPendingMutationsStrict: vi.fn(async () => outboxRows),
 }));
 
 const dirtyJob = (updatedAt = '2026-08-23T00:00:00Z'): JobDetail =>

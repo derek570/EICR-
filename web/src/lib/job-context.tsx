@@ -5,8 +5,9 @@ import type { CertificateType, JobDetail } from './types';
 import { ApiError } from './types';
 import { getUser } from './auth';
 import { queueSaveJob } from './pwa/queue-save-job';
-import { listPendingMutations } from './pwa/outbox';
-import { flushDesignationDrafts } from './designation-drafts';
+import { listPendingMutationsStrict } from './pwa/outbox';
+import { withJobSaveLock } from './pwa/job-save-lock';
+import { flushDesignationDrafts, setDesignationRecoveryReady } from './designation-drafts';
 import { repairJobCircuitDesignations } from './repair-job-designations';
 
 /**
@@ -172,6 +173,14 @@ export function JobProvider({
   // Stable-ref mirror for identity-stable callbacks (the PDF gate).
   const isHydratedRef = React.useRef(isHydrated);
   isHydratedRef.current = isHydrated;
+  // Mini-review c1 — journal-recovery gate: stranded designation-draft
+  // journals may commit only once THIS doc is authoritative (accepted
+  // network doc, or confirmed-offline cache). Reset on unmount so the
+  // next job's mount cannot inherit readiness.
+  React.useEffect(() => {
+    setDesignationRecoveryReady(isHydrated || networkRejected);
+  }, [isHydrated, networkRejected]);
+  React.useEffect(() => () => setDesignationRecoveryReady(false), []);
 
   // Keep a ref of the freshest job so `flushSave` (fired from a timer)
   // reads the post-patch doc even when the closure was captured with a
@@ -487,27 +496,43 @@ export function JobProvider({
         setIsDirty(false);
       }
       if (!result.synced) return { synced: false };
-      // Codex r1 — a fresh synced save still does not prove S3 holds
-      // THIS snapshot if OLDER outbox rows for this job remain queued:
-      // the replay worker could push a stale circuits mutation after
-      // this save. Only an outbox with no OTHER pending rows for this
-      // job proves the canonical snapshot is the last write. (Our own
-      // synced mutation has already been removed from the outbox by
-      // queueSaveJob's success path.)
+      // Codex r1 + mini-review c1 — a fresh synced save still does not
+      // prove S3 holds THIS snapshot if OLDER outbox rows for this job
+      // remain queued (the replay worker could push a stale circuits
+      // mutation after this save; another tab could too). The proof is a
+      // STRICT outbox read (propagates read errors — the lenient
+      // listPendingMutations returns [] on failure, which would treat an
+      // unreadable outbox as drained) finding no other rows for this
+      // job, taken under the cross-tab save lock where available.
+      const proveDrained = async (): Promise<boolean> => {
+        const rows = await listPendingMutationsStrict();
+        // A POISONED row will never replay, so it cannot overwrite the
+        // fresh save — only live pending rows block the gate.
+        return rows.every((m) => m.jobId !== detail.id || m.poisoned === true);
+      };
       try {
-        const rows = await listPendingMutations();
-        const staleRows = rows.filter((m) => m.jobId === detail.id);
-        if (staleRows.length > 0) return { synced: false };
+        const drained = await withJobSaveLock(user.id, detail.id, proveDrained);
+        return { synced: drained };
       } catch {
         // Outbox unreadable — cannot prove drained; fail closed.
         return { synced: false };
       }
-      return { synced: true };
     } catch (err) {
       // 4xx — a validation rejection will never sync; surface it and
       // report un-synced so the caller fails visibly / falls back.
       if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
         if (mountedRef.current) setSaveError(err.message);
+      } else {
+        // Mini-review c1 — same pre-durability restore as flushSave: the
+        // outbox enqueue itself threw, so the drained patch reached
+        // NEITHER the server nor the outbox. Restore (newer keys win)
+        // and re-arm, else a draft/load-repair patch dies with a failed
+        // PDF attempt.
+        pendingPatchRef.current = { ...pending, ...pendingPatchRef.current };
+        if (mountedRef.current) {
+          setIsDirty(true);
+          scheduleSaveRef.current?.();
+        }
       }
       return { synced: false };
     } finally {

@@ -70,3 +70,37 @@ export function flushDesignationDrafts(): void {
 export function _registeredDesignationDraftCount(): number {
   return drafts.size;
 }
+
+// ── Journal-recovery gate (Codex mini-review c1, BLOCKER) ──────────────
+// A localStorage draft journal recovered at MOUNT would commit into an
+// un-hydrated cache doc, dirtying the provider so `safeToReplace`
+// rejects the fresh network doc — the exact cache-before-hydration
+// overwrite class (851ba63e). Recovery therefore queues here until the
+// provider signals the doc is authoritative (accepted network doc, or
+// confirmed-offline cache).
+
+let recoveryReady = false;
+const pendingRecoveries: Array<() => void> = [];
+
+/** JobProvider calls this when (isHydrated || networkRejected) flips
+ *  true — queued journal recoveries run; later registrations run
+ *  immediately. Reset to false on provider unmount/doc change. */
+export function setDesignationRecoveryReady(ready: boolean): void {
+  recoveryReady = ready;
+  if (!ready) return;
+  const queued = pendingRecoveries.splice(0, pendingRecoveries.length);
+  for (const fn of queued) {
+    try {
+      fn();
+    } catch {
+      /* one failed recovery must not stop siblings */
+    }
+  }
+}
+
+/** Run `fn` once the provider doc is authoritative (immediately if it
+ *  already is). Used by the draft hook's journal recovery. */
+export function whenDesignationRecoveryReady(fn: () => void): void {
+  if (recoveryReady) fn();
+  else pendingRecoveries.push(fn);
+}

@@ -1194,9 +1194,34 @@ function applyAddCircuit(
     circuit_designation: canonical,
   };
   if (boardId) row.board_id = boardId;
-  const next = [...circuits, row].sort(
-    (a, b) => strictRef(a.circuit_ref ?? a.number) - strictRef(b.circuit_ref ?? b.number)
-  );
+  // Mini-review c1 — sorting uses iOS `sortByCircuitRef` semantics, NOT
+  // the allocation parser: group by board, compare leading integer
+  // portions, natural-compare remainders/non-numeric refs (Swift sorts
+  // "7A" after 7 by its LEADING int even though allocation treats it as
+  // 0).
+  const leadingInt = (raw: unknown): { num: number | null; rem: string } => {
+    const str = String(raw ?? '');
+    const m = /^([+-]?\d+)(.*)$/.exec(str);
+    return m ? { num: parseInt(m[1], 10), rem: m[2] } : { num: null, rem: str };
+  };
+  const next = [...circuits, row].sort((a, b) => {
+    const boardA = String(a.board_id ?? '');
+    const boardB = String(b.board_id ?? '');
+    if (boardA !== boardB) return boardA < boardB ? -1 : 1;
+    const ra = leadingInt(a.circuit_ref ?? a.number);
+    const rb = leadingInt(b.circuit_ref ?? b.number);
+    if (ra.num != null && rb.num != null) {
+      if (ra.num !== rb.num) return ra.num - rb.num;
+      return ra.rem.localeCompare(rb.rem, undefined, { numeric: true });
+    }
+    if (ra.num != null) return -1;
+    if (rb.num != null) return 1;
+    return String(a.circuit_ref ?? a.number ?? '').localeCompare(
+      String(b.circuit_ref ?? b.number ?? ''),
+      undefined,
+      { numeric: true }
+    );
+  });
   // Spoken template — the SAME canonical value as storage. This exact
   // wording is the cross-client contract for the add action (the iOS
   // spoken-override half pins the identical string).
