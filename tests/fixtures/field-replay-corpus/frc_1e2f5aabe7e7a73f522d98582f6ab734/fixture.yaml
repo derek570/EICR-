@@ -1,0 +1,159 @@
+# PLAN-D 2026-08-23 (feedback id 130) — "one act spoken TWICE": the ask-driven
+# create flow (create_circuit{designation} + same-turn record_reading) used to
+# emit TWO clips both announcing "circuit 3 = Downstairs light" — the reading
+# confirmation carries the designation PREFIX ("Downstairs light, circuit 3,
+# wiring type A") AND synthesiseStateChangeConfirmations adds the standalone
+# create ack ("Circuit 3 is now the Downstairs light"), because its skip-list
+# (skipDesignations) is built ONLY from record_reading(circuit_designation)
+# writes, which the create-via-ask flow never produces (the designation travels
+# inside create_circuit's input). A perceived exactly-once breach (Audio-First
+# invariant #1 — redundant content, inverted ordering).
+#
+# Field repro (turn-14 of the 2026-08-23 session, reconstructed from CloudWatch
+# evidence; raw session id kept out of the repo per corpus PII policy):
+# transcript "Wiring time for circuit 3 is a." (Flux mishears "type"→"time");
+# the model asks (circuit 3 absent from the schedule); the answer "Downstairs
+# light" is enum-REJECTED as a wiring_type value (stage6.ask_user_enum_rejected
+# kind:invalid_value — the REAL answer-resolver path this replay exercises);
+# the model then calls create_circuit(3, "Downstairs light") +
+# record_reading(wiring_type, 3, "A"). Pre-fix: confirmations: 2 (both
+# announcing the designation). Post-fix (PLAN-D D3, the bundler create-ack
+# MERGE): exactly ONE clip — "Created circuit 3, Downstairs light — wiring
+# type A" — and the standalone circop_ ack is dropped (preserved only as a
+# non-enumerable mid-stream-filter substitution sidecar, which never crosses
+# the wire and is invisible to this oracle).
+#
+# RECORDED-lane semantics: the frozen model rounds are unchanged by the fix
+# (the model's side is identical pre/post — ask, then create+record). The fix
+# under lock is BACKEND-deterministic bundler synthesis: which confirmations
+# the turn emits for the same tool-call outcomes.
+#
+# ORACLE: purely expected_audible_outputs (expected_operations stays [] —
+# the runtime create_circuit operation oracle is fail-closed INFRASTRUCTURE
+# by design, and the reading's presence is implied by the merged confirmation
+# text, which the bundler can only synthesise from an actually-projected
+# write). One-to-one bipartite matching does the absence work: the ask frame
+# and the ONE merged reading confirmation are declared; ANY additional clip —
+# the pre-fix standalone create ack, or a designation-prefixed reading — is
+# an UNCLAIMED audible output and fails `audibility.unclaimed`.
+#
+# gate_state is required_green with the fix landing in the SAME branch (the
+# corpus state machine's dual-proof admission — an on-disk expected_red would
+# fail the merge-blocking gate). red_proof_failure_id documents what REDs on
+# pre-fix code: the merged text does not exist there, so
+# `audibility.output.out_created_merge` finds 0 matches (and the two legacy
+# clips additionally fail unclaimed). The EXECUTED red proof lives in
+# src/__tests__/field-replay/create-ack-merge-red-proof.test.js: it replays
+# THIS committed fixture's declared oracle against the evidence-reconstructed
+# PRE-FIX output set (the exact two texts from the CloudWatch ios_send_attempt
+# rows) and asserts the documented id fails.
+#
+# Provenance: HAND-AUTHORED / reconstructed from CloudWatch evidence rows
+# (ios_send_attempt, stage6_tool_call, ask_user_enum_rejected). Unit-test
+# twins live in stage6-create-ack-merge.test.js. No captured PII.
+schema_version: 1
+corpus_id: frc_1e2f5aabe7e7a73f522d98582f6ab734
+purpose: regression
+gate_state: required_green
+red_proof_failure_id: audibility.output.out_created_merge
+owner: Derek Beckley
+introduced_at: '2026-08-23T00:00:00Z'
+fix_reference: fix_fd347917736074b5a157d06b5cd2bf4f
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+notes: >-
+  id-130 create-ack merge: an ask-answered create_circuit(3, "Downstairs
+  light") + same-turn record_reading(wiring_type, 3, "A") must speak exactly
+  ONE clip — "Created circuit 3, Downstairs light — wiring type A". The
+  pre-fix world spoke two (designation-prefixed reading + standalone create
+  ack); both would fail unclaimed here, and the declared merged text is the
+  single documented RED id.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  circuits:
+    - number: 1
+      designation: Cooker
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: Wiring time for circuit 3 is a.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_d130ask
+            name: ask_user
+            input:
+              question: Which circuit is the wiring type for? I don't see circuit 3 on the schedule.
+              reason: missing_value
+              context_field: wiring_type
+              context_circuit: 3
+              expected_answer_shape: free_text
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_d130create
+            name: create_circuit
+            input:
+              circuit_ref: 3
+              designation: Downstairs light
+            schema_expectation: accept
+            dispatcher_expectation: accept
+          - id: toolu_d130reading
+            name: record_reading
+            input:
+              field: wiring_type
+              circuit: 3
+              value: A
+              confidence: 0.9
+              source_turn_id: turn-1
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    ask_answers:
+      - match:
+          tool_call_id: toolu_d130ask
+        answer_channel: pending_registry
+        answer:
+          answered: true
+          user_text: Downstairs light
+        at_ms_after_ask: 2000
+        at_ms_after_ask_provenance: recorded_full
+    expected_operations: []
+    expected_audible_outputs:
+      - output_id: out_ask
+        kind: ask_user
+        count: 1
+        match:
+          tool_call_id: toolu_d130ask
+      - output_id: out_created_merge
+        kind: reading_confirmation
+        count: 1
+        match:
+          field: wiring_type
+          circuit: 3
+          text_exact: Created circuit 3, Downstairs light — wiring type A

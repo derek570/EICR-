@@ -144,6 +144,9 @@ export const VENDOR_LIVE_FIXTURE_IDS = Object.freeze([
 export const POST_00B_CORPUS_FIXTURE_IDS = Object.freeze([
   'frc_6600a62a7807c94766e10288526f733d',
   'frc_db9ad2a81993be17a38cc196c7ac8ec5',
+  // PLAN-D 2026-08-23 (id 130) — create-ack merge fixture; owned by the
+  // merge-blocking field-replay gate, post-dates the frozen 00B cohort.
+  'frc_1e2f5aabe7e7a73f522d98582f6ab734',
 ]);
 
 /**
