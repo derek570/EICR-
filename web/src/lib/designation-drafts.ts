@@ -88,6 +88,15 @@ const JOURNAL_PREFIX = 'cm-designation-draft:';
 const committedJournalRevisions = new Map<string, number>();
 // key → current write revision (bumped per keystroke).
 const journalRevisions = new Map<string, number>();
+// Cycle-7 — generation/epoch of the revision space itself. `purge`
+// (sign-out) RESETS every revision to 0, so a batch captured before the
+// purge carries revision numbers that a post-login draft will re-issue
+// from scratch: an in-flight pre-sign-out save completing afterwards
+// would find an equal revision and delete the NEW user's journal (or,
+// on failure, restore a mark for a value that no longer exists). Every
+// batch is stamped with the generation it was captured in; clear and
+// restore both ignore a batch from an older generation.
+let journalGeneration = 0;
 
 export function writeDesignationJournal(key: string, value: string): void {
   try {
@@ -114,21 +123,28 @@ export function markDesignationJournalCommitted(key: string): void {
   committedJournalRevisions.set(key, journalRevisions.get(key) ?? 0);
 }
 
-export type DesignationJournalBatch = Array<[string, number]>;
+export type DesignationJournalBatch = {
+  /** Revision-space generation this batch was captured in (cycle-7). */
+  generation: number;
+  entries: Array<[string, number]>;
+};
 
 /** Snapshot-and-drain the committed set at save-drain time. The save
  *  that captured this batch clears exactly these revisions on durable
  *  enqueue — nothing committed afterwards. */
 export function takeCommittedDesignationJournalBatch(): DesignationJournalBatch {
-  const batch = Array.from(committedJournalRevisions.entries());
+  const entries = Array.from(committedJournalRevisions.entries());
   committedJournalRevisions.clear();
-  return batch;
+  return { generation: journalGeneration, entries };
 }
 
 /** Clear a durably-enqueued batch — each key only when no NEWER
- *  keystroke has re-journalled it since the batch was captured. */
+ *  keystroke has re-journalled it since the batch was captured, and
+ *  only while the revision space it was captured in is still current
+ *  (a sign-out purge retires the generation — cycle-7). */
 export function clearDesignationJournalBatch(batch: DesignationJournalBatch): void {
-  for (const [key, revision] of batch) {
+  if (batch.generation !== journalGeneration) return;
+  for (const [key, revision] of batch.entries) {
     if ((journalRevisions.get(key) ?? 0) !== revision) continue;
     try {
       window.localStorage.removeItem(JOURNAL_PREFIX + key);
@@ -139,9 +155,12 @@ export function clearDesignationJournalBatch(batch: DesignationJournalBatch): vo
 }
 
 /** Restore a batch whose save FAILED pre-durability (existing newer
- *  marks win). */
+ *  marks win). A batch from a retired generation is dropped — its
+ *  journals were physically removed by the purge, so re-marking their
+ *  keys could only mis-target the next user's drafts (cycle-7). */
 export function restoreDesignationJournalBatch(batch: DesignationJournalBatch): void {
-  for (const [key, revision] of batch) {
+  if (batch.generation !== journalGeneration) return;
+  for (const [key, revision] of batch.entries) {
     if (!committedJournalRevisions.has(key)) {
       committedJournalRevisions.set(key, revision);
     }
@@ -160,6 +179,11 @@ export function purgeDesignationDraftState(): void {
   drafts.clear();
   journalRevisions.clear();
   committedJournalRevisions.clear();
+  // Retire the revision space (cycle-7): revisions restart at 0 for the
+  // next login, so any batch still held by an in-flight pre-sign-out
+  // save must be unable to clear OR restore against the new user's
+  // journals.
+  journalGeneration += 1;
   recoveryReady = false;
   pendingRecoveries.length = 0;
   try {
