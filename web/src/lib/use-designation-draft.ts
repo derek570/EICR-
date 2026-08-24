@@ -3,6 +3,35 @@
 import * as React from 'react';
 import { registerDesignationDraft } from './designation-drafts';
 
+// Synchronous localStorage journal for an OPEN draft — survives process
+// kill where the async outbox write cannot. Best-effort: quota/private
+// -mode failures degrade to the pre-journal behaviour.
+const JOURNAL_PREFIX = 'cm-designation-draft:';
+
+function writeDraftJournal(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(JOURNAL_PREFIX + key, value);
+  } catch {
+    /* best-effort */
+  }
+}
+
+function readDraftJournal(key: string): string | null {
+  try {
+    return window.localStorage.getItem(JOURNAL_PREFIX + key);
+  } catch {
+    return null;
+  }
+}
+
+function clearDraftJournal(key: string): void {
+  try {
+    window.localStorage.removeItem(JOURNAL_PREFIX + key);
+  } catch {
+    /* best-effort */
+  }
+}
+
 /**
  * PLAN-B2 (B2-2, web manual edits) — draft-buffered designation editing.
  *
@@ -58,6 +87,7 @@ export function useDesignationDraft(opts: {
     draftRef.current = null;
     unregisterRef.current?.();
     unregisterRef.current = null;
+    clearDraftJournal(draftKeyRef.current);
     if (open == null) return;
     setDraft(null); // post-unmount this is a safe no-op
     commitFnRef.current(open);
@@ -67,12 +97,28 @@ export function useDesignationDraft(opts: {
     (next: string) => {
       draftRef.current = next;
       setDraft(next);
+      // Codex r1 — synchronous journal per keystroke: the pagehide flush
+      // only STARTS an async IndexedDB enqueue, and the browser may kill
+      // the process before it completes (tab close, PWA eviction). The
+      // journal survives that; the next mount of this surface commits it.
+      writeDraftJournal(draftKeyRef.current, next);
       if (!unregisterRef.current) {
         unregisterRef.current = registerDesignationDraft(draftKeyRef.current, commitNow);
       }
     },
     [commitNow]
   );
+
+  // Recover a journalled draft stranded by a killed session: commit it
+  // through the same canonicalise-and-commit route as a live draft.
+  React.useEffect(() => {
+    const stranded = readDraftJournal(draftKeyRef.current);
+    if (stranded != null && draftRef.current == null) {
+      clearDraftJournal(draftKeyRef.current);
+      commitFnRef.current(stranded);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // View disappearance / unmount — a collapsed card or removed row must
   // not strand its open draft.

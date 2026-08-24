@@ -144,6 +144,7 @@ import {
   type RewriteOptions,
 } from './recording/confirmation-designation-rewrite';
 import { repairCircuitDesignation } from '@certmate/shared-utils';
+import { getLoadRepairAliases } from './repair-job-designations';
 
 /** PLAN-B2 — reading field names that carry a circuit designation (the
  *  wire uses the canonical name; legacy alias spellings included for
@@ -380,7 +381,7 @@ function isTrailingCircuitNamingPattern(text: string): boolean {
 const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
-  const { job, updateJob } = useJobContext();
+  const { job, updateJob, flushDraftsAndGetSnapshot } = useJobContext();
   // H7 — user-scoped circuit-field defaults. iOS canon applies these to
   // any newly-created circuit (`DefaultsService.applyDefaults` +
   // `CertificateDefaultsService.applyCableDefaults`) so a Sonnet-
@@ -1390,6 +1391,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const designationAliasStoreRef = React.useRef<DesignationAliasStore>(
     createDesignationAliasStore()
   );
+  // Stable ref to the provider's atomic flush — the WS callbacks are
+  // long-lived closures, so they must not capture a render-stale fn.
+  const flushDraftsAndGetSnapshotRef = React.useRef(flushDraftsAndGetSnapshot);
+  flushDraftsAndGetSnapshotRef.current = flushDraftsAndGetSnapshot;
+
   // Record a raw designation observed on ANY operation: when its repair
   // differs, the raw→canonical pairing joins the session alias map.
   const recordDesignationAliasRef = React.useRef((raw: unknown) => {
@@ -1399,22 +1405,27 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       designationAliasStoreRef.current.record(raw, canonical);
     }
   });
-  // Shared rewrite options — the by-circuit lookup reads the LIVE job
-  // ref so it always sees post-apply canonical designations.
-  const designationRewriteOptsRef = React.useRef<RewriteOptions | null>(null);
-  if (designationRewriteOptsRef.current === null) {
-    designationRewriteOptsRef.current = {
+  // Per-confirmation rewrite options — the by-circuit lookup reads the
+  // LIVE job ref (post-apply canonical designations) and is BOARD-SCOPED
+  // (Codex r1): on a multi-board job the same ref exists twice, so the
+  // confirmation's own board_id picks the row; a ref-only fallback fires
+  // only when the ref is UNAMBIGUOUS across the job.
+  const designationRewriteOptsForRef = React.useRef(
+    (boardId: string | null): RewriteOptions => ({
       aliases: designationAliasStoreRef.current,
       lookupCanonicalByCircuit: (circuit: number) => {
         const rows = (jobRef.current?.circuits ?? []) as Array<Record<string, unknown>>;
-        const row = rows.find(
+        const candidates = rows.filter(
           (r) => r.circuit_ref === String(circuit) || r.number === String(circuit)
         );
+        let row =
+          boardId != null ? candidates.find((r) => (r.board_id ?? '') === boardId) : undefined;
+        if (!row && candidates.length === 1) row = candidates[0];
         const designation = row?.circuit_designation;
         return typeof designation === 'string' && designation.trim() ? designation : null;
       },
-    };
-  }
+    })
+  );
   // One release path for queue-side discards AND the rarer pre-enqueue
   // failures (TTS unavailable / empty terminal). Address operations reserve a
   // durable delivery token plus, sometimes, an ordinary confirmation key; the
@@ -2543,6 +2554,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         turn_id: result.turn_id ?? null,
         extraction_failed: Boolean(result.extraction_failed),
       });
+      // PLAN-B2 Codex r1 — commit any open designation draft BEFORE a
+      // wire envelope mutates the model: otherwise a voice rename could
+      // apply + speak, and a later blur would commit the STALE draft
+      // over the spoken value (certificate disagreeing with the last
+      // read-back). The provider's atomic contract returns the exact
+      // committed snapshot, which THIS context's job mirror must adopt
+      // synchronously — the apply below reads jobRef and its wholesale
+      // circuits patch would otherwise resurrect the pre-commit array.
+      jobRef.current = flushDraftsAndGetSnapshotRef.current();
       // PLAN-B2 — record raw→canonical designation aliases from every
       // designation operation in this envelope BEFORE the apply mutates
       // the model (the mutation writes the canonical, so the raw is
@@ -2669,16 +2689,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const rawConfirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
       const confirmations = rawConfirmations.map((conf) => {
         if (!conf || typeof conf.text !== 'string' || conf.text.length === 0) return conf;
+        // Identity-less frames (field-nil apologies / system prompts with
+        // no circuit) are never builder reading/creation confirmations —
+        // skip rather than risk a shape collision (Codex r1).
+        if (conf.field == null && conf.circuit == null) return conf;
         const rewritten = rewriteConfirmationDesignationText(
           conf.text,
-          designationRewriteOptsRef.current!
+          designationRewriteOptsForRef.current(conf.board_id ?? null)
         );
         if (!rewritten.changed) return conf;
         clientDiagnostic('confirmation_designation_slot_rewritten', {
           before: conf.text.slice(0, 80),
           after: rewritten.text.slice(0, 80),
         });
-        return { ...conf, text: rewritten.text };
+        // The wire `expanded_text` is a TTS transformation of the OLD
+        // text — byte substitution cannot repair it, and web speaks
+        // `text` only, so it is NULLED (any future consumer re-expands
+        // from the rewritten text).
+        return { ...conf, text: rewritten.text, expanded_text: null };
       });
       const addressDeliveryToken = result.address_mirror_delivery_token ?? null;
       let addressTerminalIndex = -1;
@@ -3161,6 +3189,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           msg.rating_amps != null
             ? [{ circuit: msg.circuit_ref, field: 'ocpd_rating', value: msg.rating_amps }]
             : [];
+        // Codex r1 — this handler calls applyExtractionToJob directly
+        // (not the envelope path), so record the designation alias here.
+        recordDesignationAliasRef.current(msg.designation);
         const synthetic: ExtractionResult = {
           readings: ratingReadings,
           circuit_updates: [
@@ -3205,6 +3236,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           msg.rating_amps != null
             ? [{ circuit: msg.circuit_ref, field: 'ocpd_rating', value: msg.rating_amps }]
             : [];
+        // Codex r1 — same direct-apply alias recording as onCircuitCreated.
+        recordDesignationAliasRef.current(msg.designation);
         const circuitUpdates = msg.designation
           ? [
               {
@@ -3342,6 +3375,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (response.understood && response.action) {
           const command = mapServerActionToVoiceCommand(response.action);
           if (command) {
+            // Codex r1 — commit any open designation draft before the
+            // voice mutation reads the job (same stale-draft class as
+            // the wire-envelope flush in applyExtraction); adopt the
+            // committed snapshot into this context's mirror.
+            jobRef.current = flushDraftsAndGetSnapshotRef.current();
             // PLAN-B2 — a designation-bearing voice command also feeds
             // the session alias map (raw → canonical), so a later stale
             // wire frame naming this designation still repairs.
@@ -3367,13 +3405,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 liveFill.markUpdated(outcome.changedKeys);
               }
               playConfirmationChime();
-              if (voiceCommandTargetsDesignation(command) && outcome.response) {
-                designationSpokenOverride = outcome.response;
-                clientDiagnostic('voice_command_designation_spoken_override', {
-                  actionType: command.type,
-                  overridePreview: outcome.response.slice(0, 80),
-                });
-              }
+            }
+            // Codex r1 (two findings, one guard each):
+            // (a) ALWAYS speak the LOCAL outcome for designation actions
+            //     — success AND failure. A stale/replayed action whose
+            //     target circuit no longer exists must not fall back to
+            //     the server's success text (a false read-back naming a
+            //     rename that is absent from the certificate).
+            // (b) NEVER override when the frame carries an address-mirror
+            //     delivery token: the server text may bundle the durable
+            //     address terminal, and replacing it would ACK content
+            //     the inspector never heard. The plan's own spec keeps
+            //     delivery-token behaviour intact.
+            if (voiceCommandTargetsDesignation(command) && outcome.response && !deliveryToken) {
+              designationSpokenOverride = outcome.response;
+              clientDiagnostic('voice_command_designation_spoken_override', {
+                actionType: command.type,
+                applied: Boolean(outcome.patch),
+                overridePreview: outcome.response.slice(0, 80),
+              });
             }
           } else {
             clientDiagnostic('voice_command_action_unmapped', {
@@ -3997,8 +4047,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // into a new recording started within 30 s would suppress that
     // session's first apology.
     confirmationDedupeStoreRef.current.reset();
-    // PLAN-B2 — session-scoped designation aliases die with the session.
+    // PLAN-B2 — session-scoped designation aliases die with the session,
+    // then re-seed from the load-boundary repair ledger (the plan's
+    // "populated from load state": a pre-existing dirty job repaired at
+    // load contributes its raw→canonical pairs so a stale frame naming
+    // the raw designation still repairs in THIS session).
     designationAliasStoreRef.current.clear();
+    for (const [raw, canonical] of getLoadRepairAliases()) {
+      designationAliasStoreRef.current.record(raw, canonical);
+    }
     addressMirrorDeliveryStoreRef.current?.clearReservations();
     addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();
@@ -4246,8 +4303,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // field-nil TTL map + reservations) so the next session starts with
     // a clean slate.
     confirmationDedupeStoreRef.current.reset();
-    // PLAN-B2 — session-scoped designation aliases die with the session.
+    // PLAN-B2 — session-scoped designation aliases die with the session,
+    // then re-seed from the load-boundary repair ledger (the plan's
+    // "populated from load state": a pre-existing dirty job repaired at
+    // load contributes its raw→canonical pairs so a stale frame naming
+    // the raw designation still repairs in THIS session).
     designationAliasStoreRef.current.clear();
+    for (const [raw, canonical] of getLoadRepairAliases()) {
+      designationAliasStoreRef.current.record(raw, canonical);
+    }
     addressMirrorDeliveryStoreRef.current?.clearReservations();
     addressMirrorQueueReservationsRef.current.clear();
     liveFill.reset();

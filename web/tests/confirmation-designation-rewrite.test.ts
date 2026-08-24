@@ -171,3 +171,17 @@ describe('two-envelope old-backend sequence (raw rename → measured-only frame)
     expect(out.changed).toBe(false);
   });
 });
+
+describe('Codex r1 — alias uniqueness', () => {
+  it('an ambiguous slot (two canonicals for one raw/truncated key) resolves to NOTHING', () => {
+    aliases.record('Garage supply circuit', 'Garage supply');
+    aliases.record('Garage supply circuit', 'Garage feed');
+    // Ambiguous alias falls through; with no model row the pure repair
+    // still fixes the edge token truthfully.
+    const out = rewriteConfirmationDesignationText(
+      'Garage supply circuit, circuit 5, Zs 0.4 ohms',
+      opts
+    );
+    expect(out.text).toBe('Garage supply, circuit 5, Zs 0.4 ohms');
+  });
+});

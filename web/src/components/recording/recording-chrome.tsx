@@ -232,7 +232,7 @@ function RecordingActionBar() {
   // Apply sheet inline so recording stays live; "Defaults" navigates
   // to /settings/defaults — the inspector rarely edits presets while
   // recording, and pausing first via the Pause button is one tap.
-  const { job, updateJob } = useJobContext();
+  const { job, updateJob, flushDraftsAndGetSnapshot } = useJobContext();
   const [applyOpen, setApplyOpen] = React.useState(false);
   const onOpenDefaults = React.useCallback(() => {
     router.push('/settings/defaults');
@@ -414,7 +414,12 @@ function RecordingActionBar() {
         certificateType={job.certificate_type ?? 'EICR'}
         onClose={() => setApplyOpen(false)}
         onApply={(preset) => {
-          const patch = applyPresetToJob(preset, job);
+          // Codex r1 — commit any open designation draft first and apply
+          // the preset against the committed snapshot (a focused draft
+          // must neither be lost nor let the preset run on pre-commit
+          // state).
+          const snapshot = flushDraftsAndGetSnapshot();
+          const patch = applyPresetToJob(preset, snapshot);
           if (Object.keys(patch).length > 0) {
             updateJob(patch);
           }

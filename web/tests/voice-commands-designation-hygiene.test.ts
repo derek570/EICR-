@@ -208,3 +208,60 @@ describe('voiceCommandTargetsDesignation — spoken-override predicate', () => {
     );
   });
 });
+
+describe('Codex r1 regressions — canonical wire field + strict ref parity', () => {
+  it('field:"circuit_designation" (canonical wire name) resolves on update AND apply', () => {
+    const update = applyVoiceCommand(
+      {
+        type: 'update_field',
+        field: 'circuit_designation',
+        value: 'Upstairs lighting circuit',
+        circuit: 1,
+      },
+      job()
+    );
+    const rows = update.patch?.circuits as Array<Record<string, unknown>>;
+    expect(rows[0].circuit_designation).toBe('Upstairs lighting');
+    expect(update.response).toBe('Set designation to Upstairs lighting on circuit 1.');
+    expect(
+      voiceCommandTargetsDesignation({
+        type: 'update_field',
+        field: 'circuit_designation',
+        value: 'x',
+        circuit: 1,
+      })
+    ).toBe(true);
+    const mapped = mapServerActionToVoiceCommand({
+      type: 'apply_field',
+      params: { field: 'circuit_designation', value: 'kitchen ring', circuits: 'all' },
+    });
+    expect(mapped).not.toBeNull();
+  });
+
+  it('add_circuit ref allocation mirrors Swift Int(): "7A" counts as 0, not 7', () => {
+    const outcome = applyVoiceCommand(
+      { type: 'add_circuit', description: 'Garage' },
+      {
+        supply: {},
+        circuits: [{ id: 'x', circuit_ref: '7A', number: '7A', circuit_designation: 'Odd' }],
+      }
+    );
+    const rows = outcome.patch?.circuits as Array<Record<string, unknown>>;
+    // iOS: Int("7A") = nil → 0 → next ref 1. parseInt would have said 8.
+    expect(rows.some((r) => r.circuit_ref === '1')).toBe(true);
+    expect(rows.some((r) => r.circuit_ref === '8')).toBe(false);
+  });
+
+  it('add_circuit with only negative refs mirrors iOS (max of values, no zero floor)', () => {
+    const outcome = applyVoiceCommand(
+      { type: 'add_circuit', description: 'Cellar' },
+      {
+        supply: {},
+        circuits: [{ id: 'n', circuit_ref: '-5', number: '-5', circuit_designation: 'Neg' }],
+      }
+    );
+    const rows = outcome.patch?.circuits as Array<Record<string, unknown>>;
+    // iOS: max([-5]) = -5 → next ref "-4".
+    expect(rows.some((r) => r.circuit_ref === '-4')).toBe(true);
+  });
+});

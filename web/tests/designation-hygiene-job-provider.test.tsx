@@ -45,6 +45,13 @@ vi.mock('@/lib/auth', () => ({
   getUser: () => ({ id: 'user-1', email: 'derek@example.com' }),
 }));
 
+// The PDF gate's outbox-drain proof reads the real IDB outbox — stub it
+// (no IndexedDB in jsdom; an un-mocked call hangs under fake timers).
+let outboxRows: Array<{ jobId: string }> = [];
+vi.mock('@/lib/pwa/outbox', () => ({
+  listPendingMutations: vi.fn(async () => outboxRows),
+}));
+
 const dirtyJob = (updatedAt = '2026-08-23T00:00:00Z'): JobDetail =>
   ({
     id: 'job-1',
@@ -107,6 +114,7 @@ beforeEach(() => {
   saveCalls.length = 0;
   nextSynced = true;
   saveShouldThrow = null;
+  outboxRows = [];
 });
 
 afterEach(() => {
@@ -230,6 +238,28 @@ describe('B2-2 atomic-commit contract', () => {
     expect(saveCalls).toHaveLength(1);
     const circuits = saveCalls[0].patch.circuits as Array<Record<string, unknown>>;
     expect(circuits[0].circuit_designation).toBe('Cooker');
+    h.unmount();
+  });
+
+  it('saveCircuitsSnapshotNow reports synced:false while OLDER outbox rows for this job remain (Codex r1)', async () => {
+    outboxRows = [{ jobId: 'job-1' }];
+    const h = mountProvider(dirtyJob(), true);
+    let result: { synced: boolean } | null = null;
+    await act(async () => {
+      result = await h.ctxRef.current!.saveCircuitsSnapshotNow();
+    });
+    expect(result!.synced).toBe(false);
+    h.unmount();
+  });
+
+  it('saveCircuitsSnapshotNow refuses on an un-hydrated doc (Codex r1 hydration gate)', async () => {
+    const h = mountProvider(dirtyJob(), false);
+    let result: { synced: boolean } | null = null;
+    await act(async () => {
+      result = await h.ctxRef.current!.saveCircuitsSnapshotNow();
+    });
+    expect(result!.synced).toBe(false);
+    expect(saveCalls).toHaveLength(0);
     h.unmount();
   });
 

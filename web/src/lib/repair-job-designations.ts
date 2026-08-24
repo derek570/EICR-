@@ -1,6 +1,29 @@
 import { repairCircuitDesignation } from '@certmate/shared-utils';
 import type { JobDetail } from './types';
 
+// PLAN-B2 Codex r1 — the plan requires the session alias map to be
+// "populated from load state", but by the time a recording session
+// starts the load repair has already replaced the raw values. Each
+// repair therefore records its raw→canonical pairs here; the recording
+// context seeds its session-scoped alias store from this bounded module
+// ledger at session start. Bounded + deduped so a long-lived tab cannot
+// grow it unboundedly.
+const loadRepairAliases: Array<[string, string]> = [];
+const seenAliasKeys = new Set<string>();
+const LOAD_ALIAS_CAP = 200;
+
+function recordLoadRepairAlias(raw: string, canonical: string): void {
+  const key = `${raw}\u0000${canonical}`;
+  if (seenAliasKeys.has(key) || loadRepairAliases.length >= LOAD_ALIAS_CAP) return;
+  seenAliasKeys.add(key);
+  loadRepairAliases.push([raw, canonical]);
+}
+
+/** Raw→canonical pairs observed by load-boundary repairs (read-only). */
+export function getLoadRepairAliases(): ReadonlyArray<[string, string]> {
+  return loadRepairAliases;
+}
+
 /**
  * PLAN-B2 (B2-4) — pure repair of every circuit designation on a job
  * document. Returns the SAME object when nothing changed (so callers
@@ -32,6 +55,7 @@ export function repairJobCircuitDesignations(job: JobDetail): {
     const repaired = repairCircuitDesignation(designation);
     if (repaired === designation) return row;
     changed = true;
+    if (typeof repaired === 'string') recordLoadRepairAlias(designation, repaired);
     return { ...row, circuit_designation: repaired };
   });
   if (!changed) return { job, changed: false };

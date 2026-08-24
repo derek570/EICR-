@@ -256,7 +256,7 @@ function readInitialView(): CircuitView {
 }
 
 export default function CircuitsPage() {
-  const { job, updateJob, commitJobPatch } = useJobContext();
+  const { job, updateJob, commitJobPatch, flushDraftsAndGetSnapshot } = useJobContext();
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const jobId = params.id;
@@ -375,8 +375,17 @@ export default function CircuitsPage() {
   const persist = (next: Circuit[]) =>
     updateJob({ circuits: next as unknown as typeof job.circuits });
 
+  // Codex r1 — FUNCTIONAL patch: the old form rebuilt the whole circuits
+  // array from this render's `circuits` closure, so a patch issued right
+  // after a synchronous designation-draft commit (commitJobPatch) would
+  // resurrect the pre-commit array and silently undo the canonical
+  // designation. Resolving against `prev` keeps every same-tick commit.
   const patchCircuit = (id: string, patch: Partial<Circuit>) => {
-    persist(circuits.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    updateJob((prev) => ({
+      circuits: ((prev.circuits ?? []) as unknown as Circuit[]).map((c) =>
+        c.id === id ? { ...c, ...patch } : c
+      ) as unknown as typeof prev.circuits,
+    }));
   };
 
   // Table-view patch adapter — the sticky table passes `{key: value}`
@@ -523,7 +532,16 @@ export default function CircuitsPage() {
    * working on Board #2 doesn't accidentally stomp Board #1.
    */
   const handleApplyDefaults = () => {
-    const visibleIds = new Set(boardScoped.map((c) => c.id));
+    // Codex r1 — commit any open designation draft FIRST and derive the
+    // working set from the returned snapshot, not this render's closure:
+    // a blur-then-tap sequence could otherwise apply defaults over (and
+    // persist) the pre-commit circuit state.
+    const snapshot = flushDraftsAndGetSnapshot();
+    const snapshotCircuits = (snapshot.circuits ?? []) as unknown as Circuit[];
+    const snapshotScoped = selectedBoardId
+      ? snapshotCircuits.filter((c) => c.board_id === selectedBoardId)
+      : snapshotCircuits;
+    const visibleIds = new Set(snapshotScoped.map((c) => c.id));
     // Strip scoped/cable-type keys (e.g. `lighting.live_csa_mm2`) before
     // passing to the generic applier — otherwise the helper would write
     // those dotted strings as if they were Circuit field names. Cable
@@ -532,7 +550,7 @@ export default function CircuitsPage() {
     for (const [k, v] of Object.entries(userDefaults)) {
       if (!k.includes('.')) flatDefaults[k] = v;
     }
-    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(boardScoped, {
+    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(snapshotScoped, {
       userDefaults: flatDefaults as Partial<Record<keyof Circuit, string>>,
     });
     if (summary.filledFields === 0) {
@@ -540,8 +558,11 @@ export default function CircuitsPage() {
       return;
     }
     const updatedById = new Map(updatedVisible.map((c) => [c.id, c]));
-    const merged = circuits.map((c) => (visibleIds.has(c.id) ? (updatedById.get(c.id) ?? c) : c));
-    persist(merged);
+    updateJob((prev) => ({
+      circuits: ((prev.circuits ?? []) as unknown as Circuit[]).map((c) =>
+        visibleIds.has(c.id) ? (updatedById.get(c.id) ?? c) : c
+      ) as unknown as typeof prev.circuits,
+    }));
     const circuitsWord = summary.touchedCircuits === 1 ? 'circuit' : 'circuits';
     const suffix =
       summary.ambiguousCircuits > 0

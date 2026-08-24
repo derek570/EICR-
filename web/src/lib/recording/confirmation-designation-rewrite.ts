@@ -46,19 +46,33 @@ export interface DesignationAliasStore {
 }
 
 export function createDesignationAliasStore(): DesignationAliasStore {
-  const map = new Map<string, string>();
+  // raw slot → SET of canonicals. Resolution succeeds only when a slot
+  // maps to exactly ONE canonical (Codex r1: a last-write-wins map let
+  // two distinct long designations sharing a 40-char prefix — or the
+  // same raw text renamed differently on two boards — speak another
+  // circuit's designation). An ambiguous slot falls through to the
+  // model lookup / pure repair, which are circuit-scoped.
+  const map = new Map<string, Set<string>>();
+  const add = (key: string, canonical: string) => {
+    const set = map.get(key) ?? new Set<string>();
+    set.add(canonical);
+    map.set(key, set);
+  };
   return {
     record(raw: string, canonical: string) {
       const key = raw.trim();
-      if (!key || key === canonical.trim()) return;
-      map.set(key, canonical.trim());
+      const value = canonical.trim();
+      if (!key || key === value) return;
+      add(key, value);
       // The builder truncates prefixes to 40 chars — register the
       // truncated raw too so a shape-A slot from a long designation
       // still resolves.
-      if (key.length > 40) map.set(key.slice(0, 40), canonical.trim());
+      if (key.length > 40) add(key.slice(0, 40), value);
     },
     resolve(slot: string) {
-      return map.get(slot.trim()) ?? null;
+      const set = map.get(slot.trim());
+      if (!set || set.size !== 1) return null;
+      return set.values().next().value ?? null;
     },
     clear() {
       map.clear();

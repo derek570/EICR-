@@ -5,6 +5,7 @@ import type { CertificateType, JobDetail } from './types';
 import { ApiError } from './types';
 import { getUser } from './auth';
 import { queueSaveJob } from './pwa/queue-save-job';
+import { listPendingMutations } from './pwa/outbox';
 import { flushDesignationDrafts } from './designation-drafts';
 import { repairJobCircuitDesignations } from './repair-job-designations';
 
@@ -168,6 +169,9 @@ export function JobProvider({
   // still holds the cached blank doc, seed against it, and the resulting
   // pending patch would then block the fresh doc from ever landing.
   const [isHydrated, setIsHydrated] = React.useState(hydrated);
+  // Stable-ref mirror for identity-stable callbacks (the PDF gate).
+  const isHydratedRef = React.useRef(isHydrated);
+  isHydratedRef.current = isHydrated;
 
   // Keep a ref of the freshest job so `flushSave` (fired from a timer)
   // reads the post-patch doc even when the closure was captured with a
@@ -192,6 +196,19 @@ export function JobProvider({
   // same id AND we have no local unsynced edits. The second clause is
   // the cache-then-hydrate fix (was: id-only gate dropped fresh network
   // payloads forever when the cache won the race).
+  // PLAN-B2 Codex r1 — ALL queueSaveJob writes for this job serialise
+  // through one promise chain: an older in-flight save finishing AFTER
+  // a newer full-snapshot save could otherwise overwrite it server-side
+  // (the PDF gate's save must be the LAST write before generatePdf).
+  const saveChainRef = React.useRef<Promise<unknown>>(Promise.resolve());
+  const enqueueSerialisedSave = React.useCallback(<T,>(op: () => Promise<T>): Promise<T> => {
+    const next = saveChainRef.current.then(op, op);
+    // The chain never rejects (each link's outcome is consumed by its
+    // caller); keep the tail alive regardless of individual failures.
+    saveChainRef.current = next.catch(() => undefined);
+    return next;
+  }, []);
+
   const flushSave = React.useCallback(async () => {
     // PLAN-B2 — commit any focused designation draft BEFORE draining the
     // pending patch, so a typing pause longer than the debounce can
@@ -216,7 +233,9 @@ export function JobProvider({
     setIsSaving(true);
     setSaveError(null);
     try {
-      await queueSaveJob(user.id, jobId, pending, { optimisticDetail: detail });
+      await enqueueSerialisedSave(() =>
+        queueSaveJob(user.id, jobId, pending, { optimisticDetail: detail })
+      );
       if (!mountedRef.current) return;
       // Clear `isDirty` only if no new edits queued while we were saving.
       // If the user kept typing, keep the flag and let the next debounce
@@ -232,13 +251,25 @@ export function JobProvider({
         if (mountedRef.current) {
           setSaveError(err.message);
         }
+      } else {
+        // Codex r1 — a PRE-durability failure (the outbox enqueue itself
+        // threw, e.g. IndexedDB unavailable) means the drained patch
+        // reached NEITHER the server nor the outbox. Restore it (newer
+        // pending keys win) and re-arm the debounce, else a load-repair
+        // patch for this doc version would be lost forever (the
+        // per-version tag blocks a re-enqueue).
+        pendingPatchRef.current = { ...pending, ...pendingPatchRef.current };
+        if (mountedRef.current) {
+          setIsDirty(true);
+          scheduleSaveRef.current?.();
+        }
       }
     } finally {
       if (mountedRef.current) {
         setIsSaving(false);
       }
     }
-  }, []);
+  }, [enqueueSerialisedSave]);
 
   const scheduleSave = React.useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
@@ -246,6 +277,10 @@ export function JobProvider({
       void flushSave();
     }, SAVE_DEBOUNCE_MS);
   }, [flushSave]);
+  // flushSave is declared before scheduleSave (it must not depend on it),
+  // so the enqueue-failure retry path reaches the scheduler via a ref.
+  const scheduleSaveRef = React.useRef<(() => void) | null>(null);
+  scheduleSaveRef.current = scheduleSave;
 
   const lastInitialIdRef = React.useRef(initial.id);
   const lastInitialUpdatedRef = React.useRef(initial.updated_at ?? null);
@@ -327,14 +362,19 @@ export function JobProvider({
 
   const updateJob = React.useCallback(
     (patch: JobPatch) => {
-      setJob((prev) => {
-        const resolved = typeof patch === 'function' ? patch(prev) : patch;
-        // Merge into pending BEFORE applying the state update so a
-        // re-entrant `updateJob` call inside the same tick (rare, but
-        // observation photo uploads do batch) unions correctly.
-        pendingPatchRef.current = { ...pendingPatchRef.current, ...resolved };
-        return { ...prev, ...resolved };
-      });
+      // PLAN-B2 Codex r1 — SAME synchronous primitive as commitJobPatch.
+      // The old form resolved the patch inside a deferred React state
+      // updater while commitJobPatch mutated the refs synchronously; a
+      // same-tick updateJob(A) → commitJobPatch(B) sequence could then
+      // evaluate A late and clobber it with B's object replacement,
+      // leaving state/jobRef without A even though the queued save had
+      // A+B. Resolving against jobRef.current here keeps state, jobRef,
+      // and the pending patch in lock-step for every interleaving.
+      const resolved = typeof patch === 'function' ? patch(jobRef.current) : patch;
+      const merged = { ...jobRef.current, ...resolved } as JobDetail;
+      jobRef.current = merged;
+      pendingPatchRef.current = { ...pendingPatchRef.current, ...resolved };
+      setJob(merged);
       setIsDirty(true);
       scheduleSave();
     },
@@ -420,6 +460,13 @@ export function JobProvider({
     flushDesignationDrafts();
     const user = getUser();
     if (!user) return { synced: false };
+    // Codex r1 — HYDRATION GATE: if the doc in state is (or descends
+    // from) a cache paint whose network outcome never resolved in our
+    // favour, PUTting its full circuits array could overwrite a NEWER
+    // server schedule and then "prove" the stale doc synced. The gate
+    // reads the provider-owned accepted-hydration STATE via a ref (this
+    // callback is identity-stable across renders).
+    if (!isHydratedRef.current) return { synced: false };
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     const pending = pendingPatchRef.current;
     pendingPatchRef.current = {};
@@ -430,11 +477,32 @@ export function JobProvider({
       setSaveError(null);
     }
     try {
-      const result = await queueSaveJob(user.id, detail.id, patch, { optimisticDetail: detail });
+      // Serialised behind any in-flight save (Codex r1: an OLDER save
+      // resolving after this one could revert the server before the PDF
+      // renders).
+      const result = await enqueueSerialisedSave(() =>
+        queueSaveJob(user.id, detail.id, patch, { optimisticDetail: detail })
+      );
       if (mountedRef.current && Object.keys(pendingPatchRef.current).length === 0) {
         setIsDirty(false);
       }
-      return { synced: result.synced };
+      if (!result.synced) return { synced: false };
+      // Codex r1 — a fresh synced save still does not prove S3 holds
+      // THIS snapshot if OLDER outbox rows for this job remain queued:
+      // the replay worker could push a stale circuits mutation after
+      // this save. Only an outbox with no OTHER pending rows for this
+      // job proves the canonical snapshot is the last write. (Our own
+      // synced mutation has already been removed from the outbox by
+      // queueSaveJob's success path.)
+      try {
+        const rows = await listPendingMutations();
+        const staleRows = rows.filter((m) => m.jobId === detail.id);
+        if (staleRows.length > 0) return { synced: false };
+      } catch {
+        // Outbox unreadable — cannot prove drained; fail closed.
+        return { synced: false };
+      }
+      return { synced: true };
     } catch (err) {
       // 4xx — a validation rejection will never sync; surface it and
       // report un-synced so the caller fails visibly / falls back.
@@ -445,7 +513,7 @@ export function JobProvider({
     } finally {
       if (mountedRef.current) setIsSaving(false);
     }
-  }, []);
+  }, [enqueueSerialisedSave]);
 
   const value = React.useMemo<JobContextValue>(
     () => ({

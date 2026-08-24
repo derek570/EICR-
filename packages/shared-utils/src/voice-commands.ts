@@ -162,7 +162,11 @@ export interface VoiceCommandOutcome {
 // Key = lowercased phrase the inspector might dictate; value = canonical
 // snake_case field name on CircuitRow.
 const CIRCUIT_FIELD_ALIASES: Record<string, string> = {
-  // Designation
+  // Designation. The canonical wire name maps to itself — Codex diff
+  // review r1: a server action carrying field:"circuit_designation"
+  // previously resolved as UNKNOWN on web (no patch, raw server speech)
+  // while iOS accepted it, diverging the cross-client contract.
+  circuit_designation: 'circuit_designation',
   designation: 'circuit_designation',
   description: 'circuit_designation',
   // OCPD
@@ -1166,10 +1170,17 @@ function applyAddCircuit(
   job: VoiceCommandJob
 ): VoiceCommandOutcome {
   const circuits = [...(job.circuits ?? [])];
-  const maxRef = circuits.reduce((max, row) => {
-    const parsed = parseInt(String(row.circuit_ref ?? row.number ?? ''), 10);
-    return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
-  }, 0);
+  // Strict whole-string integer parse mirroring Swift `Int(...)` (Codex
+  // r1: `parseInt("7A")` is 7 so web allocated 8 where iOS allocates 1).
+  // Invalid refs map to 0 exactly like iOS's `Int($0.circuitRef) ?? 0`,
+  // the max may be negative, and the ?? 0 fallback applies only to an
+  // EMPTY list — byte-parity with executeAddCircuit.
+  const strictRef = (raw: unknown): number => {
+    const str = String(raw ?? '');
+    return /^[+-]?\d+$/.test(str) ? parseInt(str, 10) : 0;
+  };
+  const refValues = circuits.map((row) => strictRef(row.circuit_ref ?? row.number));
+  const maxRef = refValues.length > 0 ? Math.max(...refValues) : 0;
   const nextRef = String(maxRef + 1);
   const boards = job.boards as Array<{ id?: string }> | undefined;
   const boardId = boards?.[0]?.id;
@@ -1183,11 +1194,9 @@ function applyAddCircuit(
     circuit_designation: canonical,
   };
   if (boardId) row.board_id = boardId;
-  const next = [...circuits, row].sort((a, b) => {
-    const an = parseInt(String(a.circuit_ref ?? a.number ?? ''), 10);
-    const bn = parseInt(String(b.circuit_ref ?? b.number ?? ''), 10);
-    return (Number.isFinite(an) ? an : 0) - (Number.isFinite(bn) ? bn : 0);
-  });
+  const next = [...circuits, row].sort(
+    (a, b) => strictRef(a.circuit_ref ?? a.number) - strictRef(b.circuit_ref ?? b.number)
+  );
   // Spoken template — the SAME canonical value as storage. This exact
   // wording is the cross-client contract for the add action (the iOS
   // spoken-override half pins the identical string).

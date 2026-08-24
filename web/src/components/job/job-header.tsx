@@ -25,7 +25,8 @@ import { applyPresetToJob } from '@/lib/defaults/service';
  */
 export function JobHeader() {
   const router = useRouter();
-  const { job, isDirty, isSaving, saveError, updateJob } = useJobContext();
+  const { job, isDirty, isSaving, saveError, updateJob, flushDraftsAndGetSnapshot } =
+    useJobContext();
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [applyOpen, setApplyOpen] = React.useState(false);
 
@@ -129,7 +130,12 @@ export function JobHeader() {
         certificateType={job.certificate_type ?? 'EICR'}
         onClose={() => setApplyOpen(false)}
         onApply={(preset) => {
-          const patch = applyPresetToJob(preset, job);
+          // Codex r1 — commit any open designation draft first and apply
+          // the preset against the committed snapshot (a focused draft
+          // must neither be lost nor let the preset run on pre-commit
+          // state).
+          const snapshot = flushDraftsAndGetSnapshot();
+          const patch = applyPresetToJob(preset, snapshot);
           if (Object.keys(patch).length > 0) {
             updateJob(patch);
           }
