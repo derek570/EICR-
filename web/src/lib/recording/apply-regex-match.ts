@@ -129,6 +129,12 @@ export interface RegexWriteCandidate {
   value: unknown;
   /** circuit-target only */
   circuitIdx?: number;
+  /** PLAN-C Codex cycle 3 — the closed-enum guard refused this value, so
+   *  it must NOT be patched into the job or claimed as regex-owned. It
+   *  stays in the candidate list only so its match still counts as gate
+   *  evidence and still goes out as a `regexResults` hint (see
+   *  `FieldSourceTracker.recordRegexHintOnly`). */
+  suppressed?: boolean;
 }
 
 /** Reads the value a candidate would overwrite. Injected so hints-ON can
@@ -176,9 +182,13 @@ export function shadowBaselineReader(shadow: ReadonlyMap<string, unknown>): Base
  *   - a VALID alias is canonicalised ("60898" → "BS EN 60898"), so the
  *     ~40ms instant fill and Sonnet's later write agree on one string
  *     instead of racing between two spellings of the same value;
- *   - an INVALID value is SUPPRESSED — dropped before the tracker gate, so
- *     it never writes, never counts as a changedKey, and never marks the
- *     field as regex-owned (which would block the correct value later).
+ *   - an INVALID value is SUPPRESSED — it never writes, never counts as a
+ *     changedKey, and never marks the field as regex-owned (which would
+ *     block the correct value later). Codex cycle 3: suppression stops at
+ *     the WRITE. The match still counts as gate evidence and still goes
+ *     out as a `regexResults` hint, because dropping it outright changed
+ *     the WS frame (iOS sends the hint) and could flip a short utterance
+ *     to gate-REJECT — silence, the exact failure this plan prevents.
  *
  * No re-ask here, by design. This layer is silent by construction: it has
  * no speech path at all, it is superseded by Sonnet 1–2s later, and the
@@ -225,7 +235,20 @@ export function computeFreshRegexWrites(
   const fresh: RegexWriteCandidate[] = [];
   const consider = (raw: RegexWriteCandidate) => {
     const candidate = guardClosedEnumCandidate(raw);
-    if (!candidate) return; // closed-enum reject — suppressed, silently
+    if (!candidate) {
+      // Closed-enum reject. The WRITE is suppressed; the MATCH is not.
+      // Same gates as a real write so the outbound hint stream is
+      // unchanged in shape and cadence — ownership first, then freshness
+      // against the suppression shadow (the job can't be the baseline
+      // here: nothing is ever written, so every cumulative re-hit would
+      // look fresh forever).
+      const asString = String(raw.value);
+      if (!tracker.canRegexWrite(raw.trackerKey)) return;
+      if (tracker.isRepeatSuppressedRegexValue(raw.trackerKey, asString)) return;
+      tracker.noteSuppressedRegexValue(raw.trackerKey, asString);
+      fresh.push({ ...raw, suppressed: true });
+      return;
+    }
     if (!tracker.canRegexWrite(candidate.trackerKey)) return;
     if (valuesEqualAfterTrim(candidate.value, baseline(candidate))) return; // re-hit, not fresh
     fresh.push(candidate);
@@ -333,6 +356,14 @@ export function applyRegexMatchToJob(
   let circuits: CircuitRow[] | null = null;
 
   for (const c of freshWrites) {
+    if (c.suppressed) {
+      // Guard-refused: no patch, no changedKey (so no chime, no blue
+      // flash, no `job_state_update`), and no regex ownership — but the
+      // hint still crosses the wire and still holds the forward-gate
+      // open, so the server sees the transcript and re-asks.
+      tracker.recordRegexHintOnly(c.trackerKey);
+      continue;
+    }
     if (c.target === 'circuit') {
       if (circuits === null) circuits = [...(job.circuits ?? [])];
       const idx = c.circuitIdx ?? -1;

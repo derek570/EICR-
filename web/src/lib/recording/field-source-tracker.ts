@@ -105,6 +105,44 @@ export class FieldSourceTracker {
     this.fieldSources.set(key, 'sonnet');
   }
 
+  /** PLAN-C Codex cycle 3 — EVIDENCE without OWNERSHIP.
+   *
+   *  The closed-enum guard refuses to WRITE an off-list regex value, but
+   *  the matcher still MATCHED — and that match is what the pre-LLM
+   *  forward-gate reads (`gateRegexHit`, recording-context.tsx:2065) and
+   *  what the backend receives as `regexResults` context for Sonnet.
+   *  Dropping the candidate outright therefore did two things nobody
+   *  asked for: it changed the WS frame (iOS still sends the hint), and
+   *  — far worse — it could flip a short utterance from gate-PASS to
+   *  gate-REJECT, so "the breaker on circuit 3 is an MCB" would be
+   *  silently discarded before the model ever saw it and the inspector
+   *  would hear nothing at all. That is the Audio-First failure this
+   *  plan exists to prevent, re-introduced one layer up.
+   *
+   *  So a suppressed value joins the per-turn set — the hint goes out,
+   *  the gate stays open, the server re-asks — but NOT `fieldSources`:
+   *  claiming regex ownership of a column we did not write would make
+   *  `canRegexWrite` reject the correct value arriving moments later. */
+  recordRegexHintOnly(key: string): void {
+    this.thisTurnRegexWrites.add(key);
+  }
+
+  /** Freshness shadow for guard-suppressed values. The matcher runs on a
+   *  CUMULATIVE window, so the same bad match recurs every turn. A
+   *  written value goes non-fresh because the job now holds it; a
+   *  suppressed one never lands anywhere, so without this it would emit
+   *  a fresh hint (and hold the gate open) on every subsequent
+   *  utterance. Keyed by value so a genuine correction is still fresh. */
+  private readonly suppressedRegexValues = new Map<string, string>();
+
+  noteSuppressedRegexValue(key: string, value: string): void {
+    this.suppressedRegexValues.set(key, value);
+  }
+
+  isRepeatSuppressedRegexValue(key: string, value: string): boolean {
+    return this.suppressedRegexValues.get(key) === value;
+  }
+
   /** Atomic read-and-clear of this turn's regex writes. Mirrors iOS's
    *  `thisTurnRegexWrites` (DeepgramRecordingViewModel:125-129) which is
    *  cleared at the START of every regex apply pass and harvested at the
@@ -126,6 +164,10 @@ export class FieldSourceTracker {
     for (const key of keys) {
       this.fieldSources.delete(key);
       this.thisTurnRegexWrites.delete(key);
+      // A cleared cell forgets its suppression shadow too, or a re-dictation
+      // of the same off-list value into the emptied slot would be judged a
+      // stale repeat and lose its gate evidence.
+      this.suppressedRegexValues.delete(key);
     }
   }
 

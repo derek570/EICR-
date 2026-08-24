@@ -125,8 +125,11 @@ describe('closed-enum guard — single-circuit update_field', () => {
   });
 
   it('unguarded fields are untouched by the guard', () => {
+    // Addressed by its SPOKEN alias — which is how this column is reachable
+    // on both clients. (Codex cycle 3: the canonical `measured_zs_ohm`
+    // spelling deliberately does NOT resolve; iOS has no case for it.)
     const out = applyVoiceCommand(
-      { type: 'update_field', field: 'measured_zs_ohm', value: '0.42', circuit: 1 },
+      { type: 'update_field', field: 'zs', value: '0.42', circuit: 1 },
       JOB
     );
     const circuits = out.patch?.circuits as Array<Record<string, unknown>>;
@@ -222,12 +225,31 @@ describe('canonical snake_case field resolution (server-originated actions)', ()
     ['ocpd_type', 'B'],
     ['rcd_bs_en', 'BS EN 61008'],
     ['rcd_type', 'AC'],
-    ['measured_zs_ohm', '0.42'],
     ['number_of_points', '6'],
+    ['max_disconnect_time_s', '0.4'],
   ])('%s resolves and writes', (field, value) => {
     const out = applyVoiceCommand({ type: 'update_field', field, value, circuit: 1 }, JOB);
     const circuits = out.patch?.circuits as Array<Record<string, unknown>>;
     expect(circuits[0][field]).toBe(value);
+  });
+
+  // Codex cycle 3 — the fallback is the INTERSECTION with iOS, not every
+  // canonical name web's alias table happens to resolve to. iOS's
+  // `setCircuitField` knows these columns only under shorter names (`zs`,
+  // `r1_r2`, `ocpd_rating`, `polarity`, `cpc_csa`), so accepting the long
+  // spellings here would make one identical wire frame write on web and
+  // do nothing on iOS. iOS is canon; the union is a separate decision.
+  it.each([
+    'measured_zs_ohm',
+    'r1_r2_ohm',
+    'ocpd_rating_a',
+    'polarity_confirmed',
+    'cpc_csa_mm2',
+    'rcd_operating_current_ma',
+  ])('%s is NOT resolved — iOS has no case for it', (field) => {
+    const out = applyVoiceCommand({ type: 'update_field', field, value: '1', circuit: 1 }, JOB);
+    expect(out.patch).toBeUndefined();
+    expect(out.response).toContain("I don't know the field");
   });
 
   it('canonical SUPPLY keys resolve too', () => {

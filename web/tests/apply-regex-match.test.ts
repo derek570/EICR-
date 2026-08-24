@@ -165,10 +165,11 @@ describe('applyRegexMatchToJob', () => {
     });
 
     it('a suppressed value does NOT mark the field regex-owned (the real value can still land)', () => {
-      // Recording a write for a value that never landed would leave the
+      // Recording a WRITE for a value that never landed would leave the
       // tracker claiming a populated column while the certificate shows
-      // blank. Nothing is recorded at all — the reject happens before the
-      // tracker gate.
+      // blank — and `canRegexWrite` would then reject the correct value
+      // arriving moments later. Ownership is never claimed. (The per-turn
+      // HINT set is a separate thing and IS populated — see below.)
       const tracker = new FieldSourceTracker();
       const job = jobWithRow();
       applyRegexMatchToJob(
@@ -183,6 +184,58 @@ describe('applyRegexMatchToJob', () => {
         tracker
       );
       expect(out!.patch.circuits?.[0]).toMatchObject({ ocpd_type: 'B' });
+    });
+
+    // Codex cycle 3 — suppression stops at the WRITE.
+    //
+    // `regexResults` is built from the tracker's per-turn set, and
+    // `gateRegexHit` is `regexResults.length > 0`. Dropping the candidate
+    // outright therefore silently disarmed the pre-LLM forward gate: a
+    // short utterance whose ONLY evidence was the refused match would be
+    // gated out, so the server never saw the transcript and the inspector
+    // heard nothing at all. (Same mechanism as the 2026-08-11
+    // `second`→`circuit` normaliser bug: an upstream repair eating the
+    // gate's evidence.) iOS also still sends the hint, so dropping it was
+    // a wire divergence on top.
+    it('a suppressed value STILL emits its hint, so the forward gate stays open', () => {
+      const tracker = new FieldSourceTracker();
+      applyRegexMatchToJob(
+        jobWithRow(),
+        makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } }),
+        tracker
+      );
+      expect(tracker.consumeTurnWrites()).toEqual(['circuit.row-A.ocpd_type']);
+    });
+
+    it('the same suppressed value does not re-emit on the next cumulative pass', () => {
+      // The matcher re-scans a cumulative window, so the bad match recurs
+      // every turn. A WRITTEN value goes non-fresh because the job holds
+      // it; a suppressed one lands nowhere, so without its own shadow it
+      // would hold the gate open on every later utterance forever.
+      const tracker = new FieldSourceTracker();
+      const job = jobWithRow();
+      const result = makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } });
+      applyRegexMatchToJob(job, result, tracker);
+      tracker.consumeTurnWrites();
+      applyRegexMatchToJob(job, result, tracker);
+      expect(tracker.consumeTurnWrites()).toEqual([]);
+    });
+
+    it('a DIFFERENT off-list value is fresh evidence again', () => {
+      const tracker = new FieldSourceTracker();
+      const job = jobWithRow();
+      applyRegexMatchToJob(
+        job,
+        makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } }),
+        tracker
+      );
+      tracker.consumeTurnWrites();
+      applyRegexMatchToJob(
+        job,
+        makeResult({ circuit_updates: { '1': { ocpd_type: 'RCBO' } } }),
+        tracker
+      );
+      expect(tracker.consumeTurnWrites()).toEqual(['circuit.row-A.ocpd_type']);
     });
 
     it('CANONICALISES a valid alias so regex and Sonnet agree on one string', () => {

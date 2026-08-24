@@ -31,6 +31,7 @@
 import {
   canonicaliseClosedEnumValue,
   cleanClosedEnumResidue,
+  GUARDED_CLOSED_ENUM_FIELDS,
   isGuardedClosedEnumField,
   reaskForClosedEnumOutcome,
   renderClosedEnumReask,
@@ -327,9 +328,39 @@ const SUPPLY_FIELD_ALIASES: Record<string, { section: 'supply' | 'installation';
  *  `respondUnknown` — no write, and the guard below would never have
  *  been reached on the very path that most needs it.
  *
- *  Derived from the alias tables rather than hand-listed so a new alias
- *  entry cannot leave its canonical twin unresolvable. */
-const CANONICAL_CIRCUIT_FIELDS: ReadonlySet<string> = new Set(Object.values(CIRCUIT_FIELD_ALIASES));
+ *  Codex cycle 3 — the list is the INTERSECTION with iOS, hand-held, not
+ *  `Object.values(CIRCUIT_FIELD_ALIASES)`. Deriving it from the alias
+ *  table looked like the drift-proof choice, but it admitted fifteen
+ *  further canonical keys — `measured_zs_ohm`, `r1_r2_ohm`,
+ *  `ocpd_rating_a`, `polarity_confirmed`, `cpc_csa_mm2`, … — that iOS's
+ *  `setCircuitField` has NO case for: it knows those same columns under
+ *  shorter names (`zs`, `r1_r2`, `ocpd_rating`, `polarity`, `cpc_csa`).
+ *  One identical `update_field{field:"measured_zs_ohm"}` frame would
+ *  have written on web and done nothing on iOS — a cross-client storage
+ *  divergence, on fields outside this plan's six, that nobody reviewed.
+ *
+ *  Narrowing all the way to the guarded six would have been the opposite
+ *  error: `number_of_points` and `max_disconnect_time_s` ARE iOS cases,
+ *  so refusing them here would invent a divergence in the other
+ *  direction. iOS is canon, so the rule is exactly "what iOS's
+ *  `setCircuitField` accepts under its canonical spelling".
+ *
+ *  Kept in sync by `web/tests/closed-enum-guard-appliers.test.ts`, which
+ *  asserts both halves: every name here writes, and a canonical name iOS
+ *  does not know still answers "I don't know the field". The wider
+ *  vocabulary UNION (teaching both clients the `_ohm`/`_mm2` spellings)
+ *  is a real question and a genuine both-clients decision — logged as a
+ *  follow-up, not smuggled in under a guard plan.
+ *
+ *  (`circuit_designation` is unaffected either way: its ALIAS key equals
+ *  its canonical name, so it never needed this fallback.) */
+const CANONICAL_CIRCUIT_FIELDS: ReadonlySet<string> = new Set<string>([
+  ...GUARDED_CLOSED_ENUM_FIELDS,
+  'number_of_points',
+  'max_disconnect_time_s',
+  'rcd_button_confirmed',
+  'afdd_button_confirmed',
+]);
 const CANONICAL_SUPPLY_ROUTES: Readonly<
   Record<string, { section: 'supply' | 'installation'; field: string }>
 > = Object.fromEntries(Object.values(SUPPLY_FIELD_ALIASES).map((route) => [route.field, route]));
