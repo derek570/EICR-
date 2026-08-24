@@ -10,6 +10,7 @@
  */
 
 import { readFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
@@ -34,6 +35,21 @@ describe('canonicaliseCircuitDesignation — golden vectors (cross-platform cont
   it('fixture is present and non-trivial', () => {
     expect(Array.isArray(vectors)).toBe(true);
     expect(vectors.length).toBeGreaterThanOrEqual(20);
+  });
+
+  // PLAN-B2 (B2-3) — cross-repo contract pin. The iOS repo carries a
+  // byte-identical COPY of this fixture whose XCTest asserts the SAME
+  // digest constant; a change to either file without the other fails one
+  // side's test. Limitation (stated honestly): paired constants cannot
+  // catch a repo changing BOTH its fixture and its local constant — the
+  // cross-repo guard for that is scripts/check-designation-fixture-sync.sh
+  // (byte-compare, named pre-TestFlight step). When vectors legitimately
+  // change: update the fixture, recompute the digest (shasum -a 256),
+  // update this constant AND the iOS constant in the same coordinated
+  // change.
+  it('fixture bytes match the pinned cross-platform digest', () => {
+    const digest = createHash('sha256').update(readFileSync(VECTORS_PATH)).digest('hex');
+    expect(digest).toBe('645cac0874125415e2105515a7fab7608952b2ab03f5ade8a661f52b664a3a6e');
   });
 
   for (const { input, expected } of JSON.parse(readFileSync(VECTORS_PATH, 'utf8')).vectors) {
