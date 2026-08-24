@@ -222,3 +222,45 @@ describe('renderClosedEnumReask — frozen render vectors', () => {
     ).toContain("for all circuits'");
   });
 });
+
+describe('deliberate divergence — codes the iOS dropdown offers but the schema does not', () => {
+  // PLAN-C decision, recorded so a future reader does not "fix" it by
+  // widening the option lists on one client.
+  //
+  // iOS's `Constants.refMethods` picker offers the granular BS 7671
+  // reference methods A1/A2/B1/B2/D1/D2, and its OCPD-type picker is a
+  // superset too. `config/field_schema.json` — the CROSS-CLIENT contract
+  // that the backend validator, web dropdowns and the PDF all read — does
+  // NOT carry them. The guard is derived from the schema, so a dictated
+  // "reference method A1" is REFUSED with a re-ask.
+  //
+  // That is the correct behaviour for THIS plan: it matches what the
+  // backend voice path already does today (the validator rejects A1), and
+  // unioning the iOS superset into the guard would make one client accept
+  // a value the other cannot store or print. Widening the SCHEMA is a
+  // separate, deliberate decision (backend schema + web dropdown + PDF)
+  // and is queued as a follow-up for Derek — not something to smuggle in
+  // through a client-side guard.
+  it('ref_method A1 is refused even though the iOS picker lists it', () => {
+    const outcome = canonicaliseClosedEnumValue('ref_method', 'A1');
+    expect(outcome.kind).toBe('invalid_value');
+    expect(fixture.options.ref_method).not.toContain('A1');
+  });
+
+  it('ocpd_type 1 is refused (a device-count digit is not a trip curve)', () => {
+    expect(canonicaliseClosedEnumValue('ocpd_type', '1').kind).toBe('invalid_value');
+  });
+
+  it('the refusal is audible and restates the field, not a silent drop', () => {
+    const outcome = canonicaliseClosedEnumValue('ref_method', 'A1');
+    expect(outcome.kind).toBe('invalid_value');
+    if (outcome.kind !== 'invalid_value') return;
+    const spoken = renderClosedEnumReask('ref_method', 'invalid_value', outcome.heard, {
+      kind: 'single',
+      circuit: 4,
+    });
+    expect(spoken).toBe(
+      "I heard reference method 'A1', which isn't a valid reference method — say, for example, 'reference method C for circuit 4'."
+    );
+  });
+});

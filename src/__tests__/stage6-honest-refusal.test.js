@@ -12,6 +12,8 @@
  * seam — the only place the A3 REJECTED_PROMPTS interception is visible.
  */
 
+import { readFileSync } from 'node:fs';
+
 import { jest } from '@jest/globals';
 
 const SESSION_ID = 'sess-honest-refusal';
@@ -1648,5 +1650,74 @@ describe('§5.11 — centralised distinctness inventory + wording contract', () 
     // unknown_tool vs offschema_clear first attempts are byte-distinct
     // (round-15: shared idx-0 would collide inside the dedupe window).
     expect(B_STAGED_POOLS.unknown_tool[0]()).not.toBe(B_STAGED_POOLS.offschema_clear[0]());
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// PLAN-C (feedback id 129) — the closed-enum guard's re-ask wordings are
+// SPOKEN strings, so they join the same distinctness union every other
+// spoken family is held to. Both clients render them from the shared
+// fixture `config/closed-enum-vectors.json`, and the client-side TTS
+// dedupe is FAMILY-BLIND — a re-ask that happens to render byte-identical
+// to a refusal/apology/ack would be silently swallowed as a repeat, and
+// the inspector would hear nothing at all for a garbled dictation.
+//
+// This assertion lives here (backend) rather than in a client suite
+// because this is where the full apology/refusal/ack inventory is
+// importable. PLAN-D's D3 toggle cues are web/iOS constants, so they are
+// carried as literals and pinned back to their source file below.
+describe('§5.12 — PLAN-C closed-enum re-ask wordings join the distinctness union', () => {
+  const fixture = JSON.parse(
+    readFileSync(new URL('../../config/closed-enum-vectors.json', import.meta.url), 'utf8')
+  );
+  const reaskTexts = fixture.reask_render_vectors.map((v) => v.expected);
+
+  // PLAN-D D3 (feedback ids 122/124) — the confirmations-toggle cues and
+  // the session-start warning. Literals here; the next test proves they
+  // are still byte-identical to web/src/lib/recording/tts.ts, which iOS
+  // also mirrors.
+  const D3_WORDINGS = [
+    'Voice read-backs off.',
+    'Voice read-backs on.',
+    'Heads up — voice read-backs are off.',
+  ];
+
+  test('the D3 literals above are still byte-identical to their web source (drift guard)', () => {
+    const ttsSource = readFileSync(
+      new URL('../../web/src/lib/recording/tts.ts', import.meta.url),
+      'utf8'
+    );
+    for (const wording of D3_WORDINGS) {
+      expect(ttsSource).toContain(`'${wording}'`);
+    }
+  });
+
+  test('every re-ask render vector is internally unique', () => {
+    expect(new Set(reaskTexts).size).toBe(reaskTexts.length);
+  });
+
+  test('no re-ask collides with ANY rendered notice, apology family, or D3 cue', () => {
+    const noticeTexts = new Set(renderedNoticeInventory().map((e) => e.text));
+    for (const text of reaskTexts) {
+      expect(noticeTexts.has(text)).toBe(false);
+      expect(CATCHALL_SET.has(text)).toBe(false);
+      expect(REJECTED_SET.has(text)).toBe(false);
+      expect(ORPHAN_SET.has(text)).toBe(false);
+      expect(text).not.toBe(ASK_AUDIBILITY_FALLBACK_TEXT);
+      expect(D3_WORDINGS).not.toContain(text);
+    }
+  });
+
+  test('re-asks are self-contained restatements, not bare retry invitations', () => {
+    // The whole point of a re-ask is that the inspector can answer it
+    // without remembering what they said. Each one must name the field
+    // and offer a concrete example, and must NOT be a generic
+    // "say that again" (which is what the apology families are for, and
+    // what §5.11 forbids across every other family).
+    for (const text of reaskTexts) {
+      expect(text).not.toMatch(/say (that|it) again/i);
+      expect(text).not.toMatch(/didn't catch/i);
+      expect(text).toMatch(/say, for example, '/);
+    }
   });
 });
