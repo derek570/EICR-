@@ -35,6 +35,7 @@ import {
 import { applyDefaultsToCircuit } from '@certmate/shared-utils';
 import { orderCircuitFocusFields } from './circuit-focus-fields';
 import { useCircuitAccessoryController } from './circuit-keyboard-accessory';
+import { useDesignationDraft } from '@/lib/use-designation-draft';
 
 type CircuitLike = { id: string; [key: string]: unknown };
 
@@ -118,11 +119,6 @@ const REF_WIDTH = 64;
 const DESIGNATION_WIDTH = 240;
 const DELETE_WIDTH = 56;
 const ROW_HEIGHT = 52;
-/** Debounce window for auto-defaults after the inspector stops typing
- *  in the designation cell. 600ms is comfortably past human typing
- *  cadence (~150ms / keystroke for a fluent typist) without feeling
- *  laggy. Blur triggers the same path immediately. */
-const DEFAULTS_DEBOUNCE_MS = 600;
 /** How long the brand-blue cell flash plays. Mirrors the keyframe in
  *  globals.css `.cm-cell-flash`. We remove the className after this
  *  delay so a subsequent auto-fill of the same cell can re-trigger. */
@@ -133,6 +129,10 @@ export interface CircuitsScheduleDesktopProps {
   onPatch: (id: string, patch: Record<string, string>) => void;
   onBulkPatch: (field: string, value: string, options: { skipSpare: boolean }) => void;
   onRemove: (id: string) => void;
+  /** PLAN-B2 — canonicalise + SYNCHRONOUSLY commit a designation draft
+   *  to the model (the page routes this through `commitJobPatch`).
+   *  Returns the canonical value actually written. */
+  onCommitDesignation: (id: string, raw: string) => string;
 }
 
 // Keyboard-input field keys this surface renders: ref/designation plus
@@ -151,6 +151,7 @@ export function CircuitsScheduleDesktop({
   onPatch,
   onBulkPatch,
   onRemove,
+  onCommitDesignation,
 }: CircuitsScheduleDesktopProps) {
   const circuitIds = React.useMemo(() => circuits.map((c) => c.id), [circuits]);
   const inputRefs = React.useRef<Map<string, HTMLInputElement>>(new Map());
@@ -202,11 +203,11 @@ export function CircuitsScheduleDesktop({
   const containerRef = React.useRef<HTMLDivElement>(null);
   const flashTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  // Debounced auto-defaults timer per circuit id — fires DEFAULTS_DEBOUNCE_MS
-  // after the last designation keystroke. iOS leaves defaults manual (the
-  // Apply Defaults rail button); the desktop schedule fires it eagerly so a
-  // designer entering "Lighting" / "Cooker" sees the row light up with the
-  // matching cable / OCPD presets the moment they pause typing.
+  // Auto-defaults timers per circuit id. PLAN-B2: designation typing now
+  // buffers in a draft (never the model), so the per-keystroke debounce
+  // is gone — defaults fire once at draft COMMIT via
+  // `flushDesignationDefaults`, which still drains this map defensively
+  // for any legacy-scheduled timer.
   const defaultsTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   React.useEffect(() => {
@@ -277,19 +278,10 @@ export function CircuitsScheduleDesktop({
     [onPatch, markFlashed]
   );
 
-  const scheduleDesignationDefaults = React.useCallback(
-    (circuit: CircuitLike) => {
-      const existing = defaultsTimers.current.get(circuit.id);
-      if (existing) clearTimeout(existing);
-      const t = setTimeout(() => {
-        defaultsTimers.current.delete(circuit.id);
-        applyDesignationDefaults(circuit);
-      }, DEFAULTS_DEBOUNCE_MS);
-      defaultsTimers.current.set(circuit.id, t);
-    },
-    [applyDesignationDefaults]
-  );
-
+  // PLAN-B2: the per-keystroke `scheduleDesignationDefaults` timer is
+  // gone — designation typing now lives in a DRAFT buffer (never the
+  // model), and the defaults pipeline runs exactly once at commit
+  // (blur/focus-loss/flush), fed the just-committed canonical shape.
   const flushDesignationDefaults = React.useCallback(
     (circuit: CircuitLike) => {
       const existing = defaultsTimers.current.get(circuit.id);
@@ -406,8 +398,8 @@ export function CircuitsScheduleDesktop({
                 activeCell={activeCell}
                 setActiveCell={setActiveCell}
                 flashed={flashed}
-                onDesignationChange={scheduleDesignationDefaults}
-                onDesignationBlur={flushDesignationDefaults}
+                onDesignationCommitted={flushDesignationDefaults}
+                onCommitDesignation={onCommitDesignation}
               />
             ))}
           </tbody>
@@ -548,8 +540,8 @@ function Row({
   activeCell,
   setActiveCell,
   flashed,
-  onDesignationChange,
-  onDesignationBlur,
+  onDesignationCommitted,
+  onCommitDesignation,
 }: {
   circuit: CircuitLike;
   rowIndex: number;
@@ -558,9 +550,21 @@ function Row({
   activeCell: string | null;
   setActiveCell: (next: string | null) => void;
   flashed: Set<string>;
-  onDesignationChange: (circuit: CircuitLike) => void;
-  onDesignationBlur: (circuit: CircuitLike) => void;
+  /** Post-commit defaults pipeline — receives the committed shape. */
+  onDesignationCommitted: (circuit: CircuitLike) => void;
+  onCommitDesignation: (id: string, raw: string) => string;
 }) {
+  // PLAN-B2 — designation edits buffer in a draft; commit canonicalises
+  // ONCE (synchronously, via the page's commitJobPatch route), THEN the
+  // defaults pipeline runs against the committed canonical shape.
+  const designationDraft = useDesignationDraft({
+    draftKey: `desktop:${circuit.id}`,
+    modelValue: typeof circuit.circuit_designation === 'string' ? circuit.circuit_designation : '',
+    commit: (raw) => {
+      const canonical = onCommitDesignation(circuit.id, raw);
+      onDesignationCommitted({ ...circuit, circuit_designation: canonical });
+    },
+  });
   const v = (k: string): string | undefined => {
     const val = circuit[k];
     return typeof val === 'string' ? val : undefined;
@@ -618,15 +622,9 @@ function Row({
         <CellInput
           id={circuit.id}
           colKey="circuit_designation"
-          value={v('circuit_designation')}
-          onPatch={(id, patch) => {
-            onPatch(id, patch);
-            // Schedule the debounced auto-defaults pipeline. We pass the
-            // *patched* shape so `inferCircuitType` sees the freshest
-            // designation when the timer fires.
-            onDesignationChange({ ...circuit, ...patch });
-          }}
-          onBlur={() => onDesignationBlur(circuit)}
+          value={designationDraft.value}
+          onPatch={(_id, patch) => designationDraft.onChange(patch.circuit_designation ?? '')}
+          onBlur={designationDraft.onBlur}
           ariaLabel={`Circuit ${ref} designation`}
         />
       </td>

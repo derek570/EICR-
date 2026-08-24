@@ -265,7 +265,7 @@ describe('B2-2 designation-draft registry boundaries', () => {
         } as Partial<JobDetail>);
       });
       // A keystroke elsewhere schedules the debounced save.
-      h.ctxRef.current!.updateJob({ status: 'in_progress' } as Partial<JobDetail>);
+      h.ctxRef.current!.updateJob({ status: 'processing' } as Partial<JobDetail>);
     });
     await flushDebounce();
     expect(saveCalls).toHaveLength(1);
@@ -283,7 +283,7 @@ describe('B2-2 designation-draft registry boundaries', () => {
       registerDesignationDraft('test:c2', () => {
         committed = true;
         const ctx = h.ctxRef.current!;
-        ctx.commitJobPatch({ status: 'in_progress' } as Partial<JobDetail>);
+        ctx.commitJobPatch({ status: 'processing' } as Partial<JobDetail>);
       });
     });
     h.unmount();
@@ -302,7 +302,7 @@ describe('B2-2 designation-draft registry boundaries', () => {
     act(() => {
       registerDesignationDraft('test:c1', () => {
         committed = true;
-        h.ctxRef.current!.commitJobPatch({ status: 'in_progress' } as Partial<JobDetail>);
+        h.ctxRef.current!.commitJobPatch({ status: 'processing' } as Partial<JobDetail>);
       });
     });
     await act(async () => {

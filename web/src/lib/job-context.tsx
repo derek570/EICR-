@@ -80,7 +80,7 @@ interface JobContextValue {
    * IMMEDIATE consumer — a job-state sync push or a PDF render — with
    * no stale render-tick window. Designation draft commits use this.
    */
-  commitJobPatch: (patch: Partial<JobDetail>) => JobDetail;
+  commitJobPatch: (patch: JobPatch) => JobDetail;
   /**
    * PLAN-B2 atomic-commit contract (b): flush all registered
    * designation drafts synchronously and return the resulting
@@ -388,10 +388,13 @@ export function JobProvider({
   // updater), so the returned snapshot is immediately consumable and
   // the pending patch is immediately drainable by an awaitable save.
   const commitJobPatch = React.useCallback(
-    (patch: Partial<JobDetail>): JobDetail => {
-      const merged = { ...jobRef.current, ...patch } as JobDetail;
+    (patch: JobPatch): JobDetail => {
+      // The functional form resolves against jobRef (the freshest
+      // committed snapshot), mirroring updateJob's stale-closure guard.
+      const resolved = typeof patch === 'function' ? patch(jobRef.current) : patch;
+      const merged = { ...jobRef.current, ...resolved } as JobDetail;
       jobRef.current = merged;
-      pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };
+      pendingPatchRef.current = { ...pendingPatchRef.current, ...resolved };
       setJob(merged);
       setIsDirty(true);
       scheduleSave();

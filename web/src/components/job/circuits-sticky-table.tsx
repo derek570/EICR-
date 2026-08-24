@@ -34,6 +34,7 @@ import { Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
 import { orderCircuitFocusFields } from './circuit-focus-fields';
 import { useCircuitAccessoryController } from './circuit-keyboard-accessory';
+import { useDesignationDraft } from '@/lib/use-designation-draft';
 
 type Cell = string | undefined;
 
@@ -146,6 +147,10 @@ export interface CircuitsStickyTableProps {
   circuits: CircuitLike[];
   onPatch: (id: string, patch: Record<string, string>) => void;
   onRemove: (id: string) => void;
+  /** PLAN-B2 — canonicalise + SYNCHRONOUSLY commit a designation draft
+   *  to the model (the page routes this through `commitJobPatch`).
+   *  Returns the canonical value actually written. */
+  onCommitDesignation: (id: string, raw: string) => string;
 }
 
 // Keyboard-input field keys this surface renders (ref/designation + every
@@ -157,7 +162,12 @@ const STICKY_KEYBOARD_FIELDS = orderCircuitFocusFields([
   ...COLUMNS.filter((c) => c.kind !== 'select').map((c) => c.key),
 ]);
 
-export function CircuitsStickyTable({ circuits, onPatch, onRemove }: CircuitsStickyTableProps) {
+export function CircuitsStickyTable({
+  circuits,
+  onPatch,
+  onRemove,
+  onCommitDesignation,
+}: CircuitsStickyTableProps) {
   const circuitIds = React.useMemo(() => circuits.map((c) => c.id), [circuits]);
   const inputRefs = React.useRef<Map<string, HTMLInputElement>>(new Map());
   const refKey = (circuitId: string, fieldKey: string) => `${circuitId}::${fieldKey}`;
@@ -249,7 +259,13 @@ export function CircuitsStickyTable({ circuits, onPatch, onRemove }: CircuitsSti
           </thead>
           <tbody>
             {circuits.map((c) => (
-              <Row key={c.id} circuit={c} onPatch={onPatch} onRemove={onRemove} />
+              <Row
+                key={c.id}
+                circuit={c}
+                onPatch={onPatch}
+                onRemove={onRemove}
+                onCommitDesignation={onCommitDesignation}
+              />
             ))}
           </tbody>
         </table>
@@ -263,16 +279,26 @@ function Row({
   circuit,
   onPatch,
   onRemove,
+  onCommitDesignation,
 }: {
   circuit: CircuitLike;
   onPatch: (id: string, patch: Record<string, string>) => void;
   onRemove: (id: string) => void;
+  onCommitDesignation: (id: string, raw: string) => string;
 }) {
   const v = (k: string): Cell => {
     const value = circuit[k];
     return typeof value === 'string' ? value : undefined;
   };
   const ref = v('circuit_ref') ?? '';
+  // PLAN-B2 — designation edits buffer in a draft; blur/focus-loss/
+  // registry-flush commits once, canonicalised, via the synchronous
+  // commitJobPatch route.
+  const designationDraft = useDesignationDraft({
+    draftKey: `sticky:${circuit.id}`,
+    modelValue: v('circuit_designation') ?? '',
+    commit: (raw) => void onCommitDesignation(circuit.id, raw),
+  });
 
   return (
     <tr className="group bg-[var(--color-surface-1)] transition hover:bg-[var(--color-surface-2)]">
@@ -299,8 +325,9 @@ function Row({
         <CellInput
           id={circuit.id}
           colKey="circuit_designation"
-          value={v('circuit_designation')}
-          onPatch={onPatch}
+          value={designationDraft.value}
+          onPatch={(_id, patch) => designationDraft.onChange(patch.circuit_designation ?? '')}
+          onBlur={designationDraft.onBlur}
           ariaLabel={`Circuit ${ref} designation`}
         />
       </td>
@@ -382,6 +409,7 @@ function CellInput({
   colKey,
   value,
   onPatch,
+  onBlur,
   inputMode,
   ariaLabel,
 }: {
@@ -389,6 +417,8 @@ function CellInput({
   colKey: string;
   value: Cell;
   onPatch: (id: string, patch: Record<string, string>) => void;
+  /** PLAN-B2 — composed blur for the designation draft commit. */
+  onBlur?: () => void;
   inputMode?: 'decimal' | 'numeric' | 'text';
   ariaLabel: string;
 }) {
@@ -402,7 +432,10 @@ function CellInput({
       value={value ?? ''}
       onChange={(e) => onPatch(id, { [colKey]: e.target.value })}
       onFocus={handlers?.onFocus}
-      onBlur={handlers?.onBlur}
+      onBlur={() => {
+        onBlur?.();
+        handlers?.onBlur();
+      }}
       aria-label={ariaLabel}
       className="w-full rounded-[var(--radius-sm)] border border-transparent bg-transparent px-1 py-0.5 text-[12px] focus:border-[var(--color-brand-blue)] focus:outline-none"
     />

@@ -23,10 +23,12 @@ import {
   applyR1R2Calculation,
   applyZsCalculation,
   matchCircuits,
+  repairCircuitDesignation,
   type BulkCalcOutcome,
   type CalcSkipReason,
   type CircuitMatch,
 } from '@certmate/shared-utils';
+import { useDesignationDraft } from '@/lib/use-designation-draft';
 import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
 import { useCurrentUser } from '@/lib/use-current-user';
@@ -186,6 +188,45 @@ function CircuitFieldInput({
   );
 }
 
+/**
+ * PLAN-B2 (feedback id 128) — the card's designation field edits a DRAFT
+ * buffer (previously its onChange called onPatch → patchCircuit →
+ * `updateJob` per keystroke, with NO blur hook — a typing pause longer
+ * than the save debounce persisted the raw designation). Commit happens
+ * once, canonicalised, on blur / card collapse / unmount / any
+ * registry flush (flushSave, pagehide, PDF preflight).
+ */
+function DesignationCardField({
+  circuitId,
+  value,
+  onCommitDesignation,
+}: {
+  circuitId: string;
+  value: string;
+  onCommitDesignation: (id: string, raw: string) => string;
+}) {
+  const accessory = React.useContext(CardAccessoryContext);
+  const handlers = accessory?.inputHandlers(circuitId, 'circuit_designation');
+  const draft = useDesignationDraft({
+    draftKey: `card:${circuitId}`,
+    modelValue: value,
+    commit: (raw) => void onCommitDesignation(circuitId, raw),
+  });
+  return (
+    <FloatingLabelInput
+      label="Designation"
+      value={draft.value}
+      ref={(el) => accessory?.registerRef(circuitId, 'circuit_designation', el)}
+      onChange={(e) => draft.onChange(e.target.value)}
+      onFocus={handlers?.onFocus}
+      onBlur={() => {
+        draft.onBlur();
+        handlers?.onBlur();
+      }}
+    />
+  );
+}
+
 function newCircuit(ref: string, boardId?: string): Circuit {
   return {
     id: (globalThis.crypto?.randomUUID?.() ?? `c-${Date.now()}-${Math.random()}`).toString(),
@@ -215,7 +256,7 @@ function readInitialView(): CircuitView {
 }
 
 export default function CircuitsPage() {
-  const { job, updateJob } = useJobContext();
+  const { job, updateJob, commitJobPatch } = useJobContext();
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const jobId = params.id;
@@ -343,6 +384,27 @@ export default function CircuitsPage() {
   // narrow alias rather than a duplicate state handler.
   const patchCircuitTable = (id: string, patch: Record<string, string>) =>
     patchCircuit(id, patch as Partial<Circuit>);
+
+  // PLAN-B2 (feedback id 128) — the ONE designation commit route for all
+  // three edit surfaces. Canonicalises (repair semantics: banned-token-
+  // only left unchanged, never blanked to spare) and commits through the
+  // provider's SYNCHRONOUS commitJobPatch, so a registry flush
+  // (flushSave / pagehide / PDF preflight) immediately sees the
+  // canonical value in both the model and the pending save patch.
+  // Functional patch — resolves against the freshest snapshot, never a
+  // render-tick closure.
+  const commitDesignationDraft = React.useCallback(
+    (circuitId: string, raw: string): string => {
+      const canonical = repairCircuitDesignation(raw) as string;
+      commitJobPatch((prev) => ({
+        circuits: ((prev.circuits ?? []) as Circuit[]).map((c) =>
+          c.id === circuitId ? { ...c, circuit_designation: canonical } : c
+        ) as unknown as typeof prev.circuits,
+      }));
+      return canonical;
+    },
+    [commitJobPatch]
+  );
 
   // Desktop view kicks in at ≥1280 px. On desktop the action rail moves
   // above the schedule and the new full-width `CircuitsScheduleDesktop`
@@ -1088,12 +1150,14 @@ export default function CircuitsPage() {
                 onPatch={patchCircuitTable}
                 onBulkPatch={bulkPatchCircuits}
                 onRemove={requestDeleteCircuit}
+                onCommitDesignation={commitDesignationDraft}
               />
             ) : (
               <CircuitsStickyTable
                 circuits={visible}
                 onPatch={patchCircuitTable}
                 onRemove={requestDeleteCircuit}
+                onCommitDesignation={commitDesignationDraft}
               />
             )
           ) : (
@@ -1106,6 +1170,7 @@ export default function CircuitsPage() {
                   onToggle={() => setExpandedId((p) => (p === c.id ? null : c.id))}
                   onPatch={(patch) => patchCircuit(c.id, patch)}
                   onRemove={() => requestDeleteCircuit(c.id)}
+                  onCommitDesignation={commitDesignationDraft}
                 />
               ))}
               {cardAccessory.accessory}
@@ -1480,12 +1545,14 @@ function CircuitCard({
   onToggle,
   onPatch,
   onRemove,
+  onCommitDesignation,
 }: {
   circuit: Circuit;
   expanded: boolean;
   onToggle: () => void;
   onPatch: (patch: Partial<Circuit>) => void;
   onRemove: () => void;
+  onCommitDesignation: (id: string, raw: string) => string;
 }) {
   const text = (k: keyof Circuit) => circuit[k] ?? '';
   const circuitId = circuit.id;
@@ -1540,12 +1607,10 @@ function CircuitCard({
                 value={text('circuit_ref')}
                 onPatch={onPatch}
               />
-              <CircuitFieldInput
+              <DesignationCardField
                 circuitId={circuitId}
-                field="circuit_designation"
-                label="Designation"
                 value={text('circuit_designation')}
-                onPatch={onPatch}
+                onCommitDesignation={onCommitDesignation}
               />
               <CircuitFieldInput
                 circuitId={circuitId}

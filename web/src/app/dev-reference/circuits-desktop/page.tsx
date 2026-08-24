@@ -12,6 +12,7 @@
 import * as React from 'react';
 import { notFound } from 'next/navigation';
 import { CircuitsScheduleDesktop } from '@/components/job/circuits-schedule-desktop';
+import { repairCircuitDesignation } from '@certmate/shared-utils';
 import { isSpareCircuit } from '@/lib/constants/circuit-field-options';
 
 type Circuit = { id: string; [key: string]: string | undefined };
@@ -192,6 +193,11 @@ export default function CircuitsDesktopPreview() {
         onPatch={patch}
         onBulkPatch={bulkPatch}
         onRemove={remove}
+        onCommitDesignation={(id, raw) => {
+          const canonical = repairCircuitDesignation(raw) as string;
+          patch(id, { circuit_designation: canonical });
+          return canonical;
+        }}
       />
     </div>
   );
