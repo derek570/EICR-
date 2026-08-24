@@ -19,6 +19,12 @@
  * local state mutations from the regex layer.
  */
 
+import {
+  canonicaliseClosedEnumValue,
+  isGuardedClosedEnumField,
+  type GuardedClosedEnumField,
+} from '@certmate/shared-utils';
+
 import type { JobDetail, CircuitRow } from '@/lib/types';
 import type { FieldSourceTracker } from './field-source-tracker';
 import type { CircuitUpdates, RegexMatchResult } from './regex-match-result';
@@ -158,6 +164,50 @@ export function shadowBaselineReader(shadow: ReadonlyMap<string, unknown>): Base
 }
 
 /**
+ * PLAN-C (feedback id 129) — the closed-enum guard at the REGEX ingress.
+ *
+ * The instant-fill regex layer writes into the same six schema-enumerated
+ * columns the voice appliers guard, from raw Flux text, with no validation
+ * of its own. That is how a device CLASS lands in a device-STANDARD column:
+ * "the breaker on circuit 3 is an MCB" matched `ocpd_type`, and "MCB" is
+ * not one of B/C/D/gG/gM/aM/HRC/Rew/N/A.
+ *
+ * Two behaviours, and deliberately only two:
+ *   - a VALID alias is canonicalised ("60898" → "BS EN 60898"), so the
+ *     ~40ms instant fill and Sonnet's later write agree on one string
+ *     instead of racing between two spellings of the same value;
+ *   - an INVALID value is SUPPRESSED — dropped before the tracker gate, so
+ *     it never writes, never counts as a changedKey, and never marks the
+ *     field as regex-owned (which would block the correct value later).
+ *
+ * No re-ask here, by design. This layer is silent by construction: it has
+ * no speech path at all, it is superseded by Sonnet 1–2s later, and the
+ * same utterance's `voice_command_response` already carries ONE re-ask
+ * through the appliers. A second one would double-speak the same mistake
+ * (Audio-First §1 — exactly once, not twice).
+ */
+function guardClosedEnumCandidate(candidate: RegexWriteCandidate): RegexWriteCandidate | null {
+  if (!isGuardedClosedEnumField(candidate.fieldKey)) return candidate;
+  const outcome = canonicaliseClosedEnumValue(
+    candidate.fieldKey as GuardedClosedEnumField,
+    candidate.value
+  );
+  if (outcome.kind !== 'valid') {
+    pipelineLog('apply_regex_closed_enum_suppressed', {
+      field: candidate.fieldKey,
+      outcome: outcome.kind,
+    });
+    return null;
+  }
+  if (outcome.value === candidate.value) return candidate;
+  pipelineLog('apply_regex_closed_enum_canonicalised', {
+    field: candidate.fieldKey,
+    canonical: outcome.value,
+  });
+  return { ...candidate, value: outcome.value };
+}
+
+/**
  * Pure candidate computation — the four write loops (supply / board /
  * installation / circuit) with the tracker's 3-tier gating and the A3
  * value-equality freshness gate, but NO state commits: no
@@ -173,7 +223,9 @@ export function computeFreshRegexWrites(
   baseline: BaselineReader
 ): RegexWriteCandidate[] {
   const fresh: RegexWriteCandidate[] = [];
-  const consider = (candidate: RegexWriteCandidate) => {
+  const consider = (raw: RegexWriteCandidate) => {
+    const candidate = guardClosedEnumCandidate(raw);
+    if (!candidate) return; // closed-enum reject — suppressed, silently
     if (!tracker.canRegexWrite(candidate.trackerKey)) return;
     if (valuesEqualAfterTrim(candidate.value, baseline(candidate))) return; // re-hit, not fresh
     fresh.push(candidate);

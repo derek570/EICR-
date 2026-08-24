@@ -146,6 +146,104 @@ describe('applyRegexMatchToJob', () => {
     expect(out).toBeNull();
   });
 
+  // PLAN-C (feedback id 129) — the closed-enum guard at the REGEX ingress.
+  // The instant fill writes into the same six schema-enumerated columns the
+  // voice appliers guard, straight from Flux text, and had no validation of
+  // its own. Session 17821FFA is the provenance.
+  describe('closed-enum guard', () => {
+    const jobWithRow = () =>
+      makeJob({ circuits: [{ id: 'row-A', circuit_ref: '1', circuit_designation: 'Cooker' }] });
+
+    it('SUPPRESSES a device class dictated into a closed-enum column', () => {
+      const tracker = new FieldSourceTracker();
+      const out = applyRegexMatchToJob(
+        jobWithRow(),
+        makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } }),
+        tracker
+      );
+      expect(out).toBeNull();
+    });
+
+    it('a suppressed value does NOT mark the field regex-owned (the real value can still land)', () => {
+      // Recording a write for a value that never landed would leave the
+      // tracker claiming a populated column while the certificate shows
+      // blank. Nothing is recorded at all — the reject happens before the
+      // tracker gate.
+      const tracker = new FieldSourceTracker();
+      const job = jobWithRow();
+      applyRegexMatchToJob(
+        job,
+        makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } }),
+        tracker
+      );
+      expect(tracker.getSource('circuit.row-A.ocpd_type')).toBeUndefined();
+      const out = applyRegexMatchToJob(
+        job,
+        makeResult({ circuit_updates: { '1': { ocpd_type: 'B' } } }),
+        tracker
+      );
+      expect(out!.patch.circuits?.[0]).toMatchObject({ ocpd_type: 'B' });
+    });
+
+    it('CANONICALISES a valid alias so regex and Sonnet agree on one string', () => {
+      const tracker = new FieldSourceTracker();
+      const out = applyRegexMatchToJob(
+        jobWithRow(),
+        makeResult({ circuit_updates: { '1': { ocpd_bs_en: '60898' } } }),
+        tracker
+      );
+      expect(out!.patch.circuits?.[0]).toMatchObject({ ocpd_bs_en: 'BS EN 60898' });
+      expect(out!.changedKeys).toEqual(['circuit.row-A.ocpd_bs_en']);
+    });
+
+    it('a canonicalised re-hit is NOT fresh against the already-stored canonical value', () => {
+      // The matcher re-scans a CUMULATIVE window, so "60898" re-fires on
+      // later utterances. Canonicalising BEFORE the A3 freshness compare is
+      // what stops each re-hit looking like a new write (a phantom
+      // changedKey → chime → chitchat-counter reset).
+      const tracker = new FieldSourceTracker();
+      const job = makeJob({
+        circuits: [
+          {
+            id: 'row-A',
+            circuit_ref: '1',
+            circuit_designation: 'Cooker',
+            ocpd_bs_en: 'BS EN 60898',
+          },
+        ],
+      });
+      const out = applyRegexMatchToJob(
+        job,
+        makeResult({ circuit_updates: { '1': { ocpd_bs_en: '60898' } } }),
+        tracker
+      );
+      expect(out).toBeNull();
+    });
+
+    it('leaves an unguarded column alone', () => {
+      const tracker = new FieldSourceTracker();
+      const out = applyRegexMatchToJob(
+        jobWithRow(),
+        makeResult({ circuit_updates: { '1': { measured_zs_ohm: '0.42' } } }),
+        tracker
+      );
+      expect(out!.patch.circuits?.[0]).toMatchObject({ measured_zs_ohm: '0.42' });
+    });
+
+    it('a same-shaped SUPPLY field outside the guarded six is untouched', () => {
+      // `main_switch_bs_en` / `spd_bs_en` look like the guarded BS-EN
+      // columns but are not schema-enumerated; the guard keys on the exact
+      // canonical field name, so they pass through raw.
+      const tracker = new FieldSourceTracker();
+      const out = applyRegexMatchToJob(
+        makeJob(),
+        makeResult({ supply_updates: { main_switch_bs_en: '60898' } }),
+        tracker
+      );
+      expect(out!.patch.board_info).toEqual({ main_switch_bs_en: '60898' });
+    });
+  });
+
   it('consumeTurnWrites returns and clears between calls', () => {
     const tracker = new FieldSourceTracker();
     const job = makeJob();
