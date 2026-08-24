@@ -1391,7 +1391,24 @@ function guardedTargetForScope(
   scope: VoiceCommandScope,
   sparePolicy: ClosedEnumSparePolicy | undefined
 ): GuardedTarget {
-  if (scope.kind === 'single') return { kind: 'single', circuit: scope.circuit };
+  // Codex cycle 2 — a single scope counts as RESOLVED only when it names a
+  // positive integer, which is exactly iOS's test (`guardedApplyTarget`,
+  // `VoiceCommandExecutor.swift:749`). `asNumber` in the action mapper only
+  // screens for finiteness, so `circuit: 0` and `circuit: 2.5` reached here
+  // as resolved single targets: web then fell through to the zero-applied
+  // branch and said "No circuits found in the specified range." for a
+  // command that named no valid circuit at all, where iOS asks "…but not
+  // which circuit". Both refuse the write, so nothing lands wrongly either
+  // way — but the shared fixture is a contract about what the two clients
+  // SAY, and iOS is canon. Narrowed here rather than in `scopeFromParams`
+  // deliberately: that resolver serves every field, and dropping a
+  // 0/fractional scope to null there would change unguarded behaviour this
+  // plan has no business touching.
+  if (scope.kind === 'single') {
+    return Number.isInteger(scope.circuit) && scope.circuit >= 1
+      ? { kind: 'single', circuit: scope.circuit }
+      : { kind: 'unknown' };
+  }
   if (scope.kind === 'range') {
     return { kind: 'range', from: scope.from, to: scope.to, sparePolicy };
   }

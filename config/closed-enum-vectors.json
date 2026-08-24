@@ -336,6 +336,11 @@
     },
     {
       "field": "ocpd_bs_en",
+      "input": "6 0 8 9 8",
+      "expected": "BS EN 60898"
+    },
+    {
+      "field": "ocpd_bs_en",
       "input": "60269-2",
       "expected": "BS EN 60269-2"
     },

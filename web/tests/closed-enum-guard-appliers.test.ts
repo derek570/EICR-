@@ -308,3 +308,71 @@ describe('Codex cycle 1 — an accepted value whose write did not land', () => {
     expect(out.response).toBe('No circuits found in the specified range.');
   });
 });
+
+describe('Codex cycle 2 — an apply_field scope is only a target if it is a real circuit', () => {
+  // The action mapper's `asNumber` screens for finiteness only, so a
+  // malformed frame can put 0 or 2.5 into `scope.circuit`. iOS
+  // (`guardedApplyTarget`, VoiceCommandExecutor.swift:749) has always
+  // required a POSITIVE INTEGER and re-asks "…but not which circuit"; web
+  // used to accept the scope, find no rows, and say "No circuits found in
+  // the specified range." Neither client wrote anything — but the two
+  // SPOKE different things for one wire frame, and iOS is canon.
+  it('circuit 0 asks which circuit, exactly as iOS does', () => {
+    const out = applyVoiceCommand(
+      {
+        type: 'apply_field',
+        field: 'wiring_type',
+        value: 'A',
+        scope: { kind: 'single', circuit: 0 },
+      },
+      JOB
+    );
+    expect(out.patch).toBeUndefined();
+    expect(out.invalidClosedEnum).toBe(true);
+    expect(out.guardedWriteFailed).toBeUndefined();
+    expect(out.response).toContain('which circuit');
+  });
+
+  it('a fractional single scope asks which circuit', () => {
+    const out = applyVoiceCommand(
+      {
+        type: 'apply_field',
+        field: 'ocpd_type',
+        value: 'B',
+        scope: { kind: 'single', circuit: 2.5 },
+      },
+      JOB
+    );
+    expect(out.patch).toBeUndefined();
+    expect(out.invalidClosedEnum).toBe(true);
+    expect(out.response).toContain('which circuit');
+  });
+
+  it('the re-ask quotes the ACCEPTED canonical value, not the raw input', () => {
+    const out = applyVoiceCommand(
+      {
+        type: 'apply_field',
+        field: 'ocpd_bs_en',
+        value: '60898',
+        scope: { kind: 'single', circuit: 0 },
+      },
+      JOB
+    );
+    expect(out.response).toContain('BS EN 60898');
+  });
+
+  it('a legitimate positive-integer scope is unaffected', () => {
+    const out = applyVoiceCommand(
+      {
+        type: 'apply_field',
+        field: 'wiring_type',
+        value: 'A',
+        scope: { kind: 'single', circuit: 1 },
+      },
+      JOB
+    );
+    expect(out.patch).toBeDefined();
+    expect(out.invalidClosedEnum).toBeUndefined();
+    expect(out.guardedWriteFailed).toBeUndefined();
+  });
+});

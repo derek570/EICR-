@@ -3466,10 +3466,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             // PLAN-C reuses guard (b) verbatim for the enum verdicts: a
             // delivery-token frame carries the durable address terminal,
             // and the ACK contract says the inspector must hear THAT.
-            // The combination is structurally near-impossible anyway —
-            // the six guarded fields are all CIRCUIT fields, and an
-            // address-mirror frame's action targets the installation
-            // address — so deferring to the server costs nothing real.
+            //
+            // Codex cycle 2 — an earlier version of this comment claimed the
+            // combination was "structurally near-impossible". It is NOT:
+            // `src/extraction/sonnet-stream.js:1404` has a dedicated branch
+            // for a delivery result that ALSO carries `result.action`, and it
+            // merges the address terminal and the voice-command terminal into
+            // one `spoken_response`. So a turn that both mirrors an address
+            // and dispatches a guarded circuit write CAN occur, and on that
+            // turn a rejected enum is not re-asked — the inspector hears the
+            // merged server line instead. Left that way DELIBERATELY: the
+            // merged string carries no separator, so the client cannot
+            // replace the voice-command half without dropping the durable
+            // address terminal it is about to ACK, and appending the re-ask
+            // would speak a contradiction ("Set wiring type to A." followed
+            // by "I heard wiring type 'for'…"). The honest cure is
+            // server-side — do not merge a terminal for an action the client
+            // will refuse — which is a backend/wire change and outside this
+            // plan's client-local, zero-wire-change charter. Recorded as a
+            // follow-up rather than rationalised away.
             if (outcome.invalidClosedEnum && outcome.response && !deliveryToken) {
               localSpokenOverride = outcome.response;
               clientDiagnostic('voice_command_closed_enum_reask', {
