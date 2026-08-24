@@ -23,6 +23,7 @@ import { api } from '@/lib/api-client';
 import { ApiError } from '@/lib/types';
 import { getUser } from '@/lib/auth';
 import { downloadBlob } from '@certmate/shared-utils';
+import { repairJobCircuitDesignations } from '@/lib/repair-job-designations';
 import { cn } from '@/lib/utils';
 
 /**
@@ -88,7 +89,13 @@ type PdfJobShape = {
 };
 
 export default function PdfPage() {
-  const { job, certificateType } = useJobContext();
+  const {
+    job,
+    certificateType,
+    commitJobPatch,
+    flushDraftsAndGetSnapshot,
+    saveCircuitsSnapshotNow,
+  } = useJobContext();
   const params = useParams<{ id: string }>();
   const jobId = params?.id ?? '';
   const userId = React.useMemo(() => getUser()?.id ?? null, []);
@@ -150,11 +157,36 @@ export default function PdfPage() {
       setError(null);
       try {
         let blob: Blob;
+        // PLAN-B2 (B2-4) — PDF preflight, both engines: commit any
+        // focused designation draft and repair the committed snapshot
+        // (defence-in-depth over the load-boundary repair), so the
+        // render never consumes a stale render-tick `job` carrying a
+        // raw designation.
+        const snapshot = flushDraftsAndGetSnapshot();
+        const repaired = repairJobCircuitDesignations(snapshot);
+        const renderJob = repaired.changed
+          ? commitJobPatch({ circuits: repaired.job.circuits })
+          : snapshot;
         if (engine === 'client') {
-          // iOS-parity path: render the ported template locally.
+          // iOS-parity path: render the ported template locally from
+          // the exact committed snapshot (atomic-commit contract).
           const { generateCertificatePdf } = await import('@/lib/pdf/generate-certificate');
-          blob = await generateCertificatePdf(userId, job);
+          blob = await generateCertificatePdf(userId, renderJob);
         } else {
+          // Server fallback renders the PERSISTED S3 CSV, ignoring the
+          // repaired in-memory job — so the gate is UNCONDITIONAL: a
+          // fresh full-circuits-snapshot save must return synced===true
+          // before api.generatePdf may run. An earlier repair drained
+          // into the outbox with synced=false proves nothing about S3;
+          // offline/4xx surface here as a visible failure, never a
+          // silently-stale server render.
+          const { synced } = await saveCircuitsSnapshotNow();
+          if (!synced) {
+            throw new Error(
+              'Could not confirm the latest certificate data reached the server. ' +
+                'Use Generate PDF (renders locally), or retry the server fallback when back online.'
+            );
+          }
           blob = await api.generatePdf(userId, jobId);
         }
         setPdfBlob(blob);
@@ -192,7 +224,15 @@ export default function PdfPage() {
         setIsGenerating(false);
       }
     },
-    [userId, jobId, isGenerating, job, filename]
+    [
+      userId,
+      jobId,
+      isGenerating,
+      filename,
+      commitJobPatch,
+      flushDraftsAndGetSnapshot,
+      saveCircuitsSnapshotNow,
+    ]
   );
 
   // Open the attestation modal for a FRESH issuance (client render by

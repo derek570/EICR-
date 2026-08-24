@@ -43,9 +43,14 @@ export function useDesignationDraft(opts: {
   const draftRef = React.useRef<string | null>(null);
   const unregisterRef = React.useRef<(() => void) | null>(null);
   const commitFnRef = React.useRef(opts.commit);
-  commitFnRef.current = opts.commit;
   const draftKeyRef = React.useRef(opts.draftKey);
-  draftKeyRef.current = opts.draftKey;
+  // Latest-ref pattern via insertion effect (react-hooks/refs forbids
+  // render-time ref writes). Commits only fire from blur/flush handlers,
+  // which always run after effects have stamped the latest closures.
+  React.useInsertionEffect(() => {
+    commitFnRef.current = opts.commit;
+    draftKeyRef.current = opts.draftKey;
+  });
 
   const commitNow = React.useCallback(() => {
     const open = draftRef.current;
