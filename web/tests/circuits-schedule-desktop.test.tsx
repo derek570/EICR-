@@ -84,6 +84,7 @@ describe('CircuitsScheduleDesktop', () => {
       <CircuitsScheduleDesktop
         circuits={CIRCUITS}
         onPatch={() => {}}
+        onCommitDesignation={(_id, raw) => raw}
         onBulkPatch={() => {}}
         onRemove={() => {}}
       />
@@ -101,6 +102,7 @@ describe('CircuitsScheduleDesktop', () => {
       <CircuitsScheduleDesktop
         circuits={CIRCUITS}
         onPatch={onPatch}
+        onCommitDesignation={(_id, raw) => raw}
         onBulkPatch={() => {}}
         onRemove={() => {}}
       />
@@ -129,6 +131,7 @@ describe('CircuitsScheduleDesktop', () => {
       <CircuitsScheduleDesktop
         circuits={CIRCUITS}
         onPatch={() => {}}
+        onCommitDesignation={(_id, raw) => raw}
         onBulkPatch={() => {}}
         onRemove={() => {}}
       />
@@ -153,6 +156,7 @@ describe('CircuitsScheduleDesktop', () => {
       <CircuitsScheduleDesktop
         circuits={CIRCUITS}
         onPatch={() => {}}
+        onCommitDesignation={(_id, raw) => raw}
         onBulkPatch={onBulkPatch}
         onRemove={() => {}}
       />
@@ -188,6 +192,7 @@ describe('CircuitsScheduleDesktop', () => {
       <CircuitsScheduleDesktop
         circuits={CIRCUITS}
         onPatch={() => {}}
+        onCommitDesignation={(_id, raw) => raw}
         onBulkPatch={onBulkPatch}
         onRemove={() => {}}
       />
@@ -219,6 +224,7 @@ describe('CircuitsScheduleDesktop', () => {
       <CircuitsScheduleDesktop
         circuits={CIRCUITS}
         onPatch={() => {}}
+        onCommitDesignation={(_id, raw) => raw}
         onBulkPatch={() => {}}
         onRemove={() => {}}
       />

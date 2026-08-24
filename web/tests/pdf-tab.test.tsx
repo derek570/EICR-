@@ -142,6 +142,12 @@ vi.mock('@/lib/job-context', () => ({
     isDirty: false,
     isSaving: false,
     saveError: null,
+    // PLAN-B2 — atomic-commit / preflight contract consumed by the PDF
+    // page. The stub job is already canonical, so the snapshot IS the
+    // stub and the unconditional server-fallback save reports synced.
+    commitJobPatch: vi.fn(() => jobStub),
+    flushDraftsAndGetSnapshot: vi.fn(() => jobStub),
+    saveCircuitsSnapshotNow: vi.fn(async () => ({ synced: true })),
   }),
 }));
 

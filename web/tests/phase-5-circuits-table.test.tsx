@@ -87,7 +87,12 @@ const CIRCUITS = [
 describe('CircuitsStickyTable', () => {
   it('renders one row per circuit', () => {
     mounted = mount(
-      <CircuitsStickyTable circuits={CIRCUITS} onPatch={() => {}} onRemove={() => {}} />
+      <CircuitsStickyTable
+        onCommitDesignation={(_id, raw) => raw}
+        circuits={CIRCUITS}
+        onPatch={() => {}}
+        onRemove={() => {}}
+      />
     );
     const rows = mounted.container.querySelectorAll('tbody tr');
     expect(rows.length).toBe(2);
@@ -100,7 +105,12 @@ describe('CircuitsStickyTable', () => {
 
   it('sticks the Ref + Designation columns to the left', () => {
     mounted = mount(
-      <CircuitsStickyTable circuits={CIRCUITS} onPatch={() => {}} onRemove={() => {}} />
+      <CircuitsStickyTable
+        onCommitDesignation={(_id, raw) => raw}
+        circuits={CIRCUITS}
+        onPatch={() => {}}
+        onRemove={() => {}}
+      />
     );
     const firstCells = mounted.container.querySelectorAll('tbody tr td');
     const styles = Array.from(firstCells)
@@ -113,7 +123,12 @@ describe('CircuitsStickyTable', () => {
   it('dispatches patches when a non-sticky cell is edited', () => {
     const onPatch = vi.fn();
     mounted = mount(
-      <CircuitsStickyTable circuits={CIRCUITS} onPatch={onPatch} onRemove={() => {}} />
+      <CircuitsStickyTable
+        onCommitDesignation={(_id, raw) => raw}
+        circuits={CIRCUITS}
+        onPatch={onPatch}
+        onRemove={() => {}}
+      />
     );
     const zsInput = mounted.container.querySelector(
       'input[aria-label="Circuit 1 Meas Zs"]'
@@ -136,7 +151,12 @@ describe('CircuitsStickyTable', () => {
 
   it('renders select fields with card-aligned options so values round-trip between Cards and Table views', () => {
     mounted = mount(
-      <CircuitsStickyTable circuits={CIRCUITS} onPatch={() => {}} onRemove={() => {}} />
+      <CircuitsStickyTable
+        onCommitDesignation={(_id, raw) => raw}
+        circuits={CIRCUITS}
+        onPatch={() => {}}
+        onRemove={() => {}}
+      />
     );
     const ocpdSelect = mounted.container.querySelector(
       'select[aria-label="Circuit 1 Type"]'
@@ -164,7 +184,12 @@ describe('CircuitsStickyTable', () => {
   it('calls onRemove when the per-row trash icon is clicked', () => {
     const onRemove = vi.fn();
     mounted = mount(
-      <CircuitsStickyTable circuits={CIRCUITS} onPatch={() => {}} onRemove={onRemove} />
+      <CircuitsStickyTable
+        onCommitDesignation={(_id, raw) => raw}
+        circuits={CIRCUITS}
+        onPatch={() => {}}
+        onRemove={onRemove}
+      />
     );
     const removeBtn = mounted.container.querySelector(
       'button[aria-label="Remove circuit 2"]'

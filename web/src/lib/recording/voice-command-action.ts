@@ -80,6 +80,17 @@ export function mapServerActionToVoiceCommand(
       if (!scope) return null;
       return { type: 'apply_field', field, value, scope };
     }
+    case 'add_circuit': {
+      // PLAN-B2 — the SONNET_TOOL_CALLS=off rollback prompt emits
+      // `{type:"add_circuit",params:{description}}`. iOS has owned this
+      // action since the legacy era; web previously had no case here,
+      // so it spoke the server's success line while dropping the
+      // mutation. Description is optional on iOS (`params.description
+      // ?? ""`), mirrored here — a missing description still adds the
+      // circuit.
+      const description = typeof params.description === 'string' ? params.description : '';
+      return { type: 'add_circuit', description };
+    }
     default:
       return null;
   }

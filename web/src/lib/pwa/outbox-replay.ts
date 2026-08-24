@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { withJobSaveLock } from './job-save-lock';
 import { api } from '@/lib/api-client';
 import { ApiError } from '@/lib/types';
 import { getCachedJob, putCachedJob } from './job-cache';
@@ -86,7 +87,13 @@ export function useOutboxReplay(): void {
             // FIFO ordering is required (see loop-level comment).
             break;
           }
-          const outcome = await attempt(m);
+          // PLAN-B2 mini-review c1 — each replay attempt holds the
+          // per-job save lock: the PDF gate's snapshot-save + drained
+          // proof serialises against replays (an older row landing on
+          // the server AFTER the fresh canonical save would silently
+          // revert it — and its row-removal could make the gate's
+          // outbox read look drained).
+          const outcome = await withJobSaveLock(m.userId, m.jobId, () => attempt(m));
           if (outcome === 'poisoned') {
             // The patch itself is permanently rejected by the server
             // (4xx). The row has been moved aside via

@@ -202,8 +202,11 @@ describe('mapServerActionToVoiceCommand — apply_field', () => {
 
 describe('mapServerActionToVoiceCommand — unknown / malformed actions', () => {
   it('returns null for an unknown action.type', () => {
+    // PLAN-B2: `add_circuit` (this test's previous example) is now a
+    // SUPPORTED action — the legacy rollback prompt emits it and iOS has
+    // always owned it. `delete_circuit` remains web-unmapped today.
     expect(
-      mapServerActionToVoiceCommand({ type: 'add_circuit', params: { circuit_ref: '1' } })
+      mapServerActionToVoiceCommand({ type: 'not_a_real_action', params: { circuit_ref: '1' } })
     ).toBeNull();
   });
 

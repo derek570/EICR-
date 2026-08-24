@@ -33,6 +33,12 @@
     { "input": "Spare", "expected": "Spare" },
     { "input": "", "expected": "" },
     { "input": "   ", "expected": "   " },
-    { "input": " . ", "expected": " . " }
+    { "input": " . ", "expected": " . " },
+    { "input": "Circuit\u0085Kitchen", "expected": "Circuit\u0085Kitchen" },
+    { "input": "Kitchen\u0085circuit", "expected": "Kitchen\u0085circuit" },
+    { "input": "Circuit\u2028Kitchen", "expected": "Kitchen" },
+    { "input": "Kitchen\u2028circuit", "expected": "Kitchen" },
+    { "input": "Circuit \u0085", "expected": "\u0085" },
+    { "input": "\u0085 circuit", "expected": "\u0085" }
   ]
 }

@@ -414,6 +414,25 @@ export async function enqueueSaveJobMutation(
  * expected to be tiny (single-digit rows in normal use, low dozens
  * during an extended offline session), so the sort is cheap.
  */
+/** PLAN-B2 mini-review c1 — STRICT variant for correctness gates: read
+ *  errors and an unsupported environment PROPAGATE as throws (the
+ *  lenient variant below returns [] on failure, which a gate would
+ *  misread as "outbox drained"). Reads raw rows without the validation
+ *  pass — a gate only needs jobId presence, and an unparseable row must
+ *  COUNT as pending, not vanish. */
+export async function listPendingMutationsStrict(): Promise<
+  Array<{ jobId?: string; poisoned?: boolean }>
+> {
+  if (!isSupported()) {
+    throw new Error('outbox unsupported in this environment');
+  }
+  const db = await openDB();
+  const tx = db.transaction(STORE_OUTBOX, 'readonly');
+  const store = tx.objectStore(STORE_OUTBOX);
+  const all = (await wrapRequest(store.getAll())) as unknown[] | null;
+  return (all ?? []) as Array<{ jobId?: string; poisoned?: boolean }>;
+}
+
 export async function listPendingMutations(): Promise<OutboxMutation[]> {
   if (!isSupported()) return [];
   try {

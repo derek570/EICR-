@@ -28,6 +28,8 @@
  * TTS helper.
  */
 
+import { repairCircuitDesignation } from './designation-canonicaliser';
+
 // We use local structural types rather than pulling from @certmate/shared-types
 // because the iOS-oriented shared-types `JobDetail` uses nested sections
 // (`installation_details`, `supply_characteristics`) while the web client
@@ -121,6 +123,20 @@ export type VoiceCommand =
        *  otherwise reach a backend with no contradiction branch, which
        *  may pick one scope and mutate anyway). */
       type: 'apply_field_contradiction';
+    }
+  | {
+      /** PLAN-B2 — legacy `add_circuit` action from the
+       *  SONNET_TOOL_CALLS=off rollback prompt path
+       *  (`config/prompts/sonnet_extraction_system.md` §add_circuit:
+       *  `{type:"add_circuit",params:{description}}`). iOS has owned
+       *  this since the legacy era (`executeAddCircuit`); web's mapper
+       *  previously had NO case, so it spoke the server's success text
+       *  while silently dropping the mutation. Board/ref semantics
+       *  MIRROR iOS's today (round-14 revert): `boards.first?.id`
+       *  attribution + GLOBAL next-ref — deliberately imperfect on
+       *  multi-board jobs, identically imperfect on both clients. */
+      type: 'add_circuit';
+      description: string;
     };
 
 export interface VoiceCommandOutcome {
@@ -146,7 +162,11 @@ export interface VoiceCommandOutcome {
 // Key = lowercased phrase the inspector might dictate; value = canonical
 // snake_case field name on CircuitRow.
 const CIRCUIT_FIELD_ALIASES: Record<string, string> = {
-  // Designation
+  // Designation. The canonical wire name maps to itself — Codex diff
+  // review r1: a server action carrying field:"circuit_designation"
+  // previously resolved as UNKNOWN on web (no patch, raw server speech)
+  // while iOS accepted it, diverging the cross-client contract.
+  circuit_designation: 'circuit_designation',
   designation: 'circuit_designation',
   description: 'circuit_designation',
   // OCPD
@@ -752,6 +772,8 @@ export function applyVoiceCommand(
       return applyCalculateImpedance(command, job);
     case 'apply_field':
       return applyApplyField(command, job);
+    case 'add_circuit':
+      return applyAddCircuit(command, job);
     case 'apply_field_contradiction':
       // PLAN-F item 1, Decision 3 — consumed locally: speak a deterministic
       // refusal, no patch (nothing mutates), never forwarded to the server.
@@ -796,13 +818,24 @@ function applyUpdateField(
       if (value === 'PASS') value = '✓';
       else if (value === 'FAIL') value = '✗';
     }
+    // PLAN-B2 — designation hygiene, canonicalised ONCE at command entry.
+    // Repair semantics (never reject/blank: banned-token-only stays as
+    // dictated — empty designation = spare). The SAME canonical value is
+    // threaded to the mutation AND the spoken response below: cleaned
+    // storage + raw speech would leave the hands-free inspector hearing
+    // a value the certificate doesn't carry.
+    let spokenValue: string = command.value;
+    if (resolved.circuitField === 'circuit_designation') {
+      value = repairCircuitDesignation(command.value) as string;
+      spokenValue = value;
+    }
     const next: VoiceCommandCircuit[] = circuits.map((row, i) =>
       i === idx ? { ...row, [resolved.circuitField as string]: value } : row
     );
     const label = labelForField(resolved.circuitField);
     return {
       patch: { circuits: next },
-      response: `Set ${label} to ${command.value} on circuit ${command.circuit}.`,
+      response: `Set ${label} to ${spokenValue} on circuit ${command.circuit}.`,
       changedKeys: [resolved.circuitField as string],
     };
   }
@@ -1079,6 +1112,14 @@ function applyApplyField(
     if (value === 'PASS') value = '✓';
     else if (value === 'FAIL') value = '✗';
   }
+  // PLAN-B2 — designation hygiene at command entry (see applyUpdateField;
+  // apply_field can carry circuit_designation across a bulk scope). Same
+  // canonical value for the mutation and the spoken response.
+  let spokenValue: string = command.value;
+  if (resolved.circuitField === 'circuit_designation') {
+    value = repairCircuitDesignation(command.value) as string;
+    spokenValue = value;
+  }
   let updated = 0;
   const next: VoiceCommandCircuit[] = circuits.map((row, idx) => {
     if (!indices.includes(idx)) return row;
@@ -1099,13 +1140,114 @@ function applyApplyField(
   const skipSuffix = spareSkippedCount > 0 ? `, ${skipClause(spareSkippedCount, 'append')}` : '';
   const response =
     updated === 1
-      ? `Set ${label} to ${command.value} for 1 circuit${skipSuffix}.`
-      : `Set ${label} to ${command.value} for ${updated} circuits${skipSuffix}.`;
+      ? `Set ${label} to ${spokenValue} for 1 circuit${skipSuffix}.`
+      : `Set ${label} to ${spokenValue} for ${updated} circuits${skipSuffix}.`;
   return {
     patch: { circuits: next },
     response,
     changedKeys: [resolved.circuitField as string],
   };
+}
+
+/**
+ * PLAN-B2 — apply the legacy `add_circuit` action locally. Mirrors iOS
+ * `VoiceCommandExecutor.executeAddCircuit` (:105-115) semantics as they
+ * stand TODAY:
+ *   - GLOBAL next-ref: max numeric `circuit_ref` across ALL circuits
+ *     (every board) + 1;
+ *   - board attribution: `boards.first?.id` (undefined when the job has
+ *     no boards yet — same as iOS's optional boardId);
+ *   - designation canonicalised ONCE (repair semantics) and the SAME
+ *     value used for storage and the spoken response;
+ *   - rows kept sorted by numeric ref (iOS `sortByCircuitRef`).
+ * Deliberately NOT board-scoped allocation — the round-14 revert pinned
+ * today's identically-imperfect multi-board behaviour on both clients;
+ * which-board correctness is the "multi-board voice-routing" follow-up
+ * plan, not this one.
+ */
+function applyAddCircuit(
+  command: Extract<VoiceCommand, { type: 'add_circuit' }>,
+  job: VoiceCommandJob
+): VoiceCommandOutcome {
+  const circuits = [...(job.circuits ?? [])];
+  // Strict whole-string integer parse mirroring Swift `Int(...)` (Codex
+  // r1: `parseInt("7A")` is 7 so web allocated 8 where iOS allocates 1).
+  // Invalid refs map to 0 exactly like iOS's `Int($0.circuitRef) ?? 0`,
+  // the max may be negative, and the ?? 0 fallback applies only to an
+  // EMPTY list — byte-parity with executeAddCircuit.
+  const strictRef = (raw: unknown): number => {
+    const str = String(raw ?? '');
+    return /^[+-]?\d+$/.test(str) ? parseInt(str, 10) : 0;
+  };
+  const refValues = circuits.map((row) => strictRef(row.circuit_ref ?? row.number));
+  const maxRef = refValues.length > 0 ? Math.max(...refValues) : 0;
+  const nextRef = String(maxRef + 1);
+  const boards = job.boards as Array<{ id?: string }> | undefined;
+  const boardId = boards?.[0]?.id;
+  const canonical = repairCircuitDesignation(command.description) as string;
+  const row: VoiceCommandCircuit = {
+    id:
+      globalThis.crypto?.randomUUID?.() ??
+      `c-${nextRef}-${Math.random().toString(36).slice(2, 10)}`,
+    circuit_ref: nextRef,
+    number: nextRef,
+    circuit_designation: canonical,
+  };
+  if (boardId) row.board_id = boardId;
+  // Mini-review c1 — sorting uses iOS `sortByCircuitRef` semantics, NOT
+  // the allocation parser: group by board, compare leading integer
+  // portions, natural-compare remainders/non-numeric refs (Swift sorts
+  // "7A" after 7 by its LEADING int even though allocation treats it as
+  // 0).
+  const leadingInt = (raw: unknown): { num: number | null; rem: string } => {
+    const str = String(raw ?? '');
+    const m = /^([+-]?\d+)(.*)$/.exec(str);
+    return m ? { num: parseInt(m[1], 10), rem: m[2] } : { num: null, rem: str };
+  };
+  const next = [...circuits, row].sort((a, b) => {
+    const boardA = String(a.board_id ?? '');
+    const boardB = String(b.board_id ?? '');
+    if (boardA !== boardB) return boardA < boardB ? -1 : 1;
+    const ra = leadingInt(a.circuit_ref ?? a.number);
+    const rb = leadingInt(b.circuit_ref ?? b.number);
+    if (ra.num != null && rb.num != null) {
+      if (ra.num !== rb.num) return ra.num - rb.num;
+      return ra.rem.localeCompare(rb.rem, undefined, { numeric: true });
+    }
+    if (ra.num != null) return -1;
+    if (rb.num != null) return 1;
+    return String(a.circuit_ref ?? a.number ?? '').localeCompare(
+      String(b.circuit_ref ?? b.number ?? ''),
+      undefined,
+      { numeric: true }
+    );
+  });
+  // Spoken template — the SAME canonical value as storage. This exact
+  // wording is the cross-client contract for the add action (the iOS
+  // spoken-override half pins the identical string).
+  const response = canonical.trim()
+    ? `Added circuit ${nextRef}, ${canonical}.`
+    : `Added circuit ${nextRef}.`;
+  return {
+    patch: { circuits: next },
+    response,
+    changedKeys: ['circuits'],
+  };
+}
+
+/**
+ * PLAN-B2 — TRUE when a mapped voice command writes/speaks a circuit
+ * designation. The recording context uses this to decide the spoken
+ * response must be the LOCALLY constructed canonical text (the server's
+ * raw `spoken_response` may carry the banned word verbatim).
+ */
+export function voiceCommandTargetsDesignation(command: VoiceCommand): boolean {
+  if (command.type === 'add_circuit') return true;
+  if (command.type === 'update_field' || command.type === 'apply_field') {
+    const resolved = resolveField(command.field, /* hasCircuit */ true);
+    return resolved?.circuitField === 'circuit_designation';
+  }
+  return false;
 }
 
 /** Decision 4's exact count-aware skip clause, shared verbatim across all

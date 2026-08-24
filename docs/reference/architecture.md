@@ -40,6 +40,32 @@ The backend Docker container (`Dockerfile.backend`) includes:
 - Container health check removed (task definition revision 6+) - relies on ALB health check only
 - ALB health check: `/login` endpoint
 
+## Web JobProvider — atomic-commit / awaitable-save contract (PLAN-B2, 2026-08-24)
+
+`web/src/lib/job-context.tsx` exposes, beyond the historical `updateJob` (whose ref
+bookkeeping runs inside a React state updater, i.e. not until the next render pass):
+
+- **`commitJobPatch(patch | fn)` → JobDetail** — synchronously commits into the
+  authoritative job ref AND the pending save patch, returning the EXACT merged snapshot.
+  For immediate consumers (job-state sync over the existing `schedulePushJobState`
+  paths, PDF renders) that must never read a stale render-tick closure. Designation
+  draft commits use this route.
+- **`flushDraftsAndGetSnapshot()` → JobDetail** — synchronously commits every registered
+  designation draft (`web/src/lib/designation-drafts.ts` module registry) and returns
+  the committed snapshot.
+- **`saveCircuitsSnapshotNow()` → {synced}** — UNCONDITIONALLY enqueues+awaits a save of
+  the current full circuits snapshot (draining any pending patch alongside), surfacing
+  `queueSaveJob`'s `synced` outcome. The server-fallback PDF gate consumes this: only
+  `synced === true` unlocks `api.generatePdf` (an earlier repair drained into the outbox
+  with synced=false leaves `pendingPatchRef` empty — a no-op flush proves nothing about
+  S3). `synced: false` covers offline/signed-out/4xx alike; callers fall back to the
+  client renderer or fail visibly.
+- **Load repair (B2-4, hydration-safe):** the provider repairs circuit designations at
+  every load boundary; a PRE-hydration cache paint is repaired for display/PDF only and
+  never becomes a pending patch or scheduled save (the 851ba63e cache-before-hydration
+  overwrite class). Persistence happens only for an accepted network doc or a
+  CONFIRMED-offline cache (`networkRejected` layout prop), once per doc version.
+
 ## API Data Loading
 
 The processing pipeline outputs separate JSON files, but the API can load from either format:

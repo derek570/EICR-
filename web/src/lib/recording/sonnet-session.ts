@@ -244,6 +244,12 @@ export interface ValidationAlert {
 }
 
 export interface Confirmation {
+  /** Server-side TTS expansion of `text` (iOS consumes it; web speaks
+   *  `text` only). PLAN-B2: the designation-slot rewrite NULLS this on a
+   *  change — the wire expansion is already TTS-transformed and cannot
+   *  be byte-repaired; any future web consumer must re-expand from the
+   *  rewritten text. */
+  expanded_text?: string | null;
   text: string;
   field?: string | null;
   circuit?: number | null;

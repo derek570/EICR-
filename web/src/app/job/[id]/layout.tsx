@@ -47,6 +47,11 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
   // in. Seeding a cached/blank paint and letting the debounced save PUT
   // it is the 2026-07-02 data-loss bug (web/audit/INDEX-2026-07.md).
   const [networkHydrated, setNetworkHydrated] = React.useState(false);
+  // PLAN-B2 (B2-4): true once the network fetch has FAILED (non-auth)
+  // while a cached doc painted — confirmed offline, cache authoritative.
+  // JobProvider uses this to decide a load-boundary designation repair
+  // of the cache doc may persist through the ordinary outbox path.
+  const [networkRejected, setNetworkRejected] = React.useState(false);
 
   React.useEffect(() => {
     const user = getUser();
@@ -60,6 +65,16 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // navigation keeps this layout mounted) it stops the previous job's
     // hydrated=true leaking onto the next job's cache paint.
     setNetworkHydrated(false);
+    setNetworkRejected(false);
+    // Cycle-2 (BLOCKER) — also RESET the document on an in-place job
+    // change: the cache setter below is `prev ?? cached`, so job B's
+    // cached doc could never replace a non-null job A (offline
+    // navigation displayed A as B), and a stale-A provider could
+    // cross-write A's pending circuits under B. The keyed
+    // <JobProvider key={jobId}> below remounts provider state; this
+    // reset makes the layout's own doc honest during the transition.
+    setJob(null);
+    setError(null);
 
     // Phase 7b — stale-while-revalidate via the IDB job cache.
     //
@@ -90,7 +105,8 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // runs in the network branch may not have flushed to the closure.
     // A ref is the source of truth for "we already have fresh data".
     let networkLanded = false;
-    getCachedJobWithOverlay(user.id, jobId).then((cached) => {
+    const cachePromise = getCachedJobWithOverlay(user.id, jobId);
+    void cachePromise.then((cached) => {
       if (cancelled || networkLanded) return;
       if (cached) {
         setJob((prev) => prev ?? cached);
@@ -121,11 +137,21 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
           return;
         }
         // Cached-paint-and-carry-on — same rationale as the dashboard.
-        // If the tab was previously visited, the inspector keeps their
-        // full job record offline rather than being bounced to an error
-        // card for a network blip.
-        if (hadCache) return;
-        setError(err.message);
+        // Cycle-3 — the network rejection can WIN the race against the
+        // async cache read (hadCache still false), which previously left
+        // a later cache paint permanently un-authoritative (no
+        // networkRejected, no journal recovery, B2-4 offline convergence
+        // skipped). Await the cache promise before deciding.
+        void cachePromise.then((cached) => {
+          if (cancelled) return;
+          if (hadCache || cached) {
+            // PLAN-B2 (B2-4): the cache is CONFIRMED authoritative for
+            // this session — load repairs may persist via the outbox.
+            setNetworkRejected(true);
+          } else {
+            setError(err.message);
+          }
+        });
       });
     return () => {
       cancelled = true;
@@ -136,12 +162,23 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // when this effect should re-run. exhaustive-deps satisfied.
   }, [jobId, router]);
 
+  // Cycle-3 (BLOCKER) — the effect-based reset above runs AFTER the
+  // first render for a new jobId, so a render-time guard is still
+  // needed: never hand job A to a provider keyed (and routed) as job B,
+  // even for one frame (child effects run before this layout's effect).
+  const activeJob = job !== null && job.id === jobId ? job : null;
+
   return (
     <AppShell>
-      {job === null ? (
+      {activeJob === null ? (
         <JobShellLoading error={error} />
       ) : (
-        <JobProvider initial={job} hydrated={networkHydrated}>
+        <JobProvider
+          key={jobId}
+          initial={activeJob}
+          hydrated={networkHydrated}
+          networkRejected={networkRejected}
+        >
           <RecordingProvider>
             <div className="flex min-h-[calc(100dvh-56px)] flex-col">
               <JobHeader />

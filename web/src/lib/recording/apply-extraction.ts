@@ -40,6 +40,7 @@ import {
   clampImpedance,
   maxZsString,
   recomputeAll,
+  repairCircuitDesignation,
   type ImpedanceField,
 } from '@certmate/shared-utils';
 import {
@@ -1339,7 +1340,7 @@ function applyCircuitReadings(
     if (existing) existing.push(idx);
     else map.set(key, [idx]);
   };
-  const boardRefKey = (boardId: string, ref: string) => `${boardId} ${ref}`;
+  const boardRefKey = (boardId: string, ref: string) => `${boardId}\u0000${ref}`;
   const rowBoardId = (row: CircuitRow): string | null => {
     const bid = (row as unknown as Record<string, unknown>).board_id;
     return typeof bid === 'string' && bid !== '' ? bid : null;
@@ -1637,7 +1638,19 @@ function applyCircuitReadings(
   // the inspector's intent, so every op resolves against the shape its
   // predecessor left behind and every topology mutation rebuilds the indexes
   // before the next one is read.
-  for (const upd of circuitUpdates) {
+  for (const rawUpd of circuitUpdates) {
+    // PLAN-B2 (feedback id 128) — canonicalise the incoming designation
+    // COPY at wire entry, before any matching/row construction below.
+    // Covers create AND rename from live frames, stale frames, replays,
+    // and old-backend windows (PLAN-B only fixes what the server EMITS).
+    // Repair semantics: banned-token-only left unchanged (empty = spare).
+    const upd =
+      typeof rawUpd.designation === 'string' && rawUpd.designation.length > 0
+        ? {
+            ...rawUpd,
+            designation: repairCircuitDesignation(rawUpd.designation) as string,
+          }
+        : rawUpd;
     const obj = upd as unknown as Record<string, unknown>;
     const opBoardId = typeof obj.board_id === 'string' && obj.board_id !== '' ? obj.board_id : null;
 
@@ -1909,6 +1922,14 @@ function applyCircuitReadings(
         circuit: reading.circuit,
         pwa_column: column,
       });
+    }
+    // PLAN-B2 (feedback id 128) — wire-frame designation hygiene. PLAN-B
+    // stops the backend EMITTING a raw designation post-fix, but stale
+    // frames, replays, and not-yet-deployed-backend windows still reach
+    // this apply path — canonicalise the structured value once before
+    // mutation (repair semantics: banned-token-only unchanged).
+    if (column === 'circuit_designation' && typeof writeValue === 'string') {
+      writeValue = repairCircuitDesignation(writeValue);
     }
     circuits[idx] = {
       ...row,

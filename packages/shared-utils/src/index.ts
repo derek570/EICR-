@@ -1,4 +1,9 @@
 export { normalise } from './number-normaliser';
+export {
+  canonicaliseCircuitDesignation,
+  designationCanonicalisesToEmpty,
+  repairCircuitDesignation,
+} from './designation-canonicaliser';
 export { generateKeywordBoosts } from './keyword-boost-generator';
 export { cn } from './cn';
 export { buildLocalJob } from './build-local-job';
@@ -20,7 +25,12 @@ export type {
 } from './apply-defaults';
 export { DEFAULTS_BY_CIRCUIT, GLOBAL_DEFAULTS, inferCircuitType } from './circuit-defaults-schema';
 export type { CircuitTypeKey } from './circuit-defaults-schema';
-export { parseVoiceCommand, applyVoiceCommand, DEVICE_ATTRIBUTE_FIELDS } from './voice-commands';
+export {
+  parseVoiceCommand,
+  applyVoiceCommand,
+  voiceCommandTargetsDesignation,
+  DEVICE_ATTRIBUTE_FIELDS,
+} from './voice-commands';
 export type {
   VoiceCommand,
   VoiceCommandOutcome,

@@ -74,3 +74,34 @@ describe('auth — getUserRole / getCompanyRole', () => {
     expect(getCompanyRole(noRoles)).toBeNull();
   });
 });
+
+describe('auth — clearAuth purges designation-draft state (cycle-6/9)', () => {
+  it('sign-out sweeps a stranded draft record so the next login cannot inherit it', async () => {
+    const { clearAuth } = await import('@/lib/auth');
+    // Nothing writes these any more — the localStorage journal was
+    // removed in cycle 9 — but a device that ran a pre-removal build of
+    // this branch may still hold records, and sign-out is exactly where
+    // another inspector's abandoned text must not survive.
+    window.localStorage.setItem(
+      'cm-designation-draft:job-1:designation:c1',
+      'Previous inspector draft'
+    );
+    clearAuth();
+    expect(window.localStorage.getItem('cm-designation-draft:job-1:designation:c1')).toBeNull();
+  });
+
+  it('sign-out also clears the in-memory load-repair alias ledger', async () => {
+    const { clearAuth } = await import('@/lib/auth');
+    const { repairJobCircuitDesignations, getLoadRepairAliases } =
+      await import('@/lib/repair-job-designations');
+    // A recording session seeds its alias store from this ledger, so a
+    // designation from the previous inspector's job must not survive the
+    // sign-out that wipes the IDB cache it came from.
+    repairJobCircuitDesignations({
+      circuits: [{ circuit_designation: 'Upstairs lighting circuit' }],
+    } as never);
+    expect(getLoadRepairAliases().length).toBeGreaterThan(0);
+    clearAuth();
+    expect(getLoadRepairAliases()).toHaveLength(0);
+  });
+});

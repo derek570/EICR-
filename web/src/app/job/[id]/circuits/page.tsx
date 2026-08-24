@@ -23,16 +23,22 @@ import {
   applyR1R2Calculation,
   applyZsCalculation,
   matchCircuits,
+  repairCircuitDesignation,
   type BulkCalcOutcome,
   type CalcSkipReason,
   type CircuitMatch,
 } from '@certmate/shared-utils';
+import { useDesignationDraft } from '@/lib/use-designation-draft';
 import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
 import { useCurrentUser } from '@/lib/use-current-user';
 import { useUserDefaults } from '@/hooks/use-user-defaults';
 import { ApiError, type CCUAnalysisCircuit, type CircuitRow } from '@/lib/types';
-import { applyCcuAnalysisToJob, type CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
+import {
+  applyCcuAnalysisToJob,
+  canonicaliseCcuAnalysisLabels,
+  type CcuApplyMode,
+} from '@/lib/recording/apply-ccu-analysis';
 import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
 import {
   savePendingCcuExtraction,
@@ -182,6 +188,49 @@ function CircuitFieldInput({
   );
 }
 
+/**
+ * PLAN-B2 (feedback id 128) — the card's designation field edits a DRAFT
+ * buffer (previously its onChange called onPatch → patchCircuit →
+ * `updateJob` per keystroke, with NO blur hook — a typing pause longer
+ * than the save debounce persisted the raw designation). Commit happens
+ * once, canonicalised, on blur / card collapse / unmount / any
+ * registry flush (flushSave, pagehide, PDF preflight).
+ */
+function DesignationCardField({
+  circuitId,
+  value,
+  draftScope,
+  onCommitDesignation,
+}: {
+  circuitId: string;
+  value: string;
+  /** Cycle-3 — jobId: preset-created jobs can SHARE circuit ids, so an
+   *  unscoped journal from job A could be recovered into job B. */
+  draftScope: string;
+  onCommitDesignation: (id: string, raw: string) => string;
+}) {
+  const accessory = React.useContext(CardAccessoryContext);
+  const handlers = accessory?.inputHandlers(circuitId, 'circuit_designation');
+  const draft = useDesignationDraft({
+    draftKey: `${draftScope}:card:${circuitId}`,
+    modelValue: value,
+    commit: (raw) => void onCommitDesignation(circuitId, raw),
+  });
+  return (
+    <FloatingLabelInput
+      label="Designation"
+      value={draft.value}
+      ref={(el) => accessory?.registerRef(circuitId, 'circuit_designation', el)}
+      onChange={(e) => draft.onChange(e.target.value)}
+      onFocus={handlers?.onFocus}
+      onBlur={() => {
+        draft.onBlur();
+        handlers?.onBlur();
+      }}
+    />
+  );
+}
+
 function newCircuit(ref: string, boardId?: string): Circuit {
   return {
     id: (globalThis.crypto?.randomUUID?.() ?? `c-${Date.now()}-${Math.random()}`).toString(),
@@ -211,7 +260,7 @@ function readInitialView(): CircuitView {
 }
 
 export default function CircuitsPage() {
-  const { job, updateJob } = useJobContext();
+  const { job, updateJob, commitJobPatch, flushDraftsAndGetSnapshot } = useJobContext();
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const jobId = params.id;
@@ -330,8 +379,17 @@ export default function CircuitsPage() {
   const persist = (next: Circuit[]) =>
     updateJob({ circuits: next as unknown as typeof job.circuits });
 
+  // Codex r1 — FUNCTIONAL patch: the old form rebuilt the whole circuits
+  // array from this render's `circuits` closure, so a patch issued right
+  // after a synchronous designation-draft commit (commitJobPatch) would
+  // resurrect the pre-commit array and silently undo the canonical
+  // designation. Resolving against `prev` keeps every same-tick commit.
   const patchCircuit = (id: string, patch: Partial<Circuit>) => {
-    persist(circuits.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    updateJob((prev) => ({
+      circuits: ((prev.circuits ?? []) as unknown as Circuit[]).map((c) =>
+        c.id === id ? { ...c, ...patch } : c
+      ) as unknown as typeof prev.circuits,
+    }));
   };
 
   // Table-view patch adapter — the sticky table passes `{key: value}`
@@ -339,6 +397,27 @@ export default function CircuitsPage() {
   // narrow alias rather than a duplicate state handler.
   const patchCircuitTable = (id: string, patch: Record<string, string>) =>
     patchCircuit(id, patch as Partial<Circuit>);
+
+  // PLAN-B2 (feedback id 128) — the ONE designation commit route for all
+  // three edit surfaces. Canonicalises (repair semantics: banned-token-
+  // only left unchanged, never blanked to spare) and commits through the
+  // provider's SYNCHRONOUS commitJobPatch, so a registry flush
+  // (flushSave / pagehide / PDF preflight) immediately sees the
+  // canonical value in both the model and the pending save patch.
+  // Functional patch — resolves against the freshest snapshot, never a
+  // render-tick closure.
+  const commitDesignationDraft = React.useCallback(
+    (circuitId: string, raw: string): string => {
+      const canonical = repairCircuitDesignation(raw) as string;
+      commitJobPatch((prev) => ({
+        circuits: ((prev.circuits ?? []) as Circuit[]).map((c) =>
+          c.id === circuitId ? { ...c, circuit_designation: canonical } : c
+        ) as unknown as typeof prev.circuits,
+      }));
+      return canonical;
+    },
+    [commitJobPatch]
+  );
 
   // Desktop view kicks in at ≥1280 px. On desktop the action rail moves
   // above the schedule and the new full-width `CircuitsScheduleDesktop`
@@ -457,7 +536,16 @@ export default function CircuitsPage() {
    * working on Board #2 doesn't accidentally stomp Board #1.
    */
   const handleApplyDefaults = () => {
-    const visibleIds = new Set(boardScoped.map((c) => c.id));
+    // Codex r1 — commit any open designation draft FIRST and derive the
+    // working set from the returned snapshot, not this render's closure:
+    // a blur-then-tap sequence could otherwise apply defaults over (and
+    // persist) the pre-commit circuit state.
+    const snapshot = flushDraftsAndGetSnapshot();
+    const snapshotCircuits = (snapshot.circuits ?? []) as unknown as Circuit[];
+    const snapshotScoped = selectedBoardId
+      ? snapshotCircuits.filter((c) => c.board_id === selectedBoardId)
+      : snapshotCircuits;
+    const visibleIds = new Set(snapshotScoped.map((c) => c.id));
     // Strip scoped/cable-type keys (e.g. `lighting.live_csa_mm2`) before
     // passing to the generic applier — otherwise the helper would write
     // those dotted strings as if they were Circuit field names. Cable
@@ -466,7 +554,7 @@ export default function CircuitsPage() {
     for (const [k, v] of Object.entries(userDefaults)) {
       if (!k.includes('.')) flatDefaults[k] = v;
     }
-    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(boardScoped, {
+    const { circuits: updatedVisible, summary } = applyDefaultsToCircuits(snapshotScoped, {
       userDefaults: flatDefaults as Partial<Record<keyof Circuit, string>>,
     });
     if (summary.filledFields === 0) {
@@ -474,8 +562,11 @@ export default function CircuitsPage() {
       return;
     }
     const updatedById = new Map(updatedVisible.map((c) => [c.id, c]));
-    const merged = circuits.map((c) => (visibleIds.has(c.id) ? (updatedById.get(c.id) ?? c) : c));
-    persist(merged);
+    updateJob((prev) => ({
+      circuits: ((prev.circuits ?? []) as unknown as Circuit[]).map((c) =>
+        visibleIds.has(c.id) ? (updatedById.get(c.id) ?? c) : c
+      ) as unknown as typeof prev.circuits,
+    }));
     const circuitsWord = summary.touchedCircuits === 1 ? 'circuit' : 'circuits';
     const suffix =
       summary.ambiguousCircuits > 0
@@ -609,9 +700,17 @@ export default function CircuitsPage() {
    */
   const applyCcuAnalysisResult = (
     mode: CcuApplyMode,
-    analysis: Awaited<ReturnType<typeof api.analyzeCCU>>,
+    rawAnalysis: Awaited<ReturnType<typeof api.analyzeCCU>>,
     targetBoardId: string | null
   ) => {
+    // PLAN-B2 (feedback id 128) — canonicalise circuit labels at the
+    // import ENTRY, before `matchCircuits()` runs and before the
+    // analysis is stashed in the match handoff. Matching a raw
+    // "Kitchen sockets circuit" label against already-canonical
+    // existing rows would let dirty and clean edge-token variants
+    // compete for the same row. `applyCcuAnalysisToJob` re-repairs
+    // idempotently for callers that skip this path.
+    const analysis = canonicaliseCcuAnalysisLabels(rawAnalysis);
     if (mode === 'hardware_update') {
       // Run the matcher locally, stash the result in sessionStorage,
       // and navigate to the Match Review screen. The apply step runs
@@ -1074,14 +1173,18 @@ export default function CircuitsPage() {
               <CircuitsScheduleDesktop
                 circuits={visible}
                 onPatch={patchCircuitTable}
+                designationDraftScope={jobId}
                 onBulkPatch={bulkPatchCircuits}
                 onRemove={requestDeleteCircuit}
+                onCommitDesignation={commitDesignationDraft}
               />
             ) : (
               <CircuitsStickyTable
                 circuits={visible}
                 onPatch={patchCircuitTable}
+                designationDraftScope={jobId}
                 onRemove={requestDeleteCircuit}
+                onCommitDesignation={commitDesignationDraft}
               />
             )
           ) : (
@@ -1094,6 +1197,8 @@ export default function CircuitsPage() {
                   onToggle={() => setExpandedId((p) => (p === c.id ? null : c.id))}
                   onPatch={(patch) => patchCircuit(c.id, patch)}
                   onRemove={() => requestDeleteCircuit(c.id)}
+                  onCommitDesignation={commitDesignationDraft}
+                  draftScope={jobId}
                 />
               ))}
               {cardAccessory.accessory}
@@ -1468,12 +1573,16 @@ function CircuitCard({
   onToggle,
   onPatch,
   onRemove,
+  onCommitDesignation,
+  draftScope,
 }: {
   circuit: Circuit;
   expanded: boolean;
   onToggle: () => void;
   onPatch: (patch: Partial<Circuit>) => void;
   onRemove: () => void;
+  onCommitDesignation: (id: string, raw: string) => string;
+  draftScope: string;
 }) {
   const text = (k: keyof Circuit) => circuit[k] ?? '';
   const circuitId = circuit.id;
@@ -1528,12 +1637,11 @@ function CircuitCard({
                 value={text('circuit_ref')}
                 onPatch={onPatch}
               />
-              <CircuitFieldInput
+              <DesignationCardField
                 circuitId={circuitId}
-                field="circuit_designation"
-                label="Designation"
                 value={text('circuit_designation')}
-                onPatch={onPatch}
+                draftScope={draftScope}
+                onCommitDesignation={onCommitDesignation}
               />
               <CircuitFieldInput
                 circuitId={circuitId}

@@ -104,7 +104,12 @@ const SURFACES: SurfaceCfg[] = [
   {
     name: 'sticky table',
     render: (cs, onPatch) => (
-      <CircuitsStickyTable circuits={cs} onPatch={onPatch} onRemove={() => {}} />
+      <CircuitsStickyTable
+        circuits={cs}
+        onPatch={onPatch}
+        onRemove={() => {}}
+        onCommitDesignation={(_id, raw) => raw}
+      />
     ),
     tokenCellAria: 'Circuit 1 Meas Zs',
     refCellAria: 'Circuit 1 reference',
@@ -117,6 +122,7 @@ const SURFACES: SurfaceCfg[] = [
       <CircuitsScheduleDesktop
         circuits={cs}
         onPatch={onPatch}
+        onCommitDesignation={(_id, raw) => raw}
         onBulkPatch={() => {}}
         onRemove={() => {}}
       />

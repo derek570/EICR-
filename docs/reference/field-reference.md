@@ -83,6 +83,32 @@ step is deliberate; do not blindly re-paste the literal. A1b's advert-time
 sweep re-narrows the enum to the both-clients-routable subset before any
 client advertises.
 
+## Circuit designation — canonical storage & repair semantics (PLAN-B/B2, 2026-08-24)
+
+Derek's product rule (feedback id 128): the word "circuit" never appears at a stored
+designation's EDGES — the certificate column is already headed "Circuit description".
+
+- **Canonical form:** standalone LEADING/TRAILING `circuit`/`circuits` tokens are stripped
+  (iteratively, case-insensitive, delimiter grammar — hyphen is NOT a delimiter, so
+  "Short-circuit tester" is untouched). INTERIOR tokens are kept ("Ring circuit sockets")
+  — interior removal is a deferred Derek decision.
+- **Caller policy:** backend interactive dispatchers REJECT a banned-token-only value
+  (`invalid_designation`); every persistence/client boundary uses REPAIR-never-reject —
+  a banned-token-only value ("Circuit") stays UNCHANGED, because an EMPTY designation
+  classifies the row as a SPARE on both clients.
+- **Implementations (three, contract-locked):** backend
+  `src/extraction/designation-canonicaliser.js`; web/shared
+  `packages/shared-utils/src/designation-canonicaliser.ts`; iOS
+  `Sources/Utilities/DesignationCanonicaliser.swift`. All three assert the shared
+  37-vector fixture `config/designation-canonical-vectors.json`; the iOS copy is pinned
+  by a paired SHA-256 digest and `scripts/check-designation-fixture-sync.sh`
+  (pre-TestFlight byte-compare). Change vectors only cross-platform.
+- **Client boundaries (PLAN-B2):** voice appliers (entry, storage+speech from the same
+  canonical value), wire-frame applies + a grammar-aware confirmation slot rewrite,
+  draft-buffered manual edits (commit on focus-loss, never per keystroke), CCU/document/
+  preset imports (incoming copy repaired BEFORE matching), load-boundary repair of
+  pre-existing dirty jobs, and PDF preflights on both clients' engines.
+
 ## Installation Details Tab (`/job/[id]/installation`)
 
 | Field | Type | Options | AI Extraction Guidance |
