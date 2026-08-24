@@ -212,21 +212,29 @@ describe('field-alias coverage (iOS parity)', () => {
   // (Sonnet's `voice_command_response`) rather than the client parser
   // — iOS canon. We construct the `update_field` command directly to
   // exercise the alias resolution.
+  //
+  // PLAN-C (feedback id 129): the three closed-enum aliases in this table
+  // now carry a schema-VALID value. "30" was only ever a placeholder to
+  // prove the alias resolved, but it is not a member of `rcd_type` /
+  // `wiring_type` / `ref_method`, and the closed-enum guard rejects it —
+  // correctly, and exactly as it would have rejected the Flux garble this
+  // plan exists to stop. The alias assertion is unchanged; only the
+  // placeholder became a legal value for the field it is written to.
   it.each([
-    ['cpc size', 'cpc_csa_mm2'],
-    ['rcd rating', 'rcd_rating_a'],
-    ['rcd type', 'rcd_type'],
-    ['rcd operating current', 'rcd_operating_current_ma'],
-    ['rcd test button', 'rcd_button_confirmed'],
-    ['afdd test button', 'afdd_button_confirmed'],
-    ['wiring type', 'wiring_type'],
-    ['ref method', 'ref_method'],
-    ['disconnect time', 'max_disconnect_time_s'],
-    ['number of points', 'number_of_points'],
-    ['test voltage', 'ir_test_voltage_v'],
-  ])('"%s" maps to circuit field %s', (phrase, canonical) => {
+    ['cpc size', 'cpc_csa_mm2', '30'],
+    ['rcd rating', 'rcd_rating_a', '30'],
+    ['rcd type', 'rcd_type', 'AC'],
+    ['rcd operating current', 'rcd_operating_current_ma', '30'],
+    ['rcd test button', 'rcd_button_confirmed', '30'],
+    ['afdd test button', 'afdd_button_confirmed', '30'],
+    ['wiring type', 'wiring_type', 'A'],
+    ['ref method', 'ref_method', 'C'],
+    ['disconnect time', 'max_disconnect_time_s', '30'],
+    ['number of points', 'number_of_points', '30'],
+    ['test voltage', 'ir_test_voltage_v', '30'],
+  ])('"%s" maps to circuit field %s', (phrase, canonical, value) => {
     const out = applyVoiceCommand(
-      { type: 'update_field', field: phrase, value: '30', circuit: 1 },
+      { type: 'update_field', field: phrase, value, circuit: 1 },
       { circuits: [{ id: 'c1', circuit_ref: '1' }] }
     );
     const next = (out.patch?.circuits as Array<Record<string, unknown>>)[0];
