@@ -305,3 +305,27 @@ describe('cycle-9 F4 — a non-ASCII digit is not a structural circuit number', 
     }
   );
 });
+
+/**
+ * cycle-10 F2 — the shape-C boundary length test. This side compares JS
+ * `.length` (UTF-16 units); Swift's `String.count` is extended grapheme
+ * clusters. A combining mark immediately after the boundary joins the
+ * preceding SPACE into ONE Swift grapheme, so iOS measured a 3-unit tail
+ * against a 3-unit boundary and discarded a boundary this side accepted
+ * — the same frame spoken raw on iOS and repaired on web. Swift now
+ * compares `tail.utf16.count`. iOS twin:
+ * `DesignationHygieneBoundaryTests` § "Cycle-10 (F1/F2)".
+ */
+describe('cycle-10 F2 — shape-C boundary length is UTF-16 units, not graphemes', () => {
+  // U+0301 COMBINING ACUTE ACCENT as the entire tail body.
+  const MARK = '\u0301';
+
+  it('a combining-mark tail is still a valid boundary and the slot repairs', () => {
+    const out = rewriteConfirmationDesignationText(
+      `Created circuit 5, Garage circuit \u2014 ${MARK}`,
+      opts
+    );
+    expect(out.changed).toBe(true);
+    expect(out.text).toBe(`Created circuit 5, Garage \u2014 ${MARK}`);
+  });
+});

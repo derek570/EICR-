@@ -174,6 +174,22 @@ describe('add_circuit — legacy action, iOS-parity semantics (PLAN-B2)', () => 
     expect(rows[0].board_id).toBeUndefined();
     expect(outcome.response).toBe('Added circuit 1, Garage.');
   });
+
+  it('applier: template choice uses the JS trim class, so a NEL-only canonical still names the designation (cycle-10 F1)', () => {
+    // 'Circuit \u0085' canonicalises to a lone NEL on BOTH platforms —
+    // SPACE is a delimiter, so "Circuit" is a standalone leading token.
+    // This is the value that split the two clients: iOS tested emptiness
+    // with a Foundation trim (Unicode White_Space, which SWALLOWS NEL)
+    // and spoke the short template, while this side's `.trim()` (the
+    // ECMAScript class, which does not) named the designation.
+    const outcome = applyVoiceCommand(
+      { type: 'add_circuit', description: 'Circuit \u0085' },
+      multiBoardJob()
+    );
+    const rows = outcome.patch?.circuits as Array<Record<string, unknown>>;
+    expect(rows.find((r) => r.circuit_ref === '8')?.circuit_designation).toBe('\u0085');
+    expect(outcome.response).toBe('Added circuit 8, \u0085.');
+  });
 });
 
 describe('voiceCommandTargetsDesignation — spoken-override predicate', () => {
