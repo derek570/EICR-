@@ -35,7 +35,32 @@
 
 import type { CCUAnalysis, CCUAnalysisCircuit, CircuitRow, JobDetail } from '../types';
 import { hasValue } from './apply-extraction';
-import type { CircuitMatch } from '@certmate/shared-utils';
+import { repairCircuitDesignation, type CircuitMatch } from '@certmate/shared-utils';
+
+/**
+ * PLAN-B2 (feedback id 128) — canonicalise every circuit label on an
+ * incoming COPY of the analysis at import ENTRY, BEFORE matching,
+ * dedupe, default inference, or row construction. The CCU analyser can
+ * return labels like "Kitchen sockets circuit"; if the raw label
+ * reached `matchCircuits()` while existing rows are already canonical,
+ * the dirty and clean edge-token variants would compete for the same
+ * row. Idempotent (safe to call again inside `applyCcuAnalysisToJob`
+ * after a caller-side pass). Repair semantics: banned-token-only labels
+ * are left unchanged — never blanked (empty designation = spare).
+ */
+export function canonicaliseCcuAnalysisLabels(analysis: CCUAnalysis): CCUAnalysis {
+  const circuits = analysis.circuits ?? [];
+  if (circuits.length === 0) return analysis;
+  let changed = false;
+  const next = circuits.map((c) => {
+    if (typeof c.label !== 'string') return c;
+    const repaired = repairCircuitDesignation(c.label);
+    if (repaired === c.label) return c;
+    changed = true;
+    return { ...c, label: repaired as string };
+  });
+  return changed ? { ...analysis, circuits: next } : analysis;
+}
 
 /** Valid RCD sensitivity types — iOS keeps this list in
  *  FuseboardAnalysisApplier.swift (two copies). Matches exactly so
@@ -568,6 +593,11 @@ export function applyCcuAnalysisToJob(
   analysis: CCUAnalysis,
   options: CcuApplyOptions = {}
 ): CcuApplyResult {
+  // PLAN-B2 — canonicalise labels on the incoming copy before any row
+  // construction (and before the analysis is PERSISTED verbatim into
+  // `ccu_analysis_by_board` below). Idempotent when the caller already
+  // canonicalised for matching.
+  analysis = canonicaliseCcuAnalysisLabels(analysis);
   const mode: CcuApplyMode = options.mode ?? 'full_capture';
   const patch: Partial<JobDetail> = {};
 

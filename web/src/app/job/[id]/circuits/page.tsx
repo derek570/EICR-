@@ -32,7 +32,11 @@ import { useJobContext } from '@/lib/job-context';
 import { useCurrentUser } from '@/lib/use-current-user';
 import { useUserDefaults } from '@/hooks/use-user-defaults';
 import { ApiError, type CCUAnalysisCircuit, type CircuitRow } from '@/lib/types';
-import { applyCcuAnalysisToJob, type CcuApplyMode } from '@/lib/recording/apply-ccu-analysis';
+import {
+  applyCcuAnalysisToJob,
+  canonicaliseCcuAnalysisLabels,
+  type CcuApplyMode,
+} from '@/lib/recording/apply-ccu-analysis';
 import { applyDocumentExtractionToJob } from '@/lib/recording/apply-document-extraction';
 import {
   savePendingCcuExtraction,
@@ -609,9 +613,17 @@ export default function CircuitsPage() {
    */
   const applyCcuAnalysisResult = (
     mode: CcuApplyMode,
-    analysis: Awaited<ReturnType<typeof api.analyzeCCU>>,
+    rawAnalysis: Awaited<ReturnType<typeof api.analyzeCCU>>,
     targetBoardId: string | null
   ) => {
+    // PLAN-B2 (feedback id 128) — canonicalise circuit labels at the
+    // import ENTRY, before `matchCircuits()` runs and before the
+    // analysis is stashed in the match handoff. Matching a raw
+    // "Kitchen sockets circuit" label against already-canonical
+    // existing rows would let dirty and clean edge-token variants
+    // compete for the same row. `applyCcuAnalysisToJob` re-repairs
+    // idempotently for callers that skip this path.
+    const analysis = canonicaliseCcuAnalysisLabels(rawAnalysis);
     if (mode === 'hardware_update') {
       // Run the matcher locally, stash the result in sessionStorage,
       // and navigate to the Match Review screen. The apply step runs

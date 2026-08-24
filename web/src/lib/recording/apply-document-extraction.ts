@@ -36,6 +36,7 @@ import type {
   ObservationRow,
 } from '../types';
 import { hasValue, parseObservationCode } from './apply-extraction';
+import { repairCircuitDesignation } from '@certmate/shared-utils';
 
 /** Whitelist of installation keys we let the extractor populate.
  *  Aligned with `InstallationShape` in
@@ -333,7 +334,21 @@ function mergeCircuits(
 
   let affected = 0;
 
-  for (const analysed of incoming) {
+  for (const rawAnalysed of incoming) {
+    // PLAN-B2 (feedback id 128) — canonicalise the import-entry COPY of
+    // the incoming designation. Both write paths below are the generic
+    // `row[field] = value` loop, so repairing the copy here covers the
+    // matched-row fill AND the new-row build in one place. Repair
+    // semantics: banned-token-only stays unchanged (empty = spare).
+    const analysed =
+      typeof rawAnalysed.circuit_designation === 'string'
+        ? {
+            ...rawAnalysed,
+            circuit_designation: repairCircuitDesignation(
+              rawAnalysed.circuit_designation
+            ) as string,
+          }
+        : rawAnalysed;
     const refRaw = analysed.circuit_ref;
     if (!refRaw) continue;
     const key = String(refRaw).toLowerCase();

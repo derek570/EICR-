@@ -16,6 +16,7 @@
  */
 
 import { api } from '../api-client';
+import { repairCircuitDesignation } from '@certmate/shared-utils';
 import type { JobDetail } from '../types';
 import type { CertificateDefaultPreset, CableDefault } from './types';
 import { DEFAULT_CABLE_TYPES } from './types';
@@ -356,10 +357,20 @@ export function applyPresetToJob(
   // Circuits — copy if the job has none. Don't merge circuit-by-circuit:
   // circuits are job-specific and a preset's circuits are meant as a
   // starting point, not an overlay.
+  //
+  // PLAN-B2 (feedback id 128) — a LEGACY preset saved before the
+  // designation-hygiene wave can carry "…circuit"-suffixed labels; this
+  // copy is a designation write boundary that traverses no other
+  // canonicalisation point, so repair each designation on the copied
+  // rows (banned-token-only left unchanged — empty = spare).
   const existingCircuits = (job.circuits ?? []) as unknown[];
-  const tplCircuits = (tpl.circuits ?? []) as unknown[];
+  const tplCircuits = (tpl.circuits ?? []) as Array<Record<string, unknown>>;
   if (tplCircuits.length > 0 && existingCircuits.length === 0) {
-    patch.circuits = tpl.circuits;
+    patch.circuits = tplCircuits.map((row) =>
+      typeof row.circuit_designation === 'string'
+        ? { ...row, circuit_designation: repairCircuitDesignation(row.circuit_designation) }
+        : row
+    ) as JobDetail['circuits'];
   }
 
   // Observations — copy if the job has none.
