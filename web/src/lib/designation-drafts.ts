@@ -81,13 +81,20 @@ export function _registeredDesignationDraftCount(): number {
 // on enqueue failure the journal survives for next-mount recovery.
 
 const JOURNAL_PREFIX = 'cm-designation-draft:';
-const committedJournalKeys = new Set<string>();
+// key → committed revision awaiting durability (cycle-4: BATCH-scoped —
+// a save captures its batch at drain time; a draft committing while
+// that save is in flight lands in the NEXT batch and its journal
+// survives a kill until ITS save durably enqueues).
+const committedJournalRevisions = new Map<string, number>();
+// key → current write revision (bumped per keystroke).
+const journalRevisions = new Map<string, number>();
 
 export function writeDesignationJournal(key: string, value: string): void {
   try {
     window.localStorage.setItem(JOURNAL_PREFIX + key, value);
+    journalRevisions.set(key, (journalRevisions.get(key) ?? 0) + 1);
     // A fresh draft supersedes any pending-clear mark for this key.
-    committedJournalKeys.delete(key);
+    committedJournalRevisions.delete(key);
   } catch {
     /* best-effort */
   }
@@ -101,21 +108,42 @@ export function readDesignationJournal(key: string): string | null {
   }
 }
 
-/** Mark a journal as committed-to-pending; cleared only once durable. */
+/** Mark a journal as committed-to-pending at its CURRENT revision;
+ *  physically cleared only once the batch that carried it is durable. */
 export function markDesignationJournalCommitted(key: string): void {
-  committedJournalKeys.add(key);
+  committedJournalRevisions.set(key, journalRevisions.get(key) ?? 0);
 }
 
-/** JobProvider calls this AFTER queueSaveJob resolves (the outbox
- *  enqueue succeeded — the edit is durable) to drop committed journals. */
-export function clearCommittedDesignationJournals(): void {
-  const keys = Array.from(committedJournalKeys);
-  committedJournalKeys.clear();
-  for (const key of keys) {
+export type DesignationJournalBatch = Array<[string, number]>;
+
+/** Snapshot-and-drain the committed set at save-drain time. The save
+ *  that captured this batch clears exactly these revisions on durable
+ *  enqueue — nothing committed afterwards. */
+export function takeCommittedDesignationJournalBatch(): DesignationJournalBatch {
+  const batch = Array.from(committedJournalRevisions.entries());
+  committedJournalRevisions.clear();
+  return batch;
+}
+
+/** Clear a durably-enqueued batch — each key only when no NEWER
+ *  keystroke has re-journalled it since the batch was captured. */
+export function clearDesignationJournalBatch(batch: DesignationJournalBatch): void {
+  for (const [key, revision] of batch) {
+    if ((journalRevisions.get(key) ?? 0) !== revision) continue;
     try {
       window.localStorage.removeItem(JOURNAL_PREFIX + key);
     } catch {
       /* best-effort */
+    }
+  }
+}
+
+/** Restore a batch whose save FAILED pre-durability (existing newer
+ *  marks win). */
+export function restoreDesignationJournalBatch(batch: DesignationJournalBatch): void {
+  for (const [key, revision] of batch) {
+    if (!committedJournalRevisions.has(key)) {
+      committedJournalRevisions.set(key, revision);
     }
   }
 }

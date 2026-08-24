@@ -8,9 +8,11 @@ import { queueSaveJob } from './pwa/queue-save-job';
 import { listPendingMutationsStrict } from './pwa/outbox';
 import { withJobSaveLock } from './pwa/job-save-lock';
 import {
-  clearCommittedDesignationJournals,
+  clearDesignationJournalBatch,
   flushDesignationDrafts,
+  restoreDesignationJournalBatch,
   setDesignationRecoveryReady,
+  takeCommittedDesignationJournalBatch,
 } from './designation-drafts';
 import { repairJobCircuitDesignations } from './repair-job-designations';
 
@@ -241,6 +243,11 @@ export function JobProvider({
     // Snapshot + clear so any keystrokes during the flight re-fill the
     // ref instead of being wiped by a racing flush.
     pendingPatchRef.current = {};
+    // Cycle-4 — the journal batch is captured AT DRAIN TIME with the
+    // patch: a draft committing while this save is in flight lands in
+    // the NEXT batch, so this save's durable enqueue can never clear a
+    // journal whose edit it does not carry.
+    const journalBatch = takeCommittedDesignationJournalBatch();
     const detail = jobRef.current;
     const jobId = detail.id;
     setIsSaving(true);
@@ -255,9 +262,10 @@ export function JobProvider({
           queueSaveJob(user.id, jobId, pending, { optimisticDetail: detail })
         )
       );
-      // Cycle-3 — the enqueue is durable; committed designation-draft
-      // journals may now be dropped.
-      clearCommittedDesignationJournals();
+      // Cycle-3/4 — the enqueue is durable; exactly THIS batch's
+      // journals may now be dropped (revision-checked: a newer
+      // keystroke's journal survives).
+      clearDesignationJournalBatch(journalBatch);
       if (!mountedRef.current) return;
       // Clear `isDirty` only if no new edits queued while we were saving.
       // If the user kept typing, keep the flag and let the next debounce
@@ -279,8 +287,10 @@ export function JobProvider({
         // reached NEITHER the server nor the outbox. Restore it (newer
         // pending keys win) and re-arm the debounce, else a load-repair
         // patch for this doc version would be lost forever (the
-        // per-version tag blocks a re-enqueue).
+        // per-version tag blocks a re-enqueue). Cycle-4: the journal
+        // batch is restored too, so the journals survive for recovery.
         pendingPatchRef.current = { ...pending, ...pendingPatchRef.current };
+        restoreDesignationJournalBatch(journalBatch);
         if (mountedRef.current) {
           setIsDirty(true);
           scheduleSaveRef.current?.();
@@ -492,6 +502,7 @@ export function JobProvider({
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     const pending = pendingPatchRef.current;
     pendingPatchRef.current = {};
+    const journalBatch = takeCommittedDesignationJournalBatch();
     const detail = jobRef.current;
     const patch: Partial<JobDetail> = { ...pending, circuits: detail.circuits };
     if (mountedRef.current) {
@@ -510,7 +521,7 @@ export function JobProvider({
           const saved = await queueSaveJob(user.id, detail.id, patch, {
             optimisticDetail: detail,
           });
-          clearCommittedDesignationJournals();
+          clearDesignationJournalBatch(journalBatch);
           if (!saved.synced) return { synced: false as const };
           const rows = await listPendingMutationsStrict();
           // A POISONED row will never replay, so it cannot overwrite
@@ -533,8 +544,9 @@ export function JobProvider({
         // outbox enqueue itself threw, so the drained patch reached
         // NEITHER the server nor the outbox. Restore (newer keys win)
         // and re-arm, else a draft/load-repair patch dies with a failed
-        // PDF attempt.
+        // PDF attempt. Cycle-4: journals restored with it.
         pendingPatchRef.current = { ...pending, ...pendingPatchRef.current };
+        restoreDesignationJournalBatch(journalBatch);
         if (mountedRef.current) {
           setIsDirty(true);
           scheduleSaveRef.current?.();

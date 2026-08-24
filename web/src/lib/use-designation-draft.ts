@@ -31,8 +31,15 @@ import {
  * cleared before invoking) and unmount-safe.
  */
 export function useDesignationDraft(opts: {
-  /** Registry key — unique per surface+row (e.g. `desktop:<circuitId>`). */
+  /** Registry key — unique per MOUNTED surface+row (two surfaces may
+   *  render the same circuit; each needs its own registry slot). */
   draftKey: string;
+  /** Cycle-4 — LOGICAL journal key, shared across surfaces for one
+   *  circuit (`${jobId}:designation:${circuitId}`): a crash-created
+   *  card journal must be visible when the job next opens in
+   *  desktop/table view, and a newer edit on ANY surface must
+   *  supersede it. Defaults to draftKey for standalone harnesses. */
+  journalKey?: string;
   /** Current committed model value for this designation. */
   modelValue: string;
   /** Canonicalise + synchronously commit the raw draft to the model. */
@@ -50,12 +57,14 @@ export function useDesignationDraft(opts: {
   const unregisterRef = React.useRef<(() => void) | null>(null);
   const commitFnRef = React.useRef(opts.commit);
   const draftKeyRef = React.useRef(opts.draftKey);
+  const journalKeyRef = React.useRef(opts.journalKey ?? opts.draftKey);
   // Latest-ref pattern via insertion effect (react-hooks/refs forbids
   // render-time ref writes). Commits only fire from blur/flush handlers,
   // which always run after effects have stamped the latest closures.
   React.useInsertionEffect(() => {
     commitFnRef.current = opts.commit;
     draftKeyRef.current = opts.draftKey;
+    journalKeyRef.current = opts.journalKey ?? opts.draftKey;
   });
 
   const commitNow = React.useCallback(() => {
@@ -64,12 +73,15 @@ export function useDesignationDraft(opts: {
     draftRef.current = null;
     unregisterRef.current?.();
     unregisterRef.current = null;
+    // Cycle-4 ordering — only an ACTUAL commit marks its journal (an
+    // unmounting hook with no open draft must never mark a stranded,
+    // still-gated journal for clearing by an unrelated save).
+    if (open == null) return;
     // Cycle-3 — the journal is only MARKED here; it is physically
     // cleared by JobProvider once the outbox enqueue has durably
     // succeeded (a page kill between this commit and the enqueue would
     // otherwise lose both copies).
-    markDesignationJournalCommitted(draftKeyRef.current);
-    if (open == null) return;
+    markDesignationJournalCommitted(journalKeyRef.current);
     setDraft(null); // post-unmount this is a safe no-op
     commitFnRef.current(open);
   }, []);
@@ -82,7 +94,7 @@ export function useDesignationDraft(opts: {
       // only STARTS an async IndexedDB enqueue, and the browser may kill
       // the process before it completes (tab close, PWA eviction). The
       // journal survives that; the next mount of this surface commits it.
-      writeDesignationJournal(draftKeyRef.current, next);
+      writeDesignationJournal(journalKeyRef.current, next);
       if (!unregisterRef.current) {
         unregisterRef.current = registerDesignationDraft(draftKeyRef.current, commitNow);
       }
@@ -97,7 +109,7 @@ export function useDesignationDraft(opts: {
   // class). The journal is cleared only after the guarded commit runs;
   // the commit itself is functional against the then-current job.
   React.useEffect(() => {
-    const key = draftKeyRef.current;
+    const key = journalKeyRef.current;
     const cancel = whenDesignationRecoveryReady(() => {
       const stranded = readDesignationJournal(key);
       if (stranded != null && draftRef.current == null) {

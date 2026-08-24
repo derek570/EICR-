@@ -75,6 +75,36 @@ describe('shape C — PLAN-D merged create carrier', () => {
     const out = rewriteConfirmationDesignationText(text, opts);
     expect(out.changed).toBe(false);
   });
+
+  it('em-dash designation: iterates boundaries, rewriting at the split that resolves (C4-4)', () => {
+    // Designation itself contains " — ". A first-boundary split would
+    // hand "outbuilding feed circuit — wiring type A" to the tail and
+    // rewrite nothing (the fragment "Garage" resolves to nothing).
+    aliases.record('Garage — outbuilding feed circuit', 'Garage — outbuilding feed');
+    const out = rewriteConfirmationDesignationText(
+      'Created circuit 5, Garage — outbuilding feed circuit — wiring type A',
+      opts
+    );
+    expect(out.changed).toBe(true);
+    expect(out.text).toBe('Created circuit 5, Garage — outbuilding feed — wiring type A');
+  });
+
+  it('em-dash designation resolves via pure repair when no alias/model knows it', () => {
+    const out = rewriteConfirmationDesignationText(
+      'Created circuit 5, Garage — outbuilding feed circuit — wiring type A',
+      opts
+    );
+    expect(out.changed).toBe(true);
+    expect(out.text).toBe('Created circuit 5, Garage — outbuilding feed — wiring type A');
+  });
+
+  it('already-canonical em-dash designation passes through unchanged at every candidate split', () => {
+    circuits[5] = 'Garage — outbuilding feed';
+    const text = 'Created circuit 5, Garage — outbuilding feed — wiring type A';
+    const out = rewriteConfirmationDesignationText(text, opts);
+    expect(out.changed).toBe(false);
+    expect(out.text).toBe(text);
+  });
 });
 
 describe('shape A — "<designation>, circuit N, <body>"', () => {

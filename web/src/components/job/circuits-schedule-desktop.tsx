@@ -566,6 +566,7 @@ function Row({
   // defaults pipeline runs against the committed canonical shape.
   const designationDraft = useDesignationDraft({
     draftKey: `${designationDraftScope}:desktop:${circuit.id}`,
+    journalKey: `${designationDraftScope}:designation:${circuit.id}`,
     modelValue: typeof circuit.circuit_designation === 'string' ? circuit.circuit_designation : '',
     commit: (raw) => {
       const canonical = onCommitDesignation(circuit.id, raw);

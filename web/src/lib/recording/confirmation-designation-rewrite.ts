@@ -132,8 +132,12 @@ function resolveSlot(
 // "Circuit <N>" is STRUCTURAL and preserved verbatim (case-sensitive:
 // the builder always capitalises; a lowercase variant is not ours).
 const SHAPE_B = /^(Circuit (\d+) is now the )(.+)$/;
-// Shape C — PLAN-D merged create carrier.
-const SHAPE_C = /^(Created circuit (\d+), )(.+?)( — .+)$/;
+// Shape C — PLAN-D merged create carrier. Only the structural head is
+// matched here; the designation/tail split is NOT the first " — "
+// (designations may legally contain an em-dash), so the rewrite
+// iterates every boundary as a candidate split (cycle-4).
+const SHAPE_C_HEAD = /^(Created circuit (\d+), )(.+ — .+)$/;
+const SHAPE_C_BOUNDARY = ' — ';
 // Shape A — designation prefix before ", circuit <N>, ". GREEDY first
 // group: designations may themselves contain commas ("Upstairs sockets,
 // lights…"); the builder emits exactly one ", circuit <N>," separator.
@@ -152,12 +156,29 @@ export function rewriteConfirmationDesignationText(
     }
     return { text, changed: false };
   }
-  const c = SHAPE_C.exec(text);
+  const c = SHAPE_C_HEAD.exec(text);
   if (c) {
     const circuit = parseInt(c[2], 10);
-    const replacement = resolveSlot(c[3], circuit, opts);
-    if (replacement != null && replacement !== c[3]) {
-      return { text: `${c[1]}${replacement}${c[4]}`, changed: true };
+    const remainder = c[3];
+    // Cycle-4 (C4-4) — a designation may itself contain " — "
+    // ("Garage — outbuilding feed"), so a lazy first-boundary split
+    // mis-attributes its second half to the tail and rewrites only a
+    // fragment. Iterate every boundary left-to-right and rewrite the
+    // FIRST candidate whose left side positively resolves; if none
+    // does, the text passes through byte-identical.
+    let searchFrom = 0;
+    for (;;) {
+      const idx = remainder.indexOf(SHAPE_C_BOUNDARY, searchFrom);
+      if (idx === -1) break;
+      const slot = remainder.slice(0, idx);
+      const tail = remainder.slice(idx);
+      if (slot !== '' && tail.length > SHAPE_C_BOUNDARY.length) {
+        const replacement = resolveSlot(slot, circuit, opts);
+        if (replacement != null && replacement !== slot) {
+          return { text: `${c[1]}${replacement}${tail}`, changed: true };
+        }
+      }
+      searchFrom = idx + 1;
     }
     return { text, changed: false };
   }
