@@ -1,4 +1,9 @@
 export { normalise } from './number-normaliser';
+export {
+  canonicaliseCircuitDesignation,
+  designationCanonicalisesToEmpty,
+  repairCircuitDesignation,
+} from './designation-canonicaliser';
 export { generateKeywordBoosts } from './keyword-boost-generator';
 export { cn } from './cn';
 export { buildLocalJob } from './build-local-job';
