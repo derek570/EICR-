@@ -242,8 +242,14 @@ export function JobProvider({
     setIsSaving(true);
     setSaveError(null);
     try {
+      // Cycle-2 — ordinary saves hold the per-job cross-tab lock too
+      // (chain first, lock inside the chained op: acquiring the lock
+      // around the chain would deadlock against a queued op that also
+      // wants it).
       await enqueueSerialisedSave(() =>
-        queueSaveJob(user.id, jobId, pending, { optimisticDetail: detail })
+        withJobSaveLock(user.id, jobId, () =>
+          queueSaveJob(user.id, jobId, pending, { optimisticDetail: detail })
+        )
       );
       if (!mountedRef.current) return;
       // Clear `isDirty` only if no new edits queued while we were saving.
@@ -486,37 +492,29 @@ export function JobProvider({
       setSaveError(null);
     }
     try {
-      // Serialised behind any in-flight save (Codex r1: an OLDER save
-      // resolving after this one could revert the server before the PDF
-      // renders).
+      // Cycle-2 — the SAVE and the drained-proof run inside ONE lock
+      // hold (r1 locked only the proof: an older replay holding the
+      // lock could land after a concurrent unlocked fresh save, remove
+      // its row, and the later locked proof would see a drained outbox
+      // over a reverted schedule). Chain first, lock inside the chained
+      // op — same non-reentrant ordering as flushSave.
       const result = await enqueueSerialisedSave(() =>
-        queueSaveJob(user.id, detail.id, patch, { optimisticDetail: detail })
+        withJobSaveLock(user.id, detail.id, async () => {
+          const saved = await queueSaveJob(user.id, detail.id, patch, {
+            optimisticDetail: detail,
+          });
+          if (!saved.synced) return { synced: false as const };
+          const rows = await listPendingMutationsStrict();
+          // A POISONED row will never replay, so it cannot overwrite
+          // the fresh save — only live pending rows block the gate.
+          const drained = rows.every((m) => m.jobId !== detail.id || m.poisoned === true);
+          return { synced: drained };
+        })
       );
       if (mountedRef.current && Object.keys(pendingPatchRef.current).length === 0) {
         setIsDirty(false);
       }
-      if (!result.synced) return { synced: false };
-      // Codex r1 + mini-review c1 — a fresh synced save still does not
-      // prove S3 holds THIS snapshot if OLDER outbox rows for this job
-      // remain queued (the replay worker could push a stale circuits
-      // mutation after this save; another tab could too). The proof is a
-      // STRICT outbox read (propagates read errors — the lenient
-      // listPendingMutations returns [] on failure, which would treat an
-      // unreadable outbox as drained) finding no other rows for this
-      // job, taken under the cross-tab save lock where available.
-      const proveDrained = async (): Promise<boolean> => {
-        const rows = await listPendingMutationsStrict();
-        // A POISONED row will never replay, so it cannot overwrite the
-        // fresh save — only live pending rows block the gate.
-        return rows.every((m) => m.jobId !== detail.id || m.poisoned === true);
-      };
-      try {
-        const drained = await withJobSaveLock(user.id, detail.id, proveDrained);
-        return { synced: drained };
-      } catch {
-        // Outbox unreadable — cannot prove drained; fail closed.
-        return { synced: false };
-      }
+      return { synced: result.synced };
     } catch (err) {
       // 4xx — a validation rejection will never sync; surface it and
       // report un-synced so the caller fails visibly / falls back.

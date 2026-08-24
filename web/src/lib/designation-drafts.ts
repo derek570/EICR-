@@ -99,8 +99,17 @@ export function setDesignationRecoveryReady(ready: boolean): void {
 }
 
 /** Run `fn` once the provider doc is authoritative (immediately if it
- *  already is). Used by the draft hook's journal recovery. */
-export function whenDesignationRecoveryReady(fn: () => void): void {
-  if (recoveryReady) fn();
-  else pendingRecoveries.push(fn);
+ *  already is). Returns a cancel function — a hook unmounting (job
+ *  navigation) MUST cancel so its queued recovery cannot fire under the
+ *  NEXT job's provider (cycle-2). */
+export function whenDesignationRecoveryReady(fn: () => void): () => void {
+  if (recoveryReady) {
+    fn();
+    return () => {};
+  }
+  pendingRecoveries.push(fn);
+  return () => {
+    const idx = pendingRecoveries.indexOf(fn);
+    if (idx >= 0) pendingRecoveries.splice(idx, 1);
+  };
 }

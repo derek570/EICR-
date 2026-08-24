@@ -1092,6 +1092,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const session = sonnetRef.current;
       if (!session) return;
       try {
+        // Cycle-2 — commit any focused designation draft and adopt the
+        // committed snapshot IMMEDIATELY before building the wire
+        // payload, so the pushed job state never omits a focused draft.
+        jobRef.current = flushDraftsAndGetSnapshotRef.current();
         // Plan E (feedback id 125) — normalise installation_details to the
         // frozen wire contract (client_postcode -> clientPostcode etc.)
         // before it crosses the wire; the internal job object itself keeps
@@ -3107,6 +3111,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
       },
       onFieldCorrected: (msg) => {
+        // Cycle-2 — standalone handler (bypasses applyExtraction's
+        // envelope flush): commit any focused designation draft and
+        // adopt the snapshot BEFORE the clear/correction mutates.
+        jobRef.current = flushDraftsAndGetSnapshotRef.current();
         // A1b (2026-07-29) — BOARD-scope clear frame (circuit:null +
         // non-null board_id, A1a's clear_board_reading wire
         // discriminator). Routed through the tested BOARD_CLEAR_ROUTE_MAP
@@ -3189,6 +3197,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           msg.rating_amps != null
             ? [{ circuit: msg.circuit_ref, field: 'ocpd_rating', value: msg.rating_amps }]
             : [];
+        // Cycle-2 — this standalone handler bypasses applyExtraction's
+        // envelope flush: commit any focused draft and adopt the
+        // snapshot BEFORE the wire create mutates, so a later blur can
+        // never resurrect a stale draft over the spoken result.
+        jobRef.current = flushDraftsAndGetSnapshotRef.current();
         // Codex r1 — this handler calls applyExtractionToJob directly
         // (not the envelope path), so record the designation alias here.
         recordDesignationAliasRef.current(msg.designation);
@@ -3236,6 +3249,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           msg.rating_amps != null
             ? [{ circuit: msg.circuit_ref, field: 'ocpd_rating', value: msg.rating_amps }]
             : [];
+        // Cycle-2 — same standalone-handler flush+adopt as onCircuitCreated.
+        jobRef.current = flushDraftsAndGetSnapshotRef.current();
         // Codex r1 — same direct-apply alias recording as onCircuitCreated.
         recordDesignationAliasRef.current(msg.designation);
         const circuitUpdates = msg.designation

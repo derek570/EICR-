@@ -66,6 +66,15 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // hydrated=true leaking onto the next job's cache paint.
     setNetworkHydrated(false);
     setNetworkRejected(false);
+    // Cycle-2 (BLOCKER) — also RESET the document on an in-place job
+    // change: the cache setter below is `prev ?? cached`, so job B's
+    // cached doc could never replace a non-null job A (offline
+    // navigation displayed A as B), and a stale-A provider could
+    // cross-write A's pending circuits under B. The keyed
+    // <JobProvider key={jobId}> below remounts provider state; this
+    // reset makes the layout's own doc honest during the transition.
+    setJob(null);
+    setError(null);
 
     // Phase 7b — stale-while-revalidate via the IDB job cache.
     //
@@ -152,7 +161,12 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
       {job === null ? (
         <JobShellLoading error={error} />
       ) : (
-        <JobProvider initial={job} hydrated={networkHydrated} networkRejected={networkRejected}>
+        <JobProvider
+          key={jobId}
+          initial={job}
+          hydrated={networkHydrated}
+          networkRejected={networkRejected}
+        >
           <RecordingProvider>
             <div className="flex min-h-[calc(100dvh-56px)] flex-col">
               <JobHeader />

@@ -117,13 +117,16 @@ export function useDesignationDraft(opts: {
   // the commit itself is functional against the then-current job.
   React.useEffect(() => {
     const key = draftKeyRef.current;
-    whenDesignationRecoveryReady(() => {
+    const cancel = whenDesignationRecoveryReady(() => {
       const stranded = readDraftJournal(key);
       if (stranded != null && draftRef.current == null) {
         clearDraftJournal(key);
         commitFnRef.current(stranded);
       }
     });
+    // Cycle-2 — cancel on unmount so a queued recovery from THIS job's
+    // surface can never fire under the next job's provider.
+    return cancel;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
