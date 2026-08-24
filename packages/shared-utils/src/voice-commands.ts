@@ -123,6 +123,20 @@ export type VoiceCommand =
        *  otherwise reach a backend with no contradiction branch, which
        *  may pick one scope and mutate anyway). */
       type: 'apply_field_contradiction';
+    }
+  | {
+      /** PLAN-B2 — legacy `add_circuit` action from the
+       *  SONNET_TOOL_CALLS=off rollback prompt path
+       *  (`config/prompts/sonnet_extraction_system.md` §add_circuit:
+       *  `{type:"add_circuit",params:{description}}`). iOS has owned
+       *  this since the legacy era (`executeAddCircuit`); web's mapper
+       *  previously had NO case, so it spoke the server's success text
+       *  while silently dropping the mutation. Board/ref semantics
+       *  MIRROR iOS's today (round-14 revert): `boards.first?.id`
+       *  attribution + GLOBAL next-ref — deliberately imperfect on
+       *  multi-board jobs, identically imperfect on both clients. */
+      type: 'add_circuit';
+      description: string;
     };
 
 export interface VoiceCommandOutcome {
@@ -754,6 +768,8 @@ export function applyVoiceCommand(
       return applyCalculateImpedance(command, job);
     case 'apply_field':
       return applyApplyField(command, job);
+    case 'add_circuit':
+      return applyAddCircuit(command, job);
     case 'apply_field_contradiction':
       // PLAN-F item 1, Decision 3 — consumed locally: speak a deterministic
       // refusal, no patch (nothing mutates), never forwarded to the server.
@@ -1127,6 +1143,77 @@ function applyApplyField(
     response,
     changedKeys: [resolved.circuitField as string],
   };
+}
+
+/**
+ * PLAN-B2 — apply the legacy `add_circuit` action locally. Mirrors iOS
+ * `VoiceCommandExecutor.executeAddCircuit` (:105-115) semantics as they
+ * stand TODAY:
+ *   - GLOBAL next-ref: max numeric `circuit_ref` across ALL circuits
+ *     (every board) + 1;
+ *   - board attribution: `boards.first?.id` (undefined when the job has
+ *     no boards yet — same as iOS's optional boardId);
+ *   - designation canonicalised ONCE (repair semantics) and the SAME
+ *     value used for storage and the spoken response;
+ *   - rows kept sorted by numeric ref (iOS `sortByCircuitRef`).
+ * Deliberately NOT board-scoped allocation — the round-14 revert pinned
+ * today's identically-imperfect multi-board behaviour on both clients;
+ * which-board correctness is the "multi-board voice-routing" follow-up
+ * plan, not this one.
+ */
+function applyAddCircuit(
+  command: Extract<VoiceCommand, { type: 'add_circuit' }>,
+  job: VoiceCommandJob
+): VoiceCommandOutcome {
+  const circuits = [...(job.circuits ?? [])];
+  const maxRef = circuits.reduce((max, row) => {
+    const parsed = parseInt(String(row.circuit_ref ?? row.number ?? ''), 10);
+    return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
+  }, 0);
+  const nextRef = String(maxRef + 1);
+  const boards = job.boards as Array<{ id?: string }> | undefined;
+  const boardId = boards?.[0]?.id;
+  const canonical = repairCircuitDesignation(command.description) as string;
+  const row: VoiceCommandCircuit = {
+    id:
+      globalThis.crypto?.randomUUID?.() ??
+      `c-${nextRef}-${Math.random().toString(36).slice(2, 10)}`,
+    circuit_ref: nextRef,
+    number: nextRef,
+    circuit_designation: canonical,
+  };
+  if (boardId) row.board_id = boardId;
+  const next = [...circuits, row].sort((a, b) => {
+    const an = parseInt(String(a.circuit_ref ?? a.number ?? ''), 10);
+    const bn = parseInt(String(b.circuit_ref ?? b.number ?? ''), 10);
+    return (Number.isFinite(an) ? an : 0) - (Number.isFinite(bn) ? bn : 0);
+  });
+  // Spoken template — the SAME canonical value as storage. This exact
+  // wording is the cross-client contract for the add action (the iOS
+  // spoken-override half pins the identical string).
+  const response = canonical.trim()
+    ? `Added circuit ${nextRef}, ${canonical}.`
+    : `Added circuit ${nextRef}.`;
+  return {
+    patch: { circuits: next },
+    response,
+    changedKeys: ['circuits'],
+  };
+}
+
+/**
+ * PLAN-B2 — TRUE when a mapped voice command writes/speaks a circuit
+ * designation. The recording context uses this to decide the spoken
+ * response must be the LOCALLY constructed canonical text (the server's
+ * raw `spoken_response` may carry the banned word verbatim).
+ */
+export function voiceCommandTargetsDesignation(command: VoiceCommand): boolean {
+  if (command.type === 'add_circuit') return true;
+  if (command.type === 'update_field' || command.type === 'apply_field') {
+    const resolved = resolveField(command.field, /* hasCircuit */ true);
+    return resolved?.circuitField === 'circuit_designation';
+  }
+  return false;
 }
 
 /** Decision 4's exact count-aware skip clause, shared verbatim across all

@@ -11,7 +11,12 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { applyVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
+import {
+  applyVoiceCommand,
+  voiceCommandTargetsDesignation,
+  type VoiceCommandJob,
+} from '@certmate/shared-utils';
+import { mapServerActionToVoiceCommand } from '../src/lib/recording/voice-command-action';
 
 const job = (): VoiceCommandJob => ({
   supply: {},
@@ -98,5 +103,108 @@ describe('applyApplyField — circuit_designation hygiene across bulk scope', ()
     const rows = outcome.patch?.circuits as Array<Record<string, unknown>>;
     expect(rows[0].circuit_designation).toBe('circuits');
     expect(outcome.response).toBe('Set designation to circuits for 1 circuit.');
+  });
+});
+
+describe('add_circuit — legacy action, iOS-parity semantics (PLAN-B2)', () => {
+  const multiBoardJob = (): VoiceCommandJob => ({
+    supply: {},
+    boards: [{ id: 'board-A' }, { id: 'board-B' }],
+    circuits: [
+      {
+        id: 'c1',
+        circuit_ref: '1',
+        number: '1',
+        board_id: 'board-A',
+        circuit_designation: 'Cooker',
+      },
+      {
+        id: 'c7',
+        circuit_ref: '7',
+        number: '7',
+        board_id: 'board-B',
+        circuit_designation: 'Sub sockets',
+      },
+    ],
+  });
+
+  it('mapper: add_circuit maps with description (previously dropped — spoke success, no mutation)', () => {
+    const cmd = mapServerActionToVoiceCommand({
+      type: 'add_circuit',
+      params: { description: 'Shower circuit' },
+    });
+    expect(cmd).toEqual({ type: 'add_circuit', description: 'Shower circuit' });
+    // iOS tolerates a missing description (`params.description ?? ""`).
+    expect(mapServerActionToVoiceCommand({ type: 'add_circuit', params: {} })).toEqual({
+      type: 'add_circuit',
+      description: '',
+    });
+  });
+
+  it('applier: iOS executeAddCircuit parity — boards.first id + GLOBAL next-ref, canonical designation in storage AND speech', () => {
+    const outcome = applyVoiceCommand(
+      { type: 'add_circuit', description: 'Shower circuit' },
+      multiBoardJob()
+    );
+    const rows = outcome.patch?.circuits as Array<Record<string, unknown>>;
+    const added = rows.find((r) => r.circuit_ref === '8');
+    expect(added).toBeDefined();
+    // Global next-ref (max across ALL boards = 7, so 8) + first-board
+    // attribution — today's identically-imperfect iOS semantics.
+    expect(added?.board_id).toBe('board-A');
+    expect(added?.circuit_designation).toBe('Shower');
+    expect(outcome.response).toBe('Added circuit 8, Shower.');
+    expect(outcome.changedKeys).toEqual(['circuits']);
+  });
+
+  it('applier: empty description adds an unnamed circuit (iOS `?? ""`)', () => {
+    const outcome = applyVoiceCommand({ type: 'add_circuit', description: '' }, multiBoardJob());
+    const rows = outcome.patch?.circuits as Array<Record<string, unknown>>;
+    expect(rows.find((r) => r.circuit_ref === '8')?.circuit_designation).toBe('');
+    expect(outcome.response).toBe('Added circuit 8.');
+  });
+
+  it('applier: no boards yet — circuit added without board attribution', () => {
+    const outcome = applyVoiceCommand(
+      { type: 'add_circuit', description: 'Garage' },
+      { supply: {}, circuits: [] }
+    );
+    const rows = outcome.patch?.circuits as Array<Record<string, unknown>>;
+    expect(rows[0].circuit_ref).toBe('1');
+    expect(rows[0].board_id).toBeUndefined();
+    expect(outcome.response).toBe('Added circuit 1, Garage.');
+  });
+});
+
+describe('voiceCommandTargetsDesignation — spoken-override predicate', () => {
+  it('true for designation update/apply and add_circuit; false otherwise', () => {
+    expect(
+      voiceCommandTargetsDesignation({
+        type: 'update_field',
+        field: 'designation',
+        value: 'x',
+        circuit: 1,
+      })
+    ).toBe(true);
+    expect(
+      voiceCommandTargetsDesignation({
+        type: 'apply_field',
+        field: 'description',
+        value: 'x',
+        scope: { kind: 'all' },
+      })
+    ).toBe(true);
+    expect(voiceCommandTargetsDesignation({ type: 'add_circuit', description: 'x' })).toBe(true);
+    expect(
+      voiceCommandTargetsDesignation({
+        type: 'update_field',
+        field: 'zs',
+        value: '0.3',
+        circuit: 1,
+      })
+    ).toBe(false);
+    expect(voiceCommandTargetsDesignation({ type: 'reorder_circuits', from: 1, to: 2 })).toBe(
+      false
+    );
   });
 });

@@ -130,7 +130,12 @@ import {
 } from './recording/tones';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
-import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
+import {
+  applyVoiceCommand,
+  parseVoiceCommand,
+  voiceCommandTargetsDesignation,
+  type VoiceCommandJob,
+} from '@certmate/shared-utils';
 import { mapServerActionToVoiceCommand } from './recording/voice-command-action';
 import { useCurrentUser } from './use-current-user';
 import { useUserDefaults } from '@/hooks/use-user-defaults';
@@ -3235,6 +3240,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           actionType: response.action?.type ?? 'none',
           responsePreview: (response.spoken_response ?? '').slice(0, 80),
         });
+        // PLAN-B2 — designation-action spoken override. This handler
+        // previously applied the command but DISCARDED outcome.response
+        // and always spoke the server's raw spoken_response — so a
+        // canonicalised designation write was read back with the raw
+        // (banned-word) text, breaking speech/storage agreement. For
+        // designation actions (update_field / apply_field targeting the
+        // designation, and add_circuit) that APPLIED locally, speak the
+        // locally constructed response built from the canonical applied
+        // value instead. Delivery-token / ACK / force-TTS mechanics are
+        // unchanged — only the text source swaps.
+        let designationSpokenOverride: string | null = null;
         if (response.understood && response.action) {
           const command = mapServerActionToVoiceCommand(response.action);
           if (command) {
@@ -3252,6 +3268,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 liveFill.markUpdated(outcome.changedKeys);
               }
               playConfirmationChime();
+              if (voiceCommandTargetsDesignation(command) && outcome.response) {
+                designationSpokenOverride = outcome.response;
+                clientDiagnostic('voice_command_designation_spoken_override', {
+                  actionType: command.type,
+                  overridePreview: outcome.response.slice(0, 80),
+                });
+              }
             }
           } else {
             clientDiagnostic('voice_command_action_unmapped', {
@@ -3259,7 +3282,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
           }
         }
-        if (response.spoken_response) {
+        const spokenText = designationSpokenOverride ?? response.spoken_response;
+        if (spokenText) {
           // A1 agentic-voice web companion (2026-07-23) — force-speak the
           // voice_command_response. iOS speaks VCR frames UNCONDITIONALLY
           // (DeepgramRecordingViewModel.swift:9888 → speakBriefConfirmation,
@@ -3277,7 +3301,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               token: deliveryToken,
               confirmationKey: null,
             });
-            const queued = speakConfirmation(response.spoken_response, {
+            const queued = speakConfirmation(spokenText, {
               force: true,
               dedupeKey,
             });
@@ -3285,7 +3309,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               discardConfirmationReservation(dedupeKey, 'not_queued');
             }
           } else {
-            speakConfirmation(response.spoken_response, { force: true });
+            speakConfirmation(spokenText, { force: true });
           }
         } else if (deliveryToken) {
           // A delivery token without an audible terminal is malformed. Release
