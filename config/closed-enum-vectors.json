@@ -376,6 +376,16 @@
     },
     {
       "field": "ocpd_bs_en",
+      "input": "N.A.",
+      "expected": "N/A"
+    },
+    {
+      "field": "wiring_type",
+      "input": " A ",
+      "expected": "A"
+    },
+    {
+      "field": "ocpd_bs_en",
       "input": "not applicable",
       "expected": "N/A"
     },

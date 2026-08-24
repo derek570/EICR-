@@ -177,6 +177,16 @@ export interface VoiceCommandOutcome {
    *  PLAN-B2's designation override). Absent when the dictated value
    *  was already byte-identical to the canonical option. */
   canonicalSuccess?: boolean;
+  /** PLAN-C (Codex cycle 1) — the command targeted a closed-enum field,
+   *  the VALUE was accepted, and the write still did not land because the
+   *  named circuit does not exist. Nothing was mutated, so the server's
+   *  "Set wiring type to A on circuit 12." would be read back over a
+   *  certificate that has no circuit 12 (the same lie PLAN-B2's Codex r1
+   *  closed for designations). `response` holds the truthful local line;
+   *  this flag gives it the same speak-seam precedence a re-ask gets.
+   *  Deliberately distinct from `invalidClosedEnum` — the value was fine
+   *  and the TARGET was not, and the telemetry must tell them apart. */
+  guardedWriteFailed?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -964,7 +974,12 @@ function applyUpdateField(
   if (resolved.circuitField && isGuardedClosedEnumField(resolved.circuitField)) {
     const circuitRef = command.circuit;
     const target: GuardedTarget =
-      typeof circuitRef === 'number' && Number.isFinite(circuitRef) && circuitRef >= 1
+      // `Number.isInteger` (Codex cycle 1) — the comment above always said
+      // "positive INTEGER"; the code only checked finiteness, so a wire
+      // `circuit: 3.5` built a `single` target, missed every row, and
+      // reached the not-found branch. A fractional circuit reference is a
+      // structurally absent target, not a target that happens to be empty.
+      typeof circuitRef === 'number' && Number.isInteger(circuitRef) && circuitRef >= 1
         ? { kind: 'single', circuit: circuitRef }
         : { kind: 'unknown' };
     const guard = guardClosedEnumWrite(resolved.circuitField, command.value, target);
@@ -983,7 +998,13 @@ function applyUpdateField(
       (c) => c.circuit_ref === ref || c.number === ref || c.id === ref
     );
     if (idx === -1) {
-      return respondUnknown(`Circuit ${command.circuit} doesn't exist.`);
+      const missing = respondUnknown(`Circuit ${command.circuit} doesn't exist.`);
+      // PLAN-C (Codex cycle 1) — flag it so the speak seam prefers this
+      // truthful line over the server's success text. Only for the guarded
+      // columns: this plan owns those six, and widening the flag to every
+      // circuit field would change the spoken outcome of ~20 fields no plan
+      // has reviewed.
+      return guardedValue != null ? { ...missing, guardedWriteFailed: true } : missing;
     }
     // Normalise polarity_confirmed — inspectors dictate "pass"/"fail";
     // iOS converts to the ✓/✗ sigils used everywhere else in the app.
@@ -1299,13 +1320,20 @@ function applyApplyField(
   // policy" case (there is no success confirmation to append to); zero
   // applied with NO spares skipped is the pre-existing "range/circuit not
   // found" case. Distinct branches — the wording must not collide.
+  // PLAN-C (Codex cycle 1) — on a guarded field BOTH zero-applied branches
+  // must take the speak seam, for the same reason the value-rejection branch
+  // does: nothing was written, so the server's "Set wiring type to A for 6
+  // circuits." is a read-back of a certificate state that does not exist. A
+  // 0/negative/fractional circuit target from the wire lands here too.
+  const guardedZeroFlag = guardedValue != null ? { guardedWriteFailed: true as const } : {};
   if (indices.length === 0) {
     if (spareSkippedCount > 0) {
       return {
         response: `No non-spare circuits were updated; ${skipClause(spareSkippedCount, 'standalone')}.`,
+        ...guardedZeroFlag,
       };
     }
-    return respondUnknown('No circuits found in the specified range.');
+    return { ...respondUnknown('No circuits found in the specified range.'), ...guardedZeroFlag };
   }
   // Polarity normalisation — same sigil mapping as applyUpdateField.
   let value: string = command.value;
@@ -1334,7 +1362,7 @@ function applyApplyField(
   });
   const label = labelForField(resolved.circuitField);
   if (updated === 0) {
-    return { response: `No circuits found in the specified range.` };
+    return { response: `No circuits found in the specified range.`, ...guardedZeroFlag };
   }
   // iOS phrasing — VoiceCommandExecutor.swift around line 472. "Set X
   // for N circuits" / "for 1 circuit". Same direct-mutation semantics

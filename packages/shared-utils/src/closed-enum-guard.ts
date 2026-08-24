@@ -336,8 +336,14 @@ export function isGuardedClosedEnumField(field: string | null | undefined): bool
 /** Phrases that mean "not applicable" — accepted only on the fields whose
  *  schema option set actually carries `N/A`. Deliberately tight: "none" is
  *  excluded because it is just as often a mis-heard fragment as a genuine
- *  N/A. */
-const NA_PHRASES = new Set(['n/a', 'na', 'n a', 'n.a.', 'not applicable']);
+ *  N/A.
+ *
+ *  Codex cycle 1 — `n.a` earns its own entry because the lookup runs on the
+ *  EDGE-CLEANED residue: `cleanClosedEnumResidue` has already peeled the
+ *  trailing `.`, so a dictated "N.A." arrives here as `n.a` and the `n.a.`
+ *  entry alone could never match. `n.a.` is kept for the (unreachable but
+ *  harmless) direct-call case rather than silently narrowing the set. */
+const NA_PHRASES = new Set(['n/a', 'na', 'n a', 'n.a', 'n.a.', 'not applicable']);
 
 /**
  * Validate-or-ask on one guarded closed-list field.

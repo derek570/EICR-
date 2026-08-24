@@ -247,3 +247,64 @@ describe('canonical snake_case field resolution (server-originated actions)', ()
     expect(out.response).toContain("I don't know the field");
   });
 });
+
+describe('Codex cycle 1 — an accepted value whose write did not land', () => {
+  // The guard says yes, nothing is mutated because the target isn't there,
+  // and (before the fix) no flag reached the speak seam — so the server's
+  // "Set wiring type to A on circuit 12." was read back over a certificate
+  // that has no circuit 12. Exactly the lie PLAN-B2's Codex r1 closed for
+  // designations, in the six columns this plan owns.
+  it('a missing circuit is flagged so the seam speaks the truthful line', () => {
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: 'wiring_type', value: 'A', circuit: 12 },
+      JOB
+    );
+    expect(out.patch).toBeUndefined();
+    expect(out.guardedWriteFailed).toBe(true);
+    expect(out.response).toBe("Circuit 12 doesn't exist.");
+  });
+
+  it('an UNGUARDED field on a missing circuit is left exactly as it was', () => {
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: 'measured_zs_ohm', value: '0.42', circuit: 12 },
+      JOB
+    );
+    expect(out.patch).toBeUndefined();
+    expect(out.guardedWriteFailed).toBeUndefined();
+  });
+
+  it('a fractional circuit reference is a MISSING target, not an empty one', () => {
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: 'wiring_type', value: 'A', circuit: 3.5 },
+      JOB
+    );
+    expect(out.patch).toBeUndefined();
+    expect(out.invalidClosedEnum).toBe(true);
+    expect(out.response).toContain('which circuit');
+  });
+
+  it('a guarded bulk apply that matches no circuit is flagged too', () => {
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: 'wiring_type', value: 'A', circuit: 0 },
+      JOB
+    );
+    // circuit 0 is not a structurally complete target either.
+    expect(out.patch).toBeUndefined();
+    expect(out.invalidClosedEnum).toBe(true);
+  });
+
+  it('a guarded range apply matching nothing is flagged rather than silent', () => {
+    const out = applyVoiceCommand(
+      {
+        type: 'apply_field',
+        field: 'wiring_type',
+        value: 'A',
+        scope: { kind: 'range', from: 40, to: 45 },
+      },
+      JOB
+    );
+    expect(out.patch).toBeUndefined();
+    expect(out.guardedWriteFailed).toBe(true);
+    expect(out.response).toBe('No circuits found in the specified range.');
+  });
+});

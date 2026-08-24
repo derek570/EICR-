@@ -3477,6 +3477,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 field: 'field' in command ? command.field : 'none',
                 reaskPreview: outcome.response.slice(0, 80),
               });
+            } else if (outcome.guardedWriteFailed && outcome.response && !deliveryToken) {
+              // Codex cycle 1 — value accepted, target absent from the job.
+              // Nothing was written, so the server's success line would be
+              // read back over a circuit the certificate does not have.
+              localSpokenOverride = outcome.response;
+              clientDiagnostic('voice_command_closed_enum_write_failed', {
+                actionType: command.type,
+                field: 'field' in command ? command.field : 'none',
+                overridePreview: outcome.response.slice(0, 80),
+              });
             } else if (outcome.canonicalSuccess && outcome.response && !deliveryToken) {
               localSpokenOverride = outcome.response;
               clientDiagnostic('voice_command_closed_enum_canonicalised', {
