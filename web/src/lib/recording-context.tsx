@@ -3401,7 +3401,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // locally constructed response built from the canonical applied
         // value instead. Delivery-token / ACK / force-TTS mechanics are
         // unchanged — only the text source swaps.
-        let designationSpokenOverride: string | null = null;
+        //
+        // PLAN-C (feedback id 129) — the same seam now also carries the
+        // closed-enum guard's verdict. Strict precedence, most-specific
+        // first:
+        //   1. enum re-ask      — the write was REJECTED, so the server's
+        //      "Set OCPD type to MCB…" would be a false read-back of a
+        //      value that is NOT in the certificate.
+        //   2. canonical success — the write landed under a different
+        //      string than the inspector said ("60898" → "BS EN 60898");
+        //      speech must agree with storage (PLAN-B2 discipline).
+        //   3. designation override (PLAN-B2, below — unchanged).
+        //   4. the server's raw spoken_response.
+        // Rejection is read from the TYPED `invalidClosedEnum` outcome and
+        // never inferred from an absent patch: a legitimately no-op apply
+        // (value already set, empty scope) also has no patch.
+        let localSpokenOverride: string | null = null;
         if (response.understood && response.action) {
           const command = mapServerActionToVoiceCommand(response.action);
           if (command) {
@@ -3447,8 +3462,34 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             //     address terminal, and replacing it would ACK content
             //     the inspector never heard. The plan's own spec keeps
             //     delivery-token behaviour intact.
-            if (voiceCommandTargetsDesignation(command) && outcome.response && !deliveryToken) {
-              designationSpokenOverride = outcome.response;
+            //
+            // PLAN-C reuses guard (b) verbatim for the enum verdicts: a
+            // delivery-token frame carries the durable address terminal,
+            // and the ACK contract says the inspector must hear THAT.
+            // The combination is structurally near-impossible anyway —
+            // the six guarded fields are all CIRCUIT fields, and an
+            // address-mirror frame's action targets the installation
+            // address — so deferring to the server costs nothing real.
+            if (outcome.invalidClosedEnum && outcome.response && !deliveryToken) {
+              localSpokenOverride = outcome.response;
+              clientDiagnostic('voice_command_closed_enum_reask', {
+                actionType: command.type,
+                field: 'field' in command ? command.field : 'none',
+                reaskPreview: outcome.response.slice(0, 80),
+              });
+            } else if (outcome.canonicalSuccess && outcome.response && !deliveryToken) {
+              localSpokenOverride = outcome.response;
+              clientDiagnostic('voice_command_closed_enum_canonicalised', {
+                actionType: command.type,
+                field: 'field' in command ? command.field : 'none',
+                overridePreview: outcome.response.slice(0, 80),
+              });
+            } else if (
+              voiceCommandTargetsDesignation(command) &&
+              outcome.response &&
+              !deliveryToken
+            ) {
+              localSpokenOverride = outcome.response;
               clientDiagnostic('voice_command_designation_spoken_override', {
                 actionType: command.type,
                 applied: Boolean(outcome.patch),
@@ -3461,7 +3502,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
           }
         }
-        const spokenText = designationSpokenOverride ?? response.spoken_response;
+        const spokenText = localSpokenOverride ?? response.spoken_response;
         if (spokenText) {
           // A1 agentic-voice web companion (2026-07-23) — force-speak the
           // voice_command_response. iOS speaks VCR frames UNCONDITIONALLY
