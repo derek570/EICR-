@@ -297,10 +297,25 @@ const REF_METHOD_WORD_NUMBERS = new Map<string, string>([
 ]);
 
 /** Ported from `src/extraction/record-reading-coercion.js` `coerceRefMethodValue`,
- *  plus the two spoken-hundred forms NumberNormaliser actually emits:
- *  "one hundred and one" survives as either "1001" (digits concatenated) or
- *  "100 and 1" depending on which collapse fires first. Both are
- *  unambiguous — "100" is itself an option but "1001" is not. */
+ *  plus the two spoken-hundred forms NumberNormaliser actually emits. Which
+ *  form you get depends on whether the inspector says "and", and BOTH occur:
+ *    "reference method one hundred and one" → "reference method 100 and 1"
+ *    "reference method one hundred one"     → "reference method 1001"
+ *  (measured against `web/src/lib/recording/number-normaliser.ts`, 2026-08-24
+ *  — the compound-hundreds rule only fires for teens/tens, so a trailing
+ *  ONES word is not absorbed; "one hundred" collapses to "100" and the bare
+ *  "one" then digitises and abuts it.)
+ *
+ *  So the `^100[123]$` branch below is LOAD-BEARING, not dead: delete it and
+ *  "reference method one hundred one for circuit 3" — a perfectly ordinary
+ *  dictation — stops being a valid reading and starts drawing a re-ask,
+ *  which is the Audio-First §2 failure this guard exists to prevent. It is
+ *  also unambiguous: BS 7671 reference methods are A–G and 100–103, so
+ *  "1001" has no competing real reading, whereas "100" alone IS an option
+ *  and is therefore left exactly as dictated. (Codex cycle 5 proposed
+ *  removing this branch on the belief the word-map above already covered
+ *  the phrase; it covers only UN-normalised text, and the normaliser runs
+ *  first on both clients.) */
 export function parseClosedEnumRefMethod(residue: string): string | null {
   let v = residue
     .trim()

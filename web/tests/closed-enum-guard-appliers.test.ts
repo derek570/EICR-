@@ -18,6 +18,8 @@ import { describe, expect, it } from 'vitest';
 
 import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
 
+import { normalise } from '@/lib/recording/number-normaliser';
+
 const JOB: VoiceCommandJob = {
   circuits: [
     { id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker' },
@@ -381,6 +383,32 @@ describe('Codex cycle 2 — an apply_field scope is only a target if it is a rea
       JOB
     );
     expect(out.response).toContain('BS EN 60898');
+  });
+
+  /* Codex cycle 5 — end-to-end pin for the `^100[123]$` reference-method
+   * branch, which a reviewer proposed deleting as dead code.
+   *
+   * The unit fixture pins the guard in isolation ("1001" → "101"), but
+   * NOTHING pinned the reason "1001" reaches the guard at all: the number
+   * normaliser runs first, and whether the inspector says "and" decides
+   * which digit shape it emits. Both are real dictations, so both are
+   * driven here through the REAL chain — normalise → parse → apply — and
+   * must land the same stored value. Delete the branch and the second
+   * case stops writing and starts re-asking (Audio-First §2). */
+  it.each([
+    ['reference method one hundred and one for circuit 1', '101'],
+    ['reference method one hundred one for circuit 1', '101'],
+    ['reference method one hundred and three for circuit 1', '103'],
+    ['reference method one hundred three for circuit 1', '103'],
+    ['reference method one hundred for circuit 1', '100'],
+  ])('%s writes ref_method %s through normalise → parse → apply', (utterance, expected) => {
+    const command = parseVoiceCommand(normalise(utterance).toLowerCase());
+    expect(command, 'the utterance must parse as a local voice command').not.toBeNull();
+    const out = applyVoiceCommand(command!, JOB);
+    expect(out.invalidClosedEnum, `"${utterance}" must not draw a re-ask`).toBeUndefined();
+    expect((out.patch?.circuits as Array<Record<string, unknown>>)[0].ref_method).toBe(expected);
+    // Audio-First §3 — spoken and stored come from the same canonical value.
+    expect(out.response).toContain(expected);
   });
 
   it('a legitimate positive-integer scope is unaffected', () => {
