@@ -199,16 +199,20 @@ function CircuitFieldInput({
 function DesignationCardField({
   circuitId,
   value,
+  draftScope,
   onCommitDesignation,
 }: {
   circuitId: string;
   value: string;
+  /** Cycle-3 — jobId: preset-created jobs can SHARE circuit ids, so an
+   *  unscoped journal from job A could be recovered into job B. */
+  draftScope: string;
   onCommitDesignation: (id: string, raw: string) => string;
 }) {
   const accessory = React.useContext(CardAccessoryContext);
   const handlers = accessory?.inputHandlers(circuitId, 'circuit_designation');
   const draft = useDesignationDraft({
-    draftKey: `card:${circuitId}`,
+    draftKey: `${draftScope}:card:${circuitId}`,
     modelValue: value,
     commit: (raw) => void onCommitDesignation(circuitId, raw),
   });
@@ -1169,6 +1173,7 @@ export default function CircuitsPage() {
               <CircuitsScheduleDesktop
                 circuits={visible}
                 onPatch={patchCircuitTable}
+                designationDraftScope={jobId}
                 onBulkPatch={bulkPatchCircuits}
                 onRemove={requestDeleteCircuit}
                 onCommitDesignation={commitDesignationDraft}
@@ -1177,6 +1182,7 @@ export default function CircuitsPage() {
               <CircuitsStickyTable
                 circuits={visible}
                 onPatch={patchCircuitTable}
+                designationDraftScope={jobId}
                 onRemove={requestDeleteCircuit}
                 onCommitDesignation={commitDesignationDraft}
               />
@@ -1192,6 +1198,7 @@ export default function CircuitsPage() {
                   onPatch={(patch) => patchCircuit(c.id, patch)}
                   onRemove={() => requestDeleteCircuit(c.id)}
                   onCommitDesignation={commitDesignationDraft}
+                  draftScope={jobId}
                 />
               ))}
               {cardAccessory.accessory}
@@ -1567,6 +1574,7 @@ function CircuitCard({
   onPatch,
   onRemove,
   onCommitDesignation,
+  draftScope,
 }: {
   circuit: Circuit;
   expanded: boolean;
@@ -1574,6 +1582,7 @@ function CircuitCard({
   onPatch: (patch: Partial<Circuit>) => void;
   onRemove: () => void;
   onCommitDesignation: (id: string, raw: string) => string;
+  draftScope: string;
 }) {
   const text = (k: keyof Circuit) => circuit[k] ?? '';
   const circuitId = circuit.id;
@@ -1631,6 +1640,7 @@ function CircuitCard({
               <DesignationCardField
                 circuitId={circuitId}
                 value={text('circuit_designation')}
+                draftScope={draftScope}
                 onCommitDesignation={onCommitDesignation}
               />
               <CircuitFieldInput

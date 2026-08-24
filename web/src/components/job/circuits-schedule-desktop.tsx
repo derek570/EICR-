@@ -133,6 +133,9 @@ export interface CircuitsScheduleDesktopProps {
    *  to the model (the page routes this through `commitJobPatch`).
    *  Returns the canonical value actually written. */
   onCommitDesignation: (id: string, raw: string) => string;
+  /** Cycle-3 — jobId scope for draft/journal keys (preset-created jobs
+   *  can share circuit ids). Optional: standalone harnesses omit it. */
+  designationDraftScope?: string;
 }
 
 // Keyboard-input field keys this surface renders: ref/designation plus
@@ -152,6 +155,7 @@ export function CircuitsScheduleDesktop({
   onBulkPatch,
   onRemove,
   onCommitDesignation,
+  designationDraftScope = '',
 }: CircuitsScheduleDesktopProps) {
   const circuitIds = React.useMemo(() => circuits.map((c) => c.id), [circuits]);
   const inputRefs = React.useRef<Map<string, HTMLInputElement>>(new Map());
@@ -400,6 +404,7 @@ export function CircuitsScheduleDesktop({
                 flashed={flashed}
                 onDesignationCommitted={flushDesignationDefaults}
                 onCommitDesignation={onCommitDesignation}
+                designationDraftScope={designationDraftScope}
               />
             ))}
           </tbody>
@@ -542,6 +547,7 @@ function Row({
   flashed,
   onDesignationCommitted,
   onCommitDesignation,
+  designationDraftScope,
 }: {
   circuit: CircuitLike;
   rowIndex: number;
@@ -553,12 +559,13 @@ function Row({
   /** Post-commit defaults pipeline — receives the committed shape. */
   onDesignationCommitted: (circuit: CircuitLike) => void;
   onCommitDesignation: (id: string, raw: string) => string;
+  designationDraftScope: string;
 }) {
   // PLAN-B2 — designation edits buffer in a draft; commit canonicalises
   // ONCE (synchronously, via the page's commitJobPatch route), THEN the
   // defaults pipeline runs against the committed canonical shape.
   const designationDraft = useDesignationDraft({
-    draftKey: `desktop:${circuit.id}`,
+    draftKey: `${designationDraftScope}:desktop:${circuit.id}`,
     modelValue: typeof circuit.circuit_designation === 'string' ? circuit.circuit_designation : '',
     commit: (raw) => {
       const canonical = onCommitDesignation(circuit.id, raw);

@@ -7,7 +7,11 @@ import { getUser } from './auth';
 import { queueSaveJob } from './pwa/queue-save-job';
 import { listPendingMutationsStrict } from './pwa/outbox';
 import { withJobSaveLock } from './pwa/job-save-lock';
-import { flushDesignationDrafts, setDesignationRecoveryReady } from './designation-drafts';
+import {
+  clearCommittedDesignationJournals,
+  flushDesignationDrafts,
+  setDesignationRecoveryReady,
+} from './designation-drafts';
 import { repairJobCircuitDesignations } from './repair-job-designations';
 
 /**
@@ -251,6 +255,9 @@ export function JobProvider({
           queueSaveJob(user.id, jobId, pending, { optimisticDetail: detail })
         )
       );
+      // Cycle-3 — the enqueue is durable; committed designation-draft
+      // journals may now be dropped.
+      clearCommittedDesignationJournals();
       if (!mountedRef.current) return;
       // Clear `isDirty` only if no new edits queued while we were saving.
       // If the user kept typing, keep the flag and let the next debounce
@@ -503,6 +510,7 @@ export function JobProvider({
           const saved = await queueSaveJob(user.id, detail.id, patch, {
             optimisticDetail: detail,
           });
+          clearCommittedDesignationJournals();
           if (!saved.synced) return { synced: false as const };
           const rows = await listPendingMutationsStrict();
           // A POISONED row will never replay, so it cannot overwrite

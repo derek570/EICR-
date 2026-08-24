@@ -1,36 +1,13 @@
 'use client';
 
 import * as React from 'react';
-import { registerDesignationDraft, whenDesignationRecoveryReady } from './designation-drafts';
-
-// Synchronous localStorage journal for an OPEN draft — survives process
-// kill where the async outbox write cannot. Best-effort: quota/private
-// -mode failures degrade to the pre-journal behaviour.
-const JOURNAL_PREFIX = 'cm-designation-draft:';
-
-function writeDraftJournal(key: string, value: string): void {
-  try {
-    window.localStorage.setItem(JOURNAL_PREFIX + key, value);
-  } catch {
-    /* best-effort */
-  }
-}
-
-function readDraftJournal(key: string): string | null {
-  try {
-    return window.localStorage.getItem(JOURNAL_PREFIX + key);
-  } catch {
-    return null;
-  }
-}
-
-function clearDraftJournal(key: string): void {
-  try {
-    window.localStorage.removeItem(JOURNAL_PREFIX + key);
-  } catch {
-    /* best-effort */
-  }
-}
+import {
+  markDesignationJournalCommitted,
+  readDesignationJournal,
+  registerDesignationDraft,
+  whenDesignationRecoveryReady,
+  writeDesignationJournal,
+} from './designation-drafts';
 
 /**
  * PLAN-B2 (B2-2, web manual edits) — draft-buffered designation editing.
@@ -87,7 +64,11 @@ export function useDesignationDraft(opts: {
     draftRef.current = null;
     unregisterRef.current?.();
     unregisterRef.current = null;
-    clearDraftJournal(draftKeyRef.current);
+    // Cycle-3 — the journal is only MARKED here; it is physically
+    // cleared by JobProvider once the outbox enqueue has durably
+    // succeeded (a page kill between this commit and the enqueue would
+    // otherwise lose both copies).
+    markDesignationJournalCommitted(draftKeyRef.current);
     if (open == null) return;
     setDraft(null); // post-unmount this is a safe no-op
     commitFnRef.current(open);
@@ -101,7 +82,7 @@ export function useDesignationDraft(opts: {
       // only STARTS an async IndexedDB enqueue, and the browser may kill
       // the process before it completes (tab close, PWA eviction). The
       // journal survives that; the next mount of this surface commits it.
-      writeDraftJournal(draftKeyRef.current, next);
+      writeDesignationJournal(draftKeyRef.current, next);
       if (!unregisterRef.current) {
         unregisterRef.current = registerDesignationDraft(draftKeyRef.current, commitNow);
       }
@@ -118,9 +99,10 @@ export function useDesignationDraft(opts: {
   React.useEffect(() => {
     const key = draftKeyRef.current;
     const cancel = whenDesignationRecoveryReady(() => {
-      const stranded = readDraftJournal(key);
+      const stranded = readDesignationJournal(key);
       if (stranded != null && draftRef.current == null) {
-        clearDraftJournal(key);
+        // Same durability-gated clear as a live commit.
+        markDesignationJournalCommitted(key);
         commitFnRef.current(stranded);
       }
     });

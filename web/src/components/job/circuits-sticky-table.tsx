@@ -151,6 +151,8 @@ export interface CircuitsStickyTableProps {
    *  to the model (the page routes this through `commitJobPatch`).
    *  Returns the canonical value actually written. */
   onCommitDesignation: (id: string, raw: string) => string;
+  /** Cycle-3 — jobId scope for draft/journal keys. */
+  designationDraftScope?: string;
 }
 
 // Keyboard-input field keys this surface renders (ref/designation + every
@@ -167,6 +169,7 @@ export function CircuitsStickyTable({
   onPatch,
   onRemove,
   onCommitDesignation,
+  designationDraftScope = '',
 }: CircuitsStickyTableProps) {
   const circuitIds = React.useMemo(() => circuits.map((c) => c.id), [circuits]);
   const inputRefs = React.useRef<Map<string, HTMLInputElement>>(new Map());
@@ -265,6 +268,7 @@ export function CircuitsStickyTable({
                 onPatch={onPatch}
                 onRemove={onRemove}
                 onCommitDesignation={onCommitDesignation}
+                designationDraftScope={designationDraftScope}
               />
             ))}
           </tbody>
@@ -280,11 +284,13 @@ function Row({
   onPatch,
   onRemove,
   onCommitDesignation,
+  designationDraftScope,
 }: {
   circuit: CircuitLike;
   onPatch: (id: string, patch: Record<string, string>) => void;
   onRemove: (id: string) => void;
   onCommitDesignation: (id: string, raw: string) => string;
+  designationDraftScope: string;
 }) {
   const v = (k: string): Cell => {
     const value = circuit[k];
@@ -295,7 +301,7 @@ function Row({
   // registry-flush commits once, canonicalised, via the synchronous
   // commitJobPatch route.
   const designationDraft = useDesignationDraft({
-    draftKey: `sticky:${circuit.id}`,
+    draftKey: `${designationDraftScope}:sticky:${circuit.id}`,
     modelValue: v('circuit_designation') ?? '',
     commit: (raw) => void onCommitDesignation(circuit.id, raw),
   });

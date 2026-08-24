@@ -71,6 +71,55 @@ export function _registeredDesignationDraftCount(): number {
   return drafts.size;
 }
 
+// ── Draft journal (cycle-3: durability-gated clearing) ─────────────────
+// Synchronous localStorage journal for an OPEN draft — survives process
+// kill where the async outbox write cannot. A committed journal is NOT
+// cleared at commit time (the commit only reaches the in-memory pending
+// patch; Safari can kill the page before the outbox enqueue completes,
+// losing BOTH copies). Instead the commit MARKS the key, and JobProvider
+// clears marked keys only after `queueSaveJob` has durably enqueued —
+// on enqueue failure the journal survives for next-mount recovery.
+
+const JOURNAL_PREFIX = 'cm-designation-draft:';
+const committedJournalKeys = new Set<string>();
+
+export function writeDesignationJournal(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(JOURNAL_PREFIX + key, value);
+    // A fresh draft supersedes any pending-clear mark for this key.
+    committedJournalKeys.delete(key);
+  } catch {
+    /* best-effort */
+  }
+}
+
+export function readDesignationJournal(key: string): string | null {
+  try {
+    return window.localStorage.getItem(JOURNAL_PREFIX + key);
+  } catch {
+    return null;
+  }
+}
+
+/** Mark a journal as committed-to-pending; cleared only once durable. */
+export function markDesignationJournalCommitted(key: string): void {
+  committedJournalKeys.add(key);
+}
+
+/** JobProvider calls this AFTER queueSaveJob resolves (the outbox
+ *  enqueue succeeded — the edit is durable) to drop committed journals. */
+export function clearCommittedDesignationJournals(): void {
+  const keys = Array.from(committedJournalKeys);
+  committedJournalKeys.clear();
+  for (const key of keys) {
+    try {
+      window.localStorage.removeItem(JOURNAL_PREFIX + key);
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
 // ── Journal-recovery gate (Codex mini-review c1, BLOCKER) ──────────────
 // A localStorage draft journal recovered at MOUNT would commit into an
 // un-hydrated cache doc, dirtying the provider so `safeToReplace`

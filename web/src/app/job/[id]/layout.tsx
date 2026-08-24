@@ -105,7 +105,8 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // runs in the network branch may not have flushed to the closure.
     // A ref is the source of truth for "we already have fresh data".
     let networkLanded = false;
-    getCachedJobWithOverlay(user.id, jobId).then((cached) => {
+    const cachePromise = getCachedJobWithOverlay(user.id, jobId);
+    void cachePromise.then((cached) => {
       if (cancelled || networkLanded) return;
       if (cached) {
         setJob((prev) => prev ?? cached);
@@ -136,16 +137,21 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
           return;
         }
         // Cached-paint-and-carry-on — same rationale as the dashboard.
-        // If the tab was previously visited, the inspector keeps their
-        // full job record offline rather than being bounced to an error
-        // card for a network blip.
-        if (hadCache) {
-          // PLAN-B2 (B2-4): the cache is now CONFIRMED authoritative
-          // for this session — load repairs may persist via the outbox.
-          setNetworkRejected(true);
-          return;
-        }
-        setError(err.message);
+        // Cycle-3 — the network rejection can WIN the race against the
+        // async cache read (hadCache still false), which previously left
+        // a later cache paint permanently un-authoritative (no
+        // networkRejected, no journal recovery, B2-4 offline convergence
+        // skipped). Await the cache promise before deciding.
+        void cachePromise.then((cached) => {
+          if (cancelled) return;
+          if (hadCache || cached) {
+            // PLAN-B2 (B2-4): the cache is CONFIRMED authoritative for
+            // this session — load repairs may persist via the outbox.
+            setNetworkRejected(true);
+          } else {
+            setError(err.message);
+          }
+        });
       });
     return () => {
       cancelled = true;
@@ -156,14 +162,20 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // when this effect should re-run. exhaustive-deps satisfied.
   }, [jobId, router]);
 
+  // Cycle-3 (BLOCKER) — the effect-based reset above runs AFTER the
+  // first render for a new jobId, so a render-time guard is still
+  // needed: never hand job A to a provider keyed (and routed) as job B,
+  // even for one frame (child effects run before this layout's effect).
+  const activeJob = job !== null && job.id === jobId ? job : null;
+
   return (
     <AppShell>
-      {job === null ? (
+      {activeJob === null ? (
         <JobShellLoading error={error} />
       ) : (
         <JobProvider
           key={jobId}
-          initial={job}
+          initial={activeJob}
           hydrated={networkHydrated}
           networkRejected={networkRejected}
         >
