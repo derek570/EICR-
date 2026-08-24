@@ -89,4 +89,19 @@ describe('auth — clearAuth purges designation-draft state (cycle-6/9)', () => 
     clearAuth();
     expect(window.localStorage.getItem('cm-designation-draft:job-1:designation:c1')).toBeNull();
   });
+
+  it('sign-out also clears the in-memory load-repair alias ledger', async () => {
+    const { clearAuth } = await import('@/lib/auth');
+    const { repairJobCircuitDesignations, getLoadRepairAliases } =
+      await import('@/lib/repair-job-designations');
+    // A recording session seeds its alias store from this ledger, so a
+    // designation from the previous inspector's job must not survive the
+    // sign-out that wipes the IDB cache it came from.
+    repairJobCircuitDesignations({
+      circuits: [{ circuit_designation: 'Upstairs lighting circuit' }],
+    } as never);
+    expect(getLoadRepairAliases().length).toBeGreaterThan(0);
+    clearAuth();
+    expect(getLoadRepairAliases()).toHaveLength(0);
+  });
 });

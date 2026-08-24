@@ -1,6 +1,7 @@
 import type { User } from './types';
 import { clearJobCache } from './pwa/job-cache';
 import { purgeDesignationDraftState } from './designation-drafts';
+import { clearLoadRepairAliases } from './repair-job-designations';
 
 /**
  * Auth-token helpers. Token is stored in localStorage (for API calls) and
@@ -92,4 +93,9 @@ export function clearAuth(): void {
   // shared-device rationale as the cache wipe above (synchronous;
   // swallows internally).
   purgeDesignationDraftState();
+  // PLAN-B2 cycle-9 (F5) — the load-repair alias ledger is an in-memory
+  // record of designations the PREVIOUS inspector's jobs contained, and
+  // a recording session seeds its alias store from it. Same shared-device
+  // rationale; also restores the ledger's cap headroom for the next login.
+  clearLoadRepairAliases();
 }
