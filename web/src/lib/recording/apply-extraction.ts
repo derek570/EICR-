@@ -1339,7 +1339,7 @@ function applyCircuitReadings(
     if (existing) existing.push(idx);
     else map.set(key, [idx]);
   };
-  const boardRefKey = (boardId: string, ref: string) => `${boardId} ${ref}`;
+  const boardRefKey = (boardId: string, ref: string) => `${boardId}\u0000${ref}`;
   const rowBoardId = (row: CircuitRow): string | null => {
     const bid = (row as unknown as Record<string, unknown>).board_id;
     return typeof bid === 'string' && bid !== '' ? bid : null;
