@@ -297,6 +297,36 @@ Tests: iOS `AlertManagerFastPathTerminalResolutionTests` (the 127 sequence, ever
 
 ---
 
+## Wire-frame designation normalisation + confirmation slot rewrite (PLAN-B2, 2026-08-24)
+
+PLAN-B guarantees the backend never EMITS a raw edge-token designation post-fix; stale
+frames, replays and not-yet-deployed-backend windows still reach the client apply paths.
+
+- **Structured values:** both clients repair `circuit_updates[].designation` on an
+  incoming COPY at wire entry (create + rename) and repair designation READINGS before
+  the row write (iOS `DeepgramRecordingViewModel`; web `applyExtractionToJob`, which also
+  serves `onCircuitCreated`/`onCircuitUpdated` synthetic envelopes).
+- **Spoken text:** clients speak `confirmations[].text`, and the bundler inserts the
+  designation into every single-circuit reading confirmation. A GRAMMAR-AWARE slot
+  rewrite keyed to the builder's three exact shapes (`<desig>, circuit N, <body>`;
+  `Circuit N is now the <desig>`; PLAN-D's `Created circuit N, <desig> — <tail>`)
+  replaces ONLY the designation slot — structural "Circuit N" text preserved, the
+  40-char prefix cap mirrored, unrecognised shapes byte-identical. Resolution order:
+  session-scoped raw-alias map (fed by every designation operation observed, so a later
+  stale measured-only frame still repairs) → local-model canonical (only when the slot
+  provably repairs to it) → pure repair. iOS REBUILDS `expanded_text` from the rewritten
+  string via the parity-pinned `AlertManager.expandForTTS` (the wire expansion is already
+  TTS-transformed; byte substitution cannot repair it). Implementations:
+  `Sources/Recording/ConfirmationDesignationRewriter.swift` and
+  `web/src/lib/recording/confirmation-designation-rewrite.ts` — keep in lockstep.
+- **Fast-path interaction (designation-FREE fast carriers):** the rewrite changes ONLY
+  text/expanded text; `fast_correlation_id`, dedupe tokens, board and slot-key inputs
+  pass through untouched, and correlation consume/invalidate decisions key on slot +
+  correlation id — never text — so a designation-only rewrite can NEVER invalidate a
+  fast clip or dispatch a fallback (which would double-speak the reading). The rewrite
+  runs before dedupe-key construction; identical frames rewrite identically, so replay
+  dedupe still collides. Web has no client fast-TTS path — the rule binds iOS only.
+
 ## Dialogue-script leading-circuit scope + cross-utterance delete (Plan F)
 
 > Added 2026-07-28 (feedback ids 98 + 93, session 2D8E432D). Backend-only, **zero wire change** — both clients benefit identically. Verification lane: dialogue-engine unit + replay parity + sonnet-stream ingress tests (NOT the field-replay corpus — dialogue entry runs BEFORE `runShadowHarness`, and the corpus excludes dialogue-answer ingress; `dialogue_answer_ingress` is the recorded corpus capability exclusion).

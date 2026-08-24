@@ -30,6 +30,21 @@ Monitor progress:
 tail -20 /tmp/deploy.log
 ```
 
+## Pre-TestFlight step — designation-fixture byte-compare (PLAN-B2, MANDATORY)
+
+Before any TestFlight build, run from the EICR repo root:
+
+```bash
+scripts/check-designation-fixture-sync.sh
+```
+
+Byte-compares `config/designation-canonical-vectors.json` (canonical) against the iOS
+copy `CertMateUnified/Tests/CertMateUnifiedTests/Fixtures/designation-canonical-vectors.json`.
+This closes the blind spot the paired SHA-256 digest pins cannot cover (a repo changing
+BOTH its fixture and its local constant). Non-zero exit = drift: re-copy the canonical
+file and update BOTH digest constants together. `IOS_REPO_ROOT` overrides the checkout
+location for non-nested layouts.
+
 ## App Store Connect credentials
 
 | Field | Value |
