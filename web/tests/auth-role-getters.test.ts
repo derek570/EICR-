@@ -75,16 +75,18 @@ describe('auth — getUserRole / getCompanyRole', () => {
   });
 });
 
-describe('auth — clearAuth purges designation-draft journals (cycle-6)', () => {
-  it('sign-out removes journals so the next login cannot auto-recover them', async () => {
+describe('auth — clearAuth purges designation-draft state (cycle-6/9)', () => {
+  it('sign-out sweeps a stranded draft record so the next login cannot inherit it', async () => {
     const { clearAuth } = await import('@/lib/auth');
-    const { readDesignationJournal, writeDesignationJournal } =
-      await import('@/lib/designation-drafts');
-    writeDesignationJournal('job-1:designation:c1', 'Previous inspector draft');
+    // Nothing writes these any more — the localStorage journal was
+    // removed in cycle 9 — but a device that ran a pre-removal build of
+    // this branch may still hold records, and sign-out is exactly where
+    // another inspector's abandoned text must not survive.
+    window.localStorage.setItem(
+      'cm-designation-draft:job-1:designation:c1',
+      'Previous inspector draft'
+    );
     clearAuth();
-    // The journal must not survive sign-out — an auto-recovered commit
-    // under the NEXT user's login would silently apply and save the
-    // previous user's abandoned draft (shared-device wipe policy).
-    expect(readDesignationJournal('job-1:designation:c1')).toBeNull();
+    expect(window.localStorage.getItem('cm-designation-draft:job-1:designation:c1')).toBeNull();
   });
 });

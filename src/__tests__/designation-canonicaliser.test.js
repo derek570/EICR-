@@ -49,7 +49,7 @@ describe('canonicaliseCircuitDesignation — golden vectors (cross-platform cont
   // change.
   it('fixture bytes match the pinned cross-platform digest', () => {
     const digest = createHash('sha256').update(readFileSync(VECTORS_PATH)).digest('hex');
-    expect(digest).toBe('e2fe432908d633f2c5ad320f9fbab3c320086fa19c6a1b7c04a008d1da5731b5');
+    expect(digest).toBe('0115a6ac8c5155022bd4e3534e44af7bea3d8c72c903bfbb8fd42ed136673929');
   });
 
   for (const { input, expected } of JSON.parse(readFileSync(VECTORS_PATH, 'utf8')).vectors) {

@@ -1,13 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import {
-  markDesignationJournalCommitted,
-  readDesignationJournal,
-  registerDesignationDraft,
-  whenDesignationRecoveryReady,
-  writeDesignationJournal,
-} from './designation-drafts';
+import { registerDesignationDraft } from './designation-drafts';
 
 /**
  * PLAN-B2 (B2-2, web manual edits) — draft-buffered designation editing.
@@ -29,17 +23,24 @@ import {
  * (`commitJobPatch`) so a registry flush can immediately consume the
  * committed model. Commit closures are idempotent (the draft ref is
  * cleared before invoking) and unmount-safe.
+ *
+ * DURABILITY IS THE ORDINARY SAVE PATH — deliberately, and identically
+ * to iOS (which is canon for parity and has no equivalent machinery).
+ * A committed draft reaches the pending patch and persists through the
+ * same outbox every other field uses. Cycles 1–8 grew a localStorage
+ * "journal" here to additionally survive a process kill that skips
+ * pagehide; it was never in the plan, it had no iOS twin, and it was
+ * REMOVED in cycle 9 — its own recovery path could not clear what it
+ * recovered (the commit marker read a module-local map that is empty
+ * after exactly the restart the feature exists for), so a recovered
+ * draft replayed on every mount and could overwrite a NEWER designation.
+ * Resurrecting a stale designation is the precise corruption this plan
+ * exists to prevent, which makes the un-journalled path strictly safer.
  */
 export function useDesignationDraft(opts: {
   /** Registry key — unique per MOUNTED surface+row (two surfaces may
    *  render the same circuit; each needs its own registry slot). */
   draftKey: string;
-  /** Cycle-4 — LOGICAL journal key, shared across surfaces for one
-   *  circuit (`${jobId}:designation:${circuitId}`): a crash-created
-   *  card journal must be visible when the job next opens in
-   *  desktop/table view, and a newer edit on ANY surface must
-   *  supersede it. Defaults to draftKey for standalone harnesses. */
-  journalKey?: string;
   /** Current committed model value for this designation. */
   modelValue: string;
   /** Canonicalise + synchronously commit the raw draft to the model. */
@@ -57,14 +58,12 @@ export function useDesignationDraft(opts: {
   const unregisterRef = React.useRef<(() => void) | null>(null);
   const commitFnRef = React.useRef(opts.commit);
   const draftKeyRef = React.useRef(opts.draftKey);
-  const journalKeyRef = React.useRef(opts.journalKey ?? opts.draftKey);
   // Latest-ref pattern via insertion effect (react-hooks/refs forbids
   // render-time ref writes). Commits only fire from blur/flush handlers,
   // which always run after effects have stamped the latest closures.
   React.useInsertionEffect(() => {
     commitFnRef.current = opts.commit;
     draftKeyRef.current = opts.draftKey;
-    journalKeyRef.current = opts.journalKey ?? opts.draftKey;
   });
 
   const commitNow = React.useCallback(() => {
@@ -73,15 +72,7 @@ export function useDesignationDraft(opts: {
     draftRef.current = null;
     unregisterRef.current?.();
     unregisterRef.current = null;
-    // Cycle-4 ordering — only an ACTUAL commit marks its journal (an
-    // unmounting hook with no open draft must never mark a stranded,
-    // still-gated journal for clearing by an unrelated save).
     if (open == null) return;
-    // Cycle-3 — the journal is only MARKED here; it is physically
-    // cleared by JobProvider once the outbox enqueue has durably
-    // succeeded (a page kill between this commit and the enqueue would
-    // otherwise lose both copies).
-    markDesignationJournalCommitted(journalKeyRef.current);
     setDraft(null); // post-unmount this is a safe no-op
     commitFnRef.current(open);
   }, []);
@@ -90,39 +81,12 @@ export function useDesignationDraft(opts: {
     (next: string) => {
       draftRef.current = next;
       setDraft(next);
-      // Codex r1 — synchronous journal per keystroke: the pagehide flush
-      // only STARTS an async IndexedDB enqueue, and the browser may kill
-      // the process before it completes (tab close, PWA eviction). The
-      // journal survives that; the next mount of this surface commits it.
-      writeDesignationJournal(journalKeyRef.current, next);
       if (!unregisterRef.current) {
         unregisterRef.current = registerDesignationDraft(draftKeyRef.current, commitNow);
       }
     },
     [commitNow]
   );
-
-  // Recover a journalled draft stranded by a killed session — but ONLY
-  // once the provider doc is authoritative (mini-review c1: an immediate
-  // commit into an un-hydrated cache doc dirties the provider, rejects
-  // the fresh network doc, and can PUT stale circuits — the 851ba63e
-  // class). The journal is cleared only after the guarded commit runs;
-  // the commit itself is functional against the then-current job.
-  React.useEffect(() => {
-    const key = journalKeyRef.current;
-    const cancel = whenDesignationRecoveryReady(() => {
-      const stranded = readDesignationJournal(key);
-      if (stranded != null && draftRef.current == null) {
-        // Same durability-gated clear as a live commit.
-        markDesignationJournalCommitted(key);
-        commitFnRef.current(stranded);
-      }
-    });
-    // Cycle-2 — cancel on unmount so a queued recovery from THIS job's
-    // surface can never fire under the next job's provider.
-    return cancel;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // View disappearance / unmount — a collapsed card or removed row must
   // not strand its open draft.

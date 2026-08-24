@@ -75,3 +75,38 @@ describe('designationCanonicalisesToEmpty — parity helper', () => {
     expect(designationCanonicalisesToEmpty(null)).toBe(false);
   });
 });
+
+/**
+ * Cycle-9 (F3) — the blank tests inside `repair` and
+ * `designationCanonicalisesToEmpty` are TRIMS, and the two platforms
+ * were trimming with different character sets. Swift's Foundation sets
+ * (`.whitespacesAndNewlines`, `.whitespaces`) are the Unicode
+ * `White_Space` property, which contains U+0085 NEXT LINE; ECMAScript's
+ * TrimString class does not.
+ *
+ * The golden-vector fixture CANNOT fence this: it pins `canonicalise`,
+ * and both platforms already agreed there. The divergence was entirely
+ * in what `repair` then DID with that agreed remainder. This is the
+ * web half of the twin — see `DesignationCanonicaliserContractTests`.
+ */
+describe('repair — U+0085 is ECMAScript-untrimmable (cycle-9 F3 twin)', () => {
+  it('treats a NEL-only remainder as meaningful, so the banned edge token is stripped', () => {
+    // SPACE is a delimiter, so "Circuit" is a standalone leading token
+    // and canonicalises away, leaving a lone NEL. JS `.trim()` leaves
+    // that NEL in place, so the remainder is non-blank and repair
+    // returns it. Swift trimming with a Foundation set saw '' instead,
+    // concluded the value was banned-token-only, and returned the input
+    // UNCHANGED — keeping the word "circuit" on iOS alone.
+    expect(canonicaliseCircuitDesignation('Circuit \u0085')).toBe('\u0085');
+    expect(repairCircuitDesignation('Circuit \u0085')).toBe('\u0085');
+    expect(designationCanonicalisesToEmpty('Circuit \u0085')).toBe(false);
+  });
+
+  it('still treats a genuinely blank remainder as banned-token-only', () => {
+    // Control: ordinary trailing whitespace. Both platforms always
+    // agreed here, which is why the U+0085 case survived eight cycles.
+    expect(canonicaliseCircuitDesignation('Circuit  ')).toBe('');
+    expect(repairCircuitDesignation('Circuit  ')).toBe('Circuit  ');
+    expect(designationCanonicalisesToEmpty('Circuit  ')).toBe(true);
+  });
+});

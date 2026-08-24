@@ -256,3 +256,52 @@ describe('Codex r1 — alias uniqueness', () => {
     expect(out.text).toBe('Garage supply, circuit 5, Zs 0.4 ohms');
   });
 });
+
+/**
+ * cycle-9 F4 — `\d` is ASCII-only in JS (no `u`-mode property escapes)
+ * but matches every Unicode decimal digit (Nd) in ICU, which is what
+ * `NSRegularExpression` uses. A non-ASCII digit in the structural
+ * circuit slot therefore matched a shape on iOS and NOT here, so the
+ * two clients spoke the same frame differently. The Swift patterns now
+ * spell `[0-9]` out; these are the web assertions those mirror.
+ * iOS twin: `DesignationHygieneBoundaryTests` § "Cycle-9 (F4)".
+ */
+describe('cycle-9 F4 — a non-ASCII digit is not a structural circuit number', () => {
+  // U+0663 ARABIC-INDIC DIGIT THREE.
+  const THREE = '٣';
+
+  it.each([
+    ['shape B', `Circuit ${THREE} is now the Upstairs lighting circuit`],
+    ['shape C', `Created circuit ${THREE}, Upstairs lighting circuit — wiring type A`],
+    ['shape A', `Upstairs lighting circuit, circuit ${THREE}, Zs 0.4 ohms`],
+  ])('%s passes through byte-identical', (_label, text) => {
+    const out = rewriteConfirmationDesignationText(text, opts);
+    expect(out.changed).toBe(false);
+    expect(out.text).toBe(text);
+  });
+
+  it.each([
+    [
+      'shape B',
+      'Circuit 3 is now the Upstairs lighting circuit',
+      'Circuit 3 is now the Upstairs lighting',
+    ],
+    [
+      'shape C',
+      'Created circuit 3, Upstairs lighting circuit — wiring type A',
+      'Created circuit 3, Upstairs lighting — wiring type A',
+    ],
+    [
+      'shape A',
+      'Upstairs lighting circuit, circuit 3, Zs 0.4 ohms',
+      'Upstairs lighting, circuit 3, Zs 0.4 ohms',
+    ],
+  ])(
+    '%s ASCII control still rewrites (so the above pins the digit class, not a stray non-match)',
+    (_label, text, expected) => {
+      const out = rewriteConfirmationDesignationText(text, opts);
+      expect(out.changed).toBe(true);
+      expect(out.text).toBe(expected);
+    }
+  );
+});

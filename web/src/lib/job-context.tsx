@@ -7,13 +7,7 @@ import { getUser } from './auth';
 import { queueSaveJob } from './pwa/queue-save-job';
 import { listPendingMutationsStrict } from './pwa/outbox';
 import { withJobSaveLock } from './pwa/job-save-lock';
-import {
-  clearDesignationJournalBatch,
-  flushDesignationDrafts,
-  restoreDesignationJournalBatch,
-  setDesignationRecoveryReady,
-  takeCommittedDesignationJournalBatch,
-} from './designation-drafts';
+import { flushDesignationDrafts } from './designation-drafts';
 import { repairJobCircuitDesignations } from './repair-job-designations';
 
 /**
@@ -179,15 +173,6 @@ export function JobProvider({
   // Stable-ref mirror for identity-stable callbacks (the PDF gate).
   const isHydratedRef = React.useRef(isHydrated);
   isHydratedRef.current = isHydrated;
-  // Mini-review c1 — journal-recovery gate: stranded designation-draft
-  // journals may commit only once THIS doc is authoritative (accepted
-  // network doc, or confirmed-offline cache). Reset on unmount so the
-  // next job's mount cannot inherit readiness.
-  React.useEffect(() => {
-    setDesignationRecoveryReady(isHydrated || networkRejected);
-  }, [isHydrated, networkRejected]);
-  React.useEffect(() => () => setDesignationRecoveryReady(false), []);
-
   // Keep a ref of the freshest job so `flushSave` (fired from a timer)
   // reads the post-patch doc even when the closure was captured with a
   // stale snapshot. Mirrors the "functional updater" pattern in
@@ -258,20 +243,11 @@ export function JobProvider({
           const drained = pendingPatchRef.current;
           if (Object.keys(drained).length === 0) return 'empty';
           pendingPatchRef.current = {};
-          // Cycle-4 — the journal batch is captured AT DRAIN TIME with
-          // the patch: a draft committing while this save is in flight
-          // lands in the NEXT batch, so this save's durable enqueue can
-          // never clear a journal whose edit it does not carry.
-          const journalBatch = takeCommittedDesignationJournalBatch();
           const detail = jobRef.current;
           try {
             await withJobSaveLock(user.id, detail.id, () =>
               queueSaveJob(user.id, detail.id, drained, { optimisticDetail: detail })
             );
-            // Cycle-3/4 — the enqueue is durable; exactly THIS batch's
-            // journals may now be dropped (revision-checked: a newer
-            // keystroke's journal survives).
-            clearDesignationJournalBatch(journalBatch);
             return 'saved';
           } catch (err) {
             // `queueSaveJob` re-throws 4xx only. Transient failures
@@ -287,10 +263,7 @@ export function JobProvider({
             // Restore it (newer pending keys win) and re-arm, else a
             // load-repair patch for this doc version would be lost
             // forever (the per-version tag blocks a re-enqueue).
-            // Cycle-4: the journal batch is restored too (an existing
-            // newer-revision mark wins — revisions are monotonic).
             pendingPatchRef.current = { ...drained, ...pendingPatchRef.current };
-            restoreDesignationJournalBatch(journalBatch);
             return 'restored';
           }
         }
@@ -528,7 +501,6 @@ export function JobProvider({
         async (): Promise<{ synced: boolean; failed: boolean }> => {
           const pending = pendingPatchRef.current;
           pendingPatchRef.current = {};
-          const journalBatch = takeCommittedDesignationJournalBatch();
           const detail = jobRef.current;
           const patch: Partial<JobDetail> = { ...pending, circuits: detail.circuits };
           try {
@@ -536,7 +508,6 @@ export function JobProvider({
               const saved = await queueSaveJob(user.id, detail.id, patch, {
                 optimisticDetail: detail,
               });
-              clearDesignationJournalBatch(journalBatch);
               if (!saved.synced) return { synced: false as const };
               const rows = await listPendingMutationsStrict();
               // A POISONED row will never replay, so it cannot overwrite
@@ -556,9 +527,8 @@ export function JobProvider({
             // the outbox enqueue itself threw, so the drained patch
             // reached NEITHER the server nor the outbox. Restore (newer
             // keys win) and re-arm, else a draft/load-repair patch dies
-            // with a failed PDF attempt. Cycle-4: journals restored too.
+            // with a failed PDF attempt.
             pendingPatchRef.current = { ...pending, ...pendingPatchRef.current };
-            restoreDesignationJournalBatch(journalBatch);
             if (mountedRef.current) {
               setIsDirty(true);
               scheduleSaveRef.current?.();

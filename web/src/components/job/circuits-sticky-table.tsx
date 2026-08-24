@@ -302,7 +302,6 @@ function Row({
   // commitJobPatch route.
   const designationDraft = useDesignationDraft({
     draftKey: `${designationDraftScope}:sticky:${circuit.id}`,
-    journalKey: `${designationDraftScope}:designation:${circuit.id}`,
     modelValue: v('circuit_designation') ?? '',
     commit: (raw) => void onCommitDesignation(circuit.id, raw),
   });

@@ -213,7 +213,6 @@ function DesignationCardField({
   const handlers = accessory?.inputHandlers(circuitId, 'circuit_designation');
   const draft = useDesignationDraft({
     draftKey: `${draftScope}:card:${circuitId}`,
-    journalKey: `${draftScope}:designation:${circuitId}`,
     modelValue: value,
     commit: (raw) => void onCommitDesignation(circuitId, raw),
   });
