@@ -100,7 +100,7 @@ designation's EDGES — the certificate column is already headed "Circuit descri
   `src/extraction/designation-canonicaliser.js`; web/shared
   `packages/shared-utils/src/designation-canonicaliser.ts`; iOS
   `Sources/Utilities/DesignationCanonicaliser.swift`. All three assert the shared
-  33-vector fixture `config/designation-canonical-vectors.json`; the iOS copy is pinned
+  37-vector fixture `config/designation-canonical-vectors.json`; the iOS copy is pinned
   by a paired SHA-256 digest and `scripts/check-designation-fixture-sync.sh`
   (pre-TestFlight byte-compare). Change vectors only cross-platform.
 - **Client boundaries (PLAN-B2):** voice appliers (entry, storage+speech from the same

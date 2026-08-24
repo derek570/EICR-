@@ -81,29 +81,89 @@ export function _registeredDesignationDraftCount(): number {
 // on enqueue failure the journal survives for next-mount recovery.
 
 const JOURNAL_PREFIX = 'cm-designation-draft:';
-// key → committed revision awaiting durability (cycle-4: BATCH-scoped —
-// a save captures its batch at drain time; a draft committing while
+
+// Cycle-8 (BLOCKER) — WRITE-TOKEN IDENTITY, not a module-local revision
+// counter. The journal lives in localStorage, which is shared by every
+// tab on the origin, but the bookkeeping that decided whether a batch
+// may delete a key was module-local: a per-key revision integer, later
+// fenced by a module generation. Both are invisible to a second tab, so
+// tab A could delete a journal tab B had just written — the revision it
+// compared was its OWN, and B's write never touched it. Sign-out was the
+// same bug in time rather than space (the purge reset revisions, so the
+// next login re-issued revision 1 and a still-in-flight pre-sign-out
+// save matched it).
+//
+// The fix moves identity INTO the durable record: every write stamps a
+// process-unique token and stores `{t, v}`; a batch captures the token
+// it saw, and clearing RE-READS storage and removes the key only when
+// the stored token is still that exact token. The check therefore reads
+// the same shared state every tab writes, and needs no cross-tab
+// signalling. This subsumes the revision counter AND the generation
+// fence (a purge removes the records, so a stale batch's token matches
+// nothing) — deliberately ONE fence rather than three overlapping ones.
+type JournalRecord = { t: string; v: string };
+
+const TAB_ID = (() => {
+  try {
+    const c = globalThis.crypto;
+    if (typeof c?.randomUUID === 'function') return c.randomUUID();
+  } catch {
+    /* fall through */
+  }
+  return `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+})();
+let writeSeq = 0;
+
+// key → committed write-token awaiting durability (cycle-4: BATCH-scoped
+// — a save captures its batch at drain time; a draft committing while
 // that save is in flight lands in the NEXT batch and its journal
 // survives a kill until ITS save durably enqueues).
-const committedJournalRevisions = new Map<string, number>();
-// key → current write revision (bumped per keystroke).
-const journalRevisions = new Map<string, number>();
-// Cycle-7 — generation/epoch of the revision space itself. `purge`
-// (sign-out) RESETS every revision to 0, so a batch captured before the
-// purge carries revision numbers that a post-login draft will re-issue
-// from scratch: an in-flight pre-sign-out save completing afterwards
-// would find an equal revision and delete the NEW user's journal (or,
-// on failure, restore a mark for a value that no longer exists). Every
-// batch is stamped with the generation it was captured in; clear and
-// restore both ignore a batch from an older generation.
-let journalGeneration = 0;
+const committedJournalTokens = new Map<string, string>();
+// key → the token THIS tab last wrote (what `mark` records).
+const journalTokens = new Map<string, string>();
+
+/** The token currently stored for `key`, or null if no record exists.
+ *  Reads shared storage, so it sees other tabs' writes. */
+function storedToken(key: string): string | null {
+  try {
+    const raw = window.localStorage.getItem(JOURNAL_PREFIX + key);
+    if (raw == null) return null;
+    return parseRecord(raw)?.t ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a journal record. Returns null for a legacy plain-string value
+ *  written by a pre-cycle-8 build — those have no token, so they can be
+ *  READ (recovery still works across the upgrade) but never token-
+ *  matched, which fails safe: the key is left in place until its own
+ *  post-upgrade write/commit cycle clears it. */
+function parseRecord(raw: string): JournalRecord | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as JournalRecord).t === 'string' &&
+      typeof (parsed as JournalRecord).v === 'string'
+    ) {
+      return parsed as JournalRecord;
+    }
+  } catch {
+    /* legacy plain string */
+  }
+  return null;
+}
 
 export function writeDesignationJournal(key: string, value: string): void {
   try {
-    window.localStorage.setItem(JOURNAL_PREFIX + key, value);
-    journalRevisions.set(key, (journalRevisions.get(key) ?? 0) + 1);
+    const token = `${TAB_ID}:${++writeSeq}`;
+    const record: JournalRecord = { t: token, v: value };
+    window.localStorage.setItem(JOURNAL_PREFIX + key, JSON.stringify(record));
+    journalTokens.set(key, token);
     // A fresh draft supersedes any pending-clear mark for this key.
-    committedJournalRevisions.delete(key);
+    committedJournalTokens.delete(key);
   } catch {
     /* best-effort */
   }
@@ -111,41 +171,40 @@ export function writeDesignationJournal(key: string, value: string): void {
 
 export function readDesignationJournal(key: string): string | null {
   try {
-    return window.localStorage.getItem(JOURNAL_PREFIX + key);
+    const raw = window.localStorage.getItem(JOURNAL_PREFIX + key);
+    if (raw == null) return null;
+    return parseRecord(raw)?.v ?? raw; // legacy plain string reads verbatim
   } catch {
     return null;
   }
 }
 
-/** Mark a journal as committed-to-pending at its CURRENT revision;
- *  physically cleared only once the batch that carried it is durable. */
+/** Mark a journal as committed-to-pending at the token THIS tab last
+ *  wrote; physically cleared only once the batch carrying it is durable
+ *  AND that token is still the one in storage. */
 export function markDesignationJournalCommitted(key: string): void {
-  committedJournalRevisions.set(key, journalRevisions.get(key) ?? 0);
+  const token = journalTokens.get(key);
+  if (token == null) return; // nothing this tab wrote — nothing to clear
+  committedJournalTokens.set(key, token);
 }
 
-export type DesignationJournalBatch = {
-  /** Revision-space generation this batch was captured in (cycle-7). */
-  generation: number;
-  entries: Array<[string, number]>;
-};
+export type DesignationJournalBatch = Array<[string, string]>;
 
 /** Snapshot-and-drain the committed set at save-drain time. The save
- *  that captured this batch clears exactly these revisions on durable
- *  enqueue — nothing committed afterwards. */
+ *  that captured this batch clears exactly these records on durable
+ *  enqueue — nothing committed afterwards, and nothing another tab or a
+ *  later login has since rewritten. */
 export function takeCommittedDesignationJournalBatch(): DesignationJournalBatch {
-  const entries = Array.from(committedJournalRevisions.entries());
-  committedJournalRevisions.clear();
-  return { generation: journalGeneration, entries };
+  const batch = Array.from(committedJournalTokens.entries());
+  committedJournalTokens.clear();
+  return batch;
 }
 
-/** Clear a durably-enqueued batch — each key only when no NEWER
- *  keystroke has re-journalled it since the batch was captured, and
- *  only while the revision space it was captured in is still current
- *  (a sign-out purge retires the generation — cycle-7). */
+/** Clear a durably-enqueued batch — each key only when the record in
+ *  SHARED storage still carries the exact token the batch captured. */
 export function clearDesignationJournalBatch(batch: DesignationJournalBatch): void {
-  if (batch.generation !== journalGeneration) return;
-  for (const [key, revision] of batch.entries) {
-    if ((journalRevisions.get(key) ?? 0) !== revision) continue;
+  for (const [key, token] of batch) {
+    if (storedToken(key) !== token) continue;
     try {
       window.localStorage.removeItem(JOURNAL_PREFIX + key);
     } catch {
@@ -154,16 +213,16 @@ export function clearDesignationJournalBatch(batch: DesignationJournalBatch): vo
   }
 }
 
-/** Restore a batch whose save FAILED pre-durability (existing newer
- *  marks win). A batch from a retired generation is dropped — its
- *  journals were physically removed by the purge, so re-marking their
- *  keys could only mis-target the next user's drafts (cycle-7). */
+/** Restore a batch whose save FAILED pre-durability, so the next save
+ *  re-carries it. Existing newer marks win, and a key whose stored
+ *  record is no longer the captured token is dropped — the value it
+ *  named has been superseded, purged, or replaced by another tab, and
+ *  re-marking it could only mis-target that newer record. */
 export function restoreDesignationJournalBatch(batch: DesignationJournalBatch): void {
-  if (batch.generation !== journalGeneration) return;
-  for (const [key, revision] of batch.entries) {
-    if (!committedJournalRevisions.has(key)) {
-      committedJournalRevisions.set(key, revision);
-    }
+  for (const [key, token] of batch) {
+    if (committedJournalTokens.has(key)) continue;
+    if (storedToken(key) !== token) continue;
+    committedJournalTokens.set(key, token);
   }
 }
 
@@ -177,13 +236,8 @@ export function restoreDesignationJournalBatch(batch: DesignationJournalBatch): 
  */
 export function purgeDesignationDraftState(): void {
   drafts.clear();
-  journalRevisions.clear();
-  committedJournalRevisions.clear();
-  // Retire the revision space (cycle-7): revisions restart at 0 for the
-  // next login, so any batch still held by an in-flight pre-sign-out
-  // save must be unable to clear OR restore against the new user's
-  // journals.
-  journalGeneration += 1;
+  journalTokens.clear();
+  committedJournalTokens.clear();
   recoveryReady = false;
   pendingRecoveries.length = 0;
   try {
