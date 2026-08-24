@@ -32,9 +32,24 @@ import type { JobDetail } from '@/lib/types';
 const saveCalls: Array<{ patch: Partial<JobDetail> }> = [];
 let nextSynced = true;
 let saveShouldThrow: Error | null = null;
+// Cycle-5 harness controls: a one-shot gate parks the NEXT save mid-flight
+// (so the test can commit an edit while it is in the air), and a one-shot
+// throw fails exactly one save without affecting the rest.
+let saveGate: Promise<void> | null = null;
+let saveThrowOnce: Error | null = null;
 
 vi.mock('@/lib/pwa/queue-save-job', () => ({
   queueSaveJob: vi.fn(async (_userId: string, _jobId: string, patch: Partial<JobDetail>) => {
+    if (saveGate) {
+      const gate = saveGate;
+      saveGate = null;
+      await gate;
+    }
+    if (saveThrowOnce) {
+      const err = saveThrowOnce;
+      saveThrowOnce = null;
+      throw err;
+    }
     if (saveShouldThrow) throw saveShouldThrow;
     saveCalls.push({ patch });
     return { queued: true, synced: nextSynced, mutationId: 'm1' };
@@ -115,6 +130,8 @@ beforeEach(() => {
   saveCalls.length = 0;
   nextSynced = true;
   saveShouldThrow = null;
+  saveGate = null;
+  saveThrowOnce = null;
   outboxRows = [];
 });
 
@@ -272,6 +289,58 @@ describe('B2-2 atomic-commit contract', () => {
       result = await h.ctxRef.current!.saveCircuitsSnapshotNow();
     });
     expect(result!.synced).toBe(false);
+    h.unmount();
+  });
+});
+
+describe('cycle-5 — the drain is serialised with the save chain', () => {
+  it('a failed older save cannot restore its stale patch over an edit committed while it was in flight', async () => {
+    // The pinned regression: save A drains {description:'old'} and fails
+    // pre-durability (outbox enqueue throws). An edit {description:'new'}
+    // committed WHILE A was in flight must survive — under the
+    // drain-before-queue shape, A's restore resurrected 'old' into the
+    // pending ref after a second flush had already drained 'new', and the
+    // re-armed save wrote 'old' LAST, reverting the newer edit.
+    const clean = {
+      ...dirtyJob(),
+      circuits: [{ id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker' }],
+    } as unknown as JobDetail;
+    const h = mountProvider(clean, true);
+    await flushDebounce(); // no load-repair save for a clean doc
+
+    let releaseA!: () => void;
+    saveGate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    saveThrowOnce = new Error('IndexedDB unavailable'); // non-ApiError → restore path
+
+    act(() => {
+      h.ctxRef.current!.commitJobPatch({ description: 'old' } as unknown as Partial<JobDetail>);
+    });
+    await flushDebounce(); // save A starts and parks on the gate
+
+    // Newer edit lands while A is in the air.
+    act(() => {
+      h.ctxRef.current!.commitJobPatch({ description: 'new' } as unknown as Partial<JobDetail>);
+    });
+
+    // A resumes, throws, restores; subsequent saves succeed.
+    await act(async () => {
+      releaseA();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // Drive the re-armed debounce + any queued flush to completion.
+    await flushDebounce();
+    await flushDebounce();
+
+    const descCalls = saveCalls
+      .map((c) => (c.patch as Record<string, unknown>).description)
+      .filter((v): v is string => typeof v === 'string');
+    expect(descCalls.length).toBeGreaterThan(0);
+    // The newest value is what persists — and the stale 'old' value must
+    // never be written AFTER 'new'.
+    expect(descCalls[descCalls.length - 1]).toBe('new');
     h.unmount();
   });
 });

@@ -128,6 +128,47 @@ function resolveSlot(
   return null;
 }
 
+/**
+ * Cycle-5 — shape-C boundary resolution is THREE-state, not two: a
+ * boundary whose slot is positively the canonical designation (alias or
+ * circuit-scoped model match) must STOP the iteration, or a later
+ * boundary containing an edge "circuit" token inside the TAIL would be
+ * pure-repaired into corrupted speech. And a slot that merely
+ * pure-repairs is only a FALLBACK — for the legal canonical designation
+ * "Garage circuit — outbuilding feed" (interior token, preserved by
+ * design), the first boundary's fragment "Garage circuit" repairs to
+ * "Garage", so accepting the first repairing fragment would strip a
+ * token the canonicaliser deliberately keeps. Positive evidence at ANY
+ * boundary therefore beats pure repair at any boundary; pure repair
+ * applies only when the full scan produced no positive identification.
+ */
+type ShapeCResolution =
+  | { kind: 'rewrite'; replacement: string }
+  | { kind: 'stop' }
+  | { kind: 'no_evidence' };
+
+function resolveShapeCSlot(
+  slot: string,
+  circuit: number,
+  { aliases, lookupCanonicalByCircuit }: RewriteOptions
+): ShapeCResolution {
+  const viaAlias = aliases.resolve(slot);
+  if (viaAlias != null) {
+    const capped = slotCap(viaAlias);
+    return capped === slot ? { kind: 'stop' } : { kind: 'rewrite', replacement: capped };
+  }
+  const viaModel = lookupCanonicalByCircuit(circuit);
+  if (viaModel != null && viaModel.trim() !== '') {
+    const capped = slotCap(viaModel);
+    if (capped === slot) return { kind: 'stop' };
+    const repairedSlot = repairCircuitDesignation(slot);
+    if (typeof repairedSlot === 'string' && slotCap(repairedSlot) === capped) {
+      return { kind: 'rewrite', replacement: capped };
+    }
+  }
+  return { kind: 'no_evidence' };
+}
+
 // Shape B — `Circuit <N> is now the <designation>`; the leading
 // "Circuit <N>" is STRUCTURAL and preserved verbatim (case-sensitive:
 // the builder always capitalises; a lowercase variant is not ours).
@@ -162,10 +203,12 @@ export function rewriteConfirmationDesignationText(
     const remainder = c[3];
     // Cycle-4 (C4-4) — a designation may itself contain " — "
     // ("Garage — outbuilding feed"), so a lazy first-boundary split
-    // mis-attributes its second half to the tail and rewrites only a
-    // fragment. Iterate every boundary left-to-right and rewrite the
-    // FIRST candidate whose left side positively resolves; if none
-    // does, the text passes through byte-identical.
+    // mis-attributes its second half to the tail. Iterate every
+    // boundary left-to-right; positive evidence (alias / model) at any
+    // boundary wins immediately (rewrite or stop), and pure repair is
+    // only the fallback after the full scan (cycle-5 — see
+    // ShapeCResolution above).
+    let fallback: { replacement: string; tail: string } | null = null;
     let searchFrom = 0;
     for (;;) {
       const idx = remainder.indexOf(SHAPE_C_BOUNDARY, searchFrom);
@@ -173,12 +216,22 @@ export function rewriteConfirmationDesignationText(
       const slot = remainder.slice(0, idx);
       const tail = remainder.slice(idx);
       if (slot !== '' && tail.length > SHAPE_C_BOUNDARY.length) {
-        const replacement = resolveSlot(slot, circuit, opts);
-        if (replacement != null && replacement !== slot) {
-          return { text: `${c[1]}${replacement}${tail}`, changed: true };
+        const res = resolveShapeCSlot(slot, circuit, opts);
+        if (res.kind === 'rewrite' && res.replacement !== slot) {
+          return { text: `${c[1]}${res.replacement}${tail}`, changed: true };
+        }
+        if (res.kind === 'stop') return { text, changed: false };
+        if (fallback == null) {
+          const repaired = repairCircuitDesignation(slot);
+          if (typeof repaired === 'string' && repaired !== slot) {
+            fallback = { replacement: repaired, tail };
+          }
         }
       }
       searchFrom = idx + 1;
+    }
+    if (fallback != null) {
+      return { text: `${c[1]}${fallback.replacement}${fallback.tail}`, changed: true };
     }
     return { text, changed: false };
   }

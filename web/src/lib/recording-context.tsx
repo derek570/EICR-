@@ -1891,6 +1891,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // continues to the server-side extraction path.
         const command = parseVoiceCommand(text);
         if (command) {
+          // Cycle-5 — the LOCAL parse path mutates the job exactly like
+          // the server voice-response path, so it needs the same
+          // stale-draft guard: commit any focused designation draft and
+          // adopt the committed snapshot BEFORE applying (the parser
+          // accepts designation apply_field commands; without this, the
+          // next blur would flush the older draft over the spoken value).
+          jobRef.current = flushDraftsAndGetSnapshotRef.current();
+          // PLAN-B2 — designation-bearing local commands feed the session
+          // alias map too (raw → canonical), matching the server path.
+          if (
+            (command.type === 'update_field' || command.type === 'apply_field') &&
+            voiceCommandTargetsDesignation(command)
+          ) {
+            recordDesignationAliasRef.current(command.value);
+          }
           const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
           if (outcome.patch) {
             updateJobRef.current(outcome.patch);

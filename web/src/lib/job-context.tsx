@@ -240,61 +240,71 @@ export function JobProvider({
       pendingPatchRef.current = {};
       return;
     }
-    // Snapshot + clear so any keystrokes during the flight re-fill the
-    // ref instead of being wiped by a racing flush.
-    pendingPatchRef.current = {};
-    // Cycle-4 — the journal batch is captured AT DRAIN TIME with the
-    // patch: a draft committing while this save is in flight lands in
-    // the NEXT batch, so this save's durable enqueue can never clear a
-    // journal whose edit it does not carry.
-    const journalBatch = takeCommittedDesignationJournalBatch();
-    const detail = jobRef.current;
-    const jobId = detail.id;
     setIsSaving(true);
     setSaveError(null);
     try {
-      // Cycle-2 — ordinary saves hold the per-job cross-tab lock too
-      // (chain first, lock inside the chained op: acquiring the lock
-      // around the chain would deadlock against a queued op that also
-      // wants it).
-      await enqueueSerialisedSave(() =>
-        withJobSaveLock(user.id, jobId, () =>
-          queueSaveJob(user.id, jobId, pending, { optimisticDetail: detail })
-        )
+      // Cycle-5 — the DRAIN itself now happens INSIDE the serialised op.
+      // Draining before queuing let a NEWER flush drain patch B while op
+      // A was still in flight; A's pre-durability restore then
+      // resurrected A's OLDER values into the pending ref, and the
+      // re-armed save wrote them after B — reverting the newer edit.
+      // With the drain serialised, an op's restore is provably the
+      // newest un-enqueued state (nothing else can drain mid-flight).
+      // Cycle-2 ordering unchanged: chain first, per-job cross-tab lock
+      // inside the chained op (lock around the chain would deadlock
+      // against a queued op that also wants it).
+      const outcome = await enqueueSerialisedSave(
+        async (): Promise<'saved' | 'empty' | 'rejected' | 'restored'> => {
+          const drained = pendingPatchRef.current;
+          if (Object.keys(drained).length === 0) return 'empty';
+          pendingPatchRef.current = {};
+          // Cycle-4 — the journal batch is captured AT DRAIN TIME with
+          // the patch: a draft committing while this save is in flight
+          // lands in the NEXT batch, so this save's durable enqueue can
+          // never clear a journal whose edit it does not carry.
+          const journalBatch = takeCommittedDesignationJournalBatch();
+          const detail = jobRef.current;
+          try {
+            await withJobSaveLock(user.id, detail.id, () =>
+              queueSaveJob(user.id, detail.id, drained, { optimisticDetail: detail })
+            );
+            // Cycle-3/4 — the enqueue is durable; exactly THIS batch's
+            // journals may now be dropped (revision-checked: a newer
+            // keystroke's journal survives).
+            clearDesignationJournalBatch(journalBatch);
+            return 'saved';
+          } catch (err) {
+            // `queueSaveJob` re-throws 4xx only. Transient failures
+            // (network / 5xx) stay in the outbox and the replay worker
+            // owns them — no error UI because the write IS durable.
+            if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+              if (mountedRef.current) setSaveError(err.message);
+              return 'rejected';
+            }
+            // Codex r1 — a PRE-durability failure (the outbox enqueue
+            // itself threw, e.g. IndexedDB unavailable) means the
+            // drained patch reached NEITHER the server nor the outbox.
+            // Restore it (newer pending keys win) and re-arm, else a
+            // load-repair patch for this doc version would be lost
+            // forever (the per-version tag blocks a re-enqueue).
+            // Cycle-4: the journal batch is restored too (an existing
+            // newer-revision mark wins — revisions are monotonic).
+            pendingPatchRef.current = { ...drained, ...pendingPatchRef.current };
+            restoreDesignationJournalBatch(journalBatch);
+            return 'restored';
+          }
+        }
       );
-      // Cycle-3/4 — the enqueue is durable; exactly THIS batch's
-      // journals may now be dropped (revision-checked: a newer
-      // keystroke's journal survives).
-      clearDesignationJournalBatch(journalBatch);
       if (!mountedRef.current) return;
-      // Clear `isDirty` only if no new edits queued while we were saving.
-      // If the user kept typing, keep the flag and let the next debounce
-      // fire another flush for the new keys.
-      if (Object.keys(pendingPatchRef.current).length === 0) {
-        setIsDirty(false);
-      }
-    } catch (err) {
-      // `queueSaveJob` re-throws 4xx only. Transient failures (network
-      // / 5xx) stay in the outbox and the replay worker owns them — no
-      // error UI here because the write IS durable, just not synced.
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
-        if (mountedRef.current) {
-          setSaveError(err.message);
+      if (outcome === 'saved' || outcome === 'empty') {
+        // Clear `isDirty` only if no new edits queued while we were
+        // saving; if the user kept typing, the next debounce flushes.
+        if (Object.keys(pendingPatchRef.current).length === 0) {
+          setIsDirty(false);
         }
-      } else {
-        // Codex r1 — a PRE-durability failure (the outbox enqueue itself
-        // threw, e.g. IndexedDB unavailable) means the drained patch
-        // reached NEITHER the server nor the outbox. Restore it (newer
-        // pending keys win) and re-arm the debounce, else a load-repair
-        // patch for this doc version would be lost forever (the
-        // per-version tag blocks a re-enqueue). Cycle-4: the journal
-        // batch is restored too, so the journals survive for recovery.
-        pendingPatchRef.current = { ...pending, ...pendingPatchRef.current };
-        restoreDesignationJournalBatch(journalBatch);
-        if (mountedRef.current) {
-          setIsDirty(true);
-          scheduleSaveRef.current?.();
-        }
+      } else if (outcome === 'restored') {
+        setIsDirty(true);
+        scheduleSaveRef.current?.();
       }
     } finally {
       if (mountedRef.current) {
@@ -500,11 +510,6 @@ export function JobProvider({
     // callback is identity-stable across renders).
     if (!isHydratedRef.current) return { synced: false };
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    const pending = pendingPatchRef.current;
-    pendingPatchRef.current = {};
-    const journalBatch = takeCommittedDesignationJournalBatch();
-    const detail = jobRef.current;
-    const patch: Partial<JobDetail> = { ...pending, circuits: detail.circuits };
     if (mountedRef.current) {
       setIsSaving(true);
       setSaveError(null);
@@ -516,43 +521,60 @@ export function JobProvider({
       // its row, and the later locked proof would see a drained outbox
       // over a reverted schedule). Chain first, lock inside the chained
       // op — same non-reentrant ordering as flushSave.
-      const result = await enqueueSerialisedSave(() =>
-        withJobSaveLock(user.id, detail.id, async () => {
-          const saved = await queueSaveJob(user.id, detail.id, patch, {
-            optimisticDetail: detail,
-          });
-          clearDesignationJournalBatch(journalBatch);
-          if (!saved.synced) return { synced: false as const };
-          const rows = await listPendingMutationsStrict();
-          // A POISONED row will never replay, so it cannot overwrite
-          // the fresh save — only live pending rows block the gate.
-          const drained = rows.every((m) => m.jobId !== detail.id || m.poisoned === true);
-          return { synced: drained };
-        })
+      // Cycle-5 — the DRAIN moves inside the op too (see flushSave):
+      // draining before queuing let a failed older save restore its
+      // stale patch over one a newer save had already drained.
+      const result = await enqueueSerialisedSave(
+        async (): Promise<{ synced: boolean; failed: boolean }> => {
+          const pending = pendingPatchRef.current;
+          pendingPatchRef.current = {};
+          const journalBatch = takeCommittedDesignationJournalBatch();
+          const detail = jobRef.current;
+          const patch: Partial<JobDetail> = { ...pending, circuits: detail.circuits };
+          try {
+            const gate = await withJobSaveLock(user.id, detail.id, async () => {
+              const saved = await queueSaveJob(user.id, detail.id, patch, {
+                optimisticDetail: detail,
+              });
+              clearDesignationJournalBatch(journalBatch);
+              if (!saved.synced) return { synced: false as const };
+              const rows = await listPendingMutationsStrict();
+              // A POISONED row will never replay, so it cannot overwrite
+              // the fresh save — only live pending rows block the gate.
+              const drained = rows.every((m) => m.jobId !== detail.id || m.poisoned === true);
+              return { synced: drained };
+            });
+            return { synced: gate.synced, failed: false };
+          } catch (err) {
+            // 4xx — a validation rejection will never sync; surface it
+            // and report un-synced so the caller fails visibly.
+            if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+              if (mountedRef.current) setSaveError(err.message);
+              return { synced: false, failed: true };
+            }
+            // Mini-review c1 — same pre-durability restore as flushSave:
+            // the outbox enqueue itself threw, so the drained patch
+            // reached NEITHER the server nor the outbox. Restore (newer
+            // keys win) and re-arm, else a draft/load-repair patch dies
+            // with a failed PDF attempt. Cycle-4: journals restored too.
+            pendingPatchRef.current = { ...pending, ...pendingPatchRef.current };
+            restoreDesignationJournalBatch(journalBatch);
+            if (mountedRef.current) {
+              setIsDirty(true);
+              scheduleSaveRef.current?.();
+            }
+            return { synced: false, failed: true };
+          }
+        }
       );
-      if (mountedRef.current && Object.keys(pendingPatchRef.current).length === 0) {
+      if (
+        !result.failed &&
+        mountedRef.current &&
+        Object.keys(pendingPatchRef.current).length === 0
+      ) {
         setIsDirty(false);
       }
       return { synced: result.synced };
-    } catch (err) {
-      // 4xx — a validation rejection will never sync; surface it and
-      // report un-synced so the caller fails visibly / falls back.
-      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
-        if (mountedRef.current) setSaveError(err.message);
-      } else {
-        // Mini-review c1 — same pre-durability restore as flushSave: the
-        // outbox enqueue itself threw, so the drained patch reached
-        // NEITHER the server nor the outbox. Restore (newer keys win)
-        // and re-arm, else a draft/load-repair patch dies with a failed
-        // PDF attempt. Cycle-4: journals restored with it.
-        pendingPatchRef.current = { ...pending, ...pendingPatchRef.current };
-        restoreDesignationJournalBatch(journalBatch);
-        if (mountedRef.current) {
-          setIsDirty(true);
-          scheduleSaveRef.current?.();
-        }
-      }
-      return { synced: false };
     } finally {
       if (mountedRef.current) setIsSaving(false);
     }

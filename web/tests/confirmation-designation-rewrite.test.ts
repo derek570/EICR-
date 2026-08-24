@@ -105,6 +105,31 @@ describe('shape C — PLAN-D merged create carrier', () => {
     expect(out.changed).toBe(false);
     expect(out.text).toBe(text);
   });
+
+  it('cycle-5: an INTERIOR "circuit" before an em-dash is not stripped when the model knows the full designation', () => {
+    // Canonical designation "Garage circuit — outbuilding feed" —
+    // "circuit" is interior (preserved by the edge-only canonicaliser).
+    // The first boundary's fragment "Garage circuit" pure-repairs to
+    // "Garage"; taking that fragment would corrupt speech. The model
+    // match at boundary 2 is positive evidence and must win.
+    circuits[5] = 'Garage circuit — outbuilding feed';
+    const text = 'Created circuit 5, Garage circuit — outbuilding feed — wiring type A';
+    const out = rewriteConfirmationDesignationText(text, opts);
+    expect(out.changed).toBe(false);
+    expect(out.text).toBe(text);
+  });
+
+  it('cycle-5: a model-canonical boundary STOPS the scan before a tail fragment can pure-repair', () => {
+    // Tail legally contains " — ring circuit — ": without the stop, the
+    // boundary AFTER the canonical designation ("Garage — outbuilding
+    // feed — ring circuit") pure-repairs (trailing "circuit") and the
+    // rewriter would corrupt the TAIL.
+    circuits[5] = 'Garage — outbuilding feed';
+    const text = 'Created circuit 5, Garage — outbuilding feed — ring circuit — type A';
+    const out = rewriteConfirmationDesignationText(text, opts);
+    expect(out.changed).toBe(false);
+    expect(out.text).toBe(text);
+  });
 });
 
 describe('shape A — "<designation>, circuit N, <body>"', () => {
