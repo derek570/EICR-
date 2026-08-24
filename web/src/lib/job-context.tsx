@@ -5,6 +5,8 @@ import type { CertificateType, JobDetail } from './types';
 import { ApiError } from './types';
 import { getUser } from './auth';
 import { queueSaveJob } from './pwa/queue-save-job';
+import { flushDesignationDrafts } from './designation-drafts';
+import { repairJobCircuitDesignations } from './repair-job-designations';
 
 /**
  * Per-job state container. Holds the fetched JobDetail plus a couple of
@@ -69,6 +71,37 @@ interface JobContextValue {
    * which seeds only after `load()` succeeds.
    */
   isHydrated: boolean;
+  /**
+   * PLAN-B2 atomic-commit contract (a): synchronously commit a patch
+   * into the authoritative job ref AND the pending save patch, and
+   * return the EXACT merged JobDetail snapshot. Unlike `updateJob`
+   * (whose ref bookkeeping runs inside a React state updater, i.e. not
+   * until the next render pass), the returned snapshot is safe for an
+   * IMMEDIATE consumer — a job-state sync push or a PDF render — with
+   * no stale render-tick window. Designation draft commits use this.
+   */
+  commitJobPatch: (patch: Partial<JobDetail>) => JobDetail;
+  /**
+   * PLAN-B2 atomic-commit contract (b): flush all registered
+   * designation drafts synchronously and return the resulting
+   * authoritative snapshot. Callers that need "commit everything, then
+   * consume the exact committed state" (PDF preflight, preset
+   * processing, job-state sync) use this instead of racing the
+   * debounced save.
+   */
+  flushDraftsAndGetSnapshot: () => JobDetail;
+  /**
+   * PLAN-B2 (B2-4) server-fallback PDF gate: UNCONDITIONALLY enqueue
+   * and await a save of the current FULL circuits snapshot (draining
+   * any pending patch alongside), surfacing `queueSaveJob`'s `synced`
+   * outcome. An earlier repair may already have drained into the outbox
+   * with synced=false and an empty pendingPatchRef — so a no-op flush
+   * proves nothing about S3; only THIS call returning `synced: true`
+   * may unlock server-side PDF generation. `synced: false` covers
+   * offline (outbox-only), signed-out, and 4xx rejection alike — the
+   * caller must fall back to the client renderer or fail visibly.
+   */
+  saveCircuitsSnapshotNow: () => Promise<{ synced: boolean }>;
 }
 
 const JobContext = React.createContext<JobContextValue | null>(null);
@@ -93,6 +126,7 @@ export function useJobContext(): JobContextValue {
 export function JobProvider({
   initial,
   hydrated = true,
+  networkRejected = false,
   children,
 }: {
   initial: JobDetail;
@@ -104,9 +138,25 @@ export function JobProvider({
    * pre-guard behaviour.
    */
   hydrated?: boolean;
+  /**
+   * PLAN-B2 (B2-4): true once the layout's network fetch has FAILED
+   * (non-auth) while a cached doc painted — i.e. we are CONFIRMED
+   * offline and the cache is the authoritative doc for this session.
+   * Only then may a load-boundary designation repair of a cache doc be
+   * persisted (through the ordinary outbox path). While the network
+   * outcome is still unknown, a cache repair stays display-only —
+   * queueing it would recreate the cache-before-hydration overwrite
+   * class the `isHydrated` gate exists to prevent (fix 851ba63e).
+   */
+  networkRejected?: boolean;
   children: React.ReactNode;
 }) {
-  const [job, setJob] = React.useState<JobDetail>(initial);
+  // PLAN-B2 (B2-4): the doc enters state load-REPAIRED (display/PDF
+  // safe) — but a mount-time repair NEVER creates a pending patch or
+  // scheduled save; persistence decisions live in the re-sync effect
+  // below where the doc's provenance (network / confirmed-offline
+  // cache) is known.
+  const [job, setJob] = React.useState<JobDetail>(() => repairJobCircuitDesignations(initial).job);
   const [isDirty, setIsDirty] = React.useState(false);
   const [isSaving, setIsSaving] = React.useState(false);
   const [saveError, setSaveError] = React.useState<string | null>(null);
@@ -142,44 +192,12 @@ export function JobProvider({
   // same id AND we have no local unsynced edits. The second clause is
   // the cache-then-hydrate fix (was: id-only gate dropped fresh network
   // payloads forever when the cache won the race).
-  const lastInitialIdRef = React.useRef(initial.id);
-  const lastInitialUpdatedRef = React.useRef(initial.updated_at ?? null);
-  React.useEffect(() => {
-    const nextUpdated = initial.updated_at ?? null;
-    const idChanged = lastInitialIdRef.current !== initial.id;
-    const updatedChanged = lastInitialUpdatedRef.current !== nextUpdated;
-    // Only replace from server if either the id changed (new route) OR
-    // the server has advanced `updated_at` AND we aren't sitting on a
-    // dirty local doc the user hasn't finished editing. Clobbering an
-    // in-flight edit would silently lose keystrokes.
-    const pendingKeys = Object.keys(pendingPatchRef.current).length;
-    const safeToReplace = idChanged || (updatedChanged && !isDirty && pendingKeys === 0);
-    if (safeToReplace) {
-      lastInitialIdRef.current = initial.id;
-      lastInitialUpdatedRef.current = nextUpdated;
-      setJob(initial);
-      setIsDirty(false);
-      setSaveError(null);
-      // The accepted doc's provenance travels with it: a network doc
-      // marks us hydrated; a cache paint (id change while offline)
-      // marks us NOT hydrated so the auto-seeders stay off.
-      setIsHydrated(hydrated);
-    } else if (hydrated && !idChanged && !updatedChanged) {
-      // Network doc landed but matches the version we already hold
-      // (the cache was fresh — same id, same `updated_at`). Nothing to
-      // replace, but the doc in state IS the network version, so the
-      // seeders can safely run. Without this branch a fresh-cache visit
-      // would never hydrate and seeding would be permanently off.
-      setIsHydrated(true);
-    }
-    // NOTE: when a hydrated doc is REJECTED (dirty local edits), we
-    // deliberately stay un-hydrated — state holds cache+edits, not the
-    // server doc, and silently seeding on top of that mix is exactly
-    // the wipe vector this flag exists to close. Safe direction: the
-    // seeders simply never run for that mount.
-  }, [initial, isDirty, hydrated]);
-
   const flushSave = React.useCallback(async () => {
+    // PLAN-B2 — commit any focused designation draft BEFORE draining the
+    // pending patch, so a typing pause longer than the debounce can
+    // never persist the raw pre-blur designation. Draft commits are
+    // synchronous and land in both jobRef and pendingPatchRef.
+    flushDesignationDrafts();
     const pending = pendingPatchRef.current;
     const keys = Object.keys(pending);
     if (keys.length === 0) return;
@@ -229,6 +247,84 @@ export function JobProvider({
     }, SAVE_DEBOUNCE_MS);
   }, [flushSave]);
 
+  const lastInitialIdRef = React.useRef(initial.id);
+  const lastInitialUpdatedRef = React.useRef(initial.updated_at ?? null);
+  // PLAN-B2 (B2-4): one repair-persist per accepted doc version. The
+  // effect re-runs on `isDirty` flips; without this tag the fresh-cache
+  // branch would re-enqueue the repaired circuits every pass.
+  const repairEnqueuedForRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const nextUpdated = initial.updated_at ?? null;
+    const idChanged = lastInitialIdRef.current !== initial.id;
+    const updatedChanged = lastInitialUpdatedRef.current !== nextUpdated;
+    // Only replace from server if either the id changed (new route) OR
+    // the server has advanced `updated_at` AND we aren't sitting on a
+    // dirty local doc the user hasn't finished editing. Clobbering an
+    // in-flight edit would silently lose keystrokes.
+    const pendingKeys = Object.keys(pendingPatchRef.current).length;
+    const safeToReplace = idChanged || (updatedChanged && !isDirty && pendingKeys === 0);
+    const versionTag = `${initial.id}:${nextUpdated ?? ''}`;
+    // PLAN-B2 (B2-4) — the accepted doc is load-repaired BEFORE it
+    // enters state, and the repair is PERSISTED only when the doc's
+    // provenance allows it (see below). Repair is pure and returns the
+    // same object when nothing changed.
+    const repaired = repairJobCircuitDesignations(initial);
+    // A repaired snapshot may be persisted only when (a) it descends
+    // from an ACCEPTED network doc (authoritative), or (b) we are
+    // CONFIRMED offline and the cache is authoritative — explicitly
+    // through the ordinary outbox path. A cache doc whose network
+    // outcome is still UNKNOWN must never become a pending patch: the
+    // dirty/pending state would make this provider reject the newer
+    // network doc and later PUT the stale cached circuits (the exact
+    // cache-before-hydration overwrite class of fix 851ba63e).
+    const mayPersistRepair = hydrated || networkRejected;
+    const enqueueRepairedCircuits = () => {
+      if (!repaired.changed) return;
+      if (!mayPersistRepair) return;
+      if (repairEnqueuedForRef.current === versionTag) return;
+      repairEnqueuedForRef.current = versionTag;
+      pendingPatchRef.current = {
+        ...pendingPatchRef.current,
+        circuits: repaired.job.circuits,
+      };
+      setIsDirty(true);
+      scheduleSave();
+    };
+    if (safeToReplace) {
+      lastInitialIdRef.current = initial.id;
+      lastInitialUpdatedRef.current = nextUpdated;
+      setJob(repaired.job);
+      setIsDirty(false);
+      setSaveError(null);
+      // The accepted doc's provenance travels with it: a network doc
+      // marks us hydrated; a cache paint (id change while offline)
+      // marks us NOT hydrated so the auto-seeders stay off.
+      setIsHydrated(hydrated);
+      enqueueRepairedCircuits();
+    } else if (hydrated && !idChanged && !updatedChanged) {
+      // Network doc landed but matches the version we already hold
+      // (the cache was fresh — same id, same `updated_at`). Nothing to
+      // replace, but the doc in state IS the network version, so the
+      // seeders can safely run. Without this branch a fresh-cache visit
+      // would never hydrate and seeding would be permanently off.
+      setIsHydrated(true);
+      // The mount-time repair already fixed the DISPLAY copy; the
+      // server still holds the dirty designations. Now that the network
+      // has confirmed this exact version, persist the repair once.
+      enqueueRepairedCircuits();
+    } else if (networkRejected && !idChanged && !updatedChanged) {
+      // CONFIRMED offline: the cache doc in state is authoritative for
+      // this session — persist its repair through the ordinary outbox
+      // path (replay syncs it when connectivity returns).
+      enqueueRepairedCircuits();
+    }
+    // NOTE: when a hydrated doc is REJECTED (dirty local edits), we
+    // deliberately stay un-hydrated — state holds cache+edits, not the
+    // server doc, and silently seeding on top of that mix is exactly
+    // the wipe vector this flag exists to close. Safe direction: the
+    // seeders simply never run for that mount.
+  }, [initial, isDirty, hydrated, networkRejected, scheduleSave]);
+
   const updateJob = React.useCallback(
     (patch: JobPatch) => {
       setJob((prev) => {
@@ -253,11 +349,100 @@ export function JobProvider({
     return () => {
       mountedRef.current = false;
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      // PLAN-B2 — a focused designation draft must survive navigation/
+      // unmount. Commits mutate jobRef/pendingPatchRef directly (the
+      // setJob half is a no-op post-unmount, which is fine — the model
+      // consumer at this point is the persistence path, not the UI).
+      flushDesignationDrafts();
       if (Object.keys(pendingPatchRef.current).length > 0) {
         void flushSave();
       }
     };
   }, [flushSave]);
+
+  // PLAN-B2 — backgrounding boundaries: pagehide (BFCache / tab close)
+  // and visibility-hidden both commit focused designation drafts and
+  // push any pending patch to the durable outbox immediately. Without
+  // this, pocketing the phone mid-edit strands the draft in component
+  // state (blur never fires under pagehide on iOS Safari).
+  React.useEffect(() => {
+    const flushForBackground = () => {
+      flushDesignationDrafts();
+      if (Object.keys(pendingPatchRef.current).length > 0) {
+        void flushSave();
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flushForBackground();
+    };
+    window.addEventListener('pagehide', flushForBackground);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flushForBackground);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [flushSave]);
+
+  // PLAN-B2 atomic-commit contract (a) — see JobContextValue docs. The
+  // ref mutations happen synchronously HERE (not inside a React state
+  // updater), so the returned snapshot is immediately consumable and
+  // the pending patch is immediately drainable by an awaitable save.
+  const commitJobPatch = React.useCallback(
+    (patch: Partial<JobDetail>): JobDetail => {
+      const merged = { ...jobRef.current, ...patch } as JobDetail;
+      jobRef.current = merged;
+      pendingPatchRef.current = { ...pendingPatchRef.current, ...patch };
+      setJob(merged);
+      setIsDirty(true);
+      scheduleSave();
+      return merged;
+    },
+    [scheduleSave]
+  );
+
+  // PLAN-B2 atomic-commit contract (b) — flush drafts, return the exact
+  // committed snapshot.
+  const flushDraftsAndGetSnapshot = React.useCallback((): JobDetail => {
+    flushDesignationDrafts();
+    return jobRef.current;
+  }, []);
+
+  // PLAN-B2 (B2-4) — the server-fallback PDF gate. UNCONDITIONAL full
+  // circuits-snapshot save: an earlier repair may have drained into the
+  // outbox with synced=false leaving pendingPatchRef empty, so a no-op
+  // flush proves nothing about S3. Always enqueue a fresh save carrying
+  // the CURRENT full canonical circuits array (plus any other pending
+  // keys, which this drains), and surface queueSaveJob's `synced`.
+  const saveCircuitsSnapshotNow = React.useCallback(async (): Promise<{ synced: boolean }> => {
+    flushDesignationDrafts();
+    const user = getUser();
+    if (!user) return { synced: false };
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    const pending = pendingPatchRef.current;
+    pendingPatchRef.current = {};
+    const detail = jobRef.current;
+    const patch: Partial<JobDetail> = { ...pending, circuits: detail.circuits };
+    if (mountedRef.current) {
+      setIsSaving(true);
+      setSaveError(null);
+    }
+    try {
+      const result = await queueSaveJob(user.id, detail.id, patch, { optimisticDetail: detail });
+      if (mountedRef.current && Object.keys(pendingPatchRef.current).length === 0) {
+        setIsDirty(false);
+      }
+      return { synced: result.synced };
+    } catch (err) {
+      // 4xx — a validation rejection will never sync; surface it and
+      // report un-synced so the caller fails visibly / falls back.
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        if (mountedRef.current) setSaveError(err.message);
+      }
+      return { synced: false };
+    } finally {
+      if (mountedRef.current) setIsSaving(false);
+    }
+  }, []);
 
   const value = React.useMemo<JobContextValue>(
     () => ({
@@ -269,8 +454,21 @@ export function JobProvider({
       isSaving,
       saveError,
       isHydrated,
+      commitJobPatch,
+      flushDraftsAndGetSnapshot,
+      saveCircuitsSnapshotNow,
     }),
-    [job, updateJob, isDirty, isSaving, saveError, isHydrated]
+    [
+      job,
+      updateJob,
+      isDirty,
+      isSaving,
+      saveError,
+      isHydrated,
+      commitJobPatch,
+      flushDraftsAndGetSnapshot,
+      saveCircuitsSnapshotNow,
+    ]
   );
 
   return <JobContext.Provider value={value}>{children}</JobContext.Provider>;

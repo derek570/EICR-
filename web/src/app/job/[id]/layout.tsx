@@ -47,6 +47,11 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
   // in. Seeding a cached/blank paint and letting the debounced save PUT
   // it is the 2026-07-02 data-loss bug (web/audit/INDEX-2026-07.md).
   const [networkHydrated, setNetworkHydrated] = React.useState(false);
+  // PLAN-B2 (B2-4): true once the network fetch has FAILED (non-auth)
+  // while a cached doc painted — confirmed offline, cache authoritative.
+  // JobProvider uses this to decide a load-boundary designation repair
+  // of the cache doc may persist through the ordinary outbox path.
+  const [networkRejected, setNetworkRejected] = React.useState(false);
 
   React.useEffect(() => {
     const user = getUser();
@@ -60,6 +65,7 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
     // navigation keeps this layout mounted) it stops the previous job's
     // hydrated=true leaking onto the next job's cache paint.
     setNetworkHydrated(false);
+    setNetworkRejected(false);
 
     // Phase 7b — stale-while-revalidate via the IDB job cache.
     //
@@ -124,7 +130,12 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
         // If the tab was previously visited, the inspector keeps their
         // full job record offline rather than being bounced to an error
         // card for a network blip.
-        if (hadCache) return;
+        if (hadCache) {
+          // PLAN-B2 (B2-4): the cache is now CONFIRMED authoritative
+          // for this session — load repairs may persist via the outbox.
+          setNetworkRejected(true);
+          return;
+        }
         setError(err.message);
       });
     return () => {
@@ -141,7 +152,7 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
       {job === null ? (
         <JobShellLoading error={error} />
       ) : (
-        <JobProvider initial={job} hydrated={networkHydrated}>
+        <JobProvider initial={job} hydrated={networkHydrated} networkRejected={networkRejected}>
           <RecordingProvider>
             <div className="flex min-h-[calc(100dvh-56px)] flex-col">
               <JobHeader />
