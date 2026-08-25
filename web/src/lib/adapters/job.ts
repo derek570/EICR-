@@ -122,5 +122,15 @@ export const CreateJobResponseSchema = z.object({ id: z.string() });
 export const DeleteJobResponseSchema = z.object({ success: z.boolean() });
 export const SaveJobResponseSchema = z.object({ success: z.boolean() });
 
-/** Deepgram key-mint response — single short-lived JWT. */
-export const DeepgramKeyResponseSchema = z.object({ key: z.string() });
+/**
+ * Deepgram key-mint response — single short-lived JWT, plus the additive
+ * PLAN-E1 `uplink_codec` field. `.catch(undefined)` on the codec means an
+ * unrecognised/absent value degrades to `undefined` rather than failing
+ * the whole parse — mixed-version tolerance is the point (an old backend
+ * omitting the field, or a future backend adding a codec this client
+ * doesn't know yet, must not break key issuance).
+ */
+export const DeepgramKeyResponseSchema = z.object({
+  key: z.string(),
+  uplink_codec: z.enum(['linear16', 'opus']).optional().catch(undefined),
+});
