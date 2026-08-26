@@ -1721,3 +1721,55 @@ describe('§5.12 — PLAN-C closed-enum re-ask wordings join the distinctness un
     }
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// PLAN-E1 E3 (Codex diff-review r1 BLOCKER fix) — the poor-signal advisory
+// (and, later, PLAN-E2's own disclosure line) is a SPOKEN string that must
+// join the SAME distinctness union every other spoken family is held to.
+// `config/closed-enum-vectors.json`'s `spoken_distinctness_union` member
+// (reused from PLAN-C's fixture rather than inventing a second cross-repo
+// fixture — see that member's own comment) is the cross-platform anchor;
+// this test is where the LIVE backend inventories it must never collide
+// with actually live.
+describe('§5.13 — PLAN-E1 poor-signal advisory joins the distinctness union', () => {
+  const fixture = JSON.parse(
+    readFileSync(new URL('../../config/closed-enum-vectors.json', import.meta.url), 'utf8')
+  );
+  const unionTexts = fixture.spoken_distinctness_union;
+  const reaskTexts = fixture.reask_render_vectors.map((v) => v.expected);
+
+  // PLAN-D D3 (feedback ids 122/124) — same literals §5.12 already pins
+  // against web/src/lib/recording/tts.ts; not re-asserted here.
+  const D3_WORDINGS = [
+    'Voice read-backs off.',
+    'Voice read-backs on.',
+    'Heads up — voice read-backs are off.',
+  ];
+
+  test('the union is byte-identical to its web source (drift guard)', () => {
+    const ttsSource = readFileSync(
+      new URL('../../web/src/lib/recording/tts.ts', import.meta.url),
+      'utf8'
+    );
+    for (const wording of unionTexts) {
+      expect(ttsSource).toContain(wording);
+    }
+  });
+
+  test('the union is internally unique', () => {
+    expect(new Set(unionTexts).size).toBe(unionTexts.length);
+  });
+
+  test('no union entry collides with any rendered notice, apology family, D3 cue, or PLAN-C re-ask', () => {
+    const noticeTexts = new Set(renderedNoticeInventory().map((e) => e.text));
+    for (const text of unionTexts) {
+      expect(noticeTexts.has(text)).toBe(false);
+      expect(CATCHALL_SET.has(text)).toBe(false);
+      expect(REJECTED_SET.has(text)).toBe(false);
+      expect(ORPHAN_SET.has(text)).toBe(false);
+      expect(text).not.toBe(ASK_AUDIBILITY_FALLBACK_TEXT);
+      expect(D3_WORDINGS).not.toContain(text);
+      expect(reaskTexts).not.toContain(text);
+    }
+  });
+});

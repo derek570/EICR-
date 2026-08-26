@@ -1277,7 +1277,14 @@ export function handleModeStatusCuePlaybackStarted(dedupeKey: string): boolean {
 
 export const POOR_SIGNAL_ADVISORY_TEXT =
   'Transcription is running slowly — confirmations may take a few seconds.';
-const POOR_SIGNAL_ADVISORY_DEDUPE_KEY = 'poor-signal-advisory';
+// Codex diff-review r1 BLOCKER fix — the plan's own coalescing-key
+// definition is "the advisory's CANONICAL STRING" (PLAN-E1-final.md E3),
+// not an arbitrary identifier unrelated to what's actually spoken. Keying
+// on the canonical text itself is what lets a live-inventory collision
+// test (the `spoken_distinctness_union` fixture) detect a future
+// byte-identical notice colliding with this one; an arbitrary literal
+// key would be invisible to that check.
+const POOR_SIGNAL_ADVISORY_DEDUPE_KEY = POOR_SIGNAL_ADVISORY_TEXT;
 
 /** True from a successful enqueue until the head is heard to completion,
  *  discarded pre-start, or manually torn down mid-playback — the

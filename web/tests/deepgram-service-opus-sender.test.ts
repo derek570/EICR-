@@ -54,16 +54,26 @@ class FakeOpusEncoder implements OpusEncoderLike {
   pending: Int16Array[] = [];
   closed = false;
   flushBehavior: 'drain' | 'hang' = 'drain';
-  constructor(private readonly onPacket: (bytes: Uint8Array) => void) {}
+  constructor(
+    private readonly onPacket: (bytes: Uint8Array) => void,
+    private readonly onInputDrained: () => void
+  ) {}
   encode(samples: Int16Array): void {
     this.pending.push(samples);
   }
-  /** Test helper — fire the fake encoder's output for the oldest
-   *  still-pending input, mirroring a real 1-in/1-out streaming encoder. */
-  emitNext(): void {
-    const next = this.pending.shift();
-    if (!next) return;
-    this.onPacket(new Uint8Array([1, 2, 3]));
+  /** Test helper — pop the oldest still-pending input, fire `packetCount`
+   *  output packets for it (default 1), THEN drain it. `packetCount > 1`
+   *  simulates a real encoder emitting several packets for one input
+   *  (E0's on-device probe found 4 packets from one 80ms input) WITHOUT
+   *  desyncing the pop — `onPacket` and `onInputDrained` are separate
+   *  signals, exactly like production. */
+  emitNext(packetCount = 1): void {
+    if (this.pending.length === 0) return;
+    this.pending.shift();
+    for (let i = 0; i < packetCount; i++) {
+      this.onPacket(new Uint8Array([1, 2, 3]));
+    }
+    this.onInputDrained();
   }
   async flush(): Promise<void> {
     if (this.flushBehavior === 'hang') {
@@ -80,8 +90,8 @@ class FakeOpusEncoder implements OpusEncoderLike {
 
 function makeFakeOpusEncoderFactory() {
   const encoders: FakeOpusEncoder[] = [];
-  const factory: OpusEncoderFactory = (onPacket) => {
-    const enc = new FakeOpusEncoder(onPacket);
+  const factory: OpusEncoderFactory = (onPacket, onInputDrained) => {
+    const enc = new FakeOpusEncoder(onPacket, onInputDrained);
     encoders.push(enc);
     return enc;
   };
@@ -179,6 +189,33 @@ describe('DeepgramService — Opus sender (PLAN-E1)', () => {
     // A fourth emit with nothing pending is a safe no-op.
     encoders[0].emitNext();
     expect(getWs().sent.length).toBe(3);
+  });
+
+  it('a single input producing MULTIPLE output packets does not desync the FIFO pop (Codex review r1 BLOCKER)', async () => {
+    const { factory, encoders } = makeFakeOpusEncoderFactory();
+    const { service, getWs } = makeService({ opusEncoderFactory: factory });
+    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
+    await Promise.resolve();
+    await Promise.resolve();
+    getWs().onopen?.();
+
+    service.sendSamples(frame1280()); // input A
+    service.sendSamples(frame1280()); // input B
+    expect(encoders[0].pending.length).toBe(2);
+
+    // Input A emits 4 packets (mirrors the on-device E0 probe: one
+    // 80ms/1280-frame `encode()` call produced 4 ~20ms packets) — a
+    // pop-per-packet design would consume input B's queue slot on
+    // packet #2, well before input B has even drained.
+    encoders[0].emitNext(4);
+    expect(getWs().sent.length).toBe(4);
+    // Input B still has its OWN pending slot — only ONE input has
+    // drained so far, not two.
+    expect(encoders[0].pending.length).toBe(1);
+
+    encoders[0].emitNext(1);
+    expect(getWs().sent.length).toBe(5);
+    expect(encoders[0].pending.length).toBe(0);
   });
 
   it('discards encoder output that arrives after a NEWER generation started', async () => {
@@ -313,6 +350,53 @@ describe('DeepgramService — Opus sender (PLAN-E1)', () => {
     expect(encoders.length).toBe(0);
     expect(service.resolvedCodec).toBe('linear16');
     expect((created as unknown as FakeWS | null)?.url).toContain('encoding=linear16');
+  });
+
+  it('charges a partial Flux sub-frame tail as onUndispatchedLoss on an UNEXPECTED close (Codex review r1 IMPORTANT fix)', async () => {
+    const reports: Array<{
+      recordingSessionId: string;
+      captureSampleRange: { start: number; end: number };
+    }> = [];
+    const { service, getWs } = makeService({
+      onUndispatchedLoss: (r) => reports.push(r as never),
+    });
+    service.connect(async () => ({ key: 'jwt', uplink_codec: 'linear16' }), 16000);
+    await Promise.resolve();
+    await Promise.resolve();
+    getWs().onopen?.();
+
+    // A full 1280-sample frame dispatches immediately (sent over the
+    // wire) — only the remainder below stays pending as a sub-frame tail.
+    service.sendSamples(new Float32Array(1280).fill(0.1));
+    expect(getWs().sent.length).toBe(1);
+    // 500 samples short of a second full frame — sits in the accumulator.
+    service.sendSamples(new Float32Array(780).fill(0.1));
+    expect(getWs().sent.length).toBe(1);
+
+    getWs().onclose?.({ code: 1006, reason: 'abnormal', wasClean: false });
+
+    expect(reports.length).toBe(1);
+    expect(reports[0].recordingSessionId).toBe('sess-test');
+    expect(reports[0].captureSampleRange).toEqual({ start: 1280, end: 2060 });
+    expect(unboundLossTelemetryCount()).toBe(0);
+  });
+
+  it('a graceful disconnect flushes the Flux tail through the sender instead of losing it', async () => {
+    const { service, getWs } = makeService();
+    service.connect(async () => ({ key: 'jwt', uplink_codec: 'linear16' }), 16000);
+    await Promise.resolve();
+    await Promise.resolve();
+    getWs().onopen?.();
+
+    service.sendSamples(new Float32Array(780).fill(0.1));
+    expect(getWs().sent.length).toBe(0); // still short of a full frame
+
+    service.disconnect();
+    // The flushed tail's binary frame, THEN the CloseStream JSON message —
+    // the tail must reach the wire BEFORE CloseStream, not be dropped.
+    expect(getWs().sent.length).toBe(2);
+    expect(getWs().sent[0]).toBeInstanceOf(ArrayBuffer);
+    expect(typeof getWs().sent[1]).toBe('string');
   });
 
   it('a service constructed WITHOUT a session context (the ~20 pre-existing direct tests) still works standalone', () => {

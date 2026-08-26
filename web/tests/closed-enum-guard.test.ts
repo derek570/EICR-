@@ -33,6 +33,7 @@ import {
   type GuardedClosedEnumField,
   type GuardedTarget,
 } from '@certmate/shared-utils';
+import { POOR_SIGNAL_ADVISORY_TEXT } from '@/lib/recording/tts';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -56,6 +57,7 @@ type Fixture = {
     target: GuardedTarget;
     expected: string;
   }>;
+  spoken_distinctness_union: string[];
 };
 
 const fixture = require('../../config/closed-enum-vectors.json') as Fixture;
@@ -71,7 +73,7 @@ describe('closed-enum fixture — cross-platform pins', () => {
    *  BOTH constants in the same coordinated change. */
   it('fixture bytes match the pinned cross-platform digest', () => {
     const digest = createHash('sha256').update(readFileSync(FIXTURE_PATH)).digest('hex');
-    expect(digest).toBe('ca9fdf6e5750eb2ee1f23df6d1fcc8db3f6dc539d0b41d180fb069fb4d5ab572');
+    expect(digest).toBe('76bc6437f8071ba6357ca8da0402351cc7cea204343e79a9b1dd99ab564860ce');
   });
 
   it('fixture options are exactly field_schema.json minus the empty sentinel', () => {
@@ -88,6 +90,19 @@ describe('closed-enum fixture — cross-platform pins', () => {
       expect(CLOSED_ENUM_LABELS[field]).toBe(fixture.labels[field]);
     }
     expect({ ...WIRING_TYPE_DESCRIPTION_TO_CODE }).toEqual(fixture.wiring_type_description_to_code);
+  });
+
+  // PLAN-E1 E3 (Codex diff-review r1 BLOCKER fix) — the plan requires the
+  // poor-signal advisory's coalescing key to be its own canonical spoken
+  // string, which only matters if this fixture's live-inventory collision
+  // check (src/__tests__/stage6-honest-refusal.test.js §5.12) can actually
+  // see it. PLAN-E2 adds its own disclosure line to the SAME member in its
+  // own PR (same contract) — this member is deliberately NOT closed to
+  // future additions.
+  it('spoken_distinctness_union is internally unique and contains the E1 advisory, byte-identical to its source', () => {
+    const union = fixture.spoken_distinctness_union;
+    expect(new Set(union).size).toBe(union.length);
+    expect(union).toContain(POOR_SIGNAL_ADVISORY_TEXT);
   });
 
   it('every wiring-description target is itself a schema option', () => {

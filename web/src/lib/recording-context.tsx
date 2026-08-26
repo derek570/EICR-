@@ -2259,7 +2259,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // Flux frame timelines); production always takes the `new
       // DeepgramService` branch below.
       const deepgramCallbacks: DeepgramCallbacks = {
-        onStateChange: setDeepgramState,
+        onStateChange: (state) => {
+          setDeepgramState(state);
+          // PLAN-E1 E3 (Codex diff-review r1 IMPORTANT fix) — reset the
+          // probe the MOMENT the socket dies (enters 'reconnecting' or
+          // terminal 'error'), not only after a reconnect SUCCEEDS
+          // (`onReconnected`, below). Waiting for success would let an
+          // onset pinned right before the drop sit for the ENTIRE
+          // reconnect gap — seconds on a bad link, or forever if the
+          // reconnect never succeeds — before ever resolving, wildly
+          // overreporting latency (or never contributing a sample at
+          // all). `onStateChange` only fires on a GENUINE transition
+          // (DeepgramService no-ops a same-state call), so this can't
+          // double-reset for one drop.
+          if (state === 'reconnecting' || state === 'error') {
+            if (
+              poorSignalProbeRef.current?.onResetWithoutInterim() &&
+              poorSignalProbeRef.current.isArmed
+            ) {
+              speakPoorSignalAdvisory();
+            }
+          }
+        },
         onInterimTranscript: (text) => {
           // PLAN-E1 E3 — first interim since the last onset resolves the
           // probe's pending sample as OBSERVED; arm the spoken advisory

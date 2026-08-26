@@ -283,14 +283,12 @@ export class DeepgramService {
   // generations (round-8: async encoder output is socket/generation-bound).
   private opusEncoder: OpusEncoderLike | null = null;
   private opusEncoderGeneration = 0;
-  // FIFO of captured segments handed to the encoder whose output packet
-  // hasn't arrived yet — a real-time Opus encoder configured with input
-  // frames matching its own packet duration emits one packet per input
-  // frame in order, so FIFO correspondence is the correct pairing (both
-  // the production WebCodecs path and the deterministic fake encoder
-  // tests exercise this 1:1 assumption explicitly). Anything still queued
-  // at teardown is CONFIRMED local loss, reported via
-  // `onUndispatchedLoss` before the reset.
+  // FIFO of captured segments handed to the encoder whose INPUT hasn't
+  // finished draining yet (popped on `onInputDrained`, NOT on `onPacket`
+  // — see `handleOpusInputDrained`'s doc comment: an encoder's `encode()`
+  // call can legitimately emit more than one output packet, so pop-per-
+  // packet would desync). Anything still queued at teardown is CONFIRMED
+  // local loss, reported via `onUndispatchedLoss` before the reset.
   private pendingOpusInput: TaggedPcmSegment[] = [];
   // Monotonic 16kHz-sample dispatched-audio-time offset — advances ONLY
   // after a successful socket handoff (raw send for linear16; the
@@ -658,17 +656,18 @@ export class DeepgramService {
       this.currentEpoch = null;
       const reconnectable = event.code !== 1000 && event.code !== 1005;
       // An UNEXPECTED teardown (reconnectable close) charges any samples
-      // still sitting inside the encoder pipeline as confirmed local
-      // loss BEFORE the reset — a graceful stop/pause instead runs the
-      // bounded flush in `disconnect()` and never reaches this branch's
-      // encoder-loss path. A clean 1000/1005 close (server CloseStream
-      // response) has already been drained by `disconnect()`'s flush, so
-      // nothing should be pending here either way. Uses the epoch
-      // snapshotted BEFORE the clear above — `chargeUndispatchedEncoderLoss`
-      // no longer reads `this.currentEpoch` itself (it would always see
-      // the just-cleared `null`).
+      // still sitting inside the encoder pipeline AND any partial Flux
+      // sub-frame tail as confirmed local loss BEFORE the reset — a
+      // graceful stop/pause instead runs the bounded flush in
+      // `disconnect()` and never reaches this branch's loss-charging path.
+      // A clean 1000/1005 close (server CloseStream response) has already
+      // been drained by `disconnect()`'s flush, so nothing should be
+      // pending here either way. Uses the epoch snapshotted BEFORE the
+      // clear above — these methods no longer read `this.currentEpoch`
+      // themselves (it would always see the just-cleared `null`).
       if (reconnectable && dyingEpoch !== null) {
         this.chargeUndispatchedEncoderLoss(dyingEpoch);
+        this.chargeFluxTailLoss(dyingEpoch);
       }
       this.teardownOpusEncoder();
       pipelineLog('deepgram_ws_close', {
@@ -1069,12 +1068,10 @@ export class DeepgramService {
       return;
     }
 
-    // Opus path — async encoder output. Queue this segment so the FIFO
-    // output handler can pair it with the packet it produces (a
-    // real-time encoder configured with input frames matching its own
-    // packet duration emits one packet per input frame, in order — both
-    // the production WebCodecs path and the deterministic fake encoder
-    // used in tests honour this 1:1 correspondence explicitly).
+    // Opus path — async encoder output. Queue this segment so the
+    // per-INPUT drain handler (`handleOpusInputDrained`, fired once per
+    // `encode()` call regardless of output count) can pop it in FIFO
+    // order.
     this.pendingOpusInput.push(segment);
     this.opusEncoder?.encode(segment.samples);
   }
@@ -1082,21 +1079,40 @@ export class DeepgramService {
   /** Encoder-output callback, bound to the generation that constructed
    *  it — output arriving after a NEWER generation has started (a
    *  reconnect/codec-change raced an in-flight encode) is discarded, not
-   *  sent on a socket it no longer belongs to. */
+   *  sent on a socket it no longer belongs to. Does NOT touch
+   *  `pendingOpusInput` (Codex diff-review r1 BLOCKER fix): a single
+   *  `encode()` call can legitimately emit MULTIPLE packets here (iOS's
+   *  on-device E0 probe found 4 packets from one 80ms/1280-frame input;
+   *  nothing suggests WebCodecs' Opus encoder differs) — popping the
+   *  queue per PACKET desyncs after the very first multi-packet input,
+   *  consuming segments pushed by LATER `encode()` calls before they've
+   *  even drained. Sending is the only job left here; the pop moved to
+   *  `handleOpusInputDrained`. */
   private handleOpusPacket(bytes: Uint8Array, generation: number): void {
     if (generation !== this.opusEncoderGeneration) return;
-    const segment = this.pendingOpusInput.shift();
-    if (!segment) return;
     if (!this.ws || this.state !== 'connected') return;
     try {
       this.ws.send(bytes.buffer as ArrayBuffer);
-      this.dispatchedSampleOffset += segment.samples.length;
     } catch {
       // WS backpressure — drop this packet (same accepted-loss bar as
       // the linear16 path); this is NOT an `onUndispatchedLoss` event —
       // that seam is for an unexpected TEARDOWN with residue still
       // queued, not an ordinary per-send failure.
     }
+  }
+
+  /** The 1-input-in / 1-drain-out signal (`OpusEncoderFactory`'s
+   *  `onInputDrained` — WebCodecs' `dequeue` event in production),
+   *  decoupled from `onPacket`'s count. Pops exactly the oldest pending
+   *  segment (FIFO — the encoder processes inputs strictly in submission
+   *  order, never reordering) and advances `dispatchedSampleOffset` by
+   *  its ORIGINAL sample count, regardless of how many output packets
+   *  that input produced. */
+  private handleOpusInputDrained(generation: number): void {
+    if (generation !== this.opusEncoderGeneration) return;
+    const segment = this.pendingOpusInput.shift();
+    if (!segment) return;
+    this.dispatchedSampleOffset += segment.samples.length;
   }
 
   /** Bumps the encoder generation and tears down any prior encoder
@@ -1119,8 +1135,9 @@ export class DeepgramService {
   private constructOpusEncoderForCurrentGeneration(): boolean {
     const generation = this.opusEncoderGeneration;
     try {
-      this.opusEncoder = this.opusEncoderFactory((bytes) =>
-        this.handleOpusPacket(bytes, generation)
+      this.opusEncoder = this.opusEncoderFactory(
+        (bytes) => this.handleOpusPacket(bytes, generation),
+        () => this.handleOpusInputDrained(generation)
       );
       return this.opusEncoder !== null;
     } catch {
@@ -1161,6 +1178,30 @@ export class DeepgramService {
         captureSampleRange: segment.captureSampleRange,
       });
     }
+  }
+
+  /** Charges a partial Flux sub-frame tail (< 80ms, not yet a complete
+   *  frame the batcher would have dispatched) as CONFIRMED local loss —
+   *  called on an UNEXPECTED teardown only (a reconnectable close), the
+   *  Flux-batching sibling of `chargeUndispatchedEncoderLoss` (Codex
+   *  diff-review r1 IMPORTANT fix: this tail sat outside ALL loss/flush
+   *  accounting before this fix — `disconnect()`'s graceful path now
+   *  flushes it through the sender, but an unexpected close never
+   *  reached the sender at all). Clears the accumulator after charging,
+   *  same as the graceful-flush path. */
+  private chargeFluxTailLoss(epoch: ConnectionEpoch): void {
+    if (this.fluxSampleBuffer.length === 0 || this.fluxAccumulatorRangeStart === null) return;
+    this.onUndispatchedLoss({
+      samples: this.fluxSampleBuffer.slice(),
+      recordingSessionId: this.sessionContext.recordingSessionId,
+      epoch,
+      captureSampleRange: {
+        start: this.fluxAccumulatorRangeStart,
+        end: this.fluxAccumulatorRangeStart + this.fluxSampleBuffer.length,
+      },
+    });
+    this.fluxSampleBuffer = new Int16Array(0);
+    this.fluxAccumulatorRangeStart = null;
   }
 
   /**

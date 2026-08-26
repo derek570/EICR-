@@ -38,7 +38,23 @@ export interface OpusEncoderLike {
   close(): void;
 }
 
-export type OpusEncoderFactory = (onPacket: (bytes: Uint8Array) => void) => OpusEncoderLike;
+/**
+ * `onPacket` fires for each encoded output chunk. `onInputDrained` fires
+ * once per `encode()` INPUT call, when the underlying codec has fully
+ * finished processing it (WebCodecs' `dequeue` event / `encodeQueueSize`
+ * decrement) — decoupled from `onPacket`'s count. Codex diff-review r1
+ * BLOCKER: a single `encode()` call can legitimately emit MULTIPLE output
+ * chunks (iOS's on-device E0 probe found 4 packets from one 80ms/1280-
+ * frame input; there is no reason to assume WebCodecs' Opus encoder
+ * differs), so the caller must NOT pop its per-segment bookkeeping queue
+ * once per `onPacket` call — that desyncs after the very first
+ * multi-packet input. `onInputDrained` is the correct 1-input-in ↔
+ * 1-drain-out signal to pop against instead.
+ */
+export type OpusEncoderFactory = (
+  onPacket: (bytes: Uint8Array) => void,
+  onInputDrained: () => void
+) => OpusEncoderLike;
 
 /** Detects genuine WebCodecs Opus support at runtime (SSR/older Safari
  *  have no `AudioEncoder` global at all). */
@@ -54,7 +70,7 @@ export function webCodecsOpusAvailable(): boolean {
  *  quality). One instance per connection generation; callers create a
  *  fresh one per socket and `close()` it on teardown/reconnect/codec
  *  change — never reused across generations. */
-export const realOpusEncoderFactory: OpusEncoderFactory = (onPacket) => {
+export const realOpusEncoderFactory: OpusEncoderFactory = (onPacket, onInputDrained) => {
   if (!webCodecsOpusAvailable()) {
     throw new Error('opus-encoder: WebCodecs AudioEncoder is not available in this environment');
   }
@@ -79,6 +95,14 @@ export const realOpusEncoderFactory: OpusEncoderFactory = (onPacket) => {
     sampleRate: 16000,
     numberOfChannels: 1,
     bitrate: 28000,
+  });
+  // `dequeue` fires once per `encode()` input, when the codec has fully
+  // finished with it (`encodeQueueSize` just decremented) — the caller's
+  // 1-in/1-drain-out pop signal, independent of how many `output` chunks
+  // that input produced.
+  encoder.addEventListener('dequeue', () => {
+    if (closed) return;
+    onInputDrained();
   });
 
   return {
