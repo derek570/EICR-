@@ -2524,8 +2524,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (sessionIdRef.current !== sessionId) {
           throw new Error('recording session rotated — aborting key fetch');
         }
-        const { key } = await api.deepgramKey(sessionIdRef.current);
-        return key;
+        // PLAN-E1 E1 — return the full config object, not just the bare
+        // key: DeepgramService.connect()'s fetcher-mode contract widened
+        // to carry the additive uplink_codec field so the service can
+        // latch it. Absent (old backend) is undefined here and the
+        // service treats that as linear16.
+        return await api.deepgramKey(sessionIdRef.current);
       }, sourceSampleRate);
     },
     [liveFill, onInspectorStoppedSpeaking, uploadFeedbackIssue]

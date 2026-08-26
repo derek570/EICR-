@@ -141,6 +141,34 @@ ledgers.
   can ack `status:'compact_skipped'`).
 - `session_stop` → final `session_ack {status:'stopped', sessionStats}`.
 
+### HTTP: Deepgram key issuance (`POST /api/proxy/deepgram-streaming-key`)
+
+The ONE HTTP (non-WebSocket) contract this skill covers — it precedes the
+`/api/sonnet-stream` connection and hands the client its Deepgram credential.
+`src/routes/keys.js`, `createDeepgramTempKey()` + the route handler.
+
+Response shape (PLAN-E1 E1, 2026-08-25): `{ key: string, uplink_codec:
+"linear16" | "opus" }`. `key` is a short-lived (~30s TTL) JWT minted via
+Deepgram's `/v1/auth/grant` — WebSocket auth uses the bearer subprotocol
+(`['bearer', jwt]` web / `Authorization: Bearer` iOS), NEVER `token` (a JWT
+with the `token` scheme 401s). `uplink_codec` is additive and env-driven
+(`DEEPGRAM_UPLINK_CODEC`, see the `certmate-config-and-flags` skill) — a
+backend carrying this change ALWAYS emits it explicitly (`linear16` when
+unset/invalid); absence is the OLD-backend compatibility case only, and both
+clients treat an absent/unrecognised value as `linear16`. Each client latches
+the codec ONCE per recording session, from the FIRST successful fetch;
+subsequent reconnect fetches (auto-reconnect, sleep-wake, keyword-update
+reconnect) refresh only the JWT and never re-latch — an env flip must not
+change the codec under a live socket.
+
+**As of 2026-08-25, the latch is plumbed on both clients but UNCONSUMED** —
+no sender/encoder reads it yet, so flipping `DEEPGRAM_UPLINK_CODEC=opus`
+today has zero effect on the wire (still linear16 bytes always). The
+Opus-uplink sender/encoder work (tagged-PCM-segment carrier, per-connection
+encoder lifecycle, the shared `VoicedActivityDetector`) is PLAN-E1's larger
+remaining scope — see `~/.claude/handoffs/EICR_Automation--feedback-2026-08-23/PLAN-E1-final.md`
+and its execution log for what shipped vs. what's deferred.
+
 ## 3. Client → server frames
 
 | Frame | Shape (load-bearing fields) | Notes |

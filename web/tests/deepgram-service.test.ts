@@ -28,7 +28,11 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import WS from 'jest-websocket-mock';
-import { DeepgramService, type WebSocketFactory } from '@/lib/recording/deepgram-service';
+import {
+  DeepgramService,
+  type WebSocketFactory,
+  type DeepgramStreamingKeyConfig,
+} from '@/lib/recording/deepgram-service';
 
 // The service connects to a fixed URL + query string. `jest-websocket-mock`
 // treats the URL string as a prefix-match key, so we register the
@@ -573,9 +577,9 @@ describe('DeepgramService', () => {
       const onReconnected = vi.fn();
       const onStateChange = vi.fn();
       const fetchKey = vi
-        .fn<() => Promise<string>>()
-        .mockResolvedValueOnce('jwt-1')
-        .mockResolvedValueOnce('jwt-2');
+        .fn<() => Promise<DeepgramStreamingKeyConfig>>()
+        .mockResolvedValueOnce({ key: 'jwt-1' })
+        .mockResolvedValueOnce({ key: 'jwt-2' });
 
       const service = new DeepgramService({
         onInterimTranscript: vi.fn(),
@@ -631,7 +635,9 @@ describe('DeepgramService', () => {
         toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'],
       });
 
-      const fetchKey = vi.fn<() => Promise<string>>().mockRejectedValue(new Error('backend 503'));
+      const fetchKey = vi
+        .fn<() => Promise<DeepgramStreamingKeyConfig>>()
+        .mockRejectedValue(new Error('backend 503'));
       const onError = vi.fn();
 
       const service = new DeepgramService({
@@ -674,9 +680,9 @@ describe('DeepgramService', () => {
       });
 
       const fetchKey = vi
-        .fn<() => Promise<string>>()
-        .mockResolvedValueOnce('jwt-1')
-        .mockResolvedValueOnce('jwt-2-should-never-be-used');
+        .fn<() => Promise<DeepgramStreamingKeyConfig>>()
+        .mockResolvedValueOnce({ key: 'jwt-1' })
+        .mockResolvedValueOnce({ key: 'jwt-2-should-never-be-used' });
 
       const service = new DeepgramService({
         onInterimTranscript: vi.fn(),
@@ -702,6 +708,54 @@ describe('DeepgramService', () => {
       // against the cleaned WS.clean()'d server and leaked a socket.
       expect(fetchKey).toHaveBeenCalledTimes(1);
       expect(service.connectionState).toBe('disconnected');
+    });
+
+    it('PLAN-E1: latches uplink_codec from the FIRST fetch and never re-latches on reconnect', async () => {
+      vi.useFakeTimers({
+        toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'],
+      });
+
+      const fetchKey = vi
+        .fn<() => Promise<DeepgramStreamingKeyConfig>>()
+        .mockResolvedValueOnce({ key: 'jwt-1', uplink_codec: 'opus' })
+        .mockResolvedValueOnce({ key: 'jwt-2', uplink_codec: 'linear16' });
+
+      const service = new DeepgramService({
+        onInterimTranscript: vi.fn(),
+        onFinalTranscript: vi.fn(),
+        onError: vi.fn(),
+        onStateChange: vi.fn(),
+      });
+      expect(service.latchedUplinkCodec).toBeNull();
+      service.connect(fetchKey, 16000);
+      await vi.advanceTimersByTimeAsync(10);
+      await server.connected;
+      expect(service.latchedUplinkCodec).toBe('opus');
+
+      // Reconnect with a DIFFERENT codec in the fresh fetch response — the
+      // already-latched session codec must NOT change.
+      server.close({ code: 1006, reason: 'drop', wasClean: false });
+      await server.closed;
+      WS.clean();
+      server = makeServer();
+      await vi.advanceTimersByTimeAsync(1_010);
+      await server.connected;
+      expect(fetchKey).toHaveBeenCalledTimes(2);
+      expect(service.latchedUplinkCodec).toBe('opus');
+    });
+
+    it('PLAN-E1: an absent uplink_codec (old backend) latches as linear16', async () => {
+      const fetchKey = vi.fn<() => Promise<DeepgramStreamingKeyConfig>>().mockResolvedValueOnce({
+        key: 'jwt-1',
+      });
+      const service = new DeepgramService({
+        onInterimTranscript: vi.fn(),
+        onFinalTranscript: vi.fn(),
+        onError: vi.fn(),
+      });
+      service.connect(fetchKey, 16000);
+      await server.connected;
+      expect(service.latchedUplinkCodec).toBe('linear16');
     });
 
     it('static-key mode is unchanged — a reconnectable close still fires onError', async () => {

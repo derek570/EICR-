@@ -22,7 +22,12 @@
  * tap, job-state observer, chime + haptic effect hooks, TTS player hooks.
  */
 
-import type { DeepgramCallbacks, DeepgramConnectionState, SttModel } from './deepgram-service';
+import type {
+  DeepgramCallbacks,
+  DeepgramConnectionState,
+  DeepgramStreamingKeyConfig,
+  SttModel,
+} from './deepgram-service';
 import type { SonnetConnectionState } from './sonnet-session';
 import type { MicCaptureHandle, MicCaptureOptions } from './mic-capture';
 import type { ScheduleFn, ClearScheduleFn } from './dispatch-buffers';
@@ -34,7 +39,7 @@ import type { ConfirmationQueueItem } from './tts-queue';
  *  class satisfies this structurally. */
 export interface DeepgramServiceLike {
   connect(
-    keyOrFetcher: string | (() => Promise<string>),
+    keyOrFetcher: string | (() => Promise<DeepgramStreamingKeyConfig>),
     sourceSampleRate: number
   ): void | Promise<void>;
   disconnect(): void;

@@ -11,6 +11,7 @@ import {
   DeepgramService,
   type DeepgramCallbacks,
   type DeepgramConnectionState,
+  type DeepgramStreamingKeyConfig,
   type SttModel,
 } from '@/lib/recording/deepgram-service';
 import type {
@@ -91,7 +92,10 @@ export class FakeDeepgramService implements DeepgramServiceLike {
     );
   }
 
-  connect(_keyOrFetcher: string | (() => Promise<string>), sourceSampleRate: number): void {
+  connect(
+    _keyOrFetcher: string | (() => Promise<DeepgramStreamingKeyConfig>),
+    sourceSampleRate: number
+  ): void {
     // Static-key mode constructs the socket synchronously (same recipe as
     // the flux unit tests); the production fetcher is ignored — no network.
     this.inner.connect('harness-static-key', sourceSampleRate);

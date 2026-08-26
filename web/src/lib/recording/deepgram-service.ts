@@ -95,7 +95,17 @@ export interface DeepgramCallbacks {
  * web-client gap — the correct fix is reconnect parity here. Static-key
  * mode is preserved so existing unit tests keep working untouched.
  */
-export type DeepgramKeySource = string | (() => Promise<string>);
+/**
+ * PLAN-E1 E1 — the additive backend field on the key response. `key` is
+ * always present; `uplink_codec` is optional so an old backend (no field)
+ * degrades safely to `undefined` → treated as `linear16`.
+ */
+export interface DeepgramStreamingKeyConfig {
+  key: string;
+  uplink_codec?: 'linear16' | 'opus';
+}
+
+export type DeepgramKeySource = string | (() => Promise<DeepgramStreamingKeyConfig>);
 
 /**
  * Constructor-level seam for injecting an alternate WebSocket factory.
@@ -142,7 +152,14 @@ export class DeepgramService {
   //
   // `fetchKey` is stored because reconnection must mint a FRESH key, not
   // reuse the cached JWT — the JWT is what expired in the first place.
-  private fetchKey: (() => Promise<string>) | null = null;
+  private fetchKey: (() => Promise<DeepgramStreamingKeyConfig>) | null = null;
+  // PLAN-E1 E1 — latched ONCE from the first successful fetcher-mode key
+  // response and never overwritten by a later fetch (env flip mid-session
+  // must not change the codec under a live socket). Static-key mode never
+  // sets this — it has no codec information, and stays implicitly
+  // linear16. NOT YET READ by any sender/encoder — deliberately dark this
+  // wave; see PLAN-E1 execution log for what's deferred.
+  private uplinkCodec: 'linear16' | 'opus' | null = null;
   // Set true on fetcher-mode connect, flipped false by `disconnect()` so
   // any in-flight async key-fetch aborts cleanly and no further retries
   // are scheduled.
@@ -228,6 +245,16 @@ export class DeepgramService {
   }
 
   /**
+   * PLAN-E1 E1 — the codec latched from the first successful fetcher-mode
+   * key response this session (`null` before any fetch, or in static-key
+   * mode). Exposed for tests and for future consumers (the sender, once
+   * built) to read; not yet consulted anywhere in this service.
+   */
+  get latchedUplinkCodec(): 'linear16' | 'opus' | null {
+    return this.uplinkCodec;
+  }
+
+  /**
    * Open a Deepgram WebSocket.
    *
    * Two modes:
@@ -263,6 +290,8 @@ export class DeepgramService {
     } else {
       this.fetchKey = null;
       this.shouldReconnect = false;
+      // Static-key mode carries no codec information (legacy Phase 4a
+      // contract, unit tests) — latches implicit linear16.
       this.openSocket(keyOrFetcher);
     }
   }
@@ -278,7 +307,13 @@ export class DeepgramService {
     this.setState(this.reconnectAttempt === 0 ? 'connecting' : 'reconnecting');
     let key: string;
     try {
-      key = await this.fetchKey();
+      const config = await this.fetchKey();
+      key = config.key;
+      // Latch ONCE from the first successful fetch this session; later
+      // fetches (reconnect) refresh only the JWT, never re-latch.
+      if (this.uplinkCodec === null) {
+        this.uplinkCodec = config.uplink_codec ?? 'linear16';
+      }
     } catch (err) {
       // Key-fetch failed (backend 5xx, network, etc.). First-connect
       // failures surface to the UI; reconnect failures stay quiet and

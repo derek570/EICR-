@@ -28,6 +28,25 @@ let cachedProjectId = null;
 
 const router = Router();
 
+// PLAN-E1 E1 — uplink codec resolved once at module load from
+// DEEPGRAM_UPLINK_CODEC (infra-from-source: ecs/task-def-backend.json).
+// Unset/invalid values fall back to linear16 with one startup warning —
+// the response ALWAYS emits an explicit value (never omits the field);
+// "absent" is reserved for the old-backend compatibility case clients
+// handle themselves.
+const VALID_UPLINK_CODECS = new Set(['linear16', 'opus']);
+function resolveUplinkCodec() {
+  const raw = process.env.DEEPGRAM_UPLINK_CODEC;
+  if (raw === undefined || raw === '') return 'linear16';
+  if (VALID_UPLINK_CODECS.has(raw)) return raw;
+  logger.warn('Invalid DEEPGRAM_UPLINK_CODEC — falling back to linear16', {
+    configured: raw,
+    allowed: [...VALID_UPLINK_CODECS],
+  });
+  return 'linear16';
+}
+const UPLINK_CODEC = resolveUplinkCodec();
+
 // Allowed Claude models for proxy requests
 const ALLOWED_MODELS = new Set([
   'claude-sonnet-4-5-20241022',
@@ -283,7 +302,8 @@ async function streamConfirmationViaElevenLabs({
     // before this call, regardless of attempt count.
     const failOpenResult = await synthWithLanguageFailOpen(
       client,
-      () => new ElevenLabsStreamClient({ apiKey, multiContext: useMultiContext, languageCode: null }),
+      () =>
+        new ElevenLabsStreamClient({ apiKey, multiContext: useMultiContext, languageCode: null }),
       text,
       opts
     );
@@ -953,7 +973,7 @@ router.post('/proxy/deepgram-streaming-key', auth.requireAuth, async (req, res) 
   try {
     const key = await createDeepgramTempKey(userId);
     logger.info('Deepgram temp streaming key issued', { userId });
-    res.json({ key });
+    res.json({ key, uplink_codec: UPLINK_CODEC });
   } catch (error) {
     // P0-10 — NEVER fall back to the master key. The previous code
     // returned the Deepgram master API key directly to the browser

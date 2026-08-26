@@ -59,7 +59,8 @@
         { "name": "OPENAI_OBSERVATION_SERVICE_TIER",   "value": "standard" },
         { "name": "OPENAI_OBSERVATION_REASONING_EFFORT", "value": "low" },
         { "name": "VOICE_AGENTIC_ANSWERS",              "value": "true" },
-        { "name": "OBSERVATION_TIER_ROUTING",           "value": "true" }
+        { "name": "OBSERVATION_TIER_ROUTING",           "value": "true" },
+        { "name": "DEEPGRAM_UPLINK_CODEC",              "value": "linear16" }
       ],
       "mountPoints": [],
       "volumesFrom": [],

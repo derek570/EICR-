@@ -286,19 +286,21 @@ export const api = {
   },
 
   /**
-   * Fetch a short-lived Deepgram Nova-3 access token scoped to a single
+   * Fetch a short-lived Deepgram access token scoped to a single
    * recording session. Backend (`POST /api/proxy/deepgram-streaming-key`,
    * `src/routes/keys.js`) mints the token via Deepgram's
-   * `/v1/auth/grant` endpoint and returns `{ key: string }`. Token TTL
-   * is 30s — only needs to be valid at WS connect time; the WS stays
-   * open after token expiry. Callers should re-request on reconnect.
+   * `/v1/auth/grant` endpoint and returns `{ key, uplink_codec }` — the
+   * server-latched uplink codec is an additive PLAN-E1 field (default
+   * `linear16`; absent only from an old backend). Token TTL is 30s —
+   * only needs to be valid at WS connect time; the WS stays open after
+   * token expiry. Callers should re-request on reconnect.
    *
    * `sessionId` is currently logged-only on the server (userId comes
    * from the JWT) but we keep it in the signature + payload so future
    * server-side scoping can land without churning every call site.
    */
-  deepgramKey(sessionId: string): Promise<{ key: string }> {
-    return request<{ key: string }>(
+  deepgramKey(sessionId: string): Promise<{ key: string; uplink_codec?: 'linear16' | 'opus' }> {
+    return request<{ key: string; uplink_codec?: 'linear16' | 'opus' }>(
       '/api/proxy/deepgram-streaming-key',
       { method: 'POST', body: JSON.stringify({ sessionId }) },
       DeepgramKeyResponseSchema
