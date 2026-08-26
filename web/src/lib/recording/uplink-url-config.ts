@@ -100,8 +100,19 @@ export function resolveUplinkURLConfig(params: {
   // Safety invariant: nova-3 ALWAYS forces linear16, regardless of the
   // latched codec — a model rollback can never accidentally ship opus to
   // a listener that wasn't part of the A/B.
-  const resolvedSenderCodec: UplinkCodec =
-    model === 'flux' ? (latchedCodec ?? 'linear16') : 'linear16';
+  //
+  // Codex diff-review r2 BLOCKER fix (mirrored on iOS) — an unrecognised
+  // latched value (never actually reachable from the real backend, which
+  // already normalises server-side in `resolveUplinkCodec()`, but a
+  // defensive fail-safe against a version-skew/malformed-response edge
+  // case) must fall back to `linear16` explicitly rather than being
+  // passed through: `dispatchFrame`'s `else` branch treats anything that
+  // isn't literally `'linear16'` as the Opus path, and the encoder is
+  // only constructed when this value is literally `'opus'` — an
+  // unrecognised third value would reach a null `opusEncoder`, silently
+  // dropping every sample.
+  const latched = model === 'flux' ? (latchedCodec ?? 'linear16') : 'linear16';
+  const resolvedSenderCodec: UplinkCodec = latched === 'opus' ? 'opus' : 'linear16';
 
   const searchParams = baseParams(model, resolvedSenderCodec);
   const budget = codecIndependentBaseLength(model);

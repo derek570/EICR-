@@ -101,6 +101,12 @@ GEMINI_MODEL=gemini-3-pro-preview  # Transcription model
 
 **Note:** You can skip local testing and deploy changes directly to the cloud.
 
+### Runtime feature flags (ECS task definition)
+
+| Var | Default | Accepted values | Notes |
+|-----|---------|------------------|-------|
+| `DEEPGRAM_UPLINK_CODEC` | `linear16` (`ecs/task-def-backend.json`, infra-from-source) | `linear16` \| `opus` | Resolved once at backend module load (`resolveUplinkCodec()`, `src/routes/keys.js`); an unset or unrecognized value falls back to `linear16` with one startup warning — never propagated unnormalized. Read at `POST /api/proxy/deepgram-streaming-key`'s response build and returned as the additive `uplink_codec` field (always present). Both clients decode it and latch it ONCE per recording session (`latchUplinkCodecIfNeeded`) — later reconnect/resume fetches refresh only the JWT, never re-latch. As of 2026-08-26 both clients' senders CONSUME the latch (Opus routes through a per-connection encoder; construction/decode failure falls back to `linear16` for that connection). See the `certmate-config-and-flags` skill for the full contract and the `certmate-voice-wire-protocol` skill for the HTTP response shape. |
+
 ## AI Models Reference
 
 Current models used by the backend processing pipeline:

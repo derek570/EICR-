@@ -63,14 +63,20 @@ export function splitCapturedSegment(
   if (localIdx <= 0 || localIdx >= segment.samples.length) {
     throw new RangeError('splitCapturedSegment: split point outside segment bounds');
   }
+  // Codex diff-review r2 IMPORTANT fix — `.subarray()` returns a VIEW
+  // sharing the parent `ArrayBuffer`; the sender dispatches
+  // `segment.samples.buffer` directly (the whole parent buffer), so a
+  // view here would silently transmit BOTH halves regardless of which
+  // one was "sent". `.slice()` copies, so each half owns its own
+  // buffer and only its own bytes are ever sent.
   const left: CapturedPcmSegment = {
     ...segment,
-    samples: segment.samples.subarray(0, localIdx),
+    samples: segment.samples.slice(0, localIdx),
     captureSampleRange: { start: segment.captureSampleRange.start, end: atSampleOffset },
   };
   const right: CapturedPcmSegment = {
     ...segment,
-    samples: segment.samples.subarray(localIdx),
+    samples: segment.samples.slice(localIdx),
     captureSampleRange: { start: atSampleOffset, end: segment.captureSampleRange.end },
   };
   return [left, right];

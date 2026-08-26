@@ -1059,7 +1059,15 @@ export class DeepgramService {
 
     if (this.resolvedSenderCodec === 'linear16') {
       try {
-        this.ws.send(segment.samples.buffer as ArrayBuffer);
+        // Codex diff-review r2 IMPORTANT fix — send the EXACT byte range,
+        // not the raw parent `.buffer`: if `segment.samples` is ever a
+        // view over a larger buffer (e.g. `splitCapturedSegment`'s
+        // halves), sending `.buffer` directly would transmit the WHOLE
+        // parent buffer regardless of which slice this segment
+        // represents. Every current caller happens to hand this a
+        // full-buffer array, but the sender shouldn't depend on that.
+        const { buffer, byteOffset, byteLength } = segment.samples;
+        this.ws.send(buffer.slice(byteOffset, byteOffset + byteLength) as ArrayBuffer);
         this.dispatchedSampleOffset += segment.samples.length;
       } catch {
         // WS backpressure — drop this frame (pre-existing accepted
@@ -1092,7 +1100,12 @@ export class DeepgramService {
     if (generation !== this.opusEncoderGeneration) return;
     if (!this.ws || this.state !== 'connected') return;
     try {
-      this.ws.send(bytes.buffer as ArrayBuffer);
+      // Same exact-byte-range send as the linear16 path — the production
+      // WebCodecs encoder currently always allocates a full-buffer
+      // `Uint8Array` per packet, but this must not rely on that.
+      this.ws.send(
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+      );
     } catch {
       // WS backpressure — drop this packet (same accepted-loss bar as
       // the linear16 path); this is NOT an `onUndispatchedLoss` event —
