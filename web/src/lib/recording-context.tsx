@@ -4,10 +4,16 @@ import * as React from 'react';
 import { startMicCapture, type MicCaptureHandle } from './recording/mic-capture';
 import {
   DeepgramService,
+  createSessionCodecLatch,
+  createCaptureClock,
   type DeepgramCallbacks,
   type DeepgramConnectionState,
+  type DeepgramSessionContext,
   type SttModel,
 } from './recording/deepgram-service';
+import { UplinkScopeAllocator } from './recording/uplink-scope-allocator';
+import { VoicedActivityDetector } from './recording/voiced-activity';
+import { PoorSignalLatencyProbe } from './recording/poor-signal-probe';
 import { ensureRuntimeConfigLoaded, DEFAULT_STT_MODEL } from '@/lib/runtime-config';
 import { resampleTo16k } from './recording/resample';
 import {
@@ -91,6 +97,8 @@ import {
   getTtsAudioWindow,
   handleModeStatusCueDiscard,
   handleModeStatusCuePlaybackStarted,
+  handlePoorSignalAdvisoryDiscard,
+  handlePoorSignalAdvisoryTornDown,
   isDirectAudioActive,
   isTTSEcho,
   isWithinTtsWindow,
@@ -99,6 +107,7 @@ import {
   speak as speakRaw,
   speakConfirmation,
   speakConfirmationModeStatus,
+  speakPoorSignalAdvisory,
   type SpeakOptions,
 } from './recording/tts';
 import {
@@ -106,6 +115,7 @@ import {
   resumeIfDeferred as ttsQueueResumeIfDeferred,
   setOnDiscarded as ttsQueueSetOnDiscarded,
   setOnPlaybackStarted as ttsQueueSetOnPlaybackStarted,
+  setOnStartedHeadTornDown as ttsQueueSetOnStartedHeadTornDown,
   setShouldDeferPlayback as ttsQueueSetShouldDeferPlayback,
   type DiscardReason,
 } from './recording/tts-queue';
@@ -1140,6 +1150,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // mic is live so a wake from sleeping can replay the words the
   // inspector spoke _just before_ VAD fired.
   const ringBufferRef = React.useRef<AudioRingBuffer | null>(null);
+  // PLAN-E1 — the recording-session-owned uplink identity bundle
+  // (codec latch, scope allocator, capture clock, shared VAD). Constructed
+  // ONCE at `start()`'s physical-session initialisation, reset ONLY there
+  // (never inside `openDeepgram`/`beginMicPipeline`, which also run
+  // mid-session from `handleWake` and the automatic-resume branch) so a
+  // service replaced on pause/resume shares session state with its
+  // predecessor instead of re-latching a mid-session backend env flip.
+  const sessionUplinkContextRef = React.useRef<DeepgramSessionContext | null>(null);
+  // PLAN-E1 E3 — the poor-signal latency probe, session-scoped alongside
+  // the uplink context (same reset discipline).
+  const poorSignalProbeRef = React.useRef<PoorSignalLatencyProbe | null>(null);
   const sleepManagerRef = React.useRef<SleepManager | null>(null);
   // C2a (PLAN-C, id 120) — discriminator set by the lighter-weight pause
   // path (`pause()`) and checked at the top of `resume()` so the two
@@ -1443,6 +1464,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // why this must run FIRST, why it's safe during a full reset, and why
       // `reason` gates re-park vs retire.
       if (handleModeStatusCueDiscard(dedupeKey, reason)) return;
+      // PLAN-E1 E3 — the poor-signal advisory releases its coalescing
+      // gate on ANY pre-start discard, WITHOUT re-parking (unlike the
+      // mode-status cue above) — it can recur only via a fresh
+      // median-over-threshold arming after cooldown.
+      if (handlePoorSignalAdvisoryDiscard(dedupeKey)) return;
       const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
       if (addressToken) {
         const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -2234,6 +2260,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const deepgramCallbacks: DeepgramCallbacks = {
         onStateChange: setDeepgramState,
         onInterimTranscript: (text) => {
+          // PLAN-E1 E3 — first interim since the last onset resolves the
+          // probe's pending sample as OBSERVED; arm the spoken advisory
+          // only on an actual arm↔recover transition (the queue itself
+          // coalesces a repeat arm, but there's no reason to call it on
+          // every still-armed interim).
+          if (
+            poorSignalProbeRef.current?.onInterimReceived() &&
+            poorSignalProbeRef.current.isArmed
+          ) {
+            speakPoorSignalAdvisory();
+          }
           setInterim(text);
           // Mirror iOS `isSpeaking` flag — interim arrival proves the
           // inspector is mid-utterance. The phantom-VAD watchdog
@@ -2278,6 +2315,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }, SPEECH_CONFIRM_TIMEOUT_MS);
         },
         onUtteranceEnd: () => {
+          // PLAN-E1 E3 — a reset trigger with NO interim received since
+          // the last onset records a CENSORED sample (only if the armed
+          // age already exceeds the arm threshold).
+          if (
+            poorSignalProbeRef.current?.onResetWithoutInterim() &&
+            poorSignalProbeRef.current.isArmed
+          ) {
+            speakPoorSignalAdvisory();
+          }
           // Inspector finished a sentence. Flip the flag back and drain any
           // deferred TTS so the question they were talking over plays now.
           // Mirrors iOS `resumeDeferredTTSIfNeeded` (AlertManager.swift:
@@ -2292,6 +2338,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           onInspectorStoppedSpeaking();
         },
         onFinalTranscript: (text, confidence) => {
+          // PLAN-E1 E3 — a final can arrive without a preceding interim
+          // (idempotent-safe: a no-op if the probe already resolved via
+          // `onInterimTranscript` this turn).
+          if (
+            poorSignalProbeRef.current?.onInterimReceived() &&
+            poorSignalProbeRef.current.isArmed
+          ) {
+            speakPoorSignalAdvisory();
+          }
           setInterim('');
           // Stage 1 of the recording pipeline — verbose log so we can
           // confirm at the field-test console that the transcript
@@ -2461,6 +2516,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           dispatchFinalBurstBuffered(effectiveText, effectiveConfidence);
         },
         onReconnected: () => {
+          // PLAN-E1 E3 — reconnect is one of the probe's three reset
+          // triggers (utterance-end / reconnect / pause).
+          if (
+            poorSignalProbeRef.current?.onResetWithoutInterim() &&
+            poorSignalProbeRef.current.isArmed
+          ) {
+            speakPoorSignalAdvisory();
+          }
           // Socket just reopened after an auto-reconnect. Replay the
           // ring buffer so words spoken during the backoff gap aren't
           // lost — mirrors the iOS wake path. drain() returns undefined
@@ -2507,10 +2570,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // only if the ref is somehow unset (defensive — start() always sets it).
       const sttModel = activeSttModelRef.current ?? DEFAULT_STT_MODEL;
       const testServices = getRecordingTestServices();
+      // PLAN-E1 — the session-owned uplink context (codec latch, scope
+      // allocator, capture clock, shared VAD), constructed once at
+      // `start()`. `openDeepgram` re-runs mid-session (wake/resume) and
+      // must NOT construct a fresh one — that's exactly what would
+      // re-latch a mid-session backend env flip and restart the scope
+      // allocator's identity counters.
+      const sessionContext = sessionUplinkContextRef.current ?? undefined;
       const service: DeepgramServiceLike = testServices?.deepgramServiceFactory
-        ? testServices.deepgramServiceFactory(deepgramCallbacks, sttModel)
+        ? testServices.deepgramServiceFactory(deepgramCallbacks, sttModel, sessionContext)
         : // No WebSocket factory override in production (unit tests inject one).
-          new DeepgramService(deepgramCallbacks, undefined, sttModel);
+          new DeepgramService(deepgramCallbacks, undefined, sttModel, { sessionContext });
       // Bind the ref BEFORE starting the async connect so a concurrent
       // stop()/teardownDeepgram can call service.disconnect() and abort
       // the in-flight key fetch via `shouldReconnect=false`.
@@ -2897,6 +2967,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // TTL stamp left behind here would suppress a re-emitted apology for
     // up to 30 s despite it never being heard.
     ttsQueueSetOnDiscarded(discardConfirmationReservation);
+    // PLAN-E1 E3 (split-round-2) — a PLAYING advisory head manually torn
+    // down (preemptFlush/reset) has no `onDiscarded` callback (that only
+    // fires for a never-started item); without this the gate would latch
+    // forever after that sequence and suppress every later legitimate
+    // arm.
+    ttsQueueSetOnStartedHeadTornDown((dedupeKey) => {
+      handlePoorSignalAdvisoryTornDown(dedupeKey);
+    });
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
     ttsQueueSetOnPlaybackStarted((dedupeKey) => {
@@ -4167,6 +4245,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // dead session — we bail and tear down the accidental resources.
     const sessionId = `sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     sessionIdRef.current = sessionId;
+    // PLAN-E1 — fresh session-owned uplink context (codec latch, scope
+    // allocator, capture clock, shared VAD) + poor-signal probe. Reset
+    // ONLY here (the physical session boundary) — see the refs'
+    // declaration-site comment for why this must never happen inside
+    // `openDeepgram`/`beginMicPipeline`.
+    poorSignalProbeRef.current = new PoorSignalLatencyProbe();
+    const sessionVad = new VoicedActivityDetector((transition) => {
+      if (transition.kind === 'onset') {
+        poorSignalProbeRef.current?.onOnset();
+      }
+    });
+    sessionUplinkContextRef.current = {
+      recordingSessionId: sessionId,
+      codecLatch: createSessionCodecLatch(),
+      allocator: new UplinkScopeAllocator(),
+      captureClock: createCaptureClock(),
+      vad: sessionVad,
+    };
     // Initialise the cross-reload session-resume slot. The
     // serverSessionId stays null until the first session_ack lands;
     // it gets populated via the onSessionAck callback wired in

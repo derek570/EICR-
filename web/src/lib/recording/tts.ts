@@ -1257,6 +1257,110 @@ export function handleModeStatusCuePlaybackStarted(dedupeKey: string): boolean {
   return modeStatusCueTexts.delete(dedupeKey);
 }
 
+// ── PLAN-E1 E3 — poor-signal advisory ───────────────────────────────────────
+//
+// A DEDICATED API, backed by the EXISTING FIFO with no new queue. Pinned
+// semantics (split-round-1/2): (1) respects the confirmations toggle — this
+// is latency HONESTY, not a dictated-reading confirmation, and PLAN-D's
+// sole documented exception set does not include it; (2) coalescing key =
+// the advisory's own canonical string — a new arm while one is queued or
+// playing is a no-op (NO ledger, NO operation token); (3) orders AFTER any
+// backlog replay and NEVER interrupts an active question/clarification (the
+// shared `shouldDeferPlayback` gate, unchanged, already gives every
+// confirmation-class item this ordering); (4) discard-WITHOUT-re-park —
+// unlike PLAN-D's mode-status cues, an evicted/preempted advisory is
+// retired silently and can recur ONLY via a fresh median-over-threshold
+// arming after cooldown; (5) never enters PLAN-E2's delivery ledger; (6) a
+// STARTED-then-preempted head also releases the coalescing key (via
+// `setOnStartedHeadTornDown`, `tts-queue.ts` — `onDiscarded` alone does not
+// fire for an already-playing head that gets manually torn down).
+
+export const POOR_SIGNAL_ADVISORY_TEXT =
+  'Transcription is running slowly — confirmations may take a few seconds.';
+const POOR_SIGNAL_ADVISORY_DEDUPE_KEY = 'poor-signal-advisory';
+
+/** True from a successful enqueue until the head is heard to completion,
+ *  discarded pre-start, or manually torn down mid-playback — the
+ *  coalescing gate for `speakPoorSignalAdvisory()`. */
+let poorSignalAdvisoryActive = false;
+
+/**
+ * Arms the poor-signal advisory. A no-op (coalesced, not re-queued) if one
+ * is already queued or playing. Silent when confirmations are OFF — this
+ * is the one deliberate parity with the confirmations-toggle rule; a
+ * separate advisory-specific mute would be a second, undocumented
+ * exception.
+ */
+export function speakPoorSignalAdvisory(): { enqueued: boolean } {
+  if (poorSignalAdvisoryActive) {
+    clientDiagnostic('tts_poor_signal_advisory_coalesced', {});
+    return { enqueued: false };
+  }
+  if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) {
+    return { enqueued: false };
+  }
+  if (!getConfirmationModeEnabled()) {
+    clientDiagnostic('tts_poor_signal_advisory_skipped_muted', {});
+    return { enqueued: false };
+  }
+  poorSignalAdvisoryActive = true;
+  const harnessPlayer = getRecordingTestServices()?.ttsConfirmationPlayer;
+  const result = enqueueConfirmation({
+    text: POOR_SIGNAL_ADVISORY_TEXT,
+    dedupeKey: POOR_SIGNAL_ADVISORY_DEDUPE_KEY,
+    // Deliberately NOT `protected` — unlike a mode-status cue, an evicted
+    // advisory retires silently by design (no re-park).
+    play: harnessPlayer
+      ? (t, controls) => {
+          registerTtsFingerprint(t);
+          harnessPlayer(t, controls);
+        }
+      : playConfirmationHead,
+    // Natural completion releases the coalescing gate — this is the ONLY
+    // terminal path `onDiscarded`/`onStartedHeadTornDown` don't cover.
+    onEnd: releasePoorSignalAdvisoryGate,
+  });
+  if (!result.enqueued) {
+    poorSignalAdvisoryActive = false;
+  } else {
+    clientDiagnostic('tts_poor_signal_advisory_armed', {});
+  }
+  return { enqueued: result.enqueued };
+}
+
+/** Called from recording-context's `onDiscarded` hook. Returns true iff
+ *  `dedupeKey` belongs to the advisory — releases the coalescing gate
+ *  WITHOUT re-parking (unlike `handleModeStatusCueDiscard`). */
+export function handlePoorSignalAdvisoryDiscard(dedupeKey: string): boolean {
+  if (dedupeKey !== POOR_SIGNAL_ADVISORY_DEDUPE_KEY) return false;
+  poorSignalAdvisoryActive = false;
+  return true;
+}
+
+/** Called from recording-context's `onStartedHeadTornDown` hook
+ *  (`tts-queue.ts`) — a PLAYING advisory head was manually preempted.
+ *  Releases the coalescing key with NO terminal callback (split-round-2:
+ *  without this, a started-then-preempted advisory latches the gate
+ *  forever and suppresses every later legitimate arm). Returns true iff
+ *  this was the advisory's key. */
+export function handlePoorSignalAdvisoryTornDown(dedupeKey: string): boolean {
+  if (dedupeKey !== POOR_SIGNAL_ADVISORY_DEDUPE_KEY) return false;
+  poorSignalAdvisoryActive = false;
+  return true;
+}
+
+/** Fired by the queue's own `onEnd` (wired at enqueue time above) on
+ *  NATURAL completion — the advisory was heard start-to-finish. Releases
+ *  the coalescing gate; exported for tests. */
+export function releasePoorSignalAdvisoryGate(): void {
+  poorSignalAdvisoryActive = false;
+}
+
+/** Test-only — reset module state between test files. */
+export function __resetPoorSignalAdvisoryForTests(): void {
+  poorSignalAdvisoryActive = false;
+}
+
 /** Test-only. */
 export function __resetModeStatusCuesForTests(): void {
   modeStatusCueTexts.clear();

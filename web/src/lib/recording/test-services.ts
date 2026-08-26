@@ -25,6 +25,7 @@
 import type {
   DeepgramCallbacks,
   DeepgramConnectionState,
+  DeepgramSessionContext,
   DeepgramStreamingKeyConfig,
   SttModel,
 } from './deepgram-service';
@@ -48,6 +49,11 @@ export interface DeepgramServiceLike {
   sendSamples(samples: Float32Array): void;
   sendInt16PCM(pcm: Int16Array): void;
   readonly connectionState: DeepgramConnectionState;
+  /** PLAN-E1 — the codec latched from the session's first successful
+   *  fetcher-mode key response. Exposed so a fake service used in a
+   *  pause/resume test can prove the SAME session context (not a fresh
+   *  one) is being consulted. */
+  readonly latchedUplinkCodec?: 'linear16' | 'opus' | null;
 }
 
 /** The SonnetSession surface recording-context actually uses. The real
@@ -90,8 +96,16 @@ export interface JobStateChange {
 }
 
 export interface RecordingTestServices {
-  /** Replaces `new DeepgramService(callbacks, undefined, model)`. */
-  deepgramServiceFactory?: (callbacks: DeepgramCallbacks, model: SttModel) => DeepgramServiceLike;
+  /** Replaces `new DeepgramService(callbacks, undefined, model, {
+   *  sessionContext })`. PLAN-E1 widened this with a third, optional
+   *  session-context parameter — the harness's fake MUST exercise it
+   *  (read the latch, not ignore it) or a pause/resume env-flip test
+   *  would go falsely green. */
+  deepgramServiceFactory?: (
+    callbacks: DeepgramCallbacks,
+    model: SttModel,
+    sessionContext?: DeepgramSessionContext
+  ) => DeepgramServiceLike;
   /** Replaces `new SonnetSession(callbacks)`. Callbacks are the full
    *  SonnetSessionCallbacks object recording-context builds (typed loosely
    *  to keep this module import-light; cast in the harness). */

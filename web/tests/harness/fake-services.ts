@@ -11,6 +11,7 @@ import {
   DeepgramService,
   type DeepgramCallbacks,
   type DeepgramConnectionState,
+  type DeepgramSessionContext,
   type DeepgramStreamingKeyConfig,
   type SttModel,
 } from '@/lib/recording/deepgram-service';
@@ -80,7 +81,11 @@ export class FakeDeepgramService implements DeepgramServiceLike {
    *  replay (only the automatic-timer full-sleep wake path replays). */
   sentInt16PCMBlocks = 0;
 
-  constructor(callbacks: DeepgramCallbacks, model: SttModel) {
+  constructor(
+    callbacks: DeepgramCallbacks,
+    model: SttModel,
+    sessionContext?: DeepgramSessionContext
+  ) {
     this.model = model;
     this.inner = new DeepgramService(
       callbacks,
@@ -88,8 +93,21 @@ export class FakeDeepgramService implements DeepgramServiceLike {
         this.ws = new CaptiveWS(url, protocols);
         return this.ws as unknown as WebSocket;
       },
-      model
+      model,
+      // PLAN-E1 — EXERCISES the session context (does not ignore it): the
+      // wrapped real service reads the SAME shared latch/allocator/clock,
+      // so a pause/resume test that constructs a NEW FakeDeepgramService
+      // with the caller's session context proves cross-instance sharing,
+      // not just single-instance latching.
+      { sessionContext }
     );
+  }
+
+  /** PLAN-E1 — delegates to the wrapped real service so a test can assert
+   *  the SAME session context is being consulted across a
+   *  pause/resume-constructed sibling. */
+  get latchedUplinkCodec(): 'linear16' | 'opus' | null {
+    return this.inner.latchedUplinkCodec;
   }
 
   connect(
@@ -359,9 +377,9 @@ export function buildHarnessServices(): {
   const diagnostics: Array<{ category: string; payload: Record<string, unknown> }> = [];
   const jobChanges: Array<{ source: string; changedKeys?: string[] }> = [];
   const services: RecordingTestServices = {
-    deepgramServiceFactory: (callbacks, model) => {
+    deepgramServiceFactory: (callbacks, model, sessionContext) => {
       counts.deepgramConstructed += 1;
-      refs.deepgram = new FakeDeepgramService(callbacks, model);
+      refs.deepgram = new FakeDeepgramService(callbacks, model, sessionContext);
       return refs.deepgram;
     },
     sonnetSessionFactory: (callbacks) => {

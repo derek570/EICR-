@@ -93,7 +93,13 @@ export type ConfirmationPlayFn = (text: string, controls: QueuePlayControls) => 
  *  ElevenLabs both failed before any audio played) — re-parking that would
  *  retry indefinitely against a persistently broken synth backend, so
  *  callers must retire tracking instead. */
-export type DiscardReason = 'overflow' | 'preempt' | 'purge' | 'reset' | 'playback_error' | 'not_queued';
+export type DiscardReason =
+  | 'overflow'
+  | 'preempt'
+  | 'purge'
+  | 'reset'
+  | 'playback_error'
+  | 'not_queued';
 
 export interface ConfirmationQueueItem {
   text: string;
@@ -150,6 +156,20 @@ let onDiscarded: ((dedupeKey: string, reason: DiscardReason) => void) | null = n
  *  apologies). Same lifecycle as `onDiscarded`: null until registered,
  *  cleared by `reset()`. */
 let onPlaybackStarted: ((dedupeKey: string) => void) | null = null;
+/**
+ * PLAN-E1 E3 — fired when a PLAYING head (already `wasStarted`) is
+ * manually torn down (`preemptFlush()` / `reset()` / a direct/critical
+ * preemption). `onDiscarded` deliberately does NOT fire for this case
+ * (see `tearDownCurrentHeadManually` — it only fires for a
+ * never-started head), so a caller whose coalescing key must be
+ * released on EITHER a pre-start discard OR a started-then-preempted
+ * head needs both hooks. The poor-signal advisory (E3) is the first
+ * consumer: a STARTED-then-preempted advisory head must release its
+ * coalescing key too, or it latches forever after that exact sequence
+ * and suppresses every later legitimate arm. Same lifecycle as
+ * `onDiscarded`/`onPlaybackStarted`: null until registered, cleared by
+ * `reset()`. */
+let onStartedHeadTornDown: ((dedupeKey: string) => void) | null = null;
 
 export function setShouldDeferPlayback(fn: () => boolean): void {
   shouldDeferPlayback = fn;
@@ -161,6 +181,10 @@ export function setOnDiscarded(fn: (dedupeKey: string, reason: DiscardReason) =>
 
 export function setOnPlaybackStarted(fn: (dedupeKey: string) => void): void {
   onPlaybackStarted = fn;
+}
+
+export function setOnStartedHeadTornDown(fn: (dedupeKey: string) => void): void {
+  onStartedHeadTornDown = fn;
 }
 
 /** Fire the un-record hook synchronously for a never-played item. No-op when
@@ -337,6 +361,15 @@ function tearDownCurrentHeadManually(reason: DiscardReason): { discarded: boolea
     if (!isDeferred) {
       clientDiagnostic('tts_queue_discarded_prefetch', { id: currentHeadId });
     }
+  } else if (head.dedupeKey && onStartedHeadTornDown) {
+    // A PLAYING head manually torn down — `onDiscarded` does not cover
+    // this case (it only fires for a never-started item). See
+    // `onStartedHeadTornDown`'s docblock.
+    try {
+      onStartedHeadTornDown(head.dedupeKey);
+    } catch {
+      /* swallow — a caller's hook must never break queue teardown */
+    }
   }
   const canceller = currentCanceller;
   const prepared = deferredHead?.prepared ?? null;
@@ -448,6 +481,7 @@ export function reset(): void {
   shouldDeferPlayback = () => false;
   onDiscarded = null;
   onPlaybackStarted = null;
+  onStartedHeadTornDown = null;
 }
 
 /** Test-only — wipe ALL module state including the id counter + wiring. */
@@ -463,6 +497,7 @@ export function __resetForTests(): void {
   shouldDeferPlayback = () => false;
   onDiscarded = null;
   onPlaybackStarted = null;
+  onStartedHeadTornDown = null;
 }
 
 /** Read-only introspection for diagnostics / tests. */
