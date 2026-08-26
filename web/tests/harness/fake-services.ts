@@ -20,6 +20,7 @@ import type {
   SonnetSessionLike,
   RecordingTestServices,
 } from '@/lib/recording/test-services';
+import type { CapturedPcmSegment } from '@/lib/recording/tagged-pcm-segment';
 import type { SonnetConnectionState } from '@/lib/recording/sonnet-session';
 import type { MicCaptureHandle, MicCaptureOptions } from '@/lib/recording/mic-capture';
 import type { SpeakOptions } from '@/lib/recording/tts';
@@ -76,10 +77,15 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   private readonly inner: DeepgramService;
   private ws: CaptiveWS | null = null;
   sentSampleBlocks = 0;
-  /** PLAN-C (id 120) — counts `sendInt16PCM` calls so C2a tests can
-   *  assert the lighter-weight-pause resume path sends NO ring-buffer
-   *  replay (only the automatic-timer full-sleep wake path replays). */
+  /** PLAN-C (id 120) — counts `sendInt16PCM` calls. Superseded as the
+   *  production replay signal by `sentTaggedAudioBlocks` below (PLAN-E1
+   *  moved ring-buffer replay off `sendInt16PCM` to preserve original
+   *  capture tags), kept for any caller still injecting raw PCM. */
   sentInt16PCMBlocks = 0;
+  /** PLAN-E1 — counts `sendTaggedAudio` calls so C2a tests can assert the
+   *  lighter-weight-pause resume path sends NO ring-buffer replay (only
+   *  the automatic-timer full-sleep wake path replays). */
+  sentTaggedAudioBlocks = 0;
 
   constructor(
     callbacks: DeepgramCallbacks,
@@ -110,6 +116,13 @@ export class FakeDeepgramService implements DeepgramServiceLike {
     return this.inner.latchedUplinkCodec;
   }
 
+  /** PLAN-E1 — delegates to the wrapped real service so a test driving
+   *  `onSamples` through the fake still resolves the correct epoch
+   *  scope for ring-buffer segments. */
+  get liveEpoch() {
+    return this.inner.liveEpoch;
+  }
+
   connect(
     _keyOrFetcher: string | (() => Promise<DeepgramStreamingKeyConfig>),
     sourceSampleRate: number
@@ -125,12 +138,16 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   pause(): void {
     this.inner.pause();
   }
-  resume(replay?: Int16Array | null): void {
-    this.inner.resume(replay ?? undefined);
+  resume(replaySegments?: CapturedPcmSegment[] | null): void {
+    this.inner.resume(replaySegments ?? undefined);
   }
-  sendSamples(samples: Float32Array): void {
+  sendSamples(samples: Float32Array): CapturedPcmSegment | null {
     this.sentSampleBlocks += 1;
-    this.inner.sendSamples(samples);
+    return this.inner.sendSamples(samples);
+  }
+  sendTaggedAudio(segment: CapturedPcmSegment): void {
+    this.sentTaggedAudioBlocks += 1;
+    this.inner.sendTaggedAudio(segment);
   }
   sendInt16PCM(pcm: Int16Array): void {
     this.sentInt16PCMBlocks += 1;

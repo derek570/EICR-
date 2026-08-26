@@ -527,6 +527,43 @@ Prevents wasted Deepgram billing when the inspector stops speaking. Three-tier s
 
 ---
 
+## Uplink codec, capture tagging, and the poor-signal advisory (PLAN-E1, 2026-08-26)
+
+Both clients now consume the `uplink_codec` the key response latches (see
+the `certmate-voice-wire-protocol` skill): when it's `opus`, the sender
+routes captured PCM through a per-connection Opus encoder instead of
+sending raw linear16 bytes — web via WebCodecs `AudioEncoder`, iOS via
+`AVAudioConverter`/`kAudioFormatOpus`. Encoder construction failure falls
+back to `linear16` for that connection on both platforms.
+
+Every captured PCM segment is tagged once, at capture time, with a
+capture-domain sample range and an `EpochScope`: `epoch(id)` once a
+socket is open, `preOpen(captureAttemptId)` before one exists for the
+current capture attempt. A session-owned `UplinkScopeAllocator` mints
+these; a `preOpen`-tagged range is never restamped once an epoch mints
+for it — that's the invariant every sender/replay path is built around.
+A single codec-aware sender per platform (iOS `DeepgramService`'s
+sender, web's `dispatchFrame`) is the only place that touches the
+WebSocket for binary audio — live capture, reconnect-gap replay
+(iOS `reconnectAudioQueue`, web `AudioRingBuffer`'s tagged segments),
+and keepalive silence all funnel through it.
+
+A shared `VoicedActivityDetector` (energy-RMS, debounced onset/silence)
+is fed every live frame and drives a `PoorSignalLatencyProbe`: a rolling
+median of onset-to-first-interim latency. Crossing the arm threshold
+speaks a one-time, confirmations-gated advisory
+(`speakPoorSignalAdvisory()`) telling the inspector the connection looks
+degraded; a recovery median un-arms it (5-minute cooldown between
+re-arms).
+
+**Key files:** `UplinkScopeTypes.swift`, `OpusEncoder.swift`,
+`VoicedActivityDetector.swift`, `PoorSignalLatencyProbe.swift`,
+`DeepgramService.swift` (web: `uplink-scope-allocator.ts`,
+`opus-encoder.ts`, `voiced-activity.ts`, `poor-signal-probe.ts`,
+`capture-tagging.ts`, `deepgram-service.ts`).
+
+---
+
 ## Realtime iOS Log Streaming (PLAN-backend-final.md Phase 1.3)
 
 On-device `DebugLogger` JSONL output streams to the backend in near-real-time via batched `client_log_batch` envelopes over the existing Sonnet WebSocket. Replaces the multipart `/api/session/:id/analytics` upload that has been broken since Mar 2026 — that path used a one-shot end-of-session POST that lost the batch on crash and required the iPad to be plugged in for diagnosis. The streaming path:

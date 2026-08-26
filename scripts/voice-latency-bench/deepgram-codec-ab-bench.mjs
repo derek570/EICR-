@@ -19,6 +19,16 @@
  * poor-signal cellular is a SEPARATE, live-network requirement this
  * synthetic bench cannot substitute for; see PLAN-E1 "Accuracy bar").
  *
+ * Methodology caveat (Codex diff-review r1): this bench encodes its opus
+ * arm via ffmpeg's libopus, NOT the production sender (web WebCodecs
+ * `AudioEncoder` / iOS `AVAudioConverter`). ffmpeg's default bitrate and
+ * framing may not match either shipped encoder's actual output, so the
+ * payload-reduction ratio this script reports is a DIRECTIONAL estimate
+ * of the codec swap, not a measurement of what the shipped encoders
+ * produce on real mic audio. Treat it as corroborating evidence for the
+ * E0 probe's decode-correctness finding, not as a verified production
+ * bandwidth number.
+ *
  * Credential contract (same as `deepgram-flux-encoding-probe.mjs`,
  * MANDATORY): the key is fetched in-process from AWS Secrets Manager,
  * never hardcoded, never placed in a URL, never logged.

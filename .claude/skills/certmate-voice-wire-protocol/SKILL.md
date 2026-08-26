@@ -161,13 +161,25 @@ subsequent reconnect fetches (auto-reconnect, sleep-wake, keyword-update
 reconnect) refresh only the JWT and never re-latch — an env flip must not
 change the codec under a live socket.
 
-**As of 2026-08-25, the latch is plumbed on both clients but UNCONSUMED** —
-no sender/encoder reads it yet, so flipping `DEEPGRAM_UPLINK_CODEC=opus`
-today has zero effect on the wire (still linear16 bytes always). The
-Opus-uplink sender/encoder work (tagged-PCM-segment carrier, per-connection
-encoder lifecycle, the shared `VoicedActivityDetector`) is PLAN-E1's larger
-remaining scope — see `~/.claude/handoffs/EICR_Automation--feedback-2026-08-23/PLAN-E1-final.md`
-and its execution log for what shipped vs. what's deferred.
+**As of 2026-08-26, both clients CONSUME the latch.** Each builds its
+uplink URL from `resolveUplinkURLConfig`/its Swift equivalent against the
+latched codec; when it resolves to `opus`, the sender routes captured PCM
+through a per-connection Opus encoder (web: WebCodecs `AudioEncoder`; iOS:
+`AVAudioConverter`/`kAudioFormatOpus`) instead of sending raw linear16
+bytes. Every captured PCM segment carries a `CaptureAttemptId`/
+`ConnectionEpoch`-scoped tag (`EpochScope`: `epoch(id)` post-open,
+`preOpen(captureAttemptId)` before any socket exists for the current
+capture attempt) minted by a session-owned `UplinkScopeAllocator`, fed
+through a single codec-aware sender per platform — live capture, ring-
+buffer/reconnect-queue replay, and keepalive silence all funnel through
+it, and a `preOpen`-tagged range is never restamped once an epoch mints.
+A shared `VoicedActivityDetector` (energy-RMS, debounced) is fed every
+live frame and drives a `PoorSignalLatencyProbe` (onset→first-interim
+median) that speaks a one-time, confirmations-gated advisory when
+signal degrades. Flipping `DEEPGRAM_UPLINK_CODEC=opus` DOES now change
+the wire bytes — see `~/.claude/handoffs/EICR_Automation--feedback-2026-08-23/PLAN-E1-final.md`
+and its execution log for the full design + what remains for PLAN-E2
+(the disclosure ledger for the loss/residue seams this wave wired dark).
 
 ## 3. Client → server frames
 

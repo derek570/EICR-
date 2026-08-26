@@ -66,11 +66,11 @@ in `src/` — safe-to-remove candidate, via source commit only).
 | `NODE_ENV` / `STORAGE_TYPE` | `production` / `s3` | PROD | |
 | `REDIS_URL` | `redis://eicr-redis-prod...:6379` | PROD | |
 
-### Deepgram uplink codec (1) — PLAN-E1 E1, dark-shipped 2026-08-25
+### Deepgram uplink codec (1) — PLAN-E1, tier 2 (sender + encoder) shipped 2026-08-26
 
 | Var | Prod value | Code default (file:line) | Class |
 |---|---|---|---|
-| `DEEPGRAM_UPLINK_CODEC` | `linear16` | `'linear16'` (`src/routes/keys.js`, `resolveUplinkCodec()`) | **SAFETY** — resolved once at module load; `linear16` \| `opus` accepted, anything else falls back to `linear16` with one startup warning. Read exactly once, at `POST /api/proxy/deepgram-streaming-key`'s response build — additive `uplink_codec` field, ALWAYS present. Both clients decode + latch the value (session-scoped, set-once) but as of 2026-08-25 **neither client's sender/encoder reads the latch yet** — flipping this to `opus` today has ZERO effect on what bytes hit Deepgram (still linear16 always) until the Opus encoder work ships. Do not flip expecting a bandwidth change. |
+| `DEEPGRAM_UPLINK_CODEC` | `linear16` | `'linear16'` (`src/routes/keys.js`, `resolveUplinkCodec()`) | **SAFETY** — resolved once at module load; `linear16` \| `opus` accepted, anything else falls back to `linear16` with one startup warning. Read exactly once, at `POST /api/proxy/deepgram-streaming-key`'s response build — additive `uplink_codec` field, ALWAYS present. Both clients decode + latch the value (session-scoped, set-once) and, as of 2026-08-26, both senders CONSUME it: `opus` routes captured PCM through a per-connection Opus encoder (web WebCodecs, iOS `AVAudioConverter`); construction failure falls back to `linear16` for that connection (web re-resolves the URL to match; iOS `RealOpusEncoder` init failure is caught the same way). Flipping this to `opus` in prod is the kill-switch's OTHER direction — it now changes the wire bytes, so treat a flip as a real behavior change, not a no-op. |
 
 ### Extraction models & Stage 6 (7)
 

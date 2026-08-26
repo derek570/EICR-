@@ -13,6 +13,7 @@ import {
 } from './recording/deepgram-service';
 import { UplinkScopeAllocator } from './recording/uplink-scope-allocator';
 import { VoicedActivityDetector } from './recording/voiced-activity';
+import { tagCapturedFloat32 } from './recording/capture-tagging';
 import { PoorSignalLatencyProbe } from './recording/poor-signal-probe';
 import { ensureRuntimeConfigLoaded, DEFAULT_STT_MODEL } from '@/lib/runtime-config';
 import { resampleTo16k } from './recording/resample';
@@ -2526,12 +2527,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
           // Socket just reopened after an auto-reconnect. Replay the
           // ring buffer so words spoken during the backoff gap aren't
-          // lost — mirrors the iOS wake path. drain() returns undefined
-          // if the buffer is empty or unavailable, in which case the
-          // live sample loop picks up on its own.
-          const replay = ringBufferRef.current?.drain();
-          if (replay && replay.length > 0) {
-            deepgramRef.current?.sendInt16PCM(replay);
+          // lost — mirrors the iOS wake path. drainTagged() returns
+          // undefined if the buffer is empty or unavailable, in which
+          // case the live sample loop picks up on its own. Each segment
+          // carries its ORIGINAL capture-time tag (see
+          // `capture-tagging.ts`) — sendTaggedAudio never restamps it.
+          const replaySegments = ringBufferRef.current?.drainTagged();
+          if (replaySegments && replaySegments.length > 0) {
+            for (const segment of replaySegments) {
+              deepgramRef.current?.sendTaggedAudio(segment);
+            }
           }
         },
         onError: (err) => {
@@ -3811,11 +3816,37 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Post-resample data is 16kHz Float32 regardless of the hardware
         // rate, so both downstream sinks can trust the sample count.
         const samples16k = resampleTo16k(samples, handle.sampleRate);
-        // Always write to the ring buffer, even while paused. That's
-        // what lets wake-from-doze replay the 3 seconds leading up to
-        // the VAD fire.
-        ringBufferRef.current?.writeFloat32(samples16k);
-        deepgramRef.current?.sendSamples(samples16k);
+        // Always write to the ring buffer, even while paused (and even
+        // when no DeepgramService instance currently exists — full
+        // sleep tears it down but leaves the mic running). That's what
+        // lets wake-from-doze/sleep and post-reconnect replay the audio
+        // leading up to the VAD fire.
+        //
+        // PLAN-E1 (Codex diff-review r1 BLOCKER fix): tag ONCE here, at
+        // the session-owned capture-tagging boundary, and hand the SAME
+        // tagged segment to both the ring buffer and the live sender —
+        // never let each independently mint its own tag for the same
+        // physical audio (that duplicates the capture clock's position
+        // and lets a later replay mislabel gap-period audio under the
+        // wrong epoch). `sessionUplinkContextRef` outlives any one
+        // DeepgramService instance, so this runs whether or not
+        // `deepgramRef.current` is currently alive.
+        const ctx = sessionUplinkContextRef.current;
+        if (ctx) {
+          const segment = tagCapturedFloat32(
+            samples16k,
+            ctx,
+            deepgramRef.current?.liveEpoch ?? null
+          );
+          ringBufferRef.current?.writeTagged(segment);
+          deepgramRef.current?.sendTaggedAudio(segment);
+        } else {
+          // Should not happen post-start() — sessionUplinkContextRef is
+          // populated before beginMicPipeline/beginMicOnly ever run.
+          // Fall back to the pre-E1 self-tagging path rather than
+          // silently dropping this block.
+          deepgramRef.current?.sendSamples(samples16k);
+        }
         // T20 — feed the VAD chunk accumulator. Only run while sleeping;
         // the SleepManager ignores VAD frames in `active` (the timer is
         // what drives sleep entry there) so doing inference on every
@@ -3940,17 +3971,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             // DeepgramService always speaks 16kHz for this session.
             await openDeepgram(16000);
             openSonnet();
-            const replay = ringBufferRef.current?.drain();
-            if (replay && replay.length > 0) {
-              deepgramRef.current?.sendInt16PCM(replay);
+            const replaySegments = ringBufferRef.current?.drainTagged();
+            if (replaySegments && replaySegments.length > 0) {
+              for (const segment of replaySegments) {
+                deepgramRef.current?.sendTaggedAudio(segment);
+              }
             }
           }
         } else {
           // Doze — Deepgram + Sonnet are still open, just paused.
           // Resume with the ring-buffer replay so pre-wake audio
-          // reaches the ASR.
-          const replay = ringBufferRef.current?.drain();
-          deepgramRef.current?.resume(replay);
+          // reaches the ASR. Each segment keeps its ORIGINAL tag.
+          const replaySegments = ringBufferRef.current?.drainTagged();
+          deepgramRef.current?.resume(replaySegments);
           sonnetRef.current?.resume();
         }
         // Session rotated while awaiting mic/WS reopen — drop the work
@@ -4577,6 +4610,17 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // almost-dispatched reading would silently drop it instead of
     // safely reaching the still-connected session).
     disconnectDeepgramForPause();
+    // PLAN-E1 E3 (Codex review r1 IMPORTANT fix) — pause is the THIRD
+    // reset trigger the probe's own doc comment names (utterance-end /
+    // reconnect / pause), but was never wired here. Without it, an onset
+    // pinned right before a manual pause stays pinned across the ENTIRE
+    // pause duration — the first interim after resume would measure
+    // "onset → post-resume interim" as one latency sample, which
+    // includes however long the inspector left the session paused, and
+    // could spuriously arm the advisory on a perfectly healthy link.
+    if (poorSignalProbeRef.current?.onResetWithoutInterim() && poorSignalProbeRef.current.isArmed) {
+      speakPoorSignalAdvisory();
+    }
     // KEEP the Sonnet/server WS connected (iOS `sendPause` parity) —
     // do NOT call teardownSonnet(). The existing `session_ack
     // {status:paused}` backend frame is reused as-is via this call.
@@ -4671,9 +4715,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // forward the raw device rate here.
           await openDeepgram(16000);
           openSonnet();
-          const replay = ringBufferRef.current?.drain();
-          if (replay && replay.length > 0) {
-            deepgramRef.current?.sendInt16PCM(replay);
+          const replaySegments = ringBufferRef.current?.drainTagged();
+          if (replaySegments && replaySegments.length > 0) {
+            for (const segment of replaySegments) {
+              deepgramRef.current?.sendTaggedAudio(segment);
+            }
           }
         }
       }

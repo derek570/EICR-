@@ -9,7 +9,7 @@
 | Component | Technology |
 |-----------|------------|
 | iOS App | SwiftUI (CertMateUnified) — primary user interface |
-| Transcription | Deepgram Flux `flux-general-en` (`/v2/listen`, direct WebSocket from both clients; web since 2026-07-03 via the `DEEPGRAM_STT_MODEL` runtime kill-switch, nova-3 fail-safe only). Uplink encoding is server-latched per session via the key response (`DEEPGRAM_UPLINK_CODEC`, default `linear16` — see the `certmate-config-and-flags` skill); as of 2026-08-25 the Opus sender/encoder is not yet built, so both clients always send linear16 regardless of the flag |
+| Transcription | Deepgram Flux `flux-general-en` (`/v2/listen`, direct WebSocket from both clients; web since 2026-07-03 via the `DEEPGRAM_STT_MODEL` runtime kill-switch, nova-3 fail-safe only). Uplink encoding is server-latched per session via the key response (`DEEPGRAM_UPLINK_CODEC`, default `linear16` — see the `certmate-config-and-flags` skill); as of 2026-08-26 both clients ship a real Opus sender/encoder (web WebCodecs, iOS `AVAudioConverter`) that consumes the latch, so `opus` genuinely changes the wire bytes — see `docs/reference/ios-pipeline.md` for the tagging/scope model |
 | Data Extraction | GPT-5.6 Luna Fast (ordinary live turns), GPT-5.6 Terra Standard/low (observation turns), plus OpenAI GPT batch extraction |
 | Photo Analysis | OpenAI Vision API |
 | Backend | Node.js (ES modules) — API server, job processing, S3 storage |

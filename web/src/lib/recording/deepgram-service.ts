@@ -49,6 +49,7 @@ import {
   type UndispatchedLossHandler,
 } from './uplink-loss-report';
 import type { VoicedActivityDetector } from './voiced-activity';
+import { tagCapturedFloat32 } from './capture-tagging';
 
 /**
  * STT model selector. `nova3` is the legacy `/v1/listen` path (still the
@@ -96,9 +97,10 @@ export interface DeepgramCallbacks {
   onConfigureResult?: (result: ConfigureResult) => void;
   /**
    * Fires after a successful auto-reconnect (not on the initial open).
-   * Consumers typically replay their `AudioRingBuffer` via `sendInt16PCM()`
-   * here so words spoken during the WS downtime aren't lost — matching the
-   * iOS wake path that replays a 3-second ring buffer on Deepgram reopen.
+   * Consumers typically drain their `AudioRingBuffer`'s tagged segments and
+   * replay them via `sendTaggedAudio()` here so words spoken during the WS
+   * downtime aren't lost — matching the iOS wake path that replays a
+   * 3-second ring buffer on Deepgram reopen.
    */
   onReconnected?: () => void;
 }
@@ -189,9 +191,11 @@ export interface DeepgramSessionContext {
   readonly allocator: UplinkScopeAllocator;
   readonly captureClock: CaptureClock;
   /** Optional — the session owner's shared `VoicedActivityDetector`. Fed
-   *  every accepted frame (see `sendSamples`/`sendInt16PCM`). `null`/
-   *  absent for the ~20 pre-existing direct unit tests that construct a
-   *  default context and don't care about materiality. */
+   *  every accepted LIVE frame (`sendSamples`/`tagCapturedFloat32`) —
+   *  replay (`sendTaggedAudio`/`sendInt16PCM`) does not re-feed it, since
+   *  a replayed segment was already fed once at its original capture
+   *  moment. `null`/absent for the ~20 pre-existing direct unit tests
+   *  that construct a default context and don't care about materiality. */
   readonly vad?: VoicedActivityDetector;
 }
 
@@ -431,6 +435,16 @@ export class DeepgramService {
     return this.resolvedSenderCodec;
   }
 
+  /** The connection epoch minted for the CURRENT socket, or `null` if
+   *  none is live (before the first `connect()`, or during a reconnect
+   *  gap). Exposed so a caller that tags audio independently of this
+   *  instance's lifecycle (the session-owned ring buffer in
+   *  `recording-context.tsx` — see `capture-tagging.ts`) can resolve the
+   *  same `EpochScope` this service would resolve internally. */
+  get liveEpoch(): ConnectionEpoch | null {
+    return this.currentEpoch;
+  }
+
   /**
    * Open a Deepgram WebSocket.
    *
@@ -541,17 +555,31 @@ export class DeepgramService {
     this.currentEpoch = allocator.mintEpoch(captureAttemptId);
     this.resetOpusEncoderForNewGeneration();
 
-    const config = resolveUplinkURLConfig({
+    let config = resolveUplinkURLConfig({
       model: this.sttModel,
       latchedCodec: this.sessionContext.codecLatch.get(),
       ccuAnalysis: this.ccuAnalysis,
     });
+    if (config.resolvedSenderCodec === 'opus') {
+      const encoderBuilt = this.constructOpusEncoderForCurrentGeneration();
+      // Codex review r1 BLOCKER: constructing the encoder can fail
+      // (WebCodecs unavailable) — the URL was already built declaring
+      // `encoding=opus` at that point. Re-resolve the URL against a
+      // forced-linear16 config so the socket never opens declaring a
+      // codec the sender isn't actually producing — sending raw
+      // linear16 bytes to an Opus-declared connection would break
+      // transcription outright.
+      if (!encoderBuilt) {
+        config = resolveUplinkURLConfig({
+          model: this.sttModel,
+          latchedCodec: 'linear16',
+          ccuAnalysis: this.ccuAnalysis,
+        });
+      }
+    }
     const url = config.url;
     this.resolvedSenderCodec = config.resolvedSenderCodec;
     this.keepalivePolicy = config.keepalivePolicy;
-    if (this.resolvedSenderCodec === 'opus') {
-      this.constructOpusEncoderForCurrentGeneration();
-    }
     // Deepgram accepts subprotocol-based auth; URL query params are blocked
     // on iOS Safari during the HTTP→WS upgrade (rules/mistakes.md), and
     // browsers can't set an Authorization header on the WS upgrade at all
@@ -617,6 +645,17 @@ export class DeepgramService {
     ws.onclose = (event) => {
       this.stopKeepAlive();
       this.ws = null;
+      // Codex review r1 BLOCKER: `currentEpoch` was never cleared on
+      // close, so any audio arriving during a reconnect gap (this
+      // service's OWN internal auto-reconnect keeps calling
+      // `sendSamples` on the SAME instance between the old socket dying
+      // and the new one opening) was tagged with the now-DEAD epoch
+      // instead of `preOpen` — a stale-epoch mislabel, not merely a
+      // restamp. Clearing it here makes `currentUplinkScope()` correctly
+      // fall back to reserving a fresh preOpen capture attempt for
+      // anything captured before `_connect()`'s next mint.
+      const dyingEpoch = this.currentEpoch;
+      this.currentEpoch = null;
       const reconnectable = event.code !== 1000 && event.code !== 1005;
       // An UNEXPECTED teardown (reconnectable close) charges any samples
       // still sitting inside the encoder pipeline as confirmed local
@@ -624,9 +663,12 @@ export class DeepgramService {
       // bounded flush in `disconnect()` and never reaches this branch's
       // encoder-loss path. A clean 1000/1005 close (server CloseStream
       // response) has already been drained by `disconnect()`'s flush, so
-      // nothing should be pending here either way.
-      if (reconnectable) {
-        this.chargeUndispatchedEncoderLoss();
+      // nothing should be pending here either way. Uses the epoch
+      // snapshotted BEFORE the clear above — `chargeUndispatchedEncoderLoss`
+      // no longer reads `this.currentEpoch` itself (it would always see
+      // the just-cleared `null`).
+      if (reconnectable && dyingEpoch !== null) {
+        this.chargeUndispatchedEncoderLoss(dyingEpoch);
       }
       this.teardownOpusEncoder();
       pipelineLog('deepgram_ws_close', {
@@ -706,40 +748,47 @@ export class DeepgramService {
    *  if the service has been paused by the SleepManager.
    *
    *  PLAN-E1: every accepted frame is tagged (recordingSessionId,
-   *  captureSampleRange, epochScope) via the session-owned capture clock
-   *  + scope allocator BEFORE the connection-state check — so the shared
+   *  captureSampleRange, epochScope) via the shared `tagCapturedFloat32`
+   *  helper BEFORE the connection-state check — so the shared
    *  `VoicedActivityDetector` (if the session owner supplied one) sees a
    *  CONTINUOUS feed across reconnects, exactly like a genuinely
    *  connected session would, even on frames this socket ends up
-   *  dropping. */
-  sendSamples(samples: Float32Array): void {
-    if (this.paused) return;
-    if (samples.length === 0) return;
+   *  dropping. Returns the tagged segment (even when dropped) so a
+   *  caller that ALSO wants to retain this exact tag — the ring buffer
+   *  in `recording-context.tsx` — can do so without re-tagging (Codex
+   *  review r1 BLOCKER: a replay path that mints its OWN fresh tag at
+   *  drain time double-advances the capture clock and mislabels
+   *  gap-period audio under the wrong epoch — see `sendTaggedAudio`). */
+  sendSamples(samples: Float32Array): CapturedPcmSegment | null {
+    if (this.paused) return null;
+    if (samples.length === 0) return null;
 
     const resampled = this.sourceSampleRate === 16000 ? samples : this.resampleTo16k(samples);
+    const segment = tagCapturedFloat32(resampled, this.sessionContext, this.currentEpoch);
 
-    const int16 = new Int16Array(resampled.length);
-    for (let i = 0; i < resampled.length; i++) {
-      const clamped = Math.max(-1, Math.min(1, resampled[i]));
-      int16[i] = Math.round(clamped * 32767);
-    }
-
-    const captureSampleRange = this.sessionContext.captureClock.advance(int16.length);
-    const epochScope = this.sessionContext.allocator.currentScope(this.currentEpoch);
-    this.sessionContext.vad?.processFrame(int16, captureSampleRange, epochScope);
-
-    if (!this.ws || this.state !== 'connected') return;
+    if (!this.ws || this.state !== 'connected') return segment;
 
     this.lastAudioSendMs = performance.now();
 
-    const segment: CapturedPcmSegment = {
-      origin: 'captured',
-      samples: int16,
-      recordingSessionId: this.sessionContext.recordingSessionId,
-      captureSampleRange,
-      epochScope,
-    };
+    if (this.sttModel === 'flux') {
+      this.enqueueFluxFrames(segment);
+    } else {
+      this.dispatchFrame(segment);
+    }
+    return segment;
+  }
 
+  /** Dispatch an ALREADY-TAGGED captured segment straight through the
+   *  single sender, WITHOUT recomputing its capture range or epoch scope
+   *  — the "no restamping" invariant. Used for ring-buffer replay, where
+   *  the caller tagged the segment at its ORIGINAL capture moment (see
+   *  `capture-tagging.ts`), including moments when no `DeepgramService`
+   *  instance existed yet (e.g. full sleep). Does NOT feed VAD — the
+   *  segment was already fed once, at original capture time, by whoever
+   *  tagged it. */
+  sendTaggedAudio(segment: CapturedPcmSegment): void {
+    if (!this.ws || this.state !== 'connected' || segment.samples.length === 0) return;
+    this.lastAudioSendMs = performance.now();
     if (this.sttModel === 'flux') {
       this.enqueueFluxFrames(segment);
       return;
@@ -837,14 +886,18 @@ export class DeepgramService {
     this.fluxAccumulatorRangeStart = null;
   }
 
-  /** Drop a pre-recorded Int16 PCM block straight into the WS. Used by
-   *  the SleepManager to replay the 3-second AudioRingBuffer on wake so
-   *  Deepgram can transcribe the words spoken _just before_ VAD fired.
-   *  Replay audio is CAPTURED PCM (it was genuinely tapped earlier and
-   *  buffered) — tagged with a fresh range off the shared capture clock
-   *  and the CURRENT scope, then routed through the same codec-aware
-   *  sender as live audio (round-1 BLOCKER: no bypass of the sender for
-   *  any binary path, replay included). */
+  /** Send a RAW, UNTAGGED Int16 PCM block — tags it fresh (a new capture
+   *  range off the shared clock, the CURRENT scope) as if it were just
+   *  captured, then routes it through the same codec-aware sender as
+   *  live audio (round-1 BLOCKER: no bypass of the sender for any binary
+   *  path). Correct only for audio whose true capture moment IS now —
+   *  NOT for replaying older buffered audio, which must preserve its
+   *  ORIGINAL tag instead (see `sendTaggedAudio`; the ring-buffer replay
+   *  path was moved off this method in the Codex review r1 BLOCKER fix
+   *  — minting a fresh tag for genuinely-older audio double-advanced the
+   *  capture clock and mislabeled gap-period audio under the wrong
+   *  epoch). Retained for callers that only have raw, previously-untagged
+   *  PCM to inject. */
   sendInt16PCM(samples: Int16Array): void {
     if (!this.ws || this.state !== 'connected' || samples.length === 0) return;
     this.lastAudioSendMs = performance.now();
@@ -876,12 +929,16 @@ export class DeepgramService {
   }
 
   /** Inverse of `pause()`. Optionally drain a caller-supplied replay
-   *  buffer (typically the 3-second AudioRingBuffer) before live
-   *  samples resume flowing — matches the iOS wake path. */
-  resume(replay?: Int16Array): void {
+   *  buffer (typically the 3-second AudioRingBuffer's tagged segments)
+   *  before live samples resume flowing — matches the iOS wake path.
+   *  Segments are dispatched via `sendTaggedAudio` so their ORIGINAL
+   *  capture-time tags survive the replay (no restamping). */
+  resume(replaySegments?: CapturedPcmSegment[]): void {
     this.paused = false;
-    if (replay && replay.length > 0) {
-      this.sendInt16PCM(replay);
+    if (replaySegments) {
+      for (const segment of replaySegments) {
+        this.sendTaggedAudio(segment);
+      }
     }
   }
 
@@ -891,11 +948,22 @@ export class DeepgramService {
   disconnect(): void {
     this.stopKeepAlive();
     this.paused = false;
-    // Reset Flux batching + Configure state so nothing leaks into the next
-    // session (a stale sub-frame tail or an orphaned Configure resolver).
-    this.fluxSampleBuffer = new Int16Array(0);
+    // PLAN-E1 (Codex review r1 IMPORTANT fix) — flush any partial Flux
+    // batching tail (< one 80ms frame) through the SAME sender rather
+    // than silently discarding it. The socket is still open/connected at
+    // this point (CloseStream + the actual `ws.close()` happen later, in
+    // `finishClose`), so this genuinely reaches Deepgram — a real
+    // fraction of a word can sit in this accumulator, and dropping it
+    // silently on every stop/pause would lose it with no telemetry at
+    // all (unlike the Opus-encoder residue path below, which counts and
+    // telemeters what it can't flush in time). For the opus codec this
+    // enqueues into `pendingOpusInput` via `dispatchFrame`, so it's
+    // covered by the bounded encoder flush further down, same as any
+    // other in-flight segment.
+    this.flushFluxAccumulator();
+    // Reset remaining Flux batching + Configure state so nothing leaks
+    // into the next session (an orphaned Configure resolver).
     this.fluxBatchScope = null;
-    this.fluxAccumulatorRangeStart = null;
     if (this.pendingConfigure) {
       clearTimeout(this.pendingConfigure.timer);
       this.pendingConfigure.resolve({ ok: false, reason: 'disconnected', rttMs: 0 });
@@ -1042,19 +1110,26 @@ export class DeepgramService {
     this.pendingOpusInput = [];
   }
 
-  private constructOpusEncoderForCurrentGeneration(): void {
+  /** Returns true iff the encoder was actually constructed. Does NOT
+   *  touch `resolvedSenderCodec` itself — the caller (`openSocket`) owns
+   *  reconciling the codec decision with the URL it builds, since a
+   *  construction failure must also change what the socket DECLARES,
+   *  not just what the sender does internally (Codex review r1 BLOCKER —
+   *  see `openSocket`'s comment). */
+  private constructOpusEncoderForCurrentGeneration(): boolean {
     const generation = this.opusEncoderGeneration;
     try {
       this.opusEncoder = this.opusEncoderFactory((bytes) =>
         this.handleOpusPacket(bytes, generation)
       );
+      return this.opusEncoder !== null;
     } catch {
       // WebCodecs unavailable at runtime despite the resolved codec
       // being opus (E0 gates this at the probe stage, so this should not
       // happen in practice) — fail SAFE to linear16 for this connection
       // rather than silently dropping all audio.
-      this.resolvedSenderCodec = 'linear16';
       this.opusEncoder = null;
+      return false;
     }
   }
 
@@ -1065,13 +1140,18 @@ export class DeepgramService {
 
   /** Charges any samples still queued inside the encoder pipeline as
    *  CONFIRMED local loss via `onUndispatchedLoss`, BEFORE the reset —
-   *  called on an UNEXPECTED teardown only (a reconnectable close).
-   *  Synthetic (keepalive) segments are NEVER loss-reported — a keepalive
-   *  send failure neither mutates any captured segment's tags nor
-   *  invokes this seam. */
-  private chargeUndispatchedEncoderLoss(): void {
-    if (this.pendingOpusInput.length === 0 || this.currentEpoch === null) return;
-    const epoch = this.currentEpoch;
+   *  called on an UNEXPECTED teardown only (a reconnectable close). Takes
+   *  the dying socket's epoch as a PARAMETER rather than reading
+   *  `this.currentEpoch` — the caller (`ws.onclose`) clears
+   *  `this.currentEpoch` before calling this (round-1 BLOCKER fix: a
+   *  stale currentEpoch must not leak into the NEXT capture attempt's
+   *  scope resolution), so reading the instance field here would always
+   *  see `null` and silently drop every loss report. Synthetic
+   *  (keepalive) segments are NEVER loss-reported — a keepalive send
+   *  failure neither mutates any captured segment's tags nor invokes
+   *  this seam. */
+  private chargeUndispatchedEncoderLoss(epoch: ConnectionEpoch): void {
+    if (this.pendingOpusInput.length === 0) return;
     for (const segment of this.pendingOpusInput) {
       if (segment.origin !== 'captured') continue;
       this.onUndispatchedLoss({

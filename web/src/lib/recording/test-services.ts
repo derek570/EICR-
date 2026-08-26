@@ -29,6 +29,8 @@ import type {
   DeepgramStreamingKeyConfig,
   SttModel,
 } from './deepgram-service';
+import type { CapturedPcmSegment } from './tagged-pcm-segment';
+import type { ConnectionEpoch } from './uplink-scope-allocator';
 import type { SonnetConnectionState } from './sonnet-session';
 import type { MicCaptureHandle, MicCaptureOptions } from './mic-capture';
 import type { ScheduleFn, ClearScheduleFn } from './dispatch-buffers';
@@ -45,8 +47,9 @@ export interface DeepgramServiceLike {
   ): void | Promise<void>;
   disconnect(): void;
   pause(): void;
-  resume(replay?: Int16Array | null): void;
-  sendSamples(samples: Float32Array): void;
+  resume(replaySegments?: CapturedPcmSegment[] | null): void;
+  sendSamples(samples: Float32Array): CapturedPcmSegment | null;
+  sendTaggedAudio(segment: CapturedPcmSegment): void;
   sendInt16PCM(pcm: Int16Array): void;
   readonly connectionState: DeepgramConnectionState;
   /** PLAN-E1 — the codec latched from the session's first successful
@@ -54,6 +57,11 @@ export interface DeepgramServiceLike {
    *  pause/resume test can prove the SAME session context (not a fresh
    *  one) is being consulted. */
   readonly latchedUplinkCodec?: 'linear16' | 'opus' | null;
+  /** PLAN-E1 — the connection epoch minted for the current socket, or
+   *  `null` if none is live. `recording-context.tsx`'s capture-tagging
+   *  boundary reads this to resolve the same `EpochScope` the service
+   *  would resolve internally (see `capture-tagging.ts`). */
+  readonly liveEpoch?: ConnectionEpoch | null;
 }
 
 /** The SonnetSession surface recording-context actually uses. The real
