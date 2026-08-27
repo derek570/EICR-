@@ -95,7 +95,7 @@ describe('speakPoorSignalAdvisory — coalescing + confirmations toggle', () => 
 
   it('a second arm while one is queued/playing is a no-op (coalesced)', () => {
     speakPoorSignalAdvisory();
-    expect(shim.speak ? shim.spoken.length : 0).toBe(1);
+    expect(shim.spoken.length).toBe(1);
     const second = speakPoorSignalAdvisory();
     expect(second.enqueued).toBe(false);
     expect(shim.spoken.length).toBe(1);
