@@ -682,7 +682,10 @@ export class DeepgramService {
     };
 
     ws.onmessage = (event) => {
-      this.handleMessage(event.data);
+      // Codex E2 cycle-3 — bind the message to the epoch of the socket that
+      // delivered it, so a watermark can never be re-bound to a successor
+      // epoch (a stale message can only be dropped, never falsely retire).
+      this.handleMessage(event.data, socketEpoch);
     };
 
     ws.onerror = () => {
@@ -1578,7 +1581,7 @@ export class DeepgramService {
     }
   }
 
-  private handleMessage(data: unknown): void {
+  private handleMessage(data: unknown, socketEpoch?: ConnectionEpoch | null): void {
     let json: Record<string, unknown>;
     try {
       const text = typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer);
@@ -1588,7 +1591,7 @@ export class DeepgramService {
     }
 
     if (this.sttModel === 'flux') {
-      this.handleFluxMessage(json);
+      this.handleFluxMessage(json, socketEpoch);
       return;
     }
 
@@ -1677,7 +1680,7 @@ export class DeepgramService {
    * "Dispatch ALL message types" (2026-05-15 mistake): Error AND
    * ConfigureFailure are surfaced, never silently dropped.
    */
-  private handleFluxMessage(json: Record<string, unknown>): void {
+  private handleFluxMessage(json: Record<string, unknown>, socketEpoch?: ConnectionEpoch | null): void {
     const type = json.type as string | undefined;
     switch (type) {
       case 'Connected': {
@@ -1693,7 +1696,7 @@ export class DeepgramService {
         this.resolveConfigure(json, /*success*/ false);
         break;
       case 'TurnInfo':
-        this.handleFluxTurnInfo(json);
+        this.handleFluxTurnInfo(json, socketEpoch);
         break;
       case 'Error': {
         // Surface — never drop. Flux fatal errors arrive as {type:'Error'|'Fatal'}.
@@ -1726,7 +1729,7 @@ export class DeepgramService {
    * sub-type. Ports iOS `handleFluxTurnInfo`. EagerEndOfTurn is ignored
    * (eager mode disabled — no `eager_eot_threshold` in the URL), matching iOS.
    */
-  private handleFluxTurnInfo(json: Record<string, unknown>): void {
+  private handleFluxTurnInfo(json: Record<string, unknown>, socketEpoch?: ConnectionEpoch | null): void {
     const event = json.event as string | undefined;
     if (!event) return;
     const transcript = (json.transcript as string | undefined) ?? '';
@@ -1737,7 +1740,7 @@ export class DeepgramService {
     // epoch's dispatch origin so the ledger retires only SAME-epoch
     // dispatched ranges. Every TurnInfo event carries it, so retirement
     // advances on interims and silence-driven EndOfTurns alike.
-    this.advanceProcessedWatermark(json.audio_window_end);
+    this.advanceProcessedWatermark(json.audio_window_end, socketEpoch);
 
     switch (event) {
       case 'Update': {
@@ -1814,9 +1817,17 @@ export class DeepgramService {
     }
   }
 
-  private advanceProcessedWatermark(rawWindowEnd: unknown): void {
+  private advanceProcessedWatermark(
+    rawWindowEnd: unknown,
+    socketEpoch?: ConnectionEpoch | null
+  ): void {
     const ledger = this.sessionContext.lossLedger;
     if (!ledger || this.currentEpoch === null) return;
+    // Codex E2 cycle-3 — a message from a SUPERSEDED socket (its epoch no
+    // longer current) must never advance the live epoch's watermark. Web's
+    // closed sockets don't fire `onmessage`, so in practice every message
+    // arrives while its socket is current; this only ever drops a stale one.
+    if (socketEpoch !== undefined && socketEpoch !== null && socketEpoch !== this.currentEpoch) return;
     if (typeof rawWindowEnd !== 'number' || !Number.isFinite(rawWindowEnd) || rawWindowEnd < 0) {
       return; // malformed vendor value — never a bogus retirement
     }

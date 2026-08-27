@@ -464,3 +464,59 @@ describe('UplinkLossLedger — Codex cycle-1 regressions', () => {
     expect(disclosed).toHaveLength(1);
   });
 });
+
+describe('UplinkLossLedger — Codex cycle-3 regressions', () => {
+  const drop = (l: UplinkLossLedger, scope: EpochScope, start: number, end: number) =>
+    l.recordDropped({ epochScope: scope, captureSampleRange: { start, end }, samples: voicedPcm(end - start) });
+
+  it('a late report for epoch-1 does NOT leak into epoch-2\'s open episode (membership)', () => {
+    const { ledger, disclosed } = harness();
+    // epoch 1 outage → discloses at epoch 2 open
+    ledger.onSocketOpened(E(1));
+    drop(ledger, epoch(1), 0, 4800);
+    ledger.onSocketClosed(E(1), ACTIVE); // episode-1 opens (failedEpochs {1})
+    ledger.onSocketOpened(E(2)); // discloses episode 1
+    expect(disclosed).toHaveLength(1);
+    // epoch 2 now has its OWN outage
+    drop(ledger, epoch(2), 4800, 9600);
+    ledger.onSocketClosed(E(2), ACTIVE); // episode-2 opens (failedEpochs {2})
+    // A stale epoch-1 report arrives while episode-2 is open — must NOT
+    // join episode 2 (it belongs to the already-disclosed epoch 1).
+    ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 9600, end: 14_400 } });
+    ledger.onSocketOpened(E(3));
+    // episode 2 discloses (its own epoch-2 drop) — exactly once, no epoch-1 leak.
+    expect(disclosed).toHaveLength(2);
+    expect(disclosed[1].map(lossSourceIdKey)).toEqual(['episode:2']);
+  });
+
+  it('a member epoch\'s late report DOES join its own open episode', () => {
+    const { ledger, disclosed } = harness();
+    ledger.onSocketOpened(E(1));
+    ledger.onSocketClosed(E(1), ACTIVE); // episode opens, failedEpochs {1}, immaterial so far
+    // A late epoch-1 report arrives while epoch-1's episode is still open.
+    ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
+    ledger.onSocketOpened(E(2));
+    expect(disclosed).toHaveLength(1); // the member report made it material
+  });
+
+  it('a STAGED-ONLY late report under a hold still releases at hold-release (held-open moment)', () => {
+    const { ledger, disclosed } = harness();
+    const hold = ledger.holdDisclosureRelease();
+    ledger.onSocketOpened(E(1)); // no material yet, but observed under a hold
+    expect(ledger.isReleaseParked).toBe(true);
+    // A late staged report lands AFTER the open, BEFORE the hold releases.
+    ledger.recordStagedLoss({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 4800 }, voiced: true });
+    expect(disclosed).toHaveLength(0);
+    hold.release();
+    expect(disclosed).toHaveLength(1);
+    expect(disclosed[0].map(lossSourceIdKey)).toEqual(['stagedLoss:1']);
+  });
+
+  it('an EMPTY held-open moment closes silently (no disclosure)', () => {
+    const { ledger, disclosed } = harness();
+    const hold = ledger.holdDisclosureRelease();
+    ledger.onSocketOpened(E(1));
+    hold.release();
+    expect(disclosed).toHaveLength(0);
+  });
+});

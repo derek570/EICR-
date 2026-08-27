@@ -103,6 +103,11 @@ export interface UplinkLossLedgerOptions {
 interface Episode {
   readonly sourceId: LossSourceId;
   entries: LedgerEntry[];
+  /** The epochs whose UNOWNED close/failure opened or joined THIS episode.
+   *  An epoch-scoped report may only join an episode it belongs to — Codex
+   *  E2 cycle-3: without this, an old epoch's late report leaked into a
+   *  later, unrelated outage episode (a false / double disclosure). */
+  readonly failedEpochs: Set<ConnectionEpoch>;
 }
 
 interface PreOpenWindow {
@@ -177,6 +182,12 @@ export class UplinkLossLedger {
 
   private holds = 0;
   private pendingRelease: LossSourceId[] | null = null;
+  /** An open observed WHILE a hold was outstanding is a disclosure MOMENT
+   *  regardless of whether material existed at that instant — a late
+   *  staged/pre-open report landing before the hold releases must join it.
+   *  Codex E2 cycle-3: a staged-only late report was otherwise stranded
+   *  until an unrelated later open. */
+  private heldOpenPending = false;
 
   constructor(options: UplinkLossLedgerOptions) {
     this.recordingSessionId = options.recordingSessionId;
@@ -365,8 +376,10 @@ export class UplinkLossLedger {
       this.openEpisode = {
         sourceId: { kind: 'episode', id: this.nextEpisodeId++ },
         entries: [],
+        failedEpochs: new Set<ConnectionEpoch>(),
       };
     }
+    this.openEpisode.failedEpochs.add(epoch);
     // Several failed attempts can precede one reopen — later failures join
     // the SAME episode; only a genuinely dispatched tail is carried.
     if (carried.length > 0) {
@@ -407,10 +420,18 @@ export class UplinkLossLedger {
     for (const staged of this.stagedSources.splice(0)) {
       if (hasDebouncedVoicedRun(staged.entries)) material.push(staged.sourceId);
     }
-    if (material.length === 0) return;
+    if (material.length === 0 && this.holds === 0) return;
     // A moment already PARKED behind a hold is JOINED, never overwritten:
     // two material opens under one outstanding hold release together.
-    this.pendingRelease = mergeSourceIds(this.pendingRelease ?? [], material);
+    if (material.length > 0) {
+      this.pendingRelease = mergeSourceIds(this.pendingRelease ?? [], material);
+    }
+    if (this.holds > 0) {
+      // Parked: even an empty-material open under a hold is a moment, so a
+      // late staged/pre-open report joins it when the hold releases.
+      this.heldOpenPending = true;
+      return;
+    }
     this.releaseIfUnheld();
   }
 
@@ -430,8 +451,10 @@ export class UplinkLossLedger {
   }
 
   private releaseIfUnheld(): void {
-    if (this.holds > 0 || !this.pendingRelease) return;
-    const ids = this.pendingRelease;
+    if (this.holds > 0) return;
+    if (!this.heldOpenPending && !this.pendingRelease) return;
+    this.heldOpenPending = false;
+    const ids = this.pendingRelease ?? [];
     this.pendingRelease = null;
     // A hold exists precisely so a LATE report (E-WAKE's staged ring loss,
     // reported from the `awaitOpen` continuation AFTER `onopen` fired)
@@ -445,31 +468,40 @@ export class UplinkLossLedger {
     for (const staged of this.stagedSources.splice(0)) {
       if (hasDebouncedVoicedRun(staged.entries)) late.push(staged.sourceId);
     }
-    this.onDisclosureReady(mergeSourceIds(ids, late));
+    const all = mergeSourceIds(ids, late);
+    // Only an actual non-empty moment speaks (an empty held-open moment that
+    // accrued nothing simply closes silently).
+    if (all.length > 0) this.onDisclosureReady(all);
   }
 
   // ── Internals ─────────────────────────────────────────────────────────
 
   private attribute(entry: LedgerEntry): void {
-    if (this.openEpisode) {
+    if (entry.epochScope.kind === 'epoch') {
+      const e = entry.epochScope.id;
+      if (this.ownedEpochs.has(e)) return; // deliberate close — drop
+      // An epoch-scoped report joins the open episode ONLY if that epoch
+      // is a member of it (Codex E2 cycle-3). Otherwise it belongs to its
+      // own epoch's future episode: held per-epoch, never leaked into an
+      // unrelated outage.
+      if (this.openEpisode?.failedEpochs.has(e)) {
+        this.openEpisode.entries.push(entry);
+        this.emitMaterialIfDebounced(this.openEpisode.sourceId, this.openEpisode.entries);
+        return;
+      }
+      if (this.openedEpochs.has(e)) {
+        const list = this.dispatchedByEpoch.get(e);
+        if (list) list.push(entry);
+        else this.dispatchedByEpoch.set(e, [entry]);
+        return;
+      }
+      // e not opened yet (handshake window) → the pre-open window below.
+    } else if (this.openEpisode) {
+      // A pre-open-scoped capture during an outage joins the open episode.
       this.openEpisode.entries.push(entry);
       this.emitMaterialIfDebounced(this.openEpisode.sourceId, this.openEpisode.entries);
       return;
     }
-    // Epoch-scoped loss on a socket that HAS opened, with no episode open
-    // yet (a caught send failure, a mid-stream drop): hold it against that
-    // epoch alongside the dispatched tail. It can never watermark-retire
-    // (no dispatched range) and is carried into the episode an unowned
-    // close opens — or discarded by an owned one.
-    if (entry.epochScope.kind === 'epoch' && this.openedEpochs.has(entry.epochScope.id)) {
-      const e = entry.epochScope.id;
-      if (this.ownedEpochs.has(e)) return;
-      const list = this.dispatchedByEpoch.get(e);
-      if (list) list.push(entry);
-      else this.dispatchedByEpoch.set(e, [entry]);
-      return;
-    }
-    if (entry.epochScope.kind === 'epoch' && this.ownedEpochs.has(entry.epochScope.id)) return;
     // Capture BEFORE any open (a `preOpen` scope, or a handshake-window
     // `epoch` scope whose socket has not opened yet): the pending
     // pre-open window, disclosed once at the next successful open.
@@ -528,6 +560,6 @@ export class UplinkLossLedger {
   }
 
   get isReleaseParked(): boolean {
-    return this.pendingRelease !== null;
+    return this.pendingRelease !== null || this.heldOpenPending;
   }
 }
