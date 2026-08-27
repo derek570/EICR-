@@ -24,12 +24,12 @@ const preOpen = (attempt: number): EpochScope => ({
   captureAttemptId: attempt as CaptureAttemptId,
 });
 
-function voicedPcm(len = 1280): Int16Array {
+function voicedPcm(len = 4800): Int16Array {
   const s = new Int16Array(len);
   for (let i = 0; i < len; i++) s[i] = i % 2 === 0 ? 6000 : -6000;
   return s;
 }
-function silentPcm(len = 1280): Int16Array {
+function silentPcm(len = 4800): Int16Array {
   return new Int16Array(len);
 }
 
@@ -66,9 +66,9 @@ describe('UplinkLossLedger — episode open/join/close (test 2, 2b)', () => {
   it('an unowned 1000/1005-class close (no reconnect today) still opens the episode — it is COUNTED, never spoken without a reopen', () => {
     const { ledger, count, disclosed } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDropped({ epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm() });
     ledger.onSocketClosed(E(1), ACTIVE);
-    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 1280, end: 2560 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 4800, end: 9600 }, samples: voicedPcm() });
     expect(ledger.isEpisodeOpen).toBe(true);
     expect(count('uplink_loss_episode_material')).toBe(1);
     expect(disclosed).toHaveLength(0);
@@ -77,7 +77,7 @@ describe('UplinkLossLedger — episode open/join/close (test 2, 2b)', () => {
   it('an OWNED close opens no episode and discards every unresolved entry', () => {
     const { ledger, count } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, dispatchedSampleRange: { start: 0, end: 1280 }, voiced: true });
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
     expect(ledger.unresolvedEntryCount).toBe(1);
     ledger.onSocketClosed(E(1), OWNED);
     expect(ledger.isEpisodeOpen).toBe(false);
@@ -87,7 +87,7 @@ describe('UplinkLossLedger — episode open/join/close (test 2, 2b)', () => {
 
   it('disconnect() with no live socket (owned, no close event) also discards + abandons', () => {
     const { ledger, disclosed } = harness();
-    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 1280 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm() });
     expect(ledger.pendingPreOpenWindowCount).toBe(1);
     ledger.onOwnedDisconnect(null);
     expect(ledger.pendingPreOpenWindowCount).toBe(0);
@@ -98,7 +98,7 @@ describe('UplinkLossLedger — episode open/join/close (test 2, 2b)', () => {
   it('capture-INACTIVE unowned close (interruption/user-pause window) opens no episode, drops the tail', () => {
     const { ledger } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, dispatchedSampleRange: { start: 0, end: 1280 }, voiced: true });
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
     ledger.onSocketClosed(E(1), INACTIVE);
     expect(ledger.isEpisodeOpen).toBe(false);
     expect(ledger.unresolvedEntryCount).toBe(0);
@@ -130,7 +130,7 @@ describe('UplinkLossLedger — materiality at DISCLOSURE time (test 2c)', () => 
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
     ledger.onSocketClosed(E(1), ACTIVE);
-    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 1280 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm() });
     ledger.onSocketOpened(E(2));
     expect(disclosed).toHaveLength(1);
     expect(disclosed[0].map(lossSourceIdKey)).toEqual(['episode:1']);
@@ -139,7 +139,7 @@ describe('UplinkLossLedger — materiality at DISCLOSURE time (test 2c)', () => 
   it('an unretired voiced DISPATCHED tail at failure → ONE disclosure', () => {
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, dispatchedSampleRange: { start: 0, end: 1280 }, voiced: true });
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
     ledger.onSocketClosed(E(1), ACTIVE);
     ledger.onSocketOpened(E(2));
     expect(disclosed).toHaveLength(1);
@@ -148,9 +148,9 @@ describe('UplinkLossLedger — materiality at DISCLOSURE time (test 2c)', () => 
   it('BOTH a dropped frame and an unretired tail in one episode → still exactly ONE disclosure', () => {
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, dispatchedSampleRange: { start: 0, end: 1280 }, voiced: true });
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
     ledger.onSocketClosed(E(1), ACTIVE);
-    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 1280, end: 2560 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 4800, end: 9600 }, samples: voicedPcm() });
     ledger.onSocketOpened(E(2));
     expect(disclosed).toHaveLength(1);
     expect(disclosed[0]).toHaveLength(1);
@@ -159,8 +159,8 @@ describe('UplinkLossLedger — materiality at DISCLOSURE time (test 2c)', () => 
   it('voiced audio FULLY retired by the watermark before disclosure time → NO disclosure', () => {
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, dispatchedSampleRange: { start: 0, end: 1280 }, voiced: true });
-    ledger.advanceWatermark(E(1), 1280);
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
+    ledger.advanceWatermark(E(1), 4800);
     ledger.onSocketClosed(E(1), ACTIVE);
     ledger.onSocketOpened(E(2));
     expect(disclosed).toHaveLength(0);
@@ -170,11 +170,11 @@ describe('UplinkLossLedger — materiality at DISCLOSURE time (test 2c)', () => 
     const { ledger, disclosed, events } = harness();
     ledger.onSocketOpened(E(1));
     for (let i = 0; i < 200; i++) {
-      ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: i * 1280, end: (i + 1) * 1280 }, dispatchedSampleRange: { start: i * 1280, end: (i + 1) * 1280 }, voiced: false });
+      ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: i * 4800, end: (i + 1) * 4800 }, dispatchedSampleRange: { start: i * 4800, end: (i + 1) * 4800 }, voiced: false });
     }
     ledger.onSocketClosed(E(1), ACTIVE);
     for (let i = 0; i < 200; i++) {
-      ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 1280 }, samples: silentPcm() });
+      ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 4800 }, samples: silentPcm() });
     }
     ledger.onSocketOpened(E(2));
     expect(disclosed).toHaveLength(0);
@@ -183,7 +183,7 @@ describe('UplinkLossLedger — materiality at DISCLOSURE time (test 2c)', () => 
 
   it('pre-open/initial-connect material loss → ONE disclosure at the FIRST open; a fast open speaks none', () => {
     const { ledger, disclosed } = harness();
-    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 800 }, samples: voicedPcm(800) });
+    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm(4800) });
     ledger.onSocketOpened(E(1));
     expect(disclosed).toHaveLength(1);
     expect(disclosed[0].map(lossSourceIdKey)).toEqual(['preOpenWindow:1']);
@@ -205,12 +205,12 @@ describe('UplinkLossLedger — watermark (two timebases)', () => {
   it('a frame DROPPED mid-stream is never retired by a watermark that passes its capture range', () => {
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, dispatchedSampleRange: { start: 0, end: 1280 }, voiced: true });
-    // dropped frame: capture [1280, 2560), never dispatched
-    ledger.recordDropped({ epochScope: epoch(1), captureSampleRange: { start: 1280, end: 2560 }, samples: voicedPcm() });
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 2560, end: 3840 }, dispatchedSampleRange: { start: 1280, end: 2560 }, voiced: true });
-    // Watermark passes 2560 in the DISPATCHED domain — retires both dispatched frames…
-    ledger.advanceWatermark(E(1), 2560);
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
+    // dropped frame: capture [4800, 9600), never dispatched
+    ledger.recordDropped({ epochScope: epoch(1), captureSampleRange: { start: 4800, end: 9600 }, samples: voicedPcm() });
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 9600, end: 14400 }, dispatchedSampleRange: { start: 4800, end: 9600 }, voiced: true });
+    // Watermark passes 9600 in the DISPATCHED domain — retires both dispatched frames…
+    ledger.advanceWatermark(E(1), 9600);
     ledger.onSocketClosed(E(1), ACTIVE);
     ledger.onSocketOpened(E(2));
     // …but the dropped frame is STILL unresolved → exactly one disclosure.
@@ -220,7 +220,7 @@ describe('UplinkLossLedger — watermark (two timebases)', () => {
   it('a successor epoch watermark never retires a predecessor epoch entry', () => {
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, dispatchedSampleRange: { start: 0, end: 1280 }, voiced: true });
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
     ledger.onSocketClosed(E(1), ACTIVE);
     ledger.advanceWatermark(E(2), 999_999); // wrong epoch
     ledger.onSocketOpened(E(2));
@@ -234,12 +234,12 @@ describe('UplinkLossLedger — watermark (two timebases)', () => {
       for (const [s, e] of ranges) {
         h.ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: s, end: e }, dispatchedSampleRange: { start: s, end: e }, voiced: true });
       }
-      h.ledger.advanceWatermark(E(1), 1280);
+      h.ledger.advanceWatermark(E(1), 4800);
       return h.ledger.unresolvedEntryCount;
     };
-    // linear16: one 1280 frame; opus-style: the same 1280 samples as 4×320
-    expect(run([[0, 1280], [1280, 2560]])).toBe(1);
-    expect(run([[0, 320], [320, 640], [640, 960], [960, 1280], [1280, 2560]])).toBe(1);
+    // linear16: one 4800 frame; opus-style: the same 4800 samples as 4×320
+    expect(run([[0, 4800], [4800, 9600]])).toBe(1);
+    expect(run([[0, 320], [320, 640], [640, 960], [960, 4800], [4800, 9600]])).toBe(1);
   });
 });
 
@@ -248,7 +248,7 @@ describe('UplinkLossLedger — three counters (test 2h)', () => {
     const { ledger, count, disclosed } = harness();
     ledger.onSocketOpened(E(1));
     ledger.onSocketClosed(E(1), ACTIVE);
-    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 1280 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm() });
     ledger.onSocketOpened(E(2));
     expect(count('uplink_loss_episode_material')).toBe(1);
     expect(count('uplink_loss_episode_retired_immaterial')).toBe(0);
@@ -258,12 +258,12 @@ describe('UplinkLossLedger — three counters (test 2h)', () => {
   it('the SAME episode whose evidence retired before the open → material + retired_immaterial, speaks nothing', () => {
     const { ledger, count, disclosed } = harness();
     ledger.onSocketOpened(E(1));
-    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 1280 }, dispatchedSampleRange: { start: 0, end: 1280 }, voiced: true });
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 0, end: 4800 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
     // receive failure opens the episode while the socket is still nominally open…
     ledger.onSocketFailure(E(1), ACTIVE);
     expect(count('uplink_loss_episode_material')).toBe(1);
     // …then a late same-epoch watermark retires the carried tail before the close lands.
-    ledger.advanceWatermark(E(1), 1280);
+    ledger.advanceWatermark(E(1), 4800);
     ledger.onSocketClosed(E(1), ACTIVE);
     ledger.onSocketOpened(E(2));
     expect(count('uplink_loss_episode_retired_immaterial')).toBe(1);
@@ -274,7 +274,7 @@ describe('UplinkLossLedger — three counters (test 2h)', () => {
     const { ledger, count, disclosed } = harness();
     ledger.onSocketOpened(E(1));
     ledger.onSocketClosed(E(1), ACTIVE); // e.g. unsolicited 1000 — no reconnect today
-    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 1280 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm() });
     // session ends: no open ever follows
     expect(count('uplink_loss_episode_material')).toBe(1);
     expect(count('uplink_loss_episode_retired_immaterial')).toBe(0);
@@ -285,15 +285,15 @@ describe('UplinkLossLedger — three counters (test 2h)', () => {
     const { ledger, events } = harness();
     ledger.onSocketOpened(E(1));
     ledger.onSocketClosed(E(1), ACTIVE);
-    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 1280 }, samples: silentPcm() });
+    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 4800 }, samples: silentPcm() });
     ledger.onSocketOpened(E(2));
     expect(events).toHaveLength(0);
   });
 
   it('a material PRE-OPEN window counts exactly like an episode; material fires once per source', () => {
     const { ledger, count } = harness();
-    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 1280 }, samples: voicedPcm() });
-    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 1280, end: 2560 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 4800, end: 9600 }, samples: voicedPcm() });
     expect(count('uplink_loss_episode_material')).toBe(1);
   });
 });
@@ -319,8 +319,8 @@ describe('UplinkLossLedger — staged loss (2i/2j) and coalescing', () => {
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
     ledger.onSocketClosed(E(1), ACTIVE);
-    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 1280 }, samples: voicedPcm() });
-    ledger.recordStagedLoss({ epochScope: preOpen(2), captureSampleRange: { start: 1280, end: 2560 }, voiced: true });
+    ledger.recordDropped({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm() });
+    ledger.recordStagedLoss({ epochScope: preOpen(2), captureSampleRange: { start: 4800, end: 9600 }, voiced: true });
     ledger.onSocketOpened(E(2));
     expect(disclosed).toHaveLength(1);
     expect(disclosed[0].map(lossSourceIdKey).sort()).toEqual(['episode:1', 'stagedLoss:1']);
@@ -330,7 +330,7 @@ describe('UplinkLossLedger — staged loss (2i/2j) and coalescing', () => {
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
     ledger.onSocketClosed(E(1), ACTIVE);
-    ledger.recordUndispatchedLoss({ samples: voicedPcm(), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 1280 } });
+    ledger.recordUndispatchedLoss({ samples: voicedPcm(), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
     ledger.advanceWatermark(E(1), 999_999);
     ledger.onSocketOpened(E(2));
     expect(disclosed).toHaveLength(1);
@@ -340,7 +340,7 @@ describe('UplinkLossLedger — staged loss (2i/2j) and coalescing', () => {
     const { ledger, events } = harness();
     ledger.onSocketOpened(E(1));
     ledger.onSocketClosed(E(1), ACTIVE);
-    ledger.recordUndispatchedLoss({ samples: voicedPcm(), recordingSessionId: 'sess-B', epoch: E(1), captureSampleRange: { start: 0, end: 1280 } });
+    ledger.recordUndispatchedLoss({ samples: voicedPcm(), recordingSessionId: 'sess-B', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
     expect(events).toHaveLength(0);
   });
 });
@@ -348,16 +348,115 @@ describe('UplinkLossLedger — staged loss (2i/2j) and coalescing', () => {
 describe('UplinkLossLedger — hold API (E-WAKE barrier, dormant)', () => {
   it('a hold registered before the open PARKS the release until released; release is immediate with no holds', () => {
     const { ledger, disclosed } = harness();
-    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 1280 }, samples: voicedPcm() });
+    ledger.recordDropped({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 4800 }, samples: voicedPcm() });
     const hold = ledger.holdDisclosureRelease();
     ledger.onSocketOpened(E(1));
     expect(disclosed).toHaveLength(0);
     expect(ledger.isReleaseParked).toBe(true);
     // A late staged report lands BEFORE the release — it joins the same moment.
-    ledger.recordStagedLoss({ epochScope: preOpen(1), captureSampleRange: { start: 1280, end: 2560 }, voiced: true });
+    ledger.recordStagedLoss({ epochScope: preOpen(1), captureSampleRange: { start: 4800, end: 9600 }, voiced: true });
     hold.release();
     hold.release(); // idempotent
     expect(disclosed).toHaveLength(1);
     expect(ledger.outstandingHoldCount).toBe(0);
+  });
+});
+
+describe('UplinkLossLedger — Codex cycle-1 regressions', () => {
+  const drop = (l: UplinkLossLedger, scope: EpochScope, start: number, end: number) =>
+    l.recordDropped({ epochScope: scope, captureSampleRange: { start, end }, samples: voicedPcm(end - start) });
+
+  it('materiality is DEBOUNCED: one 80ms voiced impulse is immaterial; three contiguous frames are material', () => {
+    const one = harness();
+    drop(one.ledger, preOpen(1), 0, 1280);
+    expect(one.count('uplink_loss_episode_material')).toBe(0);
+    one.ledger.onSocketOpened(E(1));
+    expect(one.disclosed).toHaveLength(0);
+
+    const three = harness();
+    for (let i = 0; i < 3; i++) drop(three.ledger, preOpen(1), i * 1280, (i + 1) * 1280);
+    expect(three.count('uplink_loss_episode_material')).toBe(1);
+    three.ledger.onSocketOpened(E(1));
+    expect(three.disclosed).toHaveLength(1);
+  });
+
+  it('NON-contiguous voiced frames never add up to a debounced run', () => {
+    const { ledger, disclosed, count } = harness();
+    drop(ledger, preOpen(1), 0, 1280);
+    drop(ledger, preOpen(1), 2560, 3840);
+    drop(ledger, preOpen(1), 5120, 6400);
+    expect(count('uplink_loss_episode_material')).toBe(0);
+    ledger.onSocketOpened(E(1));
+    expect(disclosed).toHaveLength(0);
+  });
+
+  it('two material opens under ONE outstanding hold JOIN the parked moment — never overwrite it', () => {
+    const { ledger, disclosed } = harness();
+    const hold = ledger.holdDisclosureRelease();
+    drop(ledger, preOpen(1), 0, 4800);
+    ledger.onSocketOpened(E(1));
+    expect(ledger.isReleaseParked).toBe(true);
+    ledger.recordDispatched({ dispatchEpoch: E(1), epochScope: epoch(1), captureSampleRange: { start: 4800, end: 9600 }, dispatchedSampleRange: { start: 0, end: 4800 }, voiced: true });
+    ledger.onSocketClosed(E(1), ACTIVE);
+    ledger.onSocketOpened(E(2));
+    expect(disclosed).toHaveLength(0);
+    hold.release();
+    expect(disclosed).toHaveLength(1);
+    expect(disclosed[0].map(lossSourceIdKey).sort()).toEqual(['episode:1', 'preOpenWindow:1']);
+  });
+
+  it('a LATE owned close for an already-classified epoch never discards a successor pre-open window', () => {
+    const { ledger, disclosed } = harness();
+    ledger.onSocketOpened(E(1));
+    ledger.onOwnedDisconnect(E(1)); // disconnect()
+    drop(ledger, preOpen(2), 0, 4800); // pause → immediate resume: new capture attempt
+    ledger.onSocketClosed(E(1), OWNED); // the 300ms-later close callback
+    expect(ledger.pendingPreOpenWindowCount).toBe(1);
+    ledger.onSocketOpened(E(2));
+    expect(disclosed).toHaveLength(1);
+  });
+
+  it('a late unowned close from an epoch OLDER than the live one is stale — no episode', () => {
+    const { ledger } = harness();
+    ledger.onSocketOpened(E(1));
+    ledger.onSocketOpened(E(2));
+    ledger.onSocketClosed(E(1), ACTIVE);
+    expect(ledger.isEpisodeOpen).toBe(false);
+  });
+
+  it('a late failed-send report from a superseded epoch is ignored; close-time residue on the live epoch is kept', () => {
+    const stale = harness();
+    stale.ledger.onSocketOpened(E(1));
+    stale.ledger.onSocketClosed(E(1), ACTIVE);
+    stale.ledger.onSocketOpened(E(2));
+    stale.ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
+    expect(stale.ledger.unresolvedEntryCount).toBe(0);
+    expect(stale.ledger.isEpisodeOpen).toBe(false);
+
+    const live = harness();
+    live.ledger.onSocketOpened(E(1));
+    live.ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
+    live.ledger.onSocketClosed(E(1), ACTIVE);
+    expect(live.ledger.unresolvedEntryCount).toBe(1);
+    expect(live.ledger.isEpisodeOpen).toBe(true);
+  });
+
+  it('contiguous per-segment staged reports coalesce into ONE stagedLoss source; a gap mints a second', () => {
+    const { ledger, count } = harness();
+    const a = ledger.recordStagedLoss({ epochScope: preOpen(1), captureSampleRange: { start: 0, end: 1280 }, voiced: true });
+    const b = ledger.recordStagedLoss({ epochScope: preOpen(1), captureSampleRange: { start: 1280, end: 2560 }, voiced: true });
+    const c = ledger.recordStagedLoss({ epochScope: preOpen(1), captureSampleRange: { start: 2560, end: 3840 }, voiced: true });
+    expect([a, b, c].map((x) => lossSourceIdKey(x!))).toEqual(['stagedLoss:1', 'stagedLoss:1', 'stagedLoss:1']);
+    expect(count('uplink_loss_episode_material')).toBe(1); // debounced at the third segment
+    const d = ledger.recordStagedLoss({ epochScope: preOpen(1), captureSampleRange: { start: 10_000, end: 11_280 }, voiced: true });
+    expect(lossSourceIdKey(d!)).toBe('stagedLoss:2');
+  });
+
+  it('a duplicate open observation for the SAME epoch does not re-run the moment', () => {
+    const { ledger, disclosed } = harness();
+    drop(ledger, preOpen(1), 0, 4800);
+    ledger.onSocketOpened(E(1));
+    ledger.onSocketOpened(E(1));
+    expect(disclosed).toHaveLength(1);
   });
 });

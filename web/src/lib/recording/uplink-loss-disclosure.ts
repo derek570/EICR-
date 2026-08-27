@@ -48,7 +48,7 @@ export interface UplinkLossDisclosureLedgerOptions {
   /** A token was minted (fresh or successor) — the caller must deliver it. */
   readonly onMint: (token: DisclosureToken) => void;
   readonly telemetry?: (
-    event: 'uplink_loss_episode_disclosed' | 'uplink_loss_disclosure_completed',
+    event: 'uplink_loss_episode_disclosed',
     payload: Record<string, unknown>
   ) => void;
 }
@@ -91,11 +91,12 @@ export class UplinkLossDisclosureLedger {
     const t = this.outstanding;
     if (!t || t.id !== tokenId) return null;
     t.state = 'completed';
+    // No counter here: the plan gives E2 exactly three counters
+    // (`material` / `retired_immaterial` on the loss ledger, `disclosed`
+    // at association below). The SOURCE-cardinal completion counter
+    // `uplink_loss_episode_disclosure_completed` is PLAN-E-TERM's, emitted
+    // per covered `LossSourceId` when it iterates this token.
     this.completedCount += 1;
-    this.options.telemetry?.('uplink_loss_disclosure_completed', {
-      token: t.id,
-      covered: t.coveredLossSourceIds.map(lossSourceIdKey),
-    });
     this.outstanding = null;
     if (this.awaiting.length === 0) return null;
     const ids = this.awaiting;
@@ -162,8 +163,12 @@ export class UplinkLossDisclosureLedger {
       const key = lossSourceIdKey(id);
       if (token.coveredLossSourceIds.some((c) => lossSourceIdKey(c) === key)) continue;
       token.coveredLossSourceIds.push(id);
-      if (this.disclosedKeys.has(key)) continue;
-      this.disclosedKeys.add(key);
+      // Idempotency is per (session, source): every session's loss ledger
+      // restarts its ids at 1, so a bare source key would suppress the
+      // counter for every session after the first.
+      const sessionKey = `${token.sessionId}|${key}`;
+      if (this.disclosedKeys.has(sessionKey)) continue;
+      this.disclosedKeys.add(sessionKey);
       this.options.telemetry?.('uplink_loss_episode_disclosed', { source: key, token: token.id });
     }
   }

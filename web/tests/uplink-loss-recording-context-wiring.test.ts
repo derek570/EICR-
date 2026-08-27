@@ -115,7 +115,7 @@ describe('family (1) — every-open observation via onStateChange, not onReconne
   it("`onStateChange` → 'connected' calls the ledger's onSocketOpened; `onReconnected` does not", () => {
     const stateChange = between('onStateChange: (state) => {', 'onInterimTranscript: (text) => {');
     expect(stateChange).toContain("state === 'connected'");
-    expect(stateChange).toContain('lossLedger?.onSocketOpened');
+    expect(stateChange).toContain('emittingLedger?.onSocketOpened');
     const reconnected = between('onReconnected: () => {', 'onError: (err) => {');
     expect(reconnected).not.toContain('onSocketOpened');
   });

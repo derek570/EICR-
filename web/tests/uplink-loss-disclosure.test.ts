@@ -146,3 +146,27 @@ describe('UplinkLossDisclosureLedger — session scoping (2e g)', () => {
     expect(ledger.naturalCompletionCount).toBe(0);
   });
 });
+
+describe('UplinkLossDisclosureLedger — Codex cycle-1 regressions', () => {
+  it("the disclosed counter is per (session, source): session B's episode:1 counts again", () => {
+    const { ledger, disclosed } = harness();
+    ledger.request('A', [episode(1)]);
+    ledger.onPlaybackStarted(1);
+    ledger.onNaturalCompletion(1);
+    ledger.request('B', [episode(1)]);
+    expect(disclosed).toEqual(['episode:1', 'episode:1']);
+  });
+
+  it("E2 emits NO completion counter — that is PLAN-E-TERM's source-cardinal counter", () => {
+    const events: string[] = [];
+    const ledger = new UplinkLossDisclosureLedger({
+      onMint: () => {},
+      telemetry: (event) => events.push(event),
+    });
+    ledger.request('A', [episode(1)]);
+    ledger.onPlaybackStarted(1);
+    ledger.onNaturalCompletion(1);
+    expect(events).toEqual(['uplink_loss_episode_disclosed']);
+    expect(ledger.naturalCompletionCount).toBe(1);
+  });
+});

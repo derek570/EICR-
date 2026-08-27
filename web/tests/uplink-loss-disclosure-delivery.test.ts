@@ -335,3 +335,13 @@ describe('speakUplinkLossDisclosure — session teardown', () => {
     expect(fifo.disclosures()).toHaveLength(0);
   });
 });
+
+describe('uplink-loss disclosure delivery — Codex cycle-1 regressions', () => {
+  it('a release stamped with a session that is no longer active is rejected, never adopted by the current one', () => {
+    setTtsSessionId('sess-B');
+    requestUplinkLossDisclosure([episode(1)], 'sess-A');
+    expect(__uplinkLossDisclosureStateForTests().outstanding).toBeNull();
+    requestUplinkLossDisclosure([episode(1)], 'sess-B');
+    expect(__uplinkLossDisclosureStateForTests().outstanding?.sessionId).toBe('sess-B');
+  });
+});

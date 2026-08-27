@@ -44,7 +44,7 @@
 import type { ConnectionEpoch, EpochScope } from './uplink-scope-allocator';
 import type { CaptureSampleRange } from './tagged-pcm-segment';
 import type { UndispatchedLossReport } from './uplink-loss-report';
-import { classifyPcmEnergy } from './voiced-activity';
+import { MATERIAL_VOICED_DEBOUNCE_SAMPLES, classifyPcmEnergy } from './voiced-activity';
 
 export type LossSourceId =
   | { readonly kind: 'episode'; readonly id: number }
@@ -53,6 +53,17 @@ export type LossSourceId =
 
 export function lossSourceIdKey(id: LossSourceId): string {
   return `${id.kind}:${id.id}`;
+}
+
+function mergeSourceIds(base: LossSourceId[], extra: readonly LossSourceId[]): LossSourceId[] {
+  const seen = new Set(base.map(lossSourceIdKey));
+  for (const id of extra) {
+    const key = lossSourceIdKey(id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    base.push(id);
+  }
+  return base;
 }
 
 export type LedgerEntryVariant = 'undispatched' | 'dispatched' | 'encoderResidue' | 'staged';
@@ -101,7 +112,33 @@ interface PreOpenWindow {
 
 interface StagedSource {
   readonly sourceId: LossSourceId;
-  readonly entry: LedgerEntry;
+  /** One staged report = one source; contiguous per-segment reports of
+   *  the SAME discarded window coalesce into it (the staging owner may
+   *  report a queue segment by segment). */
+  entries: LedgerEntry[];
+}
+
+/** The plan's ONE materiality primitive: a source is MATERIAL iff its
+ *  unretired voiced entries contain a CONTIGUOUS (capture-domain) run of
+ *  at least `MATERIAL_VOICED_DEBOUNCE_SAMPLES`. Entries are voiced by
+ *  construction (silent frames never enter), so contiguity of entries IS
+ *  the debounced voiced segment. No duration is stored or spoken. */
+export function hasDebouncedVoicedRun(entries: readonly LedgerEntry[]): boolean {
+  if (entries.length === 0) return false;
+  const sorted = [...entries].sort((a, b) => a.captureSampleRange.start - b.captureSampleRange.start);
+  let runStart = sorted[0].captureSampleRange.start;
+  let runEnd = sorted[0].captureSampleRange.end;
+  for (let i = 1; i < sorted.length; i++) {
+    const r = sorted[i].captureSampleRange;
+    if (r.start <= runEnd) {
+      if (r.end > runEnd) runEnd = r.end;
+    } else {
+      if (runEnd - runStart >= MATERIAL_VOICED_DEBOUNCE_SAMPLES) return true;
+      runStart = r.start;
+      runEnd = r.end;
+    }
+  }
+  return runEnd - runStart >= MATERIAL_VOICED_DEBOUNCE_SAMPLES;
 }
 
 export class UplinkLossLedger {
@@ -195,6 +232,11 @@ export class UplinkLossLedger {
   recordUndispatchedLoss(report: UndispatchedLossReport): void {
     if (report.recordingSessionId !== this.recordingSessionId) return;
     if (this.closedEpochs.has(report.epoch) && this.ownedEpochs.has(report.epoch)) return;
+    // A LATE failed-send completion from a superseded socket (an epoch
+    // older than the one that has since opened) is stale: its loss was
+    // settled at that epoch's close. Close-time residue itself arrives
+    // while the closing epoch is still the live one, so it is accepted.
+    if (this.liveEpoch !== null && report.epoch < this.liveEpoch) return;
     if (!classifyPcmEnergy(report.samples)) return;
     this.attribute({
       variant: 'encoderResidue',
@@ -214,7 +256,6 @@ export class UplinkLossLedger {
     readonly voiced: boolean;
   }): LossSourceId | null {
     if (!input.voiced) return null;
-    const sourceId: LossSourceId = { kind: 'stagedLoss', id: this.nextStagedId++ };
     const entry: LedgerEntry = {
       variant: 'staged',
       recordingSessionId: this.recordingSessionId,
@@ -223,8 +264,21 @@ export class UplinkLossLedger {
       dispatchedSampleRange: null,
       dispatchEpoch: null,
     };
-    this.stagedSources.push({ sourceId, entry });
-    this.emitMaterialOnce(sourceId);
+    const sourceId: LossSourceId = { kind: 'stagedLoss', id: this.nextStagedId };
+    // Contiguous with the most recent still-pending staged source (the
+    // same discarded window reported segment by segment) → SAME source.
+    const last = this.stagedSources[this.stagedSources.length - 1];
+    if (last) {
+      const lastEnd = Math.max(...last.entries.map((e) => e.captureSampleRange.end));
+      if (input.captureSampleRange.start <= lastEnd) {
+        last.entries.push(entry);
+        this.emitMaterialIfDebounced(last.sourceId, last.entries);
+        return last.sourceId;
+      }
+    }
+    this.nextStagedId += 1;
+    this.stagedSources.push({ sourceId, entries: [entry] });
+    this.emitMaterialIfDebounced(sourceId, [entry]);
     return sourceId;
   }
 
@@ -268,11 +322,18 @@ export class UplinkLossLedger {
     epoch: ConnectionEpoch,
     input: { readonly owned: boolean; readonly captureActive: boolean }
   ): void {
+    // Already classified (an error+close pair, or `disconnect()` already
+    // marked this epoch owned and discarded): a LATE close callback must
+    // not discard again — a successor socket's pre-open window may have
+    // accrued in the meantime.
+    if (this.closedEpochs.has(epoch)) return;
     if (input.owned) {
       this.onOwnedDisconnect(epoch);
       return;
     }
-    if (this.closedEpochs.has(epoch)) return; // already classified (error + close pair)
+    // A late unowned close from a socket OLDER than the one that has
+    // since opened is stale — never an outage on the live one.
+    if (this.liveEpoch !== null && epoch < this.liveEpoch) return;
     this.closedEpochs.add(epoch);
     this.classifyUnownedFailure(epoch, input.captureActive);
   }
@@ -308,7 +369,7 @@ export class UplinkLossLedger {
     // the SAME episode; only a genuinely dispatched tail is carried.
     if (carried.length > 0) {
       this.openEpisode.entries.push(...carried);
-      this.emitMaterialOnce(this.openEpisode.sourceId);
+      this.emitMaterialIfDebounced(this.openEpisode.sourceId, this.openEpisode.entries);
     }
   }
 
@@ -317,6 +378,9 @@ export class UplinkLossLedger {
    *  materiality on what is still UNRETIRED, and (after holds) hands the
    *  material ids to the delivery ledger. */
   onSocketOpened(epoch: ConnectionEpoch): void {
+    // Idempotent per epoch: a duplicate 'connected' observation for a
+    // socket already counted as opened must not re-run the moment.
+    if (this.openedEpochs.has(epoch)) return;
     this.liveEpoch = epoch;
     this.openedEpochs.add(epoch);
     const material: LossSourceId[] = [];
@@ -325,7 +389,7 @@ export class UplinkLossLedger {
       const episode = this.openEpisode;
       this.openEpisode = null;
       const key = lossSourceIdKey(episode.sourceId);
-      if (episode.entries.length > 0) {
+      if (hasDebouncedVoicedRun(episode.entries)) {
         material.push(episode.sourceId);
       } else if (this.materialEmitted.has(key) && !this.retiredImmaterialEmitted.has(key)) {
         this.retiredImmaterialEmitted.add(key);
@@ -333,14 +397,18 @@ export class UplinkLossLedger {
       }
     }
     if (this.preOpenWindow) {
-      if (this.preOpenWindow.entries.length > 0) material.push(this.preOpenWindow.sourceId);
+      if (hasDebouncedVoicedRun(this.preOpenWindow.entries)) {
+        material.push(this.preOpenWindow.sourceId);
+      }
       this.preOpenWindow = null;
     }
     for (const staged of this.stagedSources.splice(0)) {
-      material.push(staged.sourceId);
+      if (hasDebouncedVoicedRun(staged.entries)) material.push(staged.sourceId);
     }
     if (material.length === 0) return;
-    this.pendingRelease = material;
+    // A moment already PARKED behind a hold is JOINED, never overwritten:
+    // two material opens under one outstanding hold release together.
+    this.pendingRelease = mergeSourceIds(this.pendingRelease ?? [], material);
     this.releaseIfUnheld();
   }
 
@@ -367,12 +435,15 @@ export class UplinkLossLedger {
     // reported from the `awaitOpen` continuation AFTER `onopen` fired)
     // lands BEFORE the release — anything that accrued while parked
     // joins this same moment rather than waiting for the next open.
+    const late: LossSourceId[] = [];
     if (this.preOpenWindow) {
-      if (this.preOpenWindow.entries.length > 0) ids.push(this.preOpenWindow.sourceId);
+      if (hasDebouncedVoicedRun(this.preOpenWindow.entries)) late.push(this.preOpenWindow.sourceId);
       this.preOpenWindow = null;
     }
-    for (const staged of this.stagedSources.splice(0)) ids.push(staged.sourceId);
-    this.onDisclosureReady(ids);
+    for (const staged of this.stagedSources.splice(0)) {
+      if (hasDebouncedVoicedRun(staged.entries)) late.push(staged.sourceId);
+    }
+    this.onDisclosureReady(mergeSourceIds(ids, late));
   }
 
   // ── Internals ─────────────────────────────────────────────────────────
@@ -380,7 +451,7 @@ export class UplinkLossLedger {
   private attribute(entry: LedgerEntry): void {
     if (this.openEpisode) {
       this.openEpisode.entries.push(entry);
-      this.emitMaterialOnce(this.openEpisode.sourceId);
+      this.emitMaterialIfDebounced(this.openEpisode.sourceId, this.openEpisode.entries);
       return;
     }
     // Epoch-scoped loss on a socket that HAS opened, with no episode open
@@ -407,10 +478,13 @@ export class UplinkLossLedger {
       };
     }
     this.preOpenWindow.entries.push(entry);
-    this.emitMaterialOnce(this.preOpenWindow.sourceId);
+    this.emitMaterialIfDebounced(this.preOpenWindow.sourceId, this.preOpenWindow.entries);
   }
 
-  private emitMaterialOnce(sourceId: LossSourceId): void {
+  /** `uplink_loss_episode_material` — ONCE per source, at the moment its
+   *  unretired evidence first passes the debounced-voiced-run test. */
+  private emitMaterialIfDebounced(sourceId: LossSourceId, entries: readonly LedgerEntry[]): void {
+    if (!hasDebouncedVoicedRun(entries)) return;
     const key = lossSourceIdKey(sourceId);
     if (this.materialEmitted.has(key)) return;
     this.materialEmitted.add(key);
@@ -439,7 +513,7 @@ export class UplinkLossLedger {
     let n = this.openEpisode?.entries.length ?? 0;
     for (const list of this.dispatchedByEpoch.values()) n += list.length;
     n += this.preOpenWindow?.entries.length ?? 0;
-    n += this.stagedSources.length;
+    for (const staged of this.stagedSources) n += staged.entries.length;
     return n;
   }
 

@@ -49,7 +49,9 @@ class FakeWS {
   }
 }
 
-function voiced(len = 1280): Float32Array {
+// 3 exact 80ms Flux frames (240ms) — one `voiced()` call is a debounced
+// (≥200ms) contiguous voiced run and dispatches as exactly 3 ledger entries.
+function voiced(len = 3840): Float32Array {
   const f = new Float32Array(len);
   for (let i = 0; i < len; i++) f[i] = i % 2 === 0 ? 0.3 : -0.3;
   return f;
@@ -103,7 +105,7 @@ describe('DeepgramService — ownership + captureActive (2b)', () => {
     const h = harness();
     h.ws().open();
     h.service.sendSamples(voiced());
-    expect(h.ledger.unresolvedEntryCount).toBe(1);
+    expect(h.ledger.unresolvedEntryCount).toBe(3);
     h.service.disconnect();
     expect(h.ledger.isEpisodeOpen).toBe(false);
     expect(h.ledger.unresolvedEntryCount).toBe(0);
@@ -198,8 +200,8 @@ describe('DeepgramService — entry paths + watermark', () => {
   it('Flux `audio_window_end` (seconds) retires same-epoch dispatched ranges — a fully-transcribed connection that drops discloses NOTHING', () => {
     const h = harness();
     h.ws().open();
-    h.service.sendSamples(voiced()); // 1280 samples dispatched
-    h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'zs point five', audio_window_end: 0.08 });
+    h.service.sendSamples(voiced()); // 3840 samples dispatched (3 frames)
+    h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'zs point five', audio_window_end: 0.24 });
     h.ws().close(1006);
     expect(h.ledger.isEpisodeOpen).toBe(true);
     expect(h.ledger.unresolvedEntryCount).toBe(0);
@@ -209,10 +211,10 @@ describe('DeepgramService — entry paths + watermark', () => {
     const h = harness();
     h.ws().open();
     h.service.sendSamples(voiced());
-    h.service.sendSamples(voiced()); // second frame not yet processed
-    h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'zs', audio_window_end: 0.08 });
+    h.service.sendSamples(voiced()); // second run (3 frames) not yet processed
+    h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'zs', audio_window_end: 0.24 });
     h.ws().close(1006);
-    expect(h.ledger.unresolvedEntryCount).toBe(1);
+    expect(h.ledger.unresolvedEntryCount).toBe(3);
   });
 
   it('a malformed audio_window_end never retires anything', () => {
@@ -221,7 +223,7 @@ describe('DeepgramService — entry paths + watermark', () => {
     h.service.sendSamples(voiced());
     h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'x', audio_window_end: -1 });
     h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'x', audio_window_end: 'NaN' });
-    expect(h.ledger.unresolvedEntryCount).toBe(1);
+    expect(h.ledger.unresolvedEntryCount).toBe(3);
   });
 
   it('nova-3 records NO dispatched entries (no pinned retirement signal) — a reconnect after speech never false-discloses', () => {
@@ -238,7 +240,7 @@ describe('DeepgramService — entry paths + watermark', () => {
     h.service.sendSamples(voiced());
     h.ws().close(1006);
     expect(h.ledger.isEpisodeOpen).toBe(true);
-    expect(h.ledger.unresolvedEntryCount).toBe(1);
+    expect(h.ledger.unresolvedEntryCount).toBe(3);
   });
 
   it('PLAN-E1\'s onUndispatchedLoss seam is bound to the ledger by default (variant d)', () => {
@@ -258,18 +260,53 @@ describe('DeepgramService — entry paths + watermark', () => {
       await Promise.resolve();
       await Promise.resolve();
       h.ws().open();
-      h.service.sendSamples(voiced()); // abs [0,1280) epoch 1
-      h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'a', audio_window_end: 0.08 });
+      h.service.sendSamples(voiced()); // abs [0,3840) epoch 1
+      h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'a', audio_window_end: 0.24 });
       h.ws().close(1006);
       await vi.advanceTimersByTimeAsync(1000);
       await Promise.resolve();
       h.ws().open();
-      h.service.sendSamples(voiced()); // abs [1280,2560) epoch 2
-      // 0.04s on the NEW connection must NOT retire the new frame.
-      h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'b', audio_window_end: 0.04 });
+      h.service.sendSamples(voiced()); // abs [3840,7680) epoch 2
+      // 0.16s on the NEW connection retires only its first two frames —
+      // the origin is per-epoch, so nothing of epoch 1's range is touched.
+      h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'b', audio_window_end: 0.16 });
       expect(h.ledger.unresolvedEntryCount).toBe(1);
-      h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'b', audio_window_end: 0.08 });
+      h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'b', audio_window_end: 0.24 });
       expect(h.ledger.unresolvedEntryCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('DeepgramService — Codex cycle-1 regressions', () => {
+  it('an UNOWNED 1000 close charges the partial Flux tail as episode evidence (ownership, not the close code)', () => {
+    const h = harness();
+    h.ws().open();
+    h.service.sendSamples(voiced(640)); // half a frame — sits in the accumulator
+    h.ws().close(1000); // unsolicited normal close: no reconnect today, still an outage
+    expect(h.ledger.isEpisodeOpen).toBe(true);
+    expect(h.ledger.unresolvedEntryCount).toBe(1);
+  });
+
+  it('pause → the owned close → resume on the same instance: the new pre-open window is disclosed at the reopen, and the owned close never opens an episode', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      h.ws().open();
+      h.service.sendSamples(voiced());
+      h.service.disconnect(); // owned: ledger discards, marks epoch 1 closed
+      expect(h.ledger.unresolvedEntryCount).toBe(0);
+      await vi.advanceTimersByTimeAsync(300); // the deferred ws.close(1000)
+      h.sockets[0].close(1000); // the owned close callback
+      expect(h.ledger.isEpisodeOpen).toBe(false);
+      h.service.connect('k', 16000); // resume on the same instance
+      expect(h.sockets).toHaveLength(2);
+      h.service.sendSamples(voiced()); // captured before the new socket opens
+      expect(h.ledger.pendingPreOpenWindowCount).toBe(1);
+      h.ws().open();
+      expect(h.disclosed).toHaveLength(1);
+      expect(h.disclosed[0][0].kind).toBe('preOpenWindow');
     } finally {
       vi.useRealTimers();
     }

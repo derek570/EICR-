@@ -31,11 +31,21 @@ import type { EpochScope } from './uplink-scope-allocator';
 import type { CaptureSampleRange, CapturedPcmSegment } from './tagged-pcm-segment';
 
 export const VAD_SAMPLE_RATE_HZ = 16000;
-/** RMS (int16 magnitude) above which a frame is classified voiced. Tuned
- *  generously low so genuine speech at typical mic gain is never
- *  misclassified as silence — false negatives here would silently exclude
- *  real dictation from materiality/parking accounting. */
-export const VAD_ENERGY_RMS_THRESHOLD = 350;
+/** RMS (int16 magnitude) above which a frame is classified voiced. PINNED
+ *  to iOS's `VADConstants.energyRmsThreshold` (0.015 in the -1...1 Float
+ *  domain → 0.015 × 32768 ≈ 492 here) so identical PCM classifies the same
+ *  on both clients — the E1→E2 materiality primitive must not diverge
+ *  (Codex E2 review cycle 1: web was 350 ≈ 0.0107). */
+export const VAD_ENERGY_RMS_THRESHOLD = Math.round(0.015 * 32768); // 492
+/** PLAN-E2 materiality debounce (the plan's ONE pinned constant, ~150-300
+ *  ms): a loss source is material only when its unretired voiced entries
+ *  form a CONTIGUOUS run at least this long. Sub-2s complete readings pass;
+ *  a single impulse/click does not. Same value as iOS
+ *  `VADConstants.materialVoicedDebounceMs`. */
+export const MATERIAL_VOICED_DEBOUNCE_MS = 200;
+export const MATERIAL_VOICED_DEBOUNCE_SAMPLES = Math.round(
+  (MATERIAL_VOICED_DEBOUNCE_MS / 1000) * VAD_SAMPLE_RATE_HZ
+);
 /** Debounce: local-speaking flips to silence only after this much
  *  continuous sub-threshold audio, so a brief pause mid-sentence doesn't
  *  toggle the parking primitive. */

@@ -298,6 +298,9 @@ export class DeepgramService {
   // origin + converted-seconds; the ledger compares ONLY same-epoch
   // dispatched ranges against it.
   private epochDispatchOrigin = 0;
+  /** PLAN-E2 — set when an Opus packet's `ws.send` threw; consumed by the
+   *  next input drain (which then charges instead of recording dispatch). */
+  private opusPacketSendFailedSinceDrain = false;
   /** PLAN-E2 — "is the platform audio tap still delivering samples into
    *  this sender?" A CLASSIFICATION signal read synchronously at close
    *  time by the ledger; NEVER a send gate (the tap owner pushes `false`
@@ -654,6 +657,11 @@ export class DeepgramService {
     // `WebSocketFactory` doc comment for the test seam.
     const ws = this.wsFactory(url, ['bearer', apiKey]);
     ws.binaryType = 'arraybuffer';
+    // PLAN-E2 (Codex cycle-1 BLOCKER fix) — the epoch THIS socket was
+    // minted under, bound into its error/close callbacks. A late callback
+    // from a superseded socket must classify ITS OWN epoch (the ledger
+    // ignores a stale one) and must never clear or tear down a successor.
+    const socketEpoch = this.currentEpoch;
 
     ws.onopen = () => {
       const wasReconnect = this.hasEverOpened;
@@ -680,17 +688,20 @@ export class DeepgramService {
     ws.onerror = () => {
       pipelineLog('deepgram_ws_error', {
         willDeferToClose: this.shouldReconnect,
+        stale: this.ws !== ws,
       });
       // PLAN-E2 — one of the episode's entry paths (transport failure).
       // Idempotent with the `onclose` classification below; the ledger
       // ignores a signal for a superseded epoch. Changes NO reconnect
       // decision — the existing early-return/emitError logic follows.
-      if (this.currentEpoch !== null) {
-        this.sessionContext.lossLedger?.onSocketFailure(this.currentEpoch, {
-          owned: this.currentEpoch === this.ownedCloseEpoch,
+      if (socketEpoch !== null) {
+        this.sessionContext.lossLedger?.onSocketFailure(socketEpoch, {
+          owned: socketEpoch === this.ownedCloseEpoch,
           captureActive: this.captureActive,
         });
       }
+      // A superseded socket's late error never touches the live one.
+      if (this.ws !== null && this.ws !== ws) return;
       // In fetcher mode, defer to onclose — it will schedule a
       // reconnect. Surfacing an error event here would double-fire
       // through the `errorEmitted` guard and, worse, flash an error
@@ -701,6 +712,21 @@ export class DeepgramService {
     };
 
     ws.onclose = (event) => {
+      // PLAN-E2 (Codex cycle-1 BLOCKER fix) — a LATE close from a
+      // superseded socket (a new one already opened on this instance):
+      // classify its own epoch for the ledger (stale → ignored there) and
+      // return WITHOUT touching the live socket's state, epoch, encoder,
+      // or reconnect decision.
+      if (this.ws !== null && this.ws !== ws) {
+        pipelineLog('deepgram_ws_close_stale', { code: event.code, socketEpoch });
+        if (socketEpoch !== null) {
+          this.sessionContext.lossLedger?.onSocketClosed(socketEpoch, {
+            owned: socketEpoch === this.ownedCloseEpoch,
+            captureActive: this.captureActive,
+          });
+        }
+        return;
+      }
       this.stopKeepAlive();
       this.ws = null;
       // Codex review r1 BLOCKER: `currentEpoch` was never cleared on
@@ -712,9 +738,10 @@ export class DeepgramService {
       // restamp. Clearing it here makes `currentUplinkScope()` correctly
       // fall back to reserving a fresh preOpen capture attempt for
       // anything captured before `_connect()`'s next mint.
-      const dyingEpoch = this.currentEpoch;
-      this.currentEpoch = null;
+      const dyingEpoch = socketEpoch;
+      if (this.currentEpoch === socketEpoch) this.currentEpoch = null;
       const reconnectable = event.code !== 1000 && event.code !== 1005;
+      const ownedClose = dyingEpoch !== null && dyingEpoch === this.ownedCloseEpoch;
       // PLAN-E2 — close classification by LOCAL OWNERSHIP, never by code:
       // an unsolicited 1000/1005 from a middlebox or a vendor rotation is
       // an outage (episode opens, counted) even though today's gate below
@@ -737,7 +764,12 @@ export class DeepgramService {
       // pending here either way. Uses the epoch snapshotted BEFORE the
       // clear above — these methods no longer read `this.currentEpoch`
       // themselves (it would always see the just-cleared `null`).
-      if (reconnectable && dyingEpoch !== null) {
+      // PLAN-E2 (Codex cycle-1 BLOCKER fix) — OWNERSHIP, not the close
+      // code, decides: an unsolicited 1000/1005 is an outage whose partial
+      // Flux batch / encoder residue is real evidence for the episode the
+      // classifier just opened. An owned close's residue was flushed by
+      // `disconnect()` and is discarded by the ledger regardless.
+      if (dyingEpoch !== null && !ownedClose) {
         this.chargeUndispatchedEncoderLoss(dyingEpoch);
         this.chargeFluxTailLoss(dyingEpoch);
       }
@@ -1286,7 +1318,11 @@ export class DeepgramService {
       // WS backpressure — drop this packet (same accepted-loss bar as
       // the linear16 path); this is NOT an `onUndispatchedLoss` event —
       // that seam is for an unexpected TEARDOWN with residue still
-      // queued, not an ordinary per-send failure.
+      // queued, not an ordinary per-send failure. PLAN-E2 (Codex cycle-1
+      // BLOCKER fix): it IS unresolved audio — the input that drains next
+      // is charged as undispatched rather than recorded as dispatched, so
+      // a later watermark can never retire audio whose packet never left.
+      this.opusPacketSendFailedSinceDrain = true;
     }
   }
 
@@ -1303,6 +1339,14 @@ export class DeepgramService {
     if (!segment) return;
     const dispatchedStart = this.dispatchedSampleOffset;
     this.dispatchedSampleOffset += segment.samples.length;
+    if (this.opusPacketSendFailedSinceDrain) {
+      // ≥1 packet of this input never left the client: conservative
+      // charge of the whole source segment (the packet→sample mapping is
+      // not determinable for a short tail — PLAN-E1B2's probe finding).
+      this.opusPacketSendFailedSinceDrain = false;
+      if (segment.origin === 'captured') this.chargeDroppedCapture(segment);
+      return;
+    }
     // PLAN-E2 test 2k — the SAME source-sample dispatched range regardless
     // of codec/packetisation, so retirement is codec-independent.
     this.recordDispatchedCapture(segment, dispatchedStart);

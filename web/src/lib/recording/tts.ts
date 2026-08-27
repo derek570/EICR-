@@ -1427,6 +1427,7 @@ let uplinkLossLocalSpeakingGate: (() => boolean) | null = null;
 /** A token released by the ledger but not yet enqueued — waiting for
  *  local silence or an interruption to end. */
 let parkedUplinkLossToken: DisclosureToken | null = null;
+const UPLINK_LOSS_TTS_UNAVAILABLE_RETRY_MS = 2000;
 /** Direct prompts that arrived while a disclosure was PLAYING. */
 let deferredDirectPrompts: Array<{ text: string; options?: SpeakOptions }> = [];
 /** Bumped by session teardown / test reset so a scheduled re-park
@@ -1449,9 +1450,24 @@ export function setUplinkLossDisclosureLocalSpeakingGate(gate: (() => boolean) |
 /** The loss ledger's disclosure moment: mint-or-join for `sourceIds` in the
  *  CURRENT TTS session. Emits `uplink_loss_episode_disclosed` per newly
  *  associated source. */
-export function requestUplinkLossDisclosure(sourceIds: LossSourceId[]): void {
+export function requestUplinkLossDisclosure(
+  sourceIds: LossSourceId[],
+  /** The ORIGINATING recording session (the loss ledger's own id). A
+   *  release landing after that session ended — a hold released late, a
+   *  parked moment surfacing after stop/start — is rejected here rather
+   *  than adopted by whatever session is now active (Codex cycle-1). */
+  expectedSessionId?: string
+): void {
   if (sourceIds.length === 0) return;
   const sessionId = getActiveSessionId() ?? '';
+  if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
+    clientDiagnostic('tts_uplink_loss_disclosure_stale_session', {
+      expected: expectedSessionId,
+      active: sessionId,
+      sources: sourceIds.length,
+    });
+    return;
+  }
   const outcome = uplinkLossDisclosureLedger.request(sessionId, sourceIds);
   clientDiagnostic('tts_uplink_loss_disclosure_requested', {
     action: outcome.action,
@@ -1474,7 +1490,19 @@ export function speakUplinkLossDisclosure(
   if (uplinkLossDisclosureLedger.outstandingToken?.id !== token.id) return; // stale
   if (token.sessionId !== (getActiveSessionId() ?? '')) return; // earlier session
   if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) {
+    // TTS temporarily unavailable: NOT a terminal (the token stays
+    // outstanding by contract). Park it and retry on a bounded timer so
+    // the session's single slot is never held by a clip that was never
+    // queued (Codex cycle-1 BLOCKER). Local silence also replays a park.
+    parkedUplinkLossToken = token;
+    const generation = uplinkLossGeneration;
     clientDiagnostic('tts_uplink_loss_disclosure_unavailable', { token: token.id });
+    setTimeout(() => {
+      if (generation !== uplinkLossGeneration) return;
+      if (parkedUplinkLossToken !== token) return;
+      parkedUplinkLossToken = null;
+      speakUplinkLossDisclosure(token, token.coveredLossSourceIds);
+    }, UPLINK_LOSS_TTS_UNAVAILABLE_RETRY_MS);
     return;
   }
   if (uplinkLossLocalSpeakingGate?.()) {

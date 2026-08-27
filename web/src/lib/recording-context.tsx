@@ -2282,6 +2282,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // B1 seam — the harness injects a fake service (fed from recorded
       // Flux frame timelines); production always takes the `new
       // DeepgramService` branch below.
+      // PLAN-E2 (Codex cycle-1 BLOCKER fix) — the service these callbacks
+      // belong to, assigned right after construction. A deliberately
+      // disconnected service can still fire `onopen` inside its 300 ms
+      // close grace; if pause/resume or stop/start has since installed a
+      // replacement, that stale 'connected' must not mark the REPLACEMENT's
+      // not-yet-open epoch as opened (releasing its evidence into a dead
+      // transport window).
+      let emittingService: DeepgramServiceLike | null = null;
+      let emittingLedger: UplinkLossLedger | null = null;
       const deepgramCallbacks: DeepgramCallbacks = {
         onStateChange: (state) => {
           setDeepgramState(state);
@@ -2313,9 +2322,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // and any registered hold). Not an open-HANDLER edit — this is
           // the existing observation seam.
           if (state === 'connected') {
-            const epoch = deepgramRef.current?.liveEpoch ?? null;
-            if (epoch !== null) {
-              sessionUplinkContextRef.current?.lossLedger?.onSocketOpened(epoch);
+            if (emittingService !== null && emittingService === deepgramRef.current) {
+              const epoch = emittingService.liveEpoch;
+              if (epoch !== null) {
+                emittingLedger?.onSocketOpened(epoch);
+              }
             }
           }
         },
@@ -2645,6 +2656,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // instance; auto-reconnect reuses it (latest-wins via the two
       // setter pushes below).
       service.captureActive = captureActiveRef.current;
+      emittingService = service;
+      emittingLedger = sessionUplinkContextRef.current?.lossLedger ?? null;
       // Bind the ref BEFORE starting the async connect so a concurrent
       // stop()/teardownDeepgram can call service.disconnect() and abort
       // the in-flight key fetch via `shouldReconnect=false`.
@@ -3917,7 +3930,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             capturedAt
           );
           ringBufferRef.current?.writeTagged(segment);
-          deepgramRef.current?.sendTaggedAudio(segment);
+          const sender = deepgramRef.current;
+          if (sender) {
+            sender.sendTaggedAudio(segment);
+          } else if (statusRef.current !== 'sleeping') {
+            // PLAN-E2 (Codex cycle-1 BLOCKER fix) — capture accepted from
+            // the tap while NO sender exists yet (initial start and manual
+            // resume both start the mic before the service is
+            // constructed) is the capture-before-open window: recorded
+            // as undispatched loss here, since no `sendTaggedAudio`
+            // not-connected return can ever see it. Auto-sleep's ring
+            // ownership (replayed on wake) is the explicit negative.
+            ctx.lossLedger?.recordDropped({
+              epochScope: segment.epochScope,
+              captureSampleRange: segment.captureSampleRange,
+              samples: segment.samples,
+            });
+          }
         } else {
           // Should not happen post-start() — sessionUplinkContextRef is
           // populated before beginMicPipeline/beginMicOnly ever run.
@@ -4390,7 +4419,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // ledger (mint-or-join); the parking gate reads the SAME session VAD.
     const lossLedger = new UplinkLossLedger({
       recordingSessionId: sessionId,
-      onDisclosureReady: (sourceIds) => requestUplinkLossDisclosure(sourceIds),
+      onDisclosureReady: (sourceIds) => requestUplinkLossDisclosure(sourceIds, sessionId),
       telemetry: (event, payload) => clientDiagnostic(event, payload),
     });
     setUplinkLossDisclosureLocalSpeakingGate(() => sessionVad.isLocalSpeaking);
