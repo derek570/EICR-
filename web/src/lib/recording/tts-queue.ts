@@ -119,8 +119,18 @@ export interface ConfirmationQueueItem {
    *  rather than silently drop one. */
   protected?: boolean;
   play: ConfirmationPlayFn;
-  /** Optional per-item natural-completion hook (diagnostic; not correctness). */
+  /** Optional per-item NATURAL-completion hook. Fires ONLY when the head
+   *  ended without failure; never after a post-start failure (see
+   *  `onPlaybackFailed`). */
   onEnd?: () => void;
+  /** PLAN-E2 — fires when a head that HAD started playback terminates with
+   *  a failure (`onError` after `onStart`). MUTUALLY EXCLUSIVE with `onEnd`:
+   *  a started failure invokes ONLY this; `onEnd` fires ONLY on natural
+   *  completion. Before this hook a post-start `onError` was
+   *  indistinguishable from natural completion and would have RETIRED a
+   *  disclosure the inspector never finished hearing. Only the disclosure
+   *  item supplies it; every other item is unaffected. */
+  onPlaybackFailed?: () => void;
 }
 
 interface QueueHead extends ConfirmationQueueItem {
@@ -169,7 +179,7 @@ let onPlaybackStarted: ((dedupeKey: string) => void) | null = null;
  * and suppresses every later legitimate arm. Same lifecycle as
  * `onDiscarded`/`onPlaybackStarted`: null until registered, cleared by
  * `reset()`. */
-let onStartedHeadTornDown: ((dedupeKey: string) => void) | null = null;
+let onStartedHeadTornDown: ((dedupeKey: string, reason: DiscardReason) => void) | null = null;
 
 export function setShouldDeferPlayback(fn: () => boolean): void {
   shouldDeferPlayback = fn;
@@ -183,7 +193,12 @@ export function setOnPlaybackStarted(fn: (dedupeKey: string) => void): void {
   onPlaybackStarted = fn;
 }
 
-export function setOnStartedHeadTornDown(fn: (dedupeKey: string) => void): void {
+/** PLAN-E2 widened the hook with the teardown `reason` (additive — existing
+ *  one-arg consumers ignore it): a disclosure token torn down by a session
+ *  `reset()` is ABANDONED, while one torn down by `preempt`/`purge` re-parks. */
+export function setOnStartedHeadTornDown(
+  fn: (dedupeKey: string, reason: DiscardReason) => void
+): void {
   onStartedHeadTornDown = fn;
 }
 
@@ -307,7 +322,8 @@ function pumpIfIdle(): void {
 function completeHead(id: number, failed = false): void {
   if (id !== currentHeadId) return;
   const finished = head;
-  if (failed && !startedPlayback && finished) {
+  const hadStarted = startedPlayback;
+  if (failed && !hadStarted && finished) {
     fireDiscarded(finished, 'playback_error');
   }
   head = null;
@@ -316,9 +332,16 @@ function completeHead(id: number, failed = false): void {
   startedPlayback = false;
   currentCanceller = null;
   deferredHead = null;
-  clientDiagnostic('tts_queue_complete', { id });
+  clientDiagnostic('tts_queue_complete', { id, failed, hadStarted });
   try {
-    finished?.onEnd?.();
+    // PLAN-E2 — a STARTED head that failed is NOT a natural completion:
+    // route it to `onPlaybackFailed` only, never `onEnd`. A never-started
+    // failure already fired `onDiscarded` above and gets neither.
+    if (failed && hadStarted) {
+      finished?.onPlaybackFailed?.();
+    } else if (!failed) {
+      finished?.onEnd?.();
+    }
   } catch {
     /* swallow */
   }
@@ -366,7 +389,7 @@ function tearDownCurrentHeadManually(reason: DiscardReason): { discarded: boolea
     // this case (it only fires for a never-started item). See
     // `onStartedHeadTornDown`'s docblock.
     try {
-      onStartedHeadTornDown(head.dedupeKey);
+      onStartedHeadTornDown(head.dedupeKey, reason);
     } catch {
       /* swallow — a caller's hook must never break queue teardown */
     }
