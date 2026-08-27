@@ -884,6 +884,7 @@
     }
   ],
   "spoken_distinctness_union": [
-    "Transcription is running slowly — confirmations may take a few seconds."
+    "Transcription is running slowly — confirmations may take a few seconds.",
+    "Some recent audio may not have been transcribed. Check your recent readings and repeat only anything that's missing."
   ]
 }
