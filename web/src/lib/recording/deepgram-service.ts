@@ -48,8 +48,10 @@ import {
   chargeGracefulResidueTelemetry,
   type UndispatchedLossHandler,
 } from './uplink-loss-report';
-import type { VoicedActivityDetector } from './voiced-activity';
+import { classifyPcmEnergy, type VoicedActivityDetector } from './voiced-activity';
 import { tagCapturedFloat32 } from './capture-tagging';
+import type { UplinkLossLedger } from './uplink-loss-ledger';
+import { audioWindowEndToSampleOffset } from './sample-offset';
 
 /**
  * STT model selector. `nova3` is the legacy `/v1/listen` path (still the
@@ -197,6 +199,12 @@ export interface DeepgramSessionContext {
    *  moment. `null`/absent for the ~20 pre-existing direct unit tests
    *  that construct a default context and don't care about materiality. */
   readonly vad?: VoicedActivityDetector;
+  /** PLAN-E2 — the session-owned unresolved-voiced-audio ledger. Fed by
+   *  this service's single sender (dispatched ranges + dropped frames),
+   *  the close/error classifier, and the Flux `audio_window_end`
+   *  watermark. Absent for the pre-existing direct unit tests (no
+   *  accounting → no disclosure). */
+  readonly lossLedger?: UplinkLossLedger;
 }
 
 export interface DeepgramServiceOptions {
@@ -275,6 +283,29 @@ export class DeepgramService {
   // codec decided when its URL was built (nova-3 always forces linear16
   // regardless of the latch — see `resolveUplinkURLConfig`).
   private currentEpoch: ConnectionEpoch | null = null;
+  // PLAN-E2 — close OWNERSHIP marker. Set ONLY inside `disconnect()` (the
+  // web client's single `ws.close()` site, so every caller — all ten
+  // `teardownDeepgram()` sites plus `disconnectDeepgramForPause()` — is
+  // owned by construction) to the epoch being deliberately closed. The
+  // `ws.onclose` classifier compares the dying epoch against it: equal →
+  // owned (no episode, entries discarded); otherwise → an outage.
+  // Generation-scoped so a late close callback from a superseded socket
+  // can never be mistaken for an unsolicited close on the current one.
+  private ownedCloseEpoch: ConnectionEpoch | null = null;
+  // PLAN-E2 — the ABSOLUTE `dispatchedSampleOffset` at the instant this
+  // socket's epoch was minted. Deepgram's `audio_window_end` restarts from
+  // 0 per connection, so the watermark's absolute position is
+  // origin + converted-seconds; the ledger compares ONLY same-epoch
+  // dispatched ranges against it.
+  private epochDispatchOrigin = 0;
+  /** PLAN-E2 — "is the platform audio tap still delivering samples into
+   *  this sender?" A CLASSIFICATION signal read synchronously at close
+   *  time by the ledger; NEVER a send gate (the tap owner pushes `false`
+   *  only AFTER its residual flush). Session-scoped and latest-wins:
+   *  copied in at construction from the provider-owned ref and pushed at
+   *  every tap transition, so a reconnect (no tap transition) on this
+   *  reused instance still reads the live value. */
+  captureActive = false;
   private resolvedSenderCodec: UplinkCodec = 'linear16';
   private keepalivePolicy: UplinkKeepalivePolicy = 'disabled';
   // The generation-bound Opus encoder for the CURRENT socket (null when
@@ -401,7 +432,13 @@ export class DeepgramService {
       captureClock: createCaptureClock(),
     };
     this.opusEncoderFactory = options.opusEncoderFactory ?? realOpusEncoderFactory;
-    this.onUndispatchedLoss = options.onUndispatchedLoss ?? defaultUndispatchedLossHandler;
+    // PLAN-E2 binds PLAN-E1's `onUndispatchedLoss` seam to the session
+    // ledger (entry variant d) whenever the session owner supplied one; an
+    // explicit handler option still wins (tests of the seam itself).
+    const ledger = this.sessionContext.lossLedger;
+    this.onUndispatchedLoss =
+      options.onUndispatchedLoss ??
+      (ledger ? (report) => ledger.recordUndispatchedLoss(report) : defaultUndispatchedLossHandler);
   }
 
   /** The STT model this instance was constructed with (diagnostics/tests). */
@@ -560,6 +597,10 @@ export class DeepgramService {
     const captureAttemptId =
       allocator.currentCaptureAttemptId() ?? allocator.reserveCaptureAttemptIfNeeded();
     this.currentEpoch = allocator.mintEpoch(captureAttemptId);
+    // PLAN-E2 — snapshot the watermark origin for this epoch. No send can
+    // land on this socket before `onopen`, and `onopen` is frozen, so the
+    // offset here IS the offset at open.
+    this.epochDispatchOrigin = this.dispatchedSampleOffset;
     this.resetOpusEncoderForNewGeneration();
 
     let config = resolveUplinkURLConfig({
@@ -640,6 +681,16 @@ export class DeepgramService {
       pipelineLog('deepgram_ws_error', {
         willDeferToClose: this.shouldReconnect,
       });
+      // PLAN-E2 — one of the episode's entry paths (transport failure).
+      // Idempotent with the `onclose` classification below; the ledger
+      // ignores a signal for a superseded epoch. Changes NO reconnect
+      // decision — the existing early-return/emitError logic follows.
+      if (this.currentEpoch !== null) {
+        this.sessionContext.lossLedger?.onSocketFailure(this.currentEpoch, {
+          owned: this.currentEpoch === this.ownedCloseEpoch,
+          captureActive: this.captureActive,
+        });
+      }
       // In fetcher mode, defer to onclose — it will schedule a
       // reconnect. Surfacing an error event here would double-fire
       // through the `errorEmitted` guard and, worse, flash an error
@@ -664,6 +715,18 @@ export class DeepgramService {
       const dyingEpoch = this.currentEpoch;
       this.currentEpoch = null;
       const reconnectable = event.code !== 1000 && event.code !== 1005;
+      // PLAN-E2 — close classification by LOCAL OWNERSHIP, never by code:
+      // an unsolicited 1000/1005 from a middlebox or a vendor rotation is
+      // an outage (episode opens, counted) even though today's gate below
+      // — unchanged, Carve A — does not reconnect on it. Runs BEFORE the
+      // loss charges so a residue report attributes to the episode this
+      // close just opened. Reads `captureActive` synchronously.
+      if (dyingEpoch !== null) {
+        this.sessionContext.lossLedger?.onSocketClosed(dyingEpoch, {
+          owned: dyingEpoch === this.ownedCloseEpoch,
+          captureActive: this.captureActive,
+        });
+      }
       // An UNEXPECTED teardown (reconnectable close) charges any samples
       // still sitting inside the encoder pipeline AND any partial Flux
       // sub-frame tail as confirmed local loss BEFORE the reset — a
@@ -802,7 +865,10 @@ export class DeepgramService {
       capturedAt
     );
 
-    if (!this.ws || this.state !== 'connected') return segment;
+    if (!this.ws || this.state !== 'connected') {
+      this.chargeDroppedCapture(segment);
+      return segment;
+    }
 
     this.lastAudioSendMs = performance.now();
 
@@ -823,7 +889,16 @@ export class DeepgramService {
    *  segment was already fed once, at original capture time, by whoever
    *  tagged it. */
   sendTaggedAudio(segment: CapturedPcmSegment): void {
-    if (!this.ws || this.state !== 'connected' || segment.samples.length === 0) return;
+    if (segment.samples.length === 0) return;
+    if (!this.ws || this.state !== 'connected') {
+      // PLAN-E2 entry variant (a) — accepted from the tap, no socket to
+      // take it (the initial connecting window, a reconnect gap). Full
+      // sleep never reaches here: no service instance exists then, so
+      // the ring's staged audio is excluded by construction. Behaviour is
+      // otherwise EXACTLY today's drop.
+      this.chargeDroppedCapture(segment);
+      return;
+    }
     this.lastAudioSendMs = performance.now();
     if (this.sttModel === 'flux') {
       this.enqueueFluxFrames(segment);
@@ -1059,6 +1134,12 @@ export class DeepgramService {
       this.pendingConfigure.resolve({ ok: false, reason: 'disconnected', rttMs: 0 });
       this.pendingConfigure = null;
     }
+    // PLAN-E2 — mark the close OWNED (this is the client's only
+    // `ws.close()` site) and tell the ledger directly too: with no live
+    // socket there is no close event for the classifier to see, and an
+    // owned close discards every unresolved entry either way.
+    this.ownedCloseEpoch = this.currentEpoch;
+    this.sessionContext.lossLedger?.onOwnedDisconnect(this.currentEpoch);
     // Kill auto-reconnect BEFORE anything else — prevents onclose below
     // from scheduling a fresh attempt on the way out, and short-circuits
     // any in-flight `openWithFreshKey` key-fetch.
@@ -1159,10 +1240,14 @@ export class DeepgramService {
         // full-buffer array, but the sender shouldn't depend on that.
         const { buffer, byteOffset, byteLength } = segment.samples;
         this.ws.send(buffer.slice(byteOffset, byteOffset + byteLength) as ArrayBuffer);
+        const dispatchedStart = this.dispatchedSampleOffset;
         this.dispatchedSampleOffset += segment.samples.length;
+        this.recordDispatchedCapture(segment, dispatchedStart);
       } catch {
         // WS backpressure — drop this frame (pre-existing accepted
-        // behaviour, unchanged by E1).
+        // behaviour, unchanged by E1). PLAN-E2 counts it as a known send
+        // failure (entry variant a) — the frame never reached the socket.
+        if (segment.origin === 'captured') this.chargeDroppedCapture(segment);
       }
       return;
     }
@@ -1216,7 +1301,44 @@ export class DeepgramService {
     if (generation !== this.opusEncoderGeneration) return;
     const segment = this.pendingOpusInput.shift();
     if (!segment) return;
+    const dispatchedStart = this.dispatchedSampleOffset;
     this.dispatchedSampleOffset += segment.samples.length;
+    // PLAN-E2 test 2k — the SAME source-sample dispatched range regardless
+    // of codec/packetisation, so retirement is codec-independent.
+    this.recordDispatchedCapture(segment, dispatchedStart);
+  }
+
+  /** PLAN-E2 entry variant (b) — a captured frame handed to the socket on
+   *  the CURRENT epoch, recorded (if voiced) with its half-open SOURCE-
+   *  SAMPLE dispatched range so the same epoch's watermark can retire it.
+   *  Flux only: nova-3 has no pinned retirement signal, and an
+   *  unretirable dispatched entry would fire a false disclosure on every
+   *  nova-3 reconnect after any speech. Synthetic keepalive is never
+   *  recorded (it advances the offset but is not inspector audio). */
+  private recordDispatchedCapture(segment: TaggedPcmSegment, dispatchedStart: number): void {
+    const ledger = this.sessionContext.lossLedger;
+    if (!ledger || segment.origin !== 'captured') return;
+    if (this.sttModel !== 'flux' || this.currentEpoch === null) return;
+    ledger.recordDispatched({
+      dispatchEpoch: this.currentEpoch,
+      epochScope: segment.epochScope,
+      captureSampleRange: segment.captureSampleRange,
+      dispatchedSampleRange: {
+        start: dispatchedStart,
+        end: dispatchedStart + segment.samples.length,
+      },
+      voiced: classifyPcmEnergy(segment.samples),
+    });
+  }
+
+  /** PLAN-E2 entry variant (a) — accepted from the tap, never handed to a
+   *  socket. The ledger classifies the snapshot and retains NO PCM. */
+  private chargeDroppedCapture(segment: CapturedPcmSegment): void {
+    this.sessionContext.lossLedger?.recordDropped({
+      epochScope: segment.epochScope,
+      captureSampleRange: segment.captureSampleRange,
+      samples: segment.samples,
+    });
   }
 
   /** Bumps the encoder generation and tears down any prior encoder
@@ -1555,6 +1677,13 @@ export class DeepgramService {
     if (!event) return;
     const transcript = (json.transcript as string | undefined) ?? '';
     const confidence = (json.end_of_turn_confidence as number | undefined) ?? 0;
+    // PLAN-E2 — the Deepgram-processed WATERMARK. `audio_window_end` is
+    // SECONDS since this connection's stream began; convert through the
+    // shared 16kHz helper (floor, finite/non-negative) and offset by this
+    // epoch's dispatch origin so the ledger retires only SAME-epoch
+    // dispatched ranges. Every TurnInfo event carries it, so retirement
+    // advances on interims and silence-driven EndOfTurns alike.
+    this.advanceProcessedWatermark(json.audio_window_end);
 
     switch (event) {
       case 'Update': {
@@ -1629,6 +1758,18 @@ export class DeepgramService {
       default:
       // Unknown event — ignore.
     }
+  }
+
+  private advanceProcessedWatermark(rawWindowEnd: unknown): void {
+    const ledger = this.sessionContext.lossLedger;
+    if (!ledger || this.currentEpoch === null) return;
+    if (typeof rawWindowEnd !== 'number' || !Number.isFinite(rawWindowEnd) || rawWindowEnd < 0) {
+      return; // malformed vendor value — never a bogus retirement
+    }
+    ledger.advanceWatermark(
+      this.currentEpoch,
+      this.epochDispatchOrigin + audioWindowEndToSampleOffset(rawWindowEnd)
+    );
   }
 
   /**
