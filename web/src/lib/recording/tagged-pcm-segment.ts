@@ -31,6 +31,14 @@ export interface CapturedPcmSegment {
   readonly recordingSessionId: string;
   readonly captureSampleRange: CaptureSampleRange;
   readonly epochScope: EpochScope;
+  /** PLAN-E1B2 item 3 — the true capture-ingress instant, `performance.now()`
+   *  at the moment the production `onSamples` callback was entered (never a
+   *  later timestamp taken after resampling/queueing). Shares
+   *  `PoorSignalLatencyProbe`'s own clock so onset-to-now elapsed-time math
+   *  stays valid across the two — never `Date.now()`, whose wall-clock jumps
+   *  would invalidate it. See `capture-tagging.ts` and `recording-context.tsx`'s
+   *  `onSamples` for the exact stamping point. */
+  readonly capturedAt: number;
 }
 
 /** Keepalive silence only. No capture range — this PCM was never captured. */

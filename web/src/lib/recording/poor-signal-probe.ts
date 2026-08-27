@@ -65,10 +65,17 @@ export class PoorSignalLatencyProbe {
 
   /** The shared VAD's onset transition. Pins the FIRST onset since the
    *  last interim/terminal — a later burst before an interim arrives is a
-   *  no-op. */
-  onOnset(): void {
+   *  no-op.
+   *
+   *  `capturedAt` (PLAN-E1B2 item 3) is the transition's OWN ingress
+   *  timestamp — the same clock (`performance.now()`, via this probe's
+   *  injectable `nowFn`) stamped by the caller at the frame's true capture
+   *  instant, never a later time read at the moment `onOnset` happens to
+   *  be invoked (a queue hop between capture and VAD processing must not
+   *  be misread as capture latency). */
+  onOnset(capturedAt: number): void {
     if (this.armedOnsetAtMs === null) {
-      this.armedOnsetAtMs = this.nowFn();
+      this.armedOnsetAtMs = capturedAt;
     }
   }
 

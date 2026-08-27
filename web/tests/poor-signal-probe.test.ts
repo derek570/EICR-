@@ -28,7 +28,7 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
     const probe = new PoorSignalLatencyProbe(FAST_CONFIG, clock.now);
     let armed = false;
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(2000); // exceeds armMedianMs — qualifies as censored
       armed = probe.onResetWithoutInterim() && probe.isArmed;
     }
@@ -40,7 +40,7 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
     const clock = makeClock();
     const probe = new PoorSignalLatencyProbe(FAST_CONFIG, clock.now);
     for (let i = 0; i < 8; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(200); // fast — observed sample, well under threshold
       probe.onInterimReceived();
     }
@@ -50,14 +50,14 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
   it('pins the FIRST armed onset — a later burst before the interim does not overwrite it', () => {
     const clock = makeClock();
     const probe = new PoorSignalLatencyProbe(FAST_CONFIG, clock.now);
-    probe.onOnset(); // t=0
+    probe.onOnset(clock.now()); // t=0
     clock.advance(1000);
-    probe.onOnset(); // later burst — should be a no-op (onset already pinned)
+    probe.onOnset(clock.now()); // later burst — should be a no-op (onset already pinned)
     clock.advance(1000);
     probe.onInterimReceived(); // resolves at t=2000, elapsed should be ~2000 not ~1000
     // Push three more identical slow samples to reach minSamples and arm.
     for (let i = 0; i < 3; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(2000);
       probe.onInterimReceived();
     }
@@ -76,12 +76,12 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
       ['observed', 200],
     ];
     for (const [kind, ms] of script) {
-      probe1.onOnset();
+      probe1.onOnset(clock.now());
       clock.advance(ms);
       if (kind === 'observed') probe1.onInterimReceived();
       else probe1.onResetWithoutInterim();
 
-      probe2.onOnset();
+      probe2.onOnset(clock2.now());
       clock2.advance(ms);
       if (kind === 'observed') probe2.onInterimReceived();
       else probe2.onResetWithoutInterim();
@@ -94,7 +94,7 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
     const probe = new PoorSignalLatencyProbe(FAST_CONFIG, clock.now);
     // Arm with 4 slow censored samples.
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(2000);
       probe.onResetWithoutInterim();
     }
@@ -105,7 +105,7 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
     // only be slow by construction). This test instead proves recovery
     // requires OBSERVED samples: feed 4 fast observed samples.
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(200);
       probe.onInterimReceived();
     }
@@ -116,14 +116,14 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
     const clock = makeClock();
     const probe = new PoorSignalLatencyProbe(FAST_CONFIG, clock.now);
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(2000);
       probe.onResetWithoutInterim();
     }
     expect(probe.isArmed).toBe(true);
     // Feed samples between recoverMedianMs and armMedianMs — should NOT recover.
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(1200);
       probe.onInterimReceived();
     }
@@ -135,21 +135,21 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
     const shortCooldown: PoorSignalProbeConfig = { ...FAST_CONFIG, cooldownMs: 10_000 };
     const probe = new PoorSignalLatencyProbe(shortCooldown, clock.now);
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(2000);
       probe.onResetWithoutInterim();
     }
     expect(probe.isArmed).toBe(true);
     // Recover.
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(200);
       probe.onInterimReceived();
     }
     expect(probe.isArmed).toBe(false);
     // Immediately try to re-arm within the cooldown window — should be blocked.
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(2000);
       probe.onResetWithoutInterim();
     }
@@ -160,7 +160,7 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
     const clock = makeClock();
     const probe = new PoorSignalLatencyProbe(FAST_CONFIG, clock.now);
     for (let i = 0; i < 4; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(2000);
       probe.onResetWithoutInterim();
     }
@@ -173,7 +173,7 @@ describe('PoorSignalLatencyProbe (PLAN-E1 E3)', () => {
     const clock = makeClock();
     const probe = new PoorSignalLatencyProbe(FAST_CONFIG, clock.now);
     for (let i = 0; i < 10; i++) {
-      probe.onOnset();
+      probe.onOnset(clock.now());
       clock.advance(100); // well under armMedianMs
       probe.onResetWithoutInterim();
     }

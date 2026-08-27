@@ -48,7 +48,7 @@ export interface DeepgramServiceLike {
   disconnect(): void;
   pause(): void;
   resume(replaySegments?: CapturedPcmSegment[] | null): void;
-  sendSamples(samples: Float32Array): CapturedPcmSegment | null;
+  sendSamples(samples: Float32Array, capturedAt?: number): CapturedPcmSegment | null;
   sendTaggedAudio(segment: CapturedPcmSegment): void;
   sendInt16PCM(pcm: Int16Array): void;
   readonly connectionState: DeepgramConnectionState;

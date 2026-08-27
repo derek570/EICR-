@@ -28,7 +28,7 @@
  */
 
 import type { EpochScope } from './uplink-scope-allocator';
-import type { CaptureSampleRange } from './tagged-pcm-segment';
+import type { CaptureSampleRange, CapturedPcmSegment } from './tagged-pcm-segment';
 
 export const VAD_SAMPLE_RATE_HZ = 16000;
 /** RMS (int16 magnitude) above which a frame is classified voiced. Tuned
@@ -48,11 +48,14 @@ export interface VoicedRangeClassification {
   readonly captureSampleRange: CaptureSampleRange;
   readonly epochScope: EpochScope;
   readonly voiced: boolean;
+  readonly recordingSessionId: string;
+  /** The tagged frame's own `capturedAt` — see `CapturedPcmSegment`. */
+  readonly capturedAt: number;
 }
 
 export type LocalSpeakingTransition =
-  | { readonly kind: 'onset'; readonly atSampleOffset: number }
-  | { readonly kind: 'silence'; readonly atSampleOffset: number };
+  | { readonly kind: 'onset'; readonly atSampleOffset: number; readonly capturedAt: number }
+  | { readonly kind: 'silence'; readonly atSampleOffset: number; readonly capturedAt: number };
 
 /** Pure, stateless RMS-energy classifier — also the synchronous
  *  `classifySnapshot` implementation, exported standalone so a
@@ -76,35 +79,51 @@ export class VoicedActivityDetector {
   // all-silence session never spuriously debounces into "speaking".
   private lastVoicedEndOffset = -Infinity;
 
-  constructor(private readonly onTransition: (t: LocalSpeakingTransition) => void) {}
+  constructor(
+    private readonly onTransition: (t: LocalSpeakingTransition) => void,
+    /** PLAN-E1B2 item 3 — the E1→E2 executable contract's per-range
+     *  materiality delivery seam. Fires synchronously on EVERY
+     *  `processFrame` call (not just frames that produce a transition) —
+     *  this is the primitive PLAN-E2's disclosure/parking gate attaches
+     *  its own consumer to. */
+    private readonly onClassification?: (c: VoicedRangeClassification) => void
+  ) {}
 
   /**
-   * Feed one CAPTURED frame (never call with a synthetic/keepalive
+   * Feed one CAPTURED tagged frame (never call with a synthetic/keepalive
    * segment — those carry no capture range and are excluded from
-   * materiality accounting by construction). Returns this range's voiced
+   * materiality accounting by construction). Takes the SAME
+   * `CapturedPcmSegment` already built for the ring buffer/sender, so
+   * `recordingSessionId`/`capturedAt` come along for free rather than
+   * being threaded in separately. Returns this range's voiced
    * classification and may synchronously emit a debounced onset/silence
    * transition via the constructor callback.
    */
-  processFrame(
-    samples: Int16Array,
-    captureSampleRange: CaptureSampleRange,
-    epochScope: EpochScope
-  ): VoicedRangeClassification {
+  processFrame(segment: CapturedPcmSegment): VoicedRangeClassification {
+    const { samples, captureSampleRange, epochScope, recordingSessionId, capturedAt } = segment;
     const voiced = classifyPcmEnergy(samples);
     if (voiced) {
       this.lastVoicedEndOffset = captureSampleRange.end;
       if (!this.speaking) {
         this.speaking = true;
-        this.onTransition({ kind: 'onset', atSampleOffset: captureSampleRange.start });
+        this.onTransition({ kind: 'onset', atSampleOffset: captureSampleRange.start, capturedAt });
       }
     } else if (this.speaking) {
       const silenceSamples = captureSampleRange.end - this.lastVoicedEndOffset;
       if (silenceSamples >= VAD_SILENCE_HOLD_SAMPLES) {
         this.speaking = false;
-        this.onTransition({ kind: 'silence', atSampleOffset: captureSampleRange.end });
+        this.onTransition({ kind: 'silence', atSampleOffset: captureSampleRange.end, capturedAt });
       }
     }
-    return { captureSampleRange, epochScope, voiced };
+    const classification: VoicedRangeClassification = {
+      captureSampleRange,
+      epochScope,
+      voiced,
+      recordingSessionId,
+      capturedAt,
+    };
+    this.onClassification?.(classification);
+    return classification;
   }
 
   /** The debounced local-speaking state — the parking primitive PLAN-E2's

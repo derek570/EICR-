@@ -3832,6 +3832,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Mic capture itself + the VU meter (onLevel below) keep
         // running so the inspector still sees they're being heard.
         if (ttsActiveRef.current) return;
+        // PLAN-E1B2 item 3 — the true capture-ingress instant, stamped
+        // HERE (immediately after the TTS-discard guard, before the
+        // resample below) so a queue hop between capture and processing
+        // is never misread as capture latency. `onSamples`'s real
+        // callback contract carries no pre-callback hardware-capture
+        // timestamp, so callback-entry is the best available proxy — an
+        // accepted, documented trade-off (this plan's own round-6
+        // correction).
+        const capturedAt = performance.now();
         // Single resample point. `handle.sampleRate` is the AudioContext's
         // ACTUAL rate (browsers honour the 16000 hint only on some builds).
         // Post-resample data is 16kHz Float32 regardless of the hardware
@@ -3857,7 +3866,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           const segment = tagCapturedFloat32(
             samples16k,
             ctx,
-            deepgramRef.current?.liveEpoch ?? null
+            deepgramRef.current?.liveEpoch ?? null,
+            capturedAt
           );
           ringBufferRef.current?.writeTagged(segment);
           deepgramRef.current?.sendTaggedAudio(segment);
@@ -3865,8 +3875,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // Should not happen post-start() — sessionUplinkContextRef is
           // populated before beginMicPipeline/beginMicOnly ever run.
           // Fall back to the pre-E1 self-tagging path rather than
-          // silently dropping this block.
-          deepgramRef.current?.sendSamples(samples16k);
+          // silently dropping this block. On THIS path `sendSamples` is
+          // entered only after the guard AND the resample above have
+          // already run, so pass the SAME `capturedAt` captured before
+          // either — computing a fresh one inside `sendSamples` would
+          // record a strictly later time (PLAN-E1B2 item 3, round-7
+          // finding).
+          deepgramRef.current?.sendSamples(samples16k, capturedAt);
         }
         // T20 — feed the VAD chunk accumulator. Only run while sleeping;
         // the SleepManager ignores VAD frames in `active` (the timer is
@@ -4307,7 +4322,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     poorSignalProbeRef.current = new PoorSignalLatencyProbe();
     const sessionVad = new VoicedActivityDetector((transition) => {
       if (transition.kind === 'onset') {
-        poorSignalProbeRef.current?.onOnset();
+        // PLAN-E1B2 item 3 — pass the transition's OWN ingress
+        // `capturedAt` through, mirroring iOS's `onOnset(at:)` contract,
+        // rather than letting the probe read a fresh `nowFn()` at
+        // whatever later moment this callback happens to run.
+        poorSignalProbeRef.current?.onOnset(transition.capturedAt);
       }
     });
     sessionUplinkContextRef.current = {

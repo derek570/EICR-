@@ -44,21 +44,29 @@ export function floatToInt16Pcm(samples: Float32Array): Int16Array {
  * feed the session's shared VAD (if any) — matching the prior
  * `sendSamples` behaviour of feeding VAD for every accepted frame
  * regardless of connection state.
+ *
+ * `capturedAt` (PLAN-E1B2 item 3) is stamped by the CALLER, at the true
+ * capture-ingress boundary (`recording-context.tsx`'s `onSamples`,
+ * immediately after the TTS-discard guard and before resampling) — never
+ * computed here, which would already be after resampling has run.
  */
 export function tagCapturedFloat32(
   samples16k: Float32Array,
   ctx: DeepgramSessionContext,
-  liveEpoch: ConnectionEpoch | null
+  liveEpoch: ConnectionEpoch | null,
+  capturedAt: number
 ): CapturedPcmSegment {
   const int16 = floatToInt16Pcm(samples16k);
   const captureSampleRange = ctx.captureClock.advance(int16.length);
   const epochScope = ctx.allocator.currentScope(liveEpoch);
-  ctx.vad?.processFrame(int16, captureSampleRange, epochScope);
-  return {
+  const segment: CapturedPcmSegment = {
     origin: 'captured',
     samples: int16,
     recordingSessionId: ctx.recordingSessionId,
     captureSampleRange,
     epochScope,
+    capturedAt,
   };
+  ctx.vad?.processFrame(segment);
+  return segment;
 }

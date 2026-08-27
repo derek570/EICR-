@@ -303,6 +303,15 @@ export class DeepgramService {
   // can be reconstructed even though it may have been assembled from
   // more than one original `sendSamples`/`sendInt16PCM` call.
   private fluxAccumulatorRangeStart: number | null = null;
+  // PLAN-E1B2 item 3 — a single `fluxAccumulatorCapturedAt` value can't
+  // track `fluxAccumulatorRangeStart`'s own per-emission advance (round-6
+  // finding): once a full-frame emission consumes samples that span more
+  // than one incoming segment, the emitted frame's `capturedAt` must come
+  // from whichever segment's samples sit at the buffer's CURRENT front —
+  // not a single value only reset when the buffer empties. FIFO of
+  // {sampleCount, capturedAt}, one entry per incoming segment, consumed in
+  // the same order the buffer's own bytes are.
+  private fluxAccumulatorCapturedAtQueue: Array<{ sampleCount: number; capturedAt: number }> = [];
   // Set true on fetcher-mode connect, flipped false by `disconnect()` so
   // any in-flight async key-fetch aborts cleanly and no further retries
   // are scheduled.
@@ -757,13 +766,32 @@ export class DeepgramService {
    *  in `recording-context.tsx` — can do so without re-tagging (Codex
    *  review r1 BLOCKER: a replay path that mints its OWN fresh tag at
    *  drain time double-advances the capture clock and mislabels
-   *  gap-period audio under the wrong epoch — see `sendTaggedAudio`). */
-  sendSamples(samples: Float32Array): CapturedPcmSegment | null {
+   *  gap-period audio under the wrong epoch — see `sendTaggedAudio`).
+   *
+   *  `capturedAt` (PLAN-E1B2 item 3) defaults to `performance.now()` at
+   *  THIS function's own entry when omitted — covering `sendSamples`'s
+   *  ~20 pre-existing direct unit-test callers and any other genuinely
+   *  independent caller. The one production call site
+   *  (`recording-context.tsx`'s fallback branch) passes the SAME
+   *  `capturedAt` its `onSamples` callback already captured immediately
+   *  after its TTS-discard guard, since on that path `sendSamples` is
+   *  entered only after the guard AND the resample have both already run
+   *  — computing a fresh timestamp here would record a strictly LATER
+   *  time than the primary tagging branch's callback-entry stamp. */
+  sendSamples(
+    samples: Float32Array,
+    capturedAt: number = performance.now()
+  ): CapturedPcmSegment | null {
     if (this.paused) return null;
     if (samples.length === 0) return null;
 
     const resampled = this.sourceSampleRate === 16000 ? samples : this.resampleTo16k(samples);
-    const segment = tagCapturedFloat32(resampled, this.sessionContext, this.currentEpoch);
+    const segment = tagCapturedFloat32(
+      resampled,
+      this.sessionContext,
+      this.currentEpoch,
+      capturedAt
+    );
 
     if (!this.ws || this.state !== 'connected') return segment;
 
@@ -822,6 +850,15 @@ export class DeepgramService {
       this.fluxAccumulatorRangeStart = segment.captureSampleRange.start;
     }
     this.fluxBatchScope = segment.epochScope;
+    // PLAN-E1B2 item 3 — push EVERY incoming segment's own {sampleCount,
+    // capturedAt}, not only when the buffer starts empty. Order matches
+    // the buffer's own byte order (entries are appended and consumed in
+    // the same sequence), so the head always corresponds to whichever
+    // segment's samples sit at the front of `buf` below.
+    this.fluxAccumulatorCapturedAtQueue.push({
+      sampleCount: segment.samples.length,
+      capturedAt: segment.capturedAt,
+    });
 
     // Append to the carry-over buffer.
     let buf: Int16Array;
@@ -838,12 +875,14 @@ export class DeepgramService {
       const out = new Int16Array(FRAME);
       out.set(frame);
       const rangeStart = this.fluxAccumulatorRangeStart! + offset;
+      const frameCapturedAt = this.consumeCapturedAtQueue(FRAME);
       this.dispatchFrame({
         origin: 'captured',
         samples: out,
         recordingSessionId: segment.recordingSessionId,
         captureSampleRange: { start: rangeStart, end: rangeStart + FRAME },
         epochScope: this.fluxBatchScope,
+        capturedAt: frameCapturedAt,
       });
       offset += FRAME;
     }
@@ -857,6 +896,34 @@ export class DeepgramService {
     }
   }
 
+  /** Consume `count` samples' worth of entries from the head of
+   *  `fluxAccumulatorCapturedAtQueue`, returning the FIRST (oldest)
+   *  entry's `capturedAt` — a full frame's `capturedAt` is defined as its
+   *  earliest-captured constituent segment's timestamp (PLAN-E1B2 item 3).
+   *  Production segments are AudioWorklet blocks far smaller than the
+   *  1,280-sample frame (`mic-capture.ts`: "typically 128 samples"), so
+   *  consuming one frame commonly dequeues SEVERAL entries in sequence —
+   *  a single head check-or-reduce would desync the queue from the
+   *  buffer's actual sample offsets the first time a frame spans more
+   *  than one entry, which given the size mismatch is the common case,
+   *  not an edge case. */
+  private consumeCapturedAtQueue(count: number): number {
+    const queue = this.fluxAccumulatorCapturedAtQueue;
+    const firstCapturedAt = queue.length > 0 ? queue[0].capturedAt : performance.now();
+    let remaining = count;
+    while (remaining > 0 && queue.length > 0) {
+      const head = queue[0];
+      if (remaining >= head.sampleCount) {
+        remaining -= head.sampleCount;
+        queue.shift();
+      } else {
+        head.sampleCount -= remaining;
+        remaining = 0;
+      }
+    }
+    return firstCapturedAt;
+  }
+
   /** Flush the Flux batching accumulator as its own (possibly short)
    *  tagged frame — used at a scope boundary so a batch never spans two
    *  scopes. */
@@ -868,21 +935,29 @@ export class DeepgramService {
     ) {
       this.fluxSampleBuffer = new Int16Array(0);
       this.fluxAccumulatorRangeStart = null;
+      this.fluxAccumulatorCapturedAtQueue = [];
       return;
     }
     const range: CaptureSampleRange = {
       start: this.fluxAccumulatorRangeStart,
       end: this.fluxAccumulatorRangeStart + this.fluxSampleBuffer.length,
     };
+    // The flush consumes EVERYTHING the buffer holds — read the head the
+    // same way, then clear the whole queue (a fully-drained queue and a
+    // fully-drained buffer become empty at the same instant by
+    // construction).
+    const capturedAt = this.consumeCapturedAtQueue(this.fluxSampleBuffer.length);
     this.dispatchFrame({
       origin: 'captured',
       samples: this.fluxSampleBuffer,
       recordingSessionId: this.sessionContext.recordingSessionId,
       captureSampleRange: range,
       epochScope: this.fluxBatchScope,
+      capturedAt,
     });
     this.fluxSampleBuffer = new Int16Array(0);
     this.fluxAccumulatorRangeStart = null;
+    this.fluxAccumulatorCapturedAtQueue = [];
   }
 
   /** Send a RAW, UNTAGGED Int16 PCM block — tags it fresh (a new capture
@@ -910,6 +985,10 @@ export class DeepgramService {
       recordingSessionId: this.sessionContext.recordingSessionId,
       captureSampleRange,
       epochScope,
+      // Genuinely fresh, never-before-tagged audio (per this method's own
+      // doc comment) — no merge ambiguity, stamp from the same clock at
+      // the point of injection.
+      capturedAt: performance.now(),
     };
     if (this.sttModel === 'flux') {
       this.enqueueFluxFrames(segment);

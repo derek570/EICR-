@@ -141,9 +141,15 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   resume(replaySegments?: CapturedPcmSegment[] | null): void {
     this.inner.resume(replaySegments ?? undefined);
   }
-  sendSamples(samples: Float32Array): CapturedPcmSegment | null {
+  sendSamples(samples: Float32Array, capturedAt?: number): CapturedPcmSegment | null {
     this.sentSampleBlocks += 1;
-    return this.inner.sendSamples(samples);
+    // PLAN-E1B2 item 3 (round-9 finding) — forward `capturedAt` instead of
+    // dropping it. An optional param is safe to omit under structural
+    // typing (still passes `tsc`), but silently discarding it here
+    // reproduces this item's exact bug INSIDE this harness, since the
+    // wrapped real `DeepgramService` would then fall back to its own
+    // later `performance.now()`.
+    return this.inner.sendSamples(samples, capturedAt);
   }
   sendTaggedAudio(segment: CapturedPcmSegment): void {
     this.sentTaggedAudioBlocks += 1;
