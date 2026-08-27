@@ -157,6 +157,7 @@ async function runSequence(lens) {
     const ts = data.timestamp;
     const durationUs = data.duration;
     const exactEndUs = Math.round(((totalSamples + len) * 1e6) / 16000);
+    const nextProductionTimestampUs = productionTimestampUs + frameDurationUs;
     events.push({
       kind: 'encode',
       callIndex: i,
@@ -164,14 +165,19 @@ async function runSequence(lens) {
       timestamp: ts,
       duration: durationUs,
       exactEndUs,
-      productionDriftUs: ts + durationUs - exactEndUs,
+      // Production's timestamp ACCUMULATOR vs the exact sample cursor — the
+      // drift a shipped encoder's next input would actually carry.
+      productionDriftUs: nextProductionTimestampUs - exactEndUs,
+      // Separately: the browser's own AudioData range end vs the exact
+      // cursor (duration quantization on readback).
+      audioDataRangeEndDriftUs: ts + durationUs - exactEndUs,
     });
     try {
       encoder.encode(data);
     } finally {
       data.close();
     }
-    productionTimestampUs += frameDurationUs;
+    productionTimestampUs = nextProductionTimestampUs;
     totalSamples += len;
     await new Promise((r) => setTimeout(r, 5));
   }
@@ -290,8 +296,16 @@ function reportScenario(label, events) {
   const drifted = inputs.filter((i) => i.productionDriftUs !== 0);
   if (drifted.length) {
     console.log(
-      `    production timestamp drift vs exact sample cursor: ${drifted
+      `    production timestamp-cursor drift vs exact sample cursor: ${drifted
         .map((i) => `#${i.callIndex}(len=${i.len}: ${i.productionDriftUs > 0 ? '+' : ''}${i.productionDriftUs} us)`)
+        .join(', ')}`
+    );
+  }
+  const readbackDrift = inputs.filter((i) => i.audioDataRangeEndDriftUs !== 0);
+  if (readbackDrift.length) {
+    console.log(
+      `    AudioData range-end drift vs exact sample cursor (duration readback): ${readbackDrift
+        .map((i) => `#${i.callIndex}(${i.audioDataRangeEndDriftUs > 0 ? '+' : ''}${i.audioDataRangeEndDriftUs} us)`)
         .join(', ')}`
     );
   }
@@ -306,13 +320,18 @@ function reportScenario(label, events) {
   // Full normalized signature — every input range and every output row —
   // so two runs only count as "consistent" if their entire split layout
   // matches, not merely their aggregate counts.
+  // Arrival grouping is SECONDARY evidence (scheduling of output callbacks
+  // relative to the next encode() marker can jitter run to run without any
+  // change to the timestamp-domain layout), so it is NOT part of the gating
+  // signature — it is compared separately for the diagnostic line only.
   const signature = JSON.stringify({
     inputs: inputs.map((i) => [i.len, i.timestamp, i.duration]),
     rows: rows.map((r) => [r.cStart, r.cEnd, r.owners, r.kind]),
-    arrivals: arrivalGroups(events).map((g) => [g.len, g.packets]),
     untiled: untiledInputs.map((u) => [u.i, u.reason]),
+    errors: errors.map((e) => e.message),
   });
-  return { attributable, counts, untiledInputs: untiledInputs.length, signature };
+  const arrivalSignature = JSON.stringify(arrivalGroups(events).map((g) => [g.len, g.packets]));
+  return { attributable, counts, untiledInputs: untiledInputs.length, signature, arrivalSignature };
 }
 
 async function withBrowser(fn) {
@@ -373,8 +392,11 @@ async function main() {
       }
       const attributable = runResults.every((r) => r.attributable);
       const consistent = new Set(runResults.map((r) => r.signature)).size === 1;
+      const arrivalsConsistent = new Set(runResults.map((r) => r.arrivalSignature)).size === 1;
       verdicts[s.name] = { attributable, consistent };
-      console.log(`  → attributable on every run: ${attributable}; runs consistent: ${consistent}\n`);
+      console.log(
+        `  → attributable on every run: ${attributable}; timestamp layout consistent: ${consistent}; arrival grouping consistent (diagnostic only): ${arrivalsConsistent}\n`
+      );
     }
 
     const enabled = Object.values(verdicts).every((v) => v.attributable && v.consistent);
