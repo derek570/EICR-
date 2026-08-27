@@ -50,6 +50,13 @@
  *     `flushFluxAccumulator`'s scope-boundary flush and `disconnect()`'s
  *     graceful-teardown flush, which submit whatever is held (1–1,279
  *     samples).
+ *   - CONSECUTIVE UNALIGNED: back-to-back short inputs at leading, middle
+ *     and teardown positions — repeated scope-boundary flushes before any
+ *     full frame accumulates.
+ * Input timestamps come from a cumulative SAMPLE cursor (never per-input
+ * rounded durations, which drift); tiling is checked with a strict sorted
+ * cursor per input (no gaps, no overlaps, exact end); overhang, orphan,
+ * straddle, or an encoder error each disqualify.
  *
  * Usage: node scripts/deepgram-webcodecs-opus-packet-probe.mjs
  * Read-only, offline — no Deepgram/network calls, no credentials.
@@ -120,14 +127,19 @@ async function runSequence(lens) {
   });
   encoder.configure({ codec: 'opus', sampleRate: 16000, numberOfChannels: 1, bitrate: 28000 });
 
-  let ts = 0;
+  // Sample-domain cursor: each input's [start, end) is derived from the
+  // CUMULATIVE sample count, never from independently rounded per-input
+  // durations (1,279 + 1 samples must total exactly 80,000 us, not 80,001).
+  let totalSamples = 0;
   for (let i = 0; i < lens.length; i++) {
     const len = lens[i];
     const samples = new Int16Array(len);
     for (let j = 0; j < len; j++) {
-      samples[j] = Math.round(8000 * Math.sin(2 * Math.PI * 440 * (ts / 1e6 + j / 16000)));
+      samples[j] = Math.round(8000 * Math.sin((2 * Math.PI * 440 * (totalSamples + j)) / 16000));
     }
-    const durationUs = Math.round((len / 16000) * 1e6);
+    const ts = Math.round((totalSamples * 1e6) / 16000);
+    const tsEnd = Math.round(((totalSamples + len) * 1e6) / 16000);
+    const durationUs = tsEnd - ts;
     const data = new AudioData({
       format: 's16',
       sampleRate: 16000,
@@ -142,7 +154,7 @@ async function runSequence(lens) {
     } finally {
       data.close();
     }
-    ts += durationUs;
+    totalSamples += len;
     await new Promise((r) => setTimeout(r, 5));
   }
   events.push({ kind: 'flush-start' });
@@ -157,7 +169,6 @@ async function runSequence(lens) {
 function attributeByTimestamp(events) {
   const inputs = events.filter((e) => e.kind === 'encode');
   const chunks = events.filter((e) => e.kind === 'output');
-  const perInputCoverage = inputs.map(() => 0);
   const lastInputEnd = inputs.length
     ? inputs[inputs.length - 1].timestamp + inputs[inputs.length - 1].duration
     : 0;
@@ -182,7 +193,6 @@ function attributeByTimestamp(events) {
       const inp = inputs[owners[0]];
       const within = cStart >= inp.timestamp && cEnd <= inp.timestamp + inp.duration;
       kind = within ? 'within' : 'overhang'; // overhang = past the last input's end
-      if (within) perInputCoverage[owners[0]] += c.duration;
     } else if (owners.length === 0) {
       kind = 'orphan';
     } else {
@@ -190,9 +200,30 @@ function attributeByTimestamp(events) {
     }
     return { cStart, cEnd, owners, kind };
   });
+  // Exact-tiling check per input: sort that input's within-chunks and walk a
+  // cursor — the first must start AT the input start, each next must start
+  // exactly where the previous ended (no overlap, no gap), and the cursor
+  // must finish exactly at the input end.
   const untiledInputs = inputs
-    .map((inp, i) => ({ i, len: inp.len, missingUs: inp.duration - perInputCoverage[i] }))
-    .filter((r) => r.missingUs !== 0);
+    .map((inp, i) => {
+      const mine = rows
+        .filter((r) => r.kind === 'within' && r.owners[0] === i)
+        .sort((a, b) => a.cStart - b.cStart);
+      const iStart = inp.timestamp;
+      const iEnd = inp.timestamp + inp.duration;
+      let cursor = iStart;
+      let reason = null;
+      for (const r of mine) {
+        if (r.cStart !== cursor) {
+          reason = r.cStart < cursor ? `overlap at ${r.cStart}` : `gap [${cursor}, ${r.cStart})`;
+          break;
+        }
+        cursor = r.cEnd;
+      }
+      if (!reason && cursor !== iEnd) reason = `ends at ${cursor}, input ends ${iEnd}`;
+      return { i, len: inp.len, reason };
+    })
+    .filter((r) => r.reason !== null);
   return { inputs, chunks, rows, untiledInputs };
 }
 
@@ -234,13 +265,18 @@ function reportScenario(label, events) {
   if (untiledInputs.length) {
     console.log(
       `    inputs NOT exactly tiled by within-chunks: ${untiledInputs
-        .map((u) => `#${u.i}(len=${u.len}, missing ${u.missingUs} us)`)
+        .map((u) => `#${u.i}(len=${u.len}: ${u.reason})`)
         .join(', ')}`
     );
   }
   const errors = events.filter((e) => e.kind === 'error');
   if (errors.length) console.log(`    encoder errors: ${JSON.stringify(errors)}`);
-  const attributable = counts.straddle === 0 && counts.orphan === 0 && untiledInputs.length === 0;
+  const attributable =
+    counts.straddle === 0 &&
+    counts.orphan === 0 &&
+    counts.overhang === 0 &&
+    errors.length === 0 &&
+    untiledInputs.length === 0;
   return { attributable, counts, untiledInputs: untiledInputs.length };
 }
 
@@ -285,6 +321,12 @@ async function main() {
     const scenarios = [
       { name: 'ALIGNED (multiples of 320 samples)', lens: [1280, 1280, 640, 1280, 1280] },
       { name: 'UNALIGNED (reachable flush-tail sizes)', lens: [1280, 500, 1280, 100, 1280, 1279, 1280, 1] },
+      {
+        // Repeated scope-boundary flushes before any full frame accumulates:
+        // adjacent short inputs at leading, middle, and teardown positions.
+        name: 'CONSECUTIVE UNALIGNED (back-to-back scope flushes)',
+        lens: [500, 100, 1279, 1, 1280, 100, 500],
+      },
     ];
     const verdicts = {};
     for (const s of scenarios) {

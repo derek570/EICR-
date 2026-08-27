@@ -124,18 +124,35 @@ describe('PLAN-E1B2 item 3 — capturedAt is stamped at onSamples entry, before 
     const dg = harness.refs.deepgram!;
     expect(dg.sentTaggedSegments).toHaveLength(0);
 
+    // Instrument the INPUT: the first numeric-index read of the 48 kHz
+    // samples (which only resampleTo16k performs) records the clock. A stamp
+    // taken before resampling is strictly EARLIER than that read; a stamp
+    // moved after resampling would be strictly later. This is independent
+    // of how many other clock reads act()/the pipeline make.
+    let firstSampleReadAt: number | null = null;
+    const raw = loudTone48k();
+    const instrumented = new Proxy(raw, {
+      get(target, prop) {
+        if (firstSampleReadAt === null && typeof prop === 'string' && /^\d+$/.test(prop)) {
+          firstSampleReadAt = performance.now();
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    }) as Float32Array;
     const clockBeforeCallback = clock;
     await act(async () => {
-      capturedOnSamples!(loudTone48k());
+      capturedOnSamples!(instrumented);
     });
 
     expect(dg.sentTaggedSegments).toHaveLength(1);
     const seg = dg.sentTaggedSegments[0];
-    // Resample really ran (48 kHz → 16 kHz).
+    // Resample really ran (48 kHz → 16 kHz) and read the input.
     expect(seg.samples.length).toBe(1280);
-    // The very first clock read inside the callback — after the TTS guard,
-    // before resampleTo16k — is what the segment carries...
-    expect(seg.capturedAt).toBe(clockBeforeCallback + 100);
+    expect(firstSampleReadAt).not.toBeNull();
+    // The stamp precedes the first sample read (i.e. precedes resampling)...
+    expect(seg.capturedAt).toBeGreaterThan(clockBeforeCallback);
+    expect(seg.capturedAt).toBeLessThan(firstSampleReadAt!);
     // ...and the pipeline DID read the clock again later (lastAudioSendMs
     // etc.), proving the stamp was not simply "the latest value".
     expect(clock).toBeGreaterThan(seg.capturedAt);
