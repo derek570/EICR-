@@ -151,23 +151,48 @@ function chunkPcm(buffer, chunkBytes) {
   return chunks;
 }
 
-/** Word-level diff — lowercased, punctuation-stripped token overlap
- *  (a cheap but honest proxy for "did certificate vocabulary survive",
- *  not a full alignment/WER implementation). */
-function wordDiff(expected, actual) {
-  const norm = (s) =>
-    s
-      .toLowerCase()
-      .replace(/[^\w\s]/g, '')
-      .split(/\s+/)
-      .filter(Boolean);
-  const expWords = norm(expected);
-  const actWords = new Set(norm(actual));
-  const matched = expWords.filter((w) => actWords.has(w));
+/** Tokenize: lowercase, strip punctuation, split on whitespace. Shared by
+ *  `wordErrorRate` so both call sites agree on what counts as a "word". */
+function tokenize(s) {
+  return s
+    .toLowerCase()
+    .replace(/[^\w\s]/g, '')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/**
+ * PLAN-E1B2 item 4 — a real, aligned word-error-rate (substitutions +
+ * insertions + deletions over the Levenshtein-aligned word sequence),
+ * replacing the prior set-membership `wordDiff` (Codex diff-review r2
+ * IMPORTANT finding): set membership ignores word order, duplicates, and
+ * insertions, so a transcript that's scrambled but lexically complete
+ * scored as a perfect match. Standard dynamic-programming edit distance
+ * over token arrays (rows = expected, cols = actual).
+ */
+export function wordErrorRate(expected, actual) {
+  const ref = tokenize(expected);
+  const hyp = tokenize(actual);
+  const n = ref.length;
+  const m = hyp.length;
+  // dp[i][j] = edit distance between ref[0..i) and hyp[0..j)
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 0; i <= n; i++) dp[i][0] = i;
+  for (let j = 0; j <= m; j++) dp[0][j] = j;
+  for (let i = 1; i <= n; i++) {
+    for (let j = 1; j <= m; j++) {
+      if (ref[i - 1] === hyp[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1];
+      } else {
+        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      }
+    }
+  }
+  const edits = dp[n][m];
   return {
-    expectedWordCount: expWords.length,
-    matchedWordCount: matched.length,
-    missingWords: expWords.filter((w) => !actWords.has(w)),
+    expectedWordCount: n,
+    editDistance: edits,
+    wer: n > 0 ? edits / n : actual.length > 0 ? 1 : 0,
   };
 }
 
@@ -175,7 +200,12 @@ async function runArm({ name, url, key, framesFn, frameDelayMs }) {
   assertNoCredentialInUrl(url, key);
   const frames = await framesFn();
   const encodedBytes = frames.reduce((sum, f) => sum + f.length, 0);
-  const startedAtMs = Date.now();
+  // PLAN-E1B2 item 4 (Codex diff-review r2 IMPORTANT finding) — moved from
+  // the top of this function to immediately before the first send: the
+  // prior placement included WS construction/handshake time in the onset
+  // clock, not just audio-send time, which is not what "onset->first-
+  // interim latency" is supposed to measure.
+  let startedAtMs = null;
   let firstInterimMs = null;
   let finalMs = null;
   let transcript = '';
@@ -198,6 +228,7 @@ async function runArm({ name, url, key, framesFn, frameDelayMs }) {
     }, 20000);
 
     ws.onopen = async () => {
+      startedAtMs = Date.now();
       for (const frame of frames) {
         if (ws.readyState !== WebSocket.OPEN) break;
         ws.send(frame);
@@ -267,7 +298,13 @@ async function main() {
       name: 'linear16',
       url: `wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=${SAMPLE_RATE}&mip_opt_out=true`,
       key,
-      framesFn: () => chunkPcm(pcm, 3200),
+      // PLAN-E1B2 item 4 (Codex diff-review r2 IMPORTANT finding) — 640
+      // bytes is 20ms of 16kHz mono 16-bit PCM, matching the opus arm's
+      // real ~20ms packet pacing. The prior 3,200-byte/100ms chunking
+      // delivered 100ms of audio every 20ms (~5x realtime) while the opus
+      // arm delivered real-time, making the two arms' onset/latency
+      // numbers incomparable.
+      framesFn: () => chunkPcm(pcm, 640),
       frameDelayMs: 20,
     });
     const opus = await runArm({
@@ -280,8 +317,8 @@ async function main() {
 
     results.push({
       utterance: text,
-      linear16: { ...linear16, wordDiff: wordDiff(text, linear16.transcript) },
-      opus: { ...opus, wordDiff: wordDiff(text, opus.transcript) },
+      linear16: { ...linear16, wer: wordErrorRate(text, linear16.transcript) },
+      opus: { ...opus, wer: wordErrorRate(text, opus.transcript) },
       payloadReductionRatio:
         linear16.encodedBytes > 0 ? linear16.encodedBytes / Math.max(1, opus.encodedBytes) : null,
     });
@@ -293,11 +330,8 @@ async function main() {
     sampleCount: results.length,
     meanPayloadReductionRatio:
       results.reduce((sum, r) => sum + (r.payloadReductionRatio ?? 0), 0) / results.length,
-    opusMissingWordsTotal: results.reduce((sum, r) => sum + r.opus.wordDiff.missingWords.length, 0),
-    linear16MissingWordsTotal: results.reduce(
-      (sum, r) => sum + r.linear16.wordDiff.missingWords.length,
-      0
-    ),
+    meanOpusWer: results.reduce((sum, r) => sum + r.opus.wer.wer, 0) / results.length,
+    meanLinear16Wer: results.reduce((sum, r) => sum + r.linear16.wer.wer, 0) / results.length,
   };
 
   process.stdout.write(JSON.stringify({ summary, results }, null, 2) + '\n');
