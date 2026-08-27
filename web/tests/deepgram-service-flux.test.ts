@@ -329,3 +329,66 @@ describe('DeepgramService — Flux 80ms audio batching', () => {
     expect((dispatchSpy.mock.calls[1][0] as CapturedPcmSegment).capturedAt).toBe(1010);
   });
 });
+
+// PLAN-E1B2 item 3 — the plan's own MANDATORY three-segment remainder case
+// (round-6 finding): the single-value bug only surfaces after a full-frame
+// emission has already consumed one segment entirely.
+describe('DeepgramService — Flux capturedAt FIFO (PLAN-E1B2 item 3, self-audit additions)', () => {
+  function seg(samples: number, start: number, capturedAt: number): CapturedPcmSegment {
+    return {
+      origin: 'captured',
+      samples: new Int16Array(samples),
+      recordingSessionId: 'sess-test',
+      captureSampleRange: { start, end: start + samples },
+      epochScope: { kind: 'preOpen', captureAttemptId: 1 as any },
+      capturedAt,
+    };
+  }
+
+  it("A/B/C: frame 2 reports segment B's capturedAt (A fully consumed by frame 1), never A's or C's", () => {
+    const { service, ws } = makeService();
+    ws.open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+    service.sendTaggedAudio(seg(500, 0, 100)); // A — held as remainder, no emission
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    service.sendTaggedAudio(seg(1000, 500, 200)); // B — 1500 buffered → frame 1 (A + 780 of B), 220 of B remains
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(100);
+    service.sendTaggedAudio(seg(1060, 1500, 300)); // C — 220 + 1060 = 1280 → frame 2
+    expect(dispatchSpy).toHaveBeenCalledTimes(2);
+    expect((dispatchSpy.mock.calls[1][0] as CapturedPcmSegment).capturedAt).toBe(200);
+  });
+
+  it("an abnormal close that loss-charges a partial tail also clears the capturedAt FIFO — the first post-reconnect frame uses only the fresh segment's capturedAt", () => {
+    const cbs: DeepgramCallbacks = {
+      onInterimTranscript: vi.fn(),
+      onFinalTranscript: vi.fn(),
+      onUtteranceEnd: vi.fn(),
+      onSpeechStarted: vi.fn(),
+      onError: vi.fn(),
+    };
+    let latest: FakeWS | null = null;
+    const factory: WebSocketFactory = (url, protocols) => {
+      latest = new FakeWS(url, protocols) as unknown as WebSocket & FakeWS;
+      return latest as unknown as WebSocket;
+    };
+    const service = new DeepgramService(cbs, factory, 'flux');
+    service.connect('fake-key', 16000);
+    (latest as unknown as FakeWS).open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+
+    // A partial tail sits in the accumulator with a queue entry behind it.
+    service.sendTaggedAudio(seg(700, 0, 111));
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    // Abnormal (reconnectable-code) close → chargeFluxTailLoss clears the
+    // buffer. Before the fix it left the FIFO holding {700, 111}.
+    (latest as unknown as FakeWS).onclose?.({ code: 1006, reason: 'abnormal', wasClean: false });
+
+    service.connect('fake-key', 16000);
+    (latest as unknown as FakeWS).open();
+    service.sendTaggedAudio(seg(1280, 700, 999));
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    // With the stale entry, consumeCapturedAtQueue would have returned 111.
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(999);
+  });
+});

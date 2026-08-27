@@ -86,6 +86,11 @@ export class FakeDeepgramService implements DeepgramServiceLike {
    *  lighter-weight-pause resume path sends NO ring-buffer replay (only
    *  the automatic-timer full-sleep wake path replays). */
   sentTaggedAudioBlocks = 0;
+  /** PLAN-E1B2 item 3 — the actual tagged segments handed to
+   *  `sendTaggedAudio`, so a mounted-provider test can assert the
+   *  `capturedAt` the production `onSamples` callback stamped (not just
+   *  count the calls). */
+  readonly sentTaggedSegments: CapturedPcmSegment[] = [];
 
   constructor(
     callbacks: DeepgramCallbacks,
@@ -153,6 +158,7 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   }
   sendTaggedAudio(segment: CapturedPcmSegment): void {
     this.sentTaggedAudioBlocks += 1;
+    this.sentTaggedSegments.push(segment);
     this.inner.sendTaggedAudio(segment);
   }
   sendInt16PCM(pcm: Int16Array): void {

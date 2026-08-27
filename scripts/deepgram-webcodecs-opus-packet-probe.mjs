@@ -1,9 +1,10 @@
 #!/usr/bin/env node
+/* eslint-disable no-console */
 /**
  * PLAN-E1B2 item 1 — WebCodecs AudioEncoder packet-multiplicity live probe.
  *
- * Pins the exact output multiplicity and timestamp behavior of the REAL
- * browser `AudioEncoder` for the exact config `opus-encoder.ts`'s
+ * Pins the exact output multiplicity and timestamp/duration behavior of the
+ * REAL browser `AudioEncoder` for the exact config `opus-encoder.ts`'s
  * `realOpusEncoderFactory` uses (16kHz mono opus, 28kbps), before any
  * packet-to-source-sample mapping rule is written into production code.
  * See PLAN-E1B2-final.md item 1's "A live probe must pin the exact output
@@ -20,31 +21,35 @@
  * build — this probe serves the test page from `http://127.0.0.1` (a
  * browser-trusted secure-context origin) via a throwaway local HTTP server.
  *
- * METHODOLOGY NOTE (why this probe drives a SEQUENCE, not one isolated
- * `encode()` + `flush()` call): an earlier version of this probe drove one
- * `encode()` call per fresh encoder instance, immediately followed by
- * `flush()`. That measured a consistent "N+1 packets" result for every
- * input length — which turned out to be an artifact of flushing
- * immediately, not evidence about steady-state behavior: `flush()` alone
- * drains ~1 frame of algorithmic/lookahead delay that a continuously-used
- * encoder only pays ONCE, at genuine teardown. Production never does this —
- * `deepgram-service.ts` constructs ONE encoder per connection generation and
- * calls `encode()` many times across the connection's life, calling
- * `flush()` only once, at teardown. This probe instead drives ONE encoder
- * through a SEQUENCE of `encode()` calls (mirroring real dispatch), because
- * that is the shape that actually determines whether a per-input packet
- * count can be attributed reliably.
+ * WHAT IS MEASURED (the plan's actual rule — timestamp-domain mapping, not
+ * arrival order): every submitted `AudioData` occupies the input range
+ * [timestamp, timestamp + numberOfFrames/16000 s) in the encoder's
+ * timestamp domain, and every emitted `EncodedAudioChunk` reports its own
+ * [timestamp, timestamp + duration). A per-input completion signal is only
+ * buildable if each output chunk's range lies WITHIN exactly one input's
+ * range (so it can be attributed to that `encode()` call) and each input's
+ * range is fully tiled by such chunks. A chunk whose range STRADDLES two
+ * inputs, or a chunk with no owning input, cannot be attributed to a
+ * single call from the observable data — that is the disqualifying
+ * condition. Arrival grouping ("packets seen between two encode() calls")
+ * is reported alongside as secondary evidence only.
  *
- * Two scenarios are driven:
- *   - ALIGNED: every submitted input is an exact multiple of 320 samples
- *     (20ms @ 16kHz) — the encoder's own internal frame size. This is the
- *     common-case Flux full-frame (1,280 samples / 80ms).
- *   - UNALIGNED: interleaves non-320-multiple short-tail inputs (1, 100,
- *     500, 1,279 samples) between full frames — the genuinely reachable
- *     shape of `flushFluxAccumulator`'s scope-boundary flush and
- *     `disconnect()`'s graceful-teardown flush, which submit "whatever is
- *     currently held" (anywhere from 1 to 1,279 samples), not just
- *     multiples of 320.
+ * METHODOLOGY NOTE (why a SEQUENCE, not one `encode()` + `flush()`): an
+ * earlier draft drove one `encode()` per fresh encoder followed by an
+ * immediate `flush()` and saw "N+1 packets" for every length — an artifact
+ * of `flush()` draining ~1 frame of algorithmic delay that a continuously
+ * used encoder pays once, at teardown. Production (`deepgram-service.ts`)
+ * builds ONE encoder per connection generation, calls `encode()` many
+ * times, and flushes once at teardown; this probe mirrors that.
+ *
+ * Scenarios (each run twice on independent encoders for repeatability):
+ *   - ALIGNED: inputs that are exact multiples of 320 samples (20 ms @
+ *     16 kHz) — the steady-state Flux frame (1,280) and a 320-multiple tail.
+ *   - UNALIGNED: non-320-multiple short-tail inputs (500, 100, 1,279, 1)
+ *     interleaved between full frames — the genuinely reachable shape of
+ *     `flushFluxAccumulator`'s scope-boundary flush and `disconnect()`'s
+ *     graceful-teardown flush, which submit whatever is held (1–1,279
+ *     samples).
  *
  * Usage: node scripts/deepgram-webcodecs-opus-packet-probe.mjs
  * Read-only, offline — no Deepgram/network calls, no credentials.
@@ -57,15 +62,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright';
 
+const SAMPLE_RATE = 16000;
+const RUNS_PER_SCENARIO = 2;
+
 /**
  * Playwright's default `chromium.launch()` resolves to its
  * `chromium_headless_shell` build. On this machine that build's cached
  * revision doesn't match the installed `chromium` package version (a local
  * environment issue, not a WebCodecs behavior difference), so this probe
- * falls back to launching the full "Chrome for Testing" binary directly
- * when Playwright's own default resolution fails to find an executable —
- * both are genuine Chromium builds and expose the identical `AudioEncoder`
- * implementation this probe needs to observe.
+ * falls back to the full "Chrome for Testing" binary when Playwright's own
+ * resolution fails — both are genuine Chromium builds with the identical
+ * `AudioEncoder` implementation.
  */
 function findFallbackChromeExecutable() {
   const cacheDir = path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
@@ -86,23 +93,28 @@ function findFallbackChromeExecutable() {
       if (fs.existsSync(candidate)) return candidate;
     }
   } catch {
-    // fall through — return undefined, let Playwright's default resolution
-    // try (and fail with its own actionable error) instead.
+    // fall through — let Playwright's default resolution report its own error.
   }
   return undefined;
 }
 
-// Runs inside the real browser via page.evaluate — this IS
+// Runs INSIDE the browser via page.evaluate — this IS
 // `realOpusEncoderFactory`'s exact encoder configuration, driven through a
 // sequence of `encode()` calls with a real (non-silent) tone so DTX-style
-// silence compression can't make every packet look identical.
+// silence compression can't make every packet look identical. Returns the
+// flat event trace: encode markers (with the input's timestamp range) and
+// output chunks (with their own timestamp range).
 async function runSequence(lens) {
+  /* global AudioEncoder, AudioData */
   const events = [];
   const encoder = new AudioEncoder({
     output: (chunk) => {
-      const bytes = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(bytes);
-      events.push({ kind: 'output', timestamp: chunk.timestamp, duration: chunk.duration, byteLength: chunk.byteLength });
+      events.push({
+        kind: 'output',
+        timestamp: chunk.timestamp,
+        duration: chunk.duration,
+        byteLength: chunk.byteLength,
+      });
     },
     error: (e) => events.push({ kind: 'error', message: String(e) }),
   });
@@ -113,8 +125,9 @@ async function runSequence(lens) {
     const len = lens[i];
     const samples = new Int16Array(len);
     for (let j = 0; j < len; j++) {
-      samples[j] = Math.round(8000 * Math.sin((2 * Math.PI * 440 * (ts / 1e6 + j / 16000)) % (2 * Math.PI)));
+      samples[j] = Math.round(8000 * Math.sin(2 * Math.PI * 440 * (ts / 1e6 + j / 16000)));
     }
+    const durationUs = Math.round((len / 16000) * 1e6);
     const data = new AudioData({
       format: 's16',
       sampleRate: 16000,
@@ -123,14 +136,13 @@ async function runSequence(lens) {
       timestamp: ts,
       data: samples.buffer,
     });
-    events.push({ kind: 'encode', callIndex: i, len, ts });
+    events.push({ kind: 'encode', callIndex: i, len, timestamp: ts, duration: durationUs });
     try {
       encoder.encode(data);
     } finally {
       data.close();
     }
-    ts += Math.round((len / 16000) * 1e6);
-    // eslint-disable-next-line no-await-in-loop
+    ts += durationUs;
     await new Promise((r) => setTimeout(r, 5));
   }
   events.push({ kind: 'flush-start' });
@@ -140,131 +152,167 @@ async function runSequence(lens) {
   return events;
 }
 
-/** Groups the flat event stream into "packets that arrived between one
- *  encode() call and the next" — this is exactly the bookkeeping a
- *  production completion-signal implementation would need to perform, so
- *  reproducing it here is what proves (or disproves) that it's possible. */
-function batchByCall(events) {
-  const batches = [];
-  let current = { marker: null, packets: [] };
-  for (const e of events) {
-    if (e.kind === 'output') {
-      current.packets.push(e);
-    } else {
-      batches.push(current);
-      current = { marker: e, packets: [] };
+/** Timestamp-domain attribution: for every output chunk, which input(s)
+ *  does its [timestamp, timestamp+duration) range overlap? */
+function attributeByTimestamp(events) {
+  const inputs = events.filter((e) => e.kind === 'encode');
+  const chunks = events.filter((e) => e.kind === 'output');
+  const perInputCoverage = inputs.map(() => 0);
+  const lastInputEnd = inputs.length
+    ? inputs[inputs.length - 1].timestamp + inputs[inputs.length - 1].duration
+    : 0;
+  const rows = chunks.map((c) => {
+    const cStart = c.timestamp;
+    const cEnd = c.timestamp + c.duration;
+    // A chunk lying entirely PAST the final input's end is the encoder's
+    // flush-time padding frame — it carries no submitted samples, so it is
+    // benign for attribution (there is nothing to attribute) and is
+    // reported separately rather than counted as an orphan.
+    if (cStart >= lastInputEnd) {
+      return { cStart, cEnd, owners: [], kind: 'padding' };
     }
-  }
-  batches.push(current);
-  return batches.filter((b) => b.marker !== null || b.packets.length > 0);
+    const owners = [];
+    inputs.forEach((inp, i) => {
+      const iStart = inp.timestamp;
+      const iEnd = inp.timestamp + inp.duration;
+      if (cStart < iEnd && cEnd > iStart) owners.push(i);
+    });
+    let kind;
+    if (owners.length === 1) {
+      const inp = inputs[owners[0]];
+      const within = cStart >= inp.timestamp && cEnd <= inp.timestamp + inp.duration;
+      kind = within ? 'within' : 'overhang'; // overhang = past the last input's end
+      if (within) perInputCoverage[owners[0]] += c.duration;
+    } else if (owners.length === 0) {
+      kind = 'orphan';
+    } else {
+      kind = 'straddle';
+    }
+    return { cStart, cEnd, owners, kind };
+  });
+  const untiledInputs = inputs
+    .map((inp, i) => ({ i, len: inp.len, missingUs: inp.duration - perInputCoverage[i] }))
+    .filter((r) => r.missingUs !== 0);
+  return { inputs, chunks, rows, untiledInputs };
 }
 
-async function main() {
+/** Secondary evidence: packets that ARRIVED between one encode() call and
+ *  the next (what a naive per-call counter would see). */
+function arrivalGroups(events) {
+  const groups = [];
+  let current = null;
+  for (const e of events) {
+    if (e.kind === 'output') {
+      if (current) current.packets += 1;
+    } else if (e.kind === 'encode') {
+      current = { len: e.len, packets: 0 };
+      groups.push(current);
+    } else if (e.kind === 'flush-start') {
+      current = { len: 'flush', packets: 0 };
+      groups.push(current);
+    }
+  }
+  return groups;
+}
+
+function reportScenario(label, events) {
+  const { rows, untiledInputs } = attributeByTimestamp(events);
+  const counts = { within: 0, straddle: 0, orphan: 0, overhang: 0, padding: 0 };
+  for (const r of rows) counts[r.kind] += 1;
+  console.log(`  ${label}:`);
+  console.log(
+    `    arrival groups (len→packets seen before next call): ${arrivalGroups(events)
+      .map((g) => `${g.len}→${g.packets}`)
+      .join(', ')}`
+  );
+  console.log(
+    `    timestamp attribution: within=${counts.within} straddle=${counts.straddle} orphan=${counts.orphan} overhang=${counts.overhang} flush-padding=${counts.padding}`
+  );
+  for (const r of rows.filter((x) => x.kind !== 'within' && x.kind !== 'padding')) {
+    console.log(`      chunk [${r.cStart}, ${r.cEnd}) us — ${r.kind}, overlaps inputs ${JSON.stringify(r.owners)}`);
+  }
+  if (untiledInputs.length) {
+    console.log(
+      `    inputs NOT exactly tiled by within-chunks: ${untiledInputs
+        .map((u) => `#${u.i}(len=${u.len}, missing ${u.missingUs} us)`)
+        .join(', ')}`
+    );
+  }
+  const errors = events.filter((e) => e.kind === 'error');
+  if (errors.length) console.log(`    encoder errors: ${JSON.stringify(errors)}`);
+  const attributable = counts.straddle === 0 && counts.orphan === 0 && untiledInputs.length === 0;
+  return { attributable, counts, untiledInputs: untiledInputs.length };
+}
+
+async function withBrowser(fn) {
   const server = http.createServer((req, res) => res.end('<html><body>probe</body></html>'));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
-
-  const fallbackExecutable = findFallbackChromeExecutable();
-  let browser;
+  let browser = null;
   try {
-    browser = await chromium.launch({ headless: true });
-  } catch (err) {
-    if (!fallbackExecutable) throw err;
-    console.warn(
-      `Playwright's default chromium_headless_shell launch failed (${err.message.split('\n')[0]}); falling back to ${fallbackExecutable}`
-    );
-    browser = await chromium.launch({ headless: true, executablePath: fallbackExecutable });
+    try {
+      browser = await chromium.launch({ headless: true });
+    } catch (err) {
+      const fallbackExecutable = findFallbackChromeExecutable();
+      if (!fallbackExecutable) throw err;
+      console.warn(
+        `Playwright's default chromium_headless_shell launch failed (${err.message.split('\n')[0]}); falling back to ${fallbackExecutable}`
+      );
+      browser = await chromium.launch({ headless: true, executablePath: fallbackExecutable });
+    }
+    return await fn(browser, port);
+  } finally {
+    try {
+      if (browser) await browser.close();
+    } finally {
+      server.close();
+    }
   }
+}
 
-  try {
+async function main() {
+  await withBrowser(async (browser, port) => {
     const page = await browser.newPage();
     await page.goto(`http://127.0.0.1:${port}/`);
-
-    const secure = await page.evaluate(() => window.isSecureContext && 'AudioEncoder' in window);
+    const secure = await page.evaluate(
+      () => globalThis.isSecureContext === true && 'AudioEncoder' in globalThis
+    );
     if (!secure) {
       throw new Error('BLOCKER: AudioEncoder unavailable in this browser context — cannot run the live probe.');
     }
-    console.log(`Browser: ${await browser.version()}\n`);
+    console.log(`Browser: ${await browser.version()} — ${SAMPLE_RATE} Hz mono opus @ 28 kbps\n`);
 
-    // ── Scenario 1: ALIGNED — every input is a multiple of 320 samples ──
-    const alignedLens = [1280, 1280, 640, 1280, 1280]; // matches FULL + a 320-multiple short tail
-    const alignedEvents = await page.evaluate(runSequence, alignedLens);
-    const alignedBatches = batchByCall(alignedEvents);
-    console.log('── Scenario 1: ALIGNED inputs (multiples of 320 samples) ──');
-    let alignedClean = true;
-    for (const b of alignedBatches) {
-      if (b.marker?.kind === 'encode') {
-        const expectedPackets = b.marker.len / 320;
-        console.log(`  after ENCODE(len=${b.marker.len}): ${b.packets.length} packets (expected ${expectedPackets})`);
-        if (b.packets.length !== expectedPackets) alignedClean = false;
-      } else if (b.marker?.kind === 'flush-end' || (b.marker === null && b.packets.length)) {
-        console.log(`  flush drain: ${b.packets.length} packet(s) (algorithmic-delay residue, expected)`);
+    const scenarios = [
+      { name: 'ALIGNED (multiples of 320 samples)', lens: [1280, 1280, 640, 1280, 1280] },
+      { name: 'UNALIGNED (reachable flush-tail sizes)', lens: [1280, 500, 1280, 100, 1280, 1279, 1280, 1] },
+    ];
+    const verdicts = {};
+    for (const s of scenarios) {
+      console.log(`── ${s.name} ──`);
+      const runResults = [];
+      for (let run = 1; run <= RUNS_PER_SCENARIO; run++) {
+        const events = await page.evaluate(runSequence, s.lens);
+        runResults.push(reportScenario(`run ${run}`, events));
       }
-    }
-    console.log(`  verdict: ${alignedClean ? 'clean per-call N=len/320 split' : 'NOT clean'}\n`);
-
-    // ── Scenario 2: UNALIGNED — genuinely reachable short-tail sizes ───
-    // Run TWICE (independent encoder instances) to check flush-drain
-    // repeatability as well as per-call attribution — a mapping rule must
-    // hold on EVERY run, not just be self-consistent within one.
-    const unalignedLens = [1280, 500, 1280, 100, 1280, 1279, 1280, 1];
-    console.log('── Scenario 2: UNALIGNED inputs (genuinely reachable flush-tail sizes) ──');
-    let anyUnalignedCallGotZeroImmediatePackets = false;
-    const flushDrainCounts = [];
-    for (let run = 0; run < 2; run++) {
-      // eslint-disable-next-line no-await-in-loop
-      const unalignedEvents = await page.evaluate(runSequence, unalignedLens);
-      const unalignedBatches = batchByCall(unalignedEvents);
-      console.log(`  run ${run + 1}:`);
-      for (const b of unalignedBatches) {
-        if (b.marker?.kind === 'encode') {
-          const isAligned = b.marker.len % 320 === 0;
-          console.log(
-            `    after ENCODE(len=${b.marker.len}${isAligned ? '' : ', UNALIGNED'}): ${b.packets.length} packet(s)`
-          );
-          // A short-tail (unaligned) call that produces ZERO packets before
-          // the NEXT call's own packets start arriving means its audio, if
-          // it appears at all, is folded into a LATER packet this probe
-          // cannot attribute back to this specific call from timestamp/
-          // duration data alone — the disqualifying condition itself.
-          if (!isAligned && b.packets.length === 0) anyUnalignedCallGotZeroImmediatePackets = true;
-        } else if (b.marker?.kind === 'flush-end' || (b.marker === null && b.packets.length)) {
-          console.log(`    flush drain: ${b.packets.length} packet(s)`);
-          flushDrainCounts.push(b.packets.length);
-        }
-      }
-    }
-    const flushDrainStable = new Set(flushDrainCounts).size === 1;
-    console.log(`  flush-drain counts across runs: [${flushDrainCounts.join(', ')}] (stable: ${flushDrainStable})\n`);
-
-    const unalignedClean = !anyUnalignedCallGotZeroImmediatePackets && flushDrainStable;
-    if (!unalignedClean) {
-      console.log(
-        '  verdict: NOT clean — at least one unaligned call produced zero immediately-attributable\n' +
-          '  packets (its audio is only recoverable, if at all, folded into a later batch this probe\n' +
-          "  cannot decompose) and/or the flush-time drain wasn't stable across equivalent runs.\n"
-      );
+      const attributable = runResults.every((r) => r.attributable);
+      const consistent =
+        new Set(runResults.map((r) => JSON.stringify([r.counts, r.untiledInputs]))).size === 1;
+      verdicts[s.name] = { attributable, consistent };
+      console.log(`  → attributable on every run: ${attributable}; runs consistent: ${consistent}\n`);
     }
 
-    // ── final verdict ────────────────────────────────────────────────
-    const verdict = alignedClean && unalignedClean ? 'CLEAN_1_TO_1_OR_DETERMINISTIC_SPLIT' : 'NON_DETERMINISTIC';
-
+    const enabled = Object.values(verdicts).every((v) => v.attributable && v.consistent);
+    const verdict = enabled ? 'CLEAN_1_TO_1_OR_DETERMINISTIC_SPLIT' : 'NON_DETERMINISTIC';
     console.log(`═══ VERDICT: ${verdict} ═══`);
-    if (verdict === 'NON_DETERMINISTIC') {
+    if (!enabled) {
       console.log(
-        'The full-frame (aligned) case resolves to a clean, immediate N=len/320 split, but the\n' +
-          'short-tail (unaligned) case — genuinely reachable via flushFluxAccumulator/disconnect() —\n' +
-          'does not track encode() call boundaries: packets from one call can arrive batched with a\n' +
-          "later call's packets, or be held back entirely until a subsequent call. Per PLAN-E1B2-\n" +
-          "final.md item 1's outcome matrix, this is the disabled outcome: web Opus stays off\n" +
-          '(resolveUplinkURLConfig forces linear16 unconditionally), since no single mapping rule\n' +
-          'holds across the full reachable input space.'
+        'At least one scenario produced output chunks whose timestamp/duration range straddles two\n' +
+          'submitted inputs (or leaves an input un-tiled), so no per-encode()-call subrange can be\n' +
+          "computed from the observable data. Per PLAN-E1B2-final.md item 1's outcome matrix this is\n" +
+          'the disabled outcome: web Opus stays off (resolveUplinkURLConfig forces linear16).'
       );
     }
-  } finally {
-    await browser.close();
-    server.close();
-  }
+  });
 }
 
 main().catch((err) => {

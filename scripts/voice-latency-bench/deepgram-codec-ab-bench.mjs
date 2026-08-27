@@ -192,7 +192,10 @@ export function wordErrorRate(expected, actual) {
   return {
     expectedWordCount: n,
     editDistance: edits,
-    wer: n > 0 ? edits / n : actual.length > 0 ? 1 : 0,
+    // Empty reference: WER is 1 only if the hypothesis has real tokens
+    // (pure insertions); a punctuation-only hypothesis normalizes to
+    // nothing and is a perfect match.
+    wer: n > 0 ? edits / n : m > 0 ? 1 : 0,
   };
 }
 

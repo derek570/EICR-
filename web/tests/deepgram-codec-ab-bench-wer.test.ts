@@ -64,4 +64,15 @@ describe('wordErrorRate', () => {
     expect(result.editDistance).toBe(2);
     expect(result.wer).toBe(1);
   });
+  it('an empty reference against a punctuation-only hypothesis is a perfect match (normalizes to no tokens)', () => {
+    const result = wordErrorRate('', '... !!');
+    expect(result.editDistance).toBe(0);
+    expect(result.wer).toBe(0);
+  });
+
+  it('an empty reference against a real hypothesis scores full WER (pure insertions)', () => {
+    const result = wordErrorRate('', 'circuit three');
+    expect(result.editDistance).toBe(2);
+    expect(result.wer).toBe(1);
+  });
 });

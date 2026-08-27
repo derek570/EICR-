@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   VoicedActivityDetector,
   classifyPcmEnergy,
@@ -193,17 +193,29 @@ describe('VoicedActivityDetector', () => {
   // PLAN-E1B2 item 3 (round-4 finding) — mirrors the finalized iOS
   // sibling's own item 3 test: a queue hop between frame ingress and
   // processFrame's execution must not change the recorded capturedAt.
-  it('a delayed processFrame call does not change the recorded capturedAt', () => {
-    const classifications: VoicedRangeClassification[] = [];
-    const vad = new VoicedActivityDetector(
-      () => {},
-      (c) => classifications.push(c)
-    );
-    // Stamp the segment at "ingress time" (capturedAt: 1000), simulating a
-    // frame that then sits in a queue before processFrame is finally
-    // called on it — the ingress timestamp must survive that gap.
-    const segment = makeSegment(loudFrame(320), 0, 320, { capturedAt: 1000 });
-    vad.processFrame(segment);
-    expect(classifications[0].capturedAt).toBe(1000);
+  it('a delayed processFrame call does not change the recorded capturedAt (real queue hop)', async () => {
+    vi.useFakeTimers();
+    try {
+      const classifications: VoicedRangeClassification[] = [];
+      const vad = new VoicedActivityDetector(
+        () => {},
+        (c) => classifications.push(c)
+      );
+      // Stamp at ingress from the SAME clock production uses...
+      const ingress = performance.now();
+      const segment = makeSegment(loudFrame(320), 0, 320, { capturedAt: ingress });
+      // ...then genuinely defer processing across a queue hop (a macrotask
+      // 5 s later), so "now" at processFrame time is far from ingress.
+      const hop = new Promise<void>((resolve) => setTimeout(resolve, 5000));
+      await vi.advanceTimersByTimeAsync(5000);
+      await hop;
+      const processedAt = performance.now();
+      vad.processFrame(segment);
+      expect(processedAt - ingress).toBeGreaterThanOrEqual(5000);
+      expect(classifications[0].capturedAt).toBe(ingress);
+      expect(classifications[0].capturedAt).not.toBe(processedAt);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

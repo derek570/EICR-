@@ -1294,6 +1294,12 @@ export class DeepgramService {
     });
     this.fluxSampleBuffer = new Int16Array(0);
     this.fluxAccumulatorRangeStart = null;
+    // PLAN-E1B2 item 3 (self-audit + Codex r1 lens A) — this is the FOURTH
+    // accumulator reset site, not among the three the plan cited. Leaving
+    // the capturedAt FIFO populated here would hand the lost tail's stale
+    // entries to the first post-reconnect frame and desync every frame
+    // after it.
+    this.fluxAccumulatorCapturedAtQueue = [];
   }
 
   /**
