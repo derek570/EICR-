@@ -231,12 +231,14 @@ export class UplinkLossLedger {
   /** PLAN-E1's `onUndispatchedLoss` seam, bound here (variant d). */
   recordUndispatchedLoss(report: UndispatchedLossReport): void {
     if (report.recordingSessionId !== this.recordingSessionId) return;
-    if (this.closedEpochs.has(report.epoch) && this.ownedEpochs.has(report.epoch)) return;
-    // A LATE failed-send completion from a superseded socket (an epoch
-    // older than the one that has since opened) is stale: its loss was
-    // settled at that epoch's close. Close-time residue itself arrives
-    // while the closing epoch is still the live one, so it is accepted.
-    if (this.liveEpoch !== null && report.epoch < this.liveEpoch) return;
+    // Only an OWNED (deliberate) close drops the report — a deliberate
+    // stop/pause is not an outage. An UNOWNED older epoch's residue IS
+    // real evidence: `attribute()` routes it into that epoch's open
+    // episode, or holds it inert against a dead epoch that never reopens
+    // (never re-disclosed). Codex E2 cycle-2 reverted the cycle-1
+    // `report.epoch < liveEpoch` guard, which wrongly dropped a genuine
+    // late failed-send whose unowned close had opened an episode.
+    if (this.ownedEpochs.has(report.epoch)) return;
     if (!classifyPcmEnergy(report.samples)) return;
     this.attribute({
       variant: 'encoderResidue',

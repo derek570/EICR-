@@ -1337,16 +1337,21 @@ export class DeepgramService {
     if (generation !== this.opusEncoderGeneration) return;
     const segment = this.pendingOpusInput.shift();
     if (!segment) return;
-    const dispatchedStart = this.dispatchedSampleOffset;
-    this.dispatchedSampleOffset += segment.samples.length;
     if (this.opusPacketSendFailedSinceDrain) {
       // ≥1 packet of this input never left the client: conservative
       // charge of the whole source segment (the packet→sample mapping is
       // not determinable for a short tail — PLAN-E1B2's probe finding).
+      // Codex E2 cycle-2 fix: do NOT advance `dispatchedSampleOffset` — a
+      // failed input's bytes never reached Deepgram, so its samples never
+      // exist in the vendor's dispatched stream. Advancing would push every
+      // later successful range ahead of the real watermark, so it could
+      // never watermark-retire (a false unretired tail).
       this.opusPacketSendFailedSinceDrain = false;
       if (segment.origin === 'captured') this.chargeDroppedCapture(segment);
       return;
     }
+    const dispatchedStart = this.dispatchedSampleOffset;
+    this.dispatchedSampleOffset += segment.samples.length;
     // PLAN-E2 test 2k — the SAME source-sample dispatched range regardless
     // of codec/packetisation, so retirement is codec-independent.
     this.recordDispatchedCapture(segment, dispatchedStart);
@@ -1421,6 +1426,11 @@ export class DeepgramService {
   }
 
   private teardownOpusEncoder(): void {
+    // Codex E2 cycle-2 fix — the send-failure latch is per encoder
+    // generation: a packet that threw without draining before a
+    // reconnect must not charge the SUCCESSOR generation's first drained
+    // input as loss. Cleared here (called on every teardown/reset).
+    this.opusPacketSendFailedSinceDrain = false;
     this.opusEncoder?.close();
     this.opusEncoder = null;
   }

@@ -3037,7 +3037,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // so the backend can re-speak it on a later re-emit (Audio-First #1). Both
     // are restored to defaults by `ttsQueue.reset()` (run inside the
     // `cancelSpeech({resetQueue:true})` at stop/unmount).
-    ttsQueueSetShouldDeferPlayback(() => isInspectorSpeakingRef.current || isDirectAudioActive());
+    ttsQueueSetShouldDeferPlayback(
+      () =>
+        isInspectorSpeakingRef.current ||
+        isDirectAudioActive() ||
+        // Codex E2 cycle-2 fix — the disclosure parks at ENQUEUE behind
+        // the raw VAD, but the FIFO's own last-mile gate only saw the
+        // Deepgram-derived speaking flag; a reading begun after enqueue
+        // (raw VAD leads Deepgram ~200ms) could start playback over it.
+        // The session VAD's debounced local-speaking state closes that
+        // window for every queued clip, disclosure included.
+        (sessionUplinkContextRef.current?.vad?.isLocalSpeaking ?? false),
+    );
     // §A1b — the shared forget helper clears ALL dedupe stores (permanent
     // set + field-nil TTL map + ageless reservation) so a confirmation
     // discarded before it ever played is immediately re-speakable; a

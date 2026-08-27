@@ -424,21 +424,25 @@ describe('UplinkLossLedger — Codex cycle-1 regressions', () => {
     expect(ledger.isEpisodeOpen).toBe(false);
   });
 
-  it('a late failed-send report from a superseded epoch is ignored; close-time residue on the live epoch is kept', () => {
-    const stale = harness();
-    stale.ledger.onSocketOpened(E(1));
-    stale.ledger.onSocketClosed(E(1), ACTIVE);
-    stale.ledger.onSocketOpened(E(2));
-    stale.ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
-    expect(stale.ledger.unresolvedEntryCount).toBe(0);
-    expect(stale.ledger.isEpisodeOpen).toBe(false);
+  it('a late failed-send report for an OWNED-closed epoch is dropped; an UNOWNED older epoch whose episode is still open keeps it (Codex cycle-2)', () => {
+    // Owned (deliberate) close: not an outage — the report is dropped.
+    const owned = harness();
+    owned.ledger.onSocketOpened(E(1));
+    owned.ledger.onSocketClosed(E(1), OWNED);
+    owned.ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
+    expect(owned.ledger.unresolvedEntryCount).toBe(0);
+    expect(owned.disclosed).toHaveLength(0);
 
+    // Unowned older epoch whose episode is STILL OPEN (a late completion
+    // arriving before the reopen): real evidence, carried into the episode.
     const live = harness();
     live.ledger.onSocketOpened(E(1));
+    live.ledger.onSocketClosed(E(1), ACTIVE); // unowned → episode opens
     live.ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
-    live.ledger.onSocketClosed(E(1), ACTIVE);
-    expect(live.ledger.unresolvedEntryCount).toBe(1);
     expect(live.ledger.isEpisodeOpen).toBe(true);
+    expect(live.ledger.unresolvedEntryCount).toBe(1);
+    live.ledger.onSocketOpened(E(2));
+    expect(live.disclosed).toHaveLength(1);
   });
 
   it('contiguous per-segment staged reports coalesce into ONE stagedLoss source; a gap mints a second', () => {
