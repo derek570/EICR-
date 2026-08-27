@@ -18,14 +18,23 @@ describe('resolveUplinkURLConfig (PLAN-E1 E0 test seam)', () => {
     expect(result.resolvedSenderCodec).toBe('linear16');
   });
 
-  it('flux with a latched opus codec resolves the sender to opus', () => {
+  it('PLAN-E1B2 item 1 (disabled outcome) — flux with a latched opus codec still resolves to linear16', () => {
+    // A live probe against the real WebCodecs AudioEncoder found the
+    // packet-to-source-sample mapping is not determinable for the
+    // genuinely reachable production input space (short-tail flush inputs
+    // are not guaranteed multiples of the encoder's 320-sample internal
+    // frame size) — see scripts/deepgram-webcodecs-opus-packet-probe.mjs
+    // and PLAN-E1B2-final.md item 1's outcome matrix. Web Opus therefore
+    // stays disabled unconditionally, regardless of what the backend/latch
+    // claims.
     const result = resolveUplinkURLConfig({
       model: 'flux',
       latchedCodec: 'opus',
       ccuAnalysis: null,
     });
-    expect(result.resolvedSenderCodec).toBe('opus');
-    expect(result.url).toContain('encoding=opus');
+    expect(result.resolvedSenderCodec).toBe('linear16');
+    expect(result.url).toContain('encoding=linear16');
+    expect(result.url).not.toContain('encoding=opus');
   });
 
   it('keepalive policy: nova-3 enables the silence keepalive, flux disables it — for every codec', () => {

@@ -111,8 +111,31 @@ export function resolveUplinkURLConfig(params: {
   // only constructed when this value is literally `'opus'` — an
   // unrecognised third value would reach a null `opusEncoder`, silently
   // dropping every sample.
-  const latched = model === 'flux' ? (latchedCodec ?? 'linear16') : 'linear16';
-  const resolvedSenderCodec: UplinkCodec = latched === 'opus' ? 'opus' : 'linear16';
+  //
+  // PLAN-E1B2 item 1 — web Opus stays disabled unconditionally, regardless
+  // of `latchedCodec`. A live probe against the real WebCodecs
+  // `AudioEncoder` (16kHz mono opus, matching `opus-encoder.ts`'s exact
+  // config) found the packet-to-source-sample mapping is NOT determinable
+  // for the genuinely reachable production input space: a sequence of
+  // 320-sample-aligned (20ms-multiple) `encode()` calls produces a clean,
+  // immediate N-packets-per-call split, but interleaving a non-aligned
+  // short-tail call — exactly what `flushFluxAccumulator`'s scope-boundary
+  // flush and `disconnect()`'s graceful-teardown flush actually submit
+  // (any length from 1 to 1,279 samples, not just multiples of 320) —
+  // makes packet arrival batch unpredictably across encode() call
+  // boundaries (see the probe script and its captured output for the
+  // full trace). Per PLAN-E1B2-final.md item 1's outcome matrix, this is
+  // the "mapping can't be determined deterministically" branch: shipping
+  // a completion signal built on a mapping that only holds for the
+  // aligned-only case would silently mis-account the genuinely reachable
+  // unaligned case. `opus-encoder.ts`'s WebCodecs wrapper is therefore
+  // left entirely unmodified and unreachable in production — forcing
+  // `resolvedSenderCodec` here means `constructOpusEncoderForCurrentGeneration()`
+  // (deepgram-service.ts) is never called. Rollback/re-enable path: once a
+  // future probe pins a mapping rule that holds across the full input
+  // space, remove this override.
+  const resolvedSenderCodec: UplinkCodec = 'linear16';
+  void latchedCodec; // retained in the signature — see the disabled-outcome note above
 
   const searchParams = baseParams(model, resolvedSenderCodec);
   const budget = codecIndependentBaseLength(model);

@@ -1,12 +1,33 @@
 /**
- * PLAN-E1 — the codec-aware single sender + Opus encoder integration:
- * generation fencing (async output bound to the connection that created
- * it), FIFO input/output pairing, the onUndispatchedLoss seam on an
- * UNEXPECTED teardown, and graceful-stop bounded-flush residue telemetry.
+ * PLAN-E1 — the codec-aware single sender, and (PLAN-E1B2 item 1) why web
+ * Opus stays permanently disabled.
  *
- * Uses a hand fake `WebSocketFactory` (same pattern as
- * `deepgram-service-flux.test.ts`) + a fake `OpusEncoderFactory` (WebCodecs
- * `AudioEncoder`/`AudioData` are not implemented under Vitest/jsdom).
+ * A live probe against the real browser `AudioEncoder`
+ * (`scripts/deepgram-webcodecs-opus-packet-probe.mjs`, matching
+ * `opus-encoder.ts`'s exact 16kHz/mono/28kbps config) found the
+ * packet-to-source-sample mapping is NOT determinable for the genuinely
+ * reachable production input space: a sequence of 320-sample-aligned
+ * (20ms-multiple) `encode()` calls produces a clean, immediate
+ * N-packets-per-call split, but a non-aligned short-tail call — exactly
+ * what `flushFluxAccumulator`'s scope-boundary flush and `disconnect()`'s
+ * graceful-teardown flush actually submit (any length from 1 to 1,279
+ * samples) — can produce ZERO immediately-attributable output packets, with
+ * its audio folded into a LATER call's batch in a way no observable
+ * timestamp/duration data can decompose back out. Per
+ * PLAN-E1B2-final.md item 1's outcome matrix, this is the "mapping can't be
+ * determined deterministically" branch: `resolveUplinkURLConfig`
+ * (`uplink-url-config.ts`) now forces `linear16` unconditionally,
+ * regardless of what the backend/latch claims, so `opus-encoder.ts`'s
+ * WebCodecs wrapper and `deepgram-service.ts`'s encoder-routing machinery
+ * below are left in place (a future probe may re-enable them) but are
+ * UNREACHABLE from any real production entry point.
+ *
+ * This file used to test that machinery activating end-to-end (FIFO
+ * input/output pairing, generation fencing, onUndispatchedLoss on an
+ * unexpected teardown, graceful-stop bounded-flush residue) — those tests
+ * are gone because their premise (the sender ever resolves to Opus) is now
+ * false. The `FakeOpusEncoder`/`makeFakeOpusEncoderFactory` helpers stay,
+ * repurposed to PROVE the encoder is never constructed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
@@ -50,38 +71,18 @@ class FakeWS {
   }
 }
 
+/** Minimal `OpusEncoderLike` stand-in. Every remaining test in this file
+ *  asserts the encoder is NEVER constructed (PLAN-E1B2 item 1's disabled
+ *  outcome), so this fake only needs to exist as an injectable factory
+ *  target — it never needs to actually emit a packet. */
 class FakeOpusEncoder implements OpusEncoderLike {
   pending: Int16Array[] = [];
   closed = false;
-  flushBehavior: 'drain' | 'hang' = 'drain';
-  constructor(
-    private readonly onPacket: (bytes: Uint8Array) => void,
-    private readonly onInputDrained: () => void
-  ) {}
   encode(samples: Int16Array): void {
     this.pending.push(samples);
   }
-  /** Test helper — pop the oldest still-pending input, fire `packetCount`
-   *  output packets for it (default 1), THEN drain it. `packetCount > 1`
-   *  simulates a real encoder emitting several packets for one input
-   *  (E0's on-device probe found 4 packets from one 80ms input) WITHOUT
-   *  desyncing the pop — `onPacket` and `onInputDrained` are separate
-   *  signals, exactly like production. */
-  emitNext(packetCount = 1): void {
-    if (this.pending.length === 0) return;
-    this.pending.shift();
-    for (let i = 0; i < packetCount; i++) {
-      this.onPacket(new Uint8Array([1, 2, 3]));
-    }
-    this.onInputDrained();
-  }
   async flush(): Promise<void> {
-    if (this.flushBehavior === 'hang') {
-      return new Promise(() => {
-        /* never resolves — exercises the bounded-flush timeout */
-      });
-    }
-    while (this.pending.length > 0) this.emitNext();
+    /* no-op — never exercised, since the encoder is never constructed */
   }
   close(): void {
     this.closed = true;
@@ -90,8 +91,8 @@ class FakeOpusEncoder implements OpusEncoderLike {
 
 function makeFakeOpusEncoderFactory() {
   const encoders: FakeOpusEncoder[] = [];
-  const factory: OpusEncoderFactory = (onPacket, onInputDrained) => {
-    const enc = new FakeOpusEncoder(onPacket, onInputDrained);
+  const factory: OpusEncoderFactory = () => {
+    const enc = new FakeOpusEncoder();
     encoders.push(enc);
     return enc;
   };
@@ -148,208 +149,56 @@ describe('DeepgramService — Opus sender (PLAN-E1)', () => {
     vi.useRealTimers();
   });
 
-  it('routes captured audio through the encoder when the latched codec is opus', async () => {
+  it.each(['flux', 'nova3'] as const)(
+    'PLAN-E1B2 item 1/2 (disabled outcome) — %s never constructs an Opus encoder or resolves an opus URL, even when the backend/latch claims uplink_codec is opus',
+    async (model) => {
+      const { factory, encoders } = makeFakeOpusEncoderFactory();
+      const cbs: DeepgramCallbacks = {
+        onInterimTranscript: vi.fn(),
+        onFinalTranscript: vi.fn(),
+        onUtteranceEnd: vi.fn(),
+        onSpeechStarted: vi.fn(),
+        onError: vi.fn(),
+      };
+      let created: FakeWS | null = null;
+      const wsFactory: WebSocketFactory = (url, protocols) => {
+        created = new FakeWS(url, protocols) as unknown as WebSocket & FakeWS;
+        return created as unknown as WebSocket;
+      };
+      const getWs = () => created as unknown as FakeWS;
+      const service = new DeepgramService(cbs, wsFactory, model, {
+        sessionContext: makeSessionContext(),
+        opusEncoderFactory: factory,
+      });
+      // The mock backend claims uplink_codec is 'opus' — the live-probe
+      // finding means this must be ignored, not merely defaulted-around.
+      service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(encoders.length).toBe(0);
+      expect(service.resolvedCodec).toBe('linear16');
+      expect(getWs().url).toContain('encoding=linear16');
+      expect(getWs().url).not.toContain('encoding=opus');
+
+      // Sending audio must go out as linear16 over the wire, never queue
+      // into an encoder that was never built.
+      getWs().onopen?.();
+      service.sendSamples(frame1280());
+      expect(encoders.length).toBe(0);
+      expect(getWs().sent.length).toBe(1);
+    }
+  );
+
+  it('a fresh session with no backend response yet also never constructs an Opus encoder (default-linear16 latch)', async () => {
     const { factory, encoders } = makeFakeOpusEncoderFactory();
     const { service, getWs } = makeService({ opusEncoderFactory: factory });
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
-    // Fetcher mode resolves the promise on a microtask.
-    await Promise.resolve();
-    await Promise.resolve();
-    getWs().onopen?.();
-
-    service.sendSamples(frame1280());
-    expect(encoders.length).toBe(1);
-    expect(encoders[0].pending.length).toBe(1);
-    // Nothing sent yet — the encoded packet hasn't arrived.
-    expect(getWs().sent.length).toBe(0);
-
-    encoders[0].emitNext();
-    expect(getWs().sent.length).toBe(1);
-  });
-
-  it('preserves FIFO input/output pairing across multiple queued frames', async () => {
-    const { factory, encoders } = makeFakeOpusEncoderFactory();
-    const { service, getWs } = makeService({ opusEncoderFactory: factory });
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
-    await Promise.resolve();
-    await Promise.resolve();
-    getWs().onopen?.();
-
-    service.sendSamples(frame1280());
-    service.sendSamples(frame1280());
-    service.sendSamples(frame1280());
-    expect(encoders[0].pending.length).toBe(3);
-
-    encoders[0].emitNext();
-    expect(getWs().sent.length).toBe(1);
-    encoders[0].emitNext();
-    expect(getWs().sent.length).toBe(2);
-    encoders[0].emitNext();
-    expect(getWs().sent.length).toBe(3);
-    // A fourth emit with nothing pending is a safe no-op.
-    encoders[0].emitNext();
-    expect(getWs().sent.length).toBe(3);
-  });
-
-  it('a single input producing MULTIPLE output packets does not desync the FIFO pop (Codex review r1 BLOCKER)', async () => {
-    const { factory, encoders } = makeFakeOpusEncoderFactory();
-    const { service, getWs } = makeService({ opusEncoderFactory: factory });
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
-    await Promise.resolve();
-    await Promise.resolve();
-    getWs().onopen?.();
-
-    service.sendSamples(frame1280()); // input A
-    service.sendSamples(frame1280()); // input B
-    expect(encoders[0].pending.length).toBe(2);
-
-    // Input A emits 4 packets (mirrors the on-device E0 probe: one
-    // 80ms/1280-frame `encode()` call produced 4 ~20ms packets) — a
-    // pop-per-packet design would consume input B's queue slot on
-    // packet #2, well before input B has even drained.
-    encoders[0].emitNext(4);
-    expect(getWs().sent.length).toBe(4);
-    // Input B still has its OWN pending slot — only ONE input has
-    // drained so far, not two.
-    expect(encoders[0].pending.length).toBe(1);
-
-    encoders[0].emitNext(1);
-    expect(getWs().sent.length).toBe(5);
-    expect(encoders[0].pending.length).toBe(0);
-  });
-
-  it('discards encoder output that arrives after a NEWER generation started', async () => {
-    const { factory, encoders } = makeFakeOpusEncoderFactory();
-    const { service, getWs } = makeService({ opusEncoderFactory: factory });
-    vi.useFakeTimers();
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
-    await vi.advanceTimersByTimeAsync(0);
-    getWs().onopen?.();
-
-    service.sendSamples(frame1280()); // queued on generation 1's encoder
-    const ws1 = getWs();
-    expect(encoders.length).toBe(1);
-
-    // Abnormal close — schedules a reconnect (fetcher mode).
-    ws1.onclose?.({ code: 1006, reason: 'abnormal', wasClean: false });
-    await vi.advanceTimersByTimeAsync(1100); // past the 1s initial backoff
-    const ws2 = getWs();
-    expect(ws2).not.toBe(ws1);
-    expect(encoders.length).toBe(2); // a fresh generation's encoder
-
-    // The STALE (generation-1) encoder's late output must be discarded —
-    // never sent on the (now-defunct) old socket, and never crashes.
-    encoders[0].emitNext();
-    expect(ws1.sent.length).toBe(0);
-    expect(ws2.sent.length).toBe(0);
-  });
-
-  it('charges pending encoder input as onUndispatchedLoss on an UNEXPECTED teardown', async () => {
-    const reports: Array<{
-      recordingSessionId: string;
-      captureSampleRange: { start: number; end: number };
-    }> = [];
-    const { factory, encoders } = makeFakeOpusEncoderFactory();
-    const { service, getWs } = makeService({
-      opusEncoderFactory: factory,
-      onUndispatchedLoss: (r) => reports.push(r as never),
-    });
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
-    await Promise.resolve();
-    await Promise.resolve();
-    getWs().onopen?.();
-
-    service.sendSamples(frame1280());
-    service.sendSamples(frame1280());
-    expect(encoders[0].pending.length).toBe(2); // never emitted — still "in flight"
-
-    // Abnormal (reconnectable) close.
-    getWs().onclose?.({ code: 1006, reason: 'abnormal', wasClean: false });
-
-    expect(reports.length).toBe(2);
-    expect(reports[0].recordingSessionId).toBe('sess-test');
-    expect(reports[0].captureSampleRange).toEqual({ start: 0, end: 1280 });
-    expect(reports[1].captureSampleRange).toEqual({ start: 1280, end: 2560 });
-    // The default no-op+telemetry handler is bypassed when a real handler
-    // is supplied — the unbound counter stays at 0.
-    expect(unboundLossTelemetryCount()).toBe(0);
-  });
-
-  it('defaults to the no-op + telemetry counter when no onUndispatchedLoss handler is supplied', async () => {
-    const { factory, encoders } = makeFakeOpusEncoderFactory();
-    const { service, getWs } = makeService({ opusEncoderFactory: factory });
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
+    service.connect(async () => ({ key: 'jwt' }), 16000); // no uplink_codec field at all
     await Promise.resolve();
     await Promise.resolve();
     getWs().onopen?.();
     service.sendSamples(frame1280());
-    expect(encoders[0].pending.length).toBe(1);
-    getWs().onclose?.({ code: 1006, reason: 'abnormal', wasClean: false });
-    expect(unboundLossTelemetryCount()).toBe(1);
-  });
-
-  it('a graceful stop runs a bounded flush; unflushable residue is telemetered, NOT loss-reported', async () => {
-    const reports: unknown[] = [];
-    const { factory, encoders } = makeFakeOpusEncoderFactory();
-    const { service, getWs } = makeService({
-      opusEncoderFactory: factory,
-      onUndispatchedLoss: (r) => reports.push(r),
-    });
-    vi.useFakeTimers();
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
-    await vi.advanceTimersByTimeAsync(0);
-    getWs().onopen?.();
-    service.sendSamples(frame1280());
-    encoders[0].flushBehavior = 'hang'; // simulate an unflushable tail
-    expect(encoders[0].pending.length).toBe(1);
-
-    service.disconnect();
-    await vi.advanceTimersByTimeAsync(600); // past the 500ms flush bound
-
-    expect(gracefulResidueTelemetryCount()).toBe(1);
-    expect(reports.length).toBe(0); // NOT the ledger-adjacent seam
-  });
-
-  it('a graceful stop that flushes cleanly reports ZERO residue', async () => {
-    const { factory, encoders } = makeFakeOpusEncoderFactory();
-    const { service, getWs } = makeService({ opusEncoderFactory: factory });
-    vi.useFakeTimers();
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
-    await vi.advanceTimersByTimeAsync(0);
-    getWs().onopen?.();
-    service.sendSamples(frame1280());
-    // Default flushBehavior = 'drain' — flush() drains everything itself.
-
-    service.disconnect();
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(gracefulResidueTelemetryCount()).toBe(0);
-  });
-
-  it('nova-3 forces linear16 regardless of the latched codec — no encoder constructed', async () => {
-    const { factory, encoders } = makeFakeOpusEncoderFactory();
-    const cbs: DeepgramCallbacks = {
-      onInterimTranscript: vi.fn(),
-      onFinalTranscript: vi.fn(),
-      onUtteranceEnd: vi.fn(),
-      onSpeechStarted: vi.fn(),
-      onError: vi.fn(),
-    };
-    let created: FakeWS | null = null;
-    const wsFactory: WebSocketFactory = (url, protocols) => {
-      created = new FakeWS(url, protocols) as unknown as WebSocket & FakeWS;
-      return created as unknown as WebSocket;
-    };
-    const service = new DeepgramService(cbs, wsFactory, 'nova3', {
-      sessionContext: makeSessionContext(),
-      opusEncoderFactory: factory,
-    });
-    service.connect(async () => ({ key: 'jwt', uplink_codec: 'opus' }), 16000);
-    await Promise.resolve();
-    await Promise.resolve();
     expect(encoders.length).toBe(0);
     expect(service.resolvedCodec).toBe('linear16');
-    expect((created as unknown as FakeWS | null)?.url).toContain('encoding=linear16');
   });
 
   it('charges a partial Flux sub-frame tail as onUndispatchedLoss on an UNEXPECTED close (Codex review r1 IMPORTANT fix)', async () => {
