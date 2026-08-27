@@ -2324,7 +2324,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           if (state === 'connected') {
             if (emittingService !== null && emittingService === deepgramRef.current) {
               const epoch = emittingService.liveEpoch;
-              if (epoch !== null) {
+              if (epoch != null) {
                 emittingLedger?.onSocketOpened(epoch);
               }
             }
