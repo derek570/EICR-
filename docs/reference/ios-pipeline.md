@@ -586,6 +586,113 @@ internal to this file, not separate types) (web:
 
 ---
 
+## Honest uplink-loss disclosure (PLAN-E2, 2026-08-27)
+
+Audio a client accepted from the tap but that no socket could take is no
+longer silent. Neither client replays it — the round-4 circuit-breaker
+descoped outage REPLAY (no delivery-evidence contract exists, so a replay can
+duplicate certificate writes). Instead, after the next successful socket open,
+the client speaks ONE cause-agnostic line, exactly once:
+
+> "Some recent audio may not have been transcribed. Check your recent readings
+> and repeat only anything that's missing."
+
+It is spoken verbatim for a reconnect disclosure and a pre-open disclosure
+alike, bypasses the confirmations toggle (the documented exception — "check and
+repeat only what's missing" is performable with confirmations OFF, by a glance
+at the grid), and is a member of the wave-wide spoken-string distinctness union
+(`config/closed-enum-vectors.json`, paired SHA-256 pins in both repos).
+
+### The loss ledger
+
+One recording-session ledger of UNRESOLVED VOICED AUDIO per client
+(`web/src/lib/recording/uplink-loss-ledger.ts`, `Sources/Services/UplinkLossLedger.swift`
+— identical state matrix). Only voiced ranges enter (the shared
+`VoicedActivityDetector`'s energy classifier); TTS-period frames never reach
+it. Entries:
+
+| Variant | Source | Retires by |
+|---|---|---|
+| undispatched | the `AUDIO_DROPPED` branch, a caught send failure | disclosure only |
+| dispatched | every captured frame handed to the socket, with its half-open SOURCE-SAMPLE dispatched range | the SAME epoch's watermark |
+| encoderResidue | PLAN-E1's `onUndispatchedLoss` seam (variant d) | disclosure only |
+| staged | iOS reconnect-queue overflow / abandoned queue; web wake-ring loss (PLAN-E-WAKE binds) | disclosure only |
+
+Loss SOURCES are a discriminated `LossSourceId` — `episode(id)` (the first
+unowned transport failure through the first successful open; later failed
+attempts JOIN), `preOpenWindow(id)` (capture before any open for the current
+capture attempt: session start, pause→resume, and — because both clients mint
+the epoch at socket construction — a drop stamped with a not-yet-opened
+`epoch` scope), and `stagedLoss(id)` (one per staged report). Every counter and
+every delivery token keys on `LossSourceId`.
+
+**Two timebases, never compared.** The CAPTURE offset counts every accepted
+sample; the DISPATCHED offset counts only samples handed to the socket, per
+connection epoch. The Deepgram-processed WATERMARK lives in the dispatched
+domain: Flux's `audio_window_end` (seconds since the connection began)
+converts through the shared `audioWindowEndToSampleOffset` and is offset by
+the epoch's dispatch origin. A dropped frame advances capture but not
+dispatched, so it can never be retired by a watermark that passes its capture
+range. nova-3 has no pinned retirement signal, so nova-3 records no dispatched
+entries (an unretirable entry would false-disclose on every reconnect).
+
+**Close ownership answers "is this an outage?", never "was audio lost?".**
+`disconnect()` — the web client's only `ws.close()` site; iOS's shared helper
+called by user pause, stop and sleep entry — marks its generation OWNED. An
+owned close opens no episode and DISCARDS every unresolved entry (a graceful
+stop or pause can still lose an unretired tail; that is today's behaviour,
+owned by the "graceful-stop end-to-end drain" follow-up). An UNOWNED close
+while the tap is active opens or joins the episode regardless of close code —
+an unsolicited 1000/1005/`normalClosure` is counted even though today's
+reconnect gates (unchanged, Carve A) do not retry it. "Capture active" is
+pushed by the tap owner (`captureActive`; web: `micRef` set/cleared; iOS: all
+six `RecordingSessionCoordinator` tap transitions, `false` only AFTER the
+residual flush) and is a classification signal only — never a send gate.
+
+**Materiality is evaluated on UNRETIRED evidence at disclosure time.** No
+duration gate anywhere: a sub-2s complete reading dropped pre-open discloses;
+a 10-minute silence-only outage discloses nothing. Three counters, each once
+per source: `uplink_loss_episode_material` (first material accrual — never at
+episode open), `uplink_loss_episode_disclosed` (at token association),
+`uplink_loss_episode_retired_immaterial` (an episode whose evidence all
+retired before its moment). `material − disclosed − retired_immaterial` is
+the never-associated diagnostic; PLAN-E-TERM's completion counter gives the
+unheard residue.
+
+### Delivery: one token per moment
+
+Every successful open — including the FIRST, observed through
+`onStateChange`→'connected' on web and the `connectionState` didSet on iOS
+(the open handlers are untouched) — is the ONE disclosure moment: every
+pending source coalesces into ONE clip carrying ONE operation token. A
+`holdDisclosureRelease()` hold parks the release (iOS's staging path holds
+across the awaited open + ring replay + queue flush; PLAN-E-WAKE's barrier is
+the same API), then the clip parks behind LOCAL speech (the session VAD's
+debounced state, continuous across epochs) until silence.
+
+The delivery ledger (`uplink-loss-disclosure.ts`, `UplinkLossDisclosure.swift`;
+owners `tts.ts` / `AlertManager`) keeps at most ONE token outstanding per
+session. A token is TERMINAL only on natural completion; a pre-start discard,
+mid-play preemption, barge-in, audio-session interruption (iOS: the ViewModel's
+existing `onInterruptionPause` closure notifies) or playback failure (web:
+`tts-queue.ts`'s new `onPlaybackFailed`, mutually exclusive with `onEnd`) puts
+it back to `pending` and it replays. A source arriving while the token is
+`pending` joins it; while `playing`, it awaits a successor minted at
+completion. Direct prompts DEFER while a disclosure is playing and release at
+the playing→pending transition. Tokens are session-stamped and abandoned at
+session teardown, so the frozen `stop()` never leaves the slot occupied.
+
+**Removed on web:** the unexpected-reconnect ring drain in `onReconnected`
+(it re-sent up to 3s of already-sent audio). The automatic full-sleep drains,
+doze resume and manual zero-replay are untouched.
+
+**Key files:** web `uplink-loss-ledger.ts`, `uplink-loss-disclosure.ts`,
+`deepgram-service.ts`, `tts.ts`, `tts-queue.ts`, `recording-context.tsx`; iOS
+`UplinkLossLedger.swift`, `UplinkLossDisclosure.swift`, `DeepgramService.swift`,
+`AlertManager.swift`, `RecordingSessionCoordinator.swift`.
+
+---
+
 ## Realtime iOS Log Streaming (PLAN-backend-final.md Phase 1.3)
 
 On-device `DebugLogger` JSONL output streams to the backend in near-real-time via batched `client_log_batch` envelopes over the existing Sonnet WebSocket. Replaces the multipart `/api/session/:id/analytics` upload that has been broken since Mar 2026 — that path used a one-shot end-of-session POST that lost the batch on crash and required the iPad to be plugged in for diagnosis. The streaming path:
