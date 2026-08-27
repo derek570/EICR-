@@ -14,6 +14,7 @@ import {
   type DeepgramCallbacks,
   type WebSocketFactory,
 } from '@/lib/recording/deepgram-service';
+import type { CapturedPcmSegment } from '@/lib/recording/tagged-pcm-segment';
 
 // Minimal controllable WebSocket fake. Records the URL + every frame sent,
 // and lets the test drive onopen/onmessage.
@@ -251,5 +252,166 @@ describe('DeepgramService — Flux 80ms audio batching', () => {
     service.sendSamples(new Float32Array(840));
     const after = ws.sent.filter((f) => f instanceof ArrayBuffer) as ArrayBuffer[];
     expect(after).toHaveLength(3);
+  });
+
+  // PLAN-E1B2 item 3 — capturedAt propagation through Flux batching's
+  // segment merges. `dispatchFrame` is private; spying on it via a cast is
+  // the least invasive way to observe a dispatched frame's capturedAt
+  // without adding production-only test instrumentation.
+  function makeTaggedSegment(
+    samples: Int16Array,
+    start: number,
+    capturedAt: number
+  ): CapturedPcmSegment {
+    return {
+      origin: 'captured',
+      samples,
+      recordingSessionId: 'sess-test',
+      captureSampleRange: { start, end: start + samples.length },
+      epochScope: { kind: 'preOpen', captureAttemptId: 1 as any },
+      capturedAt,
+    };
+  }
+
+  it("a full-frame emission reports the FIRST constituent segment's capturedAt, never the second's", () => {
+    const { service, ws } = makeService();
+    ws.open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+    // Segment A (800 samples, capturedAt=100) + segment B (480 samples,
+    // capturedAt=200) together span exactly one full 1280-sample frame.
+    service.sendTaggedAudio(makeTaggedSegment(new Int16Array(800), 0, 100));
+    service.sendTaggedAudio(makeTaggedSegment(new Int16Array(480), 800, 200));
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(100);
+  });
+
+  it("a scope-boundary flush reports the held-back remainder's own capturedAt", () => {
+    const { service, ws } = makeService();
+    ws.open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+    // 500 samples — short of a full frame, held as a remainder.
+    service.sendTaggedAudio(makeTaggedSegment(new Int16Array(500), 0, 111));
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    // A DIFFERENT epoch scope forces a scope-boundary flush of the
+    // remainder before the new segment is accepted.
+    const differentScope = { kind: 'epoch' as const, id: 9 as any };
+    service.sendTaggedAudio({
+      ...makeTaggedSegment(new Int16Array(320), 500, 222),
+      epochScope: differentScope,
+    });
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(111);
+  });
+
+  // PLAN-E1B2 item 3 (round-8 finding) — the multi-frame FIFO regression a
+  // two/three-segment case can't catch: segment B stays at the queue head
+  // by accident on the path a smaller case would exercise. Mirrors
+  // mic-capture.ts's documented typical per-callback size (~128 samples).
+  it('the capturedAt FIFO survives consuming several small segments per frame (multi-segment loop, not a single-head check)', () => {
+    const { service, ws } = makeService();
+    ws.open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+    // 20 segments of 128 samples each, distinct capturedAt per segment.
+    // The first 10 (10 * 128 = 1280) combine into frame 1 with NO
+    // remainder; segment 11 starts frame 2.
+    let start = 0;
+    for (let i = 0; i < 20; i++) {
+      service.sendTaggedAudio(makeTaggedSegment(new Int16Array(128), start, 1000 + i));
+      start += 128;
+    }
+    expect(dispatchSpy).toHaveBeenCalledTimes(2);
+    // Frame 1 = segments 0..9 → capturedAt of segment 0 (1000).
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(1000);
+    // Frame 2 = segments 10..19 → capturedAt of segment 10 (1010), NEVER
+    // segment 1's (1001) — a single-head, non-looping consumer would
+    // dequeue only segment 0 for frame 1, leave segments 1..9 stranded in
+    // the queue, and wrongly report segment 1's capturedAt here.
+    expect((dispatchSpy.mock.calls[1][0] as CapturedPcmSegment).capturedAt).toBe(1010);
+  });
+});
+
+// PLAN-E1B2 item 3 — the plan's own MANDATORY three-segment remainder case
+// (round-6 finding): the single-value bug only surfaces after a full-frame
+// emission has already consumed one segment entirely.
+describe('DeepgramService — Flux capturedAt FIFO (PLAN-E1B2 item 3, self-audit additions)', () => {
+  function seg(samples: number, start: number, capturedAt: number): CapturedPcmSegment {
+    return {
+      origin: 'captured',
+      samples: new Int16Array(samples),
+      recordingSessionId: 'sess-test',
+      captureSampleRange: { start, end: start + samples },
+      epochScope: { kind: 'preOpen', captureAttemptId: 1 as any },
+      capturedAt,
+    };
+  }
+
+  it("A/B/C: frame 2 reports segment B's capturedAt (A fully consumed by frame 1), never A's or C's", () => {
+    const { service, ws } = makeService();
+    ws.open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+    service.sendTaggedAudio(seg(500, 0, 100)); // A — held as remainder, no emission
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    service.sendTaggedAudio(seg(1000, 500, 200)); // B — 1500 buffered → frame 1 (A + 780 of B), 220 of B remains
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(100);
+    service.sendTaggedAudio(seg(1060, 1500, 300)); // C — 220 + 1060 = 1280 → frame 2
+    expect(dispatchSpy).toHaveBeenCalledTimes(2);
+    expect((dispatchSpy.mock.calls[1][0] as CapturedPcmSegment).capturedAt).toBe(200);
+  });
+
+  it("an abnormal close that loss-charges a partial tail also clears the capturedAt FIFO — the first post-reconnect frame uses only the fresh segment's capturedAt", () => {
+    const cbs: DeepgramCallbacks = {
+      onInterimTranscript: vi.fn(),
+      onFinalTranscript: vi.fn(),
+      onUtteranceEnd: vi.fn(),
+      onSpeechStarted: vi.fn(),
+      onError: vi.fn(),
+    };
+    let latest: FakeWS | null = null;
+    const factory: WebSocketFactory = (url, protocols) => {
+      latest = new FakeWS(url, protocols) as unknown as WebSocket & FakeWS;
+      return latest as unknown as WebSocket;
+    };
+    const service = new DeepgramService(cbs, factory, 'flux');
+    service.connect('fake-key', 16000);
+    (latest as unknown as FakeWS).open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+
+    // A partial tail sits in the accumulator with a queue entry behind it.
+    service.sendTaggedAudio(seg(700, 0, 111));
+    expect(dispatchSpy).not.toHaveBeenCalled();
+    // Abnormal (reconnectable-code) close → chargeFluxTailLoss clears the
+    // buffer. Before the fix it left the FIFO holding {700, 111}.
+    (latest as unknown as FakeWS).onclose?.({ code: 1006, reason: 'abnormal', wasClean: false });
+
+    service.connect('fake-key', 16000);
+    (latest as unknown as FakeWS).open();
+    service.sendTaggedAudio(seg(1280, 700, 999));
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    // With the stale entry, consumeCapturedAtQueue would have returned 111.
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(999);
+  });
+  it('a sub-ratio input that resamples to ZERO samples never enters the capturedAt FIFO (Codex r2 NIT)', () => {
+    const cbs: DeepgramCallbacks = {
+      onInterimTranscript: vi.fn(),
+      onFinalTranscript: vi.fn(),
+      onUtteranceEnd: vi.fn(),
+      onSpeechStarted: vi.fn(),
+      onError: vi.fn(),
+    };
+    let ws: FakeWS | null = null;
+    const factory: WebSocketFactory = (url, protocols) => {
+      ws = new FakeWS(url, protocols) as unknown as WebSocket & FakeWS;
+      return ws as unknown as WebSocket;
+    };
+    const service = new DeepgramService(cbs, factory, 'flux');
+    service.connect('fake-key', 48000); // 3:1 ratio — 2 input samples → 0 output samples
+    (ws as unknown as FakeWS).open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+    expect(service.sendSamples(new Float32Array(2).fill(0.1), 111)).toBeNull();
+    // A real full frame afterwards must carry ITS OWN stamp, not 111.
+    service.sendSamples(new Float32Array(1280 * 3).fill(0.1), 999);
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(999);
   });
 });

@@ -9,7 +9,7 @@
 | Component | Technology |
 |-----------|------------|
 | iOS App | SwiftUI (CertMateUnified) — primary user interface |
-| Transcription | Deepgram Flux `flux-general-en` (`/v2/listen`, direct WebSocket from both clients; web since 2026-07-03 via the `DEEPGRAM_STT_MODEL` runtime kill-switch, nova-3 fail-safe only). Uplink encoding is server-latched per session via the key response (`DEEPGRAM_UPLINK_CODEC`, default `linear16` — see the `certmate-config-and-flags` skill); as of 2026-08-25 the Opus sender/encoder is not yet built, so both clients always send linear16 regardless of the flag |
+| Transcription | Deepgram Flux `flux-general-en` (`/v2/listen`, direct WebSocket from both clients; web since 2026-07-03 via the `DEEPGRAM_STT_MODEL` runtime kill-switch, nova-3 fail-safe only). Uplink encoding is server-latched per session via the key response (`DEEPGRAM_UPLINK_CODEC`, default `linear16` — see the `certmate-config-and-flags` skill); as of 2026-08-26 iOS ships a real Opus sender/encoder (`AVAudioConverter`) that consumes the latch, so `opus` genuinely changes the wire bytes on iOS — web stays on `linear16` unconditionally (2026-08-27, PLAN-E1B2 item 1: a live WebCodecs probe found the packet-to-source-sample mapping isn't determinable for the reachable short-tail-flush input space) — see `docs/reference/ios-pipeline.md` for the tagging/scope model |
 | Data Extraction | GPT-5.6 Luna Fast (ordinary live turns), GPT-5.6 Terra Standard/low (observation turns), plus OpenAI GPT batch extraction |
 | Photo Analysis | OpenAI Vision API |
 | Backend | Node.js (ES modules) — API server, job processing, S3 storage |
@@ -100,6 +100,12 @@ GEMINI_MODEL=gemini-3-pro-preview  # Transcription model
 ```
 
 **Note:** You can skip local testing and deploy changes directly to the cloud.
+
+### Runtime feature flags (ECS task definition)
+
+| Var | Default | Accepted values | Notes |
+|-----|---------|------------------|-------|
+| `DEEPGRAM_UPLINK_CODEC` | `linear16` (`ecs/task-def-backend.json`, infra-from-source) | `linear16` \| `opus` | Resolved once at backend module load (`resolveUplinkCodec()`, `src/routes/keys.js`); an unset or unrecognized value falls back to `linear16` with one startup warning — never propagated unnormalized. Read at `POST /api/proxy/deepgram-streaming-key`'s response build and returned as the additive `uplink_codec` field (always present). Both clients decode it and latch it ONCE per recording session (`latchUplinkCodecIfNeeded`) — later reconnect/resume fetches refresh only the JWT, never re-latch. As of 2026-08-26 iOS's sender CONSUMES the latch (Opus routes through `AVAudioConverter`; construction/decode failure falls back to `linear16` for that connection). **Web's sender does NOT consume the opus branch** — a live probe against the real WebCodecs `AudioEncoder` (2026-08-27, PLAN-E1B2 item 1) found the packet-to-source-sample mapping isn't determinable for the genuinely reachable short-tail-flush input space, so `resolveUplinkURLConfig` forces `linear16` unconditionally on web regardless of the latch's value, pending a future probe that pins a mapping rule holding across the full input space. See the `certmate-config-and-flags` skill for the full contract and the `certmate-voice-wire-protocol` skill for the HTTP response shape. |
 
 ## AI Models Reference
 

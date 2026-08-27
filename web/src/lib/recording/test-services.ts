@@ -25,9 +25,12 @@
 import type {
   DeepgramCallbacks,
   DeepgramConnectionState,
+  DeepgramSessionContext,
   DeepgramStreamingKeyConfig,
   SttModel,
 } from './deepgram-service';
+import type { CapturedPcmSegment } from './tagged-pcm-segment';
+import type { ConnectionEpoch } from './uplink-scope-allocator';
 import type { SonnetConnectionState } from './sonnet-session';
 import type { MicCaptureHandle, MicCaptureOptions } from './mic-capture';
 import type { ScheduleFn, ClearScheduleFn } from './dispatch-buffers';
@@ -44,10 +47,21 @@ export interface DeepgramServiceLike {
   ): void | Promise<void>;
   disconnect(): void;
   pause(): void;
-  resume(replay?: Int16Array | null): void;
-  sendSamples(samples: Float32Array): void;
+  resume(replaySegments?: CapturedPcmSegment[] | null): void;
+  sendSamples(samples: Float32Array, capturedAt?: number): CapturedPcmSegment | null;
+  sendTaggedAudio(segment: CapturedPcmSegment): void;
   sendInt16PCM(pcm: Int16Array): void;
   readonly connectionState: DeepgramConnectionState;
+  /** PLAN-E1 — the codec latched from the session's first successful
+   *  fetcher-mode key response. Exposed so a fake service used in a
+   *  pause/resume test can prove the SAME session context (not a fresh
+   *  one) is being consulted. */
+  readonly latchedUplinkCodec?: 'linear16' | 'opus' | null;
+  /** PLAN-E1 — the connection epoch minted for the current socket, or
+   *  `null` if none is live. `recording-context.tsx`'s capture-tagging
+   *  boundary reads this to resolve the same `EpochScope` the service
+   *  would resolve internally (see `capture-tagging.ts`). */
+  readonly liveEpoch?: ConnectionEpoch | null;
 }
 
 /** The SonnetSession surface recording-context actually uses. The real
@@ -90,8 +104,16 @@ export interface JobStateChange {
 }
 
 export interface RecordingTestServices {
-  /** Replaces `new DeepgramService(callbacks, undefined, model)`. */
-  deepgramServiceFactory?: (callbacks: DeepgramCallbacks, model: SttModel) => DeepgramServiceLike;
+  /** Replaces `new DeepgramService(callbacks, undefined, model, {
+   *  sessionContext })`. PLAN-E1 widened this with a third, optional
+   *  session-context parameter — the harness's fake MUST exercise it
+   *  (read the latch, not ignore it) or a pause/resume env-flip test
+   *  would go falsely green. */
+  deepgramServiceFactory?: (
+    callbacks: DeepgramCallbacks,
+    model: SttModel,
+    sessionContext?: DeepgramSessionContext
+  ) => DeepgramServiceLike;
   /** Replaces `new SonnetSession(callbacks)`. Callbacks are the full
    *  SonnetSessionCallbacks object recording-context builds (typed loosely
    *  to keep this module import-light; cast in the harness). */

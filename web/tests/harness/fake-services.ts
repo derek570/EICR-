@@ -11,6 +11,7 @@ import {
   DeepgramService,
   type DeepgramCallbacks,
   type DeepgramConnectionState,
+  type DeepgramSessionContext,
   type DeepgramStreamingKeyConfig,
   type SttModel,
 } from '@/lib/recording/deepgram-service';
@@ -19,6 +20,7 @@ import type {
   SonnetSessionLike,
   RecordingTestServices,
 } from '@/lib/recording/test-services';
+import type { CapturedPcmSegment } from '@/lib/recording/tagged-pcm-segment';
 import type { SonnetConnectionState } from '@/lib/recording/sonnet-session';
 import type { MicCaptureHandle, MicCaptureOptions } from '@/lib/recording/mic-capture';
 import type { SpeakOptions } from '@/lib/recording/tts';
@@ -75,12 +77,26 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   private readonly inner: DeepgramService;
   private ws: CaptiveWS | null = null;
   sentSampleBlocks = 0;
-  /** PLAN-C (id 120) — counts `sendInt16PCM` calls so C2a tests can
-   *  assert the lighter-weight-pause resume path sends NO ring-buffer
-   *  replay (only the automatic-timer full-sleep wake path replays). */
+  /** PLAN-C (id 120) — counts `sendInt16PCM` calls. Superseded as the
+   *  production replay signal by `sentTaggedAudioBlocks` below (PLAN-E1
+   *  moved ring-buffer replay off `sendInt16PCM` to preserve original
+   *  capture tags), kept for any caller still injecting raw PCM. */
   sentInt16PCMBlocks = 0;
+  /** PLAN-E1 — counts `sendTaggedAudio` calls so C2a tests can assert the
+   *  lighter-weight-pause resume path sends NO ring-buffer replay (only
+   *  the automatic-timer full-sleep wake path replays). */
+  sentTaggedAudioBlocks = 0;
+  /** PLAN-E1B2 item 3 — the actual tagged segments handed to
+   *  `sendTaggedAudio`, so a mounted-provider test can assert the
+   *  `capturedAt` the production `onSamples` callback stamped (not just
+   *  count the calls). */
+  readonly sentTaggedSegments: CapturedPcmSegment[] = [];
 
-  constructor(callbacks: DeepgramCallbacks, model: SttModel) {
+  constructor(
+    callbacks: DeepgramCallbacks,
+    model: SttModel,
+    sessionContext?: DeepgramSessionContext
+  ) {
     this.model = model;
     this.inner = new DeepgramService(
       callbacks,
@@ -88,8 +104,28 @@ export class FakeDeepgramService implements DeepgramServiceLike {
         this.ws = new CaptiveWS(url, protocols);
         return this.ws as unknown as WebSocket;
       },
-      model
+      model,
+      // PLAN-E1 — EXERCISES the session context (does not ignore it): the
+      // wrapped real service reads the SAME shared latch/allocator/clock,
+      // so a pause/resume test that constructs a NEW FakeDeepgramService
+      // with the caller's session context proves cross-instance sharing,
+      // not just single-instance latching.
+      { sessionContext }
     );
+  }
+
+  /** PLAN-E1 — delegates to the wrapped real service so a test can assert
+   *  the SAME session context is being consulted across a
+   *  pause/resume-constructed sibling. */
+  get latchedUplinkCodec(): 'linear16' | 'opus' | null {
+    return this.inner.latchedUplinkCodec;
+  }
+
+  /** PLAN-E1 — delegates to the wrapped real service so a test driving
+   *  `onSamples` through the fake still resolves the correct epoch
+   *  scope for ring-buffer segments. */
+  get liveEpoch() {
+    return this.inner.liveEpoch;
   }
 
   connect(
@@ -107,12 +143,23 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   pause(): void {
     this.inner.pause();
   }
-  resume(replay?: Int16Array | null): void {
-    this.inner.resume(replay ?? undefined);
+  resume(replaySegments?: CapturedPcmSegment[] | null): void {
+    this.inner.resume(replaySegments ?? undefined);
   }
-  sendSamples(samples: Float32Array): void {
+  sendSamples(samples: Float32Array, capturedAt?: number): CapturedPcmSegment | null {
     this.sentSampleBlocks += 1;
-    this.inner.sendSamples(samples);
+    // PLAN-E1B2 item 3 (round-9 finding) — forward `capturedAt` instead of
+    // dropping it. An optional param is safe to omit under structural
+    // typing (still passes `tsc`), but silently discarding it here
+    // reproduces this item's exact bug INSIDE this harness, since the
+    // wrapped real `DeepgramService` would then fall back to its own
+    // later `performance.now()`.
+    return this.inner.sendSamples(samples, capturedAt);
+  }
+  sendTaggedAudio(segment: CapturedPcmSegment): void {
+    this.sentTaggedAudioBlocks += 1;
+    this.sentTaggedSegments.push(segment);
+    this.inner.sendTaggedAudio(segment);
   }
   sendInt16PCM(pcm: Int16Array): void {
     this.sentInt16PCMBlocks += 1;
@@ -359,9 +406,9 @@ export function buildHarnessServices(): {
   const diagnostics: Array<{ category: string; payload: Record<string, unknown> }> = [];
   const jobChanges: Array<{ source: string; changedKeys?: string[] }> = [];
   const services: RecordingTestServices = {
-    deepgramServiceFactory: (callbacks, model) => {
+    deepgramServiceFactory: (callbacks, model, sessionContext) => {
       counts.deepgramConstructed += 1;
-      refs.deepgram = new FakeDeepgramService(callbacks, model);
+      refs.deepgram = new FakeDeepgramService(callbacks, model, sessionContext);
       return refs.deepgram;
     },
     sonnetSessionFactory: (callbacks) => {

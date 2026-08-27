@@ -13,7 +13,7 @@
  * (4) and (4b):
  *   - mic stop/reopen observed (a fresh mic pipeline is requested)
  *   - ONE retained Sonnet instance receiving pause/resume (never rebuilt)
- *   - zero replay send (`sendInt16PCM` never called on lighter-weight
+ *   - zero replay send (`sendTaggedAudio` never called on lighter-weight
  *     resume, unlike the automatic-timer full-sleep wake path)
  *   - one Deepgram reopen
  *   - the SAME lighter-weight pause path fires in BOTH `autoSleepEnabled`
@@ -147,8 +147,9 @@ describe('PLAN-C C2a — lighter-weight pause (full RecordingProvider)', () => {
     // openDeepgram() — the old one was torn down by pause()).
     expect(harness.refs.deepgram).not.toBeNull();
     // Zero replay: the lighter-weight resume path never calls
-    // sendInt16PCM (only the automatic-timer full-sleep wake path does).
-    expect(harness.refs.deepgram!.sentInt16PCMBlocks).toBe(0);
+    // sendTaggedAudio (only the automatic-timer full-sleep wake path
+    // replays the ring buffer).
+    expect(harness.refs.deepgram!.sentTaggedAudioBlocks).toBe(0);
   });
 
   it('flag ON: pausing past the 60s automatic timeout does not enter sleeping mid-pause; resume re-arms the timer', async () => {

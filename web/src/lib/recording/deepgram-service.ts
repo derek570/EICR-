@@ -20,14 +20,36 @@
  * change there.
  */
 
-import {
-  appendKeytermsToUrl,
-  generateKeyterms,
-  appendFluxKeytermsToUrl,
-  generateFluxKeyterms,
-  type CcuAnalysisLite,
-} from './keyword-boosts';
+import { type CcuAnalysisLite } from './keyword-boosts';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
+import {
+  resolveUplinkURLConfig,
+  type UplinkCodec,
+  type UplinkKeepalivePolicy,
+} from './uplink-url-config';
+import {
+  UplinkScopeAllocator,
+  epochScopeEquals,
+  type ConnectionEpoch,
+  type EpochScope,
+} from './uplink-scope-allocator';
+import type {
+  CaptureSampleRange,
+  TaggedPcmSegment,
+  CapturedPcmSegment,
+} from './tagged-pcm-segment';
+import {
+  realOpusEncoderFactory,
+  type OpusEncoderFactory,
+  type OpusEncoderLike,
+} from './opus-encoder';
+import {
+  defaultUndispatchedLossHandler,
+  chargeGracefulResidueTelemetry,
+  type UndispatchedLossHandler,
+} from './uplink-loss-report';
+import type { VoicedActivityDetector } from './voiced-activity';
+import { tagCapturedFloat32 } from './capture-tagging';
 
 /**
  * STT model selector. `nova3` is the legacy `/v1/listen` path (still the
@@ -75,9 +97,10 @@ export interface DeepgramCallbacks {
   onConfigureResult?: (result: ConfigureResult) => void;
   /**
    * Fires after a successful auto-reconnect (not on the initial open).
-   * Consumers typically replay their `AudioRingBuffer` via `sendInt16PCM()`
-   * here so words spoken during the WS downtime aren't lost — matching the
-   * iOS wake path that replays a 3-second ring buffer on Deepgram reopen.
+   * Consumers typically drain their `AudioRingBuffer`'s tagged segments and
+   * replay them via `sendTaggedAudio()` here so words spoken during the WS
+   * downtime aren't lost — matching the iOS wake path that replays a
+   * 3-second ring buffer on Deepgram reopen.
    */
   onReconnected?: () => void;
 }
@@ -106,6 +129,92 @@ export interface DeepgramStreamingKeyConfig {
 }
 
 export type DeepgramKeySource = string | (() => Promise<DeepgramStreamingKeyConfig>);
+
+/**
+ * PLAN-E1 (split-round-4 IMPORTANT) — the session-owned codec latch. Lives
+ * with the SESSION OWNER (`recording-context.tsx`'s
+ * `sessionUplinkCodecRef`), not the socket owner, because
+ * `openDeepgram` constructs a NEW `DeepgramService` on pause/resume — a
+ * latch living ON the service would either die with it or re-latch a
+ * mid-session env flip. `set()` is idempotent (a no-op once populated) so
+ * callers don't need to double-guard the "latch once" invariant
+ * themselves.
+ */
+export interface SessionCodecLatch {
+  get(): UplinkCodec | null;
+  set(codec: UplinkCodec): void;
+}
+
+export function createSessionCodecLatch(): SessionCodecLatch {
+  let value: UplinkCodec | null = null;
+  return {
+    get: () => value,
+    set: (codec) => {
+      if (value === null) value = codec;
+    },
+  };
+}
+
+/**
+ * PLAN-E1 — the recording-session-owned context threaded into EVERY
+ * `DeepgramService` the session constructs (initial connect, pause/resume
+ * reconnects). `recordingSessionId` is PLUMBED, not ambient (a keepalive
+ * can fire before any captured segment exists, so the id cannot be
+ * inferred from prior audio) — it is an explicit IMMUTABLE member set
+ * once at `start()` and never regenerated for the lifetime of one
+ * recording session.
+ */
+/**
+ * The session-owned monotonic capture-domain sample clock. Every accepted
+ * live/replay frame reserves its own `[start, end)` range off this clock
+ * BEFORE any connection-state check, so materiality accounting (the
+ * shared VAD) sees a gapless timeline regardless of reconnects.
+ */
+export interface CaptureClock {
+  advance(sampleCount: number): CaptureSampleRange;
+}
+
+export function createCaptureClock(): CaptureClock {
+  let position = 0;
+  return {
+    advance(sampleCount: number): CaptureSampleRange {
+      const start = position;
+      position += sampleCount;
+      return { start, end: position };
+    },
+  };
+}
+
+export interface DeepgramSessionContext {
+  readonly recordingSessionId: string;
+  readonly codecLatch: SessionCodecLatch;
+  readonly allocator: UplinkScopeAllocator;
+  readonly captureClock: CaptureClock;
+  /** Optional — the session owner's shared `VoicedActivityDetector`. Fed
+   *  every accepted LIVE frame (`sendSamples`/`tagCapturedFloat32`) —
+   *  replay (`sendTaggedAudio`/`sendInt16PCM`) does not re-feed it, since
+   *  a replayed segment was already fed once at its original capture
+   *  moment. `null`/absent for the ~20 pre-existing direct unit tests
+   *  that construct a default context and don't care about materiality. */
+  readonly vad?: VoicedActivityDetector;
+}
+
+export interface DeepgramServiceOptions {
+  sessionContext?: DeepgramSessionContext;
+  /** Test seam — production defaults to `realOpusEncoderFactory`
+   *  (WebCodecs). Tests inject a fake since `AudioEncoder`/`AudioData`
+   *  are not implemented under Vitest/jsdom. */
+  opusEncoderFactory?: OpusEncoderFactory;
+  /** PLAN-E1's `onUndispatchedLoss` seam. Defaults to a no-op + telemetry
+   *  counter; PLAN-E2 replaces this with the real ledger binding. */
+  onUndispatchedLoss?: UndispatchedLossHandler;
+}
+
+let anonymousSessionCounter = 0;
+function makeAnonymousSessionId(): string {
+  anonymousSessionCounter += 1;
+  return `anon-session-${anonymousSessionCounter}`;
+}
 
 /**
  * Constructor-level seam for injecting an alternate WebSocket factory.
@@ -153,13 +262,56 @@ export class DeepgramService {
   // `fetchKey` is stored because reconnection must mint a FRESH key, not
   // reuse the cached JWT — the JWT is what expired in the first place.
   private fetchKey: (() => Promise<DeepgramStreamingKeyConfig>) | null = null;
-  // PLAN-E1 E1 — latched ONCE from the first successful fetcher-mode key
-  // response and never overwritten by a later fetch (env flip mid-session
-  // must not change the codec under a live socket). Static-key mode never
-  // sets this — it has no codec information, and stays implicitly
-  // linear16. NOT YET READ by any sender/encoder — deliberately dark this
-  // wave; see PLAN-E1 execution log for what's deferred.
-  private uplinkCodec: 'linear16' | 'opus' | null = null;
+  // PLAN-E1 — the session-owned identity bundle (recordingSessionId,
+  // codec latch, scope allocator). Threaded in via the constructor's
+  // `options.sessionContext`; a private default is constructed when
+  // omitted (every pre-existing 3-arg call site — ~20 unit tests) so
+  // those tests keep passing unchanged and each gets its own
+  // self-contained, functionally-correct (if not session-shared) context.
+  private readonly sessionContext: DeepgramSessionContext;
+  private readonly opusEncoderFactory: OpusEncoderFactory;
+  private readonly onUndispatchedLoss: UndispatchedLossHandler;
+  // The connection epoch minted for THIS socket, and the resolved sender
+  // codec decided when its URL was built (nova-3 always forces linear16
+  // regardless of the latch — see `resolveUplinkURLConfig`).
+  private currentEpoch: ConnectionEpoch | null = null;
+  private resolvedSenderCodec: UplinkCodec = 'linear16';
+  private keepalivePolicy: UplinkKeepalivePolicy = 'disabled';
+  // The generation-bound Opus encoder for the CURRENT socket (null when
+  // the resolved codec is linear16 — no encoder needed). Recreated per
+  // connection, closed on reconnect/teardown; never reused across
+  // generations (round-8: async encoder output is socket/generation-bound).
+  private opusEncoder: OpusEncoderLike | null = null;
+  private opusEncoderGeneration = 0;
+  // FIFO of captured segments handed to the encoder whose INPUT hasn't
+  // finished draining yet (popped on `onInputDrained`, NOT on `onPacket`
+  // — see `handleOpusInputDrained`'s doc comment: an encoder's `encode()`
+  // call can legitimately emit more than one output packet, so pop-per-
+  // packet would desync). Anything still queued at teardown is CONFIRMED
+  // local loss, reported via `onUndispatchedLoss` before the reset.
+  private pendingOpusInput: TaggedPcmSegment[] = [];
+  // Monotonic 16kHz-sample dispatched-audio-time offset — advances ONLY
+  // after a successful socket handoff (raw send for linear16; the
+  // corresponding encoder-output send for opus), continuously across
+  // synthetic and captured segments, never in the byte domain.
+  private dispatchedSampleOffset = 0;
+  // Scope-tagged tail of the Flux batching accumulator — batching SPLITS
+  // at metadata boundaries (a batch never spans two scopes/sessions).
+  private fluxBatchScope: EpochScope | null = null;
+  // Capture-domain sample offset of the FIRST byte currently sitting in
+  // `fluxSampleBuffer`, so a completed/flushed frame's own tagged range
+  // can be reconstructed even though it may have been assembled from
+  // more than one original `sendSamples`/`sendInt16PCM` call.
+  private fluxAccumulatorRangeStart: number | null = null;
+  // PLAN-E1B2 item 3 — a single `fluxAccumulatorCapturedAt` value can't
+  // track `fluxAccumulatorRangeStart`'s own per-emission advance (round-6
+  // finding): once a full-frame emission consumes samples that span more
+  // than one incoming segment, the emitted frame's `capturedAt` must come
+  // from whichever segment's samples sit at the buffer's CURRENT front —
+  // not a single value only reset when the buffer empties. FIFO of
+  // {sampleCount, capturedAt}, one entry per incoming segment, consumed in
+  // the same order the buffer's own bytes are.
+  private fluxAccumulatorCapturedAtQueue: Array<{ sampleCount: number; capturedAt: number }> = [];
   // Set true on fetcher-mode connect, flipped false by `disconnect()` so
   // any in-flight async key-fetch aborts cleanly and no further retries
   // are scheduled.
@@ -224,7 +376,8 @@ export class DeepgramService {
   constructor(
     callbacks: DeepgramCallbacks,
     wsFactory?: WebSocketFactory,
-    sttModel: SttModel = 'nova3'
+    sttModel: SttModel = 'nova3',
+    options: DeepgramServiceOptions = {}
   ) {
     this.callbacks = callbacks;
     // Default to the real global WebSocket. Tests pass a factory whose
@@ -233,6 +386,22 @@ export class DeepgramService {
     // arg so every existing call site keeps working unchanged.
     this.wsFactory = wsFactory ?? ((url, protocols) => new WebSocket(url, protocols));
     this.sttModel = sttModel;
+    // PLAN-E1 — production + the recording-context factory + the fake
+    // service ALWAYS pass a real session-owned context (constructor
+    // contract, split-round-4). Every pre-existing 3-arg call site (the
+    // direct unit-test suite) gets a private, self-contained default so
+    // it keeps its exact prior behaviour — this service alone latches
+    // linear16 implicitly and never shares scope with a sibling instance,
+    // which is fine because none of those tests construct a second
+    // instance expecting shared session state.
+    this.sessionContext = options.sessionContext ?? {
+      recordingSessionId: makeAnonymousSessionId(),
+      codecLatch: createSessionCodecLatch(),
+      allocator: new UplinkScopeAllocator(),
+      captureClock: createCaptureClock(),
+    };
+    this.opusEncoderFactory = options.opusEncoderFactory ?? realOpusEncoderFactory;
+    this.onUndispatchedLoss = options.onUndispatchedLoss ?? defaultUndispatchedLossHandler;
   }
 
   /** The STT model this instance was constructed with (diagnostics/tests). */
@@ -251,7 +420,36 @@ export class DeepgramService {
    * built) to read; not yet consulted anywhere in this service.
    */
   get latchedUplinkCodec(): 'linear16' | 'opus' | null {
-    return this.uplinkCodec;
+    return this.sessionContext.codecLatch.get();
+  }
+
+  /** The recording-session id this instance was constructed with — read
+   *  by tests to assert a pause/resume-constructed sibling shares the
+   *  SAME session identity as its predecessor. */
+  get recordingSessionId(): string {
+    return this.sessionContext.recordingSessionId;
+  }
+
+  /** The scope allocator this instance shares with its session owner. */
+  get scopeAllocator(): UplinkScopeAllocator {
+    return this.sessionContext.allocator;
+  }
+
+  /** The codec this connection actually sends — resolved at URL-build
+   *  time (nova-3 always forces linear16). `null` before the first
+   *  `connect()`. */
+  get resolvedCodec(): UplinkCodec {
+    return this.resolvedSenderCodec;
+  }
+
+  /** The connection epoch minted for the CURRENT socket, or `null` if
+   *  none is live (before the first `connect()`, or during a reconnect
+   *  gap). Exposed so a caller that tags audio independently of this
+   *  instance's lifecycle (the session-owned ring buffer in
+   *  `recording-context.tsx` — see `capture-tagging.ts`) can resolve the
+   *  same `EpochScope` this service would resolve internally. */
+  get liveEpoch(): ConnectionEpoch | null {
+    return this.currentEpoch;
   }
 
   /**
@@ -310,10 +508,10 @@ export class DeepgramService {
       const config = await this.fetchKey();
       key = config.key;
       // Latch ONCE from the first successful fetch this session; later
-      // fetches (reconnect) refresh only the JWT, never re-latch.
-      if (this.uplinkCodec === null) {
-        this.uplinkCodec = config.uplink_codec ?? 'linear16';
-      }
+      // fetches (reconnect) refresh only the JWT, never re-latch. `set()`
+      // is itself idempotent (see `createSessionCodecLatch`), so this
+      // reads as a plain assignment even though it may be a no-op.
+      this.sessionContext.codecLatch.set(config.uplink_codec ?? 'linear16');
     } catch (err) {
       // Key-fetch failed (backend 5xx, network, etc.). First-connect
       // failures surface to the UI; reconnect failures stay quiet and
@@ -350,7 +548,45 @@ export class DeepgramService {
     // already showed 'reconnecting' via openWithFreshKey.
     if (this.state !== 'reconnecting') this.setState('connecting');
 
-    const url = this.buildURL();
+    // PLAN-E1 — mint the connection epoch at the TOP of the single
+    // socket-construction site, parented by whichever CaptureAttemptId is
+    // currently live (reserving a fresh one if none is — a reconnect
+    // whose predecessor's epoch was already minted reserves its own).
+    // This runs on EVERY attempt (not gated on success), so even a
+    // superseded/failed connect still parents a valid epoch for the live
+    // one that follows it — ids never repeat within the session either
+    // way.
+    const allocator = this.sessionContext.allocator;
+    const captureAttemptId =
+      allocator.currentCaptureAttemptId() ?? allocator.reserveCaptureAttemptIfNeeded();
+    this.currentEpoch = allocator.mintEpoch(captureAttemptId);
+    this.resetOpusEncoderForNewGeneration();
+
+    let config = resolveUplinkURLConfig({
+      model: this.sttModel,
+      latchedCodec: this.sessionContext.codecLatch.get(),
+      ccuAnalysis: this.ccuAnalysis,
+    });
+    if (config.resolvedSenderCodec === 'opus') {
+      const encoderBuilt = this.constructOpusEncoderForCurrentGeneration();
+      // Codex review r1 BLOCKER: constructing the encoder can fail
+      // (WebCodecs unavailable) — the URL was already built declaring
+      // `encoding=opus` at that point. Re-resolve the URL against a
+      // forced-linear16 config so the socket never opens declaring a
+      // codec the sender isn't actually producing — sending raw
+      // linear16 bytes to an Opus-declared connection would break
+      // transcription outright.
+      if (!encoderBuilt) {
+        config = resolveUplinkURLConfig({
+          model: this.sttModel,
+          latchedCodec: 'linear16',
+          ccuAnalysis: this.ccuAnalysis,
+        });
+      }
+    }
+    const url = config.url;
+    this.resolvedSenderCodec = config.resolvedSenderCodec;
+    this.keepalivePolicy = config.keepalivePolicy;
     // Deepgram accepts subprotocol-based auth; URL query params are blocked
     // on iOS Safari during the HTTP→WS upgrade (rules/mistakes.md), and
     // browsers can't set an Authorization header on the WS upgrade at all
@@ -416,7 +652,33 @@ export class DeepgramService {
     ws.onclose = (event) => {
       this.stopKeepAlive();
       this.ws = null;
+      // Codex review r1 BLOCKER: `currentEpoch` was never cleared on
+      // close, so any audio arriving during a reconnect gap (this
+      // service's OWN internal auto-reconnect keeps calling
+      // `sendSamples` on the SAME instance between the old socket dying
+      // and the new one opening) was tagged with the now-DEAD epoch
+      // instead of `preOpen` — a stale-epoch mislabel, not merely a
+      // restamp. Clearing it here makes `currentUplinkScope()` correctly
+      // fall back to reserving a fresh preOpen capture attempt for
+      // anything captured before `_connect()`'s next mint.
+      const dyingEpoch = this.currentEpoch;
+      this.currentEpoch = null;
       const reconnectable = event.code !== 1000 && event.code !== 1005;
+      // An UNEXPECTED teardown (reconnectable close) charges any samples
+      // still sitting inside the encoder pipeline AND any partial Flux
+      // sub-frame tail as confirmed local loss BEFORE the reset — a
+      // graceful stop/pause instead runs the bounded flush in
+      // `disconnect()` and never reaches this branch's loss-charging path.
+      // A clean 1000/1005 close (server CloseStream response) has already
+      // been drained by `disconnect()`'s flush, so nothing should be
+      // pending here either way. Uses the epoch snapshotted BEFORE the
+      // clear above — these methods no longer read `this.currentEpoch`
+      // themselves (it would always see the just-cleared `null`).
+      if (reconnectable && dyingEpoch !== null) {
+        this.chargeUndispatchedEncoderLoss(dyingEpoch);
+        this.chargeFluxTailLoss(dyingEpoch);
+      }
+      this.teardownOpusEncoder();
       pipelineLog('deepgram_ws_close', {
         code: event.code,
         reason: event.reason ?? '',
@@ -491,83 +753,260 @@ export class DeepgramService {
 
   /** Send a Float32Array block (mic samples). Resamples to 16kHz if needed
    *  and converts to Int16 PCM before framing. No-op if not connected or
-   *  if the service has been paused by the SleepManager. */
-  sendSamples(samples: Float32Array): void {
-    if (this.paused) return;
-    if (!this.ws || this.state !== 'connected' || samples.length === 0) return;
+   *  if the service has been paused by the SleepManager.
+   *
+   *  PLAN-E1: every accepted frame is tagged (recordingSessionId,
+   *  captureSampleRange, epochScope) via the shared `tagCapturedFloat32`
+   *  helper BEFORE the connection-state check — so the shared
+   *  `VoicedActivityDetector` (if the session owner supplied one) sees a
+   *  CONTINUOUS feed across reconnects, exactly like a genuinely
+   *  connected session would, even on frames this socket ends up
+   *  dropping. Returns the tagged segment (even when dropped) so a
+   *  caller that ALSO wants to retain this exact tag — the ring buffer
+   *  in `recording-context.tsx` — can do so without re-tagging (Codex
+   *  review r1 BLOCKER: a replay path that mints its OWN fresh tag at
+   *  drain time double-advances the capture clock and mislabels
+   *  gap-period audio under the wrong epoch — see `sendTaggedAudio`).
+   *
+   *  `capturedAt` (PLAN-E1B2 item 3) defaults to `performance.now()` at
+   *  THIS function's own entry when omitted — covering `sendSamples`'s
+   *  ~20 pre-existing direct unit-test callers and any other genuinely
+   *  independent caller. The one production call site
+   *  (`recording-context.tsx`'s fallback branch) passes the SAME
+   *  `capturedAt` its `onSamples` callback already captured immediately
+   *  after its TTS-discard guard, since on that path `sendSamples` is
+   *  entered only after the guard AND the resample have both already run
+   *  — computing a fresh timestamp here would record a strictly LATER
+   *  time than the primary tagging branch's callback-entry stamp.
+   *
+   *  Returns `null` (nothing tagged) when the input resamples to zero
+   *  16 kHz samples — the same contract `recording-context.tsx`'s primary
+   *  path applies before tagging. */
+  sendSamples(
+    samples: Float32Array,
+    capturedAt: number = performance.now()
+  ): CapturedPcmSegment | null {
+    if (this.paused) return null;
+    if (samples.length === 0) return null;
 
     const resampled = this.sourceSampleRate === 16000 ? samples : this.resampleTo16k(samples);
+    // A sub-ratio input (e.g. 2 samples at 48 kHz) resamples to ZERO
+    // samples — nothing to tag, and a zero-count entry must never enter the
+    // Flux capturedAt FIFO (it would hand its timestamp to the next real
+    // frame). Codex r2 NIT.
+    if (resampled.length === 0) return null;
+    const segment = tagCapturedFloat32(
+      resampled,
+      this.sessionContext,
+      this.currentEpoch,
+      capturedAt
+    );
 
-    const int16 = new Int16Array(resampled.length);
-    for (let i = 0; i < resampled.length; i++) {
-      const clamped = Math.max(-1, Math.min(1, resampled[i]));
-      int16[i] = Math.round(clamped * 32767);
-    }
+    if (!this.ws || this.state !== 'connected') return segment;
 
     this.lastAudioSendMs = performance.now();
 
     if (this.sttModel === 'flux') {
-      this.enqueueFluxFrames(int16);
+      this.enqueueFluxFrames(segment);
+    } else {
+      this.dispatchFrame(segment);
+    }
+    return segment;
+  }
+
+  /** Dispatch an ALREADY-TAGGED captured segment straight through the
+   *  single sender, WITHOUT recomputing its capture range or epoch scope
+   *  — the "no restamping" invariant. Used for ring-buffer replay, where
+   *  the caller tagged the segment at its ORIGINAL capture moment (see
+   *  `capture-tagging.ts`), including moments when no `DeepgramService`
+   *  instance existed yet (e.g. full sleep). Does NOT feed VAD — the
+   *  segment was already fed once, at original capture time, by whoever
+   *  tagged it. */
+  sendTaggedAudio(segment: CapturedPcmSegment): void {
+    if (!this.ws || this.state !== 'connected' || segment.samples.length === 0) return;
+    this.lastAudioSendMs = performance.now();
+    if (this.sttModel === 'flux') {
+      this.enqueueFluxFrames(segment);
       return;
     }
-
-    try {
-      this.ws.send(int16.buffer);
-    } catch {
-      // WS buffer full — drop the block. Rare; surfaces as minor gap.
-    }
+    this.dispatchFrame(segment);
   }
 
   /**
-   * Flux 80ms chunk batcher. Accumulates Int16 samples and flushes exactly
-   * 1280-sample (2560-byte) frames — the ~80ms cadence Flux ingests best, and
-   * the iOS chunk-batcher size. A partial tail (< one frame) is held until the
-   * next block completes it. Cleared on disconnect so a stale tail can't leak
-   * into the next session. nova-3 never calls this (sends blocks as-is).
+   * Flux 80ms chunk batcher. Accumulates tagged Int16 samples and flushes
+   * exactly 1280-sample (2560-byte) frames — the ~80ms cadence Flux
+   * ingests best, and the iOS chunk-batcher size. A partial tail (< one
+   * frame) is held until the next block completes it. Cleared on
+   * disconnect so a stale tail can't leak into the next session. nova-3
+   * never calls this (sends blocks as-is).
+   *
+   * PLAN-E1: batching SPLITS at metadata boundaries — a batch never
+   * spans two scopes. If the accumulator holds bytes from a DIFFERENT
+   * `epochScope` than the arriving segment, the (possibly short)
+   * accumulator is flushed as its own frame FIRST, never fused with the
+   * new scope's bytes.
    */
-  private enqueueFluxFrames(int16: Int16Array): void {
+  private enqueueFluxFrames(segment: CapturedPcmSegment): void {
     const FRAME = DeepgramService.FLUX_FRAME_SAMPLES;
+    // Defence in depth for the capturedAt FIFO: a zero-sample segment
+    // contributes no bytes, so it must contribute no queue entry either.
+    if (segment.samples.length === 0) return;
+    if (
+      this.fluxSampleBuffer.length > 0 &&
+      this.fluxBatchScope !== null &&
+      !epochScopeEquals(this.fluxBatchScope, segment.epochScope)
+    ) {
+      this.flushFluxAccumulator();
+    }
+    if (this.fluxSampleBuffer.length === 0) {
+      this.fluxAccumulatorRangeStart = segment.captureSampleRange.start;
+    }
+    this.fluxBatchScope = segment.epochScope;
+    // PLAN-E1B2 item 3 — push EVERY incoming segment's own {sampleCount,
+    // capturedAt}, not only when the buffer starts empty. Order matches
+    // the buffer's own byte order (entries are appended and consumed in
+    // the same sequence), so the head always corresponds to whichever
+    // segment's samples sit at the front of `buf` below.
+    this.fluxAccumulatorCapturedAtQueue.push({
+      sampleCount: segment.samples.length,
+      capturedAt: segment.capturedAt,
+    });
+
     // Append to the carry-over buffer.
     let buf: Int16Array;
     if (this.fluxSampleBuffer.length === 0) {
-      buf = int16;
+      buf = segment.samples;
     } else {
-      buf = new Int16Array(this.fluxSampleBuffer.length + int16.length);
+      buf = new Int16Array(this.fluxSampleBuffer.length + segment.samples.length);
       buf.set(this.fluxSampleBuffer, 0);
-      buf.set(int16, this.fluxSampleBuffer.length);
+      buf.set(segment.samples, this.fluxSampleBuffer.length);
     }
     let offset = 0;
     while (buf.length - offset >= FRAME) {
       const frame = buf.subarray(offset, offset + FRAME);
-      try {
-        // Copy the exact frame range into its own buffer before send.
-        const out = new Int16Array(FRAME);
-        out.set(frame);
-        this.ws!.send(out.buffer);
-      } catch {
-        // WS backpressure — drop this frame; the next flush re-evaluates.
-      }
+      const out = new Int16Array(FRAME);
+      out.set(frame);
+      const rangeStart = this.fluxAccumulatorRangeStart! + offset;
+      const frameCapturedAt = this.consumeCapturedAtQueue(FRAME);
+      this.dispatchFrame({
+        origin: 'captured',
+        samples: out,
+        recordingSessionId: segment.recordingSessionId,
+        captureSampleRange: { start: rangeStart, end: rangeStart + FRAME },
+        epochScope: this.fluxBatchScope,
+        capturedAt: frameCapturedAt,
+      });
       offset += FRAME;
     }
     // Retain the sub-frame remainder for the next block.
-    this.fluxSampleBuffer = offset < buf.length ? buf.slice(offset) : new Int16Array(0);
+    if (offset < buf.length) {
+      this.fluxSampleBuffer = buf.slice(offset);
+      this.fluxAccumulatorRangeStart = this.fluxAccumulatorRangeStart! + offset;
+    } else {
+      this.fluxSampleBuffer = new Int16Array(0);
+      this.fluxAccumulatorRangeStart = null;
+    }
   }
 
-  /** Drop a pre-recorded Int16 PCM block straight into the WS. Used by
-   *  the SleepManager to replay the 3-second AudioRingBuffer on wake so
-   *  Deepgram can transcribe the words spoken _just before_ VAD fired. */
+  /** Consume `count` samples' worth of entries from the head of
+   *  `fluxAccumulatorCapturedAtQueue`, returning the FIRST (oldest)
+   *  entry's `capturedAt` — a full frame's `capturedAt` is defined as its
+   *  earliest-captured constituent segment's timestamp (PLAN-E1B2 item 3).
+   *  Production segments are AudioWorklet blocks far smaller than the
+   *  1,280-sample frame (`mic-capture.ts`: "typically 128 samples"), so
+   *  consuming one frame commonly dequeues SEVERAL entries in sequence —
+   *  a single head check-or-reduce would desync the queue from the
+   *  buffer's actual sample offsets the first time a frame spans more
+   *  than one entry, which given the size mismatch is the common case,
+   *  not an edge case. */
+  private consumeCapturedAtQueue(count: number): number {
+    const queue = this.fluxAccumulatorCapturedAtQueue;
+    const firstCapturedAt = queue.length > 0 ? queue[0].capturedAt : performance.now();
+    let remaining = count;
+    while (remaining > 0 && queue.length > 0) {
+      const head = queue[0];
+      if (remaining >= head.sampleCount) {
+        remaining -= head.sampleCount;
+        queue.shift();
+      } else {
+        head.sampleCount -= remaining;
+        remaining = 0;
+      }
+    }
+    return firstCapturedAt;
+  }
+
+  /** Flush the Flux batching accumulator as its own (possibly short)
+   *  tagged frame — used at a scope boundary so a batch never spans two
+   *  scopes. */
+  private flushFluxAccumulator(): void {
+    if (
+      this.fluxSampleBuffer.length === 0 ||
+      this.fluxBatchScope === null ||
+      this.fluxAccumulatorRangeStart === null
+    ) {
+      this.fluxSampleBuffer = new Int16Array(0);
+      this.fluxAccumulatorRangeStart = null;
+      this.fluxAccumulatorCapturedAtQueue = [];
+      return;
+    }
+    const range: CaptureSampleRange = {
+      start: this.fluxAccumulatorRangeStart,
+      end: this.fluxAccumulatorRangeStart + this.fluxSampleBuffer.length,
+    };
+    // The flush consumes EVERYTHING the buffer holds — read the head the
+    // same way, then clear the whole queue (a fully-drained queue and a
+    // fully-drained buffer become empty at the same instant by
+    // construction).
+    const capturedAt = this.consumeCapturedAtQueue(this.fluxSampleBuffer.length);
+    this.dispatchFrame({
+      origin: 'captured',
+      samples: this.fluxSampleBuffer,
+      recordingSessionId: this.sessionContext.recordingSessionId,
+      captureSampleRange: range,
+      epochScope: this.fluxBatchScope,
+      capturedAt,
+    });
+    this.fluxSampleBuffer = new Int16Array(0);
+    this.fluxAccumulatorRangeStart = null;
+    this.fluxAccumulatorCapturedAtQueue = [];
+  }
+
+  /** Send a RAW, UNTAGGED Int16 PCM block — tags it fresh (a new capture
+   *  range off the shared clock, the CURRENT scope) as if it were just
+   *  captured, then routes it through the same codec-aware sender as
+   *  live audio (round-1 BLOCKER: no bypass of the sender for any binary
+   *  path). Correct only for audio whose true capture moment IS now —
+   *  NOT for replaying older buffered audio, which must preserve its
+   *  ORIGINAL tag instead (see `sendTaggedAudio`; the ring-buffer replay
+   *  path was moved off this method in the Codex review r1 BLOCKER fix
+   *  — minting a fresh tag for genuinely-older audio double-advanced the
+   *  capture clock and mislabeled gap-period audio under the wrong
+   *  epoch). Retained for callers that only have raw, previously-untagged
+   *  PCM to inject. */
   sendInt16PCM(samples: Int16Array): void {
     if (!this.ws || this.state !== 'connected' || samples.length === 0) return;
     this.lastAudioSendMs = performance.now();
-    try {
-      // Copy into a fresh ArrayBuffer so we send only the valid range
-      // (the caller may hand us a subarray view).
-      const copy = new Int16Array(samples.length);
-      copy.set(samples);
-      this.ws.send(copy.buffer);
-    } catch {
-      // Rare: WS backpressure. Drop the replay; live audio will follow.
+    const copy = new Int16Array(samples.length);
+    copy.set(samples);
+    const captureSampleRange = this.sessionContext.captureClock.advance(copy.length);
+    const epochScope = this.sessionContext.allocator.currentScope(this.currentEpoch);
+    const segment: CapturedPcmSegment = {
+      origin: 'captured',
+      samples: copy,
+      recordingSessionId: this.sessionContext.recordingSessionId,
+      captureSampleRange,
+      epochScope,
+      // Genuinely fresh, never-before-tagged audio (per this method's own
+      // doc comment) — no merge ambiguity, stamp from the same clock at
+      // the point of injection.
+      capturedAt: performance.now(),
+    };
+    if (this.sttModel === 'flux') {
+      this.enqueueFluxFrames(segment);
+      return;
     }
+    this.dispatchFrame(segment);
   }
 
   /** Freeze live sample forwarding without closing the socket. The
@@ -580,12 +1019,16 @@ export class DeepgramService {
   }
 
   /** Inverse of `pause()`. Optionally drain a caller-supplied replay
-   *  buffer (typically the 3-second AudioRingBuffer) before live
-   *  samples resume flowing — matches the iOS wake path. */
-  resume(replay?: Int16Array): void {
+   *  buffer (typically the 3-second AudioRingBuffer's tagged segments)
+   *  before live samples resume flowing — matches the iOS wake path.
+   *  Segments are dispatched via `sendTaggedAudio` so their ORIGINAL
+   *  capture-time tags survive the replay (no restamping). */
+  resume(replaySegments?: CapturedPcmSegment[]): void {
     this.paused = false;
-    if (replay && replay.length > 0) {
-      this.sendInt16PCM(replay);
+    if (replaySegments) {
+      for (const segment of replaySegments) {
+        this.sendTaggedAudio(segment);
+      }
     }
   }
 
@@ -595,9 +1038,22 @@ export class DeepgramService {
   disconnect(): void {
     this.stopKeepAlive();
     this.paused = false;
-    // Reset Flux batching + Configure state so nothing leaks into the next
-    // session (a stale sub-frame tail or an orphaned Configure resolver).
-    this.fluxSampleBuffer = new Int16Array(0);
+    // PLAN-E1 (Codex review r1 IMPORTANT fix) — flush any partial Flux
+    // batching tail (< one 80ms frame) through the SAME sender rather
+    // than silently discarding it. The socket is still open/connected at
+    // this point (CloseStream + the actual `ws.close()` happen later, in
+    // `finishClose`), so this genuinely reaches Deepgram — a real
+    // fraction of a word can sit in this accumulator, and dropping it
+    // silently on every stop/pause would lose it with no telemetry at
+    // all (unlike the Opus-encoder residue path below, which counts and
+    // telemeters what it can't flush in time). For the opus codec this
+    // enqueues into `pendingOpusInput` via `dispatchFrame`, so it's
+    // covered by the bounded encoder flush further down, same as any
+    // other in-flight segment.
+    this.flushFluxAccumulator();
+    // Reset remaining Flux batching + Configure state so nothing leaks
+    // into the next session (an orphaned Configure resolver).
+    this.fluxBatchScope = null;
     if (this.pendingConfigure) {
       clearTimeout(this.pendingConfigure.timer);
       this.pendingConfigure.resolve({ ok: false, reason: 'disconnected', rttMs: 0 });
@@ -615,27 +1071,57 @@ export class DeepgramService {
     this.isReconnectScheduled = false;
     const ws = this.ws;
     if (!ws) {
+      this.teardownOpusEncoder();
       this.setState('disconnected');
       return;
     }
-    try {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'CloseStream' }));
-      }
-    } catch {
-      // ignore
-    }
-    // Give Deepgram ~300ms to flush any outstanding finals before we yank
-    // the socket — matches iOS behaviour.
-    setTimeout(() => {
+
+    const finishClose = () => {
       try {
-        ws.close(1000);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'CloseStream' }));
+        }
       } catch {
         // ignore
       }
-      this.ws = null;
-      this.setState('disconnected');
-    }, 300);
+      // Give Deepgram ~300ms to flush any outstanding finals before we
+      // yank the socket — matches iOS behaviour.
+      setTimeout(() => {
+        try {
+          ws.close(1000);
+        } catch {
+          // ignore
+        }
+        this.ws = null;
+        this.setState('disconnected');
+      }, 300);
+    };
+
+    if (this.opusEncoder) {
+      // PLAN-E1 graceful-stop scope: a BOUNDED flush drains any buffered
+      // encoder/container tail before CloseStream. Residue that cannot
+      // flush within the bound is COUNTED and telemetered — NOT charged
+      // via `onUndispatchedLoss` (that seam is for UNEXPECTED teardown
+      // only), and creates NO episode/token/clip/ledger entry this wave
+      // (that disclosure work is out of scope — see PLAN-E2).
+      const encoder = this.opusEncoder;
+      const FLUSH_BOUND_MS = 500;
+      Promise.race([
+        encoder.flush(),
+        new Promise<void>((resolve) => setTimeout(resolve, FLUSH_BOUND_MS)),
+      ])
+        .catch(() => {
+          // Flush rejected — treat identically to a bound timeout below.
+        })
+        .finally(() => {
+          chargeGracefulResidueTelemetry(this.pendingOpusInput.length);
+          this.pendingOpusInput = [];
+          this.teardownOpusEncoder();
+          finishClose();
+        });
+      return;
+    }
+    finishClose();
   }
 
   // ── Internals ──────────────────────────────────────────────────────────
@@ -646,107 +1132,186 @@ export class DeepgramService {
     this.callbacks.onStateChange?.(next);
   }
 
-  private buildURL(): string {
-    return this.sttModel === 'flux' ? this.buildFluxURL() : this.buildNova3URL();
-  }
+  // PLAN-E1 — URL construction now lives in the pure `resolveUplinkURLConfig`
+  // test seam (`uplink-url-config.ts`) so production and the {flux,nova3} ×
+  // {linear16,opus} test matrix exercise the SAME code path. `openSocket()`
+  // calls it directly; there is no `buildURL()` wrapper left to call.
+
+  // ── PLAN-E1 sender internals ────────────────────────────────────────────
 
   /**
-   * Flux `/v2/listen` `flux-general-en` URL. Ports iOS `buildFluxURL`
-   * (DeepgramService.swift): drops every nova-3 turn-detection knob
-   * (interim_results/endpointing/utterance_end_ms/vad_events — Flux's
-   * model-driven turn detector replaces all of them), keeps audio format
-   * identical, and appends EQUAL-WEIGHT keyterms (no `:boost` suffix — Flux
-   * strips it) up to the 2000-char Flux URL budget. `mip_opt_out=true` stays
-   * on the connect URL (GDPR/DPIA — per-connection, must not regress).
+   * The ONE codec-aware sender. Every binary WebSocket send this service
+   * makes — live capture, replay, AND keepalive silence — funnels through
+   * here. Buffers upstream store RAW PCM; encoding happens HERE, at send
+   * time.
    */
-  private buildFluxURL(): string {
-    const params = new URLSearchParams({
-      model: 'flux-general-en',
-      encoding: 'linear16',
-      sample_rate: '16000',
-      // Flux turn-detection defaults, stated explicitly (self-documenting
-      // baseline; the 2026-05-29 threshold-tightening was rolled back —
-      // plain thresholds are canon). eot_threshold 0.5–0.9 default 0.7;
-      // eot_timeout_ms 500–10000 default 5000.
-      eot_threshold: '0.7',
-      eot_timeout_ms: '5000',
-      // GDPR/DPIA M2.1 — opt out of Deepgram's Model Improvement Partnership.
-      // Per-connection by design so an account-config change can't regress it.
-      // Mirrors iOS DeepgramService.swift:1705 + the nova-3 branch below.
-      mip_opt_out: 'true',
-    });
+  private dispatchFrame(segment: TaggedPcmSegment): void {
+    if (!this.ws || this.state !== 'connected') return;
 
-    const baseUrl = 'wss://api.deepgram.com/v2/listen';
-    const baseLength = baseUrl.length + '?'.length + params.toString().length;
-    const keyterms = generateFluxKeyterms(this.ccuAnalysis);
-    appendFluxKeytermsToUrl(params, keyterms, baseLength);
+    if (this.resolvedSenderCodec === 'linear16') {
+      try {
+        // Codex diff-review r2 IMPORTANT fix — send the EXACT byte range,
+        // not the raw parent `.buffer`: if `segment.samples` is ever a
+        // view over a larger buffer (e.g. `splitCapturedSegment`'s
+        // halves), sending `.buffer` directly would transmit the WHOLE
+        // parent buffer regardless of which slice this segment
+        // represents. Every current caller happens to hand this a
+        // full-buffer array, but the sender shouldn't depend on that.
+        const { buffer, byteOffset, byteLength } = segment.samples;
+        this.ws.send(buffer.slice(byteOffset, byteOffset + byteLength) as ArrayBuffer);
+        this.dispatchedSampleOffset += segment.samples.length;
+      } catch {
+        // WS backpressure — drop this frame (pre-existing accepted
+        // behaviour, unchanged by E1).
+      }
+      return;
+    }
 
-    return `${baseUrl}?${params.toString()}`;
+    // Opus path — async encoder output. Queue this segment so the
+    // per-INPUT drain handler (`handleOpusInputDrained`, fired once per
+    // `encode()` call regardless of output count) can pop it in FIFO
+    // order.
+    this.pendingOpusInput.push(segment);
+    this.opusEncoder?.encode(segment.samples);
   }
 
-  private buildNova3URL(): string {
-    const params = new URLSearchParams({
-      model: 'nova-3',
-      smart_format: 'true',
-      punctuate: 'true',
-      numerals: 'true',
-      encoding: 'linear16',
-      sample_rate: '16000',
-      channels: '1',
-      language: 'en-GB',
-      interim_results: 'true',
-      // 2026-06-04: bumped 300→400 ms to match iOS slice §3.3 of the
-      // field-test-fixes-session-60754e4d sprint. iOS picked option 2
-      // (unconditional 400 ms) because option 1's script-state-aware
-      // 250/400 split would require a Deepgram WS reconnect on every
-      // dialogue-script entry, dropping accumulated keyterm context
-      // (per `rules/mistakes.md`). Web mirrors that choice — `rules/
-      // mistakes.md` is explicit that the web and iOS Deepgram configs
-      // must stay in sync; `endpointing` is listed among the params
-      // they specifically must not drift on.
-      endpointing: '400',
-      // utterance_end_ms 1000 (NOT the legacy 2000): mirrors iOS canon
-      // (DeepgramService.swift:751). Lowered from 1500→1000 on
-      // 2026-04-26 (Bug-H follow-up) because the inspector's
-      // transcript bar would otherwise sit grey for the full
-      // utterance_end_ms window in noisy rooms — speech_final
-      // sometimes fails to fire and Deepgram falls back to this
-      // silence timer. 1000ms is the production value live in iOS;
-      // the rules/mistakes.md note "Keep web and iOS Deepgram
-      // configs in sync" (utterance_end_ms is explicitly listed
-      // there) is the load-bearing reason this constant lives in
-      // both clients with the SAME value.
-      utterance_end_ms: '1000',
-      vad_events: 'true',
-      // Opt out of Deepgram's Model Improvement Partnership Program (MIP).
-      // Without this flag the default account allows Deepgram to retain
-      // audio for model training, which would be a UK GDPR breach on every
-      // session: incidental third-party voices captured during inspector
-      // dictation would end up in an external training corpus with no
-      // lawful basis. Set on every connection rather than account-wide so
-      // it cannot be regressed by an account-config change. Mirrors iOS
-      // (DeepgramService.swift); the rules/mistakes.md "keep configs in
-      // sync" note applies here. Tracked in DPIA mitigation M2.1.
-      mip_opt_out: 'true',
+  /** Encoder-output callback, bound to the generation that constructed
+   *  it — output arriving after a NEWER generation has started (a
+   *  reconnect/codec-change raced an in-flight encode) is discarded, not
+   *  sent on a socket it no longer belongs to. Does NOT touch
+   *  `pendingOpusInput` (Codex diff-review r1 BLOCKER fix): a single
+   *  `encode()` call can legitimately emit MULTIPLE packets here (iOS's
+   *  on-device E0 probe found 4 packets from one 80ms/1280-frame input;
+   *  nothing suggests WebCodecs' Opus encoder differs) — popping the
+   *  queue per PACKET desyncs after the very first multi-packet input,
+   *  consuming segments pushed by LATER `encode()` calls before they've
+   *  even drained. Sending is the only job left here; the pop moved to
+   *  `handleOpusInputDrained`. */
+  private handleOpusPacket(bytes: Uint8Array, generation: number): void {
+    if (generation !== this.opusEncoderGeneration) return;
+    if (!this.ws || this.state !== 'connected') return;
+    try {
+      // Same exact-byte-range send as the linear16 path — the production
+      // WebCodecs encoder currently always allocates a full-buffer
+      // `Uint8Array` per packet, but this must not rely on that.
+      this.ws.send(
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+      );
+    } catch {
+      // WS backpressure — drop this packet (same accepted-loss bar as
+      // the linear16 path); this is NOT an `onUndispatchedLoss` event —
+      // that seam is for an unexpected TEARDOWN with residue still
+      // queued, not an ordinary per-send failure.
+    }
+  }
+
+  /** The 1-input-in / 1-drain-out signal (`OpusEncoderFactory`'s
+   *  `onInputDrained` — WebCodecs' `dequeue` event in production),
+   *  decoupled from `onPacket`'s count. Pops exactly the oldest pending
+   *  segment (FIFO — the encoder processes inputs strictly in submission
+   *  order, never reordering) and advances `dispatchedSampleOffset` by
+   *  its ORIGINAL sample count, regardless of how many output packets
+   *  that input produced. */
+  private handleOpusInputDrained(generation: number): void {
+    if (generation !== this.opusEncoderGeneration) return;
+    const segment = this.pendingOpusInput.shift();
+    if (!segment) return;
+    this.dispatchedSampleOffset += segment.samples.length;
+  }
+
+  /** Bumps the encoder generation and tears down any prior encoder
+   *  (defensive — the prior socket's `onclose` should already have run
+   *  this, but a fresh generation id is guaranteed regardless). Called at
+   *  the top of `openSocket()`, before the new encoder (if any) is
+   *  constructed. */
+  private resetOpusEncoderForNewGeneration(): void {
+    this.teardownOpusEncoder();
+    this.opusEncoderGeneration += 1;
+    this.pendingOpusInput = [];
+  }
+
+  /** Returns true iff the encoder was actually constructed. Does NOT
+   *  touch `resolvedSenderCodec` itself — the caller (`openSocket`) owns
+   *  reconciling the codec decision with the URL it builds, since a
+   *  construction failure must also change what the socket DECLARES,
+   *  not just what the sender does internally (Codex review r1 BLOCKER —
+   *  see `openSocket`'s comment). */
+  private constructOpusEncoderForCurrentGeneration(): boolean {
+    const generation = this.opusEncoderGeneration;
+    try {
+      this.opusEncoder = this.opusEncoderFactory(
+        (bytes) => this.handleOpusPacket(bytes, generation),
+        () => this.handleOpusInputDrained(generation)
+      );
+      return this.opusEncoder !== null;
+    } catch {
+      // WebCodecs unavailable at runtime despite the resolved codec
+      // being opus (E0 gates this at the probe stage, so this should not
+      // happen in practice) — fail SAFE to linear16 for this connection
+      // rather than silently dropping all audio.
+      this.opusEncoder = null;
+      return false;
+    }
+  }
+
+  private teardownOpusEncoder(): void {
+    this.opusEncoder?.close();
+    this.opusEncoder = null;
+  }
+
+  /** Charges any samples still queued inside the encoder pipeline as
+   *  CONFIRMED local loss via `onUndispatchedLoss`, BEFORE the reset —
+   *  called on an UNEXPECTED teardown only (a reconnectable close). Takes
+   *  the dying socket's epoch as a PARAMETER rather than reading
+   *  `this.currentEpoch` — the caller (`ws.onclose`) clears
+   *  `this.currentEpoch` before calling this (round-1 BLOCKER fix: a
+   *  stale currentEpoch must not leak into the NEXT capture attempt's
+   *  scope resolution), so reading the instance field here would always
+   *  see `null` and silently drop every loss report. Synthetic
+   *  (keepalive) segments are NEVER loss-reported — a keepalive send
+   *  failure neither mutates any captured segment's tags nor invokes
+   *  this seam. */
+  private chargeUndispatchedEncoderLoss(epoch: ConnectionEpoch): void {
+    if (this.pendingOpusInput.length === 0) return;
+    for (const segment of this.pendingOpusInput) {
+      if (segment.origin !== 'captured') continue;
+      this.onUndispatchedLoss({
+        samples: segment.samples.slice(),
+        recordingSessionId: segment.recordingSessionId,
+        epoch,
+        captureSampleRange: segment.captureSampleRange,
+      });
+    }
+  }
+
+  /** Charges a partial Flux sub-frame tail (< 80ms, not yet a complete
+   *  frame the batcher would have dispatched) as CONFIRMED local loss —
+   *  called on an UNEXPECTED teardown only (a reconnectable close), the
+   *  Flux-batching sibling of `chargeUndispatchedEncoderLoss` (Codex
+   *  diff-review r1 IMPORTANT fix: this tail sat outside ALL loss/flush
+   *  accounting before this fix — `disconnect()`'s graceful path now
+   *  flushes it through the sender, but an unexpected close never
+   *  reached the sender at all). Clears the accumulator after charging,
+   *  same as the graceful-flush path. */
+  private chargeFluxTailLoss(epoch: ConnectionEpoch): void {
+    if (this.fluxSampleBuffer.length === 0 || this.fluxAccumulatorRangeStart === null) return;
+    this.onUndispatchedLoss({
+      samples: this.fluxSampleBuffer.slice(),
+      recordingSessionId: this.sessionContext.recordingSessionId,
+      epoch,
+      captureSampleRange: {
+        start: this.fluxAccumulatorRangeStart,
+        end: this.fluxAccumulatorRangeStart + this.fluxSampleBuffer.length,
+      },
     });
-
-    // Nova-3 keyterm prompting — port of iOS `KeywordBoostGenerator`.
-    // The base electrical vocabulary (~89 keyterms) goes on every
-    // connect; CCU-augmented keyterms (board manufacturer / OCPD types
-    // / circuit labels) are layered on via `setCcuAnalysis()` before
-    // the next `connect()`. Audit Phase 6 P0 closed by this branch.
-    //
-    // The URL-length budget (1800 chars) is enforced inside
-    // `appendKeytermsToUrl`. Lower-budget operators (mobile carriers
-    // doing in-flight HTTP rewriting) sometimes truncate WS-upgrade
-    // URLs; iOS picked 1800 as the safe cap after a 2026-02-26 incident
-    // where 95 keyterms produced URLs >2200 chars and Deepgram 400'd.
-    const baseUrl = 'wss://api.deepgram.com/v1/listen';
-    const baseLength = baseUrl.length + '?'.length + params.toString().length;
-    const keyterms = generateKeyterms(this.ccuAnalysis);
-    appendKeytermsToUrl(params, keyterms, baseLength);
-
-    return `${baseUrl}?${params.toString()}`;
+    this.fluxSampleBuffer = new Int16Array(0);
+    this.fluxAccumulatorRangeStart = null;
+    // PLAN-E1B2 item 3 (self-audit + Codex r1 lens A) — this is the FOURTH
+    // accumulator reset site, not among the three the plan cited. Leaving
+    // the capturedAt FIFO populated here would hand the lost tail's stale
+    // entries to the first post-reconnect frame and desync every frame
+    // after it.
+    this.fluxAccumulatorCapturedAtQueue = [];
   }
 
   /**
@@ -808,10 +1373,25 @@ export class DeepgramService {
       if (idleMs < 8000) return;
       try {
         this.ws.send(JSON.stringify({ type: 'KeepAlive' }));
-        this.ws.send(new Int16Array(8000).buffer); // 500ms silence @16k
       } catch {
         // ignore
       }
+      // PLAN-E1 round-2: keepalive silence is a SYNTHETIC segment — it
+      // routes through the SAME sender as every other binary frame
+      // (single-sender invariant), but carries no capture range and is
+      // excluded from VAD/materiality/loss-source accounting. In
+      // practice `resolvedSenderCodec` is always 'linear16' here (this
+      // branch only runs for nova-3, which the safety invariant always
+      // forces to linear16), so this is 500ms of silent PCM sent
+      // raw — routed through `dispatchFrame` anyway for the single-
+      // sender invariant and so the dispatched-audio-time offset stays
+      // correct across synthetic and captured segments alike.
+      this.dispatchFrame({
+        origin: 'synthetic',
+        samples: new Int16Array(8000), // 500ms silence @16k
+        recordingSessionId: this.sessionContext.recordingSessionId,
+        epochScope: this.sessionContext.allocator.currentScope(this.currentEpoch),
+      });
     }, 10000);
   }
 

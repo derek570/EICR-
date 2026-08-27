@@ -161,13 +161,36 @@ subsequent reconnect fetches (auto-reconnect, sleep-wake, keyword-update
 reconnect) refresh only the JWT and never re-latch — an env flip must not
 change the codec under a live socket.
 
-**As of 2026-08-25, the latch is plumbed on both clients but UNCONSUMED** —
-no sender/encoder reads it yet, so flipping `DEEPGRAM_UPLINK_CODEC=opus`
-today has zero effect on the wire (still linear16 bytes always). The
-Opus-uplink sender/encoder work (tagged-PCM-segment carrier, per-connection
-encoder lifecycle, the shared `VoicedActivityDetector`) is PLAN-E1's larger
-remaining scope — see `~/.claude/handoffs/EICR_Automation--feedback-2026-08-23/PLAN-E1-final.md`
-and its execution log for what shipped vs. what's deferred.
+**As of 2026-08-27, only iOS CONSUMES the latch (PLAN-E1B).** It builds its
+uplink URL from its `resolveUplinkURLConfig` Swift equivalent against the
+latched codec; when it resolves to `opus`, the sender routes captured PCM
+through a per-connection `AVAudioConverter`/`kAudioFormatOpus` encoder
+instead of sending raw linear16 bytes. **Web's sender (`uplink-url-config.ts`)
+forces `linear16` unconditionally, regardless of the latch's value
+(PLAN-E1B2 item 1)** — a live probe against the real browser `AudioEncoder`
+found the packet-to-source-sample mapping isn't determinable for the
+genuinely reachable short-tail-flush input space (production submits 1 to
+1,279-sample inputs at scope-boundary/graceful-teardown flushes, not just
+20ms-multiple frames), so shipping a completion signal built on a mapping
+that only holds for aligned inputs would silently mis-account the
+unaligned case. Every captured PCM segment carries a `CaptureAttemptId`/
+`ConnectionEpoch`-scoped tag (`EpochScope`: `epoch(id)` post-open,
+`preOpen(captureAttemptId)` before any socket exists for the current
+capture attempt) PLUS a `capturedAt` ingress timestamp, minted by a
+session-owned `UplinkScopeAllocator`, fed through a single codec-aware
+sender per platform — live capture, ring-buffer/reconnect-queue replay,
+and keepalive silence all funnel through it, and a `preOpen`-tagged range
+is never restamped once an epoch mints. A shared `VoicedActivityDetector`
+(energy-RMS, debounced) is the real onset source on both platforms and
+drives a `PoorSignalLatencyProbe` (onset→first-interim median, using each
+onset's own `capturedAt`) that speaks a one-time, confirmations-gated
+advisory when signal degrades; its per-frame `onClassification` callback
+is the seam PLAN-E2's disclosure/parking gate will consume. Flipping
+`DEEPGRAM_UPLINK_CODEC=opus` today only changes iOS's wire bytes — see
+`~/.claude/handoffs/EICR_Automation--feedback-2026-08-23/PLAN-E1-final.md`
+and PLAN-E1B/PLAN-E1B2's execution logs for the full design + what remains
+for PLAN-E2 (the disclosure ledger for the loss/residue seams this wave
+wired dark).
 
 ## 3. Client → server frames
 

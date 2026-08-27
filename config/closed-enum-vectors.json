@@ -882,5 +882,8 @@
       },
       "expected": "I heard RCD type 'AC' but not which circuit — say, for example, 'RCD type AC for circuit 3'."
     }
+  ],
+  "spoken_distinctness_union": [
+    "Transcription is running slowly — confirmations may take a few seconds."
   ]
 }

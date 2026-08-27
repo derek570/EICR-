@@ -1,0 +1,19 @@
+{
+  "$comment": "PLAN-E1 (split-round-30 BLOCKER) — shared parity vectors for audioWindowEndToSampleOffset(seconds). Both the web (web/src/lib/recording/sample-offset.ts) and iOS (Sources/Services/SampleOffset.swift) implementations must agree on every vector here: 16kHz sample rate, floor rounding, finite/non-negative validation. Consumed by web/tests/sample-offset-parity.test.ts and CertMateUnified/Tests/CertMateUnifiedTests/SampleOffsetParityTests.swift.",
+  "sample_rate_hz": 16000,
+  "valid_vectors": [
+    { "seconds": 0, "expected_sample_offset": 0 },
+    { "seconds": 0.5, "expected_sample_offset": 8000 },
+    { "seconds": 1, "expected_sample_offset": 16000 },
+    { "seconds": 1.00003125, "expected_sample_offset": 16000, "note": "partial-sample boundary floors down" },
+    { "seconds": 2.5, "expected_sample_offset": 40000 },
+    { "seconds": 0.0000625, "expected_sample_offset": 1, "note": "one sample duration" },
+    { "seconds": 10.999999, "expected_sample_offset": 175999 },
+    { "seconds": 3600, "expected_sample_offset": 57600000, "note": "one hour — plausible upper bound for a long recording session" }
+  ],
+  "invalid_vectors": [
+    { "seconds": -0.1, "note": "negative — must throw/error, never silently clamp" },
+    { "seconds": "NaN", "note": "non-finite — must throw/error" },
+    { "seconds": "Infinity", "note": "non-finite — must throw/error" }
+  ]
+}

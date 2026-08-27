@@ -527,6 +527,65 @@ Prevents wasted Deepgram billing when the inspector stops speaking. Three-tier s
 
 ---
 
+## Uplink codec, capture tagging, and the poor-signal advisory (PLAN-E1/E1B/E1B2, 2026-08-27)
+
+iOS consumes the `uplink_codec` the key response latches (see the
+`certmate-voice-wire-protocol` skill): when it's `opus`, the sender routes
+captured PCM through a per-connection `AVAudioConverter`/`kAudioFormatOpus`
+encoder instead of sending raw linear16 bytes, with a generation-owned
+executor, atomic session context, and dispatch-acknowledgement seam
+closing the concurrency gaps PLAN-E1's original review left open
+(PLAN-E1B, CertMateUnified PR #71). **Web's sender stays on `linear16`
+unconditionally, regardless of the latch's value** — a live probe against
+the real browser `AudioEncoder` (PLAN-E1B2 item 1,
+`scripts/deepgram-webcodecs-opus-packet-probe.mjs`) found the
+packet-to-source-sample mapping isn't determinable for the genuinely
+reachable short-tail-flush input space (production submits inputs from 1
+to 1,279 samples at scope-boundary/graceful-teardown flushes, not just
+20ms-multiple frames; a non-aligned input can produce zero
+immediately-attributable output packets). Encoder construction failure
+falls back to `linear16` for that connection on iOS regardless.
+
+Every captured PCM segment is tagged once, at capture time, with a
+capture-domain sample range, an `EpochScope` (`epoch(id)` once a socket is
+open, `preOpen(captureAttemptId)` before one exists for the current
+capture attempt), and a `capturedAt` ingress timestamp (the true
+capture-ingress instant on the SAME clock `PoorSignalLatencyProbe` uses,
+never a later time read after a queue hop). A session-owned
+`UplinkScopeAllocator` mints the scope; a `preOpen`-tagged range is never
+restamped once an epoch mints for it — that's the invariant every
+sender/replay path is built around. A single codec-aware sender per
+platform (iOS `DeepgramService`'s sender, web's `dispatchFrame`) is the
+only place that touches the WebSocket for binary audio — live capture,
+reconnect-gap replay (iOS `reconnectAudioQueue`, web `AudioRingBuffer`'s
+tagged segments), and keepalive silence all funnel through it.
+
+A shared `VoicedActivityDetector` (energy-RMS, debounced onset/silence) is
+the real E3 onset source on both platforms (iOS's legacy
+`detectLocalSpeechOnset` duplicate is retired) and drives a
+`PoorSignalLatencyProbe`: a rolling median of onset-to-first-interim
+latency, using each onset's own `capturedAt`. Crossing the arm threshold
+speaks a one-time, confirmations-gated advisory
+(`speakPoorSignalAdvisory()`) telling the inspector the connection looks
+degraded; a recovery median un-arms it (5-minute cooldown between
+re-arms). The detector also exposes a per-frame `onClassification`
+callback (web: `VoicedActivityDetector`'s second constructor argument) —
+the delivery seam PLAN-E2's disclosure/parking gate consumes; PLAN-E1's
+own "injected E2-style consumer" test requirement is now covered on both
+platforms.
+
+**Key files:** `UplinkScopeTypes.swift`, `OpusEncoder.swift`,
+`VoicedActivityDetector.swift`, `PoorSignalLatencyProbe.swift`,
+`SampleOffset.swift`, `UplinkLossReport.swift`, `DeepgramService.swift`
+(the atomic session context and generation-owned encoder executor are
+internal to this file, not separate types) (web:
+`uplink-scope-allocator.ts`, `uplink-url-config.ts`, `opus-encoder.ts`
+(unreachable — kept for a future probe), `voiced-activity.ts`,
+`poor-signal-probe.ts`, `capture-tagging.ts`, `tagged-pcm-segment.ts`,
+`deepgram-service.ts`).
+
+---
+
 ## Realtime iOS Log Streaming (PLAN-backend-final.md Phase 1.3)
 
 On-device `DebugLogger` JSONL output streams to the backend in near-real-time via batched `client_log_batch` envelopes over the existing Sonnet WebSocket. Replaces the multipart `/api/session/:id/analytics` upload that has been broken since Mar 2026 — that path used a one-shot end-of-session POST that lost the batch on crash and required the iPad to be plugged in for diagnosis. The streaming path:

@@ -66,11 +66,11 @@ in `src/` — safe-to-remove candidate, via source commit only).
 | `NODE_ENV` / `STORAGE_TYPE` | `production` / `s3` | PROD | |
 | `REDIS_URL` | `redis://eicr-redis-prod...:6379` | PROD | |
 
-### Deepgram uplink codec (1) — PLAN-E1 E1, dark-shipped 2026-08-25
+### Deepgram uplink codec (1) — PLAN-E1, tier 2 (sender + encoder) shipped 2026-08-26
 
 | Var | Prod value | Code default (file:line) | Class |
 |---|---|---|---|
-| `DEEPGRAM_UPLINK_CODEC` | `linear16` | `'linear16'` (`src/routes/keys.js`, `resolveUplinkCodec()`) | **SAFETY** — resolved once at module load; `linear16` \| `opus` accepted, anything else falls back to `linear16` with one startup warning. Read exactly once, at `POST /api/proxy/deepgram-streaming-key`'s response build — additive `uplink_codec` field, ALWAYS present. Both clients decode + latch the value (session-scoped, set-once) but as of 2026-08-25 **neither client's sender/encoder reads the latch yet** — flipping this to `opus` today has ZERO effect on what bytes hit Deepgram (still linear16 always) until the Opus encoder work ships. Do not flip expecting a bandwidth change. |
+| `DEEPGRAM_UPLINK_CODEC` | `linear16` | `'linear16'` (`src/routes/keys.js`, `resolveUplinkCodec()`) | **SAFETY** — resolved once at module load; `linear16` \| `opus` accepted, anything else falls back to `linear16` with one startup warning. Read exactly once, at `POST /api/proxy/deepgram-streaming-key`'s response build — additive `uplink_codec` field, ALWAYS present. Both clients decode + latch the value (session-scoped, set-once), but only iOS's sender CONSUMES it (as of 2026-08-27, PLAN-E1B): `opus` routes captured PCM through a per-connection `AVAudioConverter` encoder; construction failure falls back to `linear16` for that connection. **Web stays on `linear16` unconditionally regardless of this flag's value** — a live probe against the real browser `AudioEncoder` (PLAN-E1B2 item 1) found the packet-to-source-sample mapping isn't determinable for the genuinely reachable short-tail-flush input space, so `resolveUplinkURLConfig` forces `linear16` on web pending a future probe. Flipping this to `opus` in prod today only changes iOS's wire bytes. |
 
 ### Extraction models & Stage 6 (7)
 
