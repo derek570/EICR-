@@ -777,7 +777,11 @@ export class DeepgramService {
    *  after its TTS-discard guard, since on that path `sendSamples` is
    *  entered only after the guard AND the resample have both already run
    *  — computing a fresh timestamp here would record a strictly LATER
-   *  time than the primary tagging branch's callback-entry stamp. */
+   *  time than the primary tagging branch's callback-entry stamp.
+   *
+   *  Returns `null` (nothing tagged) when the input resamples to zero
+   *  16 kHz samples — the same contract `recording-context.tsx`'s primary
+   *  path applies before tagging. */
   sendSamples(
     samples: Float32Array,
     capturedAt: number = performance.now()

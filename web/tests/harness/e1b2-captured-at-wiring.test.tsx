@@ -73,13 +73,23 @@ describe('PLAN-E1B2 item 3 — capturedAt is stamped at onSamples entry, before 
   let container: HTMLDivElement;
   let root: Root;
   let clock = 0;
+  // Gated capture: while `inCallback` is true, the FIRST value the clock
+  // returns is recorded — that is what "stamped at onSamples entry" means.
+  let inCallback = false;
+  let firstClockReadInCallback: number | null = null;
 
   beforeEach(() => {
     resetTtsQueue();
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('network disabled in harness')));
     setConfirmationModeEnabled(true);
     clock = 0;
-    vi.spyOn(performance, 'now').mockImplementation(() => (clock += 100));
+    inCallback = false;
+    firstClockReadInCallback = null;
+    vi.spyOn(performance, 'now').mockImplementation(() => {
+      clock += 100;
+      if (inCallback && firstClockReadInCallback === null) firstClockReadInCallback = clock;
+      return clock;
+    });
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -142,7 +152,12 @@ describe('PLAN-E1B2 item 3 — capturedAt is stamped at onSamples entry, before 
     }) as Float32Array;
     const clockBeforeCallback = clock;
     await act(async () => {
-      capturedOnSamples!(instrumented);
+      inCallback = true;
+      try {
+        capturedOnSamples!(instrumented);
+      } finally {
+        inCallback = false;
+      }
     });
 
     expect(dg.sentTaggedSegments).toHaveLength(1);
@@ -150,8 +165,13 @@ describe('PLAN-E1B2 item 3 — capturedAt is stamped at onSamples entry, before 
     // Resample really ran (48 kHz → 16 kHz) and read the input.
     expect(seg.samples.length).toBe(1280);
     expect(firstSampleReadAt).not.toBeNull();
-    // The stamp precedes the first sample read (i.e. precedes resampling)...
+    // The stamp IS the first clock read inside the callback (callback
+    // entry, right after the TTS guard) — an added read between the guard
+    // and the stamp would break this...
     expect(seg.capturedAt).toBeGreaterThan(clockBeforeCallback);
+    expect(seg.capturedAt).toBe(firstClockReadInCallback);
+    // ...and that read precedes the first input-sample read (i.e. precedes
+    // resampling).
     expect(seg.capturedAt).toBeLessThan(firstSampleReadAt!);
     // ...and the pipeline DID read the clock again later (lastAudioSendMs
     // etc.), proving the stamp was not simply "the latest value".

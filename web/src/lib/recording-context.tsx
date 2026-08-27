@@ -3846,6 +3846,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Post-resample data is 16kHz Float32 regardless of the hardware
         // rate, so both downstream sinks can trust the sample count.
         const samples16k = resampleTo16k(samples, handle.sampleRate);
+        // A sub-ratio block (fewer input samples than the resample ratio)
+        // yields ZERO 16 kHz samples — nothing to tag, feed to VAD, or
+        // retain; `DeepgramService.sendSamples` applies the same contract.
+        if (samples16k.length === 0) return;
         // Always write to the ring buffer, even while paused (and even
         // when no DeepgramService instance currently exists — full
         // sleep tears it down but leaves the mic running). That's what

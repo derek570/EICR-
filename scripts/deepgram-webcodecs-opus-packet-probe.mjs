@@ -53,8 +53,9 @@
  *   - CONSECUTIVE UNALIGNED: back-to-back short inputs at leading, middle
  *     and teardown positions — repeated scope-boundary flushes before any
  *     full frame accumulates.
- * Input timestamps come from a cumulative SAMPLE cursor (never per-input
- * rounded durations, which drift); tiling is checked with a strict sorted
+ * Input timestamps follow PRODUCTION's rule (per-input rounded durations,
+ * exactly as `opus-encoder.ts` advances them; drift vs the exact sample
+ * cursor is reported as a diagnostic); tiling is checked with a strict sorted
  * cursor per input (no gaps, no overlaps, exact end); overhang, orphan,
  * straddle, or an encoder error each disqualify.
  *
@@ -127,9 +128,16 @@ async function runSequence(lens) {
   });
   encoder.configure({ codec: 'opus', sampleRate: 16000, numberOfChannels: 1, bitrate: 28000 });
 
-  // Sample-domain cursor: each input's [start, end) is derived from the
-  // CUMULATIVE sample count, never from independently rounded per-input
-  // durations (1,279 + 1 samples must total exactly 80,000 us, not 80,001).
+  // Timestamp rule MIRRORS PRODUCTION (`opus-encoder.ts` realOpusEncoderFactory):
+  // `timestamp` advances by each input's independently ROUNDED duration —
+  // `Math.round(len / 16000 * 1e6)` — not by an exact cumulative sample
+  // cursor. That is the topology a shipped encoder would actually exercise
+  // (fractional-sample inputs drift by ±1 µs per call in production), so
+  // the probe must not measure a cleaner sequence than production emits.
+  // The exact sample-domain endpoint is kept as a DIAGNOSTIC only. The
+  // input range used for tiling is read back from the constructed
+  // `AudioData` (`data.timestamp`/`data.duration`), never re-derived.
+  let productionTimestampUs = 0;
   let totalSamples = 0;
   for (let i = 0; i < lens.length; i++) {
     const len = lens[i];
@@ -137,23 +145,33 @@ async function runSequence(lens) {
     for (let j = 0; j < len; j++) {
       samples[j] = Math.round(8000 * Math.sin((2 * Math.PI * 440 * (totalSamples + j)) / 16000));
     }
-    const ts = Math.round((totalSamples * 1e6) / 16000);
-    const tsEnd = Math.round(((totalSamples + len) * 1e6) / 16000);
-    const durationUs = tsEnd - ts;
+    const frameDurationUs = Math.round((len / 16000) * 1_000_000); // production's rule
     const data = new AudioData({
       format: 's16',
       sampleRate: 16000,
       numberOfFrames: len,
       numberOfChannels: 1,
-      timestamp: ts,
+      timestamp: productionTimestampUs,
       data: samples.buffer,
     });
-    events.push({ kind: 'encode', callIndex: i, len, timestamp: ts, duration: durationUs });
+    const ts = data.timestamp;
+    const durationUs = data.duration;
+    const exactEndUs = Math.round(((totalSamples + len) * 1e6) / 16000);
+    events.push({
+      kind: 'encode',
+      callIndex: i,
+      len,
+      timestamp: ts,
+      duration: durationUs,
+      exactEndUs,
+      productionDriftUs: ts + durationUs - exactEndUs,
+    });
     try {
       encoder.encode(data);
     } finally {
       data.close();
     }
+    productionTimestampUs += frameDurationUs;
     totalSamples += len;
     await new Promise((r) => setTimeout(r, 5));
   }
@@ -247,7 +265,7 @@ function arrivalGroups(events) {
 }
 
 function reportScenario(label, events) {
-  const { rows, untiledInputs } = attributeByTimestamp(events);
+  const { inputs, rows, untiledInputs } = attributeByTimestamp(events);
   const counts = { within: 0, straddle: 0, orphan: 0, overhang: 0, padding: 0 };
   for (const r of rows) counts[r.kind] += 1;
   console.log(`  ${label}:`);
@@ -269,6 +287,14 @@ function reportScenario(label, events) {
         .join(', ')}`
     );
   }
+  const drifted = inputs.filter((i) => i.productionDriftUs !== 0);
+  if (drifted.length) {
+    console.log(
+      `    production timestamp drift vs exact sample cursor: ${drifted
+        .map((i) => `#${i.callIndex}(len=${i.len}: ${i.productionDriftUs > 0 ? '+' : ''}${i.productionDriftUs} us)`)
+        .join(', ')}`
+    );
+  }
   const errors = events.filter((e) => e.kind === 'error');
   if (errors.length) console.log(`    encoder errors: ${JSON.stringify(errors)}`);
   const attributable =
@@ -277,7 +303,16 @@ function reportScenario(label, events) {
     counts.overhang === 0 &&
     errors.length === 0 &&
     untiledInputs.length === 0;
-  return { attributable, counts, untiledInputs: untiledInputs.length };
+  // Full normalized signature — every input range and every output row —
+  // so two runs only count as "consistent" if their entire split layout
+  // matches, not merely their aggregate counts.
+  const signature = JSON.stringify({
+    inputs: inputs.map((i) => [i.len, i.timestamp, i.duration]),
+    rows: rows.map((r) => [r.cStart, r.cEnd, r.owners, r.kind]),
+    arrivals: arrivalGroups(events).map((g) => [g.len, g.packets]),
+    untiled: untiledInputs.map((u) => [u.i, u.reason]),
+  });
+  return { attributable, counts, untiledInputs: untiledInputs.length, signature };
 }
 
 async function withBrowser(fn) {
@@ -337,8 +372,7 @@ async function main() {
         runResults.push(reportScenario(`run ${run}`, events));
       }
       const attributable = runResults.every((r) => r.attributable);
-      const consistent =
-        new Set(runResults.map((r) => JSON.stringify([r.counts, r.untiledInputs]))).size === 1;
+      const consistent = new Set(runResults.map((r) => r.signature)).size === 1;
       verdicts[s.name] = { attributable, consistent };
       console.log(`  → attributable on every run: ${attributable}; runs consistent: ${consistent}\n`);
     }
