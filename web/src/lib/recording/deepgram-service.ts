@@ -786,6 +786,11 @@ export class DeepgramService {
     if (samples.length === 0) return null;
 
     const resampled = this.sourceSampleRate === 16000 ? samples : this.resampleTo16k(samples);
+    // A sub-ratio input (e.g. 2 samples at 48 kHz) resamples to ZERO
+    // samples — nothing to tag, and a zero-count entry must never enter the
+    // Flux capturedAt FIFO (it would hand its timestamp to the next real
+    // frame). Codex r2 NIT.
+    if (resampled.length === 0) return null;
     const segment = tagCapturedFloat32(
       resampled,
       this.sessionContext,
@@ -839,6 +844,9 @@ export class DeepgramService {
    */
   private enqueueFluxFrames(segment: CapturedPcmSegment): void {
     const FRAME = DeepgramService.FLUX_FRAME_SAMPLES;
+    // Defence in depth for the capturedAt FIFO: a zero-sample segment
+    // contributes no bytes, so it must contribute no queue entry either.
+    if (segment.samples.length === 0) return;
     if (
       this.fluxSampleBuffer.length > 0 &&
       this.fluxBatchScope !== null &&

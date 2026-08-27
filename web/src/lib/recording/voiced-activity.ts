@@ -102,17 +102,24 @@ export class VoicedActivityDetector {
   processFrame(segment: CapturedPcmSegment): VoicedRangeClassification {
     const { samples, captureSampleRange, epochScope, recordingSessionId, capturedAt } = segment;
     const voiced = classifyPcmEnergy(samples);
+    // Ordering contract (PLAN-E1B2 item 3, Codex r2 silent-path lens): the
+    // speaking STATE is updated first, the triggering range's
+    // classification is published second, and only THEN does any
+    // transition fire — so an E2 transition consumer can never observe the
+    // new parking state while the range that caused it is still absent
+    // from the materiality consumer. Both consumers see the same decision.
+    let transition: LocalSpeakingTransition | null = null;
     if (voiced) {
       this.lastVoicedEndOffset = captureSampleRange.end;
       if (!this.speaking) {
         this.speaking = true;
-        this.onTransition({ kind: 'onset', atSampleOffset: captureSampleRange.start, capturedAt });
+        transition = { kind: 'onset', atSampleOffset: captureSampleRange.start, capturedAt };
       }
     } else if (this.speaking) {
       const silenceSamples = captureSampleRange.end - this.lastVoicedEndOffset;
       if (silenceSamples >= VAD_SILENCE_HOLD_SAMPLES) {
         this.speaking = false;
-        this.onTransition({ kind: 'silence', atSampleOffset: captureSampleRange.end, capturedAt });
+        transition = { kind: 'silence', atSampleOffset: captureSampleRange.end, capturedAt };
       }
     }
     const classification: VoicedRangeClassification = {
@@ -123,6 +130,7 @@ export class VoicedActivityDetector {
       capturedAt,
     };
     this.onClassification?.(classification);
+    if (transition) this.onTransition(transition);
     return classification;
   }
 

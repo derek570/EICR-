@@ -218,4 +218,36 @@ describe('VoicedActivityDetector', () => {
       vi.useRealTimers();
     }
   });
+  // PLAN-E1B2 item 3 (Codex r2 silent-path lens) — the executable-contract
+  // ORDERING guarantee: on a transition frame, the materiality consumer sees
+  // the triggering range (with the already-updated speaking state) BEFORE
+  // the parking consumer sees the transition — never the reverse.
+  it('publishes the triggering classification (with updated isLocalSpeaking) BEFORE the onset/silence transition fires', () => {
+    const order: string[] = [];
+    let speakingAtClassification: boolean[] = [];
+    const vad = new VoicedActivityDetector(
+      (t) => order.push(`transition:${t.kind}`),
+      (c) => {
+        order.push(`classification:${c.captureSampleRange.start}`);
+        speakingAtClassification.push(vad.isLocalSpeaking);
+      }
+    );
+    vad.processFrame(makeSegment(loudFrame(320), 0, 320)); // onset frame
+    let cursor = 320;
+    while (cursor - 320 < VAD_SILENCE_HOLD_SAMPLES) {
+      vad.processFrame(makeSegment(silentFrame(320), cursor, cursor + 320));
+      cursor += 320;
+    }
+    const onsetIdx = order.indexOf('transition:onset');
+    const silenceIdx = order.indexOf('transition:silence');
+    expect(onsetIdx).toBeGreaterThan(-1);
+    expect(silenceIdx).toBeGreaterThan(-1);
+    // The onset frame's classification (start 0) precedes the onset transition...
+    expect(order[onsetIdx - 1]).toBe('classification:0');
+    // ...and the silence-triggering frame's classification precedes the silence transition.
+    expect(order[silenceIdx - 1]).toMatch(/^classification:/);
+    // Speaking state was ALREADY updated when each classification was published.
+    expect(speakingAtClassification[0]).toBe(true); // onset frame
+    expect(speakingAtClassification[speakingAtClassification.length - 1]).toBe(false); // silence frame
+  });
 });

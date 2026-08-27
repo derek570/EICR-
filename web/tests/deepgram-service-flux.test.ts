@@ -391,4 +391,27 @@ describe('DeepgramService — Flux capturedAt FIFO (PLAN-E1B2 item 3, self-audit
     // With the stale entry, consumeCapturedAtQueue would have returned 111.
     expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(999);
   });
+  it('a sub-ratio input that resamples to ZERO samples never enters the capturedAt FIFO (Codex r2 NIT)', () => {
+    const cbs: DeepgramCallbacks = {
+      onInterimTranscript: vi.fn(),
+      onFinalTranscript: vi.fn(),
+      onUtteranceEnd: vi.fn(),
+      onSpeechStarted: vi.fn(),
+      onError: vi.fn(),
+    };
+    let ws: FakeWS | null = null;
+    const factory: WebSocketFactory = (url, protocols) => {
+      ws = new FakeWS(url, protocols) as unknown as WebSocket & FakeWS;
+      return ws as unknown as WebSocket;
+    };
+    const service = new DeepgramService(cbs, factory, 'flux');
+    service.connect('fake-key', 48000); // 3:1 ratio — 2 input samples → 0 output samples
+    (ws as unknown as FakeWS).open();
+    const dispatchSpy = vi.spyOn(service as any, 'dispatchFrame');
+    expect(service.sendSamples(new Float32Array(2).fill(0.1), 111)).toBeNull();
+    // A real full frame afterwards must carry ITS OWN stamp, not 111.
+    service.sendSamples(new Float32Array(1280 * 3).fill(0.1), 999);
+    expect(dispatchSpy).toHaveBeenCalledTimes(1);
+    expect((dispatchSpy.mock.calls[0][0] as CapturedPcmSegment).capturedAt).toBe(999);
+  });
 });
