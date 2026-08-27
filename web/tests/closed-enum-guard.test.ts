@@ -33,7 +33,7 @@ import {
   type GuardedClosedEnumField,
   type GuardedTarget,
 } from '@certmate/shared-utils';
-import { POOR_SIGNAL_ADVISORY_TEXT } from '@/lib/recording/tts';
+import { POOR_SIGNAL_ADVISORY_TEXT, UPLINK_LOSS_DISCLOSURE_TEXT } from '@/lib/recording/tts';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -103,6 +103,9 @@ describe('closed-enum fixture — cross-platform pins', () => {
     const union = fixture.spoken_distinctness_union;
     expect(new Set(union).size).toBe(union.length);
     expect(union).toContain(POOR_SIGNAL_ADVISORY_TEXT);
+    // PLAN-E2 — the single cause-agnostic loss disclosure, byte-identical
+    // to its TS source.
+    expect(union).toContain(UPLINK_LOSS_DISCLOSURE_TEXT);
   });
 
   it('every wiring-description target is itself a schema option', () => {
