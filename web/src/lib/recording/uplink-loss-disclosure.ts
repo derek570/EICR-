@@ -37,6 +37,12 @@ export interface DisclosureToken {
   state: DisclosureTokenState;
   /** PLAN-E-TERM iterates this at completion; this plan only appends on join. */
   readonly coveredLossSourceIds: LossSourceId[];
+  /** PLAN-E-TERM — true once real audio began. A `completed` that never
+   *  passed through `playing` (an entry-cancel `onEnd` before playback) is
+   *  NOT evidence the inspector heard anything: E2's completion accounting
+   *  runs unchanged, but the durable record and the source-cardinal counter
+   *  only honour a completion that played. */
+  hasPlayed: boolean;
 }
 
 export type DisclosureRequestOutcome =
@@ -44,13 +50,24 @@ export type DisclosureRequestOutcome =
   | { readonly action: 'joined'; readonly token: DisclosureToken }
   | { readonly action: 'awaiting'; readonly token: DisclosureToken };
 
+export type UplinkLossDisclosureTelemetryEvent =
+  | 'uplink_loss_episode_disclosed'
+  /** PLAN-E-TERM — SOURCE-cardinal: once per covered `LossSourceId` at a
+   *  token's NATURAL completion (never at mint — minting is not evidence
+   *  the inspector heard anything). */
+  | 'uplink_loss_episode_disclosure_completed';
+
 export interface UplinkLossDisclosureLedgerOptions {
   /** A token was minted (fresh or successor) — the caller must deliver it. */
   readonly onMint: (token: DisclosureToken) => void;
   readonly telemetry?: (
-    event: 'uplink_loss_episode_disclosed',
+    event: UplinkLossDisclosureTelemetryEvent,
     payload: Record<string, unknown>
   ) => void;
+  /** PLAN-E-TERM — a token reached NATURAL completion; `token.
+   *  coveredLossSourceIds` is the set the durable record resolves. Fired
+   *  BEFORE any successor is minted. */
+  readonly onCompleted?: (token: DisclosureToken) => void;
 }
 
 export class UplinkLossDisclosureLedger {
@@ -59,6 +76,7 @@ export class UplinkLossDisclosureLedger {
   private awaiting: LossSourceId[] = [];
   private nextTokenId = 1;
   private readonly disclosedKeys = new Set<string>();
+  private readonly completedKeys = new Set<string>();
   private completedCount = 0;
 
   constructor(private readonly options: UplinkLossDisclosureLedgerOptions) {}
@@ -83,6 +101,7 @@ export class UplinkLossDisclosureLedger {
     const t = this.outstanding;
     if (!t || t.id !== tokenId || t.state !== 'pending') return;
     t.state = 'playing';
+    t.hasPlayed = true;
   }
 
   /** NATURAL completion — the SOLE terminal exit. Mints a successor for
@@ -91,13 +110,31 @@ export class UplinkLossDisclosureLedger {
     const t = this.outstanding;
     if (!t || t.id !== tokenId) return null;
     t.state = 'completed';
-    // No counter here: the plan gives E2 exactly three counters
-    // (`material` / `retired_immaterial` on the loss ledger, `disclosed`
-    // at association below). The SOURCE-cardinal completion counter
-    // `uplink_loss_episode_disclosure_completed` is PLAN-E-TERM's, emitted
-    // per covered `LossSourceId` when it iterates this token.
     this.completedCount += 1;
     this.outstanding = null;
+    // PLAN-E-TERM — the SOURCE-cardinal completion counter: once per
+    // covered `LossSourceId` (idempotent per session|source, like
+    // `disclosed`), so two episodes covered by one token count 2. E2's own
+    // three counters are untouched. The binder resolves each covered
+    // source's durable record from `onCompleted`. ONLY a completion that
+    // actually PLAYED counts (Codex E-TERM cycle-1: an entry-cancel
+    // `onEnd` can reach a still-pending token; E2's accounting above is
+    // unchanged, but an unheard clip must not resolve the record).
+    if (!t.hasPlayed) return this.mintSuccessorIfAwaiting(t);
+    for (const id of t.coveredLossSourceIds) {
+      const sessionKey = `${t.sessionId}|${lossSourceIdKey(id)}`;
+      if (this.completedKeys.has(sessionKey)) continue;
+      this.completedKeys.add(sessionKey);
+      this.options.telemetry?.('uplink_loss_episode_disclosure_completed', {
+        source: lossSourceIdKey(id),
+        token: t.id,
+      });
+    }
+    this.options.onCompleted?.(t);
+    return this.mintSuccessorIfAwaiting(t);
+  }
+
+  private mintSuccessorIfAwaiting(t: DisclosureToken): DisclosureToken | null {
     if (this.awaiting.length === 0) return null;
     const ids = this.awaiting;
     this.awaiting = [];
@@ -112,6 +149,8 @@ export class UplinkLossDisclosureLedger {
     const t = this.outstanding;
     if (!t || t.id !== tokenId || t.state === 'completed') return null;
     t.state = 'pending';
+    // The NEXT attempt must prove its own playback (Codex mini-review).
+    t.hasPlayed = false;
     return t;
   }
 
@@ -151,6 +190,7 @@ export class UplinkLossDisclosureLedger {
       sessionId,
       state: 'pending',
       coveredLossSourceIds: [],
+      hasPlayed: false,
     };
     this.outstanding = token;
     this.associate(token, sourceIds);

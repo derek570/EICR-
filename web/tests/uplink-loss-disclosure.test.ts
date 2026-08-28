@@ -32,7 +32,10 @@ describe('UplinkLossDisclosureLedger — mint / join / await (2e)', () => {
     const r = ledger.request('S', [window(1), episode(1)]);
     expect(r.action).toBe('minted');
     expect(minted).toHaveLength(1);
-    expect(minted[0].coveredLossSourceIds.map(lossSourceIdKey)).toEqual(['preOpenWindow:1', 'episode:1']);
+    expect(minted[0].coveredLossSourceIds.map(lossSourceIdKey)).toEqual([
+      'preOpenWindow:1',
+      'episode:1',
+    ]);
     expect(disclosed).toEqual(['preOpenWindow:1', 'episode:1']);
   });
 
@@ -157,7 +160,7 @@ describe('UplinkLossDisclosureLedger — Codex cycle-1 regressions', () => {
     expect(disclosed).toEqual(['episode:1', 'episode:1']);
   });
 
-  it("E2 emits NO completion counter — that is PLAN-E-TERM's source-cardinal counter", () => {
+  it("PLAN-E-TERM's source-cardinal completion counter fires ONLY at natural completion, never at mint", () => {
     const events: string[] = [];
     const ledger = new UplinkLossDisclosureLedger({
       onMint: () => {},
@@ -165,8 +168,44 @@ describe('UplinkLossDisclosureLedger — Codex cycle-1 regressions', () => {
     });
     ledger.request('A', [episode(1)]);
     ledger.onPlaybackStarted(1);
-    ledger.onNaturalCompletion(1);
     expect(events).toEqual(['uplink_loss_episode_disclosed']);
+    ledger.onNaturalCompletion(1);
+    expect(events).toEqual([
+      'uplink_loss_episode_disclosed',
+      'uplink_loss_episode_disclosure_completed',
+    ]);
     expect(ledger.naturalCompletionCount).toBe(1);
+  });
+
+  it('a completion that never PLAYED emits no completion counter and no onCompleted (E2 accounting unchanged)', () => {
+    const events: string[] = [];
+    const completed: number[] = [];
+    const ledger = new UplinkLossDisclosureLedger({
+      onMint: () => {},
+      telemetry: (event) => events.push(event),
+      onCompleted: (t) => completed.push(t.id),
+    });
+    ledger.request('A', [episode(1)]);
+    ledger.onNaturalCompletion(1); // entry-cancel onEnd before playback
+    expect(events).toEqual(['uplink_loss_episode_disclosed']);
+    expect(completed).toEqual([]);
+    expect(ledger.naturalCompletionCount).toBe(1);
+    expect(ledger.outstandingToken).toBeNull();
+  });
+
+  it('a re-parked token must prove its NEXT attempt played: replay ended before playback resolves nothing', () => {
+    const events: string[] = [];
+    const completed: number[] = [];
+    const ledger = new UplinkLossDisclosureLedger({
+      onMint: () => {},
+      telemetry: (event) => events.push(event),
+      onCompleted: (t) => completed.push(t.id),
+    });
+    ledger.request('A', [episode(1)]);
+    ledger.onPlaybackStarted(1);
+    ledger.onNonNaturalTerminal(1); // preempted mid-play → re-park
+    ledger.onNaturalCompletion(1); // replay's entry-cancel onEnd before audio
+    expect(events).toEqual(['uplink_loss_episode_disclosed']);
+    expect(completed).toEqual([]);
   });
 });

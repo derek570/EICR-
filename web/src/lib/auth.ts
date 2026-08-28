@@ -1,5 +1,9 @@
 import type { User } from './types';
 import { clearJobCache } from './pwa/job-cache';
+import {
+  purgeUnresolvedAudio,
+  reconcileUnresolvedAudioOwner,
+} from './recording/unresolved-audio-store';
 import { purgeDesignationDraftState } from './designation-drafts';
 import { clearLoadRepairAliases } from './repair-job-designations';
 
@@ -66,6 +70,14 @@ export function getCompanyRole(user?: User | null): CompanyRole | null {
 
 export function setAuth(token: string, user: User): void {
   if (typeof window === 'undefined') return;
+  // PLAN-E-TERM — an ACCOUNT SWITCH (a different user signing in over a
+  // still-present previous user) purges the unresolved-audio record; a
+  // same-user re-authentication keeps its rows.
+  const previous = getUser();
+  if (previous && previous.id !== user.id) void purgeUnresolvedAudio();
+  // No recorded previous user (an interrupted sign-out, a cleared
+  // localStorage): reconcile against what the store actually holds.
+  else if (!previous) void reconcileUnresolvedAudioOwner(user.id);
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
   // Mirror into cookie so middleware can do a cheap expiry check.
@@ -86,6 +98,11 @@ export function clearAuth(): void {
   // commit before navigation. If IDB is unsupported or the clear fails,
   // the redirect still proceeds (clearJobCache swallows internally).
   void clearJobCache();
+  // PLAN-E-TERM — the unresolved-audio record is purged through its OWN
+  // serialised chain with a generation fence, so a write already queued
+  // (or a late write from the outgoing session's binder) cannot resurrect
+  // the previous inspector's dictation metadata after this clear.
+  void purgeUnresolvedAudio();
   // PLAN-B2 cycle-6 — the designation-draft journals live in
   // localStorage (crash-recovery) and would otherwise survive sign-out
   // and AUTO-COMMIT the previous inspector's abandoned draft when the

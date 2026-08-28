@@ -118,6 +118,17 @@ import {
   type SpeakOptions,
 } from './recording/tts';
 import { UplinkLossLedger } from './recording/uplink-loss-ledger';
+// PLAN-E-TERM — the durable post-session unresolved-audio record: a
+// per-session binder (identity + piecewise capture→wall-clock map) writes
+// through the IDB port on the SAME loss-event paths E2 already runs.
+import { CaptureWallClock } from './recording/capture-wall-clock';
+import { UnresolvedAudioBinder } from './recording/unresolved-audio-record';
+import {
+  createUnresolvedAudioPort,
+  primeUnresolvedAudioStore,
+} from './recording/unresolved-audio-store';
+import { announceActiveSession } from './recording/active-session-registry';
+import { getUser } from './auth';
 import {
   purge as ttsQueuePurge,
   resumeIfDeferred as ttsQueueResumeIfDeferred,
@@ -138,6 +149,7 @@ import {
   handleInspectorStoppedSpeaking,
 } from './recording/tts-prompt-helpers';
 import { setActiveSessionId as setTtsSessionId } from './recording/elevenlabs-tts';
+import { setUplinkLossDisclosureCompletionObserver } from './recording/tts';
 import { clientDiagnostic, setDiagnosticSink } from './recording/client-diagnostic';
 import { record as recordLifecycle } from './diagnostics/lifecycle-log';
 import { pipelineLog } from './diagnostics/pipeline-log';
@@ -278,6 +290,15 @@ export type RecordingSnapshot = {
 export type RecordingActions = {
   start: () => Promise<void>;
   stop: () => void;
+  /** PLAN-E-TERM — the CLIENT recording-session id (`sess_…`), read-only.
+   *  `''` when no session is active. A getter rather than a state field so
+   *  the frozen `stop()` needs no edit (it already clears the ref). */
+  getClientSessionId: () => string;
+  /** PLAN-E-TERM — the LIVE active session id: the client session id iff
+   *  the provider is recording/preparing/sleeping RIGHT NOW (never `idle`
+   *  or the terminal `error`), read from the refs at call time so an async
+   *  continuation (the PDF render) never sees a stale React state. */
+  getActiveRecordingSessionId: () => string | null;
   pause: () => void;
   resume: () => void;
   /** Dismiss a question from the queue without sending a correction.
@@ -1173,6 +1194,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // service replaced on pause/resume shares session state with its
   // predecessor instead of re-latching a mid-session backend env flip.
   const sessionUplinkContextRef = React.useRef<DeepgramSessionContext | null>(null);
+  // PLAN-E-TERM — session-scoped piecewise capture→wall-clock map + the
+  // durable unresolved-audio record binder. Same reset discipline as the
+  // uplink context (replaced at `start()` ONLY; never nulled in the
+  // frozen `stop()` — the binder session-fences every event itself).
+  const captureWallClockRef = React.useRef<CaptureWallClock | null>(null);
+  // Late-bound so `start()` (defined earlier) can read the live getter.
+  const getActiveRecordingSessionIdRef = React.useRef<() => string | null>(() => null);
+  // The current session's lease disposer (ends the cross-tab heartbeat).
+  // Invoked on replacement, on any terminal state, and on unmount — never
+  // from the frozen `stop()` body (Codex E-TERM cycle-4).
+  const endActiveSessionAnnouncementRef = React.useRef<(() => void) | null>(null);
+  const unresolvedAudioBinderRef = React.useRef<UnresolvedAudioBinder | null>(null);
   // PLAN-E1 E3 — the poor-signal latency probe, session-scoped alongside
   // the uplink context (same reset discipline).
   const poorSignalProbeRef = React.useRef<PoorSignalLatencyProbe | null>(null);
@@ -3047,7 +3080,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // (raw VAD leads Deepgram ~200ms) could start playback over it.
         // The session VAD's debounced local-speaking state closes that
         // window for every queued clip, disclosure included.
-        (sessionUplinkContextRef.current?.vad?.isLocalSpeaking ?? false),
+        (sessionUplinkContextRef.current?.vad?.isLocalSpeaking ?? false)
     );
     // §A1b — the shared forget helper clears ALL dedupe stores (permanent
     // set + field-nil TTL map + ageless reservation) so a confirmation
@@ -3941,6 +3974,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             capturedAt
           );
           ringBufferRef.current?.writeTagged(segment);
+          // PLAN-E-TERM — feed the piecewise capture→wall-clock map at
+          // the tagging boundary: a new anchor lands automatically after
+          // every capture discontinuity (pause, interruption, the
+          // TTS-excluded interval above), so a lost range's window is
+          // CAPTURE time, never write time.
+          captureWallClockRef.current?.observe(
+            segment.captureSampleRange.start,
+            performance.timeOrigin + capturedAt
+          );
           const sender = deepgramRef.current;
           if (sender) {
             sender.sendTaggedAudio(segment);
@@ -4355,6 +4397,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         ttsResumeTimerRef.current = setTimeout(() => {
           ttsResumeTimerRef.current = null;
           ttsActiveRef.current = false;
+          // PLAN-E-TERM — the TTS-excluded interval ends: the next captured
+          // block starts a new wall-clock piece even if the gap was short.
+          captureWallClockRef.current?.markDiscontinuity();
           deepgramRef.current?.resume();
           clientDiagnostic('tts_pcm_gate_released', {
             delayMs: TTS_PCM_GATE_RESUME_DELAY_MS,
@@ -4435,10 +4480,47 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // PLAN-E2 — the session-scoped unresolved-voiced-audio ledger. Its
     // disclosure moment hands material source ids to the TTS delivery
     // ledger (mint-or-join); the parking gate reads the SAME session VAD.
+    // PLAN-E-TERM — identity is INJECTED here (the recording layer holds
+    // user + job at session start); the ledger never looks it up. With no
+    // signed-in user or no job there is nothing to key a record to, so the
+    // binder is absent and E2 runs exactly as before.
+    const wallClock = new CaptureWallClock();
+    captureWallClockRef.current = wallClock;
+    // Warm the v6 IDB connection before any capture, and announce this
+    // session to sibling tabs (heartbeat self-stops once the session ref
+    // rotates — the frozen `stop()` already clears it).
+    primeUnresolvedAudioStore();
+    endActiveSessionAnnouncementRef.current?.(); // a replaced session ends its lease
+    endActiveSessionAnnouncementRef.current = announceActiveSession(
+      sessionId,
+      () => getActiveRecordingSessionIdRef.current() === sessionId
+    );
+    const recordUserId = getUser()?.id ?? null;
+    const recordJobId = jobRef.current?.id ?? null;
+    const binder =
+      recordUserId && recordJobId
+        ? new UnresolvedAudioBinder({
+            userId: recordUserId,
+            jobId: recordJobId,
+            recordingSessionId: sessionId,
+            clock: wallClock,
+            port: createUnresolvedAudioPort(),
+          })
+        : null;
+    unresolvedAudioBinderRef.current = binder;
+    setUplinkLossDisclosureCompletionObserver(
+      binder ? (sid, covered) => binder.onDisclosureCompleted(sid, covered) : null
+    );
     const lossLedger = new UplinkLossLedger({
       recordingSessionId: sessionId,
       onDisclosureReady: (sourceIds) => requestUplinkLossDisclosure(sourceIds, sessionId),
-      telemetry: (event, payload) => clientDiagnostic(event, payload),
+      telemetry: (event, payload) => {
+        clientDiagnostic(event, payload);
+        binder?.onLedgerTelemetry(event, payload);
+      },
+      onSourceEvidence: binder
+        ? (sourceId, evidence) => binder.onSourceEvidence(sourceId, evidence)
+        : undefined,
     });
     setUplinkLossDisclosureLocalSpeakingGate(() => sessionVad.isLocalSpeaking);
     sessionUplinkContextRef.current = {
@@ -4794,6 +4876,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  + ring buffer keep running through both doze and sleep, so the
    *  replay is always valid. */
   const resume = React.useCallback(async () => {
+    // PLAN-E-TERM — pause→resume is a declared capture discontinuity.
+    captureWallClockRef.current?.markDiscontinuity();
     // Synchronous guard. resume() is legal only from the paused/sleeping
     // states — anything else (including a late retry from the overlay
     // while we've already rotated to a fresh session) must no-op.
@@ -5205,6 +5289,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // as a derived value so callers always see a consistent sum.
   const costUsd = deepgramCostUsd + sonnetCostUsd;
 
+  // PLAN-E-TERM — the session lease ends the moment the provider reaches a
+  // terminal state (idle/error) or unmounts, so sibling tabs see `ended`
+  // promptly and a torn-down provider never keeps a dead session "alive".
+  React.useEffect(() => {
+    if (state === 'idle' || state === 'error') {
+      endActiveSessionAnnouncementRef.current?.();
+      endActiveSessionAnnouncementRef.current = null;
+    }
+  }, [state]);
+  React.useEffect(
+    () => () => {
+      endActiveSessionAnnouncementRef.current?.();
+      endActiveSessionAnnouncementRef.current = null;
+    },
+    []
+  );
+
+  // PLAN-E-TERM — read-only client session id (see `RecordingActions`).
+  const getClientSessionId = React.useCallback(() => sessionIdRef.current, []);
+  const getActiveRecordingSessionId = React.useCallback((): string | null => {
+    const status = statusRef.current;
+    if (status === 'idle' || status === 'error') return null;
+    return sessionIdRef.current || null;
+  }, []);
+  getActiveRecordingSessionIdRef.current = getActiveRecordingSessionId;
+
   const value = React.useMemo<RecordingCtx>(
     () => ({
       state,
@@ -5223,6 +5333,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       currentBoardId,
       start,
       stop,
+      getClientSessionId,
+      getActiveRecordingSessionId,
       pause,
       resume,
       dismissQuestion,
@@ -5247,6 +5359,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       currentBoardId,
       start,
       stop,
+      getClientSessionId,
+      getActiveRecordingSessionId,
       pause,
       resume,
       dismissQuestion,

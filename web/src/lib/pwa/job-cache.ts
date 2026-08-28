@@ -72,13 +72,17 @@ import type { Job, JobDetail } from '@/lib/types';
  *                  `web/src/lib/ccu/pending-extraction-queue.ts`.
  */
 export const DB_NAME = 'certmate-cache';
-export const DB_VERSION = 5;
+export const DB_VERSION = 6;
 const STORE_JOBS_LIST = 'jobs-list';
 const STORE_JOB_DETAIL = 'job-detail';
 export const STORE_OUTBOX = 'outbox';
 export const STORE_APP_SETTINGS = 'app-settings';
 export const STORE_PENDING_PHOTO = 'pending-observation-photo';
 export const STORE_PENDING_CCU = 'pending-ccu-extraction';
+/** PLAN-E-TERM — the post-session unresolved-audio record (v6). CRUD in
+ *  `web/src/lib/recording/unresolved-audio-store.ts`. */
+export const STORE_UNRESOLVED_AUDIO = 'unresolved-audio';
+export const UNRESOLVED_AUDIO_INDEX_BY_USER_JOB = 'by-user-job';
 export const PENDING_CCU_INDEX_BY_JOB = 'by-job';
 export const OUTBOX_INDEX_BY_USER = 'by-user';
 
@@ -165,11 +169,33 @@ export function openDB(): Promise<IDBDatabase> {
         const store = db.createObjectStore(STORE_PENDING_CCU, { keyPath: 'id' });
         store.createIndex(PENDING_CCU_INDEX_BY_JOB, 'jobId', { unique: false });
       }
+      // v6 — unresolved-audio (PLAN-E-TERM). One row per MATERIAL loss
+      // source, keyed `${recordingSessionId}|${lossSourceKey}`; rows are
+      // tombstones (`resolvedVia`) — nothing but the sign-out purge
+      // deletes. The `by-user-job` compound index drives the job banner
+      // and the PDF-success clear without a full-store scan.
+      if (!db.objectStoreNames.contains(STORE_UNRESOLVED_AUDIO)) {
+        const store = db.createObjectStore(STORE_UNRESOLVED_AUDIO, { keyPath: 'key' });
+        store.createIndex(UNRESOLVED_AUDIO_INDEX_BY_USER_JOB, ['userId', 'jobId'], {
+          unique: false,
+        });
+      }
       // Silence the unused-parameter lint without weakening the type:
       // the event object is often useful for debugging upgrade paths.
       void event;
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      // PLAN-E-TERM (Codex cycle-1) — a sibling tab opening a NEWER schema
+      // version is blocked while this handle stays open. Close it and
+      // drop the cached promise so this tab's next call re-opens at the
+      // new version instead of holding the upgrade forever.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
     request.onerror = () => {
       dbPromise = null;
       reject(request.error ?? new Error('IndexedDB open failed'));
@@ -523,6 +549,12 @@ export async function clearJobCache(): Promise<void> {
     // STORE_PENDING_CCU is included for the same shared-device reason:
     // a queued CCU photo captured under user A must not be replayed
     // (and billed) under user B's credentials after a sign-out swap.
+    // STORE_UNRESOLVED_AUDIO (PLAN-E-TERM) is deliberately NOT cleared here:
+    // `purgeUnresolvedAudio()` (recording/unresolved-audio-store.ts) is the
+    // SOLE owner of that store — it runs on the store's serialised write
+    // chain with a generation fence, and `clearAuth()` calls it beside this.
+    // A second, uncoordinated clear here could delete a NEW user's row
+    // after a fast re-login (Codex mini-review).
     const tx = db.transaction(
       [STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX, STORE_PENDING_PHOTO, STORE_PENDING_CCU],
       'readwrite'

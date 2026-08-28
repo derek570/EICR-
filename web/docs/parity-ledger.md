@@ -28,6 +28,12 @@ monorepo — not tracked inside it). Web paths are relative to the
 
 ---
 
+## PLAN-E-TERM post-session unresolved-audio record — 2026-08-28
+
+| id | iOS source | PWA counterpart | status | last-verified | owner | notes |
+| --- | ---------- | --------------- | ------ | ------------- | ----- | ----- |
+| recording/unresolved-audio-record | `Sources/Recording/UnresolvedAudioStore.swift` (durable store, visibility predicate, banner text, reconciliation) + `CaptureWallClock.swift`; `UplinkLossLedger.swift` (`onSourceEvidence`) + `UplinkLossDisclosure.swift` (`onCompleted`, `disclosure_completed` counter); `DeepgramService.swift` (per-session wall clock fed at both tagging sites, evidence/retired delegate hops); `DeepgramRecordingViewModel.swift` (injected identity, upsert/resolve, completion observer, `activeRecordingSessionId`); `JobDetailView.swift` (banner), `PDFTab.swift` (active-session-filtered clear), `AuthService.swift` (purge) | `unresolved-audio-record.ts` + `unresolved-audio-store.ts` (IDB v6 `unresolved-audio`) + `capture-wall-clock.ts`; `uplink-loss-ledger.ts` / `uplink-loss-disclosure.ts` (same seams); `recording-context.tsx` (binder at `start()`, wall clock in `onSamples`, `getClientSessionId`); `job-context.tsx` (rows, dismiss, certificate clear); `components/recording/unresolved-audio-banner.tsx` beneath RecordingProvider in `job/[id]/layout.tsx`; `job/[id]/pdf/page.tsx` (awaited clear after `setPdfBlob`); `auth.ts` → `unresolved-audio-store.ts` `purgeUnresolvedAudio()` (sole purge owner; `setAuth` account-switch purge) | match | 2026-08-28 | Derek | PLAN-E-TERM (feedback-2026-08-23 wave). Identical row schema, lifecycle matrix, visibility predicate, banner wording, and reconciliation equation, pinned by mirrored suites. Deliberate, documented asymmetries: (a) persistence medium — IDB on web, an atomic JSON file on iOS; (b) iOS purges on BOTH logout and delete-account, web on `clearAuth()` (its single sign-out path); (c) web's PDF clear is AWAITED (one atomic IDB transaction) after the Blob exists, iOS's runs synchronously after the file write — both at the real success point, both reading the active set at that instant. |
+
 ## PLAN-E2 honest uplink-loss disclosure — 2026-08-27
 
 | id | iOS source | PWA counterpart | status | last-verified | owner | notes |

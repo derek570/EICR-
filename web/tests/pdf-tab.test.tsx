@@ -133,6 +133,11 @@ const jobStub = {
   authorised_by_id: 'u-boss',
 };
 
+// PLAN-E-TERM — defined BEFORE the factory that references it (vitest
+// hoists vi.mock; the factory runs at the page's import).
+const clearUnresolvedAudioMock = vi.fn(async (_ids: ReadonlySet<string>) => 0);
+beforeEach(() => clearUnresolvedAudioMock.mockClear());
+
 vi.mock('@/lib/job-context', () => ({
   useJobContext: () => ({
     job: jobStub,
@@ -148,6 +153,20 @@ vi.mock('@/lib/job-context', () => ({
     commitJobPatch: vi.fn(() => jobStub),
     flushDraftsAndGetSnapshot: vi.fn(() => jobStub),
     saveCircuitsSnapshotNow: vi.fn(async () => ({ synced: true })),
+    // PLAN-E-TERM — the PDF-success clear (fire-and-forget on the page).
+    unresolvedAudio: [],
+    dismissUnresolvedAudio: vi.fn(async () => {}),
+    clearUnresolvedAudioForCertificate: clearUnresolvedAudioMock,
+  }),
+}));
+
+// PLAN-E-TERM — the page reads the ACTIVE recording-session set at the
+// PDF-success instant from RecordingProvider (idle here: no session).
+vi.mock('@/lib/recording-context', () => ({
+  useRecording: () => ({
+    state: 'idle',
+    getClientSessionId: () => '',
+    getActiveRecordingSessionId: () => null,
   }),
 }));
 
@@ -309,6 +328,10 @@ describe('Phase 2 · PDF tab', () => {
     expect(generateCertificatePdfMock).toHaveBeenCalledTimes(1);
     expect(generateCertificatePdfMock).toHaveBeenCalledWith('user-7', jobStub);
     expect(generatePdfMock).not.toHaveBeenCalled();
+    // PLAN-E-TERM — the certificate clear runs ONLY after the Blob exists,
+    // with the LIVE active-session set (idle here → empty set).
+    expect(clearUnresolvedAudioMock).toHaveBeenCalledTimes(1);
+    expect(clearUnresolvedAudioMock).toHaveBeenCalledWith(new Set());
 
     // Attestation rows stamped with the iOS local:// scheme
     // (PDFTab.swift:363), using the share filename.
@@ -373,6 +396,8 @@ describe('Phase 2 · PDF tab', () => {
     expect(attestationPromptCount).toBe(1);
     // Secondary buttons stay disabled on failure.
     expect(findButton(harness.container, 'Preview PDF')?.disabled).toBe(true);
+    // PLAN-E-TERM — a failed render never clears the unresolved-audio rows.
+    expect(clearUnresolvedAudioMock).not.toHaveBeenCalled();
 
     // "Try again" re-fires the render WITHOUT re-presenting the
     // attestation modal — the audit rows written before the failed
@@ -392,6 +417,7 @@ describe('Phase 2 · PDF tab', () => {
     });
     expect(generateCertificatePdfMock).toHaveBeenCalledTimes(2);
     expect(attestationPromptCount).toBe(1);
+    expect(clearUnresolvedAudioMock).toHaveBeenCalledTimes(1);
     // The successful re-render stamps the SAME attestation ids.
     expect(updateAttestationPdfKeyMock).toHaveBeenCalledWith({
       attestation_ids: [101, 102],
