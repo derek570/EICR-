@@ -1,0 +1,118 @@
+/**
+ * PLAN-E-TERM test 5 (frozen surfaces) + wiring — source-adjacency
+ * assertions on the real files (the provider is not unit-mountable; the
+ * established house pattern, see `uplink-loss-recording-context-wiring`).
+ *
+ *  - `stop()`, `pause()`, `resume()`, `handleWake()` carry NO E-TERM edit —
+ *    the plan adds not a byte to the stop path; `cancelSpeech` in tts.ts
+ *    is byte-for-byte free of it too.
+ *  - the binder is constructed at `start()` with INJECTED identity and
+ *    bound to the ledger's `onSourceEvidence` + telemetry stream;
+ *  - the wall-clock map is fed at the tagging boundary in `onSamples`;
+ *  - the banner mounts BENEATH RecordingProvider; the PDF page clears at
+ *    the REAL success point (after `setPdfBlob(blob)`) with the active set;
+ *  - `clearJobCache` purges the store.
+ */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { describe, expect, it } from 'vitest';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const read = (p: string) => readFileSync(resolve(here, p), 'utf8');
+const SRC = read('../src/lib/recording-context.tsx');
+const TTS = read('../src/lib/recording/tts.ts');
+const LAYOUT = read('../src/app/job/[id]/layout.tsx');
+const PDF = read('../src/app/job/[id]/pdf/page.tsx');
+const CACHE = read('../src/lib/pwa/job-cache.ts');
+
+function fnBody(src: string, name: string): string {
+  const start = `const ${name} = React.useCallback(`;
+  const s = src.indexOf(start);
+  expect(s, `anchor missing: ${start}`).toBeGreaterThan(-1);
+  const rest = src.slice(s + start.length);
+  const next = rest.search(/= React\.use(Callback|Effect)\(/);
+  return next === -1 ? rest : rest.slice(0, next);
+}
+
+describe('test 5 — frozen surfaces carry no E-TERM edit', () => {
+  it('stop / pause / resume / handleWake contain no TERM identifiers', () => {
+    for (const fn of ['stop', 'pause', 'resume', 'handleWake']) {
+      const body = fnBody(SRC, fn);
+      expect(body, fn).not.toContain('PLAN-E-TERM');
+      expect(body, fn).not.toContain('UnresolvedAudio');
+      expect(body, fn).not.toContain('unresolvedAudio');
+      expect(body, fn).not.toContain('captureWallClock');
+    }
+  });
+
+  it('`cancelSpeech` in tts.ts is byte-for-byte free of E-TERM', () => {
+    const s = TTS.indexOf('export function cancelSpeech(');
+    expect(s).toBeGreaterThan(-1);
+    const body = TTS.slice(s, TTS.indexOf('\n}\n', s));
+    expect(body).not.toContain('PLAN-E-TERM');
+    expect(body).not.toContain('uplinkLossCompletionObserver');
+  });
+
+  it('the session id is exposed as a read-only getter over the ref (no stop() edit needed)', () => {
+    expect(SRC).toContain(
+      'const getClientSessionId = React.useCallback(() => sessionIdRef.current, []);'
+    );
+  });
+});
+
+describe('start() wiring — injected identity, ledger seams, wall-clock', () => {
+  it('the binder is built with getUser()/jobRef identity and bound to onSourceEvidence + telemetry + the completion observer', () => {
+    const start = fnBody(SRC, 'start');
+    expect(start).toContain('new UnresolvedAudioBinder({');
+    expect(start).toContain('userId: recordUserId');
+    expect(start).toContain('jobId: recordJobId');
+    expect(start).toContain('binder?.onLedgerTelemetry(event, payload)');
+    expect(start).toContain('binder.onSourceEvidence(sourceId, evidence)');
+    expect(start).toContain('setUplinkLossDisclosureCompletionObserver(');
+    expect(start).toContain('new CaptureWallClock()');
+  });
+
+  it('the wall-clock map is fed at the tagging boundary in onSamples, AFTER the TTS-discard guard', () => {
+    const guard = SRC.indexOf('if (ttsActiveRef.current) return;');
+    const observe = SRC.indexOf(
+      'captureWallClockRef.current?.observe(segment.captureSampleRange.start, Date.now());'
+    );
+    expect(guard).toBeGreaterThan(-1);
+    expect(observe).toBeGreaterThan(guard);
+    expect(SRC.match(/captureWallClockRef\.current\?\.observe\(/g)?.length).toBe(1);
+  });
+
+  it('the disclosure ledger reports natural completion through onCompleted → the observer', () => {
+    expect(TTS).toContain('onCompleted: (token) =>');
+    expect(TTS).toContain(
+      'uplinkLossCompletionObserver?.(token.sessionId, token.coveredLossSourceIds)'
+    );
+  });
+});
+
+describe('surfacing — banner beneath RecordingProvider; PDF-success clear; purge', () => {
+  it('the banner mounts inside <RecordingProvider> and above the tab content', () => {
+    const provider = LAYOUT.indexOf('<RecordingProvider>');
+    const banner = LAYOUT.indexOf('<UnresolvedAudioBanner />');
+    const children = LAYOUT.indexOf('{children}');
+    expect(provider).toBeGreaterThan(-1);
+    expect(banner).toBeGreaterThan(provider);
+    expect(children).toBeGreaterThan(banner);
+  });
+
+  it('the PDF page clears ONLY after setPdfBlob(blob), passing the active-session set', () => {
+    const success = PDF.indexOf('setPdfBlob(blob);');
+    const clear = PDF.indexOf('void clearUnresolvedAudioForCertificate(activeSessionIds)');
+    expect(success).toBeGreaterThan(-1);
+    expect(clear).toBeGreaterThan(success);
+    expect(PDF.slice(success, clear)).toContain("if (recordingState !== 'idle')");
+    expect(PDF.slice(success, clear)).toContain('getClientSessionId()');
+  });
+
+  it('clearJobCache purges the unresolved-audio store', () => {
+    const s = CACHE.indexOf('export async function clearJobCache(');
+    const body = CACHE.slice(s, CACHE.indexOf('\n}\n', s));
+    expect(body).toContain('tx.objectStore(STORE_UNRESOLVED_AUDIO).clear();');
+  });
+});
