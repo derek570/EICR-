@@ -91,6 +91,11 @@ export function currentUnresolvedAudioGeneration(): number {
   return purgeGeneration;
 }
 
+/** Test seam: what a sibling tab's `purged` broadcast does to THIS tab. */
+export function __receiveRemotePurgeForTests(): void {
+  purgeGeneration += 1;
+}
+
 /** Warm the v6 connection (runs the upgrade) BEFORE capture begins, so
  *  the first material upsert never pays — or loses to — the migration. */
 export function primeUnresolvedAudioStore(): void {
@@ -110,9 +115,14 @@ export async function upsertUnresolvedAudio(
   return enqueue(async () => {
     if (generation !== purgeGeneration) return; // fenced by a purge
     const db = await openDB();
+    if (generation !== purgeGeneration) return; // a purge landed during the open
     const tx = db.transaction(STORE_UNRESOLVED_AUDIO, 'readwrite');
     const store = tx.objectStore(STORE_UNRESOLVED_AUDIO);
     const existing = (await wrapRequest(store.get(record.key))) as UnresolvedAudioRecord | null;
+    if (generation !== purgeGeneration) {
+      tx.abort(); // a sibling tab purged while the read was in flight
+      return;
+    }
     store.put(mergeUnresolvedAudioRecord(existing ?? null, record));
     await wrapTransaction(tx);
     notifyChanged();
@@ -129,9 +139,14 @@ export async function resolveUnresolvedAudio(
   return enqueue(async () => {
     if (generation !== purgeGeneration) return; // fenced by a purge
     const db = await openDB();
+    if (generation !== purgeGeneration) return; // a purge landed during the open
     const tx = db.transaction(STORE_UNRESOLVED_AUDIO, 'readwrite');
     const store = tx.objectStore(STORE_UNRESOLVED_AUDIO);
     const existing = (await wrapRequest(store.get(key))) as UnresolvedAudioRecord | null;
+    if (generation !== purgeGeneration) {
+      tx.abort(); // a sibling tab purged while the read was in flight
+      return;
+    }
     // No row: the source never went material (a completion/retirement for
     // it is not a TERM event). Never manufacture a row here.
     if (!existing) return;

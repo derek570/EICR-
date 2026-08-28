@@ -22,6 +22,7 @@ import {
   listUnresolvedAudioForJob,
   resolveUnresolvedAudio,
   subscribeUnresolvedAudioChanges,
+  __receiveRemotePurgeForTests,
   createUnresolvedAudioPort,
   currentUnresolvedAudioGeneration,
   purgeUnresolvedAudio,
@@ -48,7 +49,7 @@ function row(over: Partial<UnresolvedAudioRecord> = {}): UnresolvedAudioRecord {
     windowStartMs: 1_000,
     windowEndMs: 2_000,
     voicedDurationMs: 500,
-    resolvedVia: null,
+    resolved_via: null,
     createdAt: 1,
     updatedAt: 1,
     ...over,
@@ -77,7 +78,7 @@ describe('upsert / resolve / list', () => {
     await flushUnresolvedAudioWrites();
     const rows = await listUnresolvedAudioForJob('u1', 'j1');
     const found = rows.find((x) => x.key === r.key)!;
-    expect(found.resolvedVia).toBe('completion');
+    expect(found.resolved_via).toBe('completion');
   });
 
   it('a second upsert refreshes evidence but keeps createdAt and an existing tombstone', async () => {
@@ -88,7 +89,7 @@ describe('upsert / resolve / list', () => {
     const found = (await listAllUnresolvedAudio()).find((x) => x.key === r.key)!;
     expect(found.voicedDurationMs).toBe(900);
     expect(found.createdAt).toBe(1);
-    expect(found.resolvedVia).toBe('dismissed');
+    expect(found.resolved_via).toBe('dismissed');
     expect(found.updatedAt).toBe(99);
   });
 
@@ -105,7 +106,7 @@ describe('upsert / resolve / list', () => {
     await resolveUnresolvedAudio(r.key, 'retired_immaterial');
     await resolveUnresolvedAudio(r.key, 'certificate_cleared');
     const found = (await listAllUnresolvedAudio()).find((x) => x.key === r.key)!;
-    expect(found.resolvedVia).toBe('retired_immaterial');
+    expect(found.resolved_via).toBe('retired_immaterial');
   });
 
   it('list is scoped by (userId, jobId) and sorted by window start', async () => {
@@ -142,7 +143,7 @@ describe('certificate clear honours the active-session set (5b)', () => {
       userId: 'uP',
       jobId: 'jP',
       recordingSessionId: 'sess-dismissed',
-      resolvedVia: 'dismissed',
+      resolved_via: 'dismissed',
     });
     await Promise.all([
       upsertUnresolvedAudio(inactive),
@@ -153,10 +154,10 @@ describe('certificate clear honours the active-session set (5b)', () => {
     expect(n).toBe(1);
     const rows = await listUnresolvedAudioForJob('uP', 'jP');
     const by = (s: string) => rows.find((x) => x.recordingSessionId === s)!;
-    expect(by('sess-done').resolvedVia).toBe('certificate_cleared');
+    expect(by('sess-done').resolved_via).toBe('certificate_cleared');
     expect(by('sess-done').updatedAt).toBe(123);
-    expect(by('sess-live').resolvedVia).toBeNull();
-    expect(by('sess-dismissed').resolvedVia).toBe('dismissed');
+    expect(by('sess-live').resolved_via).toBeNull();
+    expect(by('sess-dismissed').resolved_via).toBe('dismissed');
   });
 });
 
@@ -183,6 +184,28 @@ describe('purge fence (Codex cycle-1)', () => {
     await purged;
     await flushUnresolvedAudioWrites();
     expect((await listAllUnresolvedAudio()).some((x) => x.userId === 'uQ')).toBe(false);
+  });
+});
+
+describe('purge arriving MID-operation (Codex cycle-3)', () => {
+  it('a remote purge that lands while an upsert is suspended prevents the stale put', async () => {
+    const port = createUnresolvedAudioPort();
+    const r = row({ userId: 'uMid' });
+    // Queue the upsert, then advance the generation on the very next tick —
+    // before the op's own awaits resolve (openDB / get) — as a sibling-tab
+    // `purged` message would.
+    port.upsert(r);
+    __receiveRemotePurgeForTests();
+    await flushUnresolvedAudioWrites();
+    expect((await listAllUnresolvedAudio()).some((x) => x.userId === 'uMid')).toBe(false);
+  });
+
+  it("the stored terminal field is named resolved_via (the plan's pinned schema)", async () => {
+    const r = row({ userId: 'uSchema' });
+    await upsertUnresolvedAudio(r);
+    const raw = (await listAllUnresolvedAudio()).find((x) => x.userId === 'uSchema')!;
+    expect(Object.keys(raw)).toContain('resolved_via');
+    expect(Object.keys(raw)).not.toContain('resolvedVia');
   });
 });
 

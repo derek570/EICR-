@@ -138,7 +138,7 @@ describe('T2 — material accrual writes the durable entry mid-session (tests 1,
     const id = materialEpisode(h, { start: 16000, end: 24000 });
     expect(h.port.rows.size).toBe(1);
     const row = h.port.rows.get(h.key(id))!;
-    expect(row.resolvedVia).toBeNull();
+    expect(row.resolved_via).toBeNull();
     expect(row.windowStartMs).toBe(T0 + 1000);
     expect(row.windowEndMs).toBe(T0 + 1500);
     expect(row.voicedDurationMs).toBe(500);
@@ -177,7 +177,7 @@ describe('T2 — material accrual writes the durable entry mid-session (tests 1,
     expect(token.coveredLossSourceIds.map(lossSourceIdKey)).toEqual([lossSourceIdKey(id)]);
     h.disclosureLedger.onPlaybackStarted(token.id);
     h.disclosureLedger.onNaturalCompletion(token.id);
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBe('completion');
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBe('completion');
     expect(h.counters.disclosureCompleted).toBe(1);
     const r = h.reconcile();
     expect(r.openRecords).toBe(0);
@@ -191,7 +191,7 @@ describe('T2 — material accrual writes the durable entry mid-session (tests 1,
     const token = h.disclosureLedger.outstandingToken!;
     h.disclosureLedger.onPlaybackStarted(token.id);
     h.disclosureLedger.abandonForSessionTeardown(); // Stop cut the clip
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBeNull();
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBeNull();
     expect(h.counters.disclosureCompleted).toBe(0);
     expect(h.port.rows.size).toBe(1); // no double entry
     const r = h.reconcile();
@@ -223,8 +223,8 @@ describe('T2 — material accrual writes the durable entry mid-session (tests 1,
     h.disclosureLedger.onPlaybackStarted(token.id);
     h.disclosureLedger.onNaturalCompletion(token.id);
     expect(h.counters.disclosureCompleted).toBe(2);
-    expect(h.port.rows.get(h.key(a))!.resolvedVia).toBe('completion');
-    expect(h.port.rows.get(h.key(staged))!.resolvedVia).toBe('completion');
+    expect(h.port.rows.get(h.key(a))!.resolved_via).toBe('completion');
+    expect(h.port.rows.get(h.key(staged))!.resolved_via).toBe('completion');
     expect(h.reconcile().openRecordsHold).toBe(true);
   });
 
@@ -241,12 +241,12 @@ describe('T2 — material accrual writes the durable entry mid-session (tests 1,
     });
     h.ledger.onSocketClosed(E(1), ACTIVE);
     const id = h.ledger.openEpisodeSourceId!;
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBeNull();
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBeNull();
     // The vendor's late watermark retires everything.
     h.ledger.advanceWatermark(E(1), 8000);
     h.ledger.onSocketOpened(E(2));
     expect(h.counters.retiredImmaterial).toBe(1);
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBe('retired_immaterial');
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBe('retired_immaterial');
     expect(h.disclosureLedger.outstandingToken).toBeNull(); // no speech
     const r = h.reconcile();
     expect(r.openRecords).toBe(0);
@@ -277,7 +277,7 @@ describe('T2 — material accrual writes the durable entry mid-session (tests 1,
     const row = h.port.rows.get(h.key(id))!;
     expect(row.voicedDurationMs).toBe(500);
     expect(row.windowStartMs).toBe(T0 + 500);
-    expect(row.resolvedVia).toBeNull();
+    expect(row.resolved_via).toBeNull();
   });
 });
 
@@ -352,7 +352,7 @@ describe('4 / 6a — tombstones: every non-purge transition writes ONLY resolved
     h.ledger.onOwnedDisconnect(null);
     h.port.resolve(h.key(id), 'dismissed');
     expect(h.port.rows.size).toBe(1);
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBe('dismissed');
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBe('dismissed');
     expect(
       isUnresolvedAudioVisible(h.port.rows.get(h.key(id))!, {
         userId: 'u1',
@@ -375,7 +375,7 @@ describe('4 / 6a — tombstones: every non-purge transition writes ONLY resolved
       activeSessionIds: new Set(),
     });
     for (const row of clearable) g.port.resolve(row.key, 'certificate_cleared');
-    expect(g.port.rows.get(g.key(gid))!.resolvedVia).toBe('certificate_cleared');
+    expect(g.port.rows.get(g.key(gid))!.resolved_via).toBe('certificate_cleared');
     const gr = g.reconcile();
     expect(gr.certificateCleared).toBe(1);
     expect(gr.openRecordsHold).toBe(true);
@@ -386,10 +386,10 @@ describe('4 / 6a — tombstones: every non-purge transition writes ONLY resolved
     const id = materialEpisode(h);
     h.port.resolve(h.key(id), 'dismissed');
     h.port.resolve(h.key(id), 'certificate_cleared');
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBe('dismissed');
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBe('dismissed');
     // A later upsert (evidence refresh) keeps the tombstone too.
-    h.port.upsert({ ...h.port.rows.get(h.key(id))!, resolvedVia: null, voicedDurationMs: 999 });
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBe('dismissed');
+    h.port.upsert({ ...h.port.rows.get(h.key(id))!, resolved_via: null, voicedDurationMs: 999 });
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBe('dismissed');
     expect(h.port.rows.get(h.key(id))!.voicedDurationMs).toBe(999);
   });
 
@@ -422,7 +422,7 @@ describe('5b — PDF success while a material episode is STILL ACTIVE on the sam
     old.port.resolve(old.key(oldId), 'certificate_cleared');
     // The live row survives, hidden while active, visible after Stop.
     const liveRow = () => live.port.rows.get(live.key(liveId))!;
-    expect(liveRow().resolvedVia).toBeNull();
+    expect(liveRow().resolved_via).toBeNull();
     expect(
       isUnresolvedAudioVisible(liveRow(), {
         userId: 'u1',
@@ -495,7 +495,7 @@ describe('a completion that never PLAYED does not resolve the record (Codex cycl
     h.disclosureLedger.onNaturalCompletion(token.id);
     expect(h.disclosureLedger.naturalCompletionCount).toBe(1); // E2 unchanged
     expect(h.counters.disclosureCompleted).toBe(0);
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBeNull();
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBeNull();
     expect(h.reconcile().openRecordsHold).toBe(true);
   });
 });
@@ -580,7 +580,7 @@ describe('visibility predicate + wording', () => {
     const h = harness('sess-A');
     const id = materialEpisode(h);
     h.binder.onDisclosureCompleted('sess-OTHER', [id]);
-    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBeNull();
+    expect(h.port.rows.get(h.key(id))!.resolved_via).toBeNull();
   });
 });
 

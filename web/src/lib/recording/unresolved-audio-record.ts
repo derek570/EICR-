@@ -71,7 +71,7 @@ export interface UnresolvedAudioRecord {
   /** Voiced evidence duration in ms (sum of the source's voiced ranges). */
   readonly voicedDurationMs: number;
   /** The single terminal field. `null` = still open. */
-  readonly resolvedVia: UnresolvedAudioResolvedVia | null;
+  readonly resolved_via: UnresolvedAudioResolvedVia | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -98,7 +98,7 @@ export interface UnresolvedAudioPort {
 
 /**
  * Merge an incoming upsert onto an existing row: identity + createdAt are
- * kept, evidence fields refresh, and a NON-NULL `resolvedVia` is never
+ * kept, evidence fields refresh, and a NON-NULL `resolved_via` is never
  * overwritten (tombstone rule). Shared by the IDB port and the in-memory
  * test port so both obey the same matrix.
  */
@@ -113,7 +113,7 @@ export function mergeUnresolvedAudioRecord(
     windowEndMs: incoming.windowEndMs,
     voicedDurationMs: incoming.voicedDurationMs,
     updatedAt: incoming.updatedAt,
-    resolvedVia: existing.resolvedVia ?? incoming.resolvedVia,
+    resolved_via: existing.resolved_via ?? incoming.resolved_via,
   };
 }
 
@@ -122,8 +122,8 @@ export function resolveUnresolvedAudioRecord(
   via: UnresolvedAudioResolvedVia,
   now: number
 ): UnresolvedAudioRecord {
-  if (existing.resolvedVia !== null) return existing; // first terminal wins
-  return { ...existing, resolvedVia: via, updatedAt: now };
+  if (existing.resolved_via !== null) return existing; // first terminal wins
+  return { ...existing, resolved_via: via, updatedAt: now };
 }
 
 export interface UnresolvedAudioBinderOptions {
@@ -178,7 +178,7 @@ export class UnresolvedAudioBinder {
       windowStartMs: window.startMs,
       windowEndMs: window.endMs,
       voicedDurationMs: (evidence.voicedSamples * 1000) / UPLINK_SAMPLE_RATE_HZ,
-      resolvedVia: null,
+      resolved_via: null,
       createdAt,
       updatedAt: now,
     });
@@ -221,7 +221,7 @@ export function isUnresolvedAudioVisible(
   record: UnresolvedAudioRecord,
   ctx: UnresolvedAudioVisibilityContext
 ): boolean {
-  if (record.resolvedVia !== null) return false;
+  if (record.resolved_via !== null) return false;
   if (ctx.userId === null || record.userId !== ctx.userId) return false;
   if (ctx.jobId === null || record.jobId !== ctx.jobId) return false;
   if (ctx.activeSessionIds.has(record.recordingSessionId)) return false;
@@ -240,7 +240,7 @@ export function selectCertificateClearable(
 ): UnresolvedAudioRecord[] {
   return records.filter(
     (r) =>
-      r.resolvedVia === null &&
+      r.resolved_via === null &&
       r.userId === ctx.userId &&
       r.jobId === ctx.jobId &&
       !ctx.activeSessionIds.has(r.recordingSessionId)
@@ -295,8 +295,8 @@ export function reconcileUnresolvedAudio(
   counters: UnresolvedAudioCounters
 ): UnresolvedAudioReconciliation {
   const byVia = (via: UnresolvedAudioResolvedVia): number =>
-    records.filter((r) => r.resolvedVia === via).length;
-  const openRecords = records.filter((r) => r.resolvedVia === null).length;
+    records.filter((r) => r.resolved_via === via).length;
+  const openRecords = records.filter((r) => r.resolved_via === null).length;
   const dismissed = byVia('dismissed');
   const certificateCleared = byVia('certificate_cleared');
   const expectedOpen =
