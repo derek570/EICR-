@@ -115,7 +115,8 @@ function harness(sessionId = 'sess-A', userId = 'u1', jobId = 'j1') {
     onSourceEvidence: (id, ev) => binder.onSourceEvidence(id, ev),
   });
   const reconcile = () => reconcileUnresolvedAudio(port.all(), counters);
-  const key = (id: LossSourceId) => unresolvedAudioKey(sessionId, lossSourceIdKey(id));
+  const key = (id: LossSourceId) =>
+    unresolvedAudioKey(userId, jobId, sessionId, lossSourceIdKey(id));
   return { port, clock, binder, ledger, disclosureLedger, counters, reconcile, key };
 }
 
@@ -447,6 +448,81 @@ describe('5b — PDF success while a material episode is STILL ACTIVE on the sam
       })
     ).toBe(true);
     expect(live.reconcile().openRecordsHold).toBe(true);
+  });
+});
+
+describe('composite key — (userId, jobId, session, source) are ALL part of the identity', () => {
+  it('identical session/source ids under two users and two jobs are four independent rows', () => {
+    const port = new MemoryPort();
+    for (const [u, j] of [
+      ['u1', 'j1'],
+      ['u1', 'j2'],
+      ['u2', 'j1'],
+      ['u2', 'j2'],
+    ]) {
+      const clock = new CaptureWallClock();
+      clock.observe(0, T0);
+      const binder = new UnresolvedAudioBinder({
+        userId: u,
+        jobId: j,
+        recordingSessionId: 'SAME',
+        clock,
+        port,
+        now: () => T0,
+      });
+      binder.onSourceEvidence(
+        { kind: 'episode', id: 1 },
+        { captureSampleRange: { start: 0, end: 8000 }, voicedSamples: 8000 }
+      );
+    }
+    expect(port.rows.size).toBe(4);
+    expect([...port.rows.keys()].sort()).toEqual([
+      'u1|j1|SAME|episode:1',
+      'u1|j2|SAME|episode:1',
+      'u2|j1|SAME|episode:1',
+      'u2|j2|SAME|episode:1',
+    ]);
+  });
+});
+
+describe('a completion that never PLAYED does not resolve the record (Codex cycle-1)', () => {
+  it('onEnd reaching a still-pending token: E2 completes it, TERM neither counts nor resolves', () => {
+    const h = harness();
+    const id = materialEpisode(h);
+    h.ledger.onSocketOpened(E(2));
+    const token = h.disclosureLedger.outstandingToken!;
+    // No onPlaybackStarted — an entry-cancel onEnd before audio.
+    h.disclosureLedger.onNaturalCompletion(token.id);
+    expect(h.disclosureLedger.naturalCompletionCount).toBe(1); // E2 unchanged
+    expect(h.counters.disclosureCompleted).toBe(0);
+    expect(h.port.rows.get(h.key(id))!.resolvedVia).toBeNull();
+    expect(h.reconcile().openRecordsHold).toBe(true);
+  });
+});
+
+describe('late report on a DISCLOSED epoch refreshes the record (Codex cycle-1)', () => {
+  it('absorbed (never re-disclosed) but the row window/duration grow', () => {
+    const h = harness();
+    h.ledger.onSocketOpened(E(1));
+    h.ledger.recordDispatched({
+      dispatchEpoch: E(1),
+      epochScope: epoch(1),
+      captureSampleRange: { start: 0, end: 8000 },
+      dispatchedSampleRange: { start: 0, end: 8000 },
+      voiced: true,
+    });
+    h.ledger.onSocketClosed(E(1), ACTIVE);
+    const id = h.ledger.openEpisodeSourceId!;
+    h.ledger.onSocketOpened(E(2)); // discloses; epoch 1 marked disclosed
+    const before = h.port.rows.get(h.key(id))!.voicedDurationMs;
+    h.ledger.recordUndispatchedLoss({
+      recordingSessionId: 'sess-A',
+      epoch: E(1),
+      captureSampleRange: { start: 8000, end: 16000 },
+      samples: voicedPcm(8000),
+    });
+    expect(h.port.rows.get(h.key(id))!.voicedDurationMs).toBeGreaterThan(before);
+    expect(h.disclosureLedger.outstandingToken!.coveredLossSourceIds.length).toBe(1); // no re-disclosure
   });
 });
 

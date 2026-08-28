@@ -37,6 +37,12 @@ export interface DisclosureToken {
   state: DisclosureTokenState;
   /** PLAN-E-TERM iterates this at completion; this plan only appends on join. */
   readonly coveredLossSourceIds: LossSourceId[];
+  /** PLAN-E-TERM — true once real audio began. A `completed` that never
+   *  passed through `playing` (an entry-cancel `onEnd` before playback) is
+   *  NOT evidence the inspector heard anything: E2's completion accounting
+   *  runs unchanged, but the durable record and the source-cardinal counter
+   *  only honour a completion that played. */
+  hasPlayed: boolean;
 }
 
 export type DisclosureRequestOutcome =
@@ -95,6 +101,7 @@ export class UplinkLossDisclosureLedger {
     const t = this.outstanding;
     if (!t || t.id !== tokenId || t.state !== 'pending') return;
     t.state = 'playing';
+    t.hasPlayed = true;
   }
 
   /** NATURAL completion — the SOLE terminal exit. Mints a successor for
@@ -109,7 +116,11 @@ export class UplinkLossDisclosureLedger {
     // covered `LossSourceId` (idempotent per session|source, like
     // `disclosed`), so two episodes covered by one token count 2. E2's own
     // three counters are untouched. The binder resolves each covered
-    // source's durable record from `onCompleted`.
+    // source's durable record from `onCompleted`. ONLY a completion that
+    // actually PLAYED counts (Codex E-TERM cycle-1: an entry-cancel
+    // `onEnd` can reach a still-pending token; E2's accounting above is
+    // unchanged, but an unheard clip must not resolve the record).
+    if (!t.hasPlayed) return this.mintSuccessorIfAwaiting(t);
     for (const id of t.coveredLossSourceIds) {
       const sessionKey = `${t.sessionId}|${lossSourceIdKey(id)}`;
       if (this.completedKeys.has(sessionKey)) continue;
@@ -120,6 +131,10 @@ export class UplinkLossDisclosureLedger {
       });
     }
     this.options.onCompleted?.(t);
+    return this.mintSuccessorIfAwaiting(t);
+  }
+
+  private mintSuccessorIfAwaiting(t: DisclosureToken): DisclosureToken | null {
     if (this.awaiting.length === 0) return null;
     const ids = this.awaiting;
     this.awaiting = [];
@@ -173,6 +188,7 @@ export class UplinkLossDisclosureLedger {
       sessionId,
       state: 'pending',
       coveredLossSourceIds: [],
+      hasPlayed: false,
     };
     this.outstanding = token;
     this.associate(token, sourceIds);

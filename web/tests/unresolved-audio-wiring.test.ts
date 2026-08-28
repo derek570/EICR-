@@ -37,7 +37,7 @@ function fnBody(src: string, name: string): string {
 
 describe('test 5 — frozen surfaces carry no E-TERM edit', () => {
   it('stop / pause / resume / handleWake contain no TERM identifiers', () => {
-    for (const fn of ['stop', 'pause', 'resume', 'handleWake']) {
+    for (const fn of ['stop', 'pause', 'handleWake']) {
       const body = fnBody(SRC, fn);
       expect(body, fn).not.toContain('PLAN-E-TERM');
       expect(body, fn).not.toContain('UnresolvedAudio');
@@ -71,6 +71,11 @@ describe('start() wiring — injected identity, ledger seams, wall-clock', () =>
     expect(start).toContain('binder.onSourceEvidence(sourceId, evidence)');
     expect(start).toContain('setUplinkLossDisclosureCompletionObserver(');
     expect(start).toContain('new CaptureWallClock()');
+    expect(start).toContain('port: createUnresolvedAudioPort()');
+    expect(start).toContain(
+      'announceActiveSession(sessionId, () => sessionIdRef.current === sessionId);'
+    );
+    expect(start).toContain('primeUnresolvedAudioStore();');
   });
 
   it('the wall-clock map is fed at the tagging boundary in onSamples, AFTER the TTS-discard guard', () => {
@@ -81,6 +86,14 @@ describe('start() wiring — injected identity, ledger seams, wall-clock', () =>
     expect(guard).toBeGreaterThan(-1);
     expect(observe).toBeGreaterThan(guard);
     expect(SRC.match(/captureWallClockRef\.current\?\.observe\(/g)?.length).toBe(1);
+  });
+
+  it('declared discontinuities force an anchor: TTS-gate release and resume()', () => {
+    const release = SRC.lastIndexOf('ttsActiveRef.current = false;');
+    expect(SRC.slice(release, release + 400)).toContain(
+      'captureWallClockRef.current?.markDiscontinuity();'
+    );
+    expect(fnBody(SRC, 'resume')).toContain('captureWallClockRef.current?.markDiscontinuity();');
   });
 
   it('the disclosure ledger reports natural completion through onCompleted → the observer', () => {
@@ -103,11 +116,14 @@ describe('surfacing — banner beneath RecordingProvider; PDF-success clear; pur
 
   it('the PDF page clears ONLY after setPdfBlob(blob), passing the active-session set', () => {
     const success = PDF.indexOf('setPdfBlob(blob);');
-    const clear = PDF.indexOf('void clearUnresolvedAudioForCertificate(activeSessionIds)');
+    const clear = PDF.indexOf('await clearUnresolvedAudioForCertificate(activeSessionIds)');
     expect(success).toBeGreaterThan(-1);
     expect(clear).toBeGreaterThan(success);
-    expect(PDF.slice(success, clear)).toContain("if (recordingState !== 'idle')");
+    expect(PDF.slice(success, clear)).toContain(
+      "recordingState !== 'idle' && recordingState !== 'error'"
+    );
     expect(PDF.slice(success, clear)).toContain('getClientSessionId()');
+    expect(PDF.slice(success, clear)).toContain('getActiveSessionIds(localActive)');
   });
 
   it('clearJobCache purges the unresolved-audio store', () => {

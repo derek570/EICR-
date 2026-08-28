@@ -184,7 +184,18 @@ export function openDB(): Promise<IDBDatabase> {
       // the event object is often useful for debugging upgrade paths.
       void event;
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      // PLAN-E-TERM (Codex cycle-1) — a sibling tab opening a NEWER schema
+      // version is blocked while this handle stays open. Close it and
+      // drop the cached promise so this tab's next call re-opens at the
+      // new version instead of holding the upgrade forever.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
     request.onerror = () => {
       dbPromise = null;
       reject(request.error ?? new Error('IndexedDB open failed'));

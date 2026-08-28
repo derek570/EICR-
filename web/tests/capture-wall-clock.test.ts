@@ -106,6 +106,15 @@ describe('CaptureWallClock — discontinuities (split-round-9)', () => {
     });
   });
 
+  it('markDiscontinuity() forces a new piece even for a sub-tolerance gap (declared seams)', () => {
+    const clock = new CaptureWallClock();
+    const { sample, wall } = feed(clock, 0, T0, 5);
+    clock.markDiscontinuity();
+    feed(clock, sample, wall + 100, 5); // 100 ms gap — inside jitter tolerance
+    expect(clock.anchorCount).toBe(2);
+    expect(clock.wallMsAt(sample)).toBe(wall + 100);
+  });
+
   it('ignores non-finite input and never rewinds', () => {
     const clock = new CaptureWallClock();
     expect(clock.observe(Number.NaN, T0)).toBe(false);

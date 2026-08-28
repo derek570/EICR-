@@ -123,7 +123,11 @@ import { UplinkLossLedger } from './recording/uplink-loss-ledger';
 // through the IDB port on the SAME loss-event paths E2 already runs.
 import { CaptureWallClock } from './recording/capture-wall-clock';
 import { UnresolvedAudioBinder } from './recording/unresolved-audio-record';
-import { unresolvedAudioIdbPort } from './recording/unresolved-audio-store';
+import {
+  createUnresolvedAudioPort,
+  primeUnresolvedAudioStore,
+} from './recording/unresolved-audio-store';
+import { announceActiveSession } from './recording/active-session-registry';
 import { getUser } from './auth';
 import {
   purge as ttsQueuePurge,
@@ -4382,6 +4386,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         ttsResumeTimerRef.current = setTimeout(() => {
           ttsResumeTimerRef.current = null;
           ttsActiveRef.current = false;
+          // PLAN-E-TERM — the TTS-excluded interval ends: the next captured
+          // block starts a new wall-clock piece even if the gap was short.
+          captureWallClockRef.current?.markDiscontinuity();
           deepgramRef.current?.resume();
           clientDiagnostic('tts_pcm_gate_released', {
             delayMs: TTS_PCM_GATE_RESUME_DELAY_MS,
@@ -4468,6 +4475,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // binder is absent and E2 runs exactly as before.
     const wallClock = new CaptureWallClock();
     captureWallClockRef.current = wallClock;
+    // Warm the v6 IDB connection before any capture, and announce this
+    // session to sibling tabs (heartbeat self-stops once the session ref
+    // rotates — the frozen `stop()` already clears it).
+    primeUnresolvedAudioStore();
+    announceActiveSession(sessionId, () => sessionIdRef.current === sessionId);
     const recordUserId = getUser()?.id ?? null;
     const recordJobId = jobRef.current?.id ?? null;
     const binder =
@@ -4477,7 +4489,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             jobId: recordJobId,
             recordingSessionId: sessionId,
             clock: wallClock,
-            port: unresolvedAudioIdbPort,
+            port: createUnresolvedAudioPort(),
           })
         : null;
     unresolvedAudioBinderRef.current = binder;
@@ -4849,6 +4861,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  + ring buffer keep running through both doze and sleep, so the
    *  replay is always valid. */
   const resume = React.useCallback(async () => {
+    // PLAN-E-TERM — pause→resume is a declared capture discontinuity.
+    captureWallClockRef.current?.markDiscontinuity();
     // Synchronous guard. resume() is legal only from the paused/sleeping
     // states — anything else (including a late retry from the overlay
     // while we've already rotated to a fresh session) must no-op.

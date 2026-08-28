@@ -58,7 +58,7 @@ export const UNRESOLVED_AUDIO_RESOLVED_VIA: readonly UnresolvedAudioResolvedVia[
 ];
 
 export interface UnresolvedAudioRecord {
-  /** `${recordingSessionId}|${lossSourceKey}` — the IDB keyPath. */
+  /** `${userId}|${jobId}|${recordingSessionId}|${lossSourceKey}` — the IDB keyPath. */
   readonly key: string;
   readonly userId: string;
   readonly jobId: string;
@@ -76,8 +76,17 @@ export interface UnresolvedAudioRecord {
   readonly updatedAt: number;
 }
 
-export function unresolvedAudioKey(recordingSessionId: string, lossSourceKey: string): string {
-  return `${recordingSessionId}|${lossSourceKey}`;
+/** The plan's composite entry key `(userId, jobId, recordingSessionId,
+ *  lossSourceId)` — ALL four components, so an equal session/source under
+ *  another user or job is an independent row, never a merge. `|` cannot
+ *  appear in any component (ids are UUID/`sess_…`/`episode:N` shapes). */
+export function unresolvedAudioKey(
+  userId: string,
+  jobId: string,
+  recordingSessionId: string,
+  lossSourceKey: string
+): string {
+  return `${userId}|${jobId}|${recordingSessionId}|${lossSourceKey}`;
 }
 
 /** Persistence port the binder writes through. Both ops are serialised by
@@ -143,6 +152,11 @@ export class UnresolvedAudioBinder {
     return this.options.recordingSessionId;
   }
 
+  private keyFor(lossSourceKey: string): string {
+    const o = this.options;
+    return unresolvedAudioKey(o.userId, o.jobId, o.recordingSessionId, lossSourceKey);
+  }
+
   /** The loss ledger's `onSourceEvidence` — fired at material accrual and
    *  on every later evidence change of a material source. The window is
    *  derived from the CAPTURE sample range through the session's piecewise
@@ -151,7 +165,7 @@ export class UnresolvedAudioBinder {
     const window = this.options.clock.windowOf(evidence.captureSampleRange);
     if (!window) return; // no anchor yet — nothing captured, cannot happen post-start
     const lossSourceKey = lossSourceIdKey(sourceId);
-    const key = unresolvedAudioKey(this.options.recordingSessionId, lossSourceKey);
+    const key = this.keyFor(lossSourceKey);
     const now = this.now();
     const createdAt = this.createdAt.get(key) ?? now;
     this.createdAt.set(key, createdAt);
@@ -176,10 +190,7 @@ export class UnresolvedAudioBinder {
     if (event !== 'uplink_loss_episode_retired_immaterial') return;
     const source = payload.source;
     if (typeof source !== 'string') return;
-    this.options.port.resolve(
-      unresolvedAudioKey(this.options.recordingSessionId, source),
-      'retired_immaterial'
-    );
+    this.options.port.resolve(this.keyFor(source), 'retired_immaterial');
   }
 
   /** The disclosure ledger's NATURAL completion of a token: every covered
@@ -188,10 +199,7 @@ export class UnresolvedAudioBinder {
   onDisclosureCompleted(sessionId: string, coveredLossSourceIds: readonly LossSourceId[]): void {
     if (sessionId !== this.options.recordingSessionId) return;
     for (const id of coveredLossSourceIds) {
-      this.options.port.resolve(
-        unresolvedAudioKey(this.options.recordingSessionId, lossSourceIdKey(id)),
-        'completion'
-      );
+      this.options.port.resolve(this.keyFor(lossSourceIdKey(id)), 'completion');
     }
   }
 }

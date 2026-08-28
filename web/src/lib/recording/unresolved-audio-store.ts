@@ -10,7 +10,10 @@
  * subscribers + sibling tabs (BroadcastChannel), mirroring
  * `ccu/pending-extraction-queue.ts`.
  *
- * Purge: the store joins `clearJobCache()` (sign-out) — the SOLE deletion.
+ * Purge (sign-out) is the SOLE deletion and is FENCED: it advances a purge
+ * generation and runs on the SAME chain, so a write already queued behind
+ * it, or a late write from a binder created before it, can never
+ * resurrect the outgoing user's row (Codex E-TERM cycle-1).
  */
 
 import {
@@ -60,9 +63,12 @@ export function subscribeUnresolvedAudioChanges(fn: () => void): () => void {
   return () => listeners.delete(fn);
 }
 
-// ── Serialised write chain ─────────────────────────────────────────────
+// ── Serialised write chain + purge fence ───────────────────────────────
 
 let chain: Promise<void> = Promise.resolve();
+/** Advanced by every purge. A write carrying an OLDER generation is a
+ *  no-op at execution time — the fence a pre-purge binder cannot cross. */
+let purgeGeneration = 0;
 
 function enqueue(op: () => Promise<void>): Promise<void> {
   const next = chain.then(op).catch((err) => {
@@ -77,11 +83,28 @@ export function flushUnresolvedAudioWrites(): Promise<void> {
   return chain;
 }
 
+export function currentUnresolvedAudioGeneration(): number {
+  return purgeGeneration;
+}
+
+/** Warm the v6 connection (runs the upgrade) BEFORE capture begins, so
+ *  the first material upsert never pays — or loses to — the migration. */
+export function primeUnresolvedAudioStore(): void {
+  if (!isSupported()) return;
+  void openDB().catch(() => {
+    /* the first write will retry the open */
+  });
+}
+
 // ── CRUD ───────────────────────────────────────────────────────────────
 
-export async function upsertUnresolvedAudio(record: UnresolvedAudioRecord): Promise<void> {
+export async function upsertUnresolvedAudio(
+  record: UnresolvedAudioRecord,
+  generation: number = purgeGeneration
+): Promise<void> {
   if (!isSupported()) return;
   return enqueue(async () => {
+    if (generation !== purgeGeneration) return; // fenced by a purge
     const db = await openDB();
     const tx = db.transaction(STORE_UNRESOLVED_AUDIO, 'readwrite');
     const store = tx.objectStore(STORE_UNRESOLVED_AUDIO);
@@ -95,10 +118,12 @@ export async function upsertUnresolvedAudio(record: UnresolvedAudioRecord): Prom
 export async function resolveUnresolvedAudio(
   key: string,
   via: UnresolvedAudioResolvedVia,
-  now: number = Date.now()
+  now: number = Date.now(),
+  generation: number = purgeGeneration
 ): Promise<void> {
   if (!isSupported()) return;
   return enqueue(async () => {
+    if (generation !== purgeGeneration) return; // fenced by a purge
     const db = await openDB();
     const tx = db.transaction(STORE_UNRESOLVED_AUDIO, 'readwrite');
     const store = tx.objectStore(STORE_UNRESOLVED_AUDIO);
@@ -148,8 +173,10 @@ export async function listAllUnresolvedAudio(): Promise<UnresolvedAudioRecord[]>
 
 /** Certificate completion: terminalize `certificate_cleared` ONLY rows of
  *  this user+job whose recording session is NOT in `activeSessionIds` at
- *  the success instant. A still-accruing session's rows survive. Returns
- *  the number of rows terminalized. */
+ *  the success instant. ONE enqueued read-write transaction over the
+ *  user/job index — the active-set snapshot is applied atomically, so a
+ *  concurrent upsert cannot slip between the read and the writes. Resolves
+ *  to the number of rows terminalized. */
 export async function clearUnresolvedAudioForCertificate(
   userId: string,
   jobId: string,
@@ -157,20 +184,52 @@ export async function clearUnresolvedAudioForCertificate(
   now: number = Date.now()
 ): Promise<number> {
   if (!isSupported()) return 0;
-  const rows = await listUnresolvedAudioForJob(userId, jobId);
-  const clearable = selectCertificateClearable(rows, { userId, jobId, activeSessionIds });
-  for (const row of clearable) {
-    await resolveUnresolvedAudio(row.key, 'certificate_cleared', now);
-  }
-  return clearable.length;
+  let cleared = 0;
+  await enqueue(async () => {
+    const db = await openDB();
+    const tx = db.transaction(STORE_UNRESOLVED_AUDIO, 'readwrite');
+    const store = tx.objectStore(STORE_UNRESOLVED_AUDIO);
+    const rows = (await wrapRequest(
+      store.index(UNRESOLVED_AUDIO_INDEX_BY_USER_JOB).getAll([userId, jobId])
+    )) as UnresolvedAudioRecord[] | null;
+    const clearable = selectCertificateClearable(rows ?? [], { userId, jobId, activeSessionIds });
+    for (const row of clearable) {
+      store.put(resolveUnresolvedAudioRecord(row, 'certificate_cleared', now));
+    }
+    await wrapTransaction(tx);
+    cleared = clearable.length;
+    if (cleared > 0) notifyChanged();
+  });
+  return cleared;
 }
 
-/** The binder's port over this module. */
-export const unresolvedAudioIdbPort: UnresolvedAudioPort = {
-  upsert: (record) => {
-    void upsertUnresolvedAudio(record);
-  },
-  resolve: (key, via) => {
-    void resolveUnresolvedAudio(key, via);
-  },
-};
+/** Sign-out / account switch — the SOLE deletion. Advances the purge
+ *  generation SYNCHRONOUSLY (so every write queued or created before this
+ *  call is fenced out at execution) and clears the store on the same
+ *  chain behind any already-started write. */
+export function purgeUnresolvedAudio(): Promise<void> {
+  purgeGeneration += 1;
+  if (!isSupported()) return Promise.resolve();
+  return enqueue(async () => {
+    const db = await openDB();
+    const tx = db.transaction(STORE_UNRESOLVED_AUDIO, 'readwrite');
+    tx.objectStore(STORE_UNRESOLVED_AUDIO).clear();
+    await wrapTransaction(tx);
+    notifyChanged();
+  });
+}
+
+/** The binder's port over this module, bound to the purge generation
+ *  current at SESSION START: a purge after that fences every later write
+ *  from this session's binder. */
+export function createUnresolvedAudioPort(): UnresolvedAudioPort {
+  const generation = purgeGeneration;
+  return {
+    upsert: (record) => {
+      void upsertUnresolvedAudio(record, generation);
+    },
+    resolve: (key, via) => {
+      void resolveUnresolvedAudio(key, via, Date.now(), generation);
+    },
+  };
+}

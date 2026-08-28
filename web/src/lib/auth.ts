@@ -1,5 +1,6 @@
 import type { User } from './types';
 import { clearJobCache } from './pwa/job-cache';
+import { purgeUnresolvedAudio } from './recording/unresolved-audio-store';
 import { purgeDesignationDraftState } from './designation-drafts';
 import { clearLoadRepairAliases } from './repair-job-designations';
 
@@ -86,6 +87,11 @@ export function clearAuth(): void {
   // commit before navigation. If IDB is unsupported or the clear fails,
   // the redirect still proceeds (clearJobCache swallows internally).
   void clearJobCache();
+  // PLAN-E-TERM — the unresolved-audio record is purged through its OWN
+  // serialised chain with a generation fence, so a write already queued
+  // (or a late write from the outgoing session's binder) cannot resurrect
+  // the previous inspector's dictation metadata after this clear.
+  void purgeUnresolvedAudio();
   // PLAN-B2 cycle-6 — the designation-draft journals live in
   // localStorage (crash-recovery) and would otherwise survive sign-out
   // and AUTO-COMMIT the previous inspector's abandoned draft when the

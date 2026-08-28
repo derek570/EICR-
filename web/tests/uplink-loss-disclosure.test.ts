@@ -176,4 +176,20 @@ describe('UplinkLossDisclosureLedger — Codex cycle-1 regressions', () => {
     ]);
     expect(ledger.naturalCompletionCount).toBe(1);
   });
+
+  it('a completion that never PLAYED emits no completion counter and no onCompleted (E2 accounting unchanged)', () => {
+    const events: string[] = [];
+    const completed: number[] = [];
+    const ledger = new UplinkLossDisclosureLedger({
+      onMint: () => {},
+      telemetry: (event) => events.push(event),
+      onCompleted: (t) => completed.push(t.id),
+    });
+    ledger.request('A', [episode(1)]);
+    ledger.onNaturalCompletion(1); // entry-cancel onEnd before playback
+    expect(events).toEqual(['uplink_loss_episode_disclosed']);
+    expect(completed).toEqual([]);
+    expect(ledger.naturalCompletionCount).toBe(1);
+    expect(ledger.outstandingToken).toBeNull();
+  });
 });

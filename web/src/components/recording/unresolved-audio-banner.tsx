@@ -9,6 +9,10 @@ import {
   formatUnresolvedAudioBannerText,
   isUnresolvedAudioVisible,
 } from '@/lib/recording/unresolved-audio-record';
+import {
+  getActiveSessionIds,
+  subscribeActiveSessionChanges,
+} from '@/lib/recording/active-session-registry';
 
 /**
  * PLAN-E-TERM (T2) — the post-session unresolved-audio RECORD banner.
@@ -17,28 +21,43 @@ import {
  * visibility predicate needs BOTH the JobContext rows AND the recording
  * session's active state: an entry is written during active recovery, so
  * a still-active session's rows must stay hidden (a recoverable episode
- * is not a residue yet). Shown only when the row is unresolved (no
- * tombstone), belongs to the signed-in user + this job, and its session
- * is no longer active. Cause-neutral, uncertainty-preserving wording —
- * never spoken. Dismissal writes `resolved_via: dismissed`.
+ * is not a residue yet). The active set is CLIENT-WIDE — this tab's live
+ * session plus every sibling tab's fresh lease — so a second tab never
+ * surfaces a row the first tab is still recovering. Shown only when the
+ * row is unresolved (no tombstone), belongs to the signed-in user + this
+ * job, and its session is no longer active. Cause-neutral,
+ * uncertainty-preserving wording — never spoken. Dismissal writes
+ * `resolved_via: dismissed`.
  *
  * iOS canon: `JobDetailView` banner above the tab content.
  */
 export function UnresolvedAudioBanner() {
-  const { unresolvedAudio, dismissUnresolvedAudio } = useJobContext();
-  const { state, getClientSessionId, job } = useRecordingWithJob();
+  const { unresolvedAudio, dismissUnresolvedAudio, job } = useJobContext();
+  const { state, getClientSessionId } = useRecording();
   const userId = React.useMemo(() => getUser()?.id ?? null, []);
+  // Re-evaluate when a sibling tab's lease changes (and on a slow tick so
+  // an expired lease drops out even with no message).
+  const [leaseTick, setLeaseTick] = React.useState(0);
+  React.useEffect(() => {
+    const bump = () => setLeaseTick((n) => n + 1);
+    const unsubscribe = subscribeActiveSessionChanges(bump);
+    const timer = setInterval(bump, 5000);
+    return () => {
+      unsubscribe();
+      clearInterval(timer);
+    };
+  }, []);
 
   const visible = React.useMemo(() => {
-    const activeSessionIds = new Set<string>();
-    if (state !== 'idle') {
-      const id = getClientSessionId();
-      if (id) activeSessionIds.add(id);
-    }
+    void leaseTick;
+    // A session is active while recording/preparing/sleeping — never in
+    // `idle` or the terminal `error` state (teardown already ran there).
+    const localActive = state !== 'idle' && state !== 'error' ? getClientSessionId() || null : null;
+    const activeSessionIds = getActiveSessionIds(localActive);
     return unresolvedAudio.filter((r) =>
       isUnresolvedAudioVisible(r, { userId, jobId: job.id, activeSessionIds })
     );
-  }, [unresolvedAudio, state, getClientSessionId, userId, job.id]);
+  }, [unresolvedAudio, state, getClientSessionId, userId, job.id, leaseTick]);
 
   if (visible.length === 0) return null;
 
@@ -74,10 +93,4 @@ export function UnresolvedAudioBanner() {
       </ul>
     </div>
   );
-}
-
-function useRecordingWithJob() {
-  const { state, getClientSessionId } = useRecording();
-  const { job } = useJobContext();
-  return { state, getClientSessionId, job };
 }

@@ -22,7 +22,9 @@ import {
   listUnresolvedAudioForJob,
   resolveUnresolvedAudio,
   subscribeUnresolvedAudioChanges,
-  unresolvedAudioIdbPort,
+  createUnresolvedAudioPort,
+  currentUnresolvedAudioGeneration,
+  purgeUnresolvedAudio,
   upsertUnresolvedAudio,
 } from '@/lib/recording/unresolved-audio-store';
 import {
@@ -35,10 +37,12 @@ function row(over: Partial<UnresolvedAudioRecord> = {}): UnresolvedAudioRecord {
   seq += 1;
   const session = over.recordingSessionId ?? `sess-${seq}`;
   const source = over.lossSourceKey ?? 'episode:1';
+  const userId = over.userId ?? 'u1';
+  const jobId = over.jobId ?? 'j1';
   return {
-    key: unresolvedAudioKey(session, source),
-    userId: 'u1',
-    jobId: 'j1',
+    key: unresolvedAudioKey(userId, jobId, session, source),
+    userId,
+    jobId,
     recordingSessionId: session,
     lossSourceKey: source,
     windowStartMs: 1_000,
@@ -67,8 +71,9 @@ describe('migration (test 4)', () => {
 describe('upsert / resolve / list', () => {
   it('upsert then resolve through the fire-and-forget port land in order (serialised chain)', async () => {
     const r = row();
-    unresolvedAudioIdbPort.upsert(r);
-    unresolvedAudioIdbPort.resolve(r.key, 'completion');
+    const port = createUnresolvedAudioPort();
+    port.upsert(r);
+    port.resolve(r.key, 'completion');
     await flushUnresolvedAudioWrites();
     const rows = await listUnresolvedAudioForJob('u1', 'j1');
     const found = rows.find((x) => x.key === r.key)!;
@@ -88,7 +93,10 @@ describe('upsert / resolve / list', () => {
   });
 
   it('resolve on a missing key manufactures nothing; a second resolve never overwrites (first terminal wins)', async () => {
-    await resolveUnresolvedAudio(unresolvedAudioKey('ghost', 'episode:1'), 'completion');
+    await resolveUnresolvedAudio(
+      unresolvedAudioKey('u1', 'j1', 'ghost', 'episode:1'),
+      'completion'
+    );
     expect((await listAllUnresolvedAudio()).some((x) => x.recordingSessionId === 'ghost')).toBe(
       false
     );
@@ -149,6 +157,32 @@ describe('certificate clear honours the active-session set (5b)', () => {
     expect(by('sess-done').updatedAt).toBe(123);
     expect(by('sess-live').resolvedVia).toBeNull();
     expect(by('sess-dismissed').resolvedVia).toBe('dismissed');
+  });
+});
+
+describe('purge fence (Codex cycle-1)', () => {
+  it('a port created BEFORE the purge cannot write after it; a port created after can', async () => {
+    const before = createUnresolvedAudioPort();
+    const g0 = currentUnresolvedAudioGeneration();
+    await purgeUnresolvedAudio();
+    expect(currentUnresolvedAudioGeneration()).toBe(g0 + 1);
+    const late = row({ userId: 'uF' });
+    before.upsert(late); // late write from the outgoing session's binder
+    await flushUnresolvedAudioWrites();
+    expect((await listAllUnresolvedAudio()).some((x) => x.userId === 'uF')).toBe(false);
+    const after = createUnresolvedAudioPort();
+    after.upsert(row({ userId: 'uG' }));
+    await flushUnresolvedAudioWrites();
+    expect((await listAllUnresolvedAudio()).some((x) => x.userId === 'uG')).toBe(true);
+  });
+
+  it('a write QUEUED before the purge is fenced too (purge advances the generation synchronously)', async () => {
+    const port = createUnresolvedAudioPort();
+    port.upsert(row({ userId: 'uQ' }));
+    const purged = purgeUnresolvedAudio(); // queued behind the upsert, generation already advanced
+    await purged;
+    await flushUnresolvedAudioWrites();
+    expect((await listAllUnresolvedAudio()).some((x) => x.userId === 'uQ')).toBe(false);
   });
 });
 

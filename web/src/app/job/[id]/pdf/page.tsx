@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
 import { useRecording } from '@/lib/recording-context';
+import { getActiveSessionIds } from '@/lib/recording/active-session-registry';
 import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -202,13 +203,16 @@ export default function PdfPage() {
         // unresolved-audio rows whose session is NOT active right now.
         // Best-effort: a record failure never fails a generated PDF.
         {
-          const activeSessionIds = new Set<string>();
-          if (recordingState !== 'idle') {
-            const activeId = getClientSessionId();
-            if (activeId) activeSessionIds.add(activeId);
-          }
-          void clearUnresolvedAudioForCertificate(activeSessionIds).catch(() => {
-            // Non-blocking.
+          // CLIENT-WIDE active set: this tab's live session plus sibling
+          // tabs' fresh leases. AWAITED (one atomic IDB transaction) so a
+          // navigation right after success cannot strand the clear.
+          const localActive =
+            recordingState !== 'idle' && recordingState !== 'error'
+              ? getClientSessionId() || null
+              : null;
+          const activeSessionIds = getActiveSessionIds(localActive);
+          await clearUnresolvedAudioForCertificate(activeSessionIds).catch(() => {
+            // Best-effort: a record failure never fails a generated PDF.
           });
         }
         // Best-effort: stamp a reference onto the attestation rows.

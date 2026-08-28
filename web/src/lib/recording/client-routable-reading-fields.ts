@@ -171,13 +171,7 @@ export const CLIENT_ROUTABLE_READING_ROUTES: Readonly<Record<string, ClientReadi
       ...entries(BOARD_FIELDS, 'board_info'),
       ...entries(INSTALLATION_FIELDS, 'installation_details'),
       ...entries(
-        [
-          'extent_of_installation',
-          'installation_type',
-          'extent',
-          'comments',
-          'design_comments',
-        ],
+        ['extent_of_installation', 'installation_type', 'extent', 'comments', 'design_comments'],
         'extent_and_type'
       ),
       ...entries(['departures_from_bs7671', 'departure_details'], 'design_construction'),

@@ -59,10 +59,24 @@ export class CaptureWallClock {
     if (sampleOffset < last.sampleOffset) return false; // never rewinds
     const expected =
       last.wallMs + ((sampleOffset - last.sampleOffset) * 1000) / UPLINK_SAMPLE_RATE_HZ;
-    if (Math.abs(wallMs - expected) <= this.toleranceMs) return false;
+    if (!this.forceNextAnchor && Math.abs(wallMs - expected) <= this.toleranceMs) return false;
+    this.forceNextAnchor = false;
     this.anchors.push({ sampleOffset, wallMs });
     return true;
   }
+
+  /**
+   * A DECLARED discontinuity (pause/resume, interruption end, TTS-exclusion
+   * release): the NEXT observation starts a new piece unconditionally, even
+   * when the gap is inside the jitter tolerance. Detection covers every
+   * gap the tolerance can see; this covers the named seams below it
+   * (Codex E-TERM cycle-1).
+   */
+  markDiscontinuity(): void {
+    this.forceNextAnchor = true;
+  }
+
+  private forceNextAnchor = false;
 
   /** Wall-clock epoch ms for a capture-domain sample, through the piece
    *  containing it. `null` before any anchor exists. */

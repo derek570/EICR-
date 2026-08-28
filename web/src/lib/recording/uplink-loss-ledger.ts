@@ -230,6 +230,13 @@ export class UplinkLossLedger {
    *  prompt) — Codex E2 cycle-4. A closed epoch NOT here still has undisclosed
    *  loss, so its late report discloses at the next open. */
   private readonly disclosedEpochs = new Set<ConnectionEpoch>();
+  /** PLAN-E-TERM — the closed MATERIAL episode each disclosed epoch
+   *  belonged to. A late report for such an epoch is still ABSORBED
+   *  (never re-disclosed — E2), but its evidence now REFRESHES that
+   *  episode's durable record, so a clip Stop later cuts off leaves a
+   *  row whose window/duration include the late evidence (Codex E-TERM
+   *  cycle-1). */
+  private readonly disclosedEpisodeByEpoch = new Map<ConnectionEpoch, Episode>();
 
   private holds = 0;
   private pendingRelease: LossSourceId[] | null = null;
@@ -335,7 +342,10 @@ export class UplinkLossLedger {
     const last = this.stagedSources[this.stagedSources.length - 1];
     if (last) {
       const lastEnd = Math.max(...last.entries.map((e) => e.captureSampleRange.end));
-      if (input.captureSampleRange.start <= lastEnd) {
+      const lastStart = Math.min(...last.entries.map((e) => e.captureSampleRange.start));
+      // Contiguous = overlapping or exactly adjacent in EITHER direction; a
+      // disjoint rewound report is its own source (Codex E-TERM cycle-1).
+      if (input.captureSampleRange.start <= lastEnd && input.captureSampleRange.end >= lastStart) {
         last.entries.push(entry);
         this.emitMaterialIfDebounced(last.sourceId, last.entries);
         return last.sourceId;
@@ -472,7 +482,10 @@ export class UplinkLossLedger {
         material.push(episode.sourceId);
         // This episode WILL disclose — mark its epochs so a late report for
         // any of them is absorbed, not re-disclosed.
-        for (const fe of episode.failedEpochs) this.disclosedEpochs.add(fe);
+        for (const fe of episode.failedEpochs) {
+          this.disclosedEpochs.add(fe);
+          this.disclosedEpisodeByEpoch.set(fe, episode);
+        }
       } else if (this.materialEmitted.has(key) && !this.retiredImmaterialEmitted.has(key)) {
         this.retiredImmaterialEmitted.add(key);
         this.telemetry?.('uplink_loss_episode_retired_immaterial', { source: key });
@@ -562,7 +575,14 @@ export class UplinkLossLedger {
         // dead epoch → the pre-open window discloses it at the next open,
         // rather than stranding it in a bucket its epoch never drains
         // (Codex E2 cycle-4).
-        if (this.disclosedEpochs.has(e)) return;
+        if (this.disclosedEpochs.has(e)) {
+          const disclosed = this.disclosedEpisodeByEpoch.get(e);
+          if (disclosed) {
+            disclosed.entries.push(entry);
+            this.publishEvidence(disclosed.sourceId, disclosed.entries);
+          }
+          return;
+        }
         // fall through to the pre-open window below.
       } else if (this.openedEpochs.has(e)) {
         // opened, still open (mid-connection): waits for its own close.
