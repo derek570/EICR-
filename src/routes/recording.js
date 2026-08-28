@@ -1674,6 +1674,98 @@ router.post('/debug-report', auth.requireAuth, async (req, res) => {
   }
 });
 
+// PLAN-E1B item 11 — the live Opus/Deepgram acceptance probe now runs from
+// a hidden in-app debug trigger (`LiveOpusProbeRunner`, admin-only) instead
+// of only from Xcode's test runner, so Derek can field-test across network
+// conditions from his phone alone. Its result previously stayed on-device
+// only (DebugLogger's local JSONL); this endpoint gives it a durable,
+// centrally-reviewable home — same S3 + CloudWatch pattern as
+// `/debug-report` immediately above, but for a fixed device-diagnostics
+// shape instead of free-text feedback (no `requireConsent` implication —
+// there is no homeowner/customer data in this payload).
+router.post('/live-probe-result', auth.requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  const {
+    deviceModel,
+    iosVersion,
+    networkCondition,
+    packetDurationsMs,
+    transcript,
+    sawTurnInfo,
+    sawEndOfTurn,
+    failureReason,
+  } = req.body;
+
+  if (!deviceModel || !iosVersion) {
+    return res.status(400).json({ error: 'deviceModel and iosVersion are required' });
+  }
+
+  try {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const prefix = `live-probe-results/${userId}/${timestamp}`;
+
+    const result = {
+      deviceModel,
+      iosVersion,
+      // Caller-supplied label ("wifi" / "cellular" / etc.) — the probe
+      // has no way to detect the active interface itself, so this is
+      // free text from whoever ran it rather than a validated enum.
+      networkCondition: networkCondition || null,
+      packetCount: Array.isArray(packetDurationsMs) ? packetDurationsMs.length : 0,
+      firstTenPacketDurationsMs: Array.isArray(packetDurationsMs)
+        ? packetDurationsMs.slice(0, 10)
+        : [],
+      transcript: transcript || '',
+      sawTurnInfo: sawTurnInfo === true,
+      sawEndOfTurn: sawEndOfTurn === true,
+      succeeded: !failureReason && !!transcript && (sawTurnInfo === true || sawEndOfTurn === true),
+      failureReason: failureReason || null,
+      timestamp: new Date().toISOString(),
+    };
+
+    await storage.uploadJson(result, `${prefix}/result.json`);
+
+    // CloudWatch row — the fast path to eyeball a run of results without
+    // touching S3, matching the debug-report pattern above.
+    logger.info('Live Opus probe result', { userId, prefix, ...result });
+
+    res.json({ success: true, resultId: prefix });
+  } catch (error) {
+    logger.error('Live Opus probe result upload failed', { userId, error: error.message });
+    res.status(500).json({ error: 'Live Opus probe result upload failed: ' + error.message });
+  }
+});
+
+// Companion listing endpoint — every prefix under the CALLING user's own
+// `live-probe-results/{userId}/` folder, newest first. Deliberately scoped
+// to `req.user.id`, not a global admin listing: the S3 prefix already
+// segments by user, and this stays a lightweight read rather than a new
+// admin surface to build/maintain.
+router.get('/live-probe-results', auth.requireAuth, async (req, res) => {
+  const userId = req.user.id;
+  try {
+    // `listDirectories` returns only the LAST path component (a bare
+    // timestamp folder name here), not the full prefix — reconstruct it
+    // before reading each result.json back out.
+    const dirNames = await storage.listDirectories(`live-probe-results/${userId}/`);
+    const results = await Promise.all(
+      dirNames.map(async (dirName) => {
+        try {
+          return await storage.downloadJson(`live-probe-results/${userId}/${dirName}/result.json`);
+        } catch {
+          return null;
+        }
+      })
+    );
+    res.json({
+      results: results.filter(Boolean).sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)),
+    });
+  } catch (error) {
+    logger.error('Live Opus probe result listing failed', { userId, error: error.message });
+    res.status(500).json({ error: 'Live Opus probe result listing failed: ' + error.message });
+  }
+});
+
 /**
  * Finish the recording session
  * POST /api/recording/:sessionId/finish

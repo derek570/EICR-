@@ -2874,6 +2874,75 @@ paths:
                   reportId:
                     type: string
 
+  /api/live-probe-result:
+    post:
+      tags: [Debug]
+      summary: Store one live Opus/Deepgram probe result from the iOS in-app debug trigger (PLAN-E1B item 11)
+      description: |
+        The iOS `LiveOpusProbeRunner` posts each run here (fire-and-forget) so results are
+        centrally reviewable. Stored to S3 under `live-probe-results/{userId}/{timestamp}/result.json`
+        and echoed as a `Live Opus probe result` CloudWatch row. `succeeded` is derived server-side:
+        no `failureReason`, a non-empty transcript, and at least one turn event.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceModel, iosVersion]
+              properties:
+                deviceModel:
+                  type: string
+                iosVersion:
+                  type: string
+                networkCondition:
+                  type: string
+                  description: Caller-supplied label ("wifi" / "cellular"); free text, not validated.
+                packetDurationsMs:
+                  type: array
+                  items:
+                    type: number
+                transcript:
+                  type: string
+                sawTurnInfo:
+                  type: boolean
+                sawEndOfTurn:
+                  type: boolean
+                failureReason:
+                  type: string
+      responses:
+        "200":
+          description: Result stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  resultId:
+                    type: string
+                    description: The S3 prefix the result was written under.
+        "400":
+          description: deviceModel or iosVersion missing
+
+  /api/live-probe-results:
+    get:
+      tags: [Debug]
+      summary: List the calling user's stored live-probe results, newest first
+      responses:
+        "200":
+          description: Results (unreadable entries are skipped)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+
   # ============= Queue =============
   /api/queue/status/{jobId}:
     get:
