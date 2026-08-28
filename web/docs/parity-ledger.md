@@ -28,6 +28,12 @@ monorepo — not tracked inside it). Web paths are relative to the
 
 ---
 
+## PLAN-E2 honest uplink-loss disclosure — 2026-08-27
+
+| id | iOS source | PWA counterpart | status | last-verified | owner | notes |
+| --- | ---------- | --------------- | ------ | ------------- | ----- | ----- |
+| recording/uplink-loss-disclosure | `UplinkLossLedger.swift` + `UplinkLossDisclosure.swift`; `DeepgramService.swift` (close ownership, `captureActive`, entry paths, `audio_window_end` watermark, every-open observation in the `connectionState` didSet); `AlertManager.swift` (`requestUplinkLossDisclosure` / `speakUplinkLossDisclosure`, overflow protection, interruption gate, teardown abandon); `RecordingSessionCoordinator.swift` (six `setCaptureActive` pushes, `stagedLoss: true` at the reconnect-queue overflow + abandon sites, hold/release across the staging path) | `uplink-loss-ledger.ts` + `uplink-loss-disclosure.ts`; `deepgram-service.ts` (same classifier/entries/watermark); `tts.ts` + `tts-queue.ts` (`onPlaybackFailed`, teardown reason); `recording-context.tsx` (families 1–3: `onStateChange`→'connected' observation, two `captureActive` writers, ring drain removed) | match | 2026-08-27 | Derek | PLAN-E2 (feedback-2026-08-23 wave). Same state matrix on both clients, pinned by mirrored unit suites. Deliberate, documented asymmetries: (a) iOS staged loss (variants c) is bound in this plan; the web wake-ring producer (variant e) is PLAN-E-WAKE's binding; (b) iOS's re-park replay gate is the FIFO's Deepgram-based deferral (AlertManager cannot observe the service-queue VAD), web's is the session VAD's local-speaking state; (c) nova-3 records no dispatched entries on either client (no pinned retirement signal). Coverage gap shared by both, owned by the graceful-stop drain follow-up: an owned close (stop/pause/sleep entry) discards its unretired tail undisclosed. |
+
 ## PLAN-3 observation-regulation integrity — 2026-07-31
 
 | id | iOS source | PWA counterpart | status | last-verified | owner | notes |

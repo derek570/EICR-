@@ -33,7 +33,7 @@ import {
   type GuardedClosedEnumField,
   type GuardedTarget,
 } from '@certmate/shared-utils';
-import { POOR_SIGNAL_ADVISORY_TEXT } from '@/lib/recording/tts';
+import { POOR_SIGNAL_ADVISORY_TEXT, UPLINK_LOSS_DISCLOSURE_TEXT } from '@/lib/recording/tts';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,7 +73,7 @@ describe('closed-enum fixture — cross-platform pins', () => {
    *  BOTH constants in the same coordinated change. */
   it('fixture bytes match the pinned cross-platform digest', () => {
     const digest = createHash('sha256').update(readFileSync(FIXTURE_PATH)).digest('hex');
-    expect(digest).toBe('76bc6437f8071ba6357ca8da0402351cc7cea204343e79a9b1dd99ab564860ce');
+    expect(digest).toBe('6ed9eb2a4d91ca578a1add1c5bcef304d945dc7eb279291e95c3e3fc0c130753');
   });
 
   it('fixture options are exactly field_schema.json minus the empty sentinel', () => {
@@ -103,6 +103,9 @@ describe('closed-enum fixture — cross-platform pins', () => {
     const union = fixture.spoken_distinctness_union;
     expect(new Set(union).size).toBe(union.length);
     expect(union).toContain(POOR_SIGNAL_ADVISORY_TEXT);
+    // PLAN-E2 — the single cause-agnostic loss disclosure, byte-identical
+    // to its TS source.
+    expect(union).toContain(UPLINK_LOSS_DISCLOSURE_TEXT);
   });
 
   it('every wiring-description target is itself a schema option', () => {

@@ -1747,12 +1747,22 @@ describe('§5.13 — PLAN-E1 poor-signal advisory joins the distinctness union',
   ];
 
   test('the union is byte-identical to its web source (drift guard)', () => {
+    // Every union entry must appear VERBATIM in a real web spoken-string
+    // source. The poor-signal advisory + D3 cues live in `tts.ts`; the
+    // PLAN-E2 uplink-loss disclosure line is defined as
+    // `UPLINK_LOSS_DISCLOSURE_TEXT` in `uplink-loss-disclosure.ts` (tts.ts
+    // only re-exports the constant), so the guard reads BOTH sources.
     const ttsSource = readFileSync(
       new URL('../../web/src/lib/recording/tts.ts', import.meta.url),
       'utf8'
     );
+    const disclosureSource = readFileSync(
+      new URL('../../web/src/lib/recording/uplink-loss-disclosure.ts', import.meta.url),
+      'utf8'
+    );
+    const combined = ttsSource + '\n' + disclosureSource;
     for (const wording of unionTexts) {
-      expect(ttsSource).toContain(wording);
+      expect(combined).toContain(wording);
     }
   });
 

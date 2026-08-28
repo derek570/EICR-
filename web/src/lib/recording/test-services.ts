@@ -62,6 +62,11 @@ export interface DeepgramServiceLike {
    *  boundary reads this to resolve the same `EpochScope` the service
    *  would resolve internally (see `capture-tagging.ts`). */
   readonly liveEpoch?: ConnectionEpoch | null;
+  /** PLAN-E2 — "the platform audio tap is still delivering samples into
+   *  the sender". A CLASSIFICATION signal only (never a send gate), pushed
+   *  by the tap owner at its two write sites (`micRef` set/cleared) and
+   *  copied in at construction; read synchronously by the close classifier. */
+  captureActive?: boolean;
 }
 
 /** The SonnetSession surface recording-context actually uses. The real

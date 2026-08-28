@@ -100,17 +100,24 @@ import {
   handleModeStatusCuePlaybackStarted,
   handlePoorSignalAdvisoryDiscard,
   handlePoorSignalAdvisoryTornDown,
+  handleUplinkLossDisclosureDiscard,
+  handleUplinkLossDisclosurePlaybackStarted,
+  handleUplinkLossDisclosureTornDown,
   isDirectAudioActive,
   isTTSEcho,
   isWithinTtsWindow,
+  notifyUplinkLossLocalSilence,
   primeTts,
+  requestUplinkLossDisclosure,
   setTtsLifecycleObserver,
+  setUplinkLossDisclosureLocalSpeakingGate,
   speak as speakRaw,
   speakConfirmation,
   speakConfirmationModeStatus,
   speakPoorSignalAdvisory,
   type SpeakOptions,
 } from './recording/tts';
+import { UplinkLossLedger } from './recording/uplink-loss-ledger';
 import {
   purge as ttsQueuePurge,
   resumeIfDeferred as ttsQueueResumeIfDeferred,
@@ -1067,6 +1074,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // AudioContext and Worklet; we keep it in a ref so `stop()` can tear it
   // down without tripping React's effect dependency machinery.
   const micRef = React.useRef<MicCaptureHandle | null>(null);
+  // PLAN-E2 — provider-owned `captureActive` (mirrors `micRef.current !==
+  // null` exactly). Copied into each newly constructed DeepgramService and
+  // pushed latest-wins on the reused instance from the two writers
+  // (`beginMicOnly`'s `micRef.current = handle`, `teardownMic`). The close
+  // classifier inside the service reads it synchronously; it is NEVER a
+  // send gate.
+  const captureActiveRef = React.useRef(false);
   // Typed against the structural `*Like` seam interfaces (B1) — the real
   // classes satisfy them; the harness injects fakes via test-services.
   const deepgramRef = React.useRef<DeepgramServiceLike | null>(null);
@@ -1470,6 +1484,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // mode-status cue above) — it can recur only via a fresh
       // median-over-threshold arming after cooldown.
       if (handlePoorSignalAdvisoryDiscard(dedupeKey)) return;
+      // PLAN-E2 — a never-started loss-disclosure token RE-PARKS on any
+      // lifecycle discard and is ABANDONED only by session teardown
+      // (`reset`); it is retired solely by natural completion.
+      if (handleUplinkLossDisclosureDiscard(dedupeKey, reason)) return;
       const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
       if (addressToken) {
         const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -1645,6 +1663,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const teardownMic = React.useCallback(() => {
     micRef.current?.stop();
     micRef.current = null;
+    // PLAN-E2 (sanctioned family 2) — the tap is torn down: push FALSE.
+    // One of exactly TWO writers (the other is `beginMicOnly`'s
+    // `micRef.current = handle`); the flag mirrors `micRef.current !==
+    // null` and is a classification signal only, never a send gate.
+    captureActiveRef.current = false;
+    if (deepgramRef.current) deepgramRef.current.captureActive = false;
   }, []);
 
   const teardownDeepgram = React.useCallback(() => {
@@ -2258,6 +2282,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // B1 seam — the harness injects a fake service (fed from recorded
       // Flux frame timelines); production always takes the `new
       // DeepgramService` branch below.
+      // PLAN-E2 (Codex cycle-1 BLOCKER fix) — the service these callbacks
+      // belong to, assigned right after construction. A deliberately
+      // disconnected service can still fire `onopen` inside its 300 ms
+      // close grace; if pause/resume or stop/start has since installed a
+      // replacement, that stale 'connected' must not mark the REPLACEMENT's
+      // not-yet-open epoch as opened (releasing its evidence into a dead
+      // transport window).
+      let emittingService: DeepgramServiceLike | null = null;
+      let emittingLedger: UplinkLossLedger | null = null;
       const deepgramCallbacks: DeepgramCallbacks = {
         onStateChange: (state) => {
           setDeepgramState(state);
@@ -2278,6 +2311,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               poorSignalProbeRef.current.isArmed
             ) {
               speakPoorSignalAdvisory();
+            }
+          }
+          // PLAN-E2 (sanctioned family 1) — EVERY successful open,
+          // including the FIRST (which `onReconnected` never sees), is the
+          // loss ledger's ONE disclosure moment: the open episode and any
+          // pending pre-open window / staged loss close here, materiality
+          // is evaluated on what is still unretired, and a material result
+          // mints-or-joins the disclosure token (parked behind local speech
+          // and any registered hold). Not an open-HANDLER edit — this is
+          // the existing observation seam.
+          if (state === 'connected') {
+            if (emittingService !== null && emittingService === deepgramRef.current) {
+              const epoch = emittingService.liveEpoch;
+              if (epoch != null) {
+                emittingLedger?.onSocketOpened(epoch);
+              }
             }
           }
         },
@@ -2546,19 +2595,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           ) {
             speakPoorSignalAdvisory();
           }
-          // Socket just reopened after an auto-reconnect. Replay the
-          // ring buffer so words spoken during the backoff gap aren't
-          // lost — mirrors the iOS wake path. drainTagged() returns
-          // undefined if the buffer is empty or unavailable, in which
-          // case the live sample loop picks up on its own. Each segment
-          // carries its ORIGINAL capture-time tag (see
-          // `capture-tagging.ts`) — sendTaggedAudio never restamps it.
-          const replaySegments = ringBufferRef.current?.drainTagged();
-          if (replaySegments && replaySegments.length > 0) {
-            for (const segment of replaySegments) {
-              deepgramRef.current?.sendTaggedAudio(segment);
-            }
-          }
+          // PLAN-E2 (sanctioned family 3) — the unexpected-reconnect ring
+          // drain that used to live here is REMOVED: it re-sent up to 3s
+          // of already-sent pre-disconnect audio (a duplicate-transcript
+          // hazard) with an uncertain boundary and no dedupe contract.
+          // Outage audio is now DISCLOSED, not replayed — see the
+          // `onStateChange` → 'connected' observation above. The ring
+          // itself still captures continuously; only AUTOMATIC sleep/wake
+          // (default-off, PLAN-C id 120) drains it.
         },
         onError: (err) => {
           pipelineLog('recording_deepgram_on_error', {
@@ -2607,6 +2651,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         ? testServices.deepgramServiceFactory(deepgramCallbacks, sttModel, sessionContext)
         : // No WebSocket factory override in production (unit tests inject one).
           new DeepgramService(deepgramCallbacks, undefined, sttModel, { sessionContext });
+      // PLAN-E2 (sanctioned family 2) — copy the provider-owned tap flag
+      // into the freshly constructed sender. A pause/resume replaces the
+      // instance; auto-reconnect reuses it (latest-wins via the two
+      // setter pushes below).
+      service.captureActive = captureActiveRef.current;
+      emittingService = service;
+      emittingLedger = sessionUplinkContextRef.current?.lossLedger ?? null;
       // Bind the ref BEFORE starting the async connect so a concurrent
       // stop()/teardownDeepgram can call service.disconnect() and abort
       // the in-flight key fetch via `shouldReconnect=false`.
@@ -2986,7 +3037,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // so the backend can re-speak it on a later re-emit (Audio-First #1). Both
     // are restored to defaults by `ttsQueue.reset()` (run inside the
     // `cancelSpeech({resetQueue:true})` at stop/unmount).
-    ttsQueueSetShouldDeferPlayback(() => isInspectorSpeakingRef.current || isDirectAudioActive());
+    ttsQueueSetShouldDeferPlayback(
+      () =>
+        isInspectorSpeakingRef.current ||
+        isDirectAudioActive() ||
+        // Codex E2 cycle-2 fix — the disclosure parks at ENQUEUE behind
+        // the raw VAD, but the FIFO's own last-mile gate only saw the
+        // Deepgram-derived speaking flag; a reading begun after enqueue
+        // (raw VAD leads Deepgram ~200ms) could start playback over it.
+        // The session VAD's debounced local-speaking state closes that
+        // window for every queued clip, disclosure included.
+        (sessionUplinkContextRef.current?.vad?.isLocalSpeaking ?? false),
+    );
     // §A1b — the shared forget helper clears ALL dedupe stores (permanent
     // set + field-nil TTL map + ageless reservation) so a confirmation
     // discarded before it ever played is immediately re-speakable; a
@@ -2998,8 +3060,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // fires for a never-started item); without this the gate would latch
     // forever after that sequence and suppress every later legitimate
     // arm.
-    ttsQueueSetOnStartedHeadTornDown((dedupeKey) => {
-      handlePoorSignalAdvisoryTornDown(dedupeKey);
+    ttsQueueSetOnStartedHeadTornDown((dedupeKey, reason) => {
+      if (handlePoorSignalAdvisoryTornDown(dedupeKey)) return;
+      // PLAN-E2 — a PLAYING disclosure head torn down mid-clip goes
+      // atomically playing → pending and replays (teardown `reset` abandons).
+      handleUplinkLossDisclosureTornDown(dedupeKey, reason);
     });
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
@@ -3007,6 +3072,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // PLAN-D — a mode-status cue was actually heard; retire its re-park
       // tracking entry (nothing left to protect it from).
       if (handleModeStatusCuePlaybackStarted(dedupeKey)) return;
+      // PLAN-E2 — the disclosure clip began real audio → token `playing`.
+      if (handleUplinkLossDisclosurePlaybackStarted(dedupeKey)) return;
       const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
       if (addressToken) {
         const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -3874,7 +3941,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             capturedAt
           );
           ringBufferRef.current?.writeTagged(segment);
-          deepgramRef.current?.sendTaggedAudio(segment);
+          const sender = deepgramRef.current;
+          if (sender) {
+            sender.sendTaggedAudio(segment);
+          } else if (statusRef.current !== 'sleeping') {
+            // PLAN-E2 (Codex cycle-1 BLOCKER fix) — capture accepted from
+            // the tap while NO sender exists yet (initial start and manual
+            // resume both start the mic before the service is
+            // constructed) is the capture-before-open window: recorded
+            // as undispatched loss here, since no `sendTaggedAudio`
+            // not-connected return can ever see it. Auto-sleep's ring
+            // ownership (replayed on wake) is the explicit negative.
+            ctx.lossLedger?.recordDropped({
+              epochScope: segment.epochScope,
+              captureSampleRange: segment.captureSampleRange,
+              samples: segment.samples,
+            });
+          }
         } else {
           // Should not happen post-start() — sessionUplinkContextRef is
           // populated before beginMicPipeline/beginMicOnly ever run.
@@ -3947,6 +4030,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
     micRef.current = handle;
+    // PLAN-E2 (sanctioned family 2) — the tap is live: push TRUE (the
+    // second of the two writers; see `teardownMic`).
+    captureActiveRef.current = true;
+    if (deepgramRef.current) deepgramRef.current.captureActive = true;
     return true;
   }, [setState, clearTick, teardownDeepgram, teardownMic, teardownSleep]);
 
@@ -4331,14 +4418,36 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // rather than letting the probe read a fresh `nowFn()` at
         // whatever later moment this callback happens to run.
         poorSignalProbeRef.current?.onOnset(transition.capturedAt);
+      } else {
+        // PLAN-E2 — debounced LOCAL silence releases a parked
+        // disclosure (the parking primitive E1's detector exists to
+        // provide; continuous across socket epochs by contract).
+        notifyUplinkLossLocalSilence();
+        // Codex E2 cycle-5 — raw-VAD silence is the ONLY resume trigger for
+        // the raw-VAD gate this plan added to `shouldDeferPlayback`. A
+        // disclosure ALREADY enqueued then deferred by that gate (raw speech
+        // began during TTS fetch) would otherwise stay deferred forever when
+        // no Deepgram utterance-end arrives (poor network). Re-check the FIFO
+        // gates now; the queue plays the deferred head iff every gate clears.
+        ttsQueueResumeIfDeferred();
       }
     });
+    // PLAN-E2 — the session-scoped unresolved-voiced-audio ledger. Its
+    // disclosure moment hands material source ids to the TTS delivery
+    // ledger (mint-or-join); the parking gate reads the SAME session VAD.
+    const lossLedger = new UplinkLossLedger({
+      recordingSessionId: sessionId,
+      onDisclosureReady: (sourceIds) => requestUplinkLossDisclosure(sourceIds, sessionId),
+      telemetry: (event, payload) => clientDiagnostic(event, payload),
+    });
+    setUplinkLossDisclosureLocalSpeakingGate(() => sessionVad.isLocalSpeaking);
     sessionUplinkContextRef.current = {
       recordingSessionId: sessionId,
       codecLatch: createSessionCodecLatch(),
       allocator: new UplinkScopeAllocator(),
       captureClock: createCaptureClock(),
       vad: sessionVad,
+      lossLedger,
     };
     // Initialise the cross-reload session-resume slot. The
     // serverSessionId stays null until the first session_ack lands;

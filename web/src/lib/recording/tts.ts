@@ -18,6 +18,12 @@ import {
 } from './tts-queue';
 import { clientDiagnostic } from './client-diagnostic';
 import { getRecordingTestServices } from './test-services';
+import {
+  UplinkLossDisclosureLedger,
+  UPLINK_LOSS_DISCLOSURE_TEXT,
+  type DisclosureToken,
+} from './uplink-loss-disclosure';
+import type { LossSourceId } from './uplink-loss-ledger';
 
 /**
  * Text-to-speech wrapper — ElevenLabs primary, browser SpeechSynthesis
@@ -838,6 +844,20 @@ export function speak(text: string, options?: SpeakOptions): void {
     options?.onEnd?.();
     return;
   }
+  // PLAN-E2 — once a loss-disclosure clip has STARTED playing, a new
+  // direct prompt DEFERS until it completes (or until the token drops back
+  // to `pending`, which releases every deferred prompt immediately —
+  // before any replay). Preempting it would truncate the one clip that
+  // tells a hands-free inspector audio was lost. Keyed on `playing`, not
+  // on the token merely existing, so a barge-in loop can never defer
+  // prompts indefinitely.
+  if (uplinkLossDisclosureLedger.isPlaying) {
+    deferredDirectPrompts.push({ text, options });
+    clientDiagnostic('tts_speak_deferred_behind_uplink_loss_disclosure', {
+      textPreview: text.slice(0, 80),
+    });
+    return;
+  }
   // A direct prompt is more urgent than a queued read-back — PREEMPT the
   // confirmation FIFO before dispatching so the question plays with nothing
   // racing behind it. preemptFlush() empties the queue deterministically and
@@ -1366,6 +1386,268 @@ export function releasePoorSignalAdvisoryGate(): void {
 /** Test-only — reset module state between test files. */
 export function __resetPoorSignalAdvisoryForTests(): void {
   poorSignalAdvisoryActive = false;
+}
+
+// ── PLAN-E2 — uplink-loss DISCLOSURE (exactly-once, tokened) ─────────────────
+//
+// ONE cause-agnostic conditional line, spoken verbatim for a reconnect
+// disclosure and a pre-open disclosure alike, delivered via THIS named API
+// (never `speakPoorSignalAdvisory`, which is toggle-respecting, tokenless and
+// discard-retired). Contract:
+//   - FORCED: bypasses the confirmations toggle (this plan's documented
+//     exception — "check and repeat only what's missing" is performable
+//     with confirmations OFF too, by a glance at the grid).
+//   - Immune to the 30s text dedupe: every disclosure is the SAME string;
+//     the per-token dedupe key exists only so the queue's discard hooks can
+//     recognise the item.
+//   - Protected from overflow eviction; RE-PARKED after any pre-start
+//     discard, preemption of a started head, or post-start playback
+//     failure; retired ONLY on natural completion.
+//   - Parked until debounced LOCAL silence (the session VAD) so a clip
+//     released at open never starts over an inspector mid-reading.
+//   - Session teardown (`reset` reason) ABANDONS the token — no replay.
+
+export { UPLINK_LOSS_DISCLOSURE_TEXT };
+
+const UPLINK_LOSS_DEDUPE_PREFIX = 'uplink-loss:';
+
+function uplinkLossDedupeKey(token: DisclosureToken): string {
+  return `${UPLINK_LOSS_DEDUPE_PREFIX}${token.id}`;
+}
+
+function tokenIdFromUplinkLossDedupeKey(dedupeKey: string): number | null {
+  if (!dedupeKey.startsWith(UPLINK_LOSS_DEDUPE_PREFIX)) return null;
+  const n = Number(dedupeKey.slice(UPLINK_LOSS_DEDUPE_PREFIX.length));
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The session VAD's debounced local-speaking state, registered by the
+ *  provider at session start. `null` → never parks (tour/no-session). */
+let uplinkLossLocalSpeakingGate: (() => boolean) | null = null;
+/** A token released by the ledger but not yet enqueued — waiting for
+ *  local silence or an interruption to end. */
+let parkedUplinkLossToken: DisclosureToken | null = null;
+const UPLINK_LOSS_TTS_UNAVAILABLE_RETRY_MS = 2000;
+/** Direct prompts that arrived while a disclosure was PLAYING. */
+let deferredDirectPrompts: Array<{ text: string; options?: SpeakOptions }> = [];
+/** Bumped by session teardown / test reset so a scheduled re-park
+ *  microtask from a previous session is a no-op. */
+let uplinkLossGeneration = 0;
+
+function createUplinkLossDisclosureLedger(): UplinkLossDisclosureLedger {
+  return new UplinkLossDisclosureLedger({
+    onMint: (token) => speakUplinkLossDisclosure(token, token.coveredLossSourceIds),
+    telemetry: (event, payload) => clientDiagnostic(event, payload),
+  });
+}
+let uplinkLossDisclosureLedger = createUplinkLossDisclosureLedger();
+
+/** Provider wiring: the session VAD's `isLocalSpeaking` reader. */
+export function setUplinkLossDisclosureLocalSpeakingGate(gate: (() => boolean) | null): void {
+  uplinkLossLocalSpeakingGate = gate;
+}
+
+/** The loss ledger's disclosure moment: mint-or-join for `sourceIds` in the
+ *  CURRENT TTS session. Emits `uplink_loss_episode_disclosed` per newly
+ *  associated source. */
+export function requestUplinkLossDisclosure(
+  sourceIds: LossSourceId[],
+  /** The ORIGINATING recording session (the loss ledger's own id). A
+   *  release landing after that session ended — a hold released late, a
+   *  parked moment surfacing after stop/start — is rejected here rather
+   *  than adopted by whatever session is now active (Codex cycle-1). */
+  expectedSessionId?: string
+): void {
+  if (sourceIds.length === 0) return;
+  const sessionId = getActiveSessionId() ?? '';
+  if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
+    clientDiagnostic('tts_uplink_loss_disclosure_stale_session', {
+      expected: expectedSessionId,
+      active: sessionId,
+      sources: sourceIds.length,
+    });
+    return;
+  }
+  const outcome = uplinkLossDisclosureLedger.request(sessionId, sourceIds);
+  clientDiagnostic('tts_uplink_loss_disclosure_requested', {
+    action: outcome.action,
+    token: outcome.token.id,
+    sources: sourceIds.length,
+  });
+}
+
+/**
+ * Deliver (or re-deliver) `token`. Parks behind local speech; otherwise
+ * enqueues ONE protected, forced item carrying the token's dedupe key.
+ * `coveredLossSourceIds` is carried on the token (this plan uses it only
+ * for join semantics; PLAN-E-TERM iterates it at completion).
+ */
+export function speakUplinkLossDisclosure(
+  token: DisclosureToken,
+  coveredLossSourceIds: LossSourceId[]
+): void {
+  void coveredLossSourceIds;
+  if (uplinkLossDisclosureLedger.outstandingToken?.id !== token.id) return; // stale
+  if (token.sessionId !== (getActiveSessionId() ?? '')) return; // earlier session
+  if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) {
+    // TTS temporarily unavailable: NOT a terminal (the token stays
+    // outstanding by contract). Park it and retry on a bounded timer so
+    // the session's single slot is never held by a clip that was never
+    // queued (Codex cycle-1 BLOCKER). Local silence also replays a park.
+    parkedUplinkLossToken = token;
+    const generation = uplinkLossGeneration;
+    clientDiagnostic('tts_uplink_loss_disclosure_unavailable', { token: token.id });
+    setTimeout(() => {
+      if (generation !== uplinkLossGeneration) return;
+      if (parkedUplinkLossToken !== token) return;
+      parkedUplinkLossToken = null;
+      speakUplinkLossDisclosure(token, token.coveredLossSourceIds);
+    }, UPLINK_LOSS_TTS_UNAVAILABLE_RETRY_MS);
+    return;
+  }
+  if (uplinkLossLocalSpeakingGate?.()) {
+    parkedUplinkLossToken = token;
+    clientDiagnostic('tts_uplink_loss_disclosure_parked', { token: token.id });
+    return;
+  }
+  parkedUplinkLossToken = null;
+  const harnessPlayer = getRecordingTestServices()?.ttsConfirmationPlayer;
+  const result = enqueueConfirmation({
+    text: UPLINK_LOSS_DISCLOSURE_TEXT,
+    dedupeKey: uplinkLossDedupeKey(token),
+    protected: true,
+    play: harnessPlayer
+      ? (t, controls) => {
+          registerTtsFingerprint(t);
+          harnessPlayer(t, controls);
+        }
+      : playConfirmationHead,
+    onEnd: () => handleUplinkLossDisclosureNaturalCompletion(token.id),
+    onPlaybackFailed: () => handleUplinkLossDisclosurePostStartFailure(token.id),
+  });
+  clientDiagnostic('tts_uplink_loss_disclosure_enqueued', {
+    token: token.id,
+    enqueued: result.enqueued,
+  });
+}
+
+/** Provider wiring: the session VAD's debounced SILENCE transition. */
+export function notifyUplinkLossLocalSilence(): void {
+  const token = parkedUplinkLossToken;
+  if (!token) return;
+  parkedUplinkLossToken = null;
+  speakUplinkLossDisclosure(token, token.coveredLossSourceIds);
+}
+
+/** Queue hook: the disclosure clip began real audio → `playing`. Returns
+ *  true iff `dedupeKey` was a disclosure key. */
+export function handleUplinkLossDisclosurePlaybackStarted(dedupeKey: string): boolean {
+  const id = tokenIdFromUplinkLossDedupeKey(dedupeKey);
+  if (id === null) return false;
+  uplinkLossDisclosureLedger.onPlaybackStarted(id);
+  return true;
+}
+
+/** Queue hook: a NEVER-started disclosure item was discarded. `reset` =
+ *  session teardown → abandon; anything else → re-park the same token. */
+export function handleUplinkLossDisclosureDiscard(
+  dedupeKey: string,
+  reason: DiscardReason
+): boolean {
+  const id = tokenIdFromUplinkLossDedupeKey(dedupeKey);
+  if (id === null) return false;
+  if (reason === 'reset') {
+    abandonUplinkLossDisclosureForTeardown();
+    return true;
+  }
+  reparkUplinkLossDisclosure(id, reason === 'playback_error' ? 1500 : 0);
+  return true;
+}
+
+/** Queue hook: a STARTED disclosure head was manually torn down. Same
+ *  split: `reset` abandons, preemption/purge re-parks. */
+export function handleUplinkLossDisclosureTornDown(
+  dedupeKey: string,
+  reason: DiscardReason
+): boolean {
+  const id = tokenIdFromUplinkLossDedupeKey(dedupeKey);
+  if (id === null) return false;
+  if (reason === 'reset') {
+    abandonUplinkLossDisclosureForTeardown();
+    return true;
+  }
+  reparkUplinkLossDisclosure(id, 0);
+  return true;
+}
+
+function handleUplinkLossDisclosureNaturalCompletion(tokenId: number): void {
+  const successor = uplinkLossDisclosureLedger.onNaturalCompletion(tokenId);
+  releaseDeferredDirectPrompts();
+  // A successor (sources that awaited while this one played) was minted by
+  // the ledger and already handed to `speakUplinkLossDisclosure` via onMint.
+  void successor;
+}
+
+function handleUplinkLossDisclosurePostStartFailure(tokenId: number): void {
+  reparkUplinkLossDisclosure(tokenId, 1500);
+}
+
+/** Atomically `playing`/`pending` → `pending`, release deferred prompts
+ *  FIRST (before any replay), then replay after the parking gate. */
+function reparkUplinkLossDisclosure(tokenId: number, delayMs: number): void {
+  const token = uplinkLossDisclosureLedger.onNonNaturalTerminal(tokenId);
+  if (!token) return;
+  clientDiagnostic('tts_uplink_loss_disclosure_reparked', { token: token.id, delayMs });
+  releaseDeferredDirectPrompts();
+  const generation = uplinkLossGeneration;
+  const replay = () => {
+    if (uplinkLossGeneration !== generation) return; // torn down meanwhile
+    speakUplinkLossDisclosure(token, token.coveredLossSourceIds);
+  };
+  // Deferred to a microtask (never synchronous) for the same reason the
+  // mode-status re-park is: the queue's discard hooks fire from inside a
+  // live iteration over the queue array.
+  if (delayMs > 0) setTimeout(replay, delayMs);
+  else queueMicrotask(replay);
+}
+
+function releaseDeferredDirectPrompts(): void {
+  if (deferredDirectPrompts.length === 0) return;
+  const prompts = deferredDirectPrompts;
+  deferredDirectPrompts = [];
+  for (const p of prompts) speak(p.text, p.options);
+}
+
+function abandonUplinkLossDisclosureForTeardown(): void {
+  uplinkLossDisclosureLedger.abandonForSessionTeardown();
+  parkedUplinkLossToken = null;
+  deferredDirectPrompts = [];
+  uplinkLossGeneration += 1;
+}
+
+/** Read-only introspection for tests. */
+export function __uplinkLossDisclosureStateForTests(): {
+  outstanding: DisclosureToken | null;
+  parked: DisclosureToken | null;
+  deferredPrompts: number;
+  awaitingSources: number;
+  completed: number;
+} {
+  return {
+    outstanding: uplinkLossDisclosureLedger.outstandingToken,
+    parked: parkedUplinkLossToken,
+    deferredPrompts: deferredDirectPrompts.length,
+    awaitingSources: uplinkLossDisclosureLedger.awaitingSourceCount,
+    completed: uplinkLossDisclosureLedger.naturalCompletionCount,
+  };
+}
+
+/** Test-only — wipe the disclosure delivery state between test files
+ *  (a FRESH ledger, so token ids and counters restart). */
+export function __resetUplinkLossDisclosureForTests(): void {
+  abandonUplinkLossDisclosureForTeardown();
+  uplinkLossDisclosureLedger = createUplinkLossDisclosureLedger();
+  uplinkLossLocalSpeakingGate = null;
 }
 
 /** Test-only. */

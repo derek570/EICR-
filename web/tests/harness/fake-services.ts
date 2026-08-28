@@ -128,6 +128,15 @@ export class FakeDeepgramService implements DeepgramServiceLike {
     return this.inner.liveEpoch;
   }
 
+  /** PLAN-E2 — delegates to the wrapped real service so a provider test
+   *  can prove the tap owner's `captureActive` push reaches the classifier. */
+  get captureActive(): boolean {
+    return this.inner.captureActive;
+  }
+  set captureActive(value: boolean) {
+    this.inner.captureActive = value;
+  }
+
   connect(
     _keyOrFetcher: string | (() => Promise<DeepgramStreamingKeyConfig>),
     sourceSampleRate: number
