@@ -133,6 +133,10 @@ const jobStub = {
   authorised_by_id: 'u-boss',
 };
 
+// PLAN-E-TERM — defined BEFORE the factory that references it (vitest
+// hoists vi.mock; the factory runs at the page's import).
+const clearUnresolvedAudioMock = vi.fn(async (_ids: ReadonlySet<string>) => 0);
+
 vi.mock('@/lib/job-context', () => ({
   useJobContext: () => ({
     job: jobStub,
@@ -148,6 +152,19 @@ vi.mock('@/lib/job-context', () => ({
     commitJobPatch: vi.fn(() => jobStub),
     flushDraftsAndGetSnapshot: vi.fn(() => jobStub),
     saveCircuitsSnapshotNow: vi.fn(async () => ({ synced: true })),
+    // PLAN-E-TERM — the PDF-success clear (fire-and-forget on the page).
+    unresolvedAudio: [],
+    dismissUnresolvedAudio: vi.fn(async () => {}),
+    clearUnresolvedAudioForCertificate: clearUnresolvedAudioMock,
+  }),
+}));
+
+// PLAN-E-TERM — the page reads the ACTIVE recording-session set at the
+// PDF-success instant from RecordingProvider (idle here: no session).
+vi.mock('@/lib/recording-context', () => ({
+  useRecording: () => ({
+    state: 'idle',
+    getClientSessionId: () => '',
   }),
 }));
 

@@ -68,7 +68,10 @@ describe('v3 → current migration (runs first — installs v3 manually then bum
     // newer stores (v4 pending-observation-photo, v5 WS6
     // pending-ccu-extraction) without touching the v3 data.
     const cache = await import('@/lib/pwa/job-cache');
-    expect(cache.DB_VERSION).toBe(5);
+    // v6 — PLAN-E-TERM `unresolved-audio` store (additive, same rules).
+    expect(cache.DB_VERSION).toBe(6);
+    const db = await cache.openDB();
+    expect(db.objectStoreNames.contains(cache.STORE_UNRESOLVED_AUDIO)).toBe(true);
 
     // jobs-list survived the upgrade.
     const jobs = await cache.getCachedJobs('u1');
