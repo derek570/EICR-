@@ -214,15 +214,26 @@ export function JobProvider({
       return;
     }
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const refresh = () => {
       void listUnresolvedAudioForJob(userId, jobId).then((rows) => {
         if (!cancelled) setUnresolvedAudio(rows);
       });
     };
+    // Store notifications are already batched; a short trailing debounce
+    // keeps a burst of them to one IDB read + one render.
+    const refreshSoon = () => {
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        refresh();
+      }, 100);
+    };
     refresh();
-    const unsubscribe = subscribeUnresolvedAudioChanges(refresh);
+    const unsubscribe = subscribeUnresolvedAudioChanges(refreshSoon);
     return () => {
       cancelled = true;
+      if (timer !== null) clearTimeout(timer);
       unsubscribe();
     };
   }, [jobId]);

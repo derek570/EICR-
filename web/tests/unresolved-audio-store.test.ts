@@ -22,6 +22,7 @@ import {
   listUnresolvedAudioForJob,
   resolveUnresolvedAudio,
   subscribeUnresolvedAudioChanges,
+  __physicalWriteCountForTests,
   __receiveRemotePurgeForTests,
   createUnresolvedAudioPort,
   currentUnresolvedAudioGeneration,
@@ -206,6 +207,33 @@ describe('purge arriving MID-operation (Codex cycle-3)', () => {
     const raw = (await listAllUnresolvedAudio()).find((x) => x.userId === 'uSchema')!;
     expect(Object.keys(raw)).toContain('resolved_via');
     expect(Object.keys(raw)).not.toContain('resolvedVia');
+  });
+});
+
+describe('evidence coalescing (Codex cycle-6)', () => {
+  it('sustained evidence updates for one key cost a bounded number of physical writes and land the LATEST snapshot', async () => {
+    const port = createUnresolvedAudioPort();
+    const base = row({ userId: 'uBurst' });
+    const before = __physicalWriteCountForTests();
+    for (let i = 1; i <= 200; i++) {
+      port.upsert({ ...base, voicedDurationMs: i * 10, updatedAt: i });
+    }
+    await flushUnresolvedAudioWrites();
+    const found = (await listAllUnresolvedAudio()).find((x) => x.key === base.key)!;
+    expect(found.voicedDurationMs).toBe(2000);
+    expect(__physicalWriteCountForTests() - before).toBeLessThanOrEqual(2); // first row + one batch
+  });
+
+  it('a resolve is an ordering barrier: pending evidence lands before the terminal', async () => {
+    const port = createUnresolvedAudioPort();
+    const base = row({ userId: 'uBar' });
+    port.upsert(base);
+    port.upsert({ ...base, voicedDurationMs: 999, updatedAt: 9 });
+    port.resolve(base.key, 'dismissed');
+    await flushUnresolvedAudioWrites();
+    const found = (await listAllUnresolvedAudio()).find((x) => x.key === base.key)!;
+    expect(found.voicedDurationMs).toBe(999);
+    expect(found.resolved_via).toBe('dismissed');
   });
 });
 
