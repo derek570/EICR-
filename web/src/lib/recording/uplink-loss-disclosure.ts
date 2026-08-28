@@ -149,6 +149,8 @@ export class UplinkLossDisclosureLedger {
     const t = this.outstanding;
     if (!t || t.id !== tokenId || t.state === 'completed') return null;
     t.state = 'pending';
+    // The NEXT attempt must prove its own playback (Codex mini-review).
+    t.hasPlayed = false;
     return t;
   }
 

@@ -102,7 +102,7 @@ export default function PdfPage() {
   // PLAN-E-TERM — the PDF-success clear needs the ACTIVE recording-session
   // set at the success instant (both clients allow generation mid-recording;
   // a still-accruing episode's row must survive).
-  const { state: recordingState, getClientSessionId } = useRecording();
+  const { getActiveRecordingSessionId } = useRecording();
   const params = useParams<{ id: string }>();
   const jobId = params?.id ?? '';
   const userId = React.useMemo(() => getUser()?.id ?? null, []);
@@ -206,11 +206,9 @@ export default function PdfPage() {
           // CLIENT-WIDE active set: this tab's live session plus sibling
           // tabs' fresh leases. AWAITED (one atomic IDB transaction) so a
           // navigation right after success cannot strand the clear.
-          const localActive =
-            recordingState !== 'idle' && recordingState !== 'error'
-              ? getClientSessionId() || null
-              : null;
-          const activeSessionIds = getActiveSessionIds(localActive);
+          // Read at THIS instant (a getter over the live refs) — a session
+          // that started while the render awaited is still seen as active.
+          const activeSessionIds = getActiveSessionIds(getActiveRecordingSessionId());
           await clearUnresolvedAudioForCertificate(activeSessionIds).catch(() => {
             // Best-effort: a record failure never fails a generated PDF.
           });
@@ -257,8 +255,7 @@ export default function PdfPage() {
       flushDraftsAndGetSnapshot,
       saveCircuitsSnapshotNow,
       clearUnresolvedAudioForCertificate,
-      recordingState,
-      getClientSessionId,
+      getActiveRecordingSessionId,
     ]
   );
 

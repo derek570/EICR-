@@ -115,6 +115,17 @@ describe('CaptureWallClock — discontinuities (split-round-9)', () => {
     expect(clock.wallMsAt(sample)).toBe(wall + 100);
   });
 
+  it('a range ending exactly at a forced anchor does NOT swallow the gap that follows', () => {
+    const clock = new CaptureWallClock();
+    const { sample, wall } = feed(clock, 0, T0, 5); // boundary at `sample`
+    clock.markDiscontinuity();
+    feed(clock, sample, wall + 60_000, 5);
+    const before = clock.windowOf({ start: 0, end: sample })!;
+    expect(before.endMs).toBeLessThanOrEqual(wall + 1);
+    const across = clock.windowOf({ start: 0, end: sample + BLOCK })!;
+    expect(across.endMs).toBeGreaterThan(wall + 60_000);
+  });
+
   it('ignores non-finite input and never rewinds', () => {
     const clock = new CaptureWallClock();
     expect(clock.observe(Number.NaN, T0)).toBe(false);

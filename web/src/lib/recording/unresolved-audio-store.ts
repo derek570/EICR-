@@ -41,7 +41,11 @@ function getChannel(): BroadcastChannel | null {
   if (typeof BroadcastChannel === 'undefined') return null;
   if (!channel) {
     channel = new BroadcastChannel(CHANNEL_NAME);
-    channel.onmessage = () => {
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      // A sibling tab signed out: advance THIS tab's generation too, so a
+      // binder created here before the remote purge is fenced as well
+      // (Codex mini-review: the fence must span tabs, not just modules).
+      if (event.data === 'purged') purgeGeneration += 1;
       for (const fn of listeners) fn();
     };
   }
@@ -209,6 +213,11 @@ export async function clearUnresolvedAudioForCertificate(
  *  chain behind any already-started write. */
 export function purgeUnresolvedAudio(): Promise<void> {
   purgeGeneration += 1;
+  try {
+    getChannel()?.postMessage('purged'); // sibling tabs fence immediately
+  } catch {
+    /* non-critical */
+  }
   if (!isSupported()) return Promise.resolve();
   return enqueue(async () => {
     const db = await openDB();

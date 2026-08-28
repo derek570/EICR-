@@ -291,12 +291,14 @@ export type RecordingActions = {
   start: () => Promise<void>;
   stop: () => void;
   /** PLAN-E-TERM — the CLIENT recording-session id (`sess_…`), read-only.
-   *  `''` when no session is active. Consumers pair it with `state` to
-   *  build the active-session set the unresolved-audio visibility
-   *  predicate and the PDF-success clear need. A getter rather than a
-   *  state field so the frozen `stop()` needs no edit (it already clears
-   *  the underlying ref). */
+   *  `''` when no session is active. A getter rather than a state field so
+   *  the frozen `stop()` needs no edit (it already clears the ref). */
   getClientSessionId: () => string;
+  /** PLAN-E-TERM — the LIVE active session id: the client session id iff
+   *  the provider is recording/preparing/sleeping RIGHT NOW (never `idle`
+   *  or the terminal `error`), read from the refs at call time so an async
+   *  continuation (the PDF render) never sees a stale React state. */
+  getActiveRecordingSessionId: () => string | null;
   pause: () => void;
   resume: () => void;
   /** Dismiss a question from the queue without sending a correction.
@@ -1197,6 +1199,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // uplink context (replaced at `start()` ONLY; never nulled in the
   // frozen `stop()` — the binder session-fences every event itself).
   const captureWallClockRef = React.useRef<CaptureWallClock | null>(null);
+  // Late-bound so `start()` (defined earlier) can read the live getter.
+  const getActiveRecordingSessionIdRef = React.useRef<() => string | null>(() => null);
   const unresolvedAudioBinderRef = React.useRef<UnresolvedAudioBinder | null>(null);
   // PLAN-E1 E3 — the poor-signal latency probe, session-scoped alongside
   // the uplink context (same reset discipline).
@@ -4479,7 +4483,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // session to sibling tabs (heartbeat self-stops once the session ref
     // rotates — the frozen `stop()` already clears it).
     primeUnresolvedAudioStore();
-    announceActiveSession(sessionId, () => sessionIdRef.current === sessionId);
+    announceActiveSession(sessionId, () => getActiveRecordingSessionIdRef.current() === sessionId);
     const recordUserId = getUser()?.id ?? null;
     const recordJobId = jobRef.current?.id ?? null;
     const binder =
@@ -5276,6 +5280,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
   // PLAN-E-TERM — read-only client session id (see `RecordingActions`).
   const getClientSessionId = React.useCallback(() => sessionIdRef.current, []);
+  const getActiveRecordingSessionId = React.useCallback((): string | null => {
+    const status = statusRef.current;
+    if (status === 'idle' || status === 'error') return null;
+    return sessionIdRef.current || null;
+  }, []);
+  getActiveRecordingSessionIdRef.current = getActiveRecordingSessionId;
 
   const value = React.useMemo<RecordingCtx>(
     () => ({
@@ -5296,6 +5306,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       start,
       stop,
       getClientSessionId,
+      getActiveRecordingSessionId,
       pause,
       resume,
       dismissQuestion,
@@ -5321,6 +5332,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       start,
       stop,
       getClientSessionId,
+      getActiveRecordingSessionId,
       pause,
       resume,
       dismissQuestion,

@@ -187,10 +187,12 @@ describe('purge fence (Codex cycle-1)', () => {
 });
 
 describe('sign-out purge is the SOLE deletion', () => {
-  it('clearJobCache() empties the store', async () => {
+  it('purgeUnresolvedAudio() empties the store; clearJobCache() leaves it alone (single owner)', async () => {
     await upsertUnresolvedAudio(row({ userId: 'uZ' }));
     expect((await listAllUnresolvedAudio()).length).toBeGreaterThan(0);
     await clearJobCache();
+    expect((await listAllUnresolvedAudio()).length).toBeGreaterThan(0);
+    await purgeUnresolvedAudio();
     expect(await listAllUnresolvedAudio()).toEqual([]);
   });
 });

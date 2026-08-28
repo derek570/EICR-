@@ -25,6 +25,7 @@ const TTS = read('../src/lib/recording/tts.ts');
 const LAYOUT = read('../src/app/job/[id]/layout.tsx');
 const PDF = read('../src/app/job/[id]/pdf/page.tsx');
 const CACHE = read('../src/lib/pwa/job-cache.ts');
+const NL_BRACE = '\n}\n';
 
 function fnBody(src: string, name: string): string {
   const start = `const ${name} = React.useCallback(`;
@@ -73,7 +74,7 @@ describe('start() wiring — injected identity, ledger seams, wall-clock', () =>
     expect(start).toContain('new CaptureWallClock()');
     expect(start).toContain('port: createUnresolvedAudioPort()');
     expect(start).toContain(
-      'announceActiveSession(sessionId, () => sessionIdRef.current === sessionId);'
+      'announceActiveSession(sessionId, () => getActiveRecordingSessionIdRef.current() === sessionId);'
     );
     expect(start).toContain('primeUnresolvedAudioStore();');
   });
@@ -120,15 +121,15 @@ describe('surfacing — banner beneath RecordingProvider; PDF-success clear; pur
     expect(success).toBeGreaterThan(-1);
     expect(clear).toBeGreaterThan(success);
     expect(PDF.slice(success, clear)).toContain(
-      "recordingState !== 'idle' && recordingState !== 'error'"
+      'getActiveSessionIds(getActiveRecordingSessionId())'
     );
-    expect(PDF.slice(success, clear)).toContain('getClientSessionId()');
-    expect(PDF.slice(success, clear)).toContain('getActiveSessionIds(localActive)');
   });
 
-  it('clearJobCache purges the unresolved-audio store', () => {
+  it('purgeUnresolvedAudio is the SOLE owner: clearAuth calls it; clearJobCache does NOT touch the store', () => {
+    const AUTH = read('../src/lib/auth.ts');
+    expect(AUTH).toContain('void purgeUnresolvedAudio();');
     const s = CACHE.indexOf('export async function clearJobCache(');
-    const body = CACHE.slice(s, CACHE.indexOf('\n}\n', s));
-    expect(body).toContain('tx.objectStore(STORE_UNRESOLVED_AUDIO).clear();');
+    const body = CACHE.slice(s, CACHE.indexOf(NL_BRACE, s));
+    expect(body).not.toContain('tx.objectStore(STORE_UNRESOLVED_AUDIO).clear();');
   });
 });

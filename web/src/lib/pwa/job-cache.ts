@@ -549,18 +549,14 @@ export async function clearJobCache(): Promise<void> {
     // STORE_PENDING_CCU is included for the same shared-device reason:
     // a queued CCU photo captured under user A must not be replayed
     // (and billed) under user B's credentials after a sign-out swap.
-    // STORE_UNRESOLVED_AUDIO (PLAN-E-TERM) is included: it holds dictation
-    // metadata keyed to a user, and sign-out / account switch is the SOLE
-    // path that deletes its tombstoned rows.
+    // STORE_UNRESOLVED_AUDIO (PLAN-E-TERM) is deliberately NOT cleared here:
+    // `purgeUnresolvedAudio()` (recording/unresolved-audio-store.ts) is the
+    // SOLE owner of that store — it runs on the store's serialised write
+    // chain with a generation fence, and `clearAuth()` calls it beside this.
+    // A second, uncoordinated clear here could delete a NEW user's row
+    // after a fast re-login (Codex mini-review).
     const tx = db.transaction(
-      [
-        STORE_JOBS_LIST,
-        STORE_JOB_DETAIL,
-        STORE_OUTBOX,
-        STORE_PENDING_PHOTO,
-        STORE_PENDING_CCU,
-        STORE_UNRESOLVED_AUDIO,
-      ],
+      [STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX, STORE_PENDING_PHOTO, STORE_PENDING_CCU],
       'readwrite'
     );
     tx.objectStore(STORE_JOBS_LIST).clear();
@@ -568,7 +564,6 @@ export async function clearJobCache(): Promise<void> {
     tx.objectStore(STORE_OUTBOX).clear();
     tx.objectStore(STORE_PENDING_PHOTO).clear();
     tx.objectStore(STORE_PENDING_CCU).clear();
-    tx.objectStore(STORE_UNRESOLVED_AUDIO).clear();
     await wrapTransaction(tx);
   } catch (err) {
     console.warn('[job-cache] clearJobCache failed', err);

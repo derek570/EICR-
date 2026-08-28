@@ -192,4 +192,20 @@ describe('UplinkLossDisclosureLedger — Codex cycle-1 regressions', () => {
     expect(ledger.naturalCompletionCount).toBe(1);
     expect(ledger.outstandingToken).toBeNull();
   });
+
+  it('a re-parked token must prove its NEXT attempt played: replay ended before playback resolves nothing', () => {
+    const events: string[] = [];
+    const completed: number[] = [];
+    const ledger = new UplinkLossDisclosureLedger({
+      onMint: () => {},
+      telemetry: (event) => events.push(event),
+      onCompleted: (t) => completed.push(t.id),
+    });
+    ledger.request('A', [episode(1)]);
+    ledger.onPlaybackStarted(1);
+    ledger.onNonNaturalTerminal(1); // preempted mid-play → re-park
+    ledger.onNaturalCompletion(1); // replay's entry-cancel onEnd before audio
+    expect(events).toEqual(['uplink_loss_episode_disclosed']);
+    expect(completed).toEqual([]);
+  });
 });

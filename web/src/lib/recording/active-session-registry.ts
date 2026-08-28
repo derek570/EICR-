@@ -17,11 +17,16 @@
 
 const CHANNEL_NAME = 'cm-active-recording-sessions';
 export const ACTIVE_SESSION_HEARTBEAT_MS = 3000;
-export const ACTIVE_SESSION_LEASE_MS = 10_000;
+/** Long enough to survive background-tab timer throttling (≈1 tick/min),
+ *  short enough that a crashed tab's session drops out within ~1.5 min. */
+export const ACTIVE_SESSION_LEASE_MS = 75_000;
 
 type Message =
   | { readonly kind: 'alive'; readonly sessionId: string }
-  | { readonly kind: 'ended'; readonly sessionId: string };
+  | { readonly kind: 'ended'; readonly sessionId: string }
+  /** A tab that just opened asks live recorders to re-announce NOW, so a
+   *  late subscriber never waits a heartbeat for its first lease. */
+  | { readonly kind: 'query' };
 
 const remoteLeases = new Map<string, number>();
 const listeners = new Set<() => void>();
@@ -34,14 +39,28 @@ function getChannel(): BroadcastChannel | null {
     channel = new BroadcastChannel(CHANNEL_NAME);
     channel.onmessage = (event: MessageEvent<Message>) => {
       const msg = event.data;
-      if (!msg || typeof msg.sessionId !== 'string') return;
+      if (!msg) return;
+      if (msg.kind === 'query') {
+        if (localSessionId && localIsStillActive?.())
+          post({ kind: 'alive', sessionId: localSessionId });
+        return;
+      }
+      if (typeof msg.sessionId !== 'string') return;
       if (msg.kind === 'alive') remoteLeases.set(msg.sessionId, Date.now());
       else remoteLeases.delete(msg.sessionId);
       for (const fn of listeners) fn();
     };
+    // Ask already-open recorders to announce themselves immediately.
+    try {
+      channel.postMessage({ kind: 'query' } satisfies Message);
+    } catch {
+      /* non-critical */
+    }
   }
   return channel;
 }
+
+let localIsStillActive: (() => boolean) | null = null;
 
 function post(msg: Message): void {
   try {
@@ -63,19 +82,32 @@ export function subscribeActiveSessionChanges(fn: () => void): () => void {
  * heartbeat stops itself the first time the predicate is false (the
  * session ref rotated or cleared) and posts `ended`.
  */
-export function announceActiveSession(sessionId: string, isStillActive: () => boolean): void {
+export function announceActiveSession(sessionId: string, isStillActive: () => boolean): () => void {
   localSessionId = sessionId;
+  localIsStillActive = isStillActive;
   post({ kind: 'alive', sessionId });
-  if (typeof setInterval === 'undefined') return;
-  const timer = setInterval(() => {
-    if (!isStillActive()) {
-      clearInterval(timer);
-      if (localSessionId === sessionId) localSessionId = null;
-      post({ kind: 'ended', sessionId });
-      return;
+  let ended = false;
+  const end = () => {
+    if (ended) return;
+    ended = true;
+    if (timer !== null) clearInterval(timer);
+    if (localSessionId === sessionId) {
+      localSessionId = null;
+      localIsStillActive = null;
     }
-    post({ kind: 'alive', sessionId });
-  }, ACTIVE_SESSION_HEARTBEAT_MS);
+    post({ kind: 'ended', sessionId });
+  };
+  const timer: ReturnType<typeof setInterval> | null =
+    typeof setInterval === 'undefined'
+      ? null
+      : setInterval(() => {
+          if (!isStillActive()) {
+            end();
+            return;
+          }
+          post({ kind: 'alive', sessionId });
+        }, ACTIVE_SESSION_HEARTBEAT_MS);
+  return end;
 }
 
 /**
@@ -103,4 +135,5 @@ export function __noteRemoteSessionForTests(sessionId: string, seenAt: number): 
 export function __resetActiveSessionRegistryForTests(): void {
   remoteLeases.clear();
   localSessionId = null;
+  localIsStillActive = null;
 }

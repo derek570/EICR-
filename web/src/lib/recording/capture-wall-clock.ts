@@ -96,8 +96,14 @@ export class CaptureWallClock {
    *  discontinuity spans the real gap. */
   windowOf(range: { readonly start: number; readonly end: number }): WallClockWindow | null {
     const startMs = this.wallMsAt(range.start);
-    const endMs = this.wallMsAt(Math.max(range.start, range.end));
-    if (startMs === null || endMs === null) return null;
+    if (startMs === null) return null;
+    if (range.end <= range.start) return { startMs, endMs: startMs };
+    // The EXCLUSIVE end resolves through the piece containing the range's
+    // LAST sample (+ one sample), so a range ending exactly at a forced
+    // anchor never swallows the gap that follows it (Codex mini-review).
+    const lastMs = this.wallMsAt(range.end - 1);
+    if (lastMs === null) return null;
+    const endMs = lastMs + 1000 / UPLINK_SAMPLE_RATE_HZ;
     return { startMs, endMs: Math.max(startMs, endMs) };
   }
 

@@ -33,7 +33,7 @@ import {
  */
 export function UnresolvedAudioBanner() {
   const { unresolvedAudio, dismissUnresolvedAudio, job } = useJobContext();
-  const { state, getClientSessionId } = useRecording();
+  const { state, getActiveRecordingSessionId } = useRecording();
   const userId = React.useMemo(() => getUser()?.id ?? null, []);
   // Re-evaluate when a sibling tab's lease changes (and on a slow tick so
   // an expired lease drops out even with no message).
@@ -52,12 +52,12 @@ export function UnresolvedAudioBanner() {
     void leaseTick;
     // A session is active while recording/preparing/sleeping — never in
     // `idle` or the terminal `error` state (teardown already ran there).
-    const localActive = state !== 'idle' && state !== 'error' ? getClientSessionId() || null : null;
-    const activeSessionIds = getActiveSessionIds(localActive);
+    void state; // re-render trigger; the getter reads the LIVE refs
+    const activeSessionIds = getActiveSessionIds(getActiveRecordingSessionId());
     return unresolvedAudio.filter((r) =>
       isUnresolvedAudioVisible(r, { userId, jobId: job.id, activeSessionIds })
     );
-  }, [unresolvedAudio, state, getClientSessionId, userId, job.id, leaseTick]);
+  }, [unresolvedAudio, state, getActiveRecordingSessionId, userId, job.id, leaseTick]);
 
   if (visible.length === 0) return null;
 

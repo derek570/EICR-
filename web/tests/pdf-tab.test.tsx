@@ -165,6 +165,7 @@ vi.mock('@/lib/recording-context', () => ({
   useRecording: () => ({
     state: 'idle',
     getClientSessionId: () => '',
+    getActiveRecordingSessionId: () => null,
   }),
 }));
 
