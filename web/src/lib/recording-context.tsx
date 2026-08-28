@@ -3975,7 +3975,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // every capture discontinuity (pause, interruption, the
           // TTS-excluded interval above), so a lost range's window is
           // CAPTURE time, never write time.
-          captureWallClockRef.current?.observe(segment.captureSampleRange.start, Date.now());
+          captureWallClockRef.current?.observe(
+            segment.captureSampleRange.start,
+            performance.timeOrigin + capturedAt
+          );
           const sender = deepgramRef.current;
           if (sender) {
             sender.sendTaggedAudio(segment);

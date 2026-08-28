@@ -81,12 +81,14 @@ describe('start() wiring — injected identity, ledger seams, wall-clock', () =>
 
   it('the wall-clock map is fed at the tagging boundary in onSamples, AFTER the TTS-discard guard', () => {
     const guard = SRC.indexOf('if (ttsActiveRef.current) return;');
-    const observe = SRC.indexOf(
-      'captureWallClockRef.current?.observe(segment.captureSampleRange.start, Date.now());'
-    );
+    const observe = SRC.indexOf('captureWallClockRef.current?.observe(');
     expect(guard).toBeGreaterThan(-1);
     expect(observe).toBeGreaterThan(guard);
     expect(SRC.match(/captureWallClockRef\.current\?\.observe\(/g)?.length).toBe(1);
+    // The anchor is the INGRESS instant (`capturedAt`, stamped before the
+    // resample), never a post-processing `Date.now()`.
+    expect(SRC.slice(observe, observe + 200)).toContain('performance.timeOrigin + capturedAt');
+    expect(SRC.slice(observe, observe + 200)).not.toContain('Date.now()');
   });
 
   it('declared discontinuities force an anchor: TTS-gate release and resume()', () => {

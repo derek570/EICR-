@@ -67,6 +67,11 @@ export function getCompanyRole(user?: User | null): CompanyRole | null {
 
 export function setAuth(token: string, user: User): void {
   if (typeof window === 'undefined') return;
+  // PLAN-E-TERM — an ACCOUNT SWITCH (a different user signing in over a
+  // still-present previous user) purges the unresolved-audio record; a
+  // same-user re-authentication keeps its rows.
+  const previous = getUser();
+  if (previous && previous.id !== user.id) void purgeUnresolvedAudio();
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
   // Mirror into cookie so middleware can do a cheap expiry check.
