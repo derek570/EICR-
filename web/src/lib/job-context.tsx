@@ -9,6 +9,16 @@ import { listPendingMutationsStrict } from './pwa/outbox';
 import { withJobSaveLock } from './pwa/job-save-lock';
 import { flushDesignationDrafts } from './designation-drafts';
 import { repairJobCircuitDesignations } from './repair-job-designations';
+// PLAN-E-TERM — the post-session unresolved-audio record rows for THIS
+// job (visibility is decided beneath RecordingProvider, where the active
+// session is in scope — this provider wraps it and cannot see that).
+import {
+  clearUnresolvedAudioForCertificate,
+  listUnresolvedAudioForJob,
+  resolveUnresolvedAudio,
+  subscribeUnresolvedAudioChanges,
+} from './recording/unresolved-audio-store';
+import type { UnresolvedAudioRecord } from './recording/unresolved-audio-record';
 
 /**
  * Per-job state container. Holds the fetched JobDetail plus a couple of
@@ -104,6 +114,23 @@ interface JobContextValue {
    * caller must fall back to the client renderer or fail visibly.
    */
   saveCircuitsSnapshotNow: () => Promise<{ synced: boolean }>;
+  /**
+   * PLAN-E-TERM — every unresolved-audio row (tombstones included) for
+   * the signed-in user + this job, loaded client-side after mount
+   * (hydration-safe: the server render has no IDB) and refreshed on
+   * every store change. Visibility (unresolved AND session-inactive) is
+   * decided by the banner beneath RecordingProvider.
+   */
+  unresolvedAudio: UnresolvedAudioRecord[];
+  /** Banner action: writes `resolved_via: dismissed` (a tombstone). */
+  dismissUnresolvedAudio: (key: string) => Promise<void>;
+  /**
+   * PDF-success path: terminalize `certificate_cleared` ONLY rows whose
+   * recording session is NOT in `activeSessionIds` at the success
+   * instant; a still-accruing session's rows survive. Resolves to the
+   * number of rows terminalized.
+   */
+  clearUnresolvedAudioForCertificate: (activeSessionIds: ReadonlySet<string>) => Promise<number>;
 }
 
 const JobContext = React.createContext<JobContextValue | null>(null);
@@ -173,6 +200,45 @@ export function JobProvider({
   // Stable-ref mirror for identity-stable callbacks (the PDF gate).
   const isHydratedRef = React.useRef(isHydrated);
   isHydratedRef.current = isHydrated;
+
+  // PLAN-E-TERM — unresolved-audio rows for this user+job. Loaded in an
+  // effect (client only — never during SSR/hydration) and refreshed on
+  // every same-tab / cross-tab store change. The effect depends on the
+  // job ID only, not the job doc, so debounced edits don't re-query IDB.
+  const jobId = job.id;
+  const [unresolvedAudio, setUnresolvedAudio] = React.useState<UnresolvedAudioRecord[]>([]);
+  React.useEffect(() => {
+    const userId = getUser()?.id ?? null;
+    if (!userId || !jobId) {
+      setUnresolvedAudio([]);
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      void listUnresolvedAudioForJob(userId, jobId).then((rows) => {
+        if (!cancelled) setUnresolvedAudio(rows);
+      });
+    };
+    refresh();
+    const unsubscribe = subscribeUnresolvedAudioChanges(refresh);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [jobId]);
+
+  const dismissUnresolvedAudio = React.useCallback(async (key: string) => {
+    await resolveUnresolvedAudio(key, 'dismissed');
+  }, []);
+
+  const clearUnresolvedAudioForCertificateCb = React.useCallback(
+    async (activeSessionIds: ReadonlySet<string>) => {
+      const userId = getUser()?.id ?? null;
+      if (!userId || !jobId) return 0;
+      return clearUnresolvedAudioForCertificate(userId, jobId, activeSessionIds);
+    },
+    [jobId]
+  );
   // Keep a ref of the freshest job so `flushSave` (fired from a timer)
   // reads the post-patch doc even when the closure was captured with a
   // stale snapshot. Mirrors the "functional updater" pattern in
@@ -563,6 +629,9 @@ export function JobProvider({
       commitJobPatch,
       flushDraftsAndGetSnapshot,
       saveCircuitsSnapshotNow,
+      unresolvedAudio,
+      dismissUnresolvedAudio,
+      clearUnresolvedAudioForCertificate: clearUnresolvedAudioForCertificateCb,
     }),
     [
       job,
@@ -571,6 +640,9 @@ export function JobProvider({
       isSaving,
       saveError,
       isHydrated,
+      unresolvedAudio,
+      dismissUnresolvedAudio,
+      clearUnresolvedAudioForCertificateCb,
       commitJobPatch,
       flushDraftsAndGetSnapshot,
       saveCircuitsSnapshotNow,

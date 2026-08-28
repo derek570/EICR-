@@ -44,13 +44,24 @@ export type DisclosureRequestOutcome =
   | { readonly action: 'joined'; readonly token: DisclosureToken }
   | { readonly action: 'awaiting'; readonly token: DisclosureToken };
 
+export type UplinkLossDisclosureTelemetryEvent =
+  | 'uplink_loss_episode_disclosed'
+  /** PLAN-E-TERM — SOURCE-cardinal: once per covered `LossSourceId` at a
+   *  token's NATURAL completion (never at mint — minting is not evidence
+   *  the inspector heard anything). */
+  | 'uplink_loss_episode_disclosure_completed';
+
 export interface UplinkLossDisclosureLedgerOptions {
   /** A token was minted (fresh or successor) — the caller must deliver it. */
   readonly onMint: (token: DisclosureToken) => void;
   readonly telemetry?: (
-    event: 'uplink_loss_episode_disclosed',
+    event: UplinkLossDisclosureTelemetryEvent,
     payload: Record<string, unknown>
   ) => void;
+  /** PLAN-E-TERM — a token reached NATURAL completion; `token.
+   *  coveredLossSourceIds` is the set the durable record resolves. Fired
+   *  BEFORE any successor is minted. */
+  readonly onCompleted?: (token: DisclosureToken) => void;
 }
 
 export class UplinkLossDisclosureLedger {
@@ -59,6 +70,7 @@ export class UplinkLossDisclosureLedger {
   private awaiting: LossSourceId[] = [];
   private nextTokenId = 1;
   private readonly disclosedKeys = new Set<string>();
+  private readonly completedKeys = new Set<string>();
   private completedCount = 0;
 
   constructor(private readonly options: UplinkLossDisclosureLedgerOptions) {}
@@ -91,13 +103,23 @@ export class UplinkLossDisclosureLedger {
     const t = this.outstanding;
     if (!t || t.id !== tokenId) return null;
     t.state = 'completed';
-    // No counter here: the plan gives E2 exactly three counters
-    // (`material` / `retired_immaterial` on the loss ledger, `disclosed`
-    // at association below). The SOURCE-cardinal completion counter
-    // `uplink_loss_episode_disclosure_completed` is PLAN-E-TERM's, emitted
-    // per covered `LossSourceId` when it iterates this token.
     this.completedCount += 1;
     this.outstanding = null;
+    // PLAN-E-TERM — the SOURCE-cardinal completion counter: once per
+    // covered `LossSourceId` (idempotent per session|source, like
+    // `disclosed`), so two episodes covered by one token count 2. E2's own
+    // three counters are untouched. The binder resolves each covered
+    // source's durable record from `onCompleted`.
+    for (const id of t.coveredLossSourceIds) {
+      const sessionKey = `${t.sessionId}|${lossSourceIdKey(id)}`;
+      if (this.completedKeys.has(sessionKey)) continue;
+      this.completedKeys.add(sessionKey);
+      this.options.telemetry?.('uplink_loss_episode_disclosure_completed', {
+        source: lossSourceIdKey(id),
+        token: t.id,
+      });
+    }
+    this.options.onCompleted?.(t);
     if (this.awaiting.length === 0) return null;
     const ids = this.awaiting;
     this.awaiting = [];

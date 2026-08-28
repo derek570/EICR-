@@ -91,6 +91,44 @@ export interface HoldToken {
   release(): void;
 }
 
+/** PLAN-E-TERM — a MATERIAL source's current voiced evidence, in the
+ *  CAPTURE sample domain: the hull of its unretired ranges plus their
+ *  merged voiced length. No wall-clock, no PCM — the durable record derives
+ *  its window through the session's piecewise capture→wall map. */
+export interface LossSourceEvidence {
+  readonly captureSampleRange: CaptureSampleRange;
+  readonly voicedSamples: number;
+}
+
+export function summariseSourceEvidence(
+  entries: readonly LedgerEntry[]
+): LossSourceEvidence | null {
+  if (entries.length === 0) return null;
+  const sorted = [...entries].sort(
+    (a, b) => a.captureSampleRange.start - b.captureSampleRange.start
+  );
+  let voiced = 0;
+  let runStart = sorted[0].captureSampleRange.start;
+  let runEnd = sorted[0].captureSampleRange.end;
+  let hullEnd = runEnd;
+  for (let i = 1; i < sorted.length; i++) {
+    const r = sorted[i].captureSampleRange;
+    if (r.end > hullEnd) hullEnd = r.end;
+    if (r.start <= runEnd) {
+      if (r.end > runEnd) runEnd = r.end;
+    } else {
+      voiced += runEnd - runStart;
+      runStart = r.start;
+      runEnd = r.end;
+    }
+  }
+  voiced += runEnd - runStart;
+  return {
+    captureSampleRange: { start: sorted[0].captureSampleRange.start, end: hullEnd },
+    voicedSamples: voiced,
+  };
+}
+
 export interface UplinkLossLedgerOptions {
   readonly recordingSessionId: string;
   /** Fires ONCE per successful open that has ≥1 material pending source,
@@ -98,6 +136,11 @@ export interface UplinkLossLedgerOptions {
    *  token from these ids. */
   readonly onDisclosureReady: (sourceIds: LossSourceId[]) => void;
   readonly telemetry?: (event: UplinkLossTelemetryEvent, payload: Record<string, unknown>) => void;
+  /** PLAN-E-TERM — fired when a source FIRST goes material (the same
+   *  instant as `uplink_loss_episode_material`) and again whenever a
+   *  material source's unretired evidence changes while still unresolved.
+   *  Additive: E2's behaviour is byte-for-byte unchanged without it. */
+  readonly onSourceEvidence?: (sourceId: LossSourceId, evidence: LossSourceEvidence) => void;
 }
 
 interface Episode {
@@ -130,7 +173,9 @@ interface StagedSource {
  *  the debounced voiced segment. No duration is stored or spoken. */
 export function hasDebouncedVoicedRun(entries: readonly LedgerEntry[]): boolean {
   if (entries.length === 0) return false;
-  const sorted = [...entries].sort((a, b) => a.captureSampleRange.start - b.captureSampleRange.start);
+  const sorted = [...entries].sort(
+    (a, b) => a.captureSampleRange.start - b.captureSampleRange.start
+  );
   let runStart = sorted[0].captureSampleRange.start;
   let runEnd = sorted[0].captureSampleRange.end;
   for (let i = 1; i < sorted.length; i++) {
@@ -150,6 +195,7 @@ export class UplinkLossLedger {
   private readonly recordingSessionId: string;
   private readonly onDisclosureReady: (sourceIds: LossSourceId[]) => void;
   private readonly telemetry: UplinkLossLedgerOptions['telemetry'];
+  private readonly onSourceEvidence: UplinkLossLedgerOptions['onSourceEvidence'];
 
   private nextEpisodeId = 1;
   private nextStagedId = 1;
@@ -198,6 +244,7 @@ export class UplinkLossLedger {
     this.recordingSessionId = options.recordingSessionId;
     this.onDisclosureReady = options.onDisclosureReady;
     this.telemetry = options.telemetry;
+    this.onSourceEvidence = options.onSourceEvidence;
   }
 
   // ── Sender-facing inputs ─────────────────────────────────────────────
@@ -318,7 +365,19 @@ export class UplinkLossLedger {
       );
     const pending = this.dispatchedByEpoch.get(epoch);
     if (pending) this.dispatchedByEpoch.set(epoch, retire(pending));
-    if (this.openEpisode) this.openEpisode.entries = retire(this.openEpisode.entries);
+    if (this.openEpisode) {
+      const before = this.openEpisode.entries.length;
+      this.openEpisode.entries = retire(this.openEpisode.entries);
+      // PLAN-E-TERM — a material episode whose evidence shrank refreshes
+      // its durable record (window/duration); emptied entirely, it stays
+      // as-is until the next open resolves it `retired_immaterial`.
+      if (
+        this.openEpisode.entries.length !== before &&
+        this.materialEmitted.has(lossSourceIdKey(this.openEpisode.sourceId))
+      ) {
+        this.publishEvidence(this.openEpisode.sourceId, this.openEpisode.entries);
+      }
+    }
   }
 
   // ── Close / failure / open classification ────────────────────────────
@@ -535,11 +594,26 @@ export class UplinkLossLedger {
   /** `uplink_loss_episode_material` — ONCE per source, at the moment its
    *  unretired evidence first passes the debounced-voiced-run test. */
   private emitMaterialIfDebounced(sourceId: LossSourceId, entries: readonly LedgerEntry[]): void {
-    if (!hasDebouncedVoicedRun(entries)) return;
     const key = lossSourceIdKey(sourceId);
-    if (this.materialEmitted.has(key)) return;
+    if (this.materialEmitted.has(key)) {
+      // PLAN-E-TERM — already material: evidence changed (a later entry
+      // joined). The durable record refreshes its window from it.
+      this.publishEvidence(sourceId, entries);
+      return;
+    }
+    if (!hasDebouncedVoicedRun(entries)) return;
     this.materialEmitted.add(key);
     this.telemetry?.('uplink_loss_episode_material', { source: key });
+    this.publishEvidence(sourceId, entries);
+  }
+
+  /** PLAN-E-TERM — hand a MATERIAL source's current evidence hull to the
+   *  durable-record binder. Skipped when nothing remains unretired (that
+   *  case resolves through `retired_immaterial` at the next open). */
+  private publishEvidence(sourceId: LossSourceId, entries: readonly LedgerEntry[]): void {
+    if (!this.onSourceEvidence) return;
+    const evidence = summariseSourceEvidence(entries);
+    if (evidence) this.onSourceEvidence(sourceId, evidence);
   }
 
   private discardAllUnresolved(): void {

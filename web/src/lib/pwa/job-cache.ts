@@ -72,13 +72,17 @@ import type { Job, JobDetail } from '@/lib/types';
  *                  `web/src/lib/ccu/pending-extraction-queue.ts`.
  */
 export const DB_NAME = 'certmate-cache';
-export const DB_VERSION = 5;
+export const DB_VERSION = 6;
 const STORE_JOBS_LIST = 'jobs-list';
 const STORE_JOB_DETAIL = 'job-detail';
 export const STORE_OUTBOX = 'outbox';
 export const STORE_APP_SETTINGS = 'app-settings';
 export const STORE_PENDING_PHOTO = 'pending-observation-photo';
 export const STORE_PENDING_CCU = 'pending-ccu-extraction';
+/** PLAN-E-TERM — the post-session unresolved-audio record (v6). CRUD in
+ *  `web/src/lib/recording/unresolved-audio-store.ts`. */
+export const STORE_UNRESOLVED_AUDIO = 'unresolved-audio';
+export const UNRESOLVED_AUDIO_INDEX_BY_USER_JOB = 'by-user-job';
 export const PENDING_CCU_INDEX_BY_JOB = 'by-job';
 export const OUTBOX_INDEX_BY_USER = 'by-user';
 
@@ -164,6 +168,17 @@ export function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_PENDING_CCU)) {
         const store = db.createObjectStore(STORE_PENDING_CCU, { keyPath: 'id' });
         store.createIndex(PENDING_CCU_INDEX_BY_JOB, 'jobId', { unique: false });
+      }
+      // v6 — unresolved-audio (PLAN-E-TERM). One row per MATERIAL loss
+      // source, keyed `${recordingSessionId}|${lossSourceKey}`; rows are
+      // tombstones (`resolvedVia`) — nothing but the sign-out purge
+      // deletes. The `by-user-job` compound index drives the job banner
+      // and the PDF-success clear without a full-store scan.
+      if (!db.objectStoreNames.contains(STORE_UNRESOLVED_AUDIO)) {
+        const store = db.createObjectStore(STORE_UNRESOLVED_AUDIO, { keyPath: 'key' });
+        store.createIndex(UNRESOLVED_AUDIO_INDEX_BY_USER_JOB, ['userId', 'jobId'], {
+          unique: false,
+        });
       }
       // Silence the unused-parameter lint without weakening the type:
       // the event object is often useful for debugging upgrade paths.
@@ -523,8 +538,18 @@ export async function clearJobCache(): Promise<void> {
     // STORE_PENDING_CCU is included for the same shared-device reason:
     // a queued CCU photo captured under user A must not be replayed
     // (and billed) under user B's credentials after a sign-out swap.
+    // STORE_UNRESOLVED_AUDIO (PLAN-E-TERM) is included: it holds dictation
+    // metadata keyed to a user, and sign-out / account switch is the SOLE
+    // path that deletes its tombstoned rows.
     const tx = db.transaction(
-      [STORE_JOBS_LIST, STORE_JOB_DETAIL, STORE_OUTBOX, STORE_PENDING_PHOTO, STORE_PENDING_CCU],
+      [
+        STORE_JOBS_LIST,
+        STORE_JOB_DETAIL,
+        STORE_OUTBOX,
+        STORE_PENDING_PHOTO,
+        STORE_PENDING_CCU,
+        STORE_UNRESOLVED_AUDIO,
+      ],
       'readwrite'
     );
     tx.objectStore(STORE_JOBS_LIST).clear();
@@ -532,6 +557,7 @@ export async function clearJobCache(): Promise<void> {
     tx.objectStore(STORE_OUTBOX).clear();
     tx.objectStore(STORE_PENDING_PHOTO).clear();
     tx.objectStore(STORE_PENDING_CCU).clear();
+    tx.objectStore(STORE_UNRESOLVED_AUDIO).clear();
     await wrapTransaction(tx);
   } catch (err) {
     console.warn('[job-cache] clearJobCache failed', err);

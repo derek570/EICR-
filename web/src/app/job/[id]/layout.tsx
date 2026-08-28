@@ -9,6 +9,7 @@ import { FloatingActionBar } from '@/components/job/floating-action-bar';
 import { RecordingChrome } from '@/components/recording/recording-chrome';
 import { JobTourMount } from '@/components/tour/job-tour-mount';
 import { TranscriptBar } from '@/components/recording/transcript-bar';
+import { UnresolvedAudioBanner } from '@/components/recording/unresolved-audio-banner';
 import { JobProvider } from '@/lib/job-context';
 import { RecordingProvider } from '@/lib/recording-context';
 import { api } from '@/lib/api-client';
@@ -184,6 +185,10 @@ export default function JobLayout({ children }: { children: React.ReactNode }) {
               <JobHeader />
               <JobTabNav jobId={jobId} />
               <TranscriptBar />
+              {/* PLAN-E-TERM — post-session unresolved-audio record. Sits
+                  beneath RecordingProvider (needs the active-session
+                  state) and above the tab content, iOS canon. */}
+              <UnresolvedAudioBanner />
               {/*
                * Pre-deploy: the live tab content always renders during a
                * recording session — the inspector wanted to keep the

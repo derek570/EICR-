@@ -14,6 +14,7 @@ import {
   XOctagon,
 } from 'lucide-react';
 import { useJobContext } from '@/lib/job-context';
+import { useRecording } from '@/lib/recording-context';
 import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -95,7 +96,12 @@ export default function PdfPage() {
     commitJobPatch,
     flushDraftsAndGetSnapshot,
     saveCircuitsSnapshotNow,
+    clearUnresolvedAudioForCertificate,
   } = useJobContext();
+  // PLAN-E-TERM — the PDF-success clear needs the ACTIVE recording-session
+  // set at the success instant (both clients allow generation mid-recording;
+  // a still-accruing episode's row must survive).
+  const { state: recordingState, getClientSessionId } = useRecording();
   const params = useParams<{ id: string }>();
   const jobId = params?.id ?? '';
   const userId = React.useMemo(() => getUser()?.id ?? null, []);
@@ -191,6 +197,20 @@ export default function PdfPage() {
         }
         setPdfBlob(blob);
         failedAttemptRef.current = null;
+        // PLAN-E-TERM — certificate completion (the REAL success point:
+        // the Blob exists) terminalizes `certificate_cleared` ONLY the
+        // unresolved-audio rows whose session is NOT active right now.
+        // Best-effort: a record failure never fails a generated PDF.
+        {
+          const activeSessionIds = new Set<string>();
+          if (recordingState !== 'idle') {
+            const activeId = getClientSessionId();
+            if (activeId) activeSessionIds.add(activeId);
+          }
+          void clearUnresolvedAudioForCertificate(activeSessionIds).catch(() => {
+            // Non-blocking.
+          });
+        }
         // Best-effort: stamp a reference onto the attestation rows.
         // Local renders stamp `local://<filename>` — EXACTLY the iOS
         // scheme (`PDFTab.swift:363` stamps local://<lastPathComponent>
@@ -232,6 +252,9 @@ export default function PdfPage() {
       commitJobPatch,
       flushDraftsAndGetSnapshot,
       saveCircuitsSnapshotNow,
+      clearUnresolvedAudioForCertificate,
+      recordingState,
+      getClientSessionId,
     ]
   );
 

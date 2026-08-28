@@ -1434,13 +1434,30 @@ let deferredDirectPrompts: Array<{ text: string; options?: SpeakOptions }> = [];
  *  microtask from a previous session is a no-op. */
 let uplinkLossGeneration = 0;
 
+/** PLAN-E-TERM — the provider's durable-record binder for the CURRENT
+ *  session, told each token's covered sources at NATURAL completion. The
+ *  ledger is module-level (it outlives sessions); the observer is
+ *  session-scoped and session-fences on `token.sessionId` itself. */
+let uplinkLossCompletionObserver:
+  | ((sessionId: string, coveredLossSourceIds: readonly LossSourceId[]) => void)
+  | null = null;
+
 function createUplinkLossDisclosureLedger(): UplinkLossDisclosureLedger {
   return new UplinkLossDisclosureLedger({
     onMint: (token) => speakUplinkLossDisclosure(token, token.coveredLossSourceIds),
     telemetry: (event, payload) => clientDiagnostic(event, payload),
+    onCompleted: (token) =>
+      uplinkLossCompletionObserver?.(token.sessionId, token.coveredLossSourceIds),
   });
 }
 let uplinkLossDisclosureLedger = createUplinkLossDisclosureLedger();
+
+/** Provider wiring (PLAN-E-TERM): register/clear the completion observer. */
+export function setUplinkLossDisclosureCompletionObserver(
+  observer: ((sessionId: string, coveredLossSourceIds: readonly LossSourceId[]) => void) | null
+): void {
+  uplinkLossCompletionObserver = observer;
+}
 
 /** Provider wiring: the session VAD's `isLocalSpeaking` reader. */
 export function setUplinkLossDisclosureLocalSpeakingGate(gate: (() => boolean) | null): void {
