@@ -1,6 +1,9 @@
 import type { User } from './types';
 import { clearJobCache } from './pwa/job-cache';
-import { purgeUnresolvedAudio } from './recording/unresolved-audio-store';
+import {
+  purgeUnresolvedAudio,
+  reconcileUnresolvedAudioOwner,
+} from './recording/unresolved-audio-store';
 import { purgeDesignationDraftState } from './designation-drafts';
 import { clearLoadRepairAliases } from './repair-job-designations';
 
@@ -72,6 +75,9 @@ export function setAuth(token: string, user: User): void {
   // same-user re-authentication keeps its rows.
   const previous = getUser();
   if (previous && previous.id !== user.id) void purgeUnresolvedAudio();
+  // No recorded previous user (an interrupted sign-out, a cleared
+  // localStorage): reconcile against what the store actually holds.
+  else if (!previous) void reconcileUnresolvedAudioOwner(user.id);
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
   // Mirror into cookie so middleware can do a cheap expiry check.

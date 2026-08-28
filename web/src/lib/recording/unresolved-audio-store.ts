@@ -243,6 +243,16 @@ export function purgeUnresolvedAudio(): Promise<void> {
   });
 }
 
+/** Owner reconciliation at any (re-)authentication: if ANY stored row
+ *  belongs to a user other than `userId` — a sign-out whose purge was
+ *  interrupted, or one that never recorded the previous user — purge.
+ *  Same-user relaunch rows are preserved. */
+export async function reconcileUnresolvedAudioOwner(userId: string): Promise<void> {
+  if (!isSupported()) return;
+  const rows = await listAllUnresolvedAudio().catch(() => [] as UnresolvedAudioRecord[]);
+  if (rows.some((r) => r.userId !== userId)) await purgeUnresolvedAudio();
+}
+
 /** The binder's port over this module, bound to the purge generation
  *  current at SESSION START: a purge after that fences every later write
  *  from this session's binder. */

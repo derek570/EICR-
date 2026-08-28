@@ -8,7 +8,11 @@ import { clearAuth, setAuth } from '@/lib/auth';
 import {
   currentUnresolvedAudioGeneration,
   flushUnresolvedAudioWrites,
+  listAllUnresolvedAudio,
+  reconcileUnresolvedAudioOwner,
+  upsertUnresolvedAudio,
 } from '@/lib/recording/unresolved-audio-store';
+import { unresolvedAudioKey } from '@/lib/recording/unresolved-audio-record';
 import type { User } from '@/lib/types';
 
 const userA = { id: 'u-A', email: 'a@e.st' } as unknown as User;
@@ -30,5 +34,26 @@ describe('setAuth account switch', () => {
     setAuth('t3', userB);
     expect(currentUnresolvedAudioGeneration()).toBe(g0 + 1);
     await flushUnresolvedAudioWrites();
+  });
+
+  it('with NO recorded previous user, stale rows of another owner are reconciled away; same-owner rows survive', async () => {
+    const mk = (u: string) => ({
+      key: unresolvedAudioKey(u, 'j', 'S', 'episode:1'),
+      userId: u,
+      jobId: 'j',
+      recordingSessionId: 'S',
+      lossSourceKey: 'episode:1',
+      windowStartMs: 1,
+      windowEndMs: 2,
+      voicedDurationMs: 500,
+      resolved_via: null,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    await upsertUnresolvedAudio(mk('u-A'));
+    await reconcileUnresolvedAudioOwner('u-A');
+    expect((await listAllUnresolvedAudio()).some((r) => r.userId === 'u-A')).toBe(true);
+    await reconcileUnresolvedAudioOwner('u-B'); // interrupted sign-out, B signs in
+    expect(await listAllUnresolvedAudio()).toEqual([]);
   });
 });
