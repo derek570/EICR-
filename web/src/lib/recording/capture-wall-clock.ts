@@ -53,6 +53,7 @@ export class CaptureWallClock {
     if (!Number.isFinite(sampleOffset) || !Number.isFinite(wallMs)) return false;
     const last = this.anchors[this.anchors.length - 1];
     if (!last) {
+      this.forceNextAnchor = false;
       this.anchors.push({ sampleOffset, wallMs });
       return true;
     }
