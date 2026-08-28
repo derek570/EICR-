@@ -520,3 +520,47 @@ describe('UplinkLossLedger — Codex cycle-3 regressions', () => {
     expect(disclosed).toHaveLength(0);
   });
 });
+
+describe('UplinkLossLedger — Codex cycle-4 regressions', () => {
+  const drop = (l: UplinkLossLedger, scope: EpochScope, start: number, end: number) =>
+    l.recordDropped({ epochScope: scope, captureSampleRange: { start, end }, samples: voicedPcm(end - start) });
+
+  it('a late report for a closed IMMATERIAL epoch is NOT stranded — it discloses at the next open', () => {
+    const { ledger, disclosed } = harness();
+    ledger.onSocketOpened(E(1));
+    ledger.onSocketClosed(E(1), ACTIVE); // episode-1 opens EMPTY (immaterial)
+    ledger.onSocketOpened(E(2)); // episode-1 released immaterial, epoch 1 closed
+    expect(disclosed).toHaveLength(0);
+    // A late epoch-1 send failure makes it material AFTER its episode released.
+    ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 0, end: 4800 } });
+    ledger.onSocketOpened(E(3));
+    expect(disclosed).toHaveLength(1); // discloses at the next open — not stranded
+  });
+
+  it('a late report for a closed DISCLOSED epoch is absorbed (no duplicate disclosure)', () => {
+    const { ledger, disclosed } = harness();
+    ledger.onSocketOpened(E(1));
+    drop(ledger, epoch(1), 0, 4800); // material epoch-1 loss
+    ledger.onSocketClosed(E(1), ACTIVE);
+    ledger.onSocketOpened(E(2)); // episode-1 discloses
+    expect(disclosed).toHaveLength(1);
+    // A late epoch-1 report AFTER its episode disclosed → absorbed.
+    ledger.recordUndispatchedLoss({ samples: voicedPcm(4800), recordingSessionId: 'sess-A', epoch: E(1), captureSampleRange: { start: 4800, end: 9600 } });
+    ledger.onSocketOpened(E(3));
+    expect(disclosed).toHaveLength(1); // still exactly one — absorbed, no duplicate
+  });
+
+  it('an owned disconnect clears a held-open moment (no stale release)', () => {
+    const { ledger, disclosed } = harness();
+    const hold = ledger.holdDisclosureRelease();
+    ledger.onSocketOpened(E(1)); // held-open moment, no material
+    expect(ledger.isReleaseParked).toBe(true);
+    ledger.onOwnedDisconnect(E(1)); // owned discard clears the held-open moment
+    expect(ledger.isReleaseParked).toBe(false);
+    // Material accrues afterward, then the OLD hold releases — must stay silent
+    // (this evidence needs its OWN successful open, not the dead moment).
+    ledger.recordStagedLoss({ epochScope: preOpen(2), captureSampleRange: { start: 0, end: 4800 }, voiced: true });
+    hold.release();
+    expect(disclosed).toHaveLength(0);
+  });
+});

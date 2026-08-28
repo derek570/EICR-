@@ -179,6 +179,11 @@ export class UplinkLossLedger {
   private readonly dispatchedByEpoch = new Map<ConnectionEpoch, LedgerEntry[]>();
   private readonly materialEmitted = new Set<string>();
   private readonly retiredImmaterialEmitted = new Set<string>();
+  /** Epochs whose episode was MATERIAL and disclosed. A late report for such
+   *  an epoch is ABSORBED (the inspector already heard the cause-agnostic
+   *  prompt) — Codex E2 cycle-4. A closed epoch NOT here still has undisclosed
+   *  loss, so its late report discloses at the next open. */
+  private readonly disclosedEpochs = new Set<ConnectionEpoch>();
 
   private holds = 0;
   private pendingRelease: LossSourceId[] | null = null;
@@ -406,6 +411,9 @@ export class UplinkLossLedger {
       const key = lossSourceIdKey(episode.sourceId);
       if (hasDebouncedVoicedRun(episode.entries)) {
         material.push(episode.sourceId);
+        // This episode WILL disclose — mark its epochs so a late report for
+        // any of them is absorbed, not re-disclosed.
+        for (const fe of episode.failedEpochs) this.disclosedEpochs.add(fe);
       } else if (this.materialEmitted.has(key) && !this.retiredImmaterialEmitted.has(key)) {
         this.retiredImmaterialEmitted.add(key);
         this.telemetry?.('uplink_loss_episode_retired_immaterial', { source: key });
@@ -482,20 +490,29 @@ export class UplinkLossLedger {
       if (this.ownedEpochs.has(e)) return; // deliberate close — drop
       // An epoch-scoped report joins the open episode ONLY if that epoch
       // is a member of it (Codex E2 cycle-3). Otherwise it belongs to its
-      // own epoch's future episode: held per-epoch, never leaked into an
-      // unrelated outage.
+      // own epoch's future episode.
       if (this.openEpisode?.failedEpochs.has(e)) {
         this.openEpisode.entries.push(entry);
         this.emitMaterialIfDebounced(this.openEpisode.sourceId, this.openEpisode.entries);
         return;
       }
-      if (this.openedEpochs.has(e)) {
+      if (this.closedEpochs.has(e)) {
+        // e already CLOSED (unowned — owned returned above) and its episode
+        // is gone. If that episode disclosed, absorb (already told the
+        // inspector). Otherwise this is genuine UNdisclosed late loss on a
+        // dead epoch → the pre-open window discloses it at the next open,
+        // rather than stranding it in a bucket its epoch never drains
+        // (Codex E2 cycle-4).
+        if (this.disclosedEpochs.has(e)) return;
+        // fall through to the pre-open window below.
+      } else if (this.openedEpochs.has(e)) {
+        // opened, still open (mid-connection): waits for its own close.
         const list = this.dispatchedByEpoch.get(e);
         if (list) list.push(entry);
         else this.dispatchedByEpoch.set(e, [entry]);
         return;
       }
-      // e not opened yet (handshake window) → the pre-open window below.
+      // e not opened yet (handshake), or closed-undisclosed → pre-open below.
     } else if (this.openEpisode) {
       // A pre-open-scoped capture during an outage joins the open episode.
       this.openEpisode.entries.push(entry);
@@ -531,6 +548,10 @@ export class UplinkLossLedger {
     this.preOpenWindow = null;
     this.stagedSources.length = 0;
     this.pendingRelease = null;
+    // Codex E2 cycle-4 — a stale held-open moment must not survive an owned
+    // discard: material accrued afterward would otherwise release when the
+    // OLD hold ends, before its own successful open.
+    this.heldOpenPending = false;
   }
 
   // ── Introspection (tests / diagnostics) ───────────────────────────────
