@@ -133,4 +133,13 @@ describe('family (1) — every-open observation via onStateChange, not onReconne
     expect(onopen).not.toContain('PLAN-E2');
     expect(onopen).not.toContain('lossLedger');
   });
+
+  it('raw-VAD silence resumes a FIFO-deferred disclosure (Codex E2 cycle-5) — notifyUplinkLossLocalSilence is followed by ttsQueueResumeIfDeferred', () => {
+    // The raw-VAD gate this plan added to shouldDeferPlayback needs a matching
+    // resume trigger; the silence branch must call BOTH so an ALREADY-enqueued
+    // deferred disclosure head resumes, not just the pre-enqueue parked slot.
+    const notifyIdx = SRC.indexOf('notifyUplinkLossLocalSilence();');
+    expect(notifyIdx).toBeGreaterThan(-1);
+    expect(SRC.slice(notifyIdx, notifyIdx + 800)).toContain('ttsQueueResumeIfDeferred();');
+  });
 });

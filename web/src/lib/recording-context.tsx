@@ -4423,6 +4423,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // disclosure (the parking primitive E1's detector exists to
         // provide; continuous across socket epochs by contract).
         notifyUplinkLossLocalSilence();
+        // Codex E2 cycle-5 — raw-VAD silence is the ONLY resume trigger for
+        // the raw-VAD gate this plan added to `shouldDeferPlayback`. A
+        // disclosure ALREADY enqueued then deferred by that gate (raw speech
+        // began during TTS fetch) would otherwise stay deferred forever when
+        // no Deepgram utterance-end arrives (poor network). Re-check the FIFO
+        // gates now; the queue plays the deferred head iff every gate clears.
+        ttsQueueResumeIfDeferred();
       }
     });
     // PLAN-E2 — the session-scoped unresolved-voiced-audio ledger. Its
