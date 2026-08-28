@@ -693,6 +693,103 @@ doze resume and manual zero-replay are untouched.
 
 ---
 
+## Post-session unresolved-audio record (PLAN-E-TERM, 2026-08-28)
+
+The residue net for loss the disclosure above cannot speak. An episode still
+open when the inspector presses Stop never reaches its disclosure moment (the
+next successful open), so PLAN-E2 counts it (`material`, no `disclosed` or
+`retired_immaterial`) and says nothing. Speaking it at teardown needs a clip
+that outlives the frozen `stop()`; speaking it at the confirmed-dead close
+asks the inspector to re-dictate into a socket that cannot transcribe. Instead,
+whatever is still undisclosed becomes a persisted, visible record. Nothing here
+speaks, and the stop path is untouched.
+
+### The durable store
+
+One row per material `LossSourceId` (episode, pre-open window, or staged loss).
+Fields: `(userId, jobId, recordingSessionId, lossSourceKey)`, a capture-time
+wall-clock window, the voiced duration, and one terminal field
+`resolved_via: completion | retired_immaterial | dismissed | certificate_cleared | null`.
+Presentation booleans are derived from `resolved_via`, never stored. Rows are
+tombstones: every non-purge transition writes only `resolved_via`, and the
+first terminal wins. Account sign-out or delete is the sole deletion.
+
+| Client | Store | Purge |
+|--------|-------|-------|
+| Web | IDB `certmate-cache` v6, object store `unresolved-audio`, index `by-user-job`. CRUD in `web/src/lib/recording/unresolved-audio-store.ts`; writes serialise through one promise chain so an upsert and its resolve never reorder. | `clearJobCache()` (sign-out). |
+| iOS | `Sources/Recording/UnresolvedAudioStore.swift` — JSON at Application Support `CertMateUnresolvedAudio/records.json`, written atomically on every mutation. One `shared` instance is injected into `DeepgramRecordingViewModel`, `JobDetailView`, and `PDFTab`. | `AuthService.logout()` and `deleteAccount()`. |
+
+### Lifecycle (both clients, identical matrix)
+
+| Event | `resolved_via` written |
+|-------|------------------------|
+| Material accrual (first debounced voiced run) | Row upserted, `null` |
+| Evidence changes while unresolved (join, partial watermark retirement) | Window and duration refreshed |
+| Disclosure token natural completion | `completion` |
+| E2 `uplink_loss_episode_retired_immaterial` | `retired_immaterial` |
+| Banner dismissed | `dismissed` |
+| PDF success, session not active | `certificate_cleared` |
+| PDF success, session still active | Row survives |
+| Stop, owned close, app kill | Nothing — row stays open |
+| Sign-out or delete account | Row deleted |
+
+The store binds to E2's own loss-event paths through two additive seams:
+`UplinkLossLedger.onSourceEvidence` (fires at first material accrual and on
+every later evidence change) and `UplinkLossDisclosureLedger.onCompleted`
+(natural completion only). The disclosure ledger also emits the source-cardinal
+counter `uplink_loss_episode_disclosure_completed`, once per covered source and
+idempotent per session and source. Minting is not evidence the inspector heard
+anything, so all reconciliation runs on completion.
+
+Identity is injected at session start. Web reads `getUser()` and `jobRef` in
+`start()`; iOS reads `AuthService.shared.currentUser` and `jobVM.job.id` in
+`performStartRecording`. The ledgers never look identity up.
+
+### Capture-time windows
+
+A staged loss can be reported seconds after the speech, and captured sample
+time is not continuous wall time: the capture clock stands still through a
+pause, an interruption, and the TTS-excluded interval. Each session owns a
+piecewise capture-sample to wall-clock map (`capture-wall-clock.ts`,
+`CaptureWallClock.swift`), fed at the capture-tagging boundary with the true
+ingress instant. A new anchor lands whenever the wall clock diverges from the
+sample-extrapolated time by more than 250 ms, so every discontinuity kind is
+covered without naming each edit site. A reading lost after a ten-minute pause
+displays the post-pause window.
+
+### Surfacing
+
+The banner shows only rows that are unresolved, belong to the current user and
+job, and whose recording session is no longer active. An entry is written
+during active recovery, so raw rows would surface a recoverable episode early.
+
+- Web: `UnresolvedAudioBanner` renders beneath `RecordingProvider` in
+  `web/src/app/job/[id]/layout.tsx`. `RecordingActions.getClientSessionId` is a
+  read-only getter over the existing session ref, so the frozen `stop()` needs
+  no edit. Rows come from `JobProvider` (`unresolvedAudio`,
+  `dismissUnresolvedAudio`, `clearUnresolvedAudioForCertificate`).
+- iOS: `JobDetailView.unresolvedAudioBanner` above the tab content, reading
+  `recordingVM.activeRecordingSessionId`.
+
+Wording is cause-neutral and never claims confirmed loss: "Some dictation
+during this session (~Ns around HH:MM) may not have been transcribed — check
+that window and repeat only readings that are missing." It is never spoken and
+sits outside PLAN-C's spoken-string distinctness fixture.
+
+Certificate completion terminalizes `certificate_cleared` only rows whose
+session is not active at the success instant, from the real success point:
+web after `setPdfBlob(blob)`, iOS after `PDFGenerator.generate` and the file
+write both succeed. Attestation alone never clears.
+
+### Reconciliation
+
+`stored_rows == material` before any purge, and
+`open_records == material − disclosure_completed − retired_immaterial − dismissed − certificate_cleared`.
+Pinned on both clients: Stop mid-playback leaves the record open with
+`completed` unincremented; a `retired_immaterial` with no token minted resolves
+the row; PDF success during an active episode leaves that row; account purge
+deliberately breaks the equation and the harness re-scopes to pre-purge state.
+
 ## Realtime iOS Log Streaming (PLAN-backend-final.md Phase 1.3)
 
 On-device `DebugLogger` JSONL output streams to the backend in near-real-time via batched `client_log_batch` envelopes over the existing Sonnet WebSocket. Replaces the multipart `/api/session/:id/analytics` upload that has been broken since Mar 2026 — that path used a one-shot end-of-session POST that lost the batch on crash and required the iPad to be plugged in for diagnosis. The streaming path:
