@@ -11,7 +11,7 @@
  *  - the wall-clock map is fed at the tagging boundary in `onSamples`;
  *  - the banner mounts BENEATH RecordingProvider; the PDF page clears at
  *    the REAL success point (after `setPdfBlob(blob)`) with the active set;
- *  - `clearJobCache` purges the store.
+ *  - `clearAuth` → `purgeUnresolvedAudio()` is the SOLE purge owner.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -73,8 +73,13 @@ describe('start() wiring — injected identity, ledger seams, wall-clock', () =>
     expect(start).toContain('setUplinkLossDisclosureCompletionObserver(');
     expect(start).toContain('new CaptureWallClock()');
     expect(start).toContain('port: createUnresolvedAudioPort()');
+    expect(start).toContain('endActiveSessionAnnouncementRef.current = announceActiveSession(');
     expect(start).toContain(
-      'announceActiveSession(sessionId, () => getActiveRecordingSessionIdRef.current() === sessionId);'
+      'endActiveSessionAnnouncementRef.current?.(); // a replaced session ends its lease'
+    );
+    // The lease ends on any terminal state and on unmount (never in stop()).
+    expect(SRC).toContain(
+      "if (state === 'idle' || state === 'error') {\n      endActiveSessionAnnouncementRef.current?.();"
     );
     expect(start).toContain('primeUnresolvedAudioStore();');
   });

@@ -3,11 +3,12 @@
  * set: this tab's live session plus sibling tabs' fresh leases, expiring
  * on their own so a crashed tab drops out.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ACTIVE_SESSION_LEASE_MS,
   __noteRemoteSessionForTests,
   __resetActiveSessionRegistryForTests,
+  announceActiveSession,
   getActiveSessionIds,
 } from '@/lib/recording/active-session-registry';
 
@@ -27,5 +28,35 @@ describe('active-session registry', () => {
   it('with no local session only remote leases count', () => {
     __noteRemoteSessionForTests('sess-a', 5000);
     expect([...getActiveSessionIds(null, 5000)]).toEqual(['sess-a']);
+  });
+
+  it('the disposer stops the heartbeat immediately (no further alive posts after end)', () => {
+    vi.useFakeTimers();
+    const posts: string[] = [];
+    const orig = globalThis.BroadcastChannel;
+    class FakeChannel {
+      onmessage: ((e: MessageEvent) => void) | null = null;
+      constructor(public name: string) {}
+      postMessage(m: { kind: string }) {
+        posts.push(m.kind);
+      }
+      close() {}
+    }
+    (globalThis as unknown as { BroadcastChannel: unknown }).BroadcastChannel = FakeChannel;
+    try {
+      const end = announceActiveSession('sess-x', () => true);
+      vi.advanceTimersByTime(3500);
+      const aliveBefore = posts.filter((k) => k === 'alive').length;
+      expect(aliveBefore).toBeGreaterThanOrEqual(2);
+      end();
+      expect(posts[posts.length - 1]).toBe('ended');
+      vi.advanceTimersByTime(10_000);
+      expect(posts.filter((k) => k === 'alive').length).toBe(aliveBefore);
+      end(); // idempotent
+      expect(posts.filter((k) => k === 'ended').length).toBe(1);
+    } finally {
+      (globalThis as unknown as { BroadcastChannel: unknown }).BroadcastChannel = orig;
+      vi.useRealTimers();
+    }
   });
 });

@@ -1201,6 +1201,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const captureWallClockRef = React.useRef<CaptureWallClock | null>(null);
   // Late-bound so `start()` (defined earlier) can read the live getter.
   const getActiveRecordingSessionIdRef = React.useRef<() => string | null>(() => null);
+  // The current session's lease disposer (ends the cross-tab heartbeat).
+  // Invoked on replacement, on any terminal state, and on unmount — never
+  // from the frozen `stop()` body (Codex E-TERM cycle-4).
+  const endActiveSessionAnnouncementRef = React.useRef<(() => void) | null>(null);
   const unresolvedAudioBinderRef = React.useRef<UnresolvedAudioBinder | null>(null);
   // PLAN-E1 E3 — the poor-signal latency probe, session-scoped alongside
   // the uplink context (same reset discipline).
@@ -4486,7 +4490,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // session to sibling tabs (heartbeat self-stops once the session ref
     // rotates — the frozen `stop()` already clears it).
     primeUnresolvedAudioStore();
-    announceActiveSession(sessionId, () => getActiveRecordingSessionIdRef.current() === sessionId);
+    endActiveSessionAnnouncementRef.current?.(); // a replaced session ends its lease
+    endActiveSessionAnnouncementRef.current = announceActiveSession(
+      sessionId,
+      () => getActiveRecordingSessionIdRef.current() === sessionId
+    );
     const recordUserId = getUser()?.id ?? null;
     const recordJobId = jobRef.current?.id ?? null;
     const binder =
@@ -5280,6 +5288,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // Total user-facing cost — Deepgram streaming + Sonnet tokens. Kept
   // as a derived value so callers always see a consistent sum.
   const costUsd = deepgramCostUsd + sonnetCostUsd;
+
+  // PLAN-E-TERM — the session lease ends the moment the provider reaches a
+  // terminal state (idle/error) or unmounts, so sibling tabs see `ended`
+  // promptly and a torn-down provider never keeps a dead session "alive".
+  React.useEffect(() => {
+    if (state === 'idle' || state === 'error') {
+      endActiveSessionAnnouncementRef.current?.();
+      endActiveSessionAnnouncementRef.current = null;
+    }
+  }, [state]);
+  React.useEffect(
+    () => () => {
+      endActiveSessionAnnouncementRef.current?.();
+      endActiveSessionAnnouncementRef.current = null;
+    },
+    []
+  );
 
   // PLAN-E-TERM — read-only client session id (see `RecordingActions`).
   const getClientSessionId = React.useCallback(() => sessionIdRef.current, []);

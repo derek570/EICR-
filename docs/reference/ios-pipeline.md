@@ -716,7 +716,7 @@ first terminal wins. Account sign-out or delete is the sole deletion.
 
 | Client | Store | Purge |
 |--------|-------|-------|
-| Web | IDB `certmate-cache` v6, object store `unresolved-audio`, index `by-user-job`. CRUD in `web/src/lib/recording/unresolved-audio-store.ts`; writes serialise through one promise chain so an upsert and its resolve never reorder. | `clearJobCache()` (sign-out). |
+| Web | IDB `certmate-cache` v6, object store `unresolved-audio`, index `by-user-job`. CRUD in `web/src/lib/recording/unresolved-audio-store.ts`; writes serialise through one promise chain so an upsert and its resolve never reorder. | `clearAuth()` → `purgeUnresolvedAudio()` — the SOLE owner of the store (generation-fenced, broadcast to sibling tabs); `setAuth()` also purges on an account switch. `clearJobCache()` deliberately does not touch it. |
 | iOS | `Sources/Recording/UnresolvedAudioStore.swift` — JSON at Application Support `CertMateUnresolvedAudio/records.json`, written atomically on every mutation. One `shared` instance is injected into `DeepgramRecordingViewModel`, `JobDetailView`, and `PDFTab`. | `AuthService.logout()` and `deleteAccount()`. |
 
 ### Lifecycle (both clients, identical matrix)
