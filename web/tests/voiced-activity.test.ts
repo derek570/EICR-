@@ -251,3 +251,31 @@ describe('VoicedActivityDetector', () => {
     expect(speakingAtClassification[speakingAtClassification.length - 1]).toBe(false); // silence frame
   });
 });
+
+describe('isLocalSpeakingWithin — time-bounded gate read (2026-08-29, sessions 38670CD6 / BD7B24C3)', () => {
+  it('is true inside the window and false after it while the unbounded state is still speaking', () => {
+    const vad = new VoicedActivityDetector(() => {});
+    vad.processFrame(makeSegment(loudFrame(320), 0, 320, { capturedAt: 1_000 }));
+    expect(vad.isLocalSpeaking).toBe(true);
+    expect(vad.isLocalSpeakingWithin(2_500, 1_200)).toBe(true);
+    expect(vad.isLocalSpeakingWithin(2_500, 3_400)).toBe(true);
+    // Ambient noise keeps feeding voiced frames: unbounded stays true, bounded expires.
+    vad.processFrame(makeSegment(loudFrame(320), 320, 640, { capturedAt: 3_600 }));
+    expect(vad.isLocalSpeaking).toBe(true);
+    expect(vad.isLocalSpeakingWithin(2_500, 3_600)).toBe(false);
+    expect(vad.isLocalSpeakingWithin(2_500, 61_000)).toBe(false);
+  });
+
+  it('restarts the window on a new run after debounced silence, and reset clears it', () => {
+    const vad = new VoicedActivityDetector(() => {});
+    vad.processFrame(makeSegment(loudFrame(320), 0, 320, { capturedAt: 1_000 }));
+    vad.processFrame(makeSegment(new Int16Array(8_000), 320, 8_320, { capturedAt: 1_500 }));
+    expect(vad.isLocalSpeaking).toBe(false);
+    expect(vad.isLocalSpeakingWithin(2_500, 1_600)).toBe(false);
+    vad.processFrame(makeSegment(loudFrame(320), 8_320, 8_640, { capturedAt: 11_000 }));
+    expect(vad.isLocalSpeakingWithin(2_500, 12_000)).toBe(true);
+    expect(vad.isLocalSpeakingWithin(2_500, 14_000)).toBe(false);
+    vad.reset();
+    expect(vad.isLocalSpeakingWithin(2_500, 11_100)).toBe(false);
+  });
+});

@@ -12,7 +12,10 @@ import {
   type SttModel,
 } from './recording/deepgram-service';
 import { UplinkScopeAllocator } from './recording/uplink-scope-allocator';
-import { VoicedActivityDetector } from './recording/voiced-activity';
+import {
+  VoicedActivityDetector,
+  VAD_LOCAL_SPEAKING_GATE_WINDOW_MS,
+} from './recording/voiced-activity';
 import { tagCapturedFloat32 } from './recording/capture-tagging';
 import { PoorSignalLatencyProbe } from './recording/poor-signal-probe';
 import { ensureRuntimeConfigLoaded, DEFAULT_STT_MODEL } from '@/lib/runtime-config';
@@ -1194,6 +1197,27 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // service replaced on pause/resume shares session state with its
   // predecessor instead of re-latching a mid-session backend env flip.
   const sessionUplinkContextRef = React.useRef<DeepgramSessionContext | null>(null);
+  // 2026-08-29 — the time-bounded local-speaking gate shared by the TTS
+  // FIFO's last-mile check and the disclosure park, plus its one-shot retry.
+  // The raw VAD's silence transition is the only event-driven resume for
+  // this gate and ambient noise never produces it, so any read that HOLDS
+  // arms a timer that re-runs every resume path once the window elapses
+  // (each re-checks its gates — Deepgram's confirmed speech still holds).
+  const localSpeakingGateRetryRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const armLocalSpeakingGateRetry = React.useCallback(() => {
+    if (localSpeakingGateRetryRef.current) return;
+    localSpeakingGateRetryRef.current = setTimeout(() => {
+      localSpeakingGateRetryRef.current = null;
+      clientDiagnostic('local_speaking_gate_retry', {});
+      notifyUplinkLossLocalSilence();
+      ttsQueueResumeIfDeferred();
+    }, VAD_LOCAL_SPEAKING_GATE_WINDOW_MS + 150);
+  }, []);
+  const localSpeakingGateHolds = React.useCallback((): boolean => {
+    const holds = sessionUplinkContextRef.current?.vad?.isLocalSpeakingWithin() ?? false;
+    if (holds) armLocalSpeakingGateRetry();
+    return holds;
+  }, [armLocalSpeakingGateRetry]);
   // PLAN-E-TERM — session-scoped piecewise capture→wall-clock map + the
   // durable unresolved-audio record binder. Same reset discipline as the
   // uplink context (replaced at `start()` ONLY; never nulled in the
@@ -3080,7 +3104,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // (raw VAD leads Deepgram ~200ms) could start playback over it.
         // The session VAD's debounced local-speaking state closes that
         // window for every queued clip, disclosure included.
-        (sessionUplinkContextRef.current?.vad?.isLocalSpeaking ?? false)
+        // 2026-08-29 (sessions 38670CD6 / BD7B24C3) — TIME-BOUNDED, and a
+        // gate read that holds arms the one-shot retry (`armLocalSpeakingGateRetry`):
+        // a fixed-threshold VAD in ambient noise never delivers the silence
+        // transition that is otherwise this gate's only resume trigger.
+        localSpeakingGateHolds()
     );
     // §A1b — the shared forget helper clears ALL dedupe stores (permanent
     // set + field-nil TTL map + ageless reservation) so a confirmation
@@ -4522,7 +4550,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         ? (sourceId, evidence) => binder.onSourceEvidence(sourceId, evidence)
         : undefined,
     });
-    setUplinkLossDisclosureLocalSpeakingGate(() => sessionVad.isLocalSpeaking);
+    setUplinkLossDisclosureLocalSpeakingGate(() => localSpeakingGateHolds());
     sessionUplinkContextRef.current = {
       recordingSessionId: sessionId,
       codecLatch: createSessionCodecLatch(),
