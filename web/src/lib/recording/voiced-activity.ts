@@ -50,6 +50,15 @@ export const MATERIAL_VOICED_DEBOUNCE_SAMPLES = Math.round(
  *  continuous sub-threshold audio, so a brief pause mid-sentence doesn't
  *  toggle the parking primitive. */
 export const VAD_SILENCE_HOLD_MS = 500;
+/** 2026-08-29 (field sessions 38670CD6 / BD7B24C3) — how long the raw-PCM
+ *  VAD alone may hold a TTS clip back. The raw gate exists to cover the
+ *  ~200 ms by which it LEADS Deepgram's own speaking flag; it is a fixed
+ *  energy threshold with no noise floor, so ambient room noise straddling
+ *  it held `isLocalSpeaking` true for minutes and the FIFO deferred every
+ *  read-back forever (Audio-First §1). Past this window Deepgram's confirmed
+ *  speech alone decides. Same value as iOS
+ *  `VADConstants.localSpeakingGateWindowMs`. */
+export const VAD_LOCAL_SPEAKING_GATE_WINDOW_MS = 2500;
 export const VAD_SILENCE_HOLD_SAMPLES = Math.round(
   (VAD_SILENCE_HOLD_MS / 1000) * VAD_SAMPLE_RATE_HZ
 );
@@ -88,6 +97,8 @@ export class VoicedActivityDetector {
   // voiced frame. -Infinity until the first voiced frame arrives so an
   // all-silence session never spuriously debounces into "speaking".
   private lastVoicedEndOffset = -Infinity;
+  /** Capture-time instant (ms) of the current speaking run's onset; null while silent. */
+  private speakingSinceMs: number | null = null;
 
   constructor(
     private readonly onTransition: (t: LocalSpeakingTransition) => void,
@@ -123,12 +134,14 @@ export class VoicedActivityDetector {
       this.lastVoicedEndOffset = captureSampleRange.end;
       if (!this.speaking) {
         this.speaking = true;
+        this.speakingSinceMs = capturedAt;
         transition = { kind: 'onset', atSampleOffset: captureSampleRange.start, capturedAt };
       }
     } else if (this.speaking) {
       const silenceSamples = captureSampleRange.end - this.lastVoicedEndOffset;
       if (silenceSamples >= VAD_SILENCE_HOLD_SAMPLES) {
         this.speaking = false;
+        this.speakingSinceMs = null;
         transition = { kind: 'silence', atSampleOffset: captureSampleRange.end, capturedAt };
       }
     }
@@ -150,6 +163,18 @@ export class VoicedActivityDetector {
     return this.speaking;
   }
 
+  /** The TIME-BOUNDED form of `isLocalSpeaking` for TTS gating: true only
+   *  while speaking AND the current run began less than `windowMs` ago. A
+   *  run that has outlived the window without Deepgram confirming speech is
+   *  noise, not the inspector. Materiality consumers keep the unbounded form. */
+  isLocalSpeakingWithin(
+    windowMs: number = VAD_LOCAL_SPEAKING_GATE_WINDOW_MS,
+    nowMs: number = Date.now()
+  ): boolean {
+    if (!this.speaking || this.speakingSinceMs === null) return false;
+    return nowMs - this.speakingSinceMs < windowMs;
+  }
+
   /** Synchronous, stateless classification for a loss-report snapshot —
    *  does not mutate detector state or affect debouncing. */
   classifySnapshot(samples: Int16Array): boolean {
@@ -161,6 +186,7 @@ export class VoicedActivityDetector {
    *  must survive the socket change. */
   reset(): void {
     this.speaking = false;
+    this.speakingSinceMs = null;
     this.lastVoicedEndOffset = -Infinity;
   }
 }
