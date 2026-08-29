@@ -76,6 +76,61 @@ export function contentTypeForFormat(outputFormat) {
   return 'application/octet-stream';
 }
 
+// Stream byte budget (2026-08-29, field sessions 3387D15C / 1033B05D /
+// 6B6FE011). eleven_flash_v2_5 occasionally returns a RUNAWAY clip: the
+// phrase is synthesised normally in the first ~2 s and is then followed by
+// many seconds of pure digital silence (108 KB / 27 s for the 28-char line
+// "earthing arrangement T N C S"; ~32 s for a three-word confirmation on
+// 2026-08-07). A REST reproduction on 2026-08-29 hit it once in ten calls
+// (11.9 s for a 35-char line, 2 s speech + 10 s silence), so it is a
+// stochastic vendor fault, not a property of our text. Left uncapped, the
+// phone plays the silence: the Deepgram stream stays paused for TTS echo
+// prevention the whole time, nothing transcribes, and the FIFO stalls.
+//
+// Because the real speech sits at the FRONT, the safe fix is a byte budget
+// derived from the text length and the output format: once the vendor has
+// sent more audio than any honest rendering of the text could need, the
+// stream is closed and the synth RESOLVES with what arrived (`capped`),
+// so every caller keeps its completed path. The budget is generous — three
+// times a slow reading, floored at 4 s — so a legitimate long clip is never
+// touched.
+const BUDGET_BASE_SECONDS = 0.6;
+const BUDGET_SECONDS_PER_CHAR = 0.085;
+const BUDGET_MULTIPLIER = 3;
+const BUDGET_MIN_SECONDS = 4;
+const BUDGET_MAX_SECONDS = 30;
+
+/**
+ * Bytes per second of audio for an ElevenLabs output_format, or null when
+ * the format is unknown (no cap is applied in that case).
+ */
+export function bytesPerSecondForFormat(outputFormat) {
+  if (typeof outputFormat !== 'string') return null;
+  let m = /^pcm_(\d+)$/.exec(outputFormat);
+  if (m) return Number(m[1]) * 2; // 16-bit mono
+  m = /^mp3_(\d+)_(\d+)$/.exec(outputFormat);
+  if (m) return (Number(m[2]) * 1000) / 8;
+  m = /^ulaw_(\d+)$/.exec(outputFormat);
+  if (m) return Number(m[1]);
+  return null;
+}
+
+/**
+ * Maximum bytes the stream may deliver for `text` in `outputFormat`, or
+ * null when no cap can be derived.
+ */
+export function ttsStreamByteBudget(text, outputFormat) {
+  const rate = bytesPerSecondForFormat(outputFormat);
+  if (!rate) return null;
+  const chars = typeof text === 'string' ? text.length : 0;
+  const honest = BUDGET_BASE_SECONDS + BUDGET_SECONDS_PER_CHAR * chars;
+  const seconds = Math.min(
+    BUDGET_MAX_SECONDS,
+    Math.max(BUDGET_MIN_SECONDS, BUDGET_MULTIPLIER * honest)
+  );
+  return Math.ceil(seconds * rate);
+}
+
 export class ElevenLabsStreamClient {
   /**
    * @param {{
@@ -143,6 +198,7 @@ export class ElevenLabsStreamClient {
    * @param {string} text — what to synthesise.
    * @param {{
    *   onAudio: (Buffer) => void,
+   *   maxBytes?: number|null,  // undefined = derived budget (see ttsStreamByteBudget); null = no cap
    *   onError?: (Error) => void,
    *   signal?: AbortSignal,
    *   contextId?: string,                      // multi-context only
@@ -157,6 +213,9 @@ export class ElevenLabsStreamClient {
       return Promise.reject(new Error('ElevenLabsStreamClient.synth: non-empty text required'));
     }
     const { onAudio, onError, signal, contextId = null } = opts;
+    // `maxBytes`: undefined → derived from text + output format; null → no cap.
+    const maxBytes =
+      opts.maxBytes === undefined ? ttsStreamByteBudget(text, this.outputFormat) : opts.maxBytes;
 
     if (this.multiContext && !contextId) {
       return Promise.reject(
@@ -167,12 +226,15 @@ export class ElevenLabsStreamClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(this._buildUrl(), { headers: { 'xi-api-key': this.apiKey } });
       this.ws = ws;
+      // Per-synth settled flag (also read by the message handler's guard).
+      this._closed = false;
       const timings = {
         wsOpenNs: process.hrtime.bigint(),
         bosSentNs: 0n,
         firstAudioNs: 0n,
         isFinalNs: 0n,
         bytes: 0,
+        capped: false,
         audioFrames: 0,
       };
 
@@ -235,6 +297,9 @@ export class ElevenLabsStreamClient {
       });
 
       ws.on('message', (raw) => {
+        // Once this synth has settled (isFinal, error, cap, abort), ignore
+        // anything the socket still delivers before it closes.
+        if (this._closed) return;
         let msg;
         try {
           msg = JSON.parse(raw.toString());
@@ -250,11 +315,18 @@ export class ElevenLabsStreamClient {
         }
         if (msg.audio) {
           if (timings.firstAudioNs === 0n) timings.firstAudioNs = process.hrtime.bigint();
-          const buf = Buffer.from(msg.audio, 'base64');
+          let buf = Buffer.from(msg.audio, 'base64');
+          let exceeded = false;
+          if (maxBytes !== null && timings.bytes + buf.length > maxBytes) {
+            // Runaway clip (see ttsStreamByteBudget): deliver only up to the
+            // budget, then finish as if the vendor had sent isFinal.
+            exceeded = true;
+            buf = buf.subarray(0, Math.max(0, maxBytes - timings.bytes));
+          }
           timings.bytes += buf.length;
           timings.audioFrames += 1;
           try {
-            onAudio(buf);
+            if (buf.length) onAudio(buf);
           } catch (err) {
             // Caller's onAudio threw — propagate as a synth error and stop.
             cleanup();
@@ -265,6 +337,28 @@ export class ElevenLabsStreamClient {
               /* noop */
             }
             reject(err);
+            return;
+          }
+          if (exceeded) {
+            timings.capped = true;
+            timings.isFinalNs = process.hrtime.bigint();
+            cleanup();
+            this._closed = true;
+            try {
+              ws.close();
+            } catch {
+              /* noop */
+            }
+            logger.warn('elevenlabs_stream_capped', {
+              text_length: text.length,
+              text_preview: text.slice(0, 80),
+              output_format: this.outputFormat,
+              model_id: this.modelId,
+              budget_bytes: maxBytes,
+              delivered_bytes: timings.bytes,
+              audio_frames: timings.audioFrames,
+            });
+            resolve(timings);
             return;
           }
         }
