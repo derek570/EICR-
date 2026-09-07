@@ -61,8 +61,10 @@ export const ANSWER_USER_MAX_CHARS = 300;
  * the turn produced no successful write and no emitted ask. A fixed string —
  * no leak filter needed — that projects into result.spoken_response like a
  * real answer and counts as speech-intent for every marker net, so a failed
- * answer is never silent in EITHER confirmation-toggle state (the apology
- * nets are confirmationsEnabled-gated and cannot cover confirmation-OFF).
+ * answer is never silent in either Extra-prompts state. The mandatory
+ * apology/catch-all nets cover ordinary failures; this fallback covers the
+ * narrower case where the answer feature was attempted but produced neither
+ * a write, an ask, nor a net apology.
  */
 export const ANSWER_FALLBACK_TEXT = "Sorry, I couldn't answer that — please ask it another way.";
 
