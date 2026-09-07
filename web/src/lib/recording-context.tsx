@@ -2248,7 +2248,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           hasPendingAsk: isAnswerToAsk,
           inResponseTo: peekedPayload != null,
         });
-        const gatePassed = existingForwardDecision;
+        const gatePassed = admission.admits || existingForwardDecision;
         if (!gatePassed) {
           // REJECT: no chime, no send, no ask-state consumption, no
           // processing-count increment (the counter is decremented solely
