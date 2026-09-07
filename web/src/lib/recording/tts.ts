@@ -36,13 +36,10 @@ import type { LossSourceId } from './uplink-loss-ledger';
  *     / `speakTourNarration` — none of which are gated by any user
  *     toggle. Mute happens at the system volume, not in-app.
  *
- *   - `speakConfirmation()` is the only path the user can mute. iOS
- *     gates `speakBriefConfirmation()` ("Set Zs to 0.44 on circuit 3")
- *     behind `confirmationModeEnabled` (UserDefaults
- *     `confirmationModeEnabled`). The same flag is also sent to the
- *     backend as `confirmations_enabled: true|false` on every
- *     transcript so Sonnet only emits confirmation strings when the
- *     user wants them — see DeepgramRecordingViewModel.swift:1863.
+ *   - `speakConfirmation()` is the mandatory FIFO path for accepted
+ *     readings, corrections, calculations and reassignments. The stored
+ *     preference controls additional prompts only; it never suppresses a
+ *     dictated outcome.
  *
  * Two paths, mirroring iOS AlertManager Phase 7.1 (`AlertManager.swift:236`):
  *   - `speakConfirmation()` — read-backs — are FIFO-QUEUED via `tts-queue.ts`
@@ -104,11 +101,11 @@ const LEGACY_STORAGE_KEY = 'cm-voice-feedback';
  * indistinguishable from a silently broken pipeline (the id-122/124
  * mechanism this plan fixes).
  */
-export const CONFIRMATION_MODE_OFF_CUE = 'Voice read-backs off.';
-export const CONFIRMATION_MODE_ON_CUE = 'Voice read-backs on.';
+export const EXTRA_PROMPTS_OFF_CUE = 'Extra prompts off. Readings still spoken.';
+export const EXTRA_PROMPTS_ON_CUE = 'Extra prompts on.';
 /** Session-start one-shot warning — spoken once per physical session
  *  when the persisted preference is already off at start. */
-export const CONFIRMATION_MODE_START_WARNING = 'Heads up — voice read-backs are off.';
+export const EXTRA_PROMPTS_START_WARNING = 'Extra prompts are off. Readings still spoken.';
 
 /**
  * Returns true iff the runtime has the SpeechSynthesis API. Used by
@@ -1056,15 +1053,9 @@ function playConfirmationNative(text: string, controls: QueuePlayControls): void
 }
 
 /**
- * Confirmation-mode-gated speech path. Only speaks when the inspector
- * has the confirmation-mode toggle ON (or the caller passes
- * `force: true` for the toggle preview). Mirrors iOS
- * `speakBriefConfirmation` which is the sole gated path on iOS.
- *
- * Server-side gating is paired with this client-side gating: the
- * matching `confirmations_enabled: true|false` flag is sent to the
- * backend on every `transcript` so Sonnet only emits confirmations the
- * client is willing to speak.
+ * Mandatory dictated-outcome speech path. The legacy `force` option is
+ * retained for call-site compatibility, but accepted read-backs enqueue in
+ * both preference states under DictatedReadbackPolicyV1.
  */
 export function speakConfirmation(
   text: string,
@@ -1083,14 +1074,6 @@ export function speakConfirmation(
   // B1 harness seam: an injected confirmation player counts as available.
   if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) {
     clientDiagnostic('tts_speak_confirmation_skipped_unavailable', {});
-    options?.onEnd?.();
-    return { enqueued: false, discardedCount: 0 };
-  }
-  const enabled = options?.force ? true : getConfirmationModeEnabled();
-  if (!enabled) {
-    clientDiagnostic('tts_speak_confirmation_skipped_muted', {});
-    // Muted — fire the end callback synchronously so any caller waiting
-    // on speech end (none today, but symmetric with `speak`) doesn't stall.
     options?.onEnd?.();
     return { enqueued: false, discardedCount: 0 };
   }

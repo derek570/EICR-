@@ -19,7 +19,8 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@certmate/shared-utils": ["../packages/shared-utils/src/index.ts"]
     }
   },
   "include": [

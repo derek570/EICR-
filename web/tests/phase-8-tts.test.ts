@@ -162,10 +162,10 @@ describe('speak() — always-on path', () => {
 });
 
 describe('speakConfirmation() — gated path', () => {
-  it('is silent when the confirmation toggle is off (matches iOS speakBriefConfirmation)', () => {
+  it('keeps mandatory confirmations audible when Extra prompts is off', () => {
     setConfirmationModeEnabled(false);
     speakConfirmation('Set Zs to 0.44 on circuit 3.');
-    expect(shim.speak).not.toHaveBeenCalled();
+    expect(shim.speak).toHaveBeenCalledTimes(1);
   });
 
   it('speaks when the confirmation toggle is on', () => {
@@ -176,14 +176,15 @@ describe('speakConfirmation() — gated path', () => {
 
   it('force=true speaks even when the toggle is off (toggle-flip cue preview)', () => {
     setConfirmationModeEnabled(false);
-    speakConfirmation('Voice read-backs on.', { force: true });
+    speakConfirmation('Extra prompts on.', { force: true });
     expect(shim.speak).toHaveBeenCalledTimes(1);
   });
 
-  it('cancels in-flight speech only when actually speaking', () => {
+  it('queues mandatory speech normally while Extra prompts is off', () => {
     setConfirmationModeEnabled(false);
-    speakConfirmation('muted, should not cancel either');
-    expect(shim.cancel).not.toHaveBeenCalled();
+    speakConfirmation('mandatory reading');
+    expect(shim.cancel).toHaveBeenCalledTimes(1);
+    expect(shim.speak).toHaveBeenCalledTimes(1);
   });
 });
 

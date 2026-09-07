@@ -76,11 +76,14 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // ── (1) + (3) — source-adjacency wiring proofs ───────────────────────────
 
 describe('recording-chrome.tsx — toggle-flip cue wiring (structural, PLAN-D id 122/124)', () => {
-  const src = readFileSync(resolve(HERE, '../src/components/recording/recording-chrome.tsx'), 'utf8');
+  const src = readFileSync(
+    resolve(HERE, '../src/components/recording/recording-chrome.tsx'),
+    'utf8'
+  );
 
   it('imports the unified cue constants from tts.ts', () => {
-    expect(src).toMatch(/CONFIRMATION_MODE_OFF_CUE/);
-    expect(src).toMatch(/CONFIRMATION_MODE_ON_CUE/);
+    expect(src).toMatch(/EXTRA_PROMPTS_OFF_CUE/);
+    expect(src).toMatch(/EXTRA_PROMPTS_ON_CUE/);
   });
 
   it('speaks the correct cue on BOTH directions via the dedicated mode-status path (survives preemption)', () => {
@@ -91,7 +94,7 @@ describe('recording-chrome.tsx — toggle-flip cue wiring (structural, PLAN-D id
     // speakConfirmation call (Codex diff review r1 BLOCKER — the latter
     // can be silently discarded by a later ask's preemptFlush()).
     expect(src).toMatch(
-      /speakConfirmationModeStatus\(next \? CONFIRMATION_MODE_ON_CUE : CONFIRMATION_MODE_OFF_CUE\)/
+      /speakConfirmationModeStatus\(next \? EXTRA_PROMPTS_ON_CUE : EXTRA_PROMPTS_OFF_CUE\)/
     );
   });
 
@@ -107,37 +110,37 @@ describe('recording-chrome.tsx — toggle-flip cue wiring (structural, PLAN-D id
 describe('recording-context.tsx — session-start warning wiring (structural, PLAN-D id 122/124)', () => {
   const src = readFileSync(resolve(HERE, '../src/lib/recording-context.tsx'), 'utf8');
 
-  it('imports CONFIRMATION_MODE_START_WARNING from tts.ts', () => {
-    expect(src).toMatch(/CONFIRMATION_MODE_START_WARNING/);
+  it('imports EXTRA_PROMPTS_START_WARNING from tts.ts', () => {
+    expect(src).toMatch(/EXTRA_PROMPTS_START_WARNING/);
   });
 
   it('the warning call appears in the source EXACTLY ONCE (import + one call site = 2 occurrences of the identifier)', () => {
-    const occurrences = src.match(/CONFIRMATION_MODE_START_WARNING/g) ?? [];
+    const occurrences = src.match(/EXTRA_PROMPTS_START_WARNING/g) ?? [];
     // One in the import list, one in the actual speakConfirmationModeStatus(...) call.
     expect(occurrences).toHaveLength(2);
   });
 
-  it('is wired adjacent to buildSleepManager()/setState(\'active\') — the PHYSICAL start() path', () => {
+  it("is wired adjacent to buildSleepManager()/setState('active') — the PHYSICAL start() path", () => {
     expect(src).toMatch(
-      /buildSleepManager\(\);\s*\n\s*setState\('active'\);\s*\n[\s\S]*?if \(!getConfirmationModeEnabled\(\)\) \{\s*\n\s*speakConfirmationModeStatus\(CONFIRMATION_MODE_START_WARNING\);\s*\n\s*\}\s*\n\s*beginTick\(\);/
+      /buildSleepManager\(\);\s*\n\s*setState\('active'\);\s*\n[\s\S]*?if \(!getConfirmationModeEnabled\(\)\) \{\s*\n\s*speakConfirmationModeStatus\(EXTRA_PROMPTS_START_WARNING\);\s*\n\s*\}\s*\n\s*beginTick\(\);/
     );
   });
 
-  it('is textually ABSENT from the file before the start() function begins (i.e. not near handleWake\'s earlier setState(\'active\'))', () => {
+  it("is textually ABSENT from the file before the start() function begins (i.e. not near handleWake's earlier setState('active'))", () => {
     // handleWake's own setState('active')/beginTick() pair appears earlier
     // in the file (before start()'s "buildSleepManager()" anchor). Confirm
     // the ONE occurrence of the warning call comes after that earlier pair,
     // not interleaved with it.
     const earlierActiveIdx = src.indexOf("setState('active');\n        beginTick();");
-    const warningCallIdx = src.indexOf('speakConfirmationModeStatus(CONFIRMATION_MODE_START_WARNING');
+    const warningCallIdx = src.indexOf('speakConfirmationModeStatus(EXTRA_PROMPTS_START_WARNING');
     expect(earlierActiveIdx).toBeGreaterThan(-1);
     expect(warningCallIdx).toBeGreaterThan(-1);
     expect(warningCallIdx).toBeGreaterThan(earlierActiveIdx);
   });
 
-  it('never appears near resume()\'s setState(\'active\') either (the last setState(\'active\') in the file)', () => {
+  it("never appears near resume()'s setState('active') either (the last setState('active') in the file)", () => {
     const lastActiveIdx = src.lastIndexOf("setState('active');\n      beginTick();");
-    const warningCallIdx = src.indexOf('speakConfirmationModeStatus(CONFIRMATION_MODE_START_WARNING');
+    const warningCallIdx = src.indexOf('speakConfirmationModeStatus(EXTRA_PROMPTS_START_WARNING');
     // The warning's OWN setState('active') pair is not the last one in the
     // file (resume()'s is, since resume() is declared after start()) — so
     // the warning call must sit BEFORE the last occurrence, proving it is
@@ -197,7 +200,7 @@ describe('recording-context.tsx — session-start warning behaviour (B0 harness)
     const { harness, apiRef } = await mountAndStart();
     expect(apiRef.current!.state).toBe('active');
     const warnings = harness.tts.played.filter(
-      (p) => p.text === 'Heads up — voice read-backs are off.'
+      (p) => p.text === 'Extra prompts are off. Readings still spoken.'
     );
     expect(warnings).toHaveLength(1);
   });
@@ -207,7 +210,7 @@ describe('recording-context.tsx — session-start warning behaviour (B0 harness)
     const { harness, apiRef } = await mountAndStart();
     expect(apiRef.current!.state).toBe('active');
     const warnings = harness.tts.played.filter(
-      (p) => p.text === 'Heads up — voice read-backs are off.'
+      (p) => p.text === 'Extra prompts are off. Readings still spoken.'
     );
     expect(warnings).toHaveLength(0);
   });

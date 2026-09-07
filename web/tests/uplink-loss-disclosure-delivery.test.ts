@@ -159,8 +159,8 @@ describe('speakUplinkLossDisclosure — canonical line, forced, tokened', () => 
     __resetModeStatusCuesForTests();
     requestUplinkLossDisclosure([episode(1)]);
     expect(fifo.disclosures()).toHaveLength(1);
-    // Contrast: an ordinary confirmation is muted.
-    expect(speakConfirmation('Zs point five').enqueued).toBe(false);
+    // DictatedReadbackPolicyV1: ordinary read-backs remain mandatory too.
+    expect(speakConfirmation('Zs point five').enqueued).toBe(true);
   });
 
   it('two successive outages after natural completion → the identical string spoken TWICE (immune to the 30s text dedupe)', () => {

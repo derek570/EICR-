@@ -36,6 +36,14 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: '@', replacement: path.resolve(__dirname, 'src') },
+      // Resolve the workspace source through this checkout. This matters in
+      // isolated worktrees whose dependency directory is reused from the main
+      // checkout: Node's workspace symlink otherwise points tests at stale
+      // shared-utils source outside the worktree under review.
+      {
+        find: '@certmate/shared-utils',
+        replacement: path.resolve(__dirname, '../packages/shared-utils/src/index.ts'),
+      },
       {
         find: /^react(\/.*)?$/,
         replacement: path.resolve(__dirname, 'node_modules/react') + '$1',

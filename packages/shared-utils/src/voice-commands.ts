@@ -151,6 +151,10 @@ export type VoiceCommand =
     };
 
 export interface VoiceCommandOutcome {
+  /** Truthful local execution status used by the speech owner. */
+  actionOutcome?: 'applied' | 'unapplied' | 'failed' | 'unsupported';
+  actionReason?: string;
+  appliedResults?: Array<{ circuit: number | string; field: string; value: string }>;
   /** Partial JobDetail patch; undefined for pure query commands.
    *  Callers cast to their richer JobDetail shape — the structural
    *  typing here only requires the keys the applier might touch. */
@@ -877,7 +881,7 @@ function labelForField(field: string): string {
 }
 
 function respondUnknown(reason: string): VoiceCommandOutcome {
-  return { response: reason };
+  return { response: reason, actionOutcome: 'unsupported', actionReason: reason };
 }
 
 /**
@@ -955,34 +959,49 @@ export function applyVoiceCommand(
   command: VoiceCommand,
   job: VoiceCommandJob
 ): VoiceCommandOutcome {
+  let outcome: VoiceCommandOutcome;
   switch (command.type) {
     case 'update_field':
-      return applyUpdateField(command, job);
+      outcome = applyUpdateField(command, job);
+      break;
     case 'reorder_circuits':
-      return applyReorderCircuits(command, job);
+      outcome = applyReorderCircuits(command, job);
+      break;
     case 'query_field':
-      return applyQueryField(command, job);
+      outcome = applyQueryField(command, job);
+      break;
     case 'calculate_impedance':
-      return applyCalculateImpedance(command, job);
+      outcome = applyCalculateImpedance(command, job);
+      break;
     case 'apply_field':
-      return applyApplyField(command, job);
+      outcome = applyApplyField(command, job);
+      break;
     case 'add_circuit':
-      return applyAddCircuit(command, job);
+      outcome = applyAddCircuit(command, job);
+      break;
     case 'apply_field_contradiction':
       // PLAN-F item 1, Decision 3 — consumed locally: speak a deterministic
       // refusal, no patch (nothing mutates), never forwarded to the server.
-      return {
+      outcome = {
         response:
           'I heard contradictory spare instructions — please say either including or excluding spares, not both.',
+        actionOutcome: 'failed',
       };
+      break;
     default: {
       // Exhaustiveness — TypeScript will flag a missing branch at compile
       // time; the runtime guard is belt-and-braces for hand-edited JSON.
       const never: never = command;
       void never;
-      return respondUnknown("I didn't understand that command.");
+      outcome = respondUnknown("I didn't understand that command.");
+      break;
     }
   }
+  if (command.type === 'query_field' || outcome.actionOutcome) return outcome;
+  return {
+    ...outcome,
+    actionOutcome: outcome.patch ? 'applied' : 'unapplied',
+  };
 }
 
 function applyUpdateField(
@@ -1046,21 +1065,18 @@ function applyUpdateField(
     }
     // PLAN-B2 — designation hygiene, canonicalised ONCE at command entry.
     // Repair semantics (never reject/blank: banned-token-only stays as
-    // dictated — empty designation = spare). The SAME canonical value is
-    // threaded to the mutation AND the spoken response below: cleaned
+    // dictated — empty designation = spare). The canonical value is
+    // threaded to the mutation and spoken response below: cleaned
     // storage + raw speech would leave the hands-free inspector hearing
     // a value the certificate doesn't carry.
-    let spokenValue: string = command.value;
     if (resolved.circuitField === 'circuit_designation') {
       value = repairCircuitDesignation(command.value) as string;
-      spokenValue = value;
     }
     // PLAN-C — the canonical option is what gets STORED, so it is also
     // what gets SPOKEN. Same storage-and-speech-from-one-value discipline
     // PLAN-B2 established for designations directly above.
     if (guardedValue != null) {
       value = guardedValue;
-      spokenValue = guardedValue;
     }
     const next: VoiceCommandCircuit[] = circuits.map((row, i) =>
       i === idx ? { ...row, [resolved.circuitField as string]: value } : row
@@ -1068,7 +1084,8 @@ function applyUpdateField(
     const label = labelForField(resolved.circuitField);
     return {
       patch: { circuits: next },
-      response: `Set ${label} to ${spokenValue} on circuit ${command.circuit}.`,
+      response: `Set ${label} to ${value} on circuit ${command.circuit}.`,
+      appliedResults: [{ circuit: command.circuit as number, field: resolved.circuitField, value }],
       changedKeys: [resolved.circuitField as string],
       ...(guardedCanonicalised ? { canonicalSuccess: true } : {}),
     };
@@ -1085,6 +1102,7 @@ function applyUpdateField(
     return {
       patch,
       response: `Set ${label} to ${command.value}.`,
+      appliedResults: [{ circuit: 0, field, value: command.value }],
       changedKeys: [field],
     };
   }
@@ -1120,7 +1138,8 @@ function applyReorderCircuits(
     // shorter phrasing reads more naturally over TTS than the verbose
     // "Moved circuit X to position Y." Pre-fix the PWA used the
     // verbose form; aligned here so both clients speak the same line.
-    response: `Moved to circuit ${command.to}.`,
+    response: `Circuit ${command.from} moved to circuit ${command.to}.`,
+    appliedResults: [{ circuit: command.from, field: 'circuit_ref', value: String(command.to) }],
     changedKeys: ['circuits'],
   };
 }
@@ -1269,43 +1288,71 @@ function applyCalculateImpedance(
   }
   const zeNum = Number(zeStr);
   if (!Number.isFinite(zeNum)) {
-    return respondUnknown("I can't calculate that — no zed E value has been set yet.");
+    return {
+      response: 'I couldn’t apply that calculation.',
+      actionOutcome: 'unsupported',
+      actionReason: 'ze_unreadable',
+    };
   }
-  let updated = 0;
+  const appliedResults: Array<{ circuit: number | string; field: string; value: string }> = [];
   const next = circuits.map((row, idx) => {
     if (!indices.includes(idx)) return row;
     if (command.kind === 'zs') {
       // Zs = Ze + R1+R2
       const r1r2Str = row.r1_r2_ohm;
-      const r1r2 = typeof r1r2Str === 'string' ? Number(r1r2Str) : Number(r1r2Str);
+      if (String(r1r2Str ?? '').trim() === '') return row;
+      const r1r2 = Number(r1r2Str);
       if (!Number.isFinite(r1r2)) return row;
       const zs = zeNum + (r1r2 as number);
-      updated += 1;
-      return { ...row, measured_zs_ohm: formatImpedance(zs) };
+      const value = formatImpedance(zs);
+      appliedResults.push({
+        circuit: String(row.circuit_ref ?? row.number ?? idx + 1),
+        field: 'measured_zs_ohm',
+        value,
+      });
+      return { ...row, measured_zs_ohm: value };
     }
     // r1_r2 = Zs - Ze
     const zsStr = row.measured_zs_ohm;
-    const zs = typeof zsStr === 'string' ? Number(zsStr) : Number(zsStr);
+    if (String(zsStr ?? '').trim() === '') return row;
+    const zs = Number(zsStr);
     if (!Number.isFinite(zs)) return row;
     const r1r2 = (zs as number) - zeNum;
     if (r1r2 < 0) return row;
-    updated += 1;
-    return { ...row, r1_r2_ohm: formatImpedance(r1r2) };
+    const value = formatImpedance(r1r2);
+    appliedResults.push({
+      circuit: String(row.circuit_ref ?? row.number ?? idx + 1),
+      field: 'r1_r2_ohm',
+      value,
+    });
+    return { ...row, r1_r2_ohm: value };
   });
   const label = command.kind === 'zs' ? 'Zs' : 'R1 plus R2';
-  if (updated === 0) {
+  if (appliedResults.length === 0) {
     return {
       response: `No circuits had the values needed to calculate ${label}.`,
     };
   }
-  // iOS phrasing — verbatim from VoiceCommandExecutor.swift:374–376.
-  const response =
-    updated === 1
-      ? `Done. Calculated ${label} for 1 circuit.`
-      : `Done. Calculated ${label} for ${updated} circuits.`;
+  const groups = new Map<string, Array<number | string>>();
+  for (const item of appliedResults) {
+    const refs = groups.get(item.value) ?? [];
+    refs.push(item.circuit);
+    groups.set(item.value, refs);
+  }
+  const response = [...groups.entries()]
+    .map(([value, refs]) => {
+      const scope =
+        refs.length === 1
+          ? `Circuit ${refs[0]}`
+          : `Circuits ${refs.slice(0, -1).join(', ')} and ${refs[refs.length - 1]}`;
+      return `${scope}, ${label} calculated as ${value} ohms`;
+    })
+    .join('. ');
   return {
     patch: { circuits: next },
     response,
+    actionOutcome: 'applied',
+    appliedResults,
     changedKeys: command.kind === 'zs' ? ['measured_zs_ohm'] : ['r1_r2_ohm'],
   };
 }
@@ -1386,10 +1433,24 @@ function applyApplyField(
     spokenValue = guardedValue;
   }
   let updated = 0;
+  const appliedResults: Array<{ circuit: number | string; field: string; value: string }> = [];
   const next: VoiceCommandCircuit[] = circuits.map((row, idx) => {
     if (!indices.includes(idx)) return row;
     updated += 1;
-    return { ...row, [resolved.circuitField as string]: value };
+    const appliedValue =
+      resolved.circuitField === 'polarity_confirmed'
+        ? value === 'PASS'
+          ? '✓'
+          : value === 'FAIL'
+            ? '✗'
+            : value
+        : value;
+    appliedResults.push({
+      circuit: String(row.circuit_ref ?? row.number ?? idx + 1),
+      field: resolved.circuitField as string,
+      value: appliedValue,
+    });
+    return { ...row, [resolved.circuitField as string]: appliedValue };
   });
   const label = labelForField(resolved.circuitField);
   if (updated === 0) {
@@ -1403,13 +1464,15 @@ function applyApplyField(
   // policy (Decision 4's exact wording, shared with backend/iOS — no
   // client-invented variants).
   const skipSuffix = spareSkippedCount > 0 ? `, ${skipClause(spareSkippedCount, 'append')}` : '';
+  const actualSpokenValue = appliedResults[0]?.value ?? spokenValue;
   const response =
     updated === 1
-      ? `Set ${label} to ${spokenValue} for 1 circuit${skipSuffix}.`
-      : `Set ${label} to ${spokenValue} for ${updated} circuits${skipSuffix}.`;
+      ? `Set ${label} to ${actualSpokenValue} for 1 circuit${skipSuffix}.`
+      : `Set ${label} to ${actualSpokenValue} for ${updated} circuits${skipSuffix}.`;
   return {
     patch: { circuits: next },
     response,
+    appliedResults,
     changedKeys: [resolved.circuitField as string],
     ...(guardedCanonicalised ? { canonicalSuccess: true } : {}),
   };
@@ -1528,6 +1591,7 @@ function applyAddCircuit(
   return {
     patch: { circuits: next },
     response,
+    appliedResults: [{ circuit: nextRef, field: 'circuit_designation', value: canonical }],
     changedKeys: ['circuits'],
   };
 }

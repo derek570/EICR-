@@ -12,8 +12,6 @@ import {
   Play,
   Settings2,
   Square,
-  Volume2,
-  VolumeX,
 } from 'lucide-react';
 import { useParams, useRouter } from 'next/navigation';
 import { useRecording, formatCost, formatElapsed } from '@/lib/recording-context';
@@ -23,8 +21,8 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { Image as ImageIcon } from 'lucide-react';
 import {
-  CONFIRMATION_MODE_OFF_CUE,
-  CONFIRMATION_MODE_ON_CUE,
+  EXTRA_PROMPTS_OFF_CUE,
+  EXTRA_PROMPTS_ON_CUE,
   getConfirmationModeEnabled,
   isTtsAvailable,
   setConfirmationModeEnabled,
@@ -138,11 +136,9 @@ function RecordingActionBar() {
   const isActive = state === 'active';
   const isPaused = state === 'sleeping';
 
-  // Confirmation-mode toggle — localStorage-persisted via the TTS
-  // helper. Mirrors iOS `confirmationModeEnabled` (RecordingOverlay.
-  // swift:74). The pill stays visually labelled "Voice" / "Muted" for
-  // parity with iOS where the on-screen label is the same misnomer
-  // ("Voice"); the aria-label below makes its actual scope explicit.
+  // Extra-prompts toggle — the persisted wire/storage name remains
+  // confirmationsEnabled for backward compatibility. Readings and
+  // corrections remain mandatory in both states.
   // Initialised from storage on mount so the button reflects the
   // inspector's last choice. SSR renders as `true` (matching the
   // never-set default — PLAN-D id 122/124) and hydrates the real
@@ -167,7 +163,7 @@ function RecordingActionBar() {
     // and — unlike a bare force:true speakConfirmation call — survives a
     // LATER ask's preemptFlush()/queue-overflow discard by re-parking
     // itself instead of vanishing.
-    speakConfirmationModeStatus(next ? CONFIRMATION_MODE_ON_CUE : CONFIRMATION_MODE_OFF_CUE);
+    speakConfirmationModeStatus(next ? EXTRA_PROMPTS_ON_CUE : EXTRA_PROMPTS_OFF_CUE);
   }, [voiceFeedbackOn]);
 
   // End-session confirmation — iOS presents a parent-owned alert
@@ -292,15 +288,15 @@ function RecordingActionBar() {
           <div className="ml-auto flex items-center justify-end gap-1 md:gap-2">
             {ttsSupported ? (
               <ParityButton
-                label={voiceFeedbackOn ? 'Voice' : 'Muted'}
+                label={voiceFeedbackOn ? 'Prompts' : 'Essentials'}
                 tone={voiceFeedbackOn ? 'green' : 'muted'}
-                icon={voiceFeedbackOn ? Volume2 : VolumeX}
+                icon={MessageSquare}
                 onClick={toggleVoiceFeedback}
                 ariaPressed={voiceFeedbackOn}
                 ariaLabel={
                   voiceFeedbackOn
-                    ? 'Disable spoken reading confirmations'
-                    : 'Enable spoken reading confirmations'
+                    ? 'Disable extra spoken prompts. Readings and corrections stay on.'
+                    : 'Enable extra spoken prompts. Readings and corrections are already on.'
                 }
               />
             ) : null}

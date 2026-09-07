@@ -147,34 +147,12 @@ const DECLINE_ACK_TEXT_SET: ReadonlySet<string> = new Set(ASK_DECLINE_ACK_PROMPT
  * `speakConfirmation` even when the local confirmation-mode toggle is off —
  * an answer to a question the app asked is not a reading confirmation, and
  * silence after "don't worry" is indistinguishable from a broken pipeline.
- * Every OTHER confirmation (ordinary readings, the plain P4 ANSWERED-family
- * ack) stays toggle-gated; this predicate must never widen beyond the exact
- * five strings above.
+ * The plain P4 ANSWERED-family ack remains optional at its backend producer.
+ * Ordinary reading confirmations are mandatory under DictatedReadbackPolicyV1;
+ * this predicate must never widen beyond the exact five strings above.
  */
 export function isP4DeclineAck(conf: DedupeKeySource): boolean {
   return conf.field == null && DECLINE_ACK_TEXT_SET.has(conf.text.trim());
-}
-
-/**
- * 2026-08-14 (PLAN-G cycle-1 mini-review fix): a forced decline ack that
- * fails to enqueue can only be TTS-unavailable — `force:true` rules out the
- * confirmation-mode toggle as the cause — so its reservation must be
- * released, or a genuine LATER decline landing on the same rotated text
- * would be silently swallowed forever. An ORDINARY (unforced) confirmation
- * muted by the toggle must keep its permanent reservation (a muted
- * confirmation the inspector chose not to hear should not re-prompt), so
- * this only ever returns true for the P4 decline family. Extracted as its
- * own exported function (rather than an inline conditional in
- * recording-context.tsx) so it is unit-testable directly — the previous
- * cycle's test reimplemented this conditional against a bare
- * `ConfirmationDedupeStore`, which would stay green even if
- * `recording-context.tsx`'s own call to this logic broke or was deleted.
- */
-export function shouldReleaseP4DeclineReservation(
-  isP4Decline: boolean,
-  enqueued: boolean
-): boolean {
-  return isP4Decline && !enqueued;
 }
 
 /**
