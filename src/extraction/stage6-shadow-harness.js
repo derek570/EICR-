@@ -3653,8 +3653,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // Codex mini-review (cycle 1) — the partial-coverage drain:false
         // stamp defers ONLY when the recovery/emission block below is
         // actually eligible to run (recovery-first, branch 1). Any
-        // ineligible combination — flag-off, answer turn, confirmations
-        // off, content gate — stamps IMMEDIATELY: otherwise the covered
+        // ineligible combination — flag-off, answer turn, content gate —
+        // stamps IMMEDIATELY: otherwise the covered
         // refusal would drain, count as speech-intent, and suppress
         // marker-② while the UNCOVERED rejection lost today's generic
         // fallback (the exact class branch 3 exists to prevent).
