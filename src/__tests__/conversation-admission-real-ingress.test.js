@@ -4,8 +4,9 @@
  * finals arrive here; the server's session-latched VOICE_AGENTIC_ANSWERS flag
  * remains the authority for borderline question turns.
  */
-import { jest, describe, test, expect, beforeEach, afterEach } from '@jest/globals';
+import { jest, describe, test, expect, beforeEach, afterEach, afterAll } from '@jest/globals';
 
+const originalVoicePreLLMGate = process.env.VOICE_PRE_LLM_GATE;
 process.env.VOICE_PRE_LLM_GATE = 'true';
 
 const runShadowHarnessSpy = jest.fn(async () => ({
@@ -14,6 +15,7 @@ const runShadowHarnessSpy = jest.fn(async () => ({
   observations: [],
   confirmations: [],
 }));
+const loggerInfoSpy = jest.fn();
 
 class FakeEICRExtractionSession {
   constructor(_apiKey, sessionId, certType) {
@@ -40,7 +42,7 @@ jest.unstable_mockModule('../extraction/eicr-extraction-session.js', () => ({
   EICRExtractionSession: FakeEICRExtractionSession,
 }));
 jest.unstable_mockModule('../logger.js', () => ({
-  default: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+  default: { info: loggerInfoSpy, warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
 }));
 jest.unstable_mockModule('../storage.js', () => ({ uploadJson: jest.fn(async () => {}) }));
 jest.unstable_mockModule('../extraction/stage6-shadow-harness.js', () => ({
@@ -61,6 +63,7 @@ jest.unstable_mockModule('../extraction/stage6-overtake-classifier.js', () => ({
 
 const { initSonnetStream, activeSessions } = await import('../extraction/sonnet-stream.js');
 const { sonnetSessionStore } = await import('../extraction/sonnet-session-store.js');
+const { GATE_REASONS } = await import('../extraction/pre-llm-gate.js');
 
 function makeFakeWs() {
   const handlers = new Map();
@@ -89,7 +92,13 @@ beforeEach(() => {
   activeSessions.clear();
   sonnetSessionStore.clear();
   runShadowHarnessSpy.mockClear();
+  loggerInfoSpy.mockClear();
   wss = initSonnetStream(null, async () => 'fake-key', jest.fn());
+});
+
+afterAll(() => {
+  if (originalVoicePreLLMGate === undefined) delete process.env.VOICE_PRE_LLM_GATE;
+  else process.env.VOICE_PRE_LLM_GATE = originalVoicePreLLMGate;
 });
 
 afterEach(() => {
@@ -111,6 +120,13 @@ describe('ConversationAdmissionV1 through real initSonnetStream ingress', () => 
       await sendFrame(enabledWs, { type: 'transcript', text });
       expect(runShadowHarnessSpy).toHaveBeenCalledTimes(1);
       expect(runShadowHarnessSpy.mock.calls[0][1]).toContain(text);
+      expect(loggerInfoSpy).toHaveBeenCalledWith(
+        'voice_latency.gate_borderline_forwarded',
+        expect.objectContaining({
+          sessionId: 'enabled',
+          reason: GATE_REASONS.BORDERLINE_FORWARD,
+        })
+      );
       expect(activeSessions.get('enabled').session.stateSnapshot).toEqual({
         circuits: {}, installation_details: {},
       });
@@ -126,6 +142,13 @@ describe('ConversationAdmissionV1 through real initSonnetStream ingress', () => 
       });
       await sendFrame(disabledWs, { type: 'transcript', text });
       expect(runShadowHarnessSpy).not.toHaveBeenCalled();
+      expect(loggerInfoSpy).toHaveBeenCalledWith(
+        'voice_latency.gate_blocked',
+        expect.objectContaining({
+          sessionId: 'disabled',
+          reason: GATE_REASONS.LOW_CONTENT,
+        })
+      );
       await stopAndClose(disabledWs);
     });
   }

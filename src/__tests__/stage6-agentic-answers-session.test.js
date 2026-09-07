@@ -226,6 +226,25 @@ describe('gate — borderline-forward under the master flag (Item 3)', () => {
     }
   });
 
+  test.each(['Could you repeat that please?', 'What did you hear?'])(
+    'admitted client question %s keeps the exact session-latched reason contract',
+    (text) => {
+      expect(
+        shouldForwardToSonnet(text, { gateEnabled: true, agenticAnswersEnabled: true })
+      ).toMatchObject({
+        forward: true,
+        reason: GATE_REASONS.BORDERLINE_FORWARD,
+        borderline: true,
+      });
+      expect(
+        shouldForwardToSonnet(text, { gateEnabled: true, agenticAnswersEnabled: false })
+      ).toMatchObject({
+        forward: false,
+        reason: GATE_REASONS.LOW_CONTENT,
+      });
+    }
+  );
+
   test('session-absent fail-closed: the option DEFAULTS to false (legacy routing, no throw)', () => {
     expect(shouldForwardToSonnet(CHATTER, {})).toMatchObject({
       forward: false,
