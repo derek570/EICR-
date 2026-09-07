@@ -17,6 +17,10 @@ iOS (16kHz PCM audio)
        │         │
        │◄── transcript words (final + interim)
        │
+       ├──► ConversationAdmission.swift (classify the raw final once)
+       │         │  questions/references bypass every local mutation surface
+       │         │  while retaining transcript + postcode lookup carriers
+       │
        ├──► NumberNormaliser.swift ("nought point two seven" → "0.27")
        │
        ├──► TranscriptFieldMatcher.swift (instant regex ~40ms)
@@ -49,6 +53,7 @@ iOS (16kHz PCM audio)
 | `CertMateUnified/.../DeepgramService.swift`            | Direct WebSocket to Deepgram Flux (`/v2/listen`)           |
 | `CertMateUnified/.../ServerWebSocketService.swift`     | WebSocket client to backend Sonnet extraction              |
 | `CertMateUnified/.../NumberNormaliser.swift`           | Spoken number → digit conversion                           |
+| `CertMateUnified/.../ConversationAdmission.swift`      | Raw-final question/reference mutation boundary             |
 | `CertMateUnified/.../KeywordBoostGenerator.swift`      | Board photo data + remote config → Deepgram keyword boosts |
 | `CertMateUnified/.../DebugLogger.swift`                | JSONL per-session debug logging                            |
 | `CertMateUnified/.../AlertManager.swift`               | Validation alerts (voice + visual) during recording        |
@@ -61,6 +66,22 @@ iOS (16kHz PCM audio)
 | `CertMateUnified/.../TranscriptFieldMatcher.swift`     | Instant regex extraction (30+ patterns)                    |
 
 **Server-side live extraction:** Multi-turn tool loop, currently `gpt-5.6-luna` through the OpenAI Responses API (Fast service-tier trial). Prompt caching and conversation compaction preserve the rolling structured-certificate context.
+
+### Client conversation admission
+
+Both recording clients classify the raw final before number normalisation. A
+question or conversational reference remains visible and can carry its
+lookup-only postcode hint, but it cannot run local board/apply/calculate
+commands, resolve a local alert, enter the regex matcher, emit regex hints, write
+the job, or dispatch regex fast TTS. The boundary also clears the matcher's
+rolling input/cursor and active circuit, preventing an earlier “Circuit four”
+from routing a later bare value across a question. Pending asks and timers are
+preserved. See [ConversationAdmissionV1](conversation-admission-v1.md).
+
+Complete ordinal references are protected before the historical Flux
+`second` → `circuit` repair. Thus “The second one” stays exact for server
+arbitration, while ordinary audio-import and reading continuations keep their
+existing repair. iOS uses UTF-16 `NSRange`; web uses UTF-16 string offsets.
 
 ### Voice-address authority and postcode hints
 
