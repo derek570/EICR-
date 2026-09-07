@@ -49,7 +49,7 @@ describe('audible-skip disclosure — single applied circuit (per-circuit confir
       confidence: 0.95,
       source_turn_id: 't1',
     });
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 1);
     expect(entry).toBeDefined();
     expect(entry.text.endsWith(', skipping 1 spare way')).toBe(true);
@@ -72,7 +72,7 @@ describe('audible-skip disclosure — multiple applied circuits (grouped confirm
       confidence: 0.95,
       source_turn_id: 't1',
     });
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const entry = r.confirmations.find(
       (c) => c.field === 'rcd_time_ms' && Array.isArray(c.circuits)
     );
@@ -98,7 +98,7 @@ describe('audible-skip disclosure — zero-applied (Decision 4 standalone confir
     });
     // No readings were written at all (both circuits spare, excluded).
     expect(writes.readings.size).toBe(0);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
     expect(entry).toBeDefined();
     expect(entry.text).toBe('No non-spare circuits were updated; skipped 2 spare ways.');
@@ -116,7 +116,7 @@ describe('audible-skip disclosure — zero-applied (Decision 4 standalone confir
       confidence: 0.95,
       source_turn_id: 't1',
     });
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
     expect(entry.text).toBe('No non-spare circuits were updated; skipped 1 spare way.');
   });
@@ -135,7 +135,7 @@ describe('audible-skip disclosure — no skip, no disclosure clause', () => {
       confidence: 0.95,
       source_turn_id: 't1',
     });
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     expect(r.confirmations).toHaveLength(1);
     expect(r.confirmations[0].text).not.toContain('spare');
   });
@@ -173,7 +173,7 @@ describe('audible-skip disclosure — multiple bulk calls / multiple boards in o
       {}
     );
     expect(writes.bulkOutcomes).toHaveLength(2);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const rcdTime = r.confirmations.find((c) => c.field === 'rcd_time_ms');
     const rcdButton = r.confirmations.find((c) => c.field === 'rcd_button_confirmed');
     expect(rcdTime.text.endsWith(', skipping 1 spare way')).toBe(true);
@@ -228,7 +228,7 @@ describe('audible-skip disclosure — multiple bulk calls / multiple boards in o
     expect(subOutcome?.appliedRefs).toEqual([1, 2]);
     expect(subOutcome?.spareSkippedRefs).toEqual([]);
 
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     // A '*' sweep stamps board_id on EVERY applied entry (including main's),
     // per dispatchSetFieldForAllCircuits's `...(input.board_id === '*' ?
     // { board_id: boardId } : {})` — so main's confirmation carries
@@ -288,7 +288,7 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
     // Pre-finding-1: the second call's (field, boardId)-only REPLACE would
     // have discarded the first call's ledger entry here. Both must survive.
     expect(writes.bulkOutcomes).toHaveLength(2);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const c1 = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 1);
     const c3 = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 3);
     expect(c1?.text.endsWith(', skipping 1 spare way')).toBe(true);
@@ -342,7 +342,7 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
       {}
     );
     expect(writes.bulkOutcomes).toHaveLength(2);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const grouped = r.confirmations.filter(
       (c) => c.field === 'rcd_time_ms' && Array.isArray(c.circuits)
     );
@@ -386,7 +386,7 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
     // REPLACE, not append — one surviving ledger entry, the correction's.
     expect(writes.bulkOutcomes).toHaveLength(1);
     expect(writes.bulkOutcomes[0].callId).toBe('tu_correction');
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const spareEntries = r.confirmations.filter((c) => c.text.includes('spare'));
     // The already-fixed bug (double-append: "...30, skipping 1 spare way,
     // skipping 1 spare way") must not return, and no stray fallback entry
@@ -431,7 +431,7 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
     // calls have surviving winning readings (circuit 1 from the first call,
     // circuit 2 from the second) — both ledger entries must survive.
     expect(writes.bulkOutcomes).toHaveLength(2);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const c1 = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 1);
     const c2 = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 2);
     // Circuit 1's confirmation (from the FIRST call, which skipped circuit
@@ -500,11 +500,7 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
         },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { fastAttemptBySlotKey });
     const c1 = r.confirmations.find((c) => c.circuit === 1 && c.field === 'rcd_time_ms');
     const c3 = r.confirmations.find((c) => c.circuit === 3 && c.field === 'rcd_time_ms');
     // The fast-correlation twin's TEXT is byte-identical to the fast route's
@@ -583,11 +579,7 @@ describe('PLAN-F2 finding 1 (2026-08-14) — callId-threaded bulk-outcome matchi
         },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { fastAttemptBySlotKey });
     const fallbacks = r.confirmations.filter(
       (c) => c.text === 'Skipping 1 spare way.' && c.circuit == null
     );
@@ -681,7 +673,7 @@ describe('PLAN-F2 finding 4 (2026-08-14) — multi-board omitted-board_id effect
     // raw-board-keyed match would have replaced call1's entry with call2's.
     expect(writes.bulkOutcomes).toHaveLength(2);
     expect(writes.bulkOutcomes.map((o) => o.effectiveBoardId).sort()).toEqual(['main', 'sub-b']);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     // The turn touches two DISTINCT effective boards, so the bundler's
     // cross-board enrichment pass stamps the resolved board onto both
     // ordinary readings (A2-multiboard item 1) — board_id is 'main' here,
@@ -710,7 +702,7 @@ describe('PLAN-F2 finding 4 (2026-08-14) — multi-board omitted-board_id effect
       confidence: 0.95,
       source_turn_id: 't1',
     });
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms' && c.circuit === 1);
     expect(entry).toBeDefined();
     expect(entry.text.endsWith(', skipping 1 spare way')).toBe(true);
@@ -754,7 +746,7 @@ describe('PLAN-F2 finding 4 (2026-08-14) — multi-board omitted-board_id effect
       source_turn_id: 't1',
       board_id: '*',
     });
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const mainConfirmation = r.confirmations.find(
       (c) => c.field === 'rcd_time_ms' && c.board_id === 'main' && c.circuit === 1
     );
@@ -783,11 +775,7 @@ describe('Codex diff-review cycle 2 (2026-08-14) — dedupe_token real-ingress c
       },
       {}
     );
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'real-turn-77' }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'real-turn-77' });
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
     expect(entry.dedupe_token).toBe('bulkoutcome_real-turn-77_tu_real_turn_main');
     expect(entry.dedupe_token).not.toContain('noturn');
@@ -809,11 +797,7 @@ describe('Codex diff-review cycle 2 (2026-08-14) — dedupe_token real-ingress c
       },
       {}
     );
-    const r1 = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'chain-turn-1' }
-    );
+    const r1 = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'chain-turn-1' });
     const realToken1 = r1.confirmations.find((c) => c.field === 'rcd_time_ms')?.dedupe_token;
     expect(realToken1).toBe('bulkoutcome_chain-turn-1_tu_chain_1_main');
 
@@ -829,11 +813,7 @@ describe('Codex diff-review cycle 2 (2026-08-14) — dedupe_token real-ingress c
       },
       {}
     );
-    const r2 = bundleToolCallsIntoResult(
-      writes2,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'chain-turn-2' }
-    );
+    const r2 = bundleToolCallsIntoResult(writes2, { questions: [] }, { turnId: 'chain-turn-2' });
     const realToken2 = r2.confirmations.find((c) => c.field === 'rcd_time_ms')?.dedupe_token;
     expect(realToken2).toBe('bulkoutcome_chain-turn-2_tu_chain_2_main');
     expect(realToken2).not.toBe(realToken1);
@@ -925,7 +905,7 @@ describe('Codex diff-review cycle 3 (2026-08-14) — a stale disclosure must not
     const c1Outcome = writes.bulkOutcomes.find((o) => o.callId === 'tu_call_1');
     expect(c1Outcome.appliedRefs).toEqual([1]);
     expect(c1Outcome.spareSkippedRefs).toEqual([2]);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     // Circuit 1's SURVIVING confirmation is call2's write (value unchanged,
     // so its text carries no disclosure of its own — call2 skipped nothing).
     const c1Confirmation = r.confirmations.find(
@@ -979,7 +959,7 @@ describe('Codex diff-review cycle 3 (2026-08-14) — a stale disclosure must not
       },
       {}
     );
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const c1Confirmation = r.confirmations.find(
       (c) => c.field === 'rcd_time_ms' && c.circuit === 1
     );

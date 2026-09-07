@@ -338,15 +338,11 @@ export function normaliseLegacyDesignationResult(
  *   - no designation operations (surviving or removed) → no-op;
  *   - otherwise designation-paired confirmations currently on the result
  *     (sanitizer-rebuilt collapsed winners included) are removed, and —
- *     gated by confirmationsEnabled — ONE confirmation per surviving
+ *     ONE confirmation per surviving
  *     ledger operation is appended in operation order via the existing
  *     builder. Other server-owned sanitizer confirmations are preserved.
  */
-export function mergeDesignationConfirmations(
-  result,
-  seamReport,
-  { confirmationsEnabled, stateSnapshot = null } = {}
-) {
+export function mergeDesignationConfirmations(result, seamReport, { stateSnapshot = null } = {}) {
   if (!result || !seamReport) return;
   const { designationOps, removedCount } = seamReport;
   if ((!designationOps || designationOps.length === 0) && !(removedCount > 0)) return;
@@ -355,8 +351,6 @@ export function mergeDesignationConfirmations(
   result.confirmations = result.confirmations.filter(
     (conf) => !DESIGNATION_READING_FIELDS.has(conf?.field)
   );
-
-  if (confirmationsEnabled !== true) return;
 
   const mainBoardId = getMainBoardId(stateSnapshot);
   for (const op of designationOps) {

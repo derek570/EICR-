@@ -1032,3 +1032,11 @@ BOARD-scope `field_corrected` frame both clients route on:
   `stage6.capability_changed_on_reparse` telemetry is a zero-expected
   TRIPWIRE, not a handled path. Rollback = server `BOARD_CLEAR_DISABLED`
   (kill-switch), never un-advertising a shipped client.
+
+### DictatedReadbackPolicyV1 (2026-09-07)
+
+`confirmations_enabled` and `cm-confirmation-mode` now express the **extra prompts** preference. They no longer suppress accepted dictated readings, corrections, requested calculations, or client-side reassignments. These mandatory outcomes enter the FIFO in both states and are deduplicated by operation/correlation identity. Automatic derivations, locality enrichment and typed/manual edits stay silent. The canonical executable inventory and strings are in `config/dictated-readback-policy-v1.json`; web and XCTest pin its SHA-256 and the TestFlight preflight byte-compares the iOS fixture.
+
+The 2026-08-13 PLAN-D statement that confirmations-OFF was an Audio-First exception is **SUPERSEDED** by this policy. The control now says Prompts/Essentials and announces “Extra prompts on.” or “Extra prompts off. Readings still spoken.” A physical start in the false state announces “Extra prompts are off. Readings still spoken.” `readback_policy_version: 1` is diagnostic metadata only.
+
+Playback evidence is a start signal, not proof of physical hearing. Web mounted tests count `FakeTtsPlayers.played` from `controls.onStart`. iOS tests may inject `AlertManager._test_onConfirmationPlaybackStart`; it reports the queue item id, optional text, slot and correlation exactly once after a successful real/test start. Failed starts and discarded heads do not fire it.

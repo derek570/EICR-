@@ -606,16 +606,21 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     expect(historyText).not.toContain('Ring Final Circuit');
   });
 
-  test('already-clean designation (nothing changed): history keeps the established raw byte shape', async () => {
+  test('already-clean designation: history retains the canonical mandatory read-back', async () => {
     session = makeSession(mode);
     const payload = legacyResult({
       circuit_updates: [{ circuit: 3, designation: 'Ring Final', action: 'create' }],
     });
     await runTurn(session, payload);
     const last = session.conversationHistory[session.conversationHistory.length - 1];
-    // No seam change, no rejection, no mirror candidate → the raw tool
-    // input byte shape survives (the pre-seam contract).
-    expect(last.content[0].text).toBe(JSON.stringify(payload));
+    const history = JSON.parse(last.content[0].text);
+    expect(history.confirmations).toEqual([
+      expect.objectContaining({
+        text: 'Circuit 3 is now the Ring Final',
+        field: 'circuit_designation',
+        circuit: 3,
+      }),
+    ]);
   });
 
   // ── Marker trust boundary ─────────────────────────────────────────────
@@ -643,8 +648,8 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
     expect(result.questions_for_user[0].question).toBe('Legit model question?');
   });
 
-  // ── confirmationsEnabled gate ─────────────────────────────────────────
-  test('confirmations disabled: designation confirmations are not rebuilt (documented Audio-First exception)', async () => {
+  // ── DictatedReadbackPolicyV1 preference boundary ─────────────────────
+  test('extra prompts disabled: accepted designation is still read back once', async () => {
     session = makeSession(mode);
     const result = await runTurn(
       session,
@@ -653,7 +658,9 @@ describe.each(['off', 'shadow'])('legacy designation seam (mode=%s)', (mode) => 
       }),
       { confirmationsEnabled: false }
     );
-    expect(result.confirmations).toHaveLength(0);
+    expect(result.confirmations).toEqual([
+      { text: 'Circuit 3 is now the Ring Final', field: 'circuit_designation', circuit: 3 },
+    ]);
     // The write itself still lands, cleaned.
     expect(session.stateSnapshot.circuits[3].circuit_designation).toBe('Ring Final');
   });

@@ -228,8 +228,8 @@ describe('speculate — happy path', () => {
     })();
   });
 
-  test('polarity_confirmed=false skipped (buildConfirmationText returns null)', async () => {
-    const { factory } = makeMockClientFactory();
+  test('polarity_confirmed=false pre-synthesizes the mandatory reversed read-back', async () => {
+    const { factory, synths } = makeMockClientFactory();
     const spec = makeSpeculator({ factory });
     spec.onSnapshotPatch(
       patchForAdded({
@@ -240,7 +240,10 @@ describe('speculate — happy path', () => {
       })
     );
     await flush();
-    expect(factory).toHaveBeenCalledTimes(0);
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(synths.map((synth) => synth.text)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/polarity is reversed/i)])
+    );
   });
 
   test('F/U-1: a ::calc:: write speculates with the bundler-identical "calculated as" text (servable, not drift)', async () => {

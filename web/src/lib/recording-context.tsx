@@ -73,7 +73,6 @@ import {
   buildConfirmationDedupeKey,
   isObservationRecodeConfirmation,
   isP4DeclineAck,
-  shouldReleaseP4DeclineReservation,
 } from './recording/confirmation-dedupe-key';
 import {
   PendingReadingsBuffer,
@@ -95,7 +94,7 @@ import {
 } from './recording/vad-accumulator';
 import { useLiveFillStore } from './recording/live-fill-state';
 import {
-  CONFIRMATION_MODE_START_WARNING,
+  EXTRA_PROMPTS_START_WARNING,
   cancelSpeech,
   confirmationToSentence,
   getConfirmationModeEnabled,
@@ -3053,22 +3052,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // confirmation is discarded before it ever plays (overflow / preempt /
         // purge / reset) — the sole "never a permanent read-back drop"
         // mechanism (Audio-First #1).
-        // 2026-08-14 (PLAN-G, id-114): force ONLY the closed P4 decline-ack
-        // family through — the backend now emits these regardless of
-        // confirmationsEnabled (an answer to a question the app asked is
-        // not a reading confirmation), so the web toggle must not silently
-        // re-mute them here. Every other confirmation stays unforced.
+        // DictatedReadbackPolicyV1: every backend-supplied confirmation is an
+        // owed audible outcome. The Extra prompts preference controls whether
+        // optional producers emit an item; it never mutes an item that arrived.
         const p4DeclineAck = isP4DeclineAck(conf);
         const spoken = speakConfirmation(sentence, { dedupeKey, force: p4DeclineAck });
-        // A forced decline ack can only fail to enqueue when TTS itself is
-        // unavailable (force:true means the toggle can never be the cause) —
-        // an ordinary confirmation-mode mute is CORRECTLY permanent (the
-        // reservation stands so a muted confirmation never re-prompts), but
-        // a TTS-unavailable drop of THIS family would otherwise permanently
-        // suppress a genuine future decline ack landing on the same rotated
-        // text. Mirrors the address-mirror-delivery branch's same pattern
-        // above. Ordinary (unforced) confirmations are unaffected.
-        if (shouldReleaseP4DeclineReservation(p4DeclineAck, spoken.enqueued)) {
+        // Any failure before enqueue must release the reservation so replay can
+        // retry the owed read-back. Playback-start converts successful queues.
+        if (!spoken.enqueued) {
           discardConfirmationReservation(dedupeKey, 'not_queued');
         }
       }
@@ -3790,6 +3781,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 applied: Boolean(outcome.patch),
                 overridePreview: outcome.response.slice(0, 80),
               });
+            } else if (
+              command.type !== 'query_field' &&
+              outcome.actionOutcome &&
+              outcome.response &&
+              !deliveryToken
+            ) {
+              // DictatedReadbackPolicyV1: action speech comes from the
+              // client-local outcome that actually mutated (or rejected)
+              // the current snapshot. This replaces blank, generic "Done."
+              // and contradictory model narration with one truthful result.
+              localSpokenOverride = outcome.response;
+              clientDiagnostic('voice_command_local_outcome_override', {
+                actionType: command.type,
+                outcome: outcome.actionOutcome,
+                reason: outcome.actionReason ?? 'none',
+                appliedCount: outcome.appliedResults?.length ?? 0,
+                overridePreview: outcome.response.slice(0, 80),
+              });
             }
           } else {
             clientDiagnostic('voice_command_action_unmapped', {
@@ -3799,17 +3808,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         const spokenText = localSpokenOverride ?? response.spoken_response;
         if (spokenText) {
-          // A1 agentic-voice web companion (2026-07-23) — force-speak the
-          // voice_command_response. iOS speaks VCR frames UNCONDITIONALLY
-          // (DeepgramRecordingViewModel.swift:9888 → speakBriefConfirmation,
-          // no toggle gate), but speakConfirmation mutes when the
-          // confirmation toggle is OFF (tts.ts:971) — the web DEFAULT — so a
-          // default-config web user would chime, receive the model's spoken
-          // answer, and silently drop it. `force: true` matches iOS's
-          // unconditional VCR speak; the confirmations channel keeps its
-          // toggle on both clients (documented opt-out), and answers still
-          // queue behind read-backs on the existing FIFO (Resolved decision
-          // 3 — no queue-priority change).
+          // Voice-command responses are always audible on both clients. They
+          // remain on the existing FIFO behind any earlier read-backs.
           if (deliveryToken) {
             const dedupeKey = addressMirrorDeliveryDedupeKey(deliveryToken);
             addressMirrorQueueReservationsRef.current.set(dedupeKey, {
@@ -4702,6 +4702,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       clientDiagnostic('session_start_flags', {
         auto_sleep_enabled: autoSleepEnabled,
         confirmations_enabled: getConfirmationModeEnabled(),
+        readback_policy_version: 1,
       });
       // PLAN-D (ids 122, 124) — one-shot warning when a NEW physical
       // session starts with confirmations already off, so an inspector
@@ -4715,7 +4716,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // arrives before this warning gets its turn (preemptFlush/overflow
       // re-park it instead of silently discarding it).
       if (!getConfirmationModeEnabled()) {
-        speakConfirmationModeStatus(CONFIRMATION_MODE_START_WARNING);
+        speakConfirmationModeStatus(EXTRA_PROMPTS_START_WARNING);
       }
       beginTick();
     } catch (err) {

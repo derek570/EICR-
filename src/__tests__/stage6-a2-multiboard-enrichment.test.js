@@ -56,7 +56,6 @@ function session(boards, currentBoardId, circuits) {
 
 function bundle(perTurnWrites) {
   return bundleToolCallsIntoResult(perTurnWrites, null, {
-    confirmationsEnabled: true,
     turnId: 't1',
   });
 }

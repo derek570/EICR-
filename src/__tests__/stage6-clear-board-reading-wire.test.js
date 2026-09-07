@@ -261,7 +261,7 @@ describe('§3.4c ordered frame ledger — reconnect flush through the REAL seam'
     expect(entry.pendingExtractions).toHaveLength(0);
   });
 
-  test('address mirror VCR carries its stable client speech-dedupe token', async () => {
+  test('address mirror extraction terminal carries the stable token while VCR stays tokenless', async () => {
     const { entry } = await startSession();
     const result = makeLedgerResult();
     Object.defineProperty(result, ADDRESS_MIRROR_DELIVERY, {
@@ -271,8 +271,10 @@ describe('§3.4c ordered frame ledger — reconnect flush through the REAL seam'
     entry.pendingExtractions.push(result);
 
     const { ws } = await startSession();
+    const extraction = ws._sent.find((frame) => frame.type === 'extraction');
     const vcr = ws._sent.find((frame) => frame.type === 'voice_command_response');
-    expect(vcr.address_mirror_delivery_token).toBe('direct:operation-7');
+    expect(extraction.result.address_mirror_delivery_token).toBe('direct:operation-7');
+    expect(vcr.address_mirror_delivery_token).toBeUndefined();
   });
 
   test('capable client socket flush leaves delivery pending until playback ACK', async () => {

@@ -69,6 +69,8 @@ describe('applyVoiceCommand — update_field (circuit)', () => {
       job
     );
     expect(outcome.patch).toBeDefined();
+    expect(outcome.actionOutcome).toBe('applied');
+    expect(outcome.appliedResults).toEqual([{ circuit: 2, field: 'ocpd_rating_a', value: '32' }]);
     expect(outcome.response).toMatch(/OCPD rating to 32 on circuit 2/);
     const circuits = (outcome.patch as { circuits: Array<{ ocpd_rating_a?: string }> }).circuits;
     expect(circuits[1].ocpd_rating_a).toBe('32');
@@ -95,6 +97,7 @@ describe('applyVoiceCommand — update_field (circuit)', () => {
     );
     expect(outcome.patch).toBeUndefined();
     expect(outcome.response).toMatch(/don't know the field/i);
+    expect(outcome.actionOutcome).toBe('unsupported');
   });
 
   it('returns a "circuit doesn\'t exist" response when the circuit is missing', () => {
@@ -105,6 +108,7 @@ describe('applyVoiceCommand — update_field (circuit)', () => {
     );
     expect(outcome.patch).toBeUndefined();
     expect(outcome.response).toMatch(/doesn't exist/i);
+    expect(outcome.actionOutcome).toBe('unsupported');
   });
 });
 
@@ -114,6 +118,7 @@ describe('applyVoiceCommand — update_field (supply)', () => {
     const outcome = applyVoiceCommand({ type: 'update_field', field: 'ze', value: '0.35' }, job);
     expect(outcome.patch).toEqual({ supply: { pfc: '1.5', ze: '0.35' } });
     expect(outcome.response).toMatch(/Ze to 0.35/);
+    expect(outcome.appliedResults).toEqual([{ circuit: 0, field: 'ze', value: '0.35' }]);
   });
 
   it('patches installation.client_name for "client name"', () => {
@@ -131,6 +136,8 @@ describe('applyVoiceCommand — reorder_circuits', () => {
     const job = jobWithCircuits(5);
     const outcome = applyVoiceCommand({ type: 'reorder_circuits', from: 4, to: 2 }, job);
     expect(outcome.patch).toBeDefined();
+    expect(outcome.response).toBe('Circuit 4 moved to circuit 2.');
+    expect(outcome.actionOutcome).toBe('applied');
     const circuits = (
       outcome.patch as {
         circuits: Array<{ id: string; circuit_ref: string }>;
@@ -148,6 +155,7 @@ describe('applyVoiceCommand — reorder_circuits', () => {
     const outcome = applyVoiceCommand({ type: 'reorder_circuits', from: 2, to: 2 }, job);
     expect(outcome.patch).toBeUndefined();
     expect(outcome.response).toMatch(/already at position/i);
+    expect(outcome.actionOutcome).toBe('unapplied');
   });
 });
 
@@ -165,6 +173,7 @@ describe('applyVoiceCommand — query_field', () => {
     const outcome = applyVoiceCommand({ type: 'query_field', field: 'zs', circuit: 1 }, job);
     expect(outcome.patch).toBeUndefined();
     expect(outcome.response).toMatch(/Zs on circuit 1 is 0\.44/);
+    expect(outcome.actionOutcome).toBeUndefined();
   });
 
   it('says "not set" when the value is blank', () => {

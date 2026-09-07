@@ -242,7 +242,7 @@ describe('orphan net — does NOT fire', () => {
     expect(prompt).toBeUndefined();
   });
 
-  test('confirmations disabled (voice mode off) → no prompt', async () => {
+  test('extra prompts off still emits one mandatory orphan outcome', async () => {
     const session = makeSession();
     const result = await runShadowHarness(
       session,
@@ -253,7 +253,7 @@ describe('orphan net — does NOT fire', () => {
     const prompt = (result.confirmations ?? []).find((c) =>
       /(catch|repeat|say it)/i.test(c.text || '')
     );
-    expect(prompt).toBeUndefined();
+    expect(prompt).toBeDefined();
   });
 });
 

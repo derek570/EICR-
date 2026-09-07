@@ -180,12 +180,8 @@ function stampTransient(entry, symbol, value) {
  * The legacy prose-JSON extractor used to emit a `confirmations` array
  * directly from the model (config/prompts/sonnet_extraction_system.md:283).
  * The Stage 6 agentic path has no analogue — record_reading is the only
- * write tool — so the iOS "Voice" toggle hooked to
- * `confirmationModeEnabled` (DeepgramRecordingViewModel.swift:7334) read
- * `result.confirmations` against an always-empty array, making the toggle
- * appear broken. This helper rebuilds the same wire shape from the
- * tool-call outcomes so the iOS path keeps working without a TestFlight
- * push or a prompt revision.
+ * write tool. This helper rebuilds the wire shape from accepted tool-call
+ * outcomes so every dictated reading has one canonical read-back.
  *
  * Confirmation text is intentionally short (legacy "under 5 words" guidance
  * preserved at intent level; the friendly-name lookup keeps it concise).
@@ -1815,10 +1811,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   }
 
   // 9. Stage 6 confirmation read-backs (2026-05-20).
-  //    When the client opts in via `confirmations_enabled` on the
-  //    transcript message (iOS Voice toggle → sonnet-stream.js:3707 →
-  //    runShadowHarness options → here), synthesise brief text-to-speech
-  //    read-backs from the per-turn writes. iOS already decodes
+  //    Synthesise brief text-to-speech read-backs from every accepted
+  //    non-derived per-turn write. `confirmations_enabled` now controls only
+  //    optional extra prompts; it can never suppress an accepted dictated
+  //    value. iOS already decodes
   //    `result.confirmations` (DeepgramRecordingViewModel.swift:7334) and
   //    applies its own dedupe/suppression layer; the backend's job is just
   //    to emit a short well-formed array per turn so the iOS speech queue
@@ -1832,11 +1828,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   //    is the only source.
   //
   //    OMITTED from the result when empty so pre-feature traffic and
-  //    sessions where the inspector turned the toggle off stay byte-
-  //    identical on the wire.
+  //    turns without an audible result stay byte-identical on the wire.
   if (Array.isArray(legacy.confirmations) && legacy.confirmations.length > 0) {
     result.confirmations = legacy.confirmations.map((c) => ({ ...c }));
-  } else if (options.confirmationsEnabled === true) {
+  } else {
     const boardReadings = Array.isArray(result.extracted_board_readings)
       ? result.extracted_board_readings
       : [];

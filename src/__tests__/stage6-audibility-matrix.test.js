@@ -300,12 +300,12 @@ describe('F7 matrix — scenario family: A3 orphan net', () => {
     expect(prompts.length).toBeGreaterThanOrEqual(1);
   });
 
-  test('mode-OFF: zero-tool digit turn does NOT fire the A3 orphan prompt', async () => {
+  test('extra-prompts-OFF: zero-tool digit turn still fires one mandatory A3 orphan prompt', async () => {
     toolCallsForTurn = [];
     const opts = baseOpts({ confirmationsEnabled: false });
     const result = await runShadowHarness(makeSession(), 'EFC is 0.86.', [], opts);
     const prompts = (result.confirmations ?? []).filter((c) => c.field == null);
-    expect(prompts).toHaveLength(0);
+    expect(prompts).toHaveLength(1);
   });
 });
 

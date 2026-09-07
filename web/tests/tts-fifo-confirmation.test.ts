@@ -86,10 +86,11 @@ describe('speakConfirmation FIFO (Symptom 1 regression)', () => {
     expect(shim.spoken[1].text).toBe('Circuit 3 is now the Downstairs Lighting.');
   });
 
-  it('muted confirmations are dropped before enqueue (never occupy a slot)', () => {
+  it('Extra prompts OFF still enqueues an owed reading confirmation', () => {
     setConfirmationModeEnabled(false);
     speakConfirmation('Set Zs to 0.6 on circuit 2.');
-    expect(shim.speak).not.toHaveBeenCalled();
+    expect(shim.speak).toHaveBeenCalledTimes(1);
+    expect(shim.spoken[0].text).toBe('Set Zs to 0.6 on circuit 2.');
   });
 });
 

@@ -850,7 +850,6 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       perTurnWrites,
       { questions: [] },
       {
-        confirmationsEnabled: true,
         totalCircuitsInJob: 3,
         turnId: 'turn-multi',
       }
@@ -1835,9 +1834,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       followup_outcome: 'user_moved_on',
       unresolved: [],
     });
-    expect(firstBody.resolved_writes).toEqual([
-      expect.objectContaining({ circuit: 3, ok: true }),
-    ]);
+    expect(firstBody.resolved_writes).toEqual([expect.objectContaining({ circuit: 3, ok: true })]);
     expect(run.pendingAsks.size).toBe(0);
     expect(run.session.pendingVoicePrompts ?? []).toEqual([]);
     const emittedBeforeRetry = run.ws.sent.length;
@@ -1878,9 +1875,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       user_text: 'the smoke alarm',
     });
     const freshBody = JSON.parse((await freshRun.promise).content);
-    expect(freshBody.resolved_writes).toEqual([
-      expect.objectContaining({ circuit: 3, ok: true }),
-    ]);
+    expect(freshBody.resolved_writes).toEqual([expect.objectContaining({ circuit: 3, ok: true })]);
   });
 
   test('an in-flight mdr keeps its original board after select_board changes the cursor', async () => {
@@ -2022,9 +2017,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     const body = JSON.parse((await run.promise).content);
 
     expect(body.match_status).toBe('partial');
-    expect(autoResolveResults).toEqual([
-      expect.objectContaining({ ok: true, body: { ok: true } }),
-    ]);
+    expect(autoResolveResults).toEqual([expect.objectContaining({ ok: true, body: { ok: true } })]);
     expect(body.resolved_writes).toEqual([
       expect.objectContaining({
         tool: 'record_board_reading',

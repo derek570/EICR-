@@ -51,7 +51,6 @@ function ctx(session, perTurnWrites, callId) {
 
 function bundle(perTurnWrites, circuitDesignations) {
   return bundleToolCallsIntoResult(perTurnWrites, null, {
-    confirmationsEnabled: true,
     turnId: 't1',
     circuitDesignations,
   });

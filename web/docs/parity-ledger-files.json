@@ -1,6 +1,7 @@
 {
   "packages/shared-utils/src/voice-commands.ts": [
-    "recording/voice-command-executor-e-g-move"
+    "recording/voice-command-executor-e-g-move",
+    "recording/dictated-readback-policy"
   ],
   "web/src/app/alerts/page.tsx": [
     "dashboard/alertsview",
@@ -401,7 +402,8 @@
     "recording/recordingoverlay-66",
     "recording/recordingoverlay-86",
     "recording/waveformview",
-    "recording/x-xx"
+    "recording/x-xx",
+    "recording/dictated-readback-policy"
   ],
   "web/src/components/recording/transcript-bar.tsx": [
     "recording/transcriptstripview-35"
@@ -540,7 +542,8 @@
     "recording/readback-dedup-rekey",
     "recording/transcript-gate",
     "recording/tts-fifo",
-    "recording/voice-command-executor-e-g-move"
+    "recording/voice-command-executor-e-g-move",
+    "recording/dictated-readback-policy"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
@@ -574,7 +577,8 @@
     "recording/flux-migration"
   ],
   "web/src/lib/recording/elevenlabs-tts.ts": [
-    "recording/tts-fifo"
+    "recording/tts-fifo",
+    "recording/dictated-readback-policy"
   ],
   "web/src/lib/recording/extraction-turn-ledger.ts": [
     "recording/async-observation-recode-turn"

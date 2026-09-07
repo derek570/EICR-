@@ -454,7 +454,7 @@ describe('P4 — does NOT fire', () => {
     expect(ackRows(opts.logger)).toHaveLength(0);
   });
 
-  test('(e2) PLAN-G (2026-08-14): confirmationsEnabled:false + an ordinary reading write → the reading confirmation stays suppressed (bundleToolCallsIntoResult synthesis is itself gated on confirmationsEnabled, unaffected by the P4 bypass)', async () => {
+  test('(e2) extra prompts off + an ordinary reading write still emits its mandatory read-back', async () => {
     runToolLoopSpy.mockImplementation(async (o) => {
       const ptw = o.perTurnWritesRef();
       ptw.readings.set(encodeReadingKey('measured_zs_ohm', 3, undefined), {
@@ -481,13 +481,10 @@ describe('P4 — does NOT fire', () => {
     });
     const opts = baseOpts({ confirmationsEnabled: false });
     const result = await runShadowHarness(makeSession(), 'zs for c3 is 0.55', [], opts);
-    expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(false);
+    expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(true);
     expect(declineAckPrompts(result)).toHaveLength(0);
-    // PLAN-G mini-review fix: prove the WRITE itself survived — confirmation
-    // mode gates the SPOKEN read-back only, never the reading (Audio-First
-    // invariant #2, "written regardless … never silently dropped"). Without
-    // this assertion the test above would pass identically if the reading
-    // had been dropped entirely rather than just muted.
+    // The write and its mandatory speech both survive. The stored preference
+    // controls optional prompts only.
     expect(result.extracted_readings).toContainEqual(
       expect.objectContaining({ field: 'measured_zs_ohm', circuit: 3, value: '0.55' })
     );

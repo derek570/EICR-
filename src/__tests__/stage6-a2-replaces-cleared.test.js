@@ -133,7 +133,6 @@ function clearCall(input, tool_call_id = 'c1') {
 
 function bundle(perTurnWrites) {
   return bundleToolCallsIntoResult(perTurnWrites, null, {
-    confirmationsEnabled: true,
     turnId: 't1',
   });
 }
@@ -1054,7 +1053,7 @@ describe('A2 — projectExtractionResultForWire', () => {
     expect(projected.address_mirror_delivery_token).toBe('direct:atomic-1');
   });
 
-  test('address confirmations fold into the single token-owning VCR and clear its deciding ask', () => {
+  test('address confirmations remain the token-owning extraction terminal beside a tokenless VCR', () => {
     const result = {
       extracted_readings: [],
       confirmations: [{ text: 'Address is 2 Test Road' }, { text: 'Postcode is TE1 1ST' }],
@@ -1077,13 +1076,21 @@ describe('A2 — projectExtractionResultForWire', () => {
     });
     const extractionIndex = frames.findIndex((frame) => frame.type === 'extraction');
     expect(extractionIndex).toBeGreaterThan(0);
-    expect(frames[extractionIndex].result.confirmations).toEqual([]);
+    expect(frames[extractionIndex].result).toMatchObject({
+      address_mirror_delivery_token: 'direct:atomic-vcr',
+      confirmations: [
+        {
+          text: 'Address is 2 Test Road. Postcode is TE1 1ST.',
+          field: null,
+          circuit: null,
+        },
+      ],
+    });
     expect(frames.at(-1)).toMatchObject({
       type: 'voice_command_response',
-      spoken_response:
-        "Address is 2 Test Road. Postcode is TE1 1ST. Okay, I'll use the site address for the client.",
-      address_mirror_delivery_token: 'direct:atomic-vcr',
+      spoken_response: "Okay, I'll use the site address for the client",
     });
+    expect(frames.at(-1).address_mirror_delivery_token).toBeUndefined();
   });
 
   test('playback ACK capability alone decides whether socket flush may complete delivery', () => {

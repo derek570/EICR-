@@ -71,8 +71,7 @@ function rename(s, p, callId, value) {
   );
 }
 
-const bundle = (p) =>
-  bundleToolCallsIntoResult(p, { questions: [] }, { confirmationsEnabled: true, turnId: 'turn-9' });
+const bundle = (p) => bundleToolCallsIntoResult(p, { questions: [] }, { turnId: 'turn-9' });
 
 const desigsOf = (r) => r.confirmations.filter((c) => c.field === 'circuit_designation');
 

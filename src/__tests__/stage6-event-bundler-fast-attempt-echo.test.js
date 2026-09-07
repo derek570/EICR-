@@ -69,7 +69,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
+      { fastAttemptBySlotKey }
     );
     expect(r.confirmations).toHaveLength(1);
     expect(r.confirmations[0]).toMatchObject({
@@ -102,7 +102,6 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
       makePerTurnWrites({ readings }),
       { questions: [] },
       {
-        confirmationsEnabled: true,
         fastAttemptBySlotKey,
         circuitDesignations: new Map([[1, 'Cooker']]),
       }
@@ -132,7 +131,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
+      { fastAttemptBySlotKey }
     );
     expect(r.confirmations).toHaveLength(1);
     expect(r.confirmations[0].text).toBe('Circuit 1, Zs 0.85');
@@ -160,7 +159,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
+      { fastAttemptBySlotKey }
     );
     expect(r.confirmations[0]).not.toHaveProperty('fast_correlation_id');
   });
@@ -186,7 +185,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
+      { fastAttemptBySlotKey }
     );
     expect(r.confirmations[0]).not.toHaveProperty('fast_correlation_id');
   });
@@ -213,7 +212,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
+      { fastAttemptBySlotKey }
     );
     expect(r.confirmations[0]).not.toHaveProperty('fast_correlation_id');
   });
@@ -248,7 +247,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
+      { fastAttemptBySlotKey }
     );
     expect(r.confirmations).toHaveLength(1);
     expect(r.confirmations[0].text).toBe('Circuit 1, Zs calculated as 0.62');
@@ -262,11 +261,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
         { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
     expect(r.confirmations[0]).not.toHaveProperty('fast_correlation_id');
   });
 
@@ -304,7 +299,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
+      { fastAttemptBySlotKey }
     );
     expect(r.confirmations).toHaveLength(2);
     const single = r.confirmations.find((c) => c.circuit === 2);
@@ -352,11 +347,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
         }),
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      p,
-      { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
-    );
+    const r = bundleToolCallsIntoResult(p, { questions: [] }, { fastAttemptBySlotKey });
     expect(r.confirmations).toHaveLength(1);
     expect(r.confirmations[0].fast_correlation_id).toBe('cid-1');
   });
@@ -384,11 +375,7 @@ describe('bundleToolCallsIntoResult — B1.3 fast-attempt echo stamping', () => 
         }),
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      p,
-      { questions: [] },
-      { confirmationsEnabled: true, fastAttemptBySlotKey }
-    );
+    const r = bundleToolCallsIntoResult(p, { questions: [] }, { fastAttemptBySlotKey });
     expect(r.confirmations[0]).not.toHaveProperty('fast_correlation_id');
   });
 });

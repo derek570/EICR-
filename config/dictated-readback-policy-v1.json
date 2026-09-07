@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "policy_id": "DictatedReadbackPolicyV1",
+  "policy_version": 1,
+  "preference": {
+    "wire_key": "confirmations_enabled",
+    "stored_key": "cm-confirmation-mode",
+    "meaning": "extra_prompts",
+    "default": true
+  },
+  "outcomes": {
+    "mandatory": [
+      "accepted_dictated_reading",
+      "accepted_dictated_correction",
+      "accepted_requested_calculation",
+      "accepted_dictated_reassignment",
+      "question",
+      "script",
+      "command",
+      "decline_acknowledgement",
+      "chimed_turn_outcome"
+    ],
+    "silent": [
+      "typed_edit",
+      "automatic_derivation",
+      "side_effect_tick",
+      "derived_address_copy",
+      "derived_locality"
+    ],
+    "optional": [
+      "plain_answered_acknowledgement",
+      "poor_signal_advisory",
+      "feedback_logged_acknowledgement",
+      "orphan_extra_prompt"
+    ]
+  },
+  "action_outcomes": ["applied", "unapplied", "failed", "unsupported"],
+  "strings": {
+    "extra_prompts_on": "Extra prompts on.",
+    "extra_prompts_off": "Extra prompts off. Readings still spoken.",
+    "extra_prompts_off_start": "Extra prompts are off. Readings still spoken.",
+    "ze_unreadable": "I couldn’t apply that calculation."
+  },
+  "evidence_seams": {
+    "web_playback_start": "getRecordingTestServices().ttsConfirmationPlayer.played at controls.onStart",
+    "ios_playback_start": "AlertManager._test_onConfirmationPlaybackStart",
+    "attempt_only": "stage6 diagnostics tts_speak_confirmation_called"
+  },
+  "vectors": [
+    {
+      "id": "reading_extra_prompts_off",
+      "kind": "accepted_dictated_reading",
+      "extra_prompts_enabled": false,
+      "field": "measured_zs_ohm",
+      "circuit": 1,
+      "value": "0.62",
+      "expected_spoken": ["Circuit 1, Zs 0.62"]
+    },
+    {
+      "id": "low_confidence_reading",
+      "kind": "accepted_dictated_reading",
+      "extra_prompts_enabled": false,
+      "confidence": 0.2,
+      "field": "measured_zs_ohm",
+      "circuit": 2,
+      "value": "0.41",
+      "expected_spoken": ["Circuit 2, Zs 0.41"]
+    },
+    {
+      "id": "reversed_polarity",
+      "kind": "accepted_dictated_correction",
+      "extra_prompts_enabled": false,
+      "field": "polarity_confirmed",
+      "circuit": 3,
+      "value": "N",
+      "expected_spoken": ["Circuit 3, polarity is reversed"]
+    },
+    {
+      "id": "grouped_reversed_polarity",
+      "kind": "accepted_dictated_reading",
+      "extra_prompts_enabled": true,
+      "field": "polarity_confirmed",
+      "circuits": [1, 2, 3],
+      "value": "false",
+      "expected_spoken": ["Circuits 1 to 3, polarity is reversed"]
+    },
+    {
+      "id": "requested_calculation",
+      "kind": "accepted_requested_calculation",
+      "extra_prompts_enabled": false,
+      "field": "measured_zs_ohm",
+      "circuit": 4,
+      "value": "0.7",
+      "calculated": true,
+      "expected_spoken": ["Circuit 4, Zs calculated as 0.7"]
+    },
+    {
+      "id": "automatic_derivation",
+      "kind": "automatic_derivation",
+      "extra_prompts_enabled": true,
+      "field": "polarity_confirmed",
+      "circuit": 4,
+      "value": "Y",
+      "derived": true,
+      "expected_spoken": []
+    },
+    {
+      "id": "typed_edit",
+      "kind": "typed_edit",
+      "extra_prompts_enabled": true,
+      "field": "measured_zs_ohm",
+      "circuit": 5,
+      "value": "0.35",
+      "expected_spoken": []
+    },
+    {
+      "id": "calculation_unreadable_ze",
+      "kind": "unsupported",
+      "reason": "ze_unreadable",
+      "expected_spoken": ["I couldn’t apply that calculation."]
+    }
+  ]
+}

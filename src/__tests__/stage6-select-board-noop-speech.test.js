@@ -79,11 +79,7 @@ async function select(session, boardId, perTurnWrites) {
  * channel — without it the bundler returns no confirmations at all.
  */
 function boardOpTexts(perTurnWrites, designations) {
-  const result = bundleToolCallsIntoResult(
-    perTurnWrites,
-    {},
-    { confirmationsEnabled: true, boardDesignations: designations }
-  );
+  const result = bundleToolCallsIntoResult(perTurnWrites, {}, { boardDesignations: designations });
   return (result.confirmations ?? []).filter((c) => c.field === 'board_op').map((c) => c.text);
 }
 

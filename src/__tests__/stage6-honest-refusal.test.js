@@ -1677,9 +1677,9 @@ describe('§5.12 — PLAN-C closed-enum re-ask wordings join the distinctness un
   // are still byte-identical to web/src/lib/recording/tts.ts, which iOS
   // also mirrors.
   const D3_WORDINGS = [
-    'Voice read-backs off.',
-    'Voice read-backs on.',
-    'Heads up — voice read-backs are off.',
+    'Extra prompts off. Readings still spoken.',
+    'Extra prompts on.',
+    'Extra prompts are off. Readings still spoken.',
   ];
 
   test('the D3 literals above are still byte-identical to their web source (drift guard)', () => {
@@ -1741,9 +1741,9 @@ describe('§5.13 — PLAN-E1 poor-signal advisory joins the distinctness union',
   // PLAN-D D3 (feedback ids 122/124) — same literals §5.12 already pins
   // against web/src/lib/recording/tts.ts; not re-asserted here.
   const D3_WORDINGS = [
-    'Voice read-backs off.',
-    'Voice read-backs on.',
-    'Heads up — voice read-backs are off.',
+    'Extra prompts off. Readings still spoken.',
+    'Extra prompts on.',
+    'Extra prompts are off. Readings still spoken.',
   ];
 
   test('the union is byte-identical to its web source (drift guard)', () => {

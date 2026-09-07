@@ -11,11 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  ASK_DECLINE_ACK_PROMPTS,
-  isP4DeclineAck,
-  shouldReleaseP4DeclineReservation,
-} from '@/lib/recording/confirmation-dedupe-key';
+import { ASK_DECLINE_ACK_PROMPTS, isP4DeclineAck } from '@/lib/recording/confirmation-dedupe-key';
 import {
   __resetTtsWindowForTests,
   setConfirmationModeEnabled,
@@ -112,7 +108,7 @@ describe('speakConfirmation + isP4DeclineAck — the recording-context call-site
     expect(shim.spoken[0].text).toBe(ASK_DECLINE_ACK_PROMPTS[1]);
   });
 
-  it('cm-confirmation-mode OFF + a generic reading confirmation (unforced) → stays muted', () => {
+  it('Extra prompts OFF + a generic reading confirmation enqueues exactly once', () => {
     setConfirmationModeEnabled(false);
     const conf = {
       text: 'Set Zs to 0.44 on circuit 3.',
@@ -122,19 +118,19 @@ describe('speakConfirmation + isP4DeclineAck — the recording-context call-site
       dedupeKey: 'k2',
       force: isP4DeclineAck(conf),
     });
-    expect(result.enqueued).toBe(false);
-    expect(shim.speak).not.toHaveBeenCalled();
+    expect(result.enqueued).toBe(true);
+    expect(shim.speak).toHaveBeenCalledTimes(1);
   });
 
-  it('cm-confirmation-mode OFF + the sibling ANSWERED (non-decline) P4 ack (unforced) → stays muted', () => {
+  it('an emitted sibling ANSWERED P4 ack is not re-muted by the client', () => {
     setConfirmationModeEnabled(false);
     const conf = { text: 'Okay, got it.', field: null as string | null };
     const result = speakConfirmation(conf.text, {
       dedupeKey: 'k3',
       force: isP4DeclineAck(conf),
     });
-    expect(result.enqueued).toBe(false);
-    expect(shim.speak).not.toHaveBeenCalled();
+    expect(result.enqueued).toBe(true);
+    expect(shim.speak).toHaveBeenCalledTimes(1);
   });
 
   it('cm-confirmation-mode ON + a decline-family ack → enqueues once (unchanged from today)', () => {
@@ -149,36 +145,11 @@ describe('speakConfirmation + isP4DeclineAck — the recording-context call-site
   });
 });
 
-describe('shouldReleaseP4DeclineReservation — the exact predicate recording-context.tsx calls', () => {
-  it('true only for a forced decline ack that failed to enqueue', () => {
-    expect(shouldReleaseP4DeclineReservation(true, false)).toBe(true);
-  });
-
-  it('false for a decline ack that enqueued successfully', () => {
-    expect(shouldReleaseP4DeclineReservation(true, true)).toBe(false);
-  });
-
-  it('false for an ordinary (non-decline) confirmation, enqueued or not', () => {
-    expect(shouldReleaseP4DeclineReservation(false, false)).toBe(false);
-    expect(shouldReleaseP4DeclineReservation(false, true)).toBe(false);
-  });
-});
-
 /**
- * PLAN-G round-1 Codex diff review (cycle 1, lens C) — a forced decline ack
- * that fails to enqueue (TTS genuinely unavailable — force:true means the
- * confirmation-mode toggle can never be the cause) must NOT leave a
- * permanent reservation behind, or a genuine LATER decline landing on the
- * same rotated text would be silently swallowed forever. Drives the SAME
- * exported predicate (`shouldReleaseP4DeclineReservation`) recording-
- * context.tsx calls — not a reimplementation of its conditional — against
- * ConfirmationDedupeStore + speakConfirmation, the same primitives the
- * component composes (its own reserve()/discardConfirmationReservation()
- * aren't exported, so those two calls alone still stand in for the
- * component's plumbing; the decision logic itself is now shared, closing
- * the mini-review's "would stay green if the real call site broke" gap).
+ * Any owed confirmation that fails before enqueue must release its reservation,
+ * or replay would silently swallow the later retry.
  */
-describe('P4 decline-ack reservation release on enqueue failure (PLAN-G cycle-1 fix)', () => {
+describe('confirmation reservation release on enqueue failure', () => {
   it('TTS unavailable: a forced decline-ack reservation is released so a later attempt can still speak', () => {
     // Override the file-level beforeEach's SynthShim install — this test
     // needs isTtsAvailable() === false (genuinely unavailable), not muted.
@@ -197,13 +168,13 @@ describe('P4 decline-ack reservation release on enqueue failure (PLAN-G cycle-1 
     // pre-fix hazard is real before asserting the fix's outcome below.
     expect(store.isLive(dedupeKey, fieldIsNil)).toBe(true);
 
-    if (shouldReleaseP4DeclineReservation(p4DeclineAck, attempt.enqueued)) {
+    if (!attempt.enqueued) {
       store.forget(dedupeKey);
     }
     expect(store.isLive(dedupeKey, fieldIsNil)).toBe(false);
   });
 
-  it('an ORDINARY confirmation muted by the toggle (not TTS-unavailable) keeps its permanent reservation — never discarded', () => {
+  it('an ordinary confirmation with Extra prompts OFF enqueues and keeps its live reservation', () => {
     setConfirmationModeEnabled(false);
     const store = new ConfirmationDedupeStore();
     const conf = {
@@ -216,11 +187,8 @@ describe('P4 decline-ack reservation release on enqueue failure (PLAN-G cycle-1 
 
     store.reserve(dedupeKey, fieldIsNil);
     const attempt = speakConfirmation(conf.text, { dedupeKey, force: p4DeclineAck });
-    expect(attempt.enqueued).toBe(false);
-    // p4DeclineAck is false here, so the fix's discard branch never fires —
-    // the reservation stands, which is CORRECT: a muted confirmation the
-    // inspector chose not to hear must not re-prompt.
-    if (shouldReleaseP4DeclineReservation(p4DeclineAck, attempt.enqueued)) {
+    expect(attempt.enqueued).toBe(true);
+    if (!attempt.enqueued) {
       store.forget(dedupeKey);
     }
     expect(store.isLive(dedupeKey, fieldIsNil)).toBe(true);

@@ -61,7 +61,7 @@ function bundleWithSnapshot(perTurnWrites, session, turnId = 'turn-1') {
   return bundleToolCallsIntoResult(
     perTurnWrites,
     { questions: [] },
-    { confirmationsEnabled: true, turnId, stateSnapshot: session.stateSnapshot }
+    { turnId, stateSnapshot: session.stateSnapshot }
   );
 }
 
@@ -265,7 +265,7 @@ describe('PLAN-E E4 — live production bundler path', () => {
     const bundled = bundleToolCallsIntoResult(
       writes,
       { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-1' } // no stateSnapshot
+      { turnId: 'turn-1' } // no stateSnapshot
     );
     const conf = postcodeConfirmation(bundled);
     expect(conf.text.includes(',')).toBe(false);

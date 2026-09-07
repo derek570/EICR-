@@ -15,14 +15,14 @@
  *  - failed-answer self-healing: attempted-but-failed answer (sole failed
  *    answer_user; inspect-then-silence) stages the FIXED fallback in BOTH
  *    confirmation-toggle states — the answer feature owns its own audibility
- *    (the apology nets are confirmationsEnabled-gated and can't cover
- *    confirmation-OFF).
+ *    while the mandatory apology nets independently cover non-answer failures.
  *  - A3 orphan-net exclusion: a sole terminal-failed answer_user is NOT an
  *    all-rejected turn (no REJECTED_PROMPTS apology beside the fallback).
  *  - mixed write+failed-answer → read-back owns the turn, NO fallback.
  *  - cancelled turns: finalization (incl. fallback staging) still runs; a
  *    staged answer suppresses the F7 cancellation apology (one utterance).
- *  - confirmation-OFF chatter: zero synthesis, answer state untouched.
+ *  - Extra-prompts OFF still receives the mandatory catch-all apology when
+ *    no answer attempt owns the turn; answer state remains untouched.
  */
 
 import { jest } from '@jest/globals';
@@ -194,7 +194,12 @@ describe('staged answer = speech-intent (mutual exclusion with every net)', () =
         ptw.answer.outcomes.push({ tool: 'answer_user', code: 'ok' });
       },
     });
-    const result = await runShadowHarness(session(), "What's missing on circuit 4?", [], baseOpts());
+    const result = await runShadowHarness(
+      session(),
+      "What's missing on circuit 4?",
+      [],
+      baseOpts()
+    );
     expect(result.spoken_response).toBe(answer);
     expect(result.answer_source).toBe('answer_user');
     // NON-ENUMERABLE: the marker never survives spread or JSON serialisation
@@ -296,11 +301,11 @@ describe('failed-answer self-healing — the fixed fallback speaks in BOTH toggl
     expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(true);
   });
 
-  test('confirmation-OFF chimed chatter (no answer feature) → NOTHING spoken, answer state untouched', async () => {
+  test('extra-prompts-OFF chimed chatter gets one mandatory outcome, answer state untouched', async () => {
     const opts = baseOpts({ confirmationsEnabled: false });
     const result = await runShadowHarness(makeSession(), 'lovely wallpaper honestly', [], opts);
     expect(result.spoken_response).toBeUndefined();
-    expect(result.confirmations ?? []).toHaveLength(0);
+    expect(fieldNilApologies(result)).toHaveLength(1);
     const staged = opts.logger.info.mock.calls.filter(
       ([ev]) => ev === 'stage6.answer_fallback_staged'
     );

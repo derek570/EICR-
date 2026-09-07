@@ -55,6 +55,17 @@ IOS_REPO_ROOT=/path/to/CertMateUnified \
 It byte-compares `config/conversation-admission-vectors.json` with the XCTest
 copy and complements the SHA-256 pins in Jest, Vitest, and XCTest.
 
+DictatedReadbackPolicyV1 adds the mandatory read-back policy check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-dictated-readback-fixture-sync.sh
+```
+
+It byte-compares `config/dictated-readback-policy-v1.json` with the XCTest copy.
+This must pass before TestFlight so backend, web, and iOS use the same mandatory,
+silent, optional, cue, and typed-action-outcome vectors.
+
 ## App Store Connect credentials
 
 | Field | Value |

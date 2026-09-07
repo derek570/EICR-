@@ -212,7 +212,7 @@ describe('confirmation-text — buildConfirmationText', () => {
     expect(buildConfirmationText('measured_zs_ohm', '   ', 1)).toBeNull();
   });
 
-  test('polarity_confirmed reads back on truthy forms (Y / OK / true / yes); falsy/empty/unknown suppressed', () => {
+  test('polarity_confirmed names both accepted states; empty/unknown remain suppressed', () => {
     // Canonical schema enum forms (post-2026-05-24 dispatcher coercion).
     expect(buildConfirmationText('polarity_confirmed', 'Y', 1)).toBe(
       'Circuit 1, polarity confirmed'
@@ -233,11 +233,13 @@ describe('confirmation-text — buildConfirmationText', () => {
     // Board-level polarity (no circuit) → bare "polarity confirmed".
     expect(buildConfirmationText('polarity_confirmed', 'Y', null)).toBe('polarity confirmed');
     expect(buildConfirmationText('polarity_confirmed', 'true', null)).toBe('polarity confirmed');
-    // Falsy / empty / unknown is suppressed (a failed polarity is an
-    // inspection failure the inspector will edit by hand — do not
-    // acoustically reinforce it as if accepted).
-    expect(buildConfirmationText('polarity_confirmed', 'N', 1)).toBeNull();
-    expect(buildConfirmationText('polarity_confirmed', 'false', 1)).toBeNull();
+    expect(buildConfirmationText('polarity_confirmed', 'N', 1)).toBe(
+      'Circuit 1, polarity is reversed'
+    );
+    expect(buildConfirmationText('polarity_confirmed', 'false', 1)).toBe(
+      'Circuit 1, polarity is reversed'
+    );
+    expect(buildConfirmationText('polarity_confirmed', 'no', null)).toBe('polarity is reversed');
     expect(buildConfirmationText('polarity_confirmed', '', 1)).toBeNull();
     expect(buildConfirmationText('polarity_confirmed', 'maybe', 1)).toBeNull();
   });
@@ -345,11 +347,11 @@ describe('confirmation-text — buildGroupedConfirmationText (Issue 10)', () => 
     expect(text).toBe('Circuits 1 to 3, IR L to L >299');
   });
 
-  test('polarity_confirmed grouped — Y form speaks, false form suppressed', () => {
+  test('polarity_confirmed grouped — both accepted states speak truthfully', () => {
     const yes = buildGroupedConfirmationText('polarity_confirmed', 'Y', [1, 2, 3]);
     expect(yes).toBe('Circuits 1 to 3, polarity confirmed');
     const no = buildGroupedConfirmationText('polarity_confirmed', 'N', [1, 2, 3]);
-    expect(no).toBe(null);
+    expect(no).toBe('Circuits 1 to 3, polarity is reversed');
   });
 
   test('totalCircuitsInJob null falls through to range/list (no false "all")', () => {
@@ -409,8 +411,12 @@ describe('confirmation-text — P3 LIM enhanced spoken tail', () => {
     expect(buildConfirmationText('r1_r2_ohm', 'LIM', 2)).toBe(
       'Circuit 2, R1 plus R2 recorded as LIM — limitation'
     );
-    expect(buildConfirmationText('ring_r1_ohm', 'LIM', 3)).toContain('recorded as LIM — limitation');
-    expect(buildConfirmationText('ocpd_rating_a', 'LIM', 5)).toContain('recorded as LIM — limitation');
+    expect(buildConfirmationText('ring_r1_ohm', 'LIM', 3)).toContain(
+      'recorded as LIM — limitation'
+    );
+    expect(buildConfirmationText('ocpd_rating_a', 'LIM', 5)).toContain(
+      'recorded as LIM — limitation'
+    );
   });
 
   test('rcd_operating_current_ma has an explicit spoken label', () => {

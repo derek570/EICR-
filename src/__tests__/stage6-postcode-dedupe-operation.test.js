@@ -59,11 +59,7 @@ async function writePostcode({
 }
 
 function postcodeConfirmation(perTurnWrites, turnId) {
-  const result = bundleToolCallsIntoResult(
-    perTurnWrites,
-    { questions: [] },
-    { confirmationsEnabled: true, turnId }
-  );
+  const result = bundleToolCallsIntoResult(perTurnWrites, { questions: [] }, { turnId });
   return result.confirmations.find((entry) => entry.field === 'postcode');
 }
 
@@ -149,11 +145,7 @@ describe('PLAN-2C postcode dispatcher operation identity', () => {
       },
     });
 
-    const bundled = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-1' }
-    );
+    const bundled = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-1' });
     expect(bundled.extracted_board_readings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ field: 'postcode', value: 'RG1 5QA' }),

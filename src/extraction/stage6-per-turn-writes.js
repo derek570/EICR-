@@ -121,8 +121,6 @@ export const CONFIRMATION_REPLAY_TOKEN = Symbol('stage6.confirmationReplayToken'
  * envelope lacks the live confirmations toggle. Non-enumerable Symbol state
  * keeps the accumulator's public/wire shape unchanged.
  */
-export const FORCE_CONFIRMATIONS = Symbol('stage6.forceConfirmations');
-
 /**
  * P5 — the ONE shared slot-DERIVATION helper used by BOTH `dispatchClearReading`'s
  * effective-aware delete and the bundler's clear→write collapse projection.

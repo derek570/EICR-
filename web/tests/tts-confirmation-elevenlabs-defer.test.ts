@@ -157,7 +157,7 @@ describe('confirmation FIFO — ElevenLabs path defers behind an active direct a
     // A confirmation arrives while the ask is still active. Pre-fix this
     // synchronously called prepareElevenLabs() -> cancelElevenLabs(),
     // killing the ask's audio before the defer gate ever ran.
-    const { enqueued } = speakConfirmation('Voice read-backs off.');
+    const { enqueued } = speakConfirmation('Extra prompts off. Readings still spoken.');
     expect(enqueued).toBe(true);
     // Let any (incorrect) synchronous fetch have a chance to fire.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -201,8 +201,8 @@ describe('confirmation FIFO — ElevenLabs path defers behind an active direct a
     await vi.waitFor(() => expect(fetchedTexts).toEqual(['Which circuit is this?']));
 
     // OFF becomes the deferred head; ON queues behind it. Neither has fetched.
-    speakConfirmationModeStatus('Voice read-backs off.');
-    speakConfirmationModeStatus('Voice read-backs on.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
+    speakConfirmationModeStatus('Extra prompts on.');
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(fetchedTexts).toEqual(['Which circuit is this?']);
 
@@ -220,7 +220,7 @@ describe('confirmation FIFO — ElevenLabs path defers behind an active direct a
     // be OFF (it was chronologically first), not ON.
     resumeIfDeferred();
     await vi.waitFor(() => expect(fetchedTexts.length).toBe(3));
-    expect(fetchedTexts[2]).toBe('Voice read-backs off.');
+    expect(fetchedTexts[2]).toBe('Extra prompts off. Readings still spoken.');
   });
 });
 
@@ -236,18 +236,20 @@ describe('confirmation FIFO — ElevenLabs deferral does not register a prematur
     setShouldDeferPlayback(() => isDirectAudioActive());
 
     server.use(
-      http.post(`${API_BASE}/api/proxy/elevenlabs-tts`, async () =>
-        new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
+      http.post(
+        `${API_BASE}/api/proxy/elevenlabs-tts`,
+        async () =>
+          new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
       )
     );
 
     speak('Which circuit is this?');
-    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     // Deferred, never fetched yet — must not be recognised as an echo of
     // something that was never actually spoken.
-    expect(isTTSEcho('Voice read-backs off.')).toBe(false);
+    expect(isTTSEcho('Extra prompts off. Readings still spoken.')).toBe(false);
 
     cancelSpeech({ resetQueue: false });
     resumeIfDeferred();
@@ -255,7 +257,7 @@ describe('confirmation FIFO — ElevenLabs deferral does not register a prematur
     // Now the real dispatch has fired — the fingerprint registers exactly
     // at this point, not before.
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(isTTSEcho('Voice read-backs off.')).toBe(true);
+    expect(isTTSEcho('Extra prompts off. Readings still spoken.')).toBe(true);
   });
 
   // Codex diff-review r7 NIT — r6's fix only moved registration out of the
@@ -274,8 +276,10 @@ describe('confirmation FIFO — ElevenLabs deferral does not register a prematur
     setShouldDeferPlayback(() => deferring);
 
     server.use(
-      http.post(`${API_BASE}/api/proxy/elevenlabs-tts`, async () =>
-        new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
+      http.post(
+        `${API_BASE}/api/proxy/elevenlabs-tts`,
+        async () =>
+          new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
       )
     );
 
@@ -309,8 +313,10 @@ describe('confirmation FIFO — a post-prepare play() rejection falls back to na
     setShouldDeferPlayback(() => false);
 
     server.use(
-      http.post(`${API_BASE}/api/proxy/elevenlabs-tts`, async () =>
-        new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
+      http.post(
+        `${API_BASE}/api/proxy/elevenlabs-tts`,
+        async () =>
+          new HttpResponse(new ArrayBuffer(8), { headers: { 'Content-Type': 'audio/mpeg' } })
       )
     );
 

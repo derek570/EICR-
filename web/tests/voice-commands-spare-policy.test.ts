@@ -228,7 +228,7 @@ describe('calculate-impedance scope — unaffected by this plan (always spare-ex
     };
     const cmd = parseVoiceCommand('calculate Zs for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
-    expect(out.response).toBe('Done. Calculated Zs for 1 circuit.');
+    expect(out.response).toBe('Circuit 1, Zs calculated as 0.80 ohms');
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
     expect(updated[0].measured_zs_ohm).toBe('0.80');
     expect(updated[1].measured_zs_ohm).toBeUndefined();

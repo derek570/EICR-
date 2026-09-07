@@ -68,7 +68,7 @@ describe('PLAN-F rendered-string inventory — actual dispatcher/bundler output'
       },
       {}
     );
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
     // Clause has no trailing period of its own (it's appended mid-sentence
     // via ", <clause>." — the bundler owns the final full stop).
@@ -99,7 +99,7 @@ describe('PLAN-F rendered-string inventory — actual dispatcher/bundler output'
       },
       {}
     );
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const entry = r.confirmations.find((c) => c.field === 'rcd_time_ms');
     expect(entry.text).toBe('No non-spare circuits were updated; skipped 1 spare way.');
   });

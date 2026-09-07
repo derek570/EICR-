@@ -210,6 +210,7 @@ describe('PLAN-C C2a — lighter-weight pause (full RecordingProvider)', () => {
       expect(flagEvents[0].payload).toEqual({
         auto_sleep_enabled: flagOn,
         confirmations_enabled: true,
+        readback_policy_version: 1,
       });
     }
   );

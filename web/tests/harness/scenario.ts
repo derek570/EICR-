@@ -94,6 +94,7 @@ export interface ReplayScenario {
   metadata?: Record<string, unknown>;
   env?: { regex_hints?: string };
   job_state?: {
+    supply?: Record<string, unknown>;
     boards?: Array<{
       id: string;
       designation?: string;
@@ -141,6 +142,7 @@ export function scenarioJob(scenario: ReplayScenario): JobDetail {
     created_date: new Date(0).toISOString(),
     last_modified: new Date(0).toISOString(),
     circuits,
+    supply: scenario.job_state?.supply ?? {},
     boards: boards.map((b) => ({ id: b.id, designation: b.designation ?? '' })),
   } as unknown as JobDetail;
 }

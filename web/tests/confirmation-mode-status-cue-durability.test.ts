@@ -104,7 +104,7 @@ describe('speakConfirmationModeStatus — survives preemptFlush (Codex r1 BLOCKE
     // sits in `queue`, not yet dispatched.
     speakConfirmation('Circuit 1 is now Kitchen Ring.');
     expect(shim.speak).toHaveBeenCalledTimes(1);
-    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
     // Still only the head has been dispatched — the cue is QUEUED.
     expect(shim.speak).toHaveBeenCalledTimes(1);
 
@@ -118,18 +118,20 @@ describe('speakConfirmationModeStatus — survives preemptFlush (Codex r1 BLOCKE
     await Promise.resolve();
     // Nothing else is busy, so the re-parked cue should already be the new
     // head and have been dispatched.
-    expect(shim.spoken[shim.spoken.length - 1].text).toBe('Voice read-backs off.');
+    expect(shim.spoken[shim.spoken.length - 1].text).toBe(
+      'Extra prompts off. Readings still spoken.'
+    );
     shim.completeLast();
 
     const spokenTexts = shim.spoken.map((u) => u.text);
-    expect(spokenTexts).toContain('Voice read-backs off.');
+    expect(spokenTexts).toContain('Extra prompts off. Readings still spoken.');
   });
 
   it('a cue that IS the current head when preempted is also re-parked', async () => {
     setConfirmationModeEnabled(true);
-    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
     expect(shim.speak).toHaveBeenCalledTimes(1);
-    expect(shim.spoken[0].text).toBe('Voice read-backs off.');
+    expect(shim.spoken[0].text).toBe('Extra prompts off. Readings still spoken.');
 
     // Preempted before it ever completes.
     speak('Which circuit is this?');
@@ -138,16 +140,16 @@ describe('speakConfirmationModeStatus — survives preemptFlush (Codex r1 BLOCKE
 
     // Re-parked and re-enqueued — plays again once the channel is free.
     const spokenTexts = shim.spoken.map((u) => u.text);
-    expect(spokenTexts.filter((t) => t === 'Voice read-backs off.').length).toBeGreaterThanOrEqual(
-      1
-    );
+    expect(
+      spokenTexts.filter((t) => t === 'Extra prompts off. Readings still spoken.').length
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('a rapid off→on→off (3 flips) is heard three times — dedupe bypass survives re-park too', () => {
     setConfirmationModeEnabled(true);
-    speakConfirmationModeStatus('Voice read-backs off.');
-    speakConfirmationModeStatus('Voice read-backs on.');
-    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
+    speakConfirmationModeStatus('Extra prompts on.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
     // Drain the FIFO fully.
     while (shim.spoken.length < 3 || shim.spoken[shim.spoken.length - 1].onstart) {
       const before = shim.spoken.length;
@@ -156,9 +158,9 @@ describe('speakConfirmationModeStatus — survives preemptFlush (Codex r1 BLOCKE
     }
     expect(shim.speak).toHaveBeenCalledTimes(3);
     expect(shim.spoken.map((u) => u.text)).toEqual([
-      'Voice read-backs off.',
-      'Voice read-backs on.',
-      'Voice read-backs off.',
+      'Extra prompts off. Readings still spoken.',
+      'Extra prompts on.',
+      'Extra prompts off. Readings still spoken.',
     ]);
   });
 });
@@ -167,7 +169,7 @@ describe('speakConfirmationModeStatus — never resurrected across a session tea
   it('cancelSpeech({resetQueue:true}) drops a still-queued cue permanently (no infinite loop, no cross-session leak)', () => {
     setConfirmationModeEnabled(true);
     speakConfirmation('Circuit 1 is now Kitchen Ring.');
-    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
     expect(shim.speak).toHaveBeenCalledTimes(1);
 
     // Full teardown — must terminate (this is the infinite-loop hazard
@@ -178,7 +180,9 @@ describe('speakConfirmationModeStatus — never resurrected across a session tea
     // Start a brand-new "session" — nothing should be waiting to play.
     speakConfirmation('Circuit 2 is now Hallway Lighting.');
     expect(shim.spoken[shim.spoken.length - 1].text).toBe('Circuit 2 is now Hallway Lighting.');
-    expect(shim.spoken.some((u) => u.text === 'Voice read-backs off.')).toBe(false);
+    expect(shim.spoken.some((u) => u.text === 'Extra prompts off. Readings still spoken.')).toBe(
+      false
+    );
   });
 
   // Codex diff-review r2 BLOCKER — modeStatusCueTexts.clear() alone cannot
@@ -188,7 +192,7 @@ describe('speakConfirmationModeStatus — never resurrected across a session tea
   it('a re-park microtask ALREADY SCHEDULED before teardown does not resurrect the cue either', async () => {
     setConfirmationModeEnabled(true);
     speakConfirmation('Circuit 1 is now Kitchen Ring.');
-    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
     expect(shim.speak).toHaveBeenCalledTimes(1);
 
     // Preempt — this is what SCHEDULES the re-park microtask (synchronously,
@@ -204,7 +208,9 @@ describe('speakConfirmationModeStatus — never resurrected across a session tea
 
     speakConfirmation('Circuit 2 is now Hallway Lighting.');
     expect(shim.spoken[shim.spoken.length - 1].text).toBe('Circuit 2 is now Hallway Lighting.');
-    expect(shim.spoken.some((u) => u.text === 'Voice read-backs off.')).toBe(false);
+    expect(shim.spoken.some((u) => u.text === 'Extra prompts off. Readings still spoken.')).toBe(
+      false
+    );
   });
 });
 
@@ -220,7 +226,7 @@ describe('speakConfirmationModeStatus — exempt from queue-overflow eviction', 
     speakConfirmation('Head confirmation.');
     expect(shim.speak).toHaveBeenCalledTimes(1);
 
-    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
     // Fill the queue to MAX_QUEUE_DEPTH (6) with ordinary confirmations —
     // depth = head(1) + queued items.
     speakConfirmation('Confirmation A.');
@@ -239,7 +245,7 @@ describe('speakConfirmationModeStatus — exempt from queue-overflow eviction', 
       if (shim.spoken.length === before) break;
     }
     for (const u of shim.spoken) spokenTexts.push(u.text);
-    expect(spokenTexts).toContain('Voice read-backs off.');
+    expect(spokenTexts).toContain('Extra prompts off. Readings still spoken.');
   });
 });
 
@@ -252,7 +258,7 @@ describe('speakConfirmationModeStatus — exempt from queue-overflow eviction', 
 describe('speakConfirmationModeStatus — retires (never retries) on a genuine playback failure', () => {
   it('a native synth error before onstart retires the cue instead of re-parking it forever', () => {
     setConfirmationModeEnabled(true);
-    speakConfirmationModeStatus('Voice read-backs off.');
+    speakConfirmationModeStatus('Extra prompts off. Readings still spoken.');
     expect(shim.speak).toHaveBeenCalledTimes(1);
 
     // Native synth fails before any audio plays — onerror, never onstart.
@@ -265,6 +271,8 @@ describe('speakConfirmationModeStatus — retires (never retries) on a genuine p
     // blocks it, and the failed cue is not silently resurrected alongside it.
     speakConfirmation('Circuit 2 is now Hallway Lighting.');
     expect(shim.spoken[shim.spoken.length - 1].text).toBe('Circuit 2 is now Hallway Lighting.');
-    expect(shim.spoken.filter((u) => u.text === 'Voice read-backs off.').length).toBe(1);
+    expect(
+      shim.spoken.filter((u) => u.text === 'Extra prompts off. Readings still spoken.').length
+    ).toBe(1);
   });
 });

@@ -553,7 +553,7 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
   const hasModelTerminal =
     typeof result.spoken_response === 'string' && result.spoken_response.trim().length > 0;
   const sourceAudible =
-    hasModelTerminal ||
+    (hasModelTerminal && result.action == null) ||
     (capturedSourceWrites.length > 0 &&
       capturedSourceWrites.some((write) => audibleLegacyFields.has(write.field)));
   const directFinal = await entry.addressMirrorController.finalizeDirectAfterWrites({
@@ -565,7 +565,6 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
   if (!directFinal?.handled) return result;
 
   const directResult = bundleToolCallsIntoResult(directWrites, null, {
-    confirmationsEnabled: false,
     turnId: result.turn_id,
     utteranceId: result.utterance_id,
   });
@@ -577,15 +576,21 @@ async function finalizeLegacyAddressMirrorDirect(entry, result) {
   if (Array.isArray(directResult.extracted_board_readings)) {
     result.extracted_board_readings.push(...directResult.extracted_board_readings);
   }
-  if (directFinal.outcome === 'blocked' && directResult.spoken_response) {
-    // The hybrid-blocked terminal owns the turn's spoken response (id 126):
-    // its delivery token is attached below and ACKed on playback, so letting
-    // pre-existing model prose keep the slot would mark the token delivered
-    // while the mandatory persisted blocker was never spoken. Ordinary
-    // outcomes keep the fill-only behaviour.
-    result.spoken_response = directResult.spoken_response;
-  } else if (!result.spoken_response && directResult.spoken_response) {
-    result.spoken_response = directResult.spoken_response;
+  if (!Array.isArray(result.confirmations)) result.confirmations = [];
+  if (Array.isArray(directResult.confirmations)) {
+    result.confirmations.push(...directResult.confirmations);
+  }
+  if (typeof directResult.spoken_response === 'string' && directResult.spoken_response.trim()) {
+    // The controller's durable terminal belongs to the address delivery,
+    // even when an unrelated client action also needs its own VCR carrier.
+    // Keep it on the extraction confirmation channel so the address ACK can
+    // never transfer to action narration.
+    result.confirmations.push({
+      text: directResult.spoken_response.trim(),
+      expanded_text: directResult.spoken_response.trim(),
+      field: null,
+      circuit: null,
+    });
   }
   if (typeof directFinal.question === 'string' || directFinal.clearAskId) {
     Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {
@@ -1356,7 +1361,7 @@ export function projectExtractionResultForWire(result) {
   // family there is deliberately no VCR frame. Put the same stable token on
   // the extraction envelope so the client can bind it to that confirmation's
   // playback-start lifecycle and ACK durable delivery only after audio begins.
-  if (mirrorDelivery?.kind && mirrorDelivery?.token && !_spokenResponse && !_action) {
+  if (mirrorDelivery?.kind && mirrorDelivery?.token) {
     projected.address_mirror_delivery_token = `${mirrorDelivery.kind}:${mirrorDelivery.token}`;
   }
   return projected;
@@ -1378,16 +1383,31 @@ function punctuateAddressMirrorFragment(value) {
  * separate for client application while giving the delivery lease exactly one
  * audio item to fence.
  *
- * Idempotent by shape: a confirmation-only terminal becomes one confirmation;
- * a VCR terminal absorbs every confirmation and empties the array.
+ * Idempotent by shape: an array already ending in the correctly tokened merged
+ * item is unchanged. Otherwise address-family confirmations become one atomic,
+ * tokened final item after unrelated confirmations. The separate VCR carrier
+ * (`spoken_response` / `action`) is never read or mutated here.
  */
 function normaliseAddressMirrorAudibleTerminal(result) {
   const delivery = result?.[ADDRESS_MIRROR_DELIVERY];
   if (!result || !delivery?.kind || !delivery?.token) return result;
   const confirmations = Array.isArray(result.confirmations) ? result.confirmations : [];
+  const addressFields = new Set([
+    'address',
+    'postcode',
+    'town',
+    'county',
+    'client_address',
+    'client_postcode',
+    'client_town',
+    'client_county',
+  ]);
   const audible = confirmations.filter(
     (confirmation) =>
-      confirmation && typeof confirmation.text === 'string' && confirmation.text.trim().length > 0
+      confirmation &&
+      typeof confirmation.text === 'string' &&
+      confirmation.text.trim().length > 0 &&
+      (confirmation.field == null || addressFields.has(confirmation.field))
   );
   if (audible.length === 0) return result;
 
@@ -1401,15 +1421,17 @@ function normaliseAddressMirrorAudibleTerminal(result) {
     )
     .filter(Boolean)
     .join(' ');
-  const hasVoiceCommandTerminal = Boolean(result.spoken_response || result.action);
-  if (hasVoiceCommandTerminal) {
-    const spokenTerminal = punctuateAddressMirrorFragment(result.spoken_response);
-    result.confirmations = [];
-    result.spoken_response = [combinedText, spokenTerminal].filter(Boolean).join(' ');
+  const audibleSet = new Set(audible);
+  const unrelated = confirmations.filter((confirmation) => !audibleSet.has(confirmation));
+  if (
+    audible.length === 1 &&
+    audible[0]?.dedupe_token === `addressmirror_${delivery.kind}_${delivery.token}` &&
+    confirmations[confirmations.length - 1] === audible[0]
+  ) {
     return result;
   }
-  if (audible.length === 1 && confirmations.length === 1) return result;
   result.confirmations = [
+    ...unrelated,
     {
       text: combinedText,
       expanded_text: combinedExpandedText,
@@ -1542,11 +1564,6 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
         action: action || null,
         ...(typeof result.utterance_id === 'string' && result.utterance_id
           ? { utterance_id: result.utterance_id }
-          : {}),
-        ...(mirrorDelivery?.kind && mirrorDelivery?.token
-          ? {
-              address_mirror_delivery_token: `${mirrorDelivery.kind}:${mirrorDelivery.token}`,
-            }
           : {}),
       }),
     });
@@ -1777,7 +1794,19 @@ export function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptO
       const boardReadings = Array.isArray(result?.extracted_board_readings)
         ? result.extracted_board_readings
         : [];
-      const withFields = [...circuitReadings, ...boardReadings].filter((r) => r && r.field != null);
+      const mirrorFields = new Set([
+        'address',
+        'postcode',
+        'town',
+        'county',
+        'client_address',
+        'client_postcode',
+        'client_town',
+        'client_county',
+      ]);
+      const withFields = [...circuitReadings, ...boardReadings].filter(
+        (r) => r && mirrorFields.has(r.field)
+      );
       const ops = [];
       let unresolved = 0;
       for (const r of withFields) {
@@ -1819,12 +1848,22 @@ export function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptO
       if (mirrorDelivery && typeof mirrorDelivery.token === 'string') {
         stageMirrorTerminal(
           (Array.isArray(result?.confirmations) &&
-            result.confirmations.find((c) => c && c.field == null)?.text) ||
+            result.confirmations.find(
+              (c) =>
+                c &&
+                c.field == null &&
+                c.dedupe_token === `addressmirror_${mirrorDelivery.kind}_${mirrorDelivery.token}`
+            )?.text) ||
             null
         );
-        return;
       }
       for (const c of Array.isArray(result?.confirmations) ? result.confirmations : []) {
+        if (
+          mirrorDelivery &&
+          c?.dedupe_token === `addressmirror_${mirrorDelivery.kind}_${mirrorDelivery.token}`
+        ) {
+          continue;
+        }
         if (c && c.field != null) {
           if (c.field === 'field_cleared') {
             // The frozen v1 expectation schema has no clear-op shape; the
@@ -1892,9 +1931,7 @@ export function recordFrameDeliveryEvidence(evalCtx, frameKind, result, attemptO
       return;
     }
     if (frameKind === 'voice_command_response') {
-      if (mirrorDelivery && typeof mirrorDelivery.token === 'string') {
-        stageMirrorTerminal(result?.spoken_response ?? null);
-      } else if (result?.spoken_response) {
+      if (result?.spoken_response) {
         evalCtx.recordNonMutatingAudible({
           channel: 'ws_vcr',
           kind: 'voice_command_response',
@@ -2197,7 +2234,6 @@ function validateAndCorrectFields(result, sessionId) {
   sanitizeReadingFieldContract(result, {
     sessionId,
     logger,
-    confirmationsEnabled: true,
   });
   if (!Array.isArray(result.extracted_readings)) return result;
   // Normalise wiring_type values from descriptions to letter codes
@@ -2358,6 +2394,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
               sessionId: currentSessionId,
               utterance_id: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
               confirmations_enabled: msg.confirmations_enabled === true,
+              readback_policy_version: 1,
             });
             await handleTranscript(ws, currentSessionId, msg, preSessionBuffer);
             break;
@@ -3134,7 +3171,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
                 ) {
                   const result = attachAddressMirrorDelivery(
                     bundleToolCallsIntoResult(mirrorWrites, null, {
-                      confirmationsEnabled: true,
                       turnId: `${currentSessionId}-address-mirror-${
                         recovered.resolutionToken ?? 'recovery'
                       }`,
@@ -5308,7 +5344,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         }
         const result = attachAddressMirrorDelivery(
           bundleToolCallsIntoResult(writes, null, {
-            confirmationsEnabled: true,
             turnId: `${sessionId}-address-mirror-outbox-${recovered.resolutionToken ?? i}`,
             utteranceId: null,
           }),
@@ -5877,8 +5912,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             }`;
             const result = attachAddressMirrorDelivery(
               bundleToolCallsIntoResult(mirrorWrites, null, {
-                confirmationsEnabled:
-                  msg.confirmations_enabled === true || (mirrorOutcome.replayedSource ?? 0) > 0,
                 turnId: mirrorTurnId,
                 utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
               }),

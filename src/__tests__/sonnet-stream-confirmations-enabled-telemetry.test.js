@@ -223,6 +223,7 @@ describe('stage6.confirmations_enabled_state — per-transcript telemetry (D2, i
       text: 'Circuit 1 Zs 0.5',
       utterance_id: 'utt-1',
       confirmations_enabled: true,
+      readback_policy_version: 1,
     });
     const rows = confirmationsRows();
     expect(rows.length).toBeGreaterThanOrEqual(1);
@@ -241,6 +242,7 @@ describe('stage6.confirmations_enabled_state — per-transcript telemetry (D2, i
       text: 'Circuit 1 Zs 0.5',
       utterance_id: 'utt-2',
       confirmations_enabled: false,
+      readback_policy_version: 1,
     });
     const rows = confirmationsRows();
     expect(rows[0]).toMatchObject({
@@ -264,6 +266,7 @@ describe('stage6.confirmations_enabled_state — per-transcript telemetry (D2, i
       sessionId: 'sess-absent',
       utterance_id: 'utt-3',
       confirmations_enabled: false,
+      readback_policy_version: 1,
     });
   });
 

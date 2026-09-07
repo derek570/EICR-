@@ -103,7 +103,6 @@ async function selectBoard(session, ptw, boardId, id = 'toolu_sel') {
 
 function bundle(ptw, opts = {}) {
   return bundleToolCallsIntoResult(ptw, null, {
-    confirmationsEnabled: true,
     turnId: 'turn-b1',
     hasBoardClearV1: true,
     ...opts,
@@ -409,7 +408,6 @@ describe('test 17 (bundler half) — post-canonicalisation wire names + projecte
     expect(on.extracted_board_readings[0].board_id).toBe('garage');
     // The write contract is independent of board_clear_v1.
     const off = bundleToolCallsIntoResult(ptw, null, {
-      confirmationsEnabled: true,
       turnId: 'turn-b1',
       hasBoardClearV1: false,
     });
@@ -432,7 +430,6 @@ describe('PLAN-2D — every board-scoped manifest field carries server-owned att
     await write(session, ptw, field, value);
 
     const result = bundleToolCallsIntoResult(ptw, null, {
-      confirmationsEnabled: true,
       turnId: 'turn-b1',
       hasBoardClearV1: false,
     });
@@ -497,7 +494,6 @@ describe('item 7 — collapsed board clear→write stamps replaces_cleared on th
     await write(session, ptw, 'manufacturer', 'Wylex', 'toolu_w7b');
 
     const off = bundleToolCallsIntoResult(ptw, null, {
-      confirmationsEnabled: true,
       turnId: 'turn-b1',
       hasBoardClearV1: false,
     });

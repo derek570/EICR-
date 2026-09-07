@@ -468,8 +468,9 @@ export function buildGroupedConfirmationText(
   if (field === 'polarity_confirmed') {
     const lc = valueStr.toLowerCase();
     const isTrue = lc === 'true' || lc === 'y' || lc === 'ok' || lc === 'yes';
-    if (!isTrue) return null;
-    tail = 'polarity confirmed';
+    const isFalse = lc === 'false' || lc === 'n' || lc === 'no';
+    if (!isTrue && !isFalse) return null;
+    tail = isFalse ? 'polarity is reversed' : 'polarity confirmed';
   } else {
     // P3 — the SAME shared spoken-tail builder as buildConfirmationText (LIM
     // enhanced phrasing / count / calculator / plain), so a fan-out LIM line
@@ -542,18 +543,18 @@ export function buildConfirmationText(field, value, circuit, designation = null,
   //   - the legacy off-mode path (no coercion) still confirms "true";
   //   - the tool-call path (post-coercion) confirms "Y"/"OK"; and
   //   - cached fixtures with either spelling continue to confirm.
-  // Speak "polarity confirmed" for any truthy form, suppress for
-  // falsy/empty/unknown — a false polarity is an inspection failure
-  // that the inspector will edit by hand and shouldn't be acoustically
-  // reinforced as if accepted. Keep the "Circuit N" prefix when present
-  // so the inspector can tell two back-to-back polarity confirmations
-  // apart.
+  // Speak the accepted canonical outcome for either polarity state. A
+  // dictated N/false/no is still a structurally valid reading and must be
+  // audible; the wording names the unsafe state instead of sounding like a
+  // success. Empty/unknown values remain rejected by the formatter.
   if (field === 'polarity_confirmed') {
     const lc = valueStr.toLowerCase();
     const isTrue = lc === 'true' || lc === 'y' || lc === 'ok' || lc === 'yes';
-    if (!isTrue) return null;
-    if (circuit == null || circuit === 0) return 'polarity confirmed';
-    return `${circuitPrefix}, polarity confirmed`;
+    const isFalse = lc === 'false' || lc === 'n' || lc === 'no';
+    if (!isTrue && !isFalse) return null;
+    const outcome = isFalse ? 'polarity is reversed' : 'polarity confirmed';
+    if (circuit == null || circuit === 0) return outcome;
+    return `${circuitPrefix}, ${outcome}`;
   }
   // Count-style fields read "<N> <noun>" (count before noun) so the
   // utterance ends on the noun, not a bare terminal numeral (item #7).

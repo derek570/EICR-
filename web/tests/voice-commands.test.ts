@@ -9,8 +9,7 @@
  *
  * Mirrors VoiceCommandExecutor.swift:314 (executeCalculateImpedance) and
  * line 399 (executeApplyField). Pinning the spoken-response phrasing
- * here as well so a future port doesn't drift away from "Done.
- * Calculated Zs for 3 circuits." which is what iOS speaks.
+ * here as well so a future port cannot regress to a count-only success.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -83,12 +82,14 @@ describe('applyVoiceCommand — calculate_impedance', () => {
     ]);
     const cmd = parseVoiceCommand('calculate Zs for circuit 1')!;
     const out = applyVoiceCommand(cmd, job);
-    expect(out.response).toBe('Done. Calculated Zs for 1 circuit.');
+    expect(out.response).toBe('Circuit 1, Zs calculated as 0.80 ohms');
+    expect(out.actionOutcome).toBe('applied');
+    expect(out.appliedResults).toEqual([{ circuit: '1', field: 'measured_zs_ohm', value: '0.80' }]);
     const next = (out.patch?.circuits as Array<Record<string, unknown>>)[0];
     expect(next.measured_zs_ohm).toBe('0.80');
   });
 
-  it('Zs across all circuits — pluralised response', () => {
+  it('Zs across all circuits reads back each distinct applied value', () => {
     // PLAN-F item 1 (2026-08-12, feedback id 115) — circuit_designation is
     // now the spare-classification signal (blank = spare); these are real
     // circuits under test, so they carry a non-spare designation.
@@ -99,7 +100,9 @@ describe('applyVoiceCommand — calculate_impedance', () => {
     ]);
     const cmd = parseVoiceCommand('calculate Zs for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
-    expect(out.response).toBe('Done. Calculated Zs for 3 circuits.');
+    expect(out.response).toBe(
+      'Circuit 1, Zs calculated as 0.80 ohms. Circuit 2, Zs calculated as 0.95 ohms. Circuit 3, Zs calculated as 0.55 ohms'
+    );
     const updated = out.patch?.circuits as Array<Record<string, unknown>>;
     expect(updated.map((r) => r.measured_zs_ohm)).toEqual(['0.80', '0.95', '0.55']);
   });
@@ -111,7 +114,7 @@ describe('applyVoiceCommand — calculate_impedance', () => {
     ]);
     const cmd = parseVoiceCommand('calculate R1+R2 for all circuits')!;
     const out = applyVoiceCommand(cmd, job);
-    expect(out.response).toBe('Done. Calculated R1 plus R2 for 1 circuit.');
+    expect(out.response).toBe('Circuit 1, R1 plus R2 calculated as 0.45 ohms');
     const next = out.patch?.circuits as Array<Record<string, unknown>>;
     expect(next[0].r1_r2_ohm).toBe('0.45');
     expect(next[1].r1_r2_ohm).toBeUndefined();
@@ -123,6 +126,7 @@ describe('applyVoiceCommand — calculate_impedance', () => {
     const out = applyVoiceCommand(cmd, job);
     expect(out.response).toContain('zed E value');
     expect(out.patch).toBeUndefined();
+    expect(out.actionOutcome).toBe('unsupported');
   });
 
   it('reports zero updates when no circuits have the input', () => {
@@ -132,6 +136,31 @@ describe('applyVoiceCommand — calculate_impedance', () => {
     const cmd = parseVoiceCommand('calculate Zs for all')!;
     const out = applyVoiceCommand(cmd, job);
     expect(out.response).toBe('No circuits had the values needed to calculate Zs.');
+    expect(out.actionOutcome).toBe('unapplied');
+  });
+
+  it('groups only identical calculated values under their exact circuits', () => {
+    const job = jobWithCircuits('0.35', [
+      { circuit_ref: '2', circuit_designation: 'Sockets', r1_r2_ohm: '0.45' },
+      { circuit_ref: '4', circuit_designation: 'Lights', r1_r2_ohm: '0.45' },
+      { circuit_ref: '7', circuit_designation: 'Cooker', r1_r2_ohm: '0.20' },
+    ]);
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for all circuits')!, job);
+    expect(out.response).toBe(
+      'Circuits 2 and 4, Zs calculated as 0.80 ohms. Circuit 7, Zs calculated as 0.55 ohms'
+    );
+  });
+
+  it('returns typed unsupported for an unreadable Ze carrier', () => {
+    const job = jobWithCircuits('recorded-but-unreadable', [
+      { circuit_ref: '1', circuit_designation: 'Sockets', r1_r2_ohm: '0.45' },
+    ]);
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for circuit 1')!, job);
+    expect(out).toMatchObject({
+      response: 'I couldn’t apply that calculation.',
+      actionOutcome: 'unsupported',
+      actionReason: 'ze_unreadable',
+    });
   });
 });
 
