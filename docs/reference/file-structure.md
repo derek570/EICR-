@@ -86,6 +86,8 @@ EICR_App/
 | `src/secrets.js` | AWS Secrets Manager client (API keys + Deepgram key) |
 | `src/sonnet-stream.js` | WebSocket session manager for Sonnet extraction |
 | `src/eicr-extraction-session.js` | Multi-turn Sonnet conversation + compaction |
+| `config/conversation-admission-vectors.json` | Canonical raw-final classification, mutation-bypass and carrier vectors shared by web/iOS |
+| `web/src/lib/recording/conversation-admission.ts` | Web raw-final question/reference admission and protected ordinal spans |
 | `web/src/lib/recording/unresolved-audio-store.ts` | PLAN-E-TERM durable post-session unresolved-audio record (IDB `certmate-cache` v6 store `unresolved-audio`); pure matrix in `unresolved-audio-record.ts`, capture→wall-clock map in `capture-wall-clock.ts` |
 | `CertMateUnified/Sources/Recording/UnresolvedAudioStore.swift` | iOS twin: file-backed JSON store (Application Support `CertMateUnresolvedAudio/records.json`) + `CaptureWallClock.swift` |
 | `python/eicr_editor.py` | Full Streamlit UI (~2500 lines) |

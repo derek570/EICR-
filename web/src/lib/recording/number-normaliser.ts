@@ -90,26 +90,32 @@ const TENS_PLURAL_MAP: Record<string, string> = {
 
 // MARK: — Spoken Abbreviations (step 1)
 
-const SPOKEN_ABBREVIATIONS: Array<readonly [RegExp, string]> = [
-  [/\bzed\s+s(?:s|ess)?\b/gi, 'Zs'],
-  [/\bzed\s+e\b/gi, 'Ze'],
-  [/\bzed(?:dy|d?e(?:e)?)\b/gi, 'Ze'],
+export const SPOKEN_ABBREVIATION_SOURCES: ReadonlyArray<readonly [string, string]> = [
+  ['\\bzed\\s+s(?:s|ess)?\\b', 'Zs'],
+  ['\\bzed\\s+e\\b', 'Ze'],
+  ['\\bzed(?:dy|d?e(?:e)?)\\b', 'Ze'],
   // field-feedback-2026-07-14 F10: "Zedi" garble of "Ze". This table feeds
   // the BACKEND-facing normalised text (recording-context sends
   // normalise(text)), so without this entry the server still receives raw
   // "zedi" and recovery depends on the prompt alone. iOS canon:
   // NumberNormaliser.swift spokenAbbreviations (commit 67ffb9d).
-  [/\bzedi\b/gi, 'Ze'],
-  [/\bp\s+f\s+c\b/gi, 'PFC'],
-  [/\bm\s+c\s+b\b/gi, 'MCB'],
-  [/\br\s+c\s+b\s+o\b/gi, 'RCBO'],
-  [/\br\s+c\s+d\b/gi, 'RCD'],
-  [/\ba\s+f\s+d\s+d\b/gi, 'AFDD'],
-  [/\bour\s+c\s*d\b/gi, 'RCD'],
-  [/\bc\s+p\s+c\b/gi, 'CPC'],
-  [/\br\s+one\b/gi, 'R1'],
-  [/\br\s+two\b/gi, 'R2'],
+  ['\\bzedi\\b', 'Ze'],
+  ['\\bp\\s+f\\s+c\\b', 'PFC'],
+  ['\\bm\\s+c\\s+b\\b', 'MCB'],
+  ['\\br\\s+c\\s+b\\s+o\\b', 'RCBO'],
+  ['\\br\\s+c\\s+d\\b', 'RCD'],
+  ['\\ba\\s+f\\s+d\\s+d\\b', 'AFDD'],
+  ['\\bour\\s+c\\s*d\\b', 'RCD'],
+  ['\\bc\\s+p\\s+c\\b', 'CPC'],
+  ['\\br\\s+one\\b', 'R1'],
+  ['\\br\\s+two\\b', 'R2'],
 ];
+
+const SPOKEN_ABBREVIATIONS: Array<readonly [RegExp, string]> =
+  SPOKEN_ABBREVIATION_SOURCES.map(([pattern, replacement]) => [
+    new RegExp(pattern, 'gi'),
+    replacement,
+  ]);
 
 // MARK: — Default Unit Normalisation (step 9)
 
@@ -151,7 +157,10 @@ const DEFAULT_UNIT_NORMALISATION: Record<string, string> = {
  *  nothing. The guard is also the correct reading: this rewrite exists to
  *  restore a "circuit" that Flux replaced, so a literal "circuit" already
  *  following proves nothing was replaced there and the "second" is a genuine
- *  ordinal. MUST stay in sync with the Swift twin
+ *  ordinal. ConversationAdmissionV1 additionally protects complete ordinal
+ *  reference spans on live raw finals, so "The second one" now reaches the
+ *  server unchanged. Callers without those spans, including audio import and
+ *  definite reading continuations, retain this historic repair. MUST stay in sync with the Swift twin
  *  (`NumberNormaliser.mishearedCircuitPattern`). */
 const MISHEARED_CIRCUIT_PATTERN = /\bsecond\b(?!\s+circuits?\b)/gi;
 
@@ -254,10 +263,24 @@ const STANDALONE_DIGIT_WORD_PATTERN =
  * Returns the input unchanged on empty / no-numbers text.
  *
  * @param text Raw Deepgram transcript text.
+ * @param protectedOrdinalSpans Optional RAW-text UTF-16 code-unit offsets.
+ * ConversationAdmissionV1 supplies these only for complete reference spans,
+ * so the historic `second`→`circuit` and standalone `one` rewrites cannot
+ * destroy the user's reference. Other callers preserve the existing default.
  * @returns Normalised text.
  */
-export function normalise(text: string): string {
+export function normalise(
+  text: string,
+  protectedOrdinalSpans: readonly { start: number; end: number }[] = []
+): string {
+  const protectedValues: string[] = [];
   let result = text;
+  for (const span of [...protectedOrdinalSpans].sort((a, b) => b.start - a.start)) {
+    if (span.start < 0 || span.end <= span.start || span.end > text.length) continue;
+    const index = protectedValues.length;
+    protectedValues.push(text.slice(span.start, span.end));
+    result = `${result.slice(0, span.start)}\uE000ORDINAL${String.fromCharCode(65 + index)}\uE001${result.slice(span.end)}`;
+  }
 
   // 0pre0. Flux misheard "second" → "circuit". MUST run first.
   result = result.replace(MISHEARED_CIRCUIT_PATTERN, 'circuit');
@@ -438,6 +461,11 @@ export function normalise(text: string): string {
     const escaped = spoken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     result = result.replace(new RegExp(escaped, 'gi'), symbol);
   }
+
+  result = result.replace(/\uE000ORDINAL([A-Z])\uE001/g, (_match, letter: string) => {
+    const index = letter.charCodeAt(0) - 65;
+    return protectedValues[index] ?? _match;
+  });
 
   return result;
 }

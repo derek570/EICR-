@@ -533,6 +533,7 @@
     "recording/assistant-answers",
     "recording/async-observation-recode-turn",
     "recording/cancel-pending-tts",
+    "recording/conversation-admission",
     "recording/fast-path-tts",
     "recording/flux-kill-switch",
     "recording/flux-migration",
@@ -586,7 +587,11 @@
     "recording/flux-migration"
   ],
   "web/src/lib/recording/number-normaliser.ts": [
+    "recording/conversation-admission",
     "recording/garble-aliases-f8-f10"
+  ],
+  "web/src/lib/recording/conversation-admission.ts": [
+    "recording/conversation-admission"
   ],
   "web/src/lib/recording/observation-photo.ts": [
     "observations/obs-photo-autolink"

@@ -28,6 +28,12 @@ monorepo — not tracked inside it). Web paths are relative to the
 
 ---
 
+## A02B ConversationAdmissionV1 — 2026-09-07
+
+| id | iOS source | PWA counterpart | status | last-verified | owner | notes |
+| --- | ---------- | --------------- | ------ | ------------- | ----- | ----- |
+| recording/conversation-admission | `Sources/Recording/ConversationAdmission.swift`; raw-final wiring and admitted matcher buffer in `DeepgramRecordingViewModel.swift`; optional UTF-16 spans in `NumberNormaliser.swift` | `web/src/lib/recording/conversation-admission.ts`; `recording-context.tsx` mutation boundary; optional UTF-16 spans in `number-normaliser.ts` | match | 2026-09-07 | Derek | A02B classifies once before normalisation. Questions/references retain display, server, and lookup-only postcode carriers while skipping every local mutation/hint/fast-TTS path and clearing matcher context. Byte-identical 74-vector fixture plus mounted web/iOS tests; physical-device hearing is unverified. A19 owns any later classifier expansion. |
+
 ## PLAN-E-TERM post-session unresolved-audio record — 2026-08-28
 
 | id | iOS source | PWA counterpart | status | last-verified | owner | notes |

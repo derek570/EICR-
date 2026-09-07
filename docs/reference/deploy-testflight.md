@@ -45,6 +45,16 @@ BOTH its fixture and its local constant). Non-zero exit = drift: re-copy the can
 file and update BOTH digest constants together. `IOS_REPO_ROOT` overrides the checkout
 location for non-nested layouts.
 
+ConversationAdmissionV1 adds a second mandatory cross-repo check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-conversation-admission-fixture-sync.sh
+```
+
+It byte-compares `config/conversation-admission-vectors.json` with the XCTest
+copy and complements the SHA-256 pins in Jest, Vitest, and XCTest.
+
 ## App Store Connect credentials
 
 | Field | Value |

@@ -62,6 +62,7 @@ import { FieldSourceTracker } from './recording/field-source-tracker';
 import { buildJobStateForWire } from './recording/installation-wire-shape';
 import { buildRegexSummary, type RegexResultsWire } from './recording/regex-match-result';
 import { shouldForward } from './recording/transcript-gate';
+import { classifyConversationAdmission } from './recording/conversation-admission';
 import {
   buildQuestionTapDispatch,
   InFlightQuestionTracker,
@@ -1178,12 +1179,22 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const regexMatcherRef = React.useRef<TranscriptFieldMatcher | null>(null);
   const fieldSourceTrackerRef = React.useRef<FieldSourceTracker | null>(null);
   const cumulativeTranscriptRef = React.useRef<string>('');
+  const matcherJobIdRef = React.useRef<string | null>(job?.id ?? null);
   // A3 hints-OFF freshness shadow — last gate-passed regex candidate value
   // per tracker key. In hints-OFF builds the regex value is deliberately
   // never written to the job, so freshness can't baseline on job state (a
   // cumulative-window re-hit would look fresh forever). Session-scoped,
   // reset with the matcher/tracker. Unused (empty) in hints-ON builds.
   const regexShadowRef = React.useRef<Map<string, unknown>>(new Map());
+  React.useEffect(() => {
+    const nextJobId = job?.id ?? null;
+    if (matcherJobIdRef.current === nextJobId) return;
+    matcherJobIdRef.current = nextJobId;
+    cumulativeTranscriptRef.current = '';
+    regexMatcherRef.current?.reset();
+    regexShadowRef.current = new Map();
+    clientDiagnostic('conversation_admission_matcher_reset', { boundary: 'job_change' });
+  }, [job?.id]);
   // Phase 4e — 3-second pre-wake PCM ring buffer + state machine driving
   // doze/sleep transitions. The ring buffer is always written while the
   // mic is live so a wake from sleeping can replay the words the
@@ -1953,6 +1964,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       };
 
       const dispatchFinal = (rawText: string, confidence: number) => {
+        const admission = classifyConversationAdmission(rawText);
         // iOS canon (DeepgramRecordingViewModel.swift:1798): normalise
         // BEFORE every downstream pass. The web pipeline previously called
         // `normaliseTranscriptText(text)` only inside the regex-hints
@@ -1971,7 +1983,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // surfaces in CloudWatch whenever the substitution changed
         // anything, so the next session lets us verify "second" → "circuit"
         // actually fired.
-        const text = normaliseTranscriptText(rawText);
+        const text = normaliseTranscriptText(rawText, admission.protectedOrdinalSpans);
         if (text !== rawText) {
           clientDiagnostic('pipeline_text_normalised', {
             rawPreview: rawText.slice(0, 80),
@@ -1997,7 +2009,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Sonnet would produce a second, conflicting extraction from
         // the same transcript. Anything the parser doesn't recognise
         // continues to the server-side extraction path.
-        const command = parseVoiceCommand(text);
+        const command = admission.bypassMutation ? null : parseVoiceCommand(text);
         if (command) {
           // Cycle-5 — the LOCAL parse path mutates the job exactly like
           // the server voice-response path, so it needs the same
@@ -2073,6 +2085,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
           feedback.appendRollingFinal(text);
         }
+        if (admission.bypassMutation) {
+          // The admitted matcher buffer is a separate local-mutation domain.
+          // A query/reference boundary must not inherit an active circuit or
+          // leave query digits available to a following ordinary final.
+          cumulativeTranscriptRef.current = '';
+          regexMatcherRef.current?.reset();
+          regexShadowRef.current = new Map();
+          clientDiagnostic('conversation_admission_matcher_reset', {
+            boundary: 'bypassed_final',
+            classification: admission.classification,
+          });
+        }
         const utteranceId =
           typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
             ? crypto.randomUUID()
@@ -2125,7 +2149,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // should remain unaware). When the regex pass is skipped for an
         // ask-answer, gateRegexHit stays false and the gate passes via
         // hasPendingAsk instead.
-        if (regexMatcherRef.current && fieldSourceTrackerRef.current && !isAnswerToAsk) {
+        if (
+          regexMatcherRef.current &&
+          fieldSourceTrackerRef.current &&
+          !isAnswerToAsk &&
+          !admission.bypassMutation
+        ) {
           // `text` is already normalised at the top of dispatchFinal; no
           // need to re-run normaliseTranscriptText. The matcher does its
           // OWN internal normalisation (transcript-field-matcher.ts:958
@@ -2191,10 +2220,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             for (const c of fresh) regexShadowRef.current.set(c.trackerKey, c.value);
             gateRegexHit = fresh.length > 0;
           }
-        } else if (regexMatcherRef.current && isAnswerToAsk) {
+        } else if (regexMatcherRef.current && (isAnswerToAsk || admission.bypassMutation)) {
           clientDiagnostic('pipeline_regex_skipped_ask_answer', {
             toolCallIdShort: peekedToolCallId?.slice(0, 12) ?? null,
             textPreview: text.slice(0, 80),
+            admission: admission.classification,
           });
         }
         // ── WS3 item 7 — client-side transcript forward-gate ─────────────
@@ -2212,12 +2242,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // could force a PASS, chime, then send with a null payload.
         // iOS-canon consequence: a non-expired pending ask or a valid
         // in_response_to payload is a gate-PASS by definition.
-        const gatePassed = shouldForward({
+        const existingForwardDecision = shouldForward({
           text,
-          hasRegexHit: gateRegexHit,
+          hasRegexHit: admission.bypassMutation ? false : gateRegexHit,
           hasPendingAsk: isAnswerToAsk,
           inResponseTo: peekedPayload != null,
         });
+        const gatePassed = admission.admits || existingForwardDecision;
         if (!gatePassed) {
           // REJECT: no chime, no send, no ask-state consumption, no
           // processing-count increment (the counter is decremented solely
@@ -2233,6 +2264,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           clientDiagnostic('transcript_gate_blocked', {
             textPreview: text.slice(0, 80),
             hadRegexHit: gateRegexHit,
+            admission: admission.classification,
           });
           sleepManagerRef.current?.onSpeechActivity();
           return;
@@ -2255,6 +2287,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // invariants re-derive gate justification from both ask signals.
           hasInResponseTo: peekedPayload != null,
           regexHintsCount: regexResults?.length ?? 0,
+          admission: admission.classification,
+          admissionDirect: admission.admits,
         });
         // iOS canon DeepgramRecordingViewModel.swift:2122 — attach
         // `in_response_to` when a TTS question is alive within the 10 s
