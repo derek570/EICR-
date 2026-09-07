@@ -482,6 +482,9 @@ export const FIXTURE_JSON_SCHEMA = {
         at_ms_provenance: { enum: [...PROVENANCE_KINDS] },
         transcript: { type: 'string' },
         regex_results: { type: 'array' },
+        // Historical wire name retained for captured traffic. Under
+        // DictatedReadbackPolicyV1 this records the Extra prompts preference;
+        // it never authorises suppressing an accepted reading's read-back.
         confirmations_enabled: { $ref: '#/$defs/provenancedScalar' },
         in_response_to: { $ref: '#/$defs/provenancedScalar' },
         ws_mode: { enum: [...WS_MODES] },

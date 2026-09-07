@@ -32,7 +32,6 @@ import {
   CONFIRMATION_REPLAY_TOKEN,
   decodeBoardReadingKey,
   encodeBoardReadingKey,
-  FORCE_CONFIRMATIONS,
   projectBoardReadingWinners,
   recordBoardReadingWrite,
 } from './stage6-per-turn-writes.js';
@@ -650,11 +649,6 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
         ledgerEntry: intent.source_writes.find((item) => item?.field === write.field) ?? null,
       }));
       if (replayWithProvenance.some((write) => write.ledgerEntry != null)) {
-        Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
-          value: true,
-          enumerable: false,
-          configurable: true,
-        });
         Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
           value: intent.resolution_token,
           enumerable: false,
@@ -1408,11 +1402,6 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
     const stageCollectedReplays = () => {
       const replayedAudibleSource = sourceReplay.filter((write) => write.ledgerEntry).length;
       if (replayedAudibleSource > 0) {
-        Object.defineProperty(perTurnWrites, FORCE_CONFIRMATIONS, {
-          value: true,
-          enumerable: false,
-          configurable: true,
-        });
         Object.defineProperty(perTurnWrites, CONFIRMATION_REPLAY_TOKEN, {
           value: intent.operation_token,
           enumerable: false,
@@ -1554,10 +1543,9 @@ export function createAddressMirrorController({ userId, jobId, session, logger, 
       });
       changed.push(field);
     }
-    const forcedSourceConfirmation =
-      perTurnWrites?.[FORCE_CONFIRMATIONS] === true &&
-      hasAudibleSourceWrite(perTurnWrites, intent.source_family);
-    if (!sourceAudible && !forcedSourceConfirmation) {
+    const sourceCovered =
+      sourceAudible || hasAudibleSourceWrite(perTurnWrites, intent.source_family);
+    if (!sourceCovered) {
       stageAcknowledgement(
         perTurnWrites,
         intent.terminal_outcome?.replacement === true

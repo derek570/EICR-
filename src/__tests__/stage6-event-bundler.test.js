@@ -357,8 +357,8 @@ describe('bundleToolCallsIntoResult — board_id emission (hotfix slice 1.1a)', 
   });
 });
 
-describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)', () => {
-  test('opt-out: omits confirmations slot entirely when options absent (byte-identical pre-feature)', () => {
+describe('bundleToolCallsIntoResult — mandatory confirmation synthesis', () => {
+  test('options absent: accepted dictated reading still has one read-back', () => {
     const readings = new Map([
       [
         encodeReadingKey('measured_zs_ohm', 1),
@@ -366,22 +366,20 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       ],
     ]);
     const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] });
-    expect(r).not.toHaveProperty('confirmations');
+    expect(r.confirmations).toHaveLength(1);
+    expect(r.confirmations[0].text).toBe('Circuit 1, Zs 0.62');
   });
 
-  test('opt-out: omits confirmations slot when options.confirmationsEnabled === false', () => {
+  test('extra prompts off: accepted dictated reading still has one read-back', () => {
     const readings = new Map([
       [
         encodeReadingKey('measured_zs_ohm', 1),
         { value: '0.62', confidence: 1.0, source_turn_id: 't1' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: false }
-    );
-    expect(r).not.toHaveProperty('confirmations');
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
+    expect(r.confirmations).toHaveLength(1);
+    expect(r.confirmations[0].text).toBe('Circuit 1, Zs 0.62');
   });
 
   test('opt-in: synthesises one confirmation per circuit reading with Circuit N prefix', () => {
@@ -392,11 +390,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       ],
       [encodeReadingKey('r1_r2_ohm', 2), { value: '0.6', confidence: 1.0, source_turn_id: 't1' }],
     ]);
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
     expect(r.confirmations).toEqual([
       {
         text: 'Circuit 1, Zs 0.62',
@@ -427,7 +421,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: '1.5', confidence: 1.0, source_turn_id: 't1' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     expect(r.confirmations).toEqual([
       {
         text: 'Ze 0.25',
@@ -472,7 +466,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: 'RG30 4XW', confidence: 1.0, source_turn_id: 't1' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     expect(r.confirmations).toHaveLength(4);
     const fields = new Set(r.confirmations.map((c) => c.field));
     expect(fields).toEqual(new Set(['circuit_designation', 'ocpd_bs_en', 'address', 'postcode']));
@@ -490,11 +484,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: '1 Tilehurst Road', confidence: 1.0, source_turn_id: 't1' },
       ],
     ]);
-    const result = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-1' }
-    );
+    const result = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-1' });
     const postcode = result.confirmations.find((c) => c.field === 'postcode');
     const address = result.confirmations.find((c) => c.field === 'address');
 
@@ -517,11 +507,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       ],
       [encodeReadingKey('r1_r2_ohm', 2), { value: '0.6', confidence: 0.5, source_turn_id: 't1' }],
     ]);
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
     expect(r.confirmations).toEqual([
       {
         text: 'Circuit 1, Zs 0.62',
@@ -540,7 +526,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     ]);
   });
 
-  test('opt-in: polarity_confirmed=true reads back, polarity_confirmed=false suppresses', () => {
+  test('accepted polarity Y and N both read back with truthful wording', () => {
     const readingsTrue = new Map([
       [
         encodeReadingKey('polarity_confirmed', 1),
@@ -550,7 +536,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     const r1 = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings: readingsTrue }),
       { questions: [] },
-      { confirmationsEnabled: true }
+      {}
     );
     expect(r1.confirmations).toEqual([
       {
@@ -571,9 +557,10 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     const r2 = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings: readingsFalse }),
       { questions: [] },
-      { confirmationsEnabled: true }
+      {}
     );
-    expect(r2).not.toHaveProperty('confirmations');
+    expect(r2.confirmations).toHaveLength(1);
+    expect(r2.confirmations[0].text).toBe('Circuit 1, polarity is reversed');
   });
 
   test('audio-first: mirror derivations stay silent; calc writes SPEAK with "calculated as" (F/U-1); all ride the wire', () => {
@@ -601,7 +588,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: 'PASS', confidence: 1.0, source_turn_id: 't1', derived: true },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     // All three writes are on the wire.
     const wireFields = new Set(r.extracted_readings.map((e) => e.field));
     expect(wireFields).toEqual(new Set(['r1_r2_ohm', 'measured_zs_ohm']));
@@ -644,11 +631,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: '0.55', confidence: 1.0, source_turn_id: '::calc::calculate_zs' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
     expect(r.confirmations.map((c) => c.text)).toEqual([
       'Circuit 1, Zs 0.55',
       'Circuit 2, Zs calculated as 0.55',
@@ -662,11 +645,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: '0.55', confidence: 1.0, source_turn_id: '::calc::calculate_zs' },
       ])
     );
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
     expect(r.confirmations.map((c) => c.text)).toEqual(['Circuits 1 to 3, Zs calculated as 0.55']);
     expect(r.confirmations[0].circuits).toEqual([1, 2, 3]);
   });
@@ -678,11 +657,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: '0.42', confidence: 1.0, source_turn_id: '::calc::calculate_r1_plus_r2' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
     expect(r.confirmations.map((c) => c.text)).toEqual([
       'Circuit 3, R1 plus R2 calculated as 0.42',
     ]);
@@ -701,9 +676,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       questions: [],
       confirmations: [{ text: 'Sonnet said this', field: 'measured_zs_ohm', circuit: 1 }],
     };
-    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), legacy, {
-      confirmationsEnabled: true,
-    });
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), legacy, {});
     expect(r.confirmations).toEqual([
       { text: 'Sonnet said this', field: 'measured_zs_ohm', circuit: 1 },
     ]);
@@ -719,7 +692,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [], confirmations: [] },
-      { confirmationsEnabled: true }
+      {}
     );
     expect(r.confirmations).toEqual([
       {
@@ -737,7 +710,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites(),
       { questions: [], confirmations: legacyConfirmations },
-      { confirmationsEnabled: true }
+      {}
     );
     legacyConfirmations[0].text = 'mutated';
     expect(r.confirmations[0].text).toBe('original');
@@ -754,11 +727,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: '0.62', confidence: 1.0, source_turn_id: 't1', boardId: 'sub-1' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
     expect(r.confirmations).toEqual([
       {
         text: 'Circuit 1, Zs 0.62',
@@ -779,7 +748,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: '0.25', confidence: 1.0, source_turn_id: 't1', boardId: 'sub-2' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     expect(r.confirmations).toEqual([
       {
         text: 'Ze 0.25',
@@ -799,17 +768,13 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     const r = bundleToolCallsIntoResult(
       makePerTurnWrites({ readings }),
       { questions: [] },
-      { confirmationsEnabled: true, turnId: 'sess-foo-turn-3' }
+      { turnId: 'sess-foo-turn-3' }
     );
     expect(r.turn_id).toBe('sess-foo-turn-3');
   });
 
   test('Loaded Barrel 4a: result.turn_id omitted when options.turnId absent (back-compat)', () => {
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites(),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites(), { questions: [] }, {});
     expect(r).not.toHaveProperty('turn_id');
   });
 
@@ -820,11 +785,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     const readings = new Map([
       [encodeReadingKey('measured_zs_ohm', 1), { value: '0.62', confidence: 1.0 }],
     ]);
-    const r = bundleToolCallsIntoResult(
-      makePerTurnWrites({ readings }),
-      { questions: [] },
-      { confirmationsEnabled: true }
-    );
+    const r = bundleToolCallsIntoResult(makePerTurnWrites({ readings }), { questions: [] }, {});
     expect(r.confirmations[0]).not.toHaveProperty('board_id');
     expect(r.confirmations).toEqual([
       {
@@ -856,7 +817,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         { value: '0.25', confidence: 1.0, source_turn_id: 't1' },
       ],
     ]);
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     expect(r.confirmations).toHaveLength(2);
     for (const c of r.confirmations) {
       expect(typeof c.text).toBe('string');
@@ -889,7 +850,6 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       writes,
       { questions: [] },
       {
-        confirmationsEnabled: true,
         turnId: 'sess-X-turn-1',
         sessionId: 'sess-X',
         logger,
@@ -944,7 +904,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     const r = bundleToolCallsIntoResult(
       writes,
       { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-9', sessionId: 'sess-X' }
+      { turnId: 'turn-9', sessionId: 'sess-X' }
     );
 
     // circuit_op → turn + operation identity.
@@ -989,11 +949,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         board_id: null,
       },
     ];
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-5' }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-5' });
     // Wire copy speaks the record-APPLY dialect the iOS/web clients map.
     expect(r.field_corrections[0].field).toBe('r1_plus_r2');
     // NEW objects — the internal accumulator keeps the raw dispatcher key
@@ -1013,7 +969,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         board_id: null,
       },
     ];
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     expect(r.field_corrections[0].field).toBe('r2_ohm');
   });
 
@@ -1041,11 +997,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
         board_id: null,
       },
     ];
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-6' }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-6' });
     // Spoken output unchanged: the write speaks once, never "<field> cleared".
     const cleared = r.confirmations.filter((c) => c.field === 'field_cleared');
     expect(cleared).toHaveLength(0);
@@ -1072,11 +1024,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { circuit: 2, boardId: null, value: 'Lights', confidence: 0.9 },
       { circuit: 2, boardId: null, value: 'Sockets', confidence: 0.95 },
     ];
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-9' }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-9' });
     const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
     expect(desigs).toHaveLength(2);
     expect(desigs[0].dedupe_token).toBe('desig_2_turn-9_ord0');
@@ -1102,11 +1050,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { circuit: 1, boardId: 'board-A', value: 'Kitchen', confidence: 0.9 },
       { circuit: 1, boardId: 'board-B', value: 'Garage', confidence: 0.9 },
     ];
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-9' }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-9' });
     const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
     expect(desigs).toHaveLength(2);
     const tokens = desigs.map((c) => c.dedupe_token).sort();
@@ -1132,11 +1076,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { circuit: 1, boardId: 'board-B', value: 'Lights', confidence: 0.9 },
       { circuit: 1, boardId: 'board-B', value: 'Sockets', confidence: 0.95 },
     ];
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-9' }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-9' });
     const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
     expect(desigs).toHaveLength(3);
     // Board A's Map-derived entry survives untouched — the board-matched
@@ -1173,11 +1113,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { circuit: 1, boardId: null, value: 'Sockets', confidence: 0.95 },
       { circuit: 2, boardId: null, value: 'Sockets', confidence: 0.95 },
     ];
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-9' }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-9' });
     const desigs = r.confirmations.filter((c) => c.field === 'circuit_designation');
     // Never a grouped circuit:null roll-up for designations.
     expect(desigs.every((c) => Number.isInteger(c.circuit))).toBe(true);
@@ -1200,11 +1136,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
       { field: 'r1_r2_ohm', circuit: 3, previous_value: '0.86', reason: 'clear_reading' },
       { field: 'r1_r2_ohm', circuit: 3, previous_value: '0.90', reason: 'clear_reading' },
     ];
-    const r = bundleToolCallsIntoResult(
-      writes,
-      { questions: [] },
-      { confirmationsEnabled: true, turnId: 'turn-9' }
-    );
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { turnId: 'turn-9' });
     const clears = r.confirmations.filter((c) => c.field === 'field_cleared');
     expect(clears).toHaveLength(2);
     expect(clears[0].dedupe_token).toBe('clear_r1_r2_ohm_3_turn-9_ord0');
@@ -1223,7 +1155,7 @@ describe('bundleToolCallsIntoResult — confirmations synthesis (Voice toggle)',
     writes.fieldCorrections = [
       { field: 'measured_zs_ohm', circuit: 1, previous_value: '0.6', reason: 'clear_reading' },
     ];
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const desig = r.confirmations.find((c) => c.field === 'circuit_designation');
     // No stable turn identity → no token; clients fall back to the bare key.
     expect(desig).not.toHaveProperty('dedupe_token');
@@ -1323,7 +1255,7 @@ describe('bundleToolCallsIntoResult — #31 same-turn clear+write suppression', 
         board_id: null,
       },
     ];
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     // The new value is read back …
     const clientNameConfirm = r.confirmations.find((c) => c.field === 'client_name');
     expect(clientNameConfirm).toBeDefined();
@@ -1344,7 +1276,7 @@ describe('bundleToolCallsIntoResult — #31 same-turn clear+write suppression', 
         board_id: null,
       },
     ];
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const cleared = r.confirmations.find((c) => c.field === 'field_cleared');
     expect(cleared).toBeDefined();
     expect(cleared.text.toLowerCase()).toContain('cleared');
@@ -1365,7 +1297,7 @@ describe('bundleToolCallsIntoResult — #31 same-turn clear+write suppression', 
         board_id: null,
       },
     ];
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     expect(r.confirmations.some((c) => c.field === 'field_cleared')).toBe(false);
   });
 
@@ -1384,7 +1316,7 @@ describe('bundleToolCallsIntoResult — #31 same-turn clear+write suppression', 
         board_id: null,
       },
     ];
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     expect(r.confirmations.some((c) => c.field === 'field_cleared')).toBe(true);
   });
 });
@@ -1400,7 +1332,7 @@ describe('bundleToolCallsIntoResult — observation TTS speaks the full body (#6
     const writes = makePerTurnWrites({
       observations: [{ code: 'C3', text: LONG_BODY }],
     });
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const obs = r.confirmations.find((c) => c.field === 'observation');
     expect(obs).toBeTruthy();
     // Full body present verbatim …
@@ -1414,7 +1346,7 @@ describe('bundleToolCallsIntoResult — observation TTS speaks the full body (#6
     const writes = makePerTurnWrites({
       observations: [{ text: LONG_BODY }],
     });
-    const r = bundleToolCallsIntoResult(writes, { questions: [] }, { confirmationsEnabled: true });
+    const r = bundleToolCallsIntoResult(writes, { questions: [] }, {});
     const obs = r.confirmations.find((c) => c.field === 'observation');
     expect(obs).toBeTruthy();
     expect(obs.text).toBe(`Observation — ${LONG_BODY}`);

@@ -9,14 +9,14 @@
  * A malformed result may repeat the rejected field/value in confirmations,
  * questions, spoken prose or actions. When any reading is rejected, every
  * audible model-authored surface is therefore replaced by server-owned output:
- * accepted readings get one deterministic read-back per final slot (when
- * confirmations are enabled), questions/alerts are dropped, and the spoken
+ * accepted readings get one deterministic read-back per final slot, questions/alerts are dropped, and the spoken
  * response becomes a generic refusal that cannot expose model text.
  */
 
 import { buildConfirmationText } from './confirmation-text.js';
 import { FIELD_CORRECTIONS, applyFieldNameCorrection } from './field-name-corrections.js';
 import { KNOWN_FIELDS } from './known-fields.js';
+import { expandForTTS } from './tts-text-expander.js';
 
 export const OFFSCHEMA_READING_RESPONSE = `I couldn't save a reading because it didn't match a field I recognise — it's logged.`;
 
@@ -36,6 +36,7 @@ function buildServerOwnedConfirmations(readings) {
     if (typeof text !== 'string' || text.trim().length === 0) continue;
     confirmations.push({
       text,
+      expanded_text: expandForTTS(text),
       field: reading.field,
       circuit: reading.circuit ?? null,
       value: reading.value,
@@ -43,6 +44,29 @@ function buildServerOwnedConfirmations(readings) {
     });
   }
   return confirmations;
+}
+
+const DESIGNATION_FIELDS = new Set(['designation', 'circuit_designation']);
+
+/**
+ * DictatedReadbackPolicyV1 — canonicalise every ordinary legacy reading
+ * confirmation from the accepted operation ledger. Model-authored reading
+ * claims are never evidence that a write was applied: they may carry stale
+ * values/scope or omit a low-confidence result. Field-null terminals remain
+ * intact, while designation confirmations stay owned by the designation seam.
+ */
+export function reconcileLegacyReadingConfirmations(result) {
+  if (!result || !Array.isArray(result.extracted_readings)) return result;
+  const ordinaryReadings = result.extracted_readings.filter(
+    (reading) => !DESIGNATION_FIELDS.has(reading?.field) && reading?.derived !== true
+  );
+  const preserved = Array.isArray(result.confirmations)
+    ? result.confirmations.filter(
+        (confirmation) => confirmation?.field == null || DESIGNATION_FIELDS.has(confirmation?.field)
+      )
+    : [];
+  result.confirmations = [...buildServerOwnedConfirmations(ordinaryReadings), ...preserved];
+  return result;
 }
 
 /**
@@ -54,7 +78,7 @@ function buildServerOwnedConfirmations(readings) {
  */
 export function sanitizeReadingFieldContractWithReport(
   result,
-  { sessionId = null, logger = null, confirmationsEnabled = true } = {}
+  { sessionId = null, logger = null } = {}
 ) {
   if (!result || !Array.isArray(result.extracted_readings)) {
     return { result, rejectedReadingCount: 0 };
@@ -97,8 +121,7 @@ export function sanitizeReadingFieldContractWithReport(
   result.extracted_readings = acceptedReadings;
   if (rejectedReadingCount === 0) return { result, rejectedReadingCount };
 
-  result.confirmations =
-    confirmationsEnabled === true ? buildServerOwnedConfirmations(acceptedReadings) : [];
+  result.confirmations = buildServerOwnedConfirmations(acceptedReadings);
   result.questions_for_user = [];
   result.validation_alerts = [];
   result.spoken_response = OFFSCHEMA_READING_RESPONSE;

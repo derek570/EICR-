@@ -92,8 +92,7 @@ function clear(s, p, callId) {
   );
 }
 
-const bundle = (p) =>
-  bundleToolCallsIntoResult(p, { questions: [] }, { confirmationsEnabled: true, turnId: 'turn-9' });
+const bundle = (p) => bundleToolCallsIntoResult(p, { questions: [] }, { turnId: 'turn-9' });
 
 const clearedOf = (r) => r.confirmations.filter((c) => c.field === 'field_cleared');
 

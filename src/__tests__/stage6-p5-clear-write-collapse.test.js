@@ -60,12 +60,12 @@ function clearCall(input, tool_call_id = 'c1') {
 
 function bundle(perTurnWrites) {
   return bundleToolCallsIntoResult(perTurnWrites, null, {
-    confirmationsEnabled: true,
     turnId: 't1',
   });
 }
 
-const clearedConfirmations = (r) => (r.confirmations ?? []).filter((c) => c.field === 'field_cleared');
+const clearedConfirmations = (r) =>
+  (r.confirmations ?? []).filter((c) => c.field === 'field_cleared');
 const fieldConfirmations = (r, field) => (r.confirmations ?? []).filter((c) => c.field === field);
 
 // ---------------------------------------------------------------------------
@@ -81,7 +81,13 @@ describe('P5 — clear→write collapse (circuit slot)', () => {
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     const r = bundle(p);
@@ -105,10 +111,40 @@ describe('P5 — repeated clear→write on one slot', () => {
     const session = makeSession({ 3: { ir_live_live_mohm: 'LIM' } });
     const p = createPerTurnWrites();
     // clear, write, clear again, write again — all same slot.
-    await dispatchClearReading(clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }, 'c1'), ctx(session, p));
-    await dispatchRecordReading(recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '90', confidence: 0.9, source_turn_id: 't1' }, 'w1'), ctx(session, p));
-    await dispatchClearReading(clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }, 'c2'), ctx(session, p));
-    await dispatchRecordReading(recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }, 'w2'), ctx(session, p));
+    await dispatchClearReading(
+      clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }, 'c1'),
+      ctx(session, p)
+    );
+    await dispatchRecordReading(
+      recordCall(
+        {
+          field: 'ir_live_live_mohm',
+          circuit: 3,
+          value: '90',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
+        'w1'
+      ),
+      ctx(session, p)
+    );
+    await dispatchClearReading(
+      clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }, 'c2'),
+      ctx(session, p)
+    );
+    await dispatchRecordReading(
+      recordCall(
+        {
+          field: 'ir_live_live_mohm',
+          circuit: 3,
+          value: '100',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
+        'w2'
+      ),
+      ctx(session, p)
+    );
     const r = bundle(p);
     // The final write survives; every stale clear is dropped from the wire.
     expect(r.extracted_readings).toHaveLength(1);
@@ -130,7 +166,13 @@ describe('P5 — write→clear stays clear-only (circuit slot)', () => {
     const session = makeSession({ 3: { ir_live_live_mohm: 'LIM' } });
     const p = createPerTurnWrites();
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     await dispatchClearReading(
@@ -153,7 +195,14 @@ describe('P5 — write→clear stays clear-only (circuit slot)', () => {
     const session = makeSession({ 3: { ir_live_live_mohm: 'LIM' } });
     const p = createPerTurnWrites();
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1', board_id: 'main' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+        board_id: 'main',
+      }),
       ctx(session, p)
     );
     await dispatchClearReading(
@@ -171,7 +220,13 @@ describe('P5 — write→clear stays clear-only (circuit slot)', () => {
     const session = makeSession({ 3: { ir_live_live_mohm: 'LIM' } });
     const p = createPerTurnWrites();
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }), // omitted
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }), // omitted
       ctx(session, p)
     );
     await dispatchClearReading(
@@ -245,7 +300,14 @@ describe('P5 — effective board identity (clear→write mixed spelling collapse
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1', board_id: 'main' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+        board_id: 'main',
+      }),
       ctx(session, p)
     );
     const r = bundle(p);
@@ -262,7 +324,13 @@ describe('P5 — effective board identity (clear→write mixed spelling collapse
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     const r = bundle(p);
@@ -292,13 +360,21 @@ describe('P5 — every readings.set producer carries the effective key', () => {
       {
         tool_call_id: 'sf1',
         name: 'set_field_for_all_circuits',
-        input: { field: 'rcd_type', value: 'A', scope: 'non_spare', source_turn_id: 't1', confidence: 1 },
+        input: {
+          field: 'rcd_type',
+          value: 'A',
+          scope: 'non_spare',
+          source_turn_id: 't1',
+          confidence: 1,
+        },
       },
       ctx(session, p)
     );
     const r = bundle(p);
     // Circuit 1's clear collapsed against its bulk write; circuit 2 wrote too.
-    const c1 = (r.field_corrections ?? []).filter((c) => c.circuit === 1 && c.reason === 'clear_reading');
+    const c1 = (r.field_corrections ?? []).filter(
+      (c) => c.circuit === 1 && c.reason === 'clear_reading'
+    );
     expect(c1).toHaveLength(0);
     expect(r.extracted_readings.some((x) => x.circuit === 1 && x.value === 'A')).toBe(true);
     expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toEqual([
@@ -315,7 +391,13 @@ describe('P5 — every readings.set producer carries the effective key', () => {
     );
     await dispatchRecordReading(
       recordCall(
-        { field: 'measured_zs_ohm', circuit: 3, value: '0.42', confidence: 0.9, source_turn_id: 't1' },
+        {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.42',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
         'tc::auto::resolve'
       ),
       ctx(session, p)
@@ -375,7 +457,9 @@ describe('P5 — every readings.set producer carries the effective key', () => {
       );
       const r = bundle(p);
       expect(r.extracted_readings.some((x) => x.circuit === 4 && x.value === '0.32')).toBe(true);
-      const c4 = (r.field_corrections ?? []).filter((c) => c.circuit === 4 && c.reason === 'clear_reading');
+      const c4 = (r.field_corrections ?? []).filter(
+        (c) => c.circuit === 4 && c.reason === 'clear_reading'
+      );
       expect(c4).toHaveLength(0);
       expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toHaveLength(1);
     }
@@ -402,7 +486,9 @@ describe('P5 — every readings.set producer carries the effective key', () => {
         ctx(session, p)
       );
       const r = bundle(p);
-      expect(r.extracted_readings.some((x) => x.circuit === 4 && x.field === 'ring_r1_ohm')).toBe(false);
+      expect(r.extracted_readings.some((x) => x.circuit === 4 && x.field === 'ring_r1_ohm')).toBe(
+        false
+      );
       expect((r.field_corrections ?? []).length).toBeGreaterThanOrEqual(1);
       expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toBeUndefined();
     }
@@ -419,7 +505,12 @@ describe("P5 — set_field_for_all_circuits '*' broadcast", () => {
       {
         0: {},
         1: { circuit_designation: 'Main Ckt 1', rcd_type: 'AC' },
-        'sub-1::1': { board_id: 'sub-1', circuit: 1, circuit_designation: 'Sub Ckt 1', rcd_type: 'AC' },
+        'sub-1::1': {
+          board_id: 'sub-1',
+          circuit: 1,
+          circuit_designation: 'Sub Ckt 1',
+          rcd_type: 'AC',
+        },
       },
       {
         boards: [
@@ -439,7 +530,14 @@ describe("P5 — set_field_for_all_circuits '*' broadcast", () => {
       {
         tool_call_id: 'sf2',
         name: 'set_field_for_all_circuits',
-        input: { field: 'rcd_type', value: 'A', scope: 'non_spare', source_turn_id: 't1', confidence: 1, board_id: '*' },
+        input: {
+          field: 'rcd_type',
+          value: 'A',
+          scope: 'non_spare',
+          source_turn_id: 't1',
+          confidence: 1,
+          board_id: '*',
+        },
       },
       ctx(session, p)
     );
@@ -447,8 +545,12 @@ describe("P5 — set_field_for_all_circuits '*' broadcast", () => {
     // Board A's clear collapsed; board B's write is untouched (no clear).
     expect('field_corrections' in r).toBe(false);
     // Both boards got their write.
-    expect(r.extracted_readings.some((x) => x.circuit === 1 && x.board_id === 'main' && x.value === 'A')).toBe(true);
-    expect(r.extracted_readings.some((x) => x.circuit === 1 && x.board_id === 'sub-1' && x.value === 'A')).toBe(true);
+    expect(
+      r.extracted_readings.some((x) => x.circuit === 1 && x.board_id === 'main' && x.value === 'A')
+    ).toBe(true);
+    expect(
+      r.extracted_readings.some((x) => x.circuit === 1 && x.board_id === 'sub-1' && x.value === 'A')
+    ).toBe(true);
     // Telemetry: exactly ONE collapse, for board 'main' (never the '*' sentinel).
     expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toEqual([
       { field: 'rcd_type', circuit: 1, board_id: 'main', final_effect: 'write' },
@@ -469,7 +571,13 @@ describe('P5 — non-collapse guards', () => {
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     const r = bundle(p);
@@ -486,7 +594,13 @@ describe('P5 — non-collapse guards', () => {
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'measured_zs_ohm', circuit: 4, value: '0.42', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'measured_zs_ohm',
+        circuit: 4,
+        value: '0.42',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     const r = bundle(p);
@@ -510,7 +624,14 @@ describe('P5 — non-collapse guards', () => {
     );
     p.fieldCorrections.push(
       attachEffectiveSlot(
-        { type: 'field_corrected', circuit: 1, field: 'measured_zs_ohm', previous_value: '1.0', reason: 'clear_reading', board_id: 'main' },
+        {
+          type: 'field_corrected',
+          circuit: 1,
+          field: 'measured_zs_ohm',
+          previous_value: '1.0',
+          reason: 'clear_reading',
+          board_id: 'main',
+        },
         'measured_zs_ohm',
         1,
         'main'
@@ -656,7 +777,13 @@ describe('P5 — A2 wire-dialect interaction', () => {
     const session = makeSession({ 2: { r2_ohm: '0.41' } });
     const p = createPerTurnWrites();
     await dispatchRecordReading(
-      recordCall({ field: 'r2_ohm', circuit: 2, value: '0.50', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'r2_ohm',
+        circuit: 2,
+        value: '0.50',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     await dispatchClearReading(
@@ -676,7 +803,13 @@ describe('P5 — A2 wire-dialect interaction', () => {
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'r1_r2_ohm', circuit: 3, value: '0.30', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'r1_r2_ohm',
+        circuit: 3,
+        value: '0.30',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     const r = bundle(p);
@@ -705,7 +838,14 @@ describe('P5 — non-clear corrections are never dropped', () => {
     for (const reason of ['same_turn_correction', 'replace_value']) {
       p.fieldCorrections.push(
         attachEffectiveSlot(
-          { type: 'field_corrected', circuit: 3, field: 'measured_zs_ohm', previous_value: '1.0', reason, board_id: null },
+          {
+            type: 'field_corrected',
+            circuit: 3,
+            field: 'measured_zs_ohm',
+            previous_value: '1.0',
+            reason,
+            board_id: null,
+          },
           'measured_zs_ohm',
           3,
           'main'
@@ -714,7 +854,10 @@ describe('P5 — non-clear corrections are never dropped', () => {
     }
     const r = bundle(p);
     expect(r.field_corrections).toHaveLength(2); // neither dropped
-    expect(r.field_corrections.map((c) => c.reason).sort()).toEqual(['replace_value', 'same_turn_correction']);
+    expect(r.field_corrections.map((c) => c.reason).sort()).toEqual([
+      'replace_value',
+      'same_turn_correction',
+    ]);
     expect(r[SAME_TURN_CLEAR_WRITE_COLLAPSED]).toBeUndefined();
   });
 });
@@ -732,7 +875,13 @@ describe('P5 — projection purity', () => {
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     const readingsSizeBefore = p.readings.size;
@@ -754,7 +903,13 @@ describe('P5 — projection purity', () => {
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     const r = bundle(p);
@@ -780,7 +935,13 @@ describe('P5 — A1 agentic-voice regressions', () => {
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     const r = bundle(p);
@@ -809,10 +970,19 @@ describe('P5 — A1 agentic-voice regressions', () => {
       p.answer.featureTouched = true;
       p.answer.stagedText = null;
       const doClear = () =>
-        dispatchClearReading(clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }), ctx(session, p));
+        dispatchClearReading(
+          clearCall({ field: 'ir_live_live_mohm', circuit: 3, reason: 'x' }),
+          ctx(session, p)
+        );
       const doWrite = () =>
         dispatchRecordReading(
-          recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+          recordCall({
+            field: 'ir_live_live_mohm',
+            circuit: 3,
+            value: '100',
+            confidence: 0.9,
+            source_turn_id: 't1',
+          }),
           ctx(session, p)
         );
       if (order === 'clear_then_write') {
@@ -856,7 +1026,13 @@ describe('P5 — A1 agentic-voice regressions', () => {
       ctx(session, p)
     );
     await dispatchRecordReading(
-      recordCall({ field: 'ir_live_live_mohm', circuit: 3, value: '100', confidence: 0.9, source_turn_id: 't1' }),
+      recordCall({
+        field: 'ir_live_live_mohm',
+        circuit: 3,
+        value: '100',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      }),
       ctx(session, p)
     );
     bundle(p);

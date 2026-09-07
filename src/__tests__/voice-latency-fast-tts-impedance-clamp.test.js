@@ -178,7 +178,6 @@ describe('fast-TTS route — impedance clamp', () => {
       writes,
       { questions: [] },
       {
-        confirmationsEnabled: true,
         turnId: 't1',
       }
     );

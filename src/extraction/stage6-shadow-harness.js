@@ -142,7 +142,6 @@ import {
   EFFECTIVE_BOARD_SLOT,
   boardSlotKey,
   EFFECTIVE_CIRCUIT_SLOT,
-  FORCE_CONFIRMATIONS,
   circuitDesignationKey,
   decodeBoardReadingKey,
   decodeReadingKey,
@@ -2597,14 +2596,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // dispatcher-fed, so it survives the throw) and BEFORE
     // bundleToolCallsIntoResult, whose projection turns the staged text into
     // result.spoken_response. The ANSWER FEATURE guarantees its OWN
-    // audibility in both confirmation-toggle states: all apology nets below
-    // are confirmationsEnabled-gated, so "the nets apologise" cannot cover a
-    // confirmation-OFF failed answer. Stage the FIXED fallback when the
+    // audibility independently of the outcome nets below. Stage the FIXED fallback when the
     // feature was attempted (ANY answer_user OR inspect_session_state call —
     // the prompt's inspect-then-answer flow makes inspect-then-silence a
     // reachable failure), nothing was staged, and the turn produced no
     // successful write and no emitted ask (a mixed inspect+write turn is
-    // owned by the read-back / the documented opt-out — pinned NO-fallback).
+    // owned by its mandatory read-back — pinned NO-fallback).
     // Deliberately derived from turnAnswerState alone, never by re-parsing
     // toolLoopOut.tool_calls (undefined on cancelled turns); runs on
     // cancelled turns too (cancelled-turn policy).
@@ -2648,11 +2645,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // legacyResultShape — there's no legacy result; bundler will produce
     // `questions: []` from that.
     //
-    // confirmationsEnabled flows from sonnet-stream.js (transcript message
-    // `confirmations_enabled` flag, set by iOS when the user toggles the
-    // Voice button ON) through options into the bundler's synthesis step
-    // (stage6-event-bundler.js:9). Live mode has no legacy.confirmations
-    // source so synthesis is the only path that populates result.confirmations.
+    // `confirmations_enabled` is retained as the Extra prompts preference.
+    // Reading synthesis is mandatory in both states; optional conversational
+    // prompts consult the preference at their own owning gates.
     // 2026-05-29 — build the circuit-designation map for confirmation
     // TTS. Source priority: same-turn circuit_designation writes (Sonnet
     // just renamed circuit N) > existing snapshot value. Both keyed by
@@ -2818,7 +2813,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       const directFinal = await entry.addressMirrorController.finalizeDirectAfterWrites({
         successfulFields: successfulAddressFields,
         perTurnWrites,
-        sourceAudible: options.confirmationsEnabled === true,
       });
       // Retain the followup when directFinal carries EITHER a question or a
       // clearAskId. A question-less terminal (the hybrid-blocked terminal,
@@ -2858,8 +2852,6 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     }
 
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {
-      confirmationsEnabled:
-        options.confirmationsEnabled === true || perTurnWrites[FORCE_CONFIRMATIONS] === true,
       // Plan B B1.2/B1.3 — resolve THIS turn's accepted fast-TTS identities
       // IMMEDIATELY before bundling (not at turn entry, above — a route can
       // accept mid-turn, during the Sonnet round-trip). Empty Map (not
@@ -3467,7 +3459,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // filter — a no-op post-B1a — AND applyConfirmationDebounce above), so a
     // speculation is only kept servable when its expandedText equals a
     // confirmation the backend actually emitted. Non-matching parked entries
-    // (corrected value, dropped by confidence, subsumed into a grouped line) and
+    // (corrected value or subsumed into a grouped line) and
     // ALL entries on an aborted/cap-hit turn are invalidated so keys.js
     // synthesises fresh. Compares actual emitted text (no recompute). Wrapped in
     // the speculator's own try/catch; never throws.
@@ -3682,10 +3674,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // "Already got", the playback_started suppress, the pending
         // fast-ledger fallback, or D3's silence mitigation.
         const orphanContentEligible =
-          options.confirmationsEnabled === true &&
-          producedNothing &&
-          !isAnswerTurn &&
-          (carriesValue || carriesObservation || chimeFired);
+          producedNothing && !isAnswerTurn && (carriesValue || carriesObservation || chimeFired);
         const orphanEmissionEligible = ORPHAN_PROMPT_ENABLED && orphanContentEligible;
         if (partialCoveragePending && !orphanEmissionEligible) {
           stampCoveredNoticesNonDraining();
@@ -4389,15 +4378,14 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // Draining first makes F7 (and marker-②) count the mandatory prompt as
     // surviving speech — a turn never carries both a notice and an apology.
     //
-    // Same guard shape as marker-②: confirmationsEnabled (mode-off users
-    // opted out of the spoken channel), chimeObserved, NOT cancelled (a
+    // Same guard shape as marker-②: chimeObserved and NOT cancelled (a
     // cancelled generation's accumulator dies with the turn; the F7
     // cancellation branch owns that apology). Entries are stamped with
     // generationId at the drain, per the voiceNotices precedent —
     // dispatchers cannot stamp (ctx carries no generationId, and an
     // unstamped pendingVoicePrompts entry counts as current-generation).
     try {
-      if (options.confirmationsEnabled === true && options.chimeObserved === true && !cancelled) {
+      if (options.chimeObserved === true && !cancelled) {
         // Plan B (round-3) — the drain gains a `notice.drain !== false` term:
         // A3's coverage arbitration (which runs BEFORE net-0) stamps
         // drain:false on the covered subset of a PARTIALLY-covered
@@ -4590,11 +4578,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       const drainablePartial = cancelled
         ? stagedPartial.filter((notice) => notice?.requiresSurvivingSibling === true)
         : stagedPartial;
-      if (
-        drainablePartial.length > 0 &&
-        options.confirmationsEnabled === true &&
-        options.chimeObserved === true
-      ) {
+      if (drainablePartial.length > 0 && options.chimeObserved === true) {
         // ── Drain rule (1) — allRejected ⇒ DROP EVERY partial notice.
         // A whole-turn rejection is plan B's / A3's to speak: it emits
         // exactly one line and every pre-2A byte of that path must be
@@ -4789,69 +4773,65 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // PLACEMENT: AFTER the D2 net and immediately BEFORE the A4 drain —
     // queueing after the drain defers the apology to the next turn
     // (reproducing the bug); queueing before it lets the existing A4 drain
-    // move the apology into result.confirmations THIS turn. The
-    // confirmationsEnabled gate mirrors A3 (a mode-off user opted out of the
-    // whole spoken channel). Audible text is trimmed-non-empty EVERYWHERE.
+    // move the apology into result.confirmations THIS turn. Audible text is
+    // trimmed-non-empty EVERYWHERE.
     try {
-      if (options.confirmationsEnabled === true) {
-        // isAudibleText / isCurrentGenPrompt are the runLiveMode-scoped shared
-        // helpers (hoisted for marker-② — see their declaration next to
-        // generationId above).
-        // toolLoopOut is undefined on a cancelled generation → no attempted
-        // asks are recoverable; the cancellation predicate (below) does not
-        // require any.
-        const calls = Array.isArray(toolLoopOut?.tool_calls) ? toolLoopOut.tool_calls : [];
-        const attemptedAskCalls = calls.filter((c) => c?.name === 'ask_user');
-        const survivingConfCount = Array.isArray(result.confirmations)
-          ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
-          : 0;
-        const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-          ? session.pendingVoicePrompts.filter(
-              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
-            ).length
-          : 0;
-        // F7 Item 3 — the cancellation branch uses ONLY a "nothing audible
-        // survived" predicate (a ceiling-cancelled generation may have no
-        // tool_calls at all): fire the fallback whenever the generation ends
-        // with no surviving confirmation/prompt and no positively-emitted ask,
-        // so a wedged-then-cancelled turn is never silent. The normal branch
-        // keeps the exact "ask ATTEMPTED but never emitted" predicate (no
-        // vacuous firing on empty turns).
-        // A1 agentic-voice — a staged answer (real or the Item-4 fallback) is
-        // an audible SURVIVOR: neither the F7 apology nor the cancellation
-        // apology may double-speak over it. Required false on BOTH branches.
-        const survivingAnswer = isAudibleText(result.spoken_response);
-        const shouldFire = cancelled
-          ? survivingConfCount === 0 &&
-            survivingPromptCount === 0 &&
-            emittedAskToolCallIds.size === 0 &&
-            !survivingAnswer
-          : attemptedAskCalls.length > 0 &&
-            emittedAskToolCallIds.size === 0 &&
-            survivingConfCount === 0 &&
-            survivingPromptCount === 0 &&
-            !survivingAnswer;
-        if (shouldFire) {
-          if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
-          // Queue on the A4 FIFO channel; the drain below moves it onto the
-          // wire this turn. `fallbackToLegacy` is pre-emission/non-audible in
-          // live mode (no independent legacy emission signal), so it too
-          // triggers this net when no other audible output survives.
-          session.pendingVoicePrompts.push({
-            text: ASK_AUDIBILITY_FALLBACK_TEXT,
-            generationId,
-          });
-          log.info?.('stage6.ask_audibility_fallback_emitted', {
-            sessionId: session.sessionId,
-            turnId,
-            generationId,
-            attempted_ask_tool_call_ids: attemptedAskCalls.map((c) => c?.tool_call_id ?? null),
-            attempted_ask_reasons: attemptedAskCalls.map((c) => parseAskOutcome(c).reason),
-            emitted_ask_count: emittedAskToolCallIds.size,
-            surviving_confirmation_count: survivingConfCount,
-            surviving_prompt_count: survivingPromptCount,
-          });
-        }
+      // isAudibleText / isCurrentGenPrompt are the runLiveMode-scoped shared
+      // helpers (hoisted for marker-② — see their declaration next to
+      // generationId above).
+      // toolLoopOut is undefined on a cancelled generation → no attempted
+      // asks are recoverable; the cancellation predicate (below) does not
+      // require any.
+      const calls = Array.isArray(toolLoopOut?.tool_calls) ? toolLoopOut.tool_calls : [];
+      const attemptedAskCalls = calls.filter((c) => c?.name === 'ask_user');
+      const survivingConfCount = Array.isArray(result.confirmations)
+        ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
+        : 0;
+      const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
+        ? session.pendingVoicePrompts.filter((p) => isCurrentGenPrompt(p) && isAudibleText(p?.text))
+            .length
+        : 0;
+      // F7 Item 3 — the cancellation branch uses ONLY a "nothing audible
+      // survived" predicate (a ceiling-cancelled generation may have no
+      // tool_calls at all): fire the fallback whenever the generation ends
+      // with no surviving confirmation/prompt and no positively-emitted ask,
+      // so a wedged-then-cancelled turn is never silent. The normal branch
+      // keeps the exact "ask ATTEMPTED but never emitted" predicate (no
+      // vacuous firing on empty turns).
+      // A1 agentic-voice — a staged answer (real or the Item-4 fallback) is
+      // an audible SURVIVOR: neither the F7 apology nor the cancellation
+      // apology may double-speak over it. Required false on BOTH branches.
+      const survivingAnswer = isAudibleText(result.spoken_response);
+      const shouldFire = cancelled
+        ? survivingConfCount === 0 &&
+          survivingPromptCount === 0 &&
+          emittedAskToolCallIds.size === 0 &&
+          !survivingAnswer
+        : attemptedAskCalls.length > 0 &&
+          emittedAskToolCallIds.size === 0 &&
+          survivingConfCount === 0 &&
+          survivingPromptCount === 0 &&
+          !survivingAnswer;
+      if (shouldFire) {
+        if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
+        // Queue on the A4 FIFO channel; the drain below moves it onto the
+        // wire this turn. `fallbackToLegacy` is pre-emission/non-audible in
+        // live mode (no independent legacy emission signal), so it too
+        // triggers this net when no other audible output survives.
+        session.pendingVoicePrompts.push({
+          text: ASK_AUDIBILITY_FALLBACK_TEXT,
+          generationId,
+        });
+        log.info?.('stage6.ask_audibility_fallback_emitted', {
+          sessionId: session.sessionId,
+          turnId,
+          generationId,
+          attempted_ask_tool_call_ids: attemptedAskCalls.map((c) => c?.tool_call_id ?? null),
+          attempted_ask_reasons: attemptedAskCalls.map((c) => parseAskOutcome(c).reason),
+          emitted_ask_count: emittedAskToolCallIds.size,
+          surviving_confirmation_count: survivingConfCount,
+          surviving_prompt_count: survivingPromptCount,
+        });
       }
     } catch (fallbackErr) {
       log.warn?.('stage6.ask_audibility_net_error', {
@@ -4875,18 +4855,17 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // result.confirmations THIS turn.
     //
     // Predicate — apologise only when ALL hold:
-    //   1. confirmationsEnabled (mode-off users opted out of the spoken channel)
-    //   2. chimeObserved (gate-pass ⟺ chime; recorded lane sets it from the
+    //   1. chimeObserved (gate-pass ⟺ chime; recorded lane sets it from the
     //      fixture's chime_observed)
-    //   3. NOT cancelled (the F7 Item-3 cancellation branch above owns that)
-    //   4. zero SPEECH-INTENT survived: no audible confirmation, no emitted
+    //   2. NOT cancelled (the F7 Item-3 cancellation branch above owns that)
+    //   3. zero SPEECH-INTENT survived: no audible confirmation, no emitted
     //      ask, no current-generation queued prompt, AND no produced-then-
     //      DEBOUNCED confirmation this turn (the inspector already heard that
     //      reading on a recent turn — apologising after a heard reading would
     //      invite a duplicate re-dictation). Readings/observations counts are
     //      deliberately NOT audibility — successful writes are UI state, not
     //      speech (counting them is exactly what preserved beep-then-silence).
-    //   5. NOT `fastLedgerSuppressesCatchallThisTurn` (Codex diff-review
+    //   4. NOT `fastLedgerSuppressesCatchallThisTurn` (Codex diff-review
     //      cycle 4, E1) — B3's `playback_started`-only "no second line"
     //      outcome and D3's `hadUnaddressedFailure` silence branch both
     //      deliberately produce zero confirmations for a reason that is NOT
@@ -4907,7 +4886,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // promise). A legitimately debounced calc read-back is predicate 4's
     // already-heard evidence, exactly like any other reading.
     try {
-      if (options.confirmationsEnabled === true && options.chimeObserved === true && !cancelled) {
+      if (options.chimeObserved === true && !cancelled) {
         const survivingConfCount = Array.isArray(result.confirmations)
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;
@@ -6106,11 +6085,9 @@ async function runShadowHarnessDispatch(
   // parallel to legacy extract(). Legacy already tracks itself at
   // eicr-extraction-session.js:1614; without this wiring the shadow leg
   // Step 5: bundle ONCE post-loop (Pitfall #3 — never mid-loop).
-  // confirmationsEnabled: shadow mode prefers legacy.confirmations when
-  // present (Sonnet prose-JSON emitted them) but still synthesises from
-  // tool calls if the client opted in and legacy returned an empty array.
+  // Shadow mode prefers legacy.confirmations when present, while mandatory
+  // read-backs are synthesised whenever the legacy array is empty.
   const toolResult = bundleToolCallsIntoResult(perTurnWrites, legacy, {
-    confirmationsEnabled: options.confirmationsEnabled === true,
     // Plan B B1.2/B1.3 — resolved the same way as the live-mode call site
     // above. Shadow mode's own confirmations never reach iOS (this
     // function always `return legacy`s — see Step 8 below); wired for

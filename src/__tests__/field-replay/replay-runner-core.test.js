@@ -119,32 +119,18 @@ function greenFixture() {
 }
 
 function redFixture() {
-  // A chime-producing MODE-OFF turn (confirmations_enabled:false) where the
-  // model emits NOTHING (end_turn only): with the spoken-confirmation channel
-  // disabled, EVERY audibility net declines by design, so the turn ends
-  // silent and the generic audibility.turn assertion is the ONE expected
-  // failure. (The runner's audibility.turn oracle deliberately does not gate
-  // on confirmations_enabled — it asserts what the recorded session's user
-  // EXPERIENCED after a chime.)
-  //
-  // NB — vehicle migration history: this was originally a NON-answer no-op
-  // (the raw marker-① shape) — healed by the marker-① net (2026-07-17); then
-  // an ANSWER-turn no-op — healed by the marker-② catch-all net
-  // (numeric-gate-redesign 2026-07-18), which has NO answer-turn gate (a
-  // truly-silent answer turn is still beep-then-silence, and its predicate 4
-  // already defers to any audible ask-resolution output). The mode-off shape
-  // is the PERMANENTLY stable RED vehicle: every current and future net is
-  // gated on confirmationsEnabled by design (a mode-off user opted out of
-  // the spoken channel), so no net can ever heal it. The frc_c55c996… /
-  // frc_b6ec5356… on-disk fixtures own the real-capture, now-required_green
-  // versions of the healed shapes.
+  // Machinery-only expected-red: a valid reading is applied and spoken, but
+  // the fixture deliberately declares no audible output. The production
+  // confirmation is therefore the sole audibility.unclaimed failure. Keeping
+  // chime_observed false isolates this oracle from the generic turn-audibility
+  // check. The healed extra-prompts-off garble is asserted separately below.
   return {
     schema_version: 1,
     corpus_id: CID_RED,
     purpose: 'regression',
     gate_state: 'expected_red',
-    expected_failure_id: 'audibility.turn',
-    red_proof_failure_id: 'audibility.turn',
+    expected_failure_id: 'audibility.unclaimed',
+    red_proof_failure_id: 'audibility.unclaimed',
     owner: 'Derek Beckley',
     introduced_at: '2026-01-10T00:00:00Z',
     fix_reference: 'fix_00000000000000000000000000000001',
@@ -162,15 +148,45 @@ function redFixture() {
       {
         turn_index: 1,
         at_ms: 0,
-        transcript: 'the garbled thing by the whatsit needs doing over',
+        transcript: 'Zs on circuit 2 is 0.35',
         regex_results: [],
-        // Mode-off — every audibility net honours confirmationsEnabled, so
-        // this chimed no-op stays silent → a permanently stable RED.
         confirmations_enabled: { value: false, provenance: 'reconstructed_reviewed' },
         in_response_to: { value: false, provenance: 'reconstructed_reviewed' },
         ws_mode: 'open',
-        chime_observed: true,
-        model_rounds: [{ stop_reason: 'end_turn', text: '' }],
+        chime_observed: false,
+        model_rounds: [
+          {
+            stop_reason: 'tool_use',
+            tool_calls: [
+              {
+                id: 'red_tc_zs',
+                name: 'record_reading',
+                input: {
+                  field: 'measured_zs_ohm',
+                  circuit: 2,
+                  value: '0.35',
+                  confidence: 0.2,
+                  source_turn_id: 'red_turn_1',
+                },
+                schema_expectation: 'accept',
+                dispatcher_expectation: 'accept',
+              },
+            ],
+          },
+          { stop_reason: 'end_turn', text: '' },
+        ],
+        expected_operations: [
+          {
+            operation_id: 'red_op_zs',
+            kind: 'reading',
+            tool: 'record_reading',
+            field: 'measured_zs_ohm',
+            circuit: 2,
+            value: '0.35',
+            audibility: 'exactly_once',
+          },
+        ],
+        expected_audible_outputs: [],
       },
     ],
   };
@@ -190,11 +206,41 @@ describe('runFixture through the REAL harness (no fake clock — fixtures avoid 
     expect(gate.verdict).toBe('pass');
   });
 
-  test('marker-①-shaped expected_red: baseline yields EXACTLY the declared failure id', async () => {
+  test('healed extra-prompts-off garble receives one mandatory audible outcome', async () => {
+    const fixture = redFixture();
+    fixture.gate_state = 'required_green';
+    delete fixture.expected_failure_id;
+    delete fixture.red_proof_failure_id;
+    delete fixture.fix_reference;
+    delete fixture.expires_at;
+    fixture.turns[0] = {
+      turn_index: 1,
+      at_ms: 0,
+      transcript: 'the garbled thing by the whatsit needs doing over',
+      regex_results: [],
+      confirmations_enabled: { value: false, provenance: 'reconstructed_reviewed' },
+      in_response_to: { value: false, provenance: 'reconstructed_reviewed' },
+      ws_mode: 'open',
+      chime_observed: true,
+      model_rounds: [{ stop_reason: 'end_turn', text: '' }],
+      expected_operations: [],
+      expected_audible_outputs: [
+        {
+          output_id: 'out_mandatory_orphan',
+          kind: 'field_null_fallback',
+          count: 1,
+        },
+      ],
+    };
+    const run = await runFixture({ fixture, modules, wallClockNowMs: Date.now() });
+    expect(run.allFailures).toEqual([]);
+  });
+
+  test('undeclared mandatory read-back expected_red yields exactly audibility.unclaimed', async () => {
     const fixture = redFixture();
     const run = await runFixture({ fixture, modules, wallClockNowMs: Date.now() });
     const ids = [...new Set(run.allFailures.map((f) => f.id))];
-    expect(ids).toEqual(['audibility.turn']);
+    expect(ids).toEqual(['audibility.unclaimed']);
     expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('pass'); // RED confirmed
     // Proof mode (GREEN evidence at subject F) bypasses ONLY the XPASS
     // inversion — a still-failing assertion FAILS the proof run.
@@ -205,10 +251,8 @@ describe('runFixture through the REAL harness (no fake clock — fixtures avoid 
 
   test('XPASS fails the gate: an expected_red whose assertion passes cannot merge', async () => {
     const fixture = redFixture();
-    // Same fixture but the model DOES speak (a confirmation-producing write).
-    fixture.turns = greenFixture().turns;
-    fixture.expected_failure_id = 'audibility.turn';
-    fixture.red_proof_failure_id = 'audibility.turn';
+    // Restoring the declaration converts the same production speech to GREEN.
+    fixture.turns[0].expected_audible_outputs = greenFixture().turns[0].expected_audible_outputs;
     const run = await runFixture({ fixture, modules, wallClockNowMs: Date.now() });
     expect(evaluateGateState(fixture, run.allFailures).verdict).toBe('xpass');
     // The evidence proof mode ACCEPTS the same run (the fixing PR's GREEN).

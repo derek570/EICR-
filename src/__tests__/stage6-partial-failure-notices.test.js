@@ -1576,12 +1576,13 @@ describe('§5.B6 — net interactions', () => {
     );
   });
 
-  test('confirmations OFF ⇒ no notice (the whole channel is a spoken one)', async () => {
+  test('extra prompts OFF still speaks the mandatory rejected-reading notice', async () => {
     const session = makeSession({ circuits: { 4: { circuit_designation: 'Sockets' } } });
     loopDispatching([reading(4, 'measured_zs_ohm', 'LIM')]);
     const opts = baseOpts({ confirmationsEnabled: false });
-    await runShadowHarness(session, 'Zs on 4 is LIM.', [], opts);
-    expect(noticeRows(opts.logger)).toHaveLength(0);
+    const result = await runShadowHarness(session, 'Zs on 4 is LIM.', [], opts);
+    expect(noticeRows(opts.logger)).toHaveLength(1);
+    expect(audibleConfs(result)).toHaveLength(1);
   });
 
   test('no chime ⇒ no notice (a turn that never promised a reply)', async () => {

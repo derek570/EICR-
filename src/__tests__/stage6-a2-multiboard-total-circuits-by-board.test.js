@@ -347,7 +347,7 @@ function bundle(readings, options) {
       boardOps: [],
     },
     null,
-    { confirmationsEnabled: true, ...options }
+    { ...options }
   );
 }
 

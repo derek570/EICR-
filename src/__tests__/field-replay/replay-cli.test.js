@@ -235,8 +235,8 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
       corpus_id: 'frc_000000000000000000000000000000ab',
       purpose: 'regression',
       gate_state: 'expected_red',
-      expected_failure_id: 'audibility.turn',
-      red_proof_failure_id: 'audibility.turn',
+      expected_failure_id: 'audibility.unclaimed',
+      red_proof_failure_id: 'audibility.unclaimed',
       owner: 'Derek Beckley',
       introduced_at: '2026-01-10T00:00:00Z',
       fix_reference: 'fix_000000000000000000000000000000ab',
@@ -254,20 +254,45 @@ describe('recorded-lane corpus execution (subprocess, fake clock)', () => {
         {
           turn_index: 1,
           at_ms: 0,
-          transcript: 'garbled whatsit doing over',
+          transcript: 'Zs on circuit 2 is 0.35',
           regex_results: [],
-          // Mode-off vehicle — the marker-② catch-all net (numeric-gate-
-          // redesign 2026-07-18) healed the previous ANSWER-turn no-op vehicle
-          // (it has no answer-turn gate), just as marker-① healed the original
-          // non-answer no-op. Every audibility net honours
-          // confirmationsEnabled by design (mode-off = user opted out of the
-          // spoken channel), so a chimed mode-off no-op is the PERMANENTLY
-          // stable audibility.turn RED for this CLI machinery test.
           confirmations_enabled: { value: false, provenance: 'reconstructed_reviewed' },
           in_response_to: { value: false, provenance: 'reconstructed_reviewed' },
           ws_mode: 'open',
-          chime_observed: true,
-          model_rounds: [{ stop_reason: 'end_turn', text: '' }],
+          chime_observed: false,
+          model_rounds: [
+            {
+              stop_reason: 'tool_use',
+              tool_calls: [
+                {
+                  id: 'red_cli_tc_zs',
+                  name: 'record_reading',
+                  input: {
+                    field: 'measured_zs_ohm',
+                    circuit: 2,
+                    value: '0.35',
+                    confidence: 0.9,
+                    source_turn_id: 'red_cli_turn_1',
+                  },
+                  schema_expectation: 'accept',
+                  dispatcher_expectation: 'accept',
+                },
+              ],
+            },
+            { stop_reason: 'end_turn', text: '' },
+          ],
+          expected_operations: [
+            {
+              operation_id: 'red_cli_op_zs',
+              kind: 'reading',
+              tool: 'record_reading',
+              field: 'measured_zs_ohm',
+              circuit: 2,
+              value: '0.35',
+              audibility: 'exactly_once',
+            },
+          ],
+          expected_audible_outputs: [],
         },
       ],
     });

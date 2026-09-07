@@ -135,7 +135,6 @@ function bundle(writes) {
     writes,
     { questions: [] },
     {
-      confirmationsEnabled: true,
       turnId: 'turn-1',
     }
   );

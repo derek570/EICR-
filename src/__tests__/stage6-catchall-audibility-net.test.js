@@ -332,14 +332,21 @@ describe('marker-② — fires on the tool-ran-but-nothing-audible class', () =>
     expect(catchallPrompts(result)).toHaveLength(0);
   });
 
-  test('F/U-2/3: notices are dropped for mode-off users (confirmationsEnabled:false) — no wire leak', async () => {
+  test('F/U-2/3: mandatory notices survive extra-prompts-off mode', async () => {
     runToolLoopSpy.mockImplementation(async (opts) => {
       const ptw = opts.perTurnWritesRef();
       ptw.voiceNotices.push({ text: 'Circuit 4 is unchanged — I did not catch a new name.' });
       return {
         stop_reason: 'end_turn',
         rounds: 1,
-        tool_calls: [],
+        tool_calls: [
+          {
+            tool_call_id: 'toolu_notice',
+            name: 'rename_circuit',
+            input: { circuit: 4, designation: 'Sockets' },
+            result: { tool_use_id: 'toolu_notice', is_error: false, content: '{"ok":true}' },
+          },
+        ],
         aborted: false,
         messages_final: [],
         usage: {},
@@ -348,7 +355,7 @@ describe('marker-② — fires on the tool-ran-but-nothing-audible class', () =>
     });
     const opts = baseOpts({ chimeObserved: true, confirmationsEnabled: false });
     const result = await runShadowHarness(session4(), 'rename attempt', [], opts);
-    expect((result.confirmations ?? []).some((c) => /unchanged/.test(c.text ?? ''))).toBe(false);
+    expect((result.confirmations ?? []).some((c) => /unchanged/.test(c.text ?? ''))).toBe(true);
   });
 
   test('(e2) a write with NO confirmation produced and no dedupe evidence → catch-all fires (a silent write IS beep-then-silence)', async () => {
@@ -403,12 +410,12 @@ describe('marker-② — gates and exemptions (does NOT fire)', () => {
     expect(catchallRows(opts.logger)).toHaveLength(0);
   });
 
-  test('(c) confirmationsEnabled:false → no apology (mode-off opted out of the spoken channel)', async () => {
+  test('(c) extra prompts off still emits the mandatory calculation failure outcome', async () => {
     const session = session4();
     mockCalcZsEmptyLoop();
     const opts = baseOpts({ chimeObserved: true, confirmationsEnabled: false });
     const result = await runShadowHarness(session, 'Zs for circuit 4.', [], opts);
-    expect(catchallPrompts(result)).toHaveLength(0);
+    expect(catchallPrompts(result)).toHaveLength(1);
   });
 
   test('(d) a successful reading with an audible confirmation → no catch-all (speech survived)', async () => {

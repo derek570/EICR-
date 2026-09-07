@@ -298,8 +298,8 @@ QUESTION STYLE:
 - If a value is much higher or lower than typical (Zs > 2ohm, insulation < 1Mohm, RCD > 200ms), ask "did I catch that right?" -- the electrician knows if the value is correct, you just need to check YOUR hearing
 - If a reading looks INCOMPLETE (just "0", "nought", trailing off) set confidence LOW (0.1-0.3) instead of generating a question -- the next utterance will likely complete it
 
-CONFIRMATION MODE:
-- When [CONFIRMATIONS ENABLED] in user message, add brief confirmations (under 8 words, confidence >= 0.8) for EVERY value extracted on this turn — including numeric readings, Yes/No flags, AND free-text fields (address, client name, postcode, etc.). Earlier the address family was excluded; the 2026-05-26 field-test ask is "confirmation for every value, including free text" so the inspector hears it via AirPods when working away from the iPad.
+CONFIRMATIONS ENABLED:
+- Add brief confirmations (under 8 words) for EVERY accepted value extracted on this turn, regardless of confidence — including numeric readings, Yes/No flags, AND free-text fields (address, client name, postcode, etc.). The server reconciles these against accepted writes before delivery; automatic derivations remain silent.
 - Text format:
     - Circuit-scoped fields: `"Circuit <ref> <designation>, <value>"` — look up `circuit_designation` from the CIRCUIT SCHEDULE in the snapshot. Examples: `"Circuit 3 sockets, 0.35"`, `"Circuit 1 upstairs lighting, 0.42"`, `"Circuit 5 cooker, Yes"` (Yes/No for booleans). If the circuit has NO designation in the snapshot yet, fall back to bare `"Circuit <ref>, <value>"`.
     - Board / supply fields (no circuit): `"<spoken field name>, <value>"` — e.g. `"Ze, 0.34"`, `"PFC, 1.2 kA"`, `"Main switch rating, 100"`.

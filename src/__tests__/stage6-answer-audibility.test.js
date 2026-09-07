@@ -194,7 +194,12 @@ describe('staged answer = speech-intent (mutual exclusion with every net)', () =
         ptw.answer.outcomes.push({ tool: 'answer_user', code: 'ok' });
       },
     });
-    const result = await runShadowHarness(session(), "What's missing on circuit 4?", [], baseOpts());
+    const result = await runShadowHarness(
+      session(),
+      "What's missing on circuit 4?",
+      [],
+      baseOpts()
+    );
     expect(result.spoken_response).toBe(answer);
     expect(result.answer_source).toBe('answer_user');
     // NON-ENUMERABLE: the marker never survives spread or JSON serialisation
@@ -296,11 +301,11 @@ describe('failed-answer self-healing — the fixed fallback speaks in BOTH toggl
     expect((result.confirmations ?? []).some((c) => c.field === 'measured_zs_ohm')).toBe(true);
   });
 
-  test('confirmation-OFF chimed chatter (no answer feature) → NOTHING spoken, answer state untouched', async () => {
+  test('extra-prompts-OFF chimed chatter gets one mandatory outcome, answer state untouched', async () => {
     const opts = baseOpts({ confirmationsEnabled: false });
     const result = await runShadowHarness(makeSession(), 'lovely wallpaper honestly', [], opts);
     expect(result.spoken_response).toBeUndefined();
-    expect(result.confirmations ?? []).toHaveLength(0);
+    expect(fieldNilApologies(result)).toHaveLength(1);
     const staged = opts.logger.info.mock.calls.filter(
       ([ev]) => ev === 'stage6.answer_fallback_staged'
     );

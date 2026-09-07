@@ -50,7 +50,10 @@ import {
   lookupResolvedPostcodeHint,
   resolvePostcodeHintState,
 } from './postcode-hint.js';
-import { sanitizeReadingFieldContractWithReport } from './reading-field-contract-sanitizer.js';
+import {
+  sanitizeReadingFieldContractWithReport,
+  reconcileLegacyReadingConfirmations,
+} from './reading-field-contract-sanitizer.js';
 import {
   normaliseLegacyDesignationResult,
   mergeDesignationConfirmations,
@@ -2944,9 +2947,7 @@ export class EICRExtractionSession {
     });
     const postcodeLookupResults = [];
     let userMessage = this.buildUserMessage(transcriptText, regexResults, postcodeLookupResult);
-    if (options.confirmationsEnabled) {
-      userMessage += '\n\n[CONFIRMATIONS ENABLED]';
-    }
+    userMessage += '\n\n[CONFIRMATIONS ENABLED]';
 
     // Prepend any recovered utterances from the failed queue (discard if >60s old)
     const now = Date.now();
@@ -3111,7 +3112,6 @@ export class EICRExtractionSession {
     const { rejectedReadingCount } = sanitizeReadingFieldContractWithReport(result, {
       sessionId: this.sessionId,
       logger,
-      confirmationsEnabled: options.confirmationsEnabled === true,
     });
     // PLAN-B ingress 6 — clarification survival: the sanitizer above REPLACES
     // questions_for_user with [] on any rejection, so the seam's server-owned
@@ -3125,6 +3125,14 @@ export class EICRExtractionSession {
     if (designationSeam.clarifications.length > 0) {
       result.questions_for_user.push(...designationSeam.clarifications);
     }
+    // DictatedReadbackPolicyV1: legacy/off/shadow accepted designations are
+    // mandatory speech too. Reconcile before assistant history is retained so
+    // the next model turn sees the same canonical audible outcome delivered to
+    // the clients, never stale model-authored confirmation text.
+    mergeDesignationConfirmations(result, designationSeam, {
+      stateSnapshot: this.stateSnapshot,
+    });
+    reconcileLegacyReadingConfirmations(result);
     // The tool input was captured above before the field-contract boundary.
     // If that boundary rejected anything, retaining the raw JSON in assistant
     // history would replay the forbidden field/value/question/action into the
@@ -3159,12 +3167,14 @@ export class EICRExtractionSession {
     // normalized result using the SAME non-mirror question projection
     // (never a blind stringify of raw questions_for_user, which would
     // reintroduce the mirror candidates the projection excludes).
-    if (designationSeam.changed) {
-      assistantHistoryText = JSON.stringify({
-        ...result,
-        questions_for_user: nonMirrorQuestions,
-      });
-    }
+    // DictatedReadbackPolicyV1 canonicalises ordinary reading confirmations
+    // on every legacy turn, including zero-rejection/low-confidence turns.
+    // Retain that exact result in history so stale model narration cannot be
+    // replayed into the next request.
+    assistantHistoryText = JSON.stringify({
+      ...result,
+      questions_for_user: nonMirrorQuestions,
+    });
 
     // ALWAYS push to conversation history (even on extraction failure) to keep context in sync
     this.conversationHistory.push(
@@ -3316,16 +3326,9 @@ export class EICRExtractionSession {
     // designation-confirmation subset, rebuilt from the seam's ordered
     // surviving-operation ledger (one confirmation per operation, in
     // operation order, via the existing builder; none for removed banned-only
-    // operations). Gated by confirmationsEnabled; other server-owned
+    // operations). Other server-owned
     // sanitizer confirmations are preserved. Runs BEFORE the snapshot dedup
     // below and the locality fold so the rebuilt entries flow through both.
-    mergeDesignationConfirmations(result, designationSeam, {
-      confirmationsEnabled: options.confirmationsEnabled === true,
-      // M1 — non-main-board confirmations get board-qualified TEXT so
-      // cross-board same-(ref, value) twins never serialize identically.
-      stateSnapshot: this.stateSnapshot,
-    });
-
     // [TTS-DEDUP] Bug D fix: dedup confirmations against stateSnapshot
     // Suppress confirmations where the field+circuit already has the same value in snapshot.
     if (result.confirmations.length > 0) {

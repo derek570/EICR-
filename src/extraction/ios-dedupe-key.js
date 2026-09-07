@@ -169,9 +169,9 @@ export function djb2UInt64Decimal(text) {
  * the iOS local correction-TTS dedupe (`correctionDedupeKey`) could cross-match
  * these wire keys; that cross-match is now INTENTIONALLY dropped (id-84: the
  * cross-match permanently swallowed the second read-back of a corrected value).
- * Worst case of dropping it is an extra local read-back, never silence — guarded
- * on server-confirmation turns by the iOS `!(confirmationModeEnabled && …)` check
- * (see `correctionDedupeKey` in DeepgramRecordingViewModel.swift).
+ * The client now suppresses the correction twin whenever a server extraction
+ * turn owns the canonical read-back (see `correctionDedupeKey` in
+ * DeepgramRecordingViewModel.swift).
  *
  * §A1a: when the confirmation carries a `dedupe_token` AND the field is on
  * the wire/client allowlist, the token key takes precedence —

@@ -49,7 +49,6 @@ function bundle(w, options = {}) {
     w,
     {},
     {
-      confirmationsEnabled: true,
       turnId: 'turn-1',
       circuitDesignations: options.circuitDesignations ?? new Map(),
       ...options,

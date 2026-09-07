@@ -183,7 +183,6 @@ describe('A2-multiboard — script backfill precedence is per EFFECTIVE slot', (
 
 function bundle(perTurnWrites) {
   return bundleToolCallsIntoResult(perTurnWrites, null, {
-    confirmationsEnabled: true,
     turnId: 't1',
   });
 }

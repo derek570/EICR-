@@ -249,9 +249,7 @@ describe('address mirror controller', () => {
       client_town: 'London',
     });
 
-    const result = bundleToolCallsIntoResult(turnWrites, null, {
-      confirmationsEnabled: true,
-    });
+    const result = bundleToolCallsIntoResult(turnWrites, null, {});
     const mirrorReadings = result.extracted_board_readings.filter((r) =>
       r.field.startsWith('client_')
     );
@@ -304,9 +302,7 @@ describe('address mirror controller', () => {
     });
     expect(out.outcome).toBe('yes');
     expect(answerWrites.answer.stagedText).toMatch(/same address for the client/i);
-    expect(
-      bundleToolCallsIntoResult(answerWrites, null, { confirmationsEnabled: true }).confirmations
-    ).toBeUndefined();
+    expect(bundleToolCallsIntoResult(answerWrites, null, {}).confirmations).toBeUndefined();
   });
 
   test('rehydration replays missing dictated source with stable tokens before silent copy', async () => {
@@ -377,7 +373,6 @@ describe('address mirror controller', () => {
     });
     expect(out).toMatchObject({ handled: true, outcome: 'yes', replayedSource: 4 });
     const result = bundleToolCallsIntoResult(writes, null, {
-      confirmationsEnabled: true,
       turnId: 'new-process-turn',
     });
     expect(result.turn_id).toBe('new-process-turn');
@@ -526,7 +521,6 @@ describe('address mirror controller', () => {
 
     expect(out).toMatchObject({ handled: true, outcome: 'conflict', replayedSource: 2 });
     const result = bundleToolCallsIntoResult(writes, null, {
-      confirmationsEnabled: true,
       turnId: 'target-conflict-replay-turn',
     });
     expect(result.confirmations.map((confirmation) => confirmation.field)).toEqual([
@@ -693,7 +687,15 @@ describe('address mirror controller', () => {
     expect(
       [...writes.boardReadings.values()].filter((entry) => entry.derived === true)
     ).toHaveLength(2);
-    expect(writes.answer.stagedText).toMatch(/use the site address for the client/i);
+    expect(writes.answer.stagedText).toBeNull();
+    expect(
+      bundleToolCallsIntoResult(writes, null, { turnId: 'direct-completion' }).confirmations
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'address' }),
+        expect.objectContaining({ field: 'postcode' }),
+      ])
+    );
   });
 
   test('incomplete direct completion trusts only a source confirmation that will be audible', async () => {
@@ -935,7 +937,6 @@ describe('address mirror controller', () => {
       replayedSource: 4,
     });
     const result = bundleToolCallsIntoResult(writes, null, {
-      confirmationsEnabled: true,
       turnId: 'direct-derived-recovery-turn',
     });
     expect(result.confirmations.map((confirmation) => confirmation.field)).toEqual([
@@ -1269,7 +1270,6 @@ describe('address mirror controller', () => {
       replayedSource: 2,
     });
     const replayResult = bundleToolCallsIntoResult(replayWrites, null, {
-      confirmationsEnabled: true,
       turnId: 'direct-target-conflict-retry',
     });
     expect(replayResult.confirmations.map((confirmation) => confirmation.field)).toEqual([
