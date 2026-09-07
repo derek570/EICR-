@@ -5972,7 +5972,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     if (gateDecision.borderline === true) {
       logger.info('voice_latency.gate_borderline_forwarded', {
         sessionId,
-        reason: gateDecision.reason,
         textPreview: typeof msg.text === 'string' ? msg.text.substring(0, 80) : null,
         distinct_content_words: gateDecision.distinctContentWords ?? null,
       });

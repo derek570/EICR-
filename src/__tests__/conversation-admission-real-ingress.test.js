@@ -124,7 +124,6 @@ describe('ConversationAdmissionV1 through real initSonnetStream ingress', () => 
         'voice_latency.gate_borderline_forwarded',
         expect.objectContaining({
           sessionId: 'enabled',
-          reason: GATE_REASONS.BORDERLINE_FORWARD,
         })
       );
       expect(activeSessions.get('enabled').session.stateSnapshot).toEqual({
