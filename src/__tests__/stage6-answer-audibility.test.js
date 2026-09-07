@@ -15,14 +15,14 @@
  *  - failed-answer self-healing: attempted-but-failed answer (sole failed
  *    answer_user; inspect-then-silence) stages the FIXED fallback in BOTH
  *    confirmation-toggle states — the answer feature owns its own audibility
- *    (the apology nets are confirmationsEnabled-gated and can't cover
- *    confirmation-OFF).
+ *    while the mandatory apology nets independently cover non-answer failures.
  *  - A3 orphan-net exclusion: a sole terminal-failed answer_user is NOT an
  *    all-rejected turn (no REJECTED_PROMPTS apology beside the fallback).
  *  - mixed write+failed-answer → read-back owns the turn, NO fallback.
  *  - cancelled turns: finalization (incl. fallback staging) still runs; a
  *    staged answer suppresses the F7 cancellation apology (one utterance).
- *  - confirmation-OFF chatter: zero synthesis, answer state untouched.
+ *  - Extra-prompts OFF still receives the mandatory catch-all apology when
+ *    no answer attempt owns the turn; answer state remains untouched.
  */
 
 import { jest } from '@jest/globals';

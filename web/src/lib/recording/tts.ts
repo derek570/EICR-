@@ -160,7 +160,7 @@ export function getConfirmationModeEnabled(): boolean {
  * Persist the confirmation-mode preference. Writes `"true"` / `"false"`
  * so the stored value round-trips through `JSON.parse` in any
  * diagnostic dashboard. Swallows storage errors (quota exceeded,
- * disabled cookies) since confirmation-off is a safe fallback.
+ * disabled cookies); Extra prompts then retain their fail-open default.
  */
 export function setConfirmationModeEnabled(enabled: boolean): void {
   if (typeof window === 'undefined') return;

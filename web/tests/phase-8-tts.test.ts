@@ -1,9 +1,8 @@
 /**
  * SpeechSynthesis wrapper tests — covers the iOS-parity split between
- * the always-on `speak()` path (ask_user prompts, validation alerts,
- * voice-command responses) and the toggle-gated `speakConfirmation()`
- * path (only "Set Zs to 0.44 on circuit 3" style brief reading
- * confirmations).
+ * the `speak()` path (ask_user prompts, validation alerts, voice-command
+ * responses) and the mandatory `speakConfirmation()` reading path. The
+ * persisted preference now controls upstream Extra-prompts production.
  *
  * Storage key migration: pre-parity the wrapper used a single
  * `cm-voice-feedback` boolean to gate every speak() call. The new
@@ -161,7 +160,7 @@ describe('speak() — always-on path', () => {
   });
 });
 
-describe('speakConfirmation() — gated path', () => {
+describe('speakConfirmation() — mandatory path', () => {
   it('keeps mandatory confirmations audible when Extra prompts is off', () => {
     setConfirmationModeEnabled(false);
     speakConfirmation('Set Zs to 0.44 on circuit 3.');

@@ -1383,8 +1383,10 @@ function punctuateAddressMirrorFragment(value) {
  * separate for client application while giving the delivery lease exactly one
  * audio item to fence.
  *
- * Idempotent by shape: a confirmation-only terminal becomes one confirmation;
- * a VCR terminal absorbs every confirmation and empties the array.
+ * Idempotent by shape: an array already ending in the correctly tokened merged
+ * item is unchanged. Otherwise address-family confirmations become one atomic,
+ * tokened final item after unrelated confirmations. The separate VCR carrier
+ * (`spoken_response` / `action`) is never read or mutated here.
  */
 function normaliseAddressMirrorAudibleTerminal(result) {
   const delivery = result?.[ADDRESS_MIRROR_DELIVERY];

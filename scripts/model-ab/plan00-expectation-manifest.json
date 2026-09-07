@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "f9f507408bc734c538660796f0525582bee3ae0e7b80e3820bf327e927779aa0",
+  "semantic_oracle_digest": "0663afd7f09e56c9fadcd522b2414660765ceac7178f5b0e35d2373fdd470965",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -517,7 +517,7 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "6a22e119b8290147bfbe03ec7e6dca4d25d00dd5571833b4840efb86eacfdd46"
+      "sha256": "d4d5607847ffbb7e85629a56a80390a143d442a85eba13da8bf421668a887dc7"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
