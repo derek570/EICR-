@@ -95,4 +95,3 @@ describe('ConversationAdmissionV1 mounted RecordingProvider boundary', () => {
     expect(result.trace.totals.chimes).toBe(1);
   });
 });
-
