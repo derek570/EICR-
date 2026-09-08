@@ -247,9 +247,15 @@ export function resolveJobZe(job: JobZeLike): JobZeResolution {
   if (boardCount > 1) return { state: 'multi_board', boardCount };
   const board = soleJobBoard(job);
   const supply = (job.supply_characteristics ?? {}) as Record<string, unknown>;
+  // At-DB alias precedence: the web column `zs_at_db` first, then the iOS
+  // spelling `ze_at_db` — selected by OCCUPANCY, not key presence. A blank
+  // `zs_at_db` beside a populated `ze_at_db` (a cross-client job) must not
+  // mask it (Codex cycle-1); an occupied-invalid `zs_at_db` still wins the
+  // tier and is parsed once (never a fall-through to the sibling or supply).
+  const atDb = occupied(board.zs_at_db) != null ? board.zs_at_db : board.ze_at_db;
   const tiers: Array<[JobZeSource, unknown]> = [
     ['board_ze', board.ze],
-    ['board_at_db', board.zs_at_db ?? board.ze_at_db],
+    ['board_at_db', atDb],
     ['supply_long', supply.earth_loop_impedance_ze],
     ['supply_short', supply.ze],
   ];
