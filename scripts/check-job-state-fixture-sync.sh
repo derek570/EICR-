@@ -67,8 +67,35 @@ if [[ "${fail}" -ne 0 ]]; then
   exit 1
 fi
 
-count=0
+# Exact-set check on BOTH sides (Codex EP iOS cycle 2): an extra file in either
+# directory — even one present in both — is drift, because it is absent from
+# the manifest and from `JobStateFixtureTests.requiredFiles`.
 shopt -s nullglob
+for dir in "${BACKEND_DIR}" "${IOS_DIR}"; do
+  for f in "${dir}"/*; do
+    [[ -f "${f}" ]] || continue
+    name="$(basename "${f}")"
+    ok=0
+    for req in "${REQUIRED_FILES[@]}"; do [[ "${req}" == "${name}" ]] && ok=1; done
+    if [[ "${ok}" -eq 0 ]]; then
+      echo "EXTRA    ${name}: not in the fixed fixture set (${dir})" >&2
+      fail=1
+    fi
+  done
+done
+# The manifest must key exactly the other five files (never itself).
+manifest_keys="$(python3 -c 'import json,sys; print("\n".join(sorted(json.load(open(sys.argv[1]))["files"].keys())))' "${BACKEND_DIR}/manifest.json" 2>/dev/null || true)"
+expected_keys="$(printf '%s\n' "${REQUIRED_FILES[@]}" | grep -v '^manifest.json$' | sort)"
+if [[ "${manifest_keys}" != "${expected_keys}" ]]; then
+  echo "MANIFEST manifest.json keys differ from the fixed set (expected: $(echo "${expected_keys}" | tr '\n' ' '))" >&2
+  fail=1
+fi
+if [[ "${fail}" -ne 0 ]]; then
+  echo "check-job-state-fixture-sync: FAILED — the fixture set must be exactly the six named files on both sides." >&2
+  exit 1
+fi
+
+count=0
 for src in "${BACKEND_DIR}"/*; do
   name="$(basename "${src}")"
   dst="${IOS_DIR}/${name}"
