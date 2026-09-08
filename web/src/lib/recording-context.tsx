@@ -2842,6 +2842,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       try {
         applied = applyExtractionToJob(jobRef.current, result, {
           userDefaults: userDefaultsRef.current,
+          // A01P — a landed accepted supply Ze promotes its alias family to
+          // Sonnet ownership so a later regex re-hit respects the correction.
+          fieldSourceTracker: fieldSourceTrackerRef.current,
           // L2 obs-photo sprint — thread the pending tuple so an
           // observation arriving within the 60 s auto-link window can
           // claim the photo. The callback drains both the in-memory

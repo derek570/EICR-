@@ -80,17 +80,21 @@ describe('apply-extraction circuit:0 dual-write (wire name + PWA column)', () =>
     }
   );
 
+  // A01P (2026-09-08): these two rows previously used Ze as their example.
+  // An ACCEPTED dictated supply Ze now REPLACES a differing seeded / manual
+  // value (a01p-accepted-ze.test.ts); the fill-only gate is unchanged for
+  // every other dual-write field, so the rows pin it on PFC instead.
   it('keeps a user value typed under the PWA column name', () => {
-    // Inspector already typed "0.99" into the Supply tab's Ze field
-    // (stored as `earth_loop_impedance_ze`). Sonnet then dictates a
-    // Ze reading. The 3-tier priority rule must protect the user's
-    // value — even though the wire name `ze` isn't set, the PWA
+    // Inspector already typed "1.99" into the Supply tab's PFC field
+    // (stored as `prospective_fault_current`). Sonnet then dictates a
+    // PFC reading. The 3-tier priority rule must protect the user's
+    // value — even though the wire name `pfc` isn't set, the PWA
     // column IS, and the dual-name check sees it.
     const job = makeJob({
-      supply_characteristics: { earth_loop_impedance_ze: '0.99' },
+      supply_characteristics: { prospective_fault_current: '1.99' },
     });
     const result = makeResult({
-      readings: [{ circuit: 0, field: 'ze', value: '0.42' }],
+      readings: [{ circuit: 0, field: 'pfc', value: '1.42' }],
     });
     const applied = applyExtractionToJob(job, result);
     expect(applied).toBeNull();
@@ -101,10 +105,10 @@ describe('apply-extraction circuit:0 dual-write (wire name + PWA column)', () =>
     // have left the value under the wire name. Same priority guard
     // applies.
     const job = makeJob({
-      supply_characteristics: { ze: '0.99' },
+      supply_characteristics: { pfc: '1.99' },
     });
     const result = makeResult({
-      readings: [{ circuit: 0, field: 'ze', value: '0.42' }],
+      readings: [{ circuit: 0, field: 'pfc', value: '1.42' }],
     });
     const applied = applyExtractionToJob(job, result);
     expect(applied).toBeNull();

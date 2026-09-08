@@ -138,22 +138,30 @@ describe('item 7 — boardless flagged reading (global scope) writes the section
     // Declining here is NOT the fail-closed path — nothing was declined.
     expect(stages()).toContain('apply_flagged_board_replacement_section_only');
     expect(stages()).not.toContain('apply_flagged_board_replacement_orphan_board_ref');
-    expect(stages()).toContain('apply_section_reading_replaces_cleared_bypass');
+    // A01P (2026-09-08): the accepted-Ze family writes through its own
+    // replace arm (both aliases materialised) — the generic bypass log is
+    // no longer the path a flagged Ze takes.
+    expect(stages()).toContain('apply_accepted_ze_replaced');
+    expect(
+      (applied!.patch.supply_characteristics as Record<string, unknown>).earth_loop_impedance_ze
+    ).toBe('0.21');
   });
 
-  it('GATE INTACT — the identical boardless `ze` WITHOUT the flag is still blocked', () => {
+  it('[invariant] A01P — the identical boardless `ze` WITHOUT the flag now REPLACES too (accepted supply Ze supersedes a differing value)', () => {
+    // Pre-A01P this row pinned the fill-only gate ("GATE INTACT"). An accepted
+    // dictated Ze is the inspector's correction; leaving the stale 0.35 in
+    // place while reading back 0.21 was the defect. The gate is unchanged for
+    // every other field (see the pfc control in a01p-accepted-ze.test.ts).
     const job = twoBoardJob({ supply_characteristics: { ze: '0.35' } });
     const applied = applyExtractionToJob(
       job,
       makeResult([boardReading({ field: 'ze', value: '0.21', replaces_cleared: undefined })])
     );
-
-    // Pre-item-7 behaviour, unchanged: a bare write never clobbers a value
-    // the user already owns.
-    const patched = applied?.patch.supply_characteristics as Record<string, unknown> | undefined;
-    expect(patched?.ze ?? '0.35').toBe('0.35');
-    expect(stages()).toContain('apply_section_reading_user_value_kept');
-    expect(stages()).not.toContain('apply_section_reading_replaces_cleared_bypass');
+    const patched = applied?.patch.supply_characteristics as Record<string, unknown>;
+    expect(patched.ze).toBe('0.21');
+    expect(patched.earth_loop_impedance_ze).toBe('0.21');
+    expect(stages()).not.toContain('apply_section_reading_user_value_kept');
+    expect(applied!.patch.boards).toBeUndefined();
   });
 });
 
