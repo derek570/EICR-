@@ -168,6 +168,9 @@ export interface VoiceCommandOutcome {
   actionOutcome?: 'applied' | 'unapplied' | 'failed' | 'unsupported';
   actionReason?: string;
   appliedResults?: Array<{ circuit: number | string; field: string; value: string }>;
+  /** A01P — rows the local calculator deliberately left alone because the
+   *  destination was already occupied (a meter reading always wins). */
+  skippedResults?: Array<{ circuit: number | string; reason: 'already_set' }>;
   /** Partial JobDetail patch; undefined for pure query commands.
    *  Callers cast to their richer JobDetail shape — the structural
    *  typing here only requires the keys the applier might touch. */
@@ -1388,8 +1391,22 @@ function applyCalculateImpedance(
   }
   const zeNum = ze.value;
   const appliedResults: Array<{ circuit: number | string; field: string; value: string }> = [];
+  // Codex cycle-1 BLOCKER — a meter reading always wins. Mirrors the backend
+  // calculators' `already_set` skip (stage6-dispatchers-circuit.js): a row
+  // whose DESTINATION field is already occupied (a number, LIM, N/A — any
+  // non-blank value) is never overwritten by a derived value, in single,
+  // range and all scopes alike; the empty rows in the same command still
+  // fill. The read-back names only what was actually written.
+  const skipped: Array<{ circuit: number | string; reason: 'already_set' }> = [];
+  const refOf = (row: VoiceCommandCircuit, idx: number): string =>
+    String(row.circuit_ref ?? row.number ?? idx + 1);
+  const destination = command.kind === 'zs' ? 'measured_zs_ohm' : 'r1_r2_ohm';
   const next = circuits.map((row, idx) => {
     if (!indices.includes(idx)) return row;
+    if (String(row[destination] ?? '').trim() !== '') {
+      skipped.push({ circuit: refOf(row, idx), reason: 'already_set' });
+      return row;
+    }
     if (command.kind === 'zs') {
       // Zs = Ze + R1+R2
       const r1r2Str = row.r1_r2_ohm;
@@ -1422,6 +1439,26 @@ function applyCalculateImpedance(
   });
   const label = command.kind === 'zs' ? 'Zs' : 'R1 plus R2';
   if (appliedResults.length === 0) {
+    if (skipped.length > 0) {
+      // Everything selected already carries a measured value — the honest
+      // outcome is the backend's own "already recorded" line, never a
+      // fabricated success and never silence (A04P truthful outcomes).
+      const refs = skipped.map((s) => s.circuit);
+      const scope =
+        refs.length === 1
+          ? `circuit ${refs[0]}`
+          : `circuits ${refs.slice(0, -1).join(', ')} and ${refs[refs.length - 1]}`;
+      const tail =
+        refs.length === 1
+          ? 'say a new reading to replace it.'
+          : 'say new readings to replace them.';
+      return {
+        response: `${label} for ${scope} is already recorded — ${tail}`,
+        actionOutcome: 'unapplied',
+        actionReason: 'already_set',
+        skippedResults: skipped,
+      };
+    }
     return {
       response: `No circuits had the values needed to calculate ${label}.`,
     };
@@ -1446,6 +1483,7 @@ function applyCalculateImpedance(
     response,
     actionOutcome: 'applied',
     appliedResults,
+    ...(skipped.length > 0 ? { skippedResults: skipped } : {}),
     changedKeys: command.kind === 'zs' ? ['measured_zs_ohm'] : ['r1_r2_ohm'],
   };
 }

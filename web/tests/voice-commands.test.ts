@@ -482,3 +482,146 @@ describe('[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-stat
     expect(applyVoiceCommand(cmd(), job).response).toBe(NO_ZE_RESPONSE);
   });
 });
+
+describe('[invariant] A01P Codex cycle-1 — a meter reading always wins (already_set skip, every scope)', () => {
+  const rows = [
+    {
+      id: 'c1',
+      circuit_ref: '1',
+      circuit_designation: 'Cooker',
+      r1_r2_ohm: '0.20',
+      measured_zs_ohm: '0.42',
+    },
+    { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets', r1_r2_ohm: '0.30' },
+    {
+      id: 'c3',
+      circuit_ref: '3',
+      circuit_designation: 'Lights',
+      r1_r2_ohm: '0.10',
+      measured_zs_ohm: 'LIM',
+    },
+    { id: 'c4', circuit_ref: '4', circuit_designation: 'Shower', r1_r2_ohm: '0.40' },
+  ];
+  const job = (): VoiceCommandJob => ({
+    supply_characteristics: { ze: '0.35' },
+    circuits: rows.map((r) => ({ ...r })),
+  });
+
+  it('single scope: an occupied destination is left unchanged and the outcome says so', () => {
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for circuit 1')!, job());
+    expect(out.patch).toBeUndefined();
+    expect(out.actionOutcome).toBe('unapplied');
+    expect(out.actionReason).toBe('already_set');
+    expect(out.skippedResults).toEqual([{ circuit: '1', reason: 'already_set' }]);
+    expect(out.response).toBe(
+      'Zs for circuit 1 is already recorded — say a new reading to replace it.'
+    );
+  });
+
+  it('range scope: occupied rows (a number AND a LIM) are skipped, the empty row in the same command fills; read-back names only what was written', () => {
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for circuits 1 to 3')!, job());
+    const next = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(next[0].measured_zs_ohm).toBe('0.42');
+    expect(next[2].measured_zs_ohm).toBe('LIM');
+    expect(next[1].measured_zs_ohm).toBe('0.65');
+    expect(out.appliedResults).toEqual([{ circuit: '2', field: 'measured_zs_ohm', value: '0.65' }]);
+    expect(out.skippedResults).toEqual([
+      { circuit: '1', reason: 'already_set' },
+      { circuit: '3', reason: 'already_set' },
+    ]);
+    expect(out.response).toBe('Circuit 2, Zs calculated as 0.65 ohms');
+    expect(out.actionOutcome).toBe('applied');
+  });
+
+  it('all scope: two skipped, two filled', () => {
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for all circuits')!, job());
+    const next = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(next.map((r) => r.measured_zs_ohm)).toEqual(['0.42', '0.65', 'LIM', '0.75']);
+    expect(out.response).toBe(
+      'Circuit 2, Zs calculated as 0.65 ohms. Circuit 4, Zs calculated as 0.75 ohms'
+    );
+  });
+
+  it('all scope with every destination occupied → the plural already-recorded line, nothing written', () => {
+    const j: VoiceCommandJob = {
+      supply_characteristics: { ze: '0.35' },
+      circuits: [
+        {
+          id: 'c1',
+          circuit_ref: '1',
+          circuit_designation: 'Cooker',
+          r1_r2_ohm: '0.20',
+          measured_zs_ohm: '0.42',
+        },
+        {
+          id: 'c2',
+          circuit_ref: '2',
+          circuit_designation: 'Sockets',
+          r1_r2_ohm: '0.30',
+          measured_zs_ohm: '0.66',
+        },
+      ],
+    };
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for all')!, j);
+    expect(out.patch).toBeUndefined();
+    expect(out.response).toBe(
+      'Zs for circuits 1 and 2 is already recorded — say new readings to replace them.'
+    );
+    expect(out.actionOutcome).toBe('unapplied');
+  });
+
+  it('R1+R2 branch: an occupied r1_r2_ohm is never overwritten by Zs − Ze', () => {
+    const j: VoiceCommandJob = {
+      supply_characteristics: { ze: '0.10' },
+      circuits: [
+        {
+          id: 'c1',
+          circuit_ref: '1',
+          circuit_designation: 'Cooker',
+          measured_zs_ohm: '0.55',
+          r1_r2_ohm: '0.20',
+        },
+        { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets', measured_zs_ohm: '0.60' },
+      ],
+    };
+    const out = applyVoiceCommand(parseVoiceCommand('calculate R1+R2 for all circuits')!, j);
+    const next = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(next[0].r1_r2_ohm).toBe('0.20');
+    expect(next[1].r1_r2_ohm).toBe('0.50');
+    expect(out.response).toBe('Circuit 2, R1 plus R2 calculated as 0.50 ohms');
+    expect(out.skippedResults).toEqual([{ circuit: '1', reason: 'already_set' }]);
+  });
+});
+
+describe('[invariant] A01P Codex cycle-1 — at-DB alias selected by occupancy', () => {
+  const rows = [{ id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker', r1_r2_ohm: '0.20' }];
+  it('a BLANK zs_at_db beside a populated ze_at_db uses ze_at_db (0.40 + 0.20 = 0.60, not supply 0.70)', () => {
+    const job: VoiceCommandJob = {
+      boards: [{ id: 'main', board_type: 'main', zs_at_db: '', ze_at_db: '0.40' }],
+      supply_characteristics: { earth_loop_impedance_ze: '0.50' },
+      circuits: rows,
+    };
+    expect(resolveJobZe(job)).toMatchObject({ state: 'finite', value: 0.4, source: 'board_at_db' });
+    expect(applyVoiceCommand(parseVoiceCommand('calculate Zs for circuit 1')!, job).response).toBe(
+      'Circuit 1, Zs calculated as 0.60 ohms'
+    );
+  });
+
+  it('an occupied-INVALID zs_at_db still wins the tier: unreadable, never the sibling or supply', () => {
+    const job: VoiceCommandJob = {
+      boards: [{ id: 'main', board_type: 'main', zs_at_db: 'N/A', ze_at_db: '0.40' }],
+      supply_characteristics: { earth_loop_impedance_ze: '0.50' },
+      circuits: rows,
+    };
+    expect(resolveJobZe(job)).toEqual({ state: 'unreadable', raw: 'N/A', source: 'board_at_db' });
+  });
+
+  it('both at-DB aliases blank → supply ladder', () => {
+    expect(
+      resolveJobZe({
+        boards: [{ id: 'main', zs_at_db: ' ', ze_at_db: '' }],
+        supply_characteristics: { ze: '0.50' },
+      })
+    ).toMatchObject({ state: 'finite', value: 0.5, source: 'supply_short' });
+  });
+});
