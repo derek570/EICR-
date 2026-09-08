@@ -72,8 +72,9 @@ fi
 # the manifest and from `JobStateFixtureTests.requiredFiles`.
 shopt -s nullglob
 for dir in "${BACKEND_DIR}" "${IOS_DIR}"; do
-  for f in "${dir}"/*; do
-    [[ -f "${f}" ]] || continue
+  # `find -type f` (not a glob) so dot-prefixed extras are enumerated too
+  # (Codex EP iOS cycle 3: `.extra.json` slipped past `${dir}/*`).
+  while IFS= read -r -d '' f; do
     name="$(basename "${f}")"
     ok=0
     for req in "${REQUIRED_FILES[@]}"; do [[ "${req}" == "${name}" ]] && ok=1; done
@@ -81,7 +82,7 @@ for dir in "${BACKEND_DIR}" "${IOS_DIR}"; do
       echo "EXTRA    ${name}: not in the fixed fixture set (${dir})" >&2
       fail=1
     fi
-  done
+  done < <(find "${dir}" -mindepth 1 -maxdepth 1 -type f -print0)
 done
 # The manifest must key exactly the other five files (never itself).
 manifest_keys="$(python3 -c 'import json,sys; print("\n".join(sorted(json.load(open(sys.argv[1]))["files"].keys())))' "${BACKEND_DIR}/manifest.json" 2>/dev/null || true)"
@@ -96,7 +97,7 @@ if [[ "${fail}" -ne 0 ]]; then
 fi
 
 count=0
-for src in "${BACKEND_DIR}"/*; do
+while IFS= read -r -d '' src; do
   name="$(basename "${src}")"
   dst="${IOS_DIR}/${name}"
   count=$((count + 1))
@@ -111,14 +112,14 @@ for src in "${BACKEND_DIR}"/*; do
     echo "         ios:     $(shasum -a 256 "${dst}" | cut -d' ' -f1)" >&2
     fail=1
   fi
-done
-for dst in "${IOS_DIR}"/*; do
+done < <(find "${BACKEND_DIR}" -mindepth 1 -maxdepth 1 -type f -print0)
+while IFS= read -r -d '' dst; do
   name="$(basename "${dst}")"
   if [[ ! -f "${BACKEND_DIR}/${name}" ]]; then
     echo "EXTRA    ${name}: present on iOS but absent from the backend fixture set" >&2
     fail=1
   fi
-done
+done < <(find "${IOS_DIR}" -mindepth 1 -maxdepth 1 -type f -print0)
 
 if [[ "${count}" -eq 0 ]]; then
   echo "check-job-state-fixture-sync: no fixtures found in ${BACKEND_DIR}" >&2
