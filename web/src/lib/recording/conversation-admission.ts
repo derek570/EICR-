@@ -4,6 +4,9 @@
  * backend remains model-owned and list-free.
  */
 
+import { parseCalculateCommand } from '@certmate/shared-utils';
+import { normalise } from './number-normaliser';
+
 export type ConversationAdmissionClass =
   | 'QUERY_TRIGGER'
   | 'REFERENCE_TRIGGER'
@@ -67,7 +70,10 @@ const FOLLOWING_QUERY_OR_REFERENCE_RE = new RegExp(
 );
 
 function trimTerminalPunctuation(text: string): string {
-  return text.trim().replace(/[.!?]+\s*$/, '').trim();
+  return text
+    .trim()
+    .replace(/[.!?]+\s*$/, '')
+    .trim();
 }
 
 function stripPoliteWrapper(text: string): string {
@@ -84,9 +90,10 @@ function stripPoliteWrapper(text: string): string {
 
 function isAnchoredQuery(text: string): boolean {
   const core = stripPoliteWrapper(text);
-  const match = /^(repeat(?:\s+(?:that|it))?(?:\s+again)?|say\s+(?:that|it)(?:\s+again)?|help(?:\s+me)?|review\s+the\s+readings|what\s+did\s+you\s+(?:hear|get|write)|what(?:\s+is|'s|’s)\s+(?:still\s+)?missing|what(?:\s+is|'s|’s)\s+the\s+next\s+(?:test|reading))(.*)$/i.exec(
-    core
-  );
+  const match =
+    /^(repeat(?:\s+(?:that|it))?(?:\s+again)?|say\s+(?:that|it)(?:\s+again)?|help(?:\s+me)?|review\s+the\s+readings|what\s+did\s+you\s+(?:hear|get|write)|what(?:\s+is|'s|’s)\s+(?:still\s+)?missing|what(?:\s+is|'s|’s)\s+the\s+next\s+(?:test|reading))(.*)$/i.exec(
+      core
+    );
   if (!match) return false;
   const tail = match[2].trim();
   if (!tail) return true;
@@ -96,10 +103,7 @@ function isAnchoredQuery(text: string): boolean {
 
 function isWholeReference(text: string): boolean {
   const core = trimTerminalPunctuation(text);
-  const simple = new RegExp(
-    `^(?:the\\s+)?(?:${REFERENCE_WORD})(?:\\s+(?:one|circuit))?$`,
-    'i'
-  );
+  const simple = new RegExp(`^(?:the\\s+)?(?:${REFERENCE_WORD})(?:\\s+(?:one|circuit))?$`, 'i');
   if (simple.test(core)) return true;
 
   const governed = new RegExp(
@@ -160,6 +164,36 @@ function findProtectedOrdinalSpans(
   return spans;
 }
 
+/**
+ * A01P (2026-09-08) — stage 2 of the whole-Calculate carve-out. Deepgram
+ * finals carry terminal punctuation, and a trailing `?` makes stage 1
+ * classify a complete spoken Calculate ("Calculate Zs for circuit one?")
+ * QUESTION_SHAPED with `bypassMutation`, which suppresses the local parse on
+ * both clients. This is NOT a second grammar: the probe applies the existing
+ * NumberNormaliser WITH stage 1's protected ordinal spans (so a protected
+ * `second one` is never rewritten into a circuit), strips terminal
+ * punctuation, and asks the client's OWN Calculate parser through its
+ * remainder-aware variant whether the result is a complete Calculate with
+ * NO unconsumed remainder. Only then does the raw final stay ORDINARY. The
+ * base parser ignores trailing text, so a base-parser probe would wrongly
+ * admit "calculate Zs for circuit one, what did I say?".
+ *
+ * Web has no QUERY_TRIGGER override (`calculate` is not an auxiliary); the
+ * probe runs ONLY for QUESTION_SHAPED — never REFERENCE_TRIGGER, MIXED, or
+ * ORDINARY (whose ordinary parse already runs with `bypassMutation: false`).
+ */
+function isWholeCalculateCommand(
+  rawFinal: string,
+  protectedOrdinalSpans: readonly ProtectedOrdinalSpan[]
+): boolean {
+  const probe = normalise(rawFinal, protectedOrdinalSpans)
+    .trim()
+    .replace(/[.,!?]+\s*$/, '')
+    .trim();
+  const command = parseCalculateCommand(probe);
+  return command != null && command.remainder === '';
+}
+
 export function classifyConversationAdmission(rawFinal: string): ConversationAdmissionDecision {
   const raw = rawFinal.trim();
   let classification: ConversationAdmissionClass = 'ORDINARY';
@@ -194,6 +228,21 @@ export function classifyConversationAdmission(rawFinal: string): ConversationAdm
       if (embeddedQuery || embeddedReference) classification = 'MIXED';
       else if (!subjectless && MARKER_RE.test(raw)) classification = 'QUERY_TRIGGER';
       else classification = 'QUESTION_SHAPED';
+    }
+  }
+
+  // A01P — two-stage whole-Calculate carve-out (beside WorkOnBoardIntent's
+  // WHOLE_BOARD_IMPERATIVE_RE above). Stage 1's raw evidence is preserved:
+  // the provisional protected spans feed the probe and ride the decision.
+  if (classification === 'QUESTION_SHAPED') {
+    const provisionalSpans = findProtectedOrdinalSpans(rawFinal, classification);
+    if (isWholeCalculateCommand(rawFinal, provisionalSpans)) {
+      return {
+        classification: 'ORDINARY',
+        bypassMutation: false,
+        admits: false,
+        protectedOrdinalSpans: provisionalSpans,
+      };
     }
   }
 

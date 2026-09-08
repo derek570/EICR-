@@ -40,6 +40,7 @@ import {
   type GuardedTarget,
 } from './closed-enum-guard';
 import { repairCircuitDesignation } from './designation-canonicaliser';
+import { resolveJobZe, type JobZeLike } from './circuit-derivations';
 
 // We use local structural types rather than pulling from @certmate/shared-types
 // because the iOS-oriented shared-types `JobDetail` uses nested sections
@@ -68,6 +69,12 @@ export interface VoiceCommandJob {
   board?: Record<string, unknown>;
   extent?: Record<string, unknown>;
   design?: Record<string, unknown>;
+  /** A01P — the REAL web job keys the local Calculate route reads
+   *  (`resolveJobZe`). The singular `supply` / `board` bags above are
+   *  unpopulated on the web JobDetail and were the original Ze bug. */
+  supply_characteristics?: Record<string, unknown> | null;
+  boards?: Array<Record<string, unknown>> | null;
+  board_info?: Record<string, unknown> | null;
   [key: string]: unknown;
 }
 
@@ -108,6 +115,12 @@ export type VoiceCommand =
       type: 'calculate_impedance';
       kind: 'zs' | 'r1_r2';
       scope: VoiceCommandScope;
+      /** A01P — additive remainder metadata: the normalised text left
+       *  after the scope match, terminal punctuation stripped (`''` when
+       *  the scope consumed everything). The CALLER forwards a Calculate
+       *  with unconsumed text ("… on the garage board") as an ordinary
+       *  transcript; the parser's recognition set is unchanged. */
+      remainder?: string;
     }
   | {
       /** Apply a single (field, value) to every circuit in the scope.
@@ -529,6 +542,70 @@ function stripPrefix(text: string, prefixes: readonly string[]): string | null {
   return null;
 }
 
+/**
+ * A01P — remainder-aware sibling of `parseScopeText`, used ONLY by the
+ * Calculate caller (`parseScopeText` and its `apply_field` caller are
+ * untouched). Same recognised shapes; additionally tolerates terminal
+ * `.`, `,`, `!` or `?` (Deepgram finals carry them) and reports the text
+ * left after the scope so the caller can forward board-qualified trailing
+ * text ("… on the garage board") instead of executing locally.
+ */
+export function parseScopeTextWithRemainder(
+  text: string
+): { scope: VoiceCommandScope; remainder: string } | null {
+  let rest = text
+    .trim()
+    .replace(/[.,!?]+$/, '')
+    .trim();
+  if (rest.startsWith('for ')) rest = rest.slice(4).trim();
+  if (rest === 'all' || rest === 'all circuits') return { scope: { kind: 'all' }, remainder: '' };
+  const allMatch = /^all(?:\s+circuits)?\b\s*(.*)$/.exec(rest);
+  if (allMatch) return { scope: { kind: 'all' }, remainder: allMatch[1].trim() };
+  const rangeMatch = /^(?:circuits?)\s+(\d+)\s+to\s+(\d+)\b\s*(.*)$/.exec(rest);
+  if (rangeMatch) {
+    const from = Number(rangeMatch[1]);
+    const to = Number(rangeMatch[2]);
+    if (Number.isFinite(from) && Number.isFinite(to)) {
+      return { scope: { kind: 'range', from, to }, remainder: rangeMatch[3].trim() };
+    }
+  }
+  const singleMatch = /^(?:circuits?)\s+(\d+)\b\s*(.*)$/.exec(rest);
+  if (singleMatch) {
+    const ref = Number(singleMatch[1]);
+    if (Number.isFinite(ref) && ref >= 1) {
+      return { scope: { kind: 'single', circuit: ref }, remainder: singleMatch[2].trim() };
+    }
+  }
+  return null;
+}
+
+/** A01P — the additive optional `client_command` transcript-frame marker a
+ *  client stamps when it RECOGNISED a Calculate but declined to run it
+ *  locally (multi-board job). Names the server calculator the model selects. */
+export type ClientCommandMarker = 'calculate_zs' | 'calculate_r1_plus_r2';
+
+export function clientCommandForCalculate(
+  command: Extract<VoiceCommand, { type: 'calculate_impedance' }>
+): ClientCommandMarker {
+  return command.kind === 'r1_r2' ? 'calculate_r1_plus_r2' : 'calculate_zs';
+}
+
+/**
+ * A01P — Calculate-only parse entry for the ConversationAdmissionV1 probe.
+ * Identical grammar to `parseVoiceCommand`'s Calculate branch (this IS that
+ * branch); the probe asks for a complete Calculate with NO unconsumed
+ * remainder, which `command.remainder === ''` answers.
+ */
+export function parseCalculateCommand(
+  transcript: string
+): Extract<VoiceCommand, { type: 'calculate_impedance' }> | null {
+  if (!transcript) return null;
+  const trimmed = transcript.trim();
+  if (trimmed.length === 0) return null;
+  const cmd = parseCalculate(trimmed);
+  return cmd && cmd.type === 'calculate_impedance' ? cmd : null;
+}
+
 function parseScopeText(text: string): VoiceCommandScope | null {
   let rest = text.trim();
   if (rest.startsWith('for ')) rest = rest.slice(4).trim();
@@ -573,11 +650,13 @@ function parseCalculate(transcript: string): VoiceCommand | null {
   if (!kind) return null;
   // Bare "calculate Zs" with no scope is ambiguous — refuse rather than
   // guess. Mirrors iOS line 666–667. The inspector should re-issue with
-  // a scope. parseScopeText returns null for empty input so we naturally
-  // bail.
-  const scope = parseScopeText(rest);
-  if (!scope) return null;
-  return { type: 'calculate_impedance', kind, scope };
+  // a scope. The remainder sibling returns null for empty input so we
+  // naturally bail. A01P: the sibling also tolerates terminal punctuation
+  // (`calculate impedance for all.` now parses) and reports unconsumed
+  // trailing text for the caller's forwarding decision.
+  const parsed = parseScopeTextWithRemainder(rest);
+  if (!parsed) return null;
+  return { type: 'calculate_impedance', kind, scope: parsed.scope, remainder: parsed.remainder };
 }
 
 /** All known field-alias phrases, sorted longest-first so prefix
@@ -1264,6 +1343,11 @@ function formatImpedance(value: number): string {
   return value.toFixed(2);
 }
 
+/** Genuinely absent Ze — every ladder tier blank (existing no-Ze wording). */
+export const NO_ZE_RESPONSE = "I can't calculate that — no zed E value has been set yet.";
+/** DictatedReadbackPolicyV1 `strings.ze_unreadable` (config/dictated-readback-policy-v1.json). */
+const ZE_UNREADABLE_RESPONSE = 'I couldn’t apply that calculation.';
+
 function applyCalculateImpedance(
   command: Extract<VoiceCommand, { type: 'calculate_impedance' }>,
   job: VoiceCommandJob
@@ -1275,25 +1359,34 @@ function applyCalculateImpedance(
   if (indices.length === 0) {
     return respondUnknown('No circuits found in the specified range.');
   }
-  // Read Ze from supply.ze. iOS also tries the active board's Ze
-  // first — the PWA doesn't yet carry a board-level Ze override, so
-  // supply Ze is the only source. If that's absent, refuse cleanly.
-  // Note `Number('')` returns 0 (finite) — so an empty/whitespace
-  // string must short-circuit BEFORE the numeric coercion.
-  const supply = (job.supply ?? {}) as Record<string, unknown>;
-  const zeRaw = supply.ze;
-  const zeStr = typeof zeRaw === 'number' ? String(zeRaw) : String(zeRaw ?? '');
-  if (zeStr.trim() === '') {
-    return respondUnknown("I can't calculate that — no zed E value has been set yet.");
-  }
-  const zeNum = Number(zeStr);
-  if (!Number.isFinite(zeNum)) {
+  // A01P — resolve Ze exactly once for the JOB through the real job keys
+  // (`boards[]` / `board_info` / `supply_characteristics`), never through a
+  // circuit anchor and never through the unpopulated singular `supply` bag
+  // that caused the original bug. Three states, parse-once, no fall-through
+  // from an occupied-but-invalid tier (mirrors iOS `findZe`).
+  const ze = resolveJobZe(job as JobZeLike);
+  if (ze.state === 'multi_board') {
+    // The caller forwards multi-board Calculates before reaching here; this
+    // is the truthful terminal if it ever does not.
     return {
-      response: 'I couldn’t apply that calculation.',
+      response: ZE_UNREADABLE_RESPONSE,
+      actionOutcome: 'unsupported',
+      actionReason: 'multi_board',
+    };
+  }
+  if (ze.state === 'absent') {
+    return respondUnknown(NO_ZE_RESPONSE);
+  }
+  if (ze.state === 'unreadable') {
+    // DictatedReadbackPolicyV1 `strings.ze_unreadable` — spoken exactly once
+    // by the caller's FIFO; a recorded LIM / N/A is never narrated as "no Ze".
+    return {
+      response: ZE_UNREADABLE_RESPONSE,
       actionOutcome: 'unsupported',
       actionReason: 'ze_unreadable',
     };
   }
+  const zeNum = ze.value;
   const appliedResults: Array<{ circuit: number | string; field: string; value: string }> = [];
   const next = circuits.map((row, idx) => {
     if (!indices.includes(idx)) return row;

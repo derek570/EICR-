@@ -101,7 +101,7 @@ export interface SonnetSessionLike {
  *  Sonnet extraction apply). `source` distinguishes the write tier so the
  *  B2 trace can diff per-utterance applied fields with provenance. */
 export interface JobStateChange {
-  source: 'regex' | 'extraction' | 'board_ops';
+  source: 'regex' | 'extraction' | 'board_ops' | 'local_command';
   patch: Partial<JobDetail>;
   /** The job AFTER the patch folded in (the pipeline's own jobRef view). */
   job: JobDetail;

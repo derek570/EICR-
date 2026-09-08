@@ -65,6 +65,10 @@ export const BOARD_CLEAR_ROUTE_MAP: Readonly<Record<string, BoardClearScope>> = 
   ze: 'global',
   pfc: 'global',
   manufacturer: 'board',
+  // A01P (2026-09-08) — the client's name is an installation-global identity
+  // field: one cell per job (`installation_details.client_name`), no board
+  // copy, cleared from any board spelling the backend accepted.
+  client_name: 'global',
 });
 
 /**
@@ -72,19 +76,43 @@ export const BOARD_CLEAR_ROUTE_MAP: Readonly<Record<string, BoardClearScope>> = 
  * wire ships the short key; the long key is the PWA column the tabs/PDF
  * read (LEGACY_TO_PWA_SECTION_FIELD in apply-extraction.ts).
  */
-const GLOBAL_SWEEP: Readonly<
-  Record<string, { sectionKeys: readonly string[]; boardKeys: readonly string[] }>
-> = Object.freeze({
+interface GlobalSweep {
+  /** The job section that owns the global cell. */
+  section: 'supply_characteristics' | 'installation_details';
+  sectionKeys: readonly string[];
+  boardKeys: readonly string[];
+  /** Supply globals also live on the legacy `board_info` summary. */
+  sweepBoardInfo: boolean;
+  /** FieldSourceTracker prefix for the ownership release. */
+  ownershipPrefix: 'supply' | 'install';
+}
+
+const GLOBAL_SWEEP: Readonly<Record<string, GlobalSweep>> = Object.freeze({
   ze: {
+    section: 'supply_characteristics',
     sectionKeys: ['ze', 'earth_loop_impedance_ze'],
     // BOTH aliases on boards[] too — the Circuits page consumes
     // `boards[].earth_loop_impedance_ze` as a fallback (Codex cycle-1), so
     // a short-key-only board sweep leaves a live Ze feeding calculations.
     boardKeys: ['ze', 'earth_loop_impedance_ze'],
+    sweepBoardInfo: true,
+    ownershipPrefix: 'supply',
   },
   pfc: {
+    section: 'supply_characteristics',
     sectionKeys: ['pfc', 'prospective_fault_current'],
     boardKeys: ['pfc'],
+    sweepBoardInfo: true,
+    ownershipPrefix: 'supply',
+  },
+  // A01P — installation-global identity. No alias, no board copy, no
+  // `board_info` leg: the name has exactly one home on the web job.
+  client_name: {
+    section: 'installation_details',
+    sectionKeys: ['client_name'],
+    boardKeys: [],
+    sweepBoardInfo: false,
+    ownershipPrefix: 'install',
   },
 });
 
@@ -150,22 +178,27 @@ export function applyBoardClearToJob(
       pipelineLog('board_clear_unroutable_field', { field: input.field, reason: 'no_sweep' });
       return null;
     }
-    const supply = asRecord(job.supply_characteristics);
-    const { next: nextSupply, removed: supplyRemoved } = deleteKeys(supply, sweep.sectionKeys);
-    if (supplyRemoved.length > 0) {
-      patch.supply_characteristics = nextSupply as JobDetail['supply_characteristics'];
-      changedKeys.push(...supplyRemoved);
-    }
-    const boardInfo = asRecord(job.board_info);
-    const { next: nextBoardInfo, removed: boardInfoRemoved } = deleteKeys(
-      boardInfo,
+    const sectionRecord = asRecord(job[sweep.section]);
+    const { next: nextSection, removed: sectionRemoved } = deleteKeys(
+      sectionRecord,
       sweep.sectionKeys
     );
-    if (boardInfoRemoved.length > 0) {
-      patch.board_info = nextBoardInfo as JobDetail['board_info'];
-      changedKeys.push(...boardInfoRemoved.map((k) => `board_info.${k}`));
+    if (sectionRemoved.length > 0) {
+      (patch as Record<string, unknown>)[sweep.section] = nextSection;
+      changedKeys.push(...sectionRemoved);
     }
-    if (boards.length > 0) {
+    if (sweep.sweepBoardInfo) {
+      const boardInfo = asRecord(job.board_info);
+      const { next: nextBoardInfo, removed: boardInfoRemoved } = deleteKeys(
+        boardInfo,
+        sweep.sectionKeys
+      );
+      if (boardInfoRemoved.length > 0) {
+        patch.board_info = nextBoardInfo as JobDetail['board_info'];
+        changedKeys.push(...boardInfoRemoved.map((k) => `board_info.${k}`));
+      }
+    }
+    if (boards.length > 0 && sweep.boardKeys.length > 0) {
       let boardsTouched = false;
       const nextBoards = boards.map((b) => {
         const { next, removed } = deleteKeys(b, sweep.boardKeys);
@@ -177,7 +210,7 @@ export function applyBoardClearToJob(
         changedKeys.push(...sweep.boardKeys.map((k) => `boards.${k}`));
       }
     }
-    const ownershipKeys = sweep.sectionKeys.map((k) => `supply.${k}`);
+    const ownershipKeys = sweep.sectionKeys.map((k) => `${sweep.ownershipPrefix}.${k}`);
     if (changedKeys.length === 0) {
       // Accepted clear of an already-empty slot: nothing to patch, but the
       // ownership release still applies (the tracker may hold a stale

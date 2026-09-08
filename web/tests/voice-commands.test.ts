@@ -13,13 +13,25 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { applyVoiceCommand, parseVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
+import {
+  applyVoiceCommand,
+  clientCommandForCalculate,
+  parseCalculateCommand,
+  parseScopeTextWithRemainder,
+  parseVoiceCommand,
+  resolveJobZe,
+  NO_ZE_RESPONSE,
+  type VoiceCommandJob,
+} from '@certmate/shared-utils';
 
+// A01P (2026-09-08) — the local calculator resolves Ze through the REAL web
+// job keys (`supply_characteristics`, `boards`, `board_info`), never the
+// unpopulated singular `supply` bag that caused the original Ze bug.
 const jobWithCircuits = (
   ze: string | undefined,
   rows: Array<Record<string, unknown>>
 ): VoiceCommandJob => ({
-  supply: ze != null ? { ze } : {},
+  supply_characteristics: ze != null ? { ze } : {},
   circuits: rows,
 });
 
@@ -30,6 +42,7 @@ describe('parseVoiceCommand — calculate_impedance', () => {
       type: 'calculate_impedance',
       kind: 'zs',
       scope: { kind: 'single', circuit: 3 },
+      remainder: '',
     });
   });
 
@@ -39,6 +52,7 @@ describe('parseVoiceCommand — calculate_impedance', () => {
       type: 'calculate_impedance',
       kind: 'r1_r2',
       scope: { kind: 'all' },
+      remainder: '',
     });
   });
 
@@ -48,6 +62,7 @@ describe('parseVoiceCommand — calculate_impedance', () => {
       type: 'calculate_impedance',
       kind: 'zs',
       scope: { kind: 'range', from: 2, to: 5 },
+      remainder: '',
     });
   });
 
@@ -57,6 +72,7 @@ describe('parseVoiceCommand — calculate_impedance', () => {
       type: 'calculate_impedance',
       kind: 'zs',
       scope: { kind: 'single', circuit: 1 },
+      remainder: '',
     });
   });
 
@@ -66,6 +82,7 @@ describe('parseVoiceCommand — calculate_impedance', () => {
       type: 'calculate_impedance',
       kind: 'r1_r2',
       scope: { kind: 'all' },
+      remainder: '',
     });
   });
 
@@ -268,5 +285,200 @@ describe('field-alias coverage (iOS parity)', () => {
     );
     const next = (out.patch?.circuits as Array<Record<string, unknown>>)[0];
     expect(next[canonical]).toBeDefined();
+  });
+});
+
+// ─────────────────────────────────────────────────
+// A01P (2026-09-08) — remainder-aware Calculate parsing, terminal
+// punctuation tolerance, and the job-level three-state Ze ladder.
+// ─────────────────────────────────────────────────
+describe('[invariant] A01P — parseScopeTextWithRemainder / terminal punctuation', () => {
+  it('tolerates a terminal full stop, comma, bang or question mark on every scope shape', () => {
+    for (const p of ['.', ',', '!', '?']) {
+      expect(parseVoiceCommand(`calculate impedance for all${p}`)).toMatchObject({
+        type: 'calculate_impedance',
+        kind: 'zs',
+        scope: { kind: 'all' },
+        remainder: '',
+      });
+      expect(parseVoiceCommand(`calculate Zs for circuit 1${p}`)).toMatchObject({
+        scope: { kind: 'single', circuit: 1 },
+        remainder: '',
+      });
+      expect(parseVoiceCommand(`calculate Zs for circuits 1 to 4${p}`)).toMatchObject({
+        scope: { kind: 'range', from: 1, to: 4 },
+        remainder: '',
+      });
+    }
+  });
+
+  it('the spoken "z s" prefix parses as Zs (no \\bzs\\b trigger word on the wire)', () => {
+    expect(parseVoiceCommand('calculate z s for all')).toMatchObject({
+      kind: 'zs',
+      scope: { kind: 'all' },
+      remainder: '',
+    });
+  });
+
+  it('reports board-qualified trailing text as an unconsumed remainder (recognition unchanged)', () => {
+    expect(parseVoiceCommand('calculate Zs for circuit 1 on the garage board')).toMatchObject({
+      scope: { kind: 'single', circuit: 1 },
+      remainder: 'on the garage board',
+    });
+    expect(
+      parseVoiceCommand('calculate Zs for circuits 1 to 4 on the garage board.')
+    ).toMatchObject({
+      scope: { kind: 'range', from: 1, to: 4 },
+      remainder: 'on the garage board',
+    });
+    expect(parseScopeTextWithRemainder('for all circuits on the garage board')).toEqual({
+      scope: { kind: 'all' },
+      remainder: 'on the garage board',
+    });
+  });
+
+  it('parseCalculateCommand is the Calculate branch only; a mixed query keeps its remainder', () => {
+    expect(parseCalculateCommand('calculate Zs for circuit 1, what did I say?')).toMatchObject({
+      scope: { kind: 'single', circuit: 1 },
+      remainder: ', what did i say',
+    });
+    expect(parseCalculateCommand('Zs for circuit 1 is 0.5')).toBeNull();
+    expect(parseCalculateCommand('calculate Zs for second one')).toBeNull();
+  });
+
+  it('clientCommandForCalculate names the server calculator', () => {
+    expect(clientCommandForCalculate(parseCalculateCommand('calculate impedance for all')!)).toBe(
+      'calculate_zs'
+    );
+    expect(clientCommandForCalculate(parseCalculateCommand('calculate R1 plus R2 for all')!)).toBe(
+      'calculate_r1_plus_r2'
+    );
+  });
+});
+
+describe('[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate', () => {
+  const rows = [{ id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker', r1_r2_ohm: '0.20' }];
+  const cmd = () => parseVoiceCommand('calculate Zs for circuit 1')!;
+
+  it('boards: null + populated board_info → board_info.ze wins over supply Ze (0.35 + 0.20 = 0.55)', () => {
+    const job: VoiceCommandJob = {
+      boards: null,
+      board_info: { ze: '0.35' },
+      supply_characteristics: { ze: '0.50', earth_loop_impedance_ze: '0.50' },
+      circuits: rows,
+    };
+    expect(resolveJobZe(job)).toEqual({
+      state: 'finite',
+      value: 0.35,
+      raw: '0.35',
+      source: 'board_ze',
+    });
+    const out = applyVoiceCommand(cmd(), job);
+    expect(out.response).toBe('Circuit 1, Zs calculated as 0.55 ohms');
+  });
+
+  it('boards: [] behaves identically to boards: null (board_info is the sole board)', () => {
+    const job: VoiceCommandJob = {
+      boards: [],
+      board_info: { ze: '0.35' },
+      supply_characteristics: { ze: '0.50', earth_loop_impedance_ze: '0.50' },
+      circuits: rows,
+    };
+    expect(applyVoiceCommand(cmd(), job).response).toBe('Circuit 1, Zs calculated as 0.55 ohms');
+  });
+
+  it('one board with a Ze override uses it whatever the circuit board_id says (absent / empty)', () => {
+    for (const boardId of [undefined, '']) {
+      const job: VoiceCommandJob = {
+        boards: [{ id: 'main', board_type: 'main', ze: '0.30' }],
+        supply_characteristics: { earth_loop_impedance_ze: '0.50' },
+        circuits: [{ ...rows[0], ...(boardId === undefined ? {} : { board_id: boardId }) }],
+      };
+      expect(applyVoiceCommand(cmd(), job).response).toBe('Circuit 1, Zs calculated as 0.50 ohms');
+    }
+  });
+
+  it('at-DB tier (zs_at_db, and the iOS ze_at_db alias) beats supply when the override is blank', () => {
+    const a: VoiceCommandJob = {
+      boards: [{ id: 'main', board_type: 'main', ze: '', zs_at_db: '0.40' }],
+      supply_characteristics: { earth_loop_impedance_ze: '0.50' },
+      circuits: rows,
+    };
+    expect(resolveJobZe(a)).toMatchObject({ state: 'finite', value: 0.4, source: 'board_at_db' });
+    const b: VoiceCommandJob = {
+      boards: [{ id: 'main', board_type: 'main', ze_at_db: '0.40' }],
+      supply_characteristics: { earth_loop_impedance_ze: '0.50' },
+      circuits: rows,
+    };
+    expect(resolveJobZe(b)).toMatchObject({ state: 'finite', value: 0.4, source: 'board_at_db' });
+  });
+
+  it('boards-less job with no board_info values reaches the supply ladder: long alias, then short', () => {
+    expect(
+      resolveJobZe({
+        board_info: {},
+        supply_characteristics: { ze: '0.35', earth_loop_impedance_ze: '0.50' },
+      })
+    ).toMatchObject({ state: 'finite', value: 0.5, source: 'supply_long' });
+    expect(resolveJobZe({ supply_characteristics: { ze: '0.35' } })).toMatchObject({
+      state: 'finite',
+      value: 0.35,
+      source: 'supply_short',
+    });
+  });
+
+  it('present-but-invalid at the highest occupied tier is unreadable — never a fall-through to a finite lower tier', () => {
+    const job: VoiceCommandJob = {
+      boards: [{ id: 'main', board_type: 'main', ze: 'LIM' }],
+      supply_characteristics: { earth_loop_impedance_ze: '0.50' },
+      circuits: rows,
+    };
+    expect(resolveJobZe(job)).toEqual({ state: 'unreadable', raw: 'LIM', source: 'board_ze' });
+    const out = applyVoiceCommand(cmd(), job);
+    expect(out).toMatchObject({
+      response: 'I couldn’t apply that calculation.',
+      actionOutcome: 'unsupported',
+      actionReason: 'ze_unreadable',
+    });
+    expect(out.patch).toBeUndefined();
+    for (const raw of ['N/A', 'abc', [0.5]]) {
+      expect(
+        resolveJobZe({ supply_characteristics: { earth_loop_impedance_ze: raw as unknown } }).state
+      ).toBe('unreadable');
+    }
+  });
+
+  it('genuinely absent Ze keeps the existing no-Ze wording', () => {
+    const job: VoiceCommandJob = {
+      boards: [{ id: 'main', ze: '  ' }],
+      supply_characteristics: {},
+      circuits: rows,
+    };
+    expect(resolveJobZe(job)).toEqual({ state: 'absent' });
+    const out = applyVoiceCommand(cmd(), job);
+    expect(out.response).toBe(NO_ZE_RESPONSE);
+    expect(out.actionOutcome).toBe('unsupported');
+    expect(out.patch).toBeUndefined();
+  });
+
+  it('two or more boards → multi_board (the caller forwards; the calculator never computes)', () => {
+    const job: VoiceCommandJob = {
+      boards: [
+        { id: 'main', ze: '0.35' },
+        { id: 'garage', ze: '0.38' },
+      ],
+      supply_characteristics: { ze: '0.50' },
+      circuits: rows,
+    };
+    expect(resolveJobZe(job)).toEqual({ state: 'multi_board', boardCount: 2 });
+    const out = applyVoiceCommand(cmd(), job);
+    expect(out.actionOutcome).toBe('unsupported');
+    expect(out.actionReason).toBe('multi_board');
+    expect(out.patch).toBeUndefined();
+  });
+
+  it('the singular legacy `supply` bag is NOT a Ze source any more', () => {
+    const job: VoiceCommandJob = { supply: { ze: '0.35' }, circuits: rows };
+    expect(applyVoiceCommand(cmd(), job).response).toBe(NO_ZE_RESPONSE);
   });
 });

@@ -901,6 +901,34 @@ describe('SonnetSession', () => {
       expect(session.consumeInFlightToolCallId('ask-b')).toBe('ask-b');
     });
 
+    it('[invariant] A01P — sendTranscript stamps the additive `client_command` marker only when given', async () => {
+      const session = new SonnetSession({});
+      session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });
+      await server.connected;
+      await server.nextMessage; // session_start
+
+      session.sendTranscript('calculate impedance for all', {
+        utteranceId: 'u-calc',
+        clientCommand: 'calculate_zs',
+      });
+      const marked = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      expect(marked.type).toBe('transcript');
+      expect(marked.client_command).toBe('calculate_zs');
+      // Never a regex hint.
+      expect(marked.regexResults).toBeUndefined();
+
+      session.sendTranscript('calculate R1 plus R2 for all', {
+        utteranceId: 'u-calc-2',
+        clientCommand: 'calculate_r1_plus_r2',
+      });
+      const marked2 = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      expect(marked2.client_command).toBe('calculate_r1_plus_r2');
+
+      session.sendTranscript('cooker', { utteranceId: 'u-plain' });
+      const plain = JSON.parse((await server.nextMessage) as string) as Record<string, unknown>;
+      expect('client_command' in plain).toBe(false);
+    });
+
     it('sendTranscript stamps utterance_id when provided', async () => {
       const session = new SonnetSession({});
       session.connect({ sessionId: 's', jobId: 'j', certificateType: 'EICR' });

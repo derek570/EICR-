@@ -57,7 +57,8 @@ const MIRRORED_PAIRS: Array<[wireField: string, boardKey: string, value: unknown
   ['manufacturer', 'manufacturer', 'Wylex'],
   ['main_switch_bs_en', 'main_switch_bs_en', 'BS EN 60947-3'],
   ['earthing_arrangement', 'earthing_arrangement', 'TN-C-S'],
-  ['ze', 'ze', '0.42'],
+  // A01P (2026-09-08): `ze` is NO LONGER mirrored to boards[] for absent /
+  // canonical-main attribution — see the dedicated negatives below.
   ['zs_at_db', 'zs_at_db', '0.55'],
   // Ambiguous board fields — wire name vs board record key diverge.
   // Backend `FIELD_CORRECTIONS` rewrites Sonnet's modern names
@@ -67,6 +68,55 @@ const MIRRORED_PAIRS: Array<[wireField: string, boardKey: string, value: unknown
   ['rcd_rating_a', 'rcd_rating_ma', '30'],
   ['rcd_trip_time', 'rcd_trip_time', '23'],
 ];
+
+describe('apply-extraction boards[0] mirror — A01P no new Ze mirror', () => {
+  it('[invariant] a supply Ze with NO board attribution is section-only: boards[] gets no ze (legacy flat job)', () => {
+    const applied = applyExtractionToJob(
+      makeJob(),
+      makeResult({ readings: [{ circuit: 0, field: 'ze', value: '0.42' }] })
+    );
+    expect(applied).not.toBeNull();
+    expect(applied!.patch.boards).toBeUndefined();
+    const supply = applied!.patch.supply_characteristics as Record<string, unknown>;
+    expect(supply.ze).toBe('0.42');
+    expect(supply.earth_loop_impedance_ze).toBe('0.42');
+  });
+
+  it('[invariant] canonical-main and empty-string attribution never seed boards[main].ze; an existing board override survives', () => {
+    for (const boardId of ['main', '']) {
+      const job = makeJob({
+        boards: [{ id: 'main', board_type: 'main', designation: 'DB1', ze: '0.30' }],
+        supply_characteristics: { ze: '0.35' },
+      });
+      const applied = applyExtractionToJob(
+        job,
+        makeResult({ readings: [{ circuit: 0, field: 'ze', value: '0.50', board_id: boardId }] })
+      );
+      expect(applied).not.toBeNull();
+      expect(applied!.patch.boards).toBeUndefined();
+      expect((job.boards as Record<string, unknown>[])[0].ze).toBe('0.30');
+      expect((applied!.patch.supply_characteristics as Record<string, unknown>).ze).toBe('0.50');
+    }
+  });
+
+  it('[current_behaviour] explicit NON-main legacy attribution keeps its boards[] routing', () => {
+    const job = makeJob({
+      boards: [
+        { id: 'main', board_type: 'main', designation: 'DB1' },
+        { id: 'garage', board_type: 'sub_distribution', designation: 'Garage' },
+      ],
+      supply_characteristics: {},
+    });
+    const applied = applyExtractionToJob(
+      job,
+      makeResult({ readings: [{ circuit: 0, field: 'ze', value: '0.38', board_id: 'garage' }] })
+    );
+    expect(applied).not.toBeNull();
+    const boards = applied!.patch.boards as Record<string, unknown>[];
+    expect(boards[1].ze).toBe('0.38');
+    expect(boards[0].ze).toBeUndefined();
+  });
+});
 
 describe('apply-extraction boards[0] mirror', () => {
   it.each(MIRRORED_PAIRS)(

@@ -178,6 +178,92 @@ export function resolveZe(circuit: Record<string, unknown>, job: JobLike): strin
   return null;
 }
 
+// ─────────────────────────────────────────────────
+// A01P (2026-09-08) — JOB-LEVEL Ze resolution for the client-local
+// Calculate route. Distinct from the per-circuit `resolveZe` above (which is
+// unchanged for its callers): a circuit anchor cannot carry board context for
+// a legacy row whose `board_id` is absent or empty, so the local Calculate
+// resolves Ze ONCE for the JOB, never through a circuit.
+//
+// Effective board (identical on iOS, `findZe`'s job-level sibling):
+//   - `boards` has exactly one entry → that entry is the sole board;
+//   - `boards` is null/absent OR an empty array → the wire's always-present
+//     `board_info` bucket is the sole board (GET returns `board_info` `{}`-or-
+//     populated with `boards: null` for legacy jobs, and `boards: []` is
+//     persisted and returned as-is);
+//   - two or more boards → `multi_board`: the caller forwards the command
+//     as an ordinary transcript and never computes locally.
+//
+// Ladder, occupied-first and parse-once: board Ze override (`ze`) → at-DB
+// value (`zs_at_db`, iOS spelling `ze_at_db` accepted) → supply long alias
+// (`earth_loop_impedance_ze`) → supply short alias (`ze`). A tier that is
+// OCCUPIED but not a finite number (LIM, N/A, a stray non-scalar) is
+// `unreadable` — the ladder never falls through from an invalid tier to a
+// lower one, mirroring backend `resolveBoardAwareZe`. Only a job with no
+// board values at all reaches the supply ladder.
+// ─────────────────────────────────────────────────
+
+export type JobZeSource = 'board_ze' | 'board_at_db' | 'supply_long' | 'supply_short';
+
+export type JobZeResolution =
+  | { state: 'finite'; value: number; raw: string; source: JobZeSource }
+  | { state: 'absent' }
+  | { state: 'unreadable'; raw: string; source: JobZeSource }
+  | { state: 'multi_board'; boardCount: number };
+
+export interface JobZeLike {
+  supply_characteristics?: Record<string, unknown> | null;
+  boards?: Array<Record<string, unknown>> | null;
+  board_info?: Record<string, unknown> | null;
+}
+
+/** Number of boards the job carries for the local-route rule. `boards`
+ *  absent, null or `[]` counts as ONE (the `board_info` sole board). */
+export function jobBoardCount(job: JobZeLike): number {
+  const boards = Array.isArray(job.boards) ? job.boards : [];
+  return boards.length === 0 ? 1 : boards.length;
+}
+
+/** The sole board record for a ≤1-board job: `boards[0]` when present,
+ *  else the always-present `board_info` bucket (possibly `{}`). */
+export function soleJobBoard(job: JobZeLike): Record<string, unknown> {
+  const boards = Array.isArray(job.boards) ? job.boards : [];
+  if (boards.length === 1 && boards[0] && typeof boards[0] === 'object') return boards[0];
+  const info = job.board_info;
+  return info && typeof info === 'object' ? info : {};
+}
+
+/** Occupied scalar as a trimmed string; `null` when absent/blank; the
+ *  string `'[non-scalar]'` marks a present value that can never parse. */
+function occupied(v: unknown): string | null {
+  if (v == null) return null;
+  if (typeof v !== 'string' && typeof v !== 'number') return '[non-scalar]';
+  const str = String(v).trim();
+  return str === '' ? null : str;
+}
+
+export function resolveJobZe(job: JobZeLike): JobZeResolution {
+  const boardCount = jobBoardCount(job);
+  if (boardCount > 1) return { state: 'multi_board', boardCount };
+  const board = soleJobBoard(job);
+  const supply = (job.supply_characteristics ?? {}) as Record<string, unknown>;
+  const tiers: Array<[JobZeSource, unknown]> = [
+    ['board_ze', board.ze],
+    ['board_at_db', board.zs_at_db ?? board.ze_at_db],
+    ['supply_long', supply.earth_loop_impedance_ze],
+    ['supply_short', supply.ze],
+  ];
+  for (const [source, value] of tiers) {
+    const raw = occupied(value);
+    if (raw == null) continue;
+    const n = Number(raw);
+    return Number.isFinite(n)
+      ? { state: 'finite', value: n, raw, source }
+      : { state: 'unreadable', raw, source };
+  }
+  return { state: 'absent' };
+}
+
 /** Recompute every circuit on a job in one pass. Returns the updated
  *  circuits array when any row changed, or `null` to indicate a no-op
  *  (so the caller can skip the `updateJob` round trip).

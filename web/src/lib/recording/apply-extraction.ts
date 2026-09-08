@@ -39,7 +39,6 @@ import {
   applyDefaultsToCircuit,
   clampImpedance,
   maxZsString,
-  recomputeAll,
   repairCircuitDesignation,
   type ImpedanceField,
 } from '@certmate/shared-utils';
@@ -63,6 +62,14 @@ import {
  */
 export interface ApplyExtractionOptions {
   userDefaults?: Record<string, string>;
+  /** A01P — the session's FieldSourceTracker. When present, a landed
+   *  accepted supply Ze promotes the WHOLE alias family (`supply.ze` +
+   *  `supply.earth_loop_impedance_ze`) to `'sonnet'` ownership so a later
+   *  regex re-hit cannot overwrite the correction. Never used to decide a
+   *  write — provenance is recorded, not inferred from value equality. */
+  fieldSourceTracker?: {
+    recordSonnetWrite(key: string): void;
+  } | null;
   /** L2 obs-photo sprint — pending tuple captured during the current
    *  recording session that's waiting for an observation to claim
    *  it. When an observation lands within `OBSERVATION_PHOTO_LINK_WINDOW_MS`
@@ -1110,6 +1117,44 @@ function applyCircuit0Readings(
         userValueKept = true;
         break;
       }
+    }
+    // A01P (2026-09-08) — ACCEPTED SUPPLY Ze REPLACES. Aligned with iOS
+    // `applySonnetValue`: an accepted dictated Ze (either wire spelling)
+    // supersedes a differing seeded / manual / regex-prefilled supply value
+    // and ALWAYS materialises both client aliases (`ze` +
+    // `earth_loop_impedance_ze`) — including when it equals a regex prefill
+    // that only wrote the short key, so the Supply tab, the wire mirror and
+    // the job-level Calculate ladder never disagree. Board Ze overrides are a
+    // separate cell (the boards[] leg above) and are never touched here. The
+    // hydrated short/long conflict is resolved by the fresh accepted value
+    // (both become it; no original is retained — A01 cannot recover
+    // pre-dictation candidates for these jobs).
+    const acceptedZeFamily =
+      primarySection === 'supply_characteristics' &&
+      (reading.field === 'ze' || reading.field === 'earth_loop_impedance_ze');
+    if (acceptedZeFamily) {
+      const existing = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
+      const inPatch =
+        (bySection.supply_characteristics as Record<string, unknown> | undefined) ?? {};
+      const already = (k: string) =>
+        String(inPatch[k] ?? existing[k] ?? '').trim() === String(sectionValue).trim();
+      if (already('ze') && already('earth_loop_impedance_ze')) {
+        pipelineLog('apply_accepted_ze_already_materialised', { wire_field: reading.field });
+        continue;
+      }
+      bySection.supply_characteristics = {
+        ...inPatch,
+        ze: sectionValue,
+        earth_loop_impedance_ze: sectionValue,
+      };
+      pipelineLog('apply_accepted_ze_replaced', {
+        wire_field: reading.field,
+        replaced_short: hasValue(existing.ze) && String(existing.ze) !== String(sectionValue),
+        replaced_long:
+          hasValue(existing.earth_loop_impedance_ze) &&
+          String(existing.earth_loop_impedance_ze) !== String(sectionValue),
+      });
+      continue;
     }
     if (userValueKept && boardPlan?.bypassFillOnly) {
       // A2-multiboard item 7 — a `replaces_cleared` write is not a fresh fill
@@ -2722,10 +2767,31 @@ function mirrorReadingsToBoards(
   // Resolved per-board updates accumulator. Keyed by board index so
   // multiple readings on the same board coalesce into one patch.
   const updatesByIndex = new Map<number, Record<string, unknown>>();
+  const canonicalMainId = resolveCanonicalMainBoardId(existingBoards as MainBoardCandidate[]);
   for (const reading of readings) {
     if (reading.circuit !== 0 || !reading.field) continue;
     const mirror = MIRROR_TO_BOARDS0.find((m) => m.sectionKey === reading.field);
     if (!mirror) continue;
+
+    // A01P (2026-09-08) — NO NEW Ze BOARD MIRROR. A supply Ze reading whose
+    // attribution is absent, empty, or the canonical main board is the
+    // ORIGIN supply value and lives in `supply_characteristics` only; it
+    // never seeds `boards[].ze` (the Board tab's "Board Ze override" cell,
+    // which the job-level Calculate ladder reads FIRST — a mirrored origin
+    // there would silently shadow a later Ze correction). This holds for a
+    // `replaces_cleared` survivor too. An explicit NON-main legacy
+    // attribution keeps today's routing, and an existing / manual board Ze
+    // is never touched by this leg. The at-DB aliases are not affected.
+    if (
+      mirror.sectionKey === 'ze' &&
+      (reading.board_id == null || reading.board_id === '' || reading.board_id === canonicalMainId)
+    ) {
+      pipelineLog('apply_boards_mirror_ze_origin_not_mirrored', {
+        board_id: reading.board_id ?? null,
+        replaces_cleared: reading.replaces_cleared === true,
+      });
+      continue;
+    }
 
     // Source-section priority — if the inspector has already typed a
     // value into the corresponding section (under the wire name OR
@@ -2901,6 +2967,20 @@ export function applyExtractionToJob(
     const merged = supplyPatches[section];
     if (merged) patch[section] = merged;
   }
+  // A01P — promote the accepted Ze alias family to Sonnet ownership when an
+  // accepted supply Ze landed this turn (the family is tracked together).
+  if (
+    options.fieldSourceTracker &&
+    readings.some(
+      (r) =>
+        r.circuit === 0 &&
+        (r.field === 'ze' || r.field === 'earth_loop_impedance_ze') &&
+        supplyPatches.supply_characteristics != null
+    )
+  ) {
+    options.fieldSourceTracker.recordSonnetWrite('supply.ze');
+    options.fieldSourceTracker.recordSonnetWrite('supply.earth_loop_impedance_ze');
+  }
 
   // M1+M2+M3 — apply Supply-side derivations that mirror tab-edit
   // side effects (TT → schedule mirror, bonding PASS, Ze polarity).
@@ -3007,22 +3087,15 @@ export function applyExtractionToJob(
     }
   }
 
-  // H4 — Zs ↔ R1+R2 ↔ Ze derivation. After all readings + the max-Zs
-  // pass land, run `recomputeAll` to fill any third unknown using the
-  // BS 7671 Zs = Ze + (R1+R2) identity. Pure on the JobDetail —
-  // takes the patched supply + circuits views. Only fills empty
-  // targets; an inspector value never gets re-derived.
-  const projectedForDerive: JobDetail = {
-    ...job,
-    ...(patch as Partial<JobDetail>),
-  } as JobDetail;
-  const derivedCircuits = recomputeAll(projectedForDerive as never);
-  if (derivedCircuits) {
-    patch.circuits = derivedCircuits as unknown as CircuitRow[];
-    pipelineLog('apply_circuit_derivation_recomputed', {
-      circuit_count: derivedCircuits.length,
-    });
-  }
+  // A01P (2026-09-08) — the implicit voice-extraction Zs ↔ R1+R2 pass
+  // (`recomputeAll` after every apply, "H4") is REMOVED, matching iOS: a
+  // dictated Ze correction must never silently rewrite every circuit's Zs
+  // behind the inspector's back, and a requested calculation is now an
+  // explicit spoken Calculate (client-local on ≤1-board jobs, forwarded to
+  // the server calculators otherwise) that is read back exactly once. The
+  // Circuits page's `applyZsCalculation` / `applyR1R2Calculation`, the
+  // polarity / max-Zs derivations and every other silent side effect are
+  // untouched. No replacement implicit pass exists by design.
 
   // Board mirror — populate the right entry in `boards[]` so the
   // Board tab renders Sonnet-extracted manufacturer, main_switch_bs_en,

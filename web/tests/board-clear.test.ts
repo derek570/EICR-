@@ -145,6 +145,38 @@ describe('global scope — atomic sweep of every representation', () => {
     expect(applied!.ownershipKeys).toEqual(['supply.ze', 'supply.earth_loop_impedance_ze']);
   });
 
+  // A01P (2026-09-08) — `client_name` is an installation-global identity
+  // field. The backend accepts the clear from ANY board spelling (absent,
+  // current, unknown, mismatched, empty) and routes ONE frame; the web sweep
+  // clears the single `installation_details.client_name` cell and touches no
+  // board, no supply key, no `board_info` leg.
+  it('[invariant] client_name: clears installation_details.client_name only; boards, supply and board_info untouched', () => {
+    const job = makeJob({
+      installation_details: { client_name: 'Mrs Smith', address: '1 A St' },
+      supply_characteristics: { ze: '0.35' },
+      board_info: { manufacturer: 'Hager' },
+      boards: [{ id: 'main', board_type: 'main', manufacturer: 'Hager' }],
+    });
+    for (const boardId of ['main', 'garage', 'shed', null]) {
+      const applied = applyBoardClearToJob(job, { field: 'client_name', boardId });
+      expect(applied).not.toBeNull();
+      expect(applied!.changedKeys).toEqual(['client_name']);
+      const installation = applied!.patch.installation_details as Record<string, unknown>;
+      expect(installation.client_name).toBeUndefined();
+      expect(installation.address).toBe('1 A St');
+      expect(applied!.patch.supply_characteristics).toBeUndefined();
+      expect(applied!.patch.board_info).toBeUndefined();
+      expect(applied!.patch.boards).toBeUndefined();
+      expect(applied!.ownershipKeys).toEqual(['install.client_name']);
+    }
+  });
+
+  it('[invariant] client_name already empty → accepted-empty shape with the install ownership released', () => {
+    const job = makeJob({ installation_details: { address: '1 A St' } });
+    const applied = applyBoardClearToJob(job, { field: 'client_name', boardId: 'main' });
+    expect(applied).toEqual({ patch: {}, changedKeys: [], ownershipKeys: ['install.client_name'] });
+  });
+
   it('ze sweep also removes the LONG alias off boards[] (Circuits-page fallback reads it)', () => {
     const job = makeJob({
       boards: [{ id: 'main', board_type: 'main', earth_loop_impedance_ze: '0.35' }],
@@ -288,7 +320,8 @@ describe('§4 test 5 — write→clear sentinel loop through the REAL apply path
   const rows = Object.entries(fixture).map(([field, scope]) => ({ field, scope }));
 
   it('the generated table is exactly the fixture rows', () => {
-    expect(rows.map((r) => r.field).sort()).toEqual(['manufacturer', 'pfc', 'ze']);
+    // A01P (2026-09-08) — `client_name` joined the map (installation-global).
+    expect(rows.map((r) => r.field).sort()).toEqual(['client_name', 'manufacturer', 'pfc', 'ze']);
   });
 
   it.each(rows)(
@@ -298,8 +331,10 @@ describe('§4 test 5 — write→clear sentinel loop through the REAL apply path
         boards: [{ id: 'main', designation: 'Main DB', board_type: 'main' }],
         supply_characteristics: {},
         board_info: {},
+        installation_details: {},
       });
-      const writeValue = field === 'manufacturer' ? 'Wylex' : '0.41';
+      const writeValue =
+        field === 'manufacturer' ? 'Wylex' : field === 'client_name' ? 'Mrs Smith' : '0.41';
       const result: ExtractionResult = {
         readings: [{ circuit: 0, field, value: writeValue }],
       } as unknown as ExtractionResult;
@@ -314,6 +349,17 @@ describe('§4 test 5 — write→clear sentinel loop through the REAL apply path
       const supply = (finalJob.supply_characteristics ?? {}) as Record<string, unknown>;
       const boardInfo = (finalJob.board_info ?? {}) as Record<string, unknown>;
       const boards = (finalJob.boards ?? []) as Record<string, unknown>[];
+      const installation = (finalJob.installation_details ?? {}) as Record<string, unknown>;
+      if (field === 'client_name') {
+        // Written through the real apply path into installation_details,
+        // cleared from its only home; boards never carried it.
+        expect((jobAfterWrite.installation_details as Record<string, unknown>).client_name).toBe(
+          'Mrs Smith'
+        );
+        expect(installation.client_name).toBeUndefined();
+        for (const b of boards) expect(b.client_name).toBeUndefined();
+        return;
+      }
       if (scope === 'global') {
         const aliases =
           field === 'ze' ? ['ze', 'earth_loop_impedance_ze'] : ['pfc', 'prospective_fault_current'];

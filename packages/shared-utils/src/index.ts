@@ -27,9 +27,13 @@ export { DEFAULTS_BY_CIRCUIT, GLOBAL_DEFAULTS, inferCircuitType } from './circui
 export type { CircuitTypeKey } from './circuit-defaults-schema';
 export {
   parseVoiceCommand,
+  parseCalculateCommand,
+  parseScopeTextWithRemainder,
+  clientCommandForCalculate,
   applyVoiceCommand,
   voiceCommandTargetsDesignation,
   DEVICE_ATTRIBUTE_FIELDS,
+  NO_ZE_RESPONSE,
 } from './voice-commands';
 export type {
   VoiceCommand,
@@ -37,6 +41,7 @@ export type {
   VoiceCommandJob,
   VoiceCommandCircuit,
   VoiceCommandScope,
+  ClientCommandMarker,
 } from './voice-commands';
 export {
   GUARDED_CLOSED_ENUM_FIELDS,
@@ -66,7 +71,17 @@ export {
   recompute,
   recomputeAll,
   resolveZe,
+  resolveJobZe,
+  jobBoardCount,
+  soleJobBoard,
   clampImpedance,
   DERIVATION_SENTINELS,
 } from './circuit-derivations';
-export type { DerivationOutcome, ImpedanceField, ClampOutcome } from './circuit-derivations';
+export type {
+  DerivationOutcome,
+  ImpedanceField,
+  ClampOutcome,
+  JobZeResolution,
+  JobZeSource,
+  JobZeLike,
+} from './circuit-derivations';

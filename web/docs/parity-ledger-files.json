@@ -1,7 +1,11 @@
 {
+  "packages/shared-utils/src/circuit-derivations.ts": [
+    "recording/ze-accepted-alias-consistency"
+  ],
   "packages/shared-utils/src/voice-commands.ts": [
     "recording/voice-command-executor-e-g-move",
-    "recording/dictated-readback-policy"
+    "recording/dictated-readback-policy",
+    "recording/ze-accepted-alias-consistency"
   ],
   "web/src/app/alerts/page.tsx": [
     "dashboard/alertsview",
@@ -67,7 +71,8 @@
     "board/boardtab-370",
     "board/boardtab-50",
     "board/boardtab-71",
-    "recording/replaces-cleared-multiboard"
+    "recording/replaces-cleared-multiboard",
+    "recording/ze-accepted-alias-consistency"
   ],
   "web/src/app/job/[id]/circuits/match-review/page.tsx": [
     "ccu-flow/circuitmatchreviewview-5",
@@ -252,6 +257,9 @@
     "supply/supplytab-93",
     "supply/surge-namespace"
   ],
+  "web/src/app/loading.tsx": [
+    "crosscutting/splash-continuity"
+  ],
   "web/src/app/runtime-config/route.ts": [
     "recording/flux-kill-switch"
   ],
@@ -298,8 +306,14 @@
   "web/src/app/sw.ts": [
     "recording/flux-kill-switch"
   ],
+  "web/src/app/terms/legal-texts-gate.ts": [
+    "crosscutting/terms-signature-port"
+  ],
   "web/src/app/terms/page.tsx": [
     "crosscutting/terms-signature-port"
+  ],
+  "web/src/components/brand/branded-splash.tsx": [
+    "crosscutting/splash-continuity"
   ],
   "web/src/components/brand/logo.tsx": [
     "crosscutting/brand-logo"
@@ -320,6 +334,15 @@
     "ccu-flow/ccuextractionmodesheet-5",
     "ccu-flow/circuitstab-429",
     "ccu-flow/off-peak-mode"
+  ],
+  "web/src/components/job/circuit-focus-fields.ts": [
+    "crosscutting/keyboard-accessory-bar"
+  ],
+  "web/src/components/job/circuit-keyboard-accessory.tsx": [
+    "crosscutting/keyboard-accessory-bar"
+  ],
+  "web/src/components/job/circuits-schedule-desktop.tsx": [
+    "crosscutting/keyboard-accessory-bar"
   ],
   "web/src/components/job/circuits-sticky-table.tsx": [
     "circuits-col/constants-209",
@@ -543,7 +566,8 @@
     "recording/transcript-gate",
     "recording/tts-fifo",
     "recording/voice-command-executor-e-g-move",
-    "recording/dictated-readback-policy"
+    "recording/dictated-readback-policy",
+    "recording/ze-accepted-alias-consistency"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
@@ -559,7 +583,11 @@
     "recording/impedance-clamp-readback",
     "recording/impedance-out-of-range-divergence",
     "recording/observation-id-dedupe",
-    "recording/replaces-cleared-multiboard"
+    "recording/replaces-cleared-multiboard",
+    "recording/ze-accepted-alias-consistency"
+  ],
+  "web/src/lib/recording/board-clear.ts": [
+    "recording/ze-accepted-alias-consistency"
   ],
   "web/src/lib/recording/capture-observation-photo.ts": [
     "observations/obs-photo-autolink"
@@ -572,6 +600,10 @@
   "web/src/lib/recording/confirmation-dedupe-store.ts": [
     "recording/confirmation-dedupe-ttl"
   ],
+  "web/src/lib/recording/conversation-admission.ts": [
+    "recording/conversation-admission",
+    "recording/ze-accepted-alias-consistency"
+  ],
   "web/src/lib/recording/deepgram-service.ts": [
     "recording/flux-kill-switch",
     "recording/flux-migration"
@@ -582,6 +614,9 @@
   ],
   "web/src/lib/recording/extraction-turn-ledger.ts": [
     "recording/async-observation-recode-turn"
+  ],
+  "web/src/lib/recording/field-source-tracker.ts": [
+    "recording/ze-accepted-alias-consistency"
   ],
   "web/src/lib/recording/in-flight-question.ts": [
     "recording/cancel-pending-tts",
@@ -594,9 +629,6 @@
     "recording/conversation-admission",
     "recording/garble-aliases-f8-f10"
   ],
-  "web/src/lib/recording/conversation-admission.ts": [
-    "recording/conversation-admission"
-  ],
   "web/src/lib/recording/observation-photo.ts": [
     "observations/obs-photo-autolink"
   ],
@@ -608,7 +640,8 @@
     "recording/capability-advertising",
     "recording/fast-path-tts",
     "recording/playback-telemetry",
-    "recording/replaces-cleared-multiboard"
+    "recording/replaces-cleared-multiboard",
+    "recording/ze-accepted-alias-consistency"
   ],
   "web/src/lib/recording/tones.ts": [
     "recording/gate-pass-chime"
@@ -662,23 +695,5 @@
   ],
   "web/tests/pwa-pending-photo-store.test.ts": [
     "observations/obs-photo-autolink"
-  ],
-  "web/src/components/job/circuits-schedule-desktop.tsx": [
-    "crosscutting/keyboard-accessory-bar"
-  ],
-  "web/src/components/job/circuit-keyboard-accessory.tsx": [
-    "crosscutting/keyboard-accessory-bar"
-  ],
-  "web/src/components/job/circuit-focus-fields.ts": [
-    "crosscutting/keyboard-accessory-bar"
-  ],
-  "web/src/app/terms/legal-texts-gate.ts": [
-    "crosscutting/terms-signature-port"
-  ],
-  "web/src/components/brand/branded-splash.tsx": [
-    "crosscutting/splash-continuity"
-  ],
-  "web/src/app/loading.tsx": [
-    "crosscutting/splash-continuity"
   ]
 }

@@ -260,6 +260,12 @@ export default function BoardPage() {
   };
 
   const text = (k: keyof BoardRecord) => (active[k] as string | undefined) ?? '';
+  // A01P — origin supply Ze (long PWA column first, then the wire alias),
+  // display-only: it lives on `supply_characteristics`, never on the board.
+  const supplyForOrigin = (job.supply_characteristics ?? {}) as Record<string, unknown>;
+  const originZe = String(
+    supplyForOrigin.earth_loop_impedance_ze ?? supplyForOrigin.ze ?? ''
+  ).trim();
   const isSubBoard = active.board_type === 'sub_distribution' || active.board_type === 'sub_main';
   const parentOptions = boards
     .filter((b) => b.id !== active.id)
@@ -374,11 +380,24 @@ export default function BoardPage() {
             options={EARTHING_OPTIONS}
             onChange={(v) => patchActive({ earthing_arrangement: v })}
           />
+          {/* A01P (2026-09-08) — the stored board cell is an OVERRIDE of the
+              origin supply Ze (the job-level Calculate ladder reads it first);
+              the read-only Origin Ze beside it shows the supply value the
+              override shadows, and is never written back through
+              `patchActive` / `buildBoardInfoSummary`. */}
           <FloatingLabelInput
-            label="Ze (Ω)"
+            label="Board Ze override (Ω)"
             inputMode="decimal"
             value={text('ze')}
             onChange={(e) => patchActive({ ze: e.target.value })}
+            hint="Leave blank to use the origin Ze from the Supply tab."
+          />
+          <FloatingLabelInput
+            label="Origin Ze (Ω)"
+            readOnly
+            aria-readonly="true"
+            value={originZe}
+            hint="Read-only: the supply Ze this board falls back to."
           />
           <FloatingLabelInput
             label="Zs at DB (Ω)"

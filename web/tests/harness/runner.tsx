@@ -306,8 +306,10 @@ function emitFrame(
   } else if (frame.type === 'field_corrected') {
     // Stage 6 STI-05 clear_reading wire — A2 canonicalised-key pin.
     sonnet.emitFieldCorrected({
-      circuit: frame.circuit ?? 0,
+      // A01P — an explicit `null` circuit is a BOARD-scope clear frame.
+      circuit: frame.circuit === null ? null : (frame.circuit ?? 0),
       field: frame.field ?? '',
+      ...(frame.board_id !== undefined ? { board_id: frame.board_id } : {}),
     });
   } else if (frame.type === 'voice_command_response') {
     // A1 agentic-voice — the model's spoken answer on the VCR channel.
