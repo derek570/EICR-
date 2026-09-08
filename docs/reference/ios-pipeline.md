@@ -1007,7 +1007,11 @@ BOARD-scope `field_corrected` frame both clients route on:
   (`stage6-dispatchers-board.js`) is the authority and the dispatcher fails
   CLOSED (`board_clear_scope_unclassified`, audible) outside it. The committed
   manifest `tests/fixtures/test-contracts/board-clear-scope-keys.json`
-  (`{ze:global, pfc:global, manufacturer:board}`) is deep-equal drift-tested
+  (`{ze:global, pfc:global, manufacturer:board, client_name:global}` — the
+  fourth key added by A01P, 2026-09-08; classification only, the board-scope
+  BYPASS for `client_name` comes from the fixed `GLOBAL_IDENTITY_FIELDS` set,
+  while `ze`/`pfc` keep unconditional `wrong_board` on a mismatched or empty
+  `board_id`) is deep-equal drift-tested
   (field AND scope value) against all three route-map surfaces: the backend
   map, web `BOARD_CLEAR_ROUTE_MAP` (`web/src/lib/recording/board-clear.ts`),
   and iOS (`DeepgramRecordingViewModel` board-clear routing) via a
