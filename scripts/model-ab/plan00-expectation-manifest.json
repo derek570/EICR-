@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "21c4c49d8d5aa2d698814935da8b5a5b993e090262414f15ce03de4b3cd31867",
+  "semantic_oracle_digest": "0845f9db9c01db5466caa4617cfe21500740f8b428a8becac986a13936b22672",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -561,7 +561,7 @@
     },
     {
       "path": "scripts/model-ab/lib/expectation-projection.mjs",
-      "sha256": "1aff82abab137d88b89fab937ae1a05eb5dfb9bb9692ff13e6d7cf203e498ada"
+      "sha256": "e5dc7ede75120e2e4e6add783ba8a6a34e2d76fa84b5c01b12e500df8e069854"
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
@@ -569,7 +569,7 @@
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
-      "sha256": "918817d831260e5334ae01254c056066db170b10623853aff5d2c786bc096da8"
+      "sha256": "de607faaec5db02bd5f4b0c4d32cb50c45825968bad3d890a2d6619159e4276b"
     },
     {
       "path": "scripts/model-ab/run-semantic-lane.mjs",
