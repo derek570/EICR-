@@ -497,8 +497,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // satisfiable, one deferred-fire worked example. Shared region; measured
       // 24954 and cap retains ~100-token headroom (measured + ~100, P8
       // precedent).
+      // 2026-09-08 (A01P): Example 8's closed skip-reason list gains
+      // `ze_unreadable` (Ze recorded but not a usable number — never narrated
+      // as missing). Shared region; measured 25097 and cap retains ~100-token
+      // headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(25054);
+      expect(estimate).toBeLessThanOrEqual(25197);
     });
   });
 
@@ -1261,8 +1265,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // relaxation + hybrid eligibility + deferred-fire worked example (see
       // the Group 1 combined-cap comment). Measured 19705; cap 19805 leaves
       // ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-08 (A01P): `ze_unreadable` skip reason in Example 8 (see the
+      // Group 1 combined-cap comment). Measured 19848; cap 19948 leaves
+      // ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(19805);
+      expect(estimate).toBeLessThanOrEqual(19948);
     });
   });
 
