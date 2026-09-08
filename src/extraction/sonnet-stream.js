@@ -5992,6 +5992,11 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     const agenticAnswersEnabled = entry.session?.agenticAnswersEnabled === true;
     const gateDecision = shouldForwardToSonnet(canonicalTranscriptText, {
       regexResults: Array.isArray(msg.regexResults) ? msg.regexResults : null,
+      // A01P — additive optional transcript-frame marker set by a client that
+      // recognised a Calculate but forwarded it (multi-board job). Validated
+      // inside the gate (closed set); anything else is ignored. Never merged
+      // into regexResults — it is not a regex hint and is never a write.
+      clientCommand: typeof msg.client_command === 'string' ? msg.client_command : null,
       hasPendingAsk: entry.pendingAsks && entry.pendingAsks.size > 0,
       hasActiveDialogueScript,
       inResponseTo: !!(msg.in_response_to && typeof msg.in_response_to === 'object'),

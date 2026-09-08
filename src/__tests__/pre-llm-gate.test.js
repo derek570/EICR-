@@ -11,6 +11,7 @@ import {
   GATE_REASONS,
   OBSERVATION_PATTERN,
   _internals,
+  RECOGNISED_CLIENT_COMMANDS,
 } from '../extraction/pre-llm-gate.js';
 import { ORIGINAL_TRIGGER_WORDS_FROM_2026_05_26 } from './fixtures/pre-llm-gate-original-94-words.js';
 
@@ -671,5 +672,87 @@ describe('shouldForwardToSonnet — extent/limitations gate vocabulary (2026-08-
     const r = shouldForwardToSonnet('To what extent?');
     expect(r.forward).toBe(false);
     expect(r.reason).toBe(GATE_REASONS.LOW_CONTENT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A01P (2026-09-08) — `client_command` marker: deterministic forward authority
+// for a client-recognised Calculate the client declined to run locally
+// (multi-board job). The recognised grammar has no digit and no trigger word,
+// so without the marker the transcript is LOW_CONTENT-blocked with
+// VOICE_AGENTIC_ANSWERS off. The marker is validated against a closed set;
+// anything else leaves the ordinary gate untouched.
+// ---------------------------------------------------------------------------
+describe('[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND)', () => {
+  const TRIGGERLESS = [
+    'calculate impedance for all',
+    'calculate z s for all',
+    'calculate impedance for all.',
+  ];
+
+  test.each(TRIGGERLESS)(
+    'control: unmarked "%s" is still LOW_CONTENT-blocked with the flag off',
+    (text) => {
+      const d = shouldForwardToSonnet(text, { agenticAnswersEnabled: false });
+      expect(d.forward).toBe(false);
+      expect(d.reason).toBe(GATE_REASONS.LOW_CONTENT);
+    }
+  );
+
+  test.each(TRIGGERLESS)(
+    '"%s" + client_command calculate_zs forwards with the flag OFF',
+    (text) => {
+      const d = shouldForwardToSonnet(text, {
+        agenticAnswersEnabled: false,
+        clientCommand: 'calculate_zs',
+      });
+      expect(d).toEqual({ forward: true, reason: GATE_REASONS.HAS_RECOGNISED_COMMAND });
+    }
+  );
+
+  test('forwards with the flag ON too, and the reason is the marker (not borderline)', () => {
+    const d = shouldForwardToSonnet('calculate impedance for all', {
+      agenticAnswersEnabled: true,
+      clientCommand: 'calculate_r1_plus_r2',
+    });
+    expect(d).toEqual({ forward: true, reason: GATE_REASONS.HAS_RECOGNISED_COMMAND });
+  });
+
+  test.each([
+    ['unknown string', 'calculate_impedance'],
+    ['number', 42],
+    ['object', { name: 'calculate_zs' }],
+    ['empty string', ''],
+    ['null', null],
+  ])(
+    'a malformed marker (%s) is ignored — ordinary gate result (blocked, flag off)',
+    (_label, marker) => {
+      const d = shouldForwardToSonnet('calculate impedance for all', {
+        agenticAnswersEnabled: false,
+        clientCommand: marker,
+      });
+      expect(d.forward).toBe(false);
+      expect(d.reason).toBe(GATE_REASONS.LOW_CONTENT);
+    }
+  );
+
+  test('the marker never carries an EMPTY transcript through', () => {
+    const d = shouldForwardToSonnet('   ', { clientCommand: 'calculate_zs' });
+    expect(d).toEqual({ forward: false, reason: GATE_REASONS.EMPTY });
+  });
+
+  test('the marker is not a regex hint: with regexResults present the reason stays HAS_REGEX_HINT', () => {
+    const d = shouldForwardToSonnet('calculate impedance for all', {
+      regexResults: [{ field: 'measured_zs_ohm' }],
+      clientCommand: 'calculate_zs',
+    });
+    expect(d.reason).toBe(GATE_REASONS.HAS_REGEX_HINT);
+  });
+
+  test('RECOGNISED_CLIENT_COMMANDS is exactly the two server calculators', () => {
+    expect([...RECOGNISED_CLIENT_COMMANDS].sort()).toEqual([
+      'calculate_r1_plus_r2',
+      'calculate_zs',
+    ]);
   });
 });
