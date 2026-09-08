@@ -88,6 +88,20 @@ function askFrameMatches(matcher, frame) {
  * reading_confirmation / state_confirmation / field_null_fallback) and
  * emitted ask frames (kind ask_user). Returns { failures, claims }.
  */
+/** A01P — case-insensitive fragment test for the spoken_response kind. */
+function spokenResponseMatches(matcher, text) {
+  if (typeof text !== 'string' || text.trim() === '') return false;
+  const hay = text.toLowerCase();
+  const list = (v) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+  for (const frag of list(matcher.text_contains)) {
+    if (!hay.includes(String(frag).toLowerCase())) return false;
+  }
+  for (const frag of list(matcher.text_not_contains)) {
+    if (hay.includes(String(frag).toLowerCase())) return false;
+  }
+  return true;
+}
+
 export function matchAudibleOutputs(expectedOutputs, { result, wsFrames }) {
   const failures = [];
   const confs = audibleConfirmations(result).map((c, i) => ({ kind: 'confirmation', c, idx: `conf_${i}` }));
@@ -97,6 +111,24 @@ export function matchAudibleOutputs(expectedOutputs, { result, wsFrames }) {
 
   for (const out of expectedOutputs) {
     const id = `audibility.output.${out.output_id}`;
+    if (out.kind === 'spoken_response') {
+      // A01P — narration oracle over the model-staged spoken answer. Not a
+      // pooled candidate: it never participates in the unclaimed sweep.
+      const spoken = result?.spoken_response;
+      const ok = spokenResponseMatches(out.match ?? {}, spoken);
+      if (out.count === 0 && ok) {
+        failures.push({ id, outcome: OUTCOME.FAIL, message: `expected NO matching spoken_response, found "${String(spoken).slice(0, 80)}"` });
+      } else if (out.count > 0 && !ok) {
+        failures.push({
+          id,
+          outcome: OUTCOME.FAIL,
+          message: typeof spoken === 'string' && spoken.trim()
+            ? `spoken_response "${spoken.slice(0, 80)}" does not satisfy ${JSON.stringify(out.match ?? {})}`
+            : 'no spoken_response was staged this turn',
+        });
+      }
+      continue;
+    }
     const pool =
       out.kind === 'ask_user'
         ? asks.filter((a) => askFrameMatches(out.match ?? {}, a.f))
