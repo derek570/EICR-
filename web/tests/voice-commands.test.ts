@@ -625,3 +625,105 @@ describe('[invariant] A01P Codex cycle-1 — at-DB alias selected by occupancy',
     ).toMatchObject({ state: 'finite', value: 0.5, source: 'supply_short' });
   });
 });
+
+describe('[invariant] A01P Codex cycle-2 — mixed-skip zero-write commands name BOTH reasons', () => {
+  it('Zs: circuit 1 occupied, circuit 2 blank but lacking R1+R2 → both named, nothing written, unapplied', () => {
+    const job: VoiceCommandJob = {
+      supply_characteristics: { ze: '0.35' },
+      circuits: [
+        {
+          id: 'c1',
+          circuit_ref: '1',
+          circuit_designation: 'Cooker',
+          r1_r2_ohm: '0.20',
+          measured_zs_ohm: '0.42',
+        },
+        { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets' },
+      ],
+    };
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for all')!, job);
+    expect(out.patch).toBeUndefined();
+    expect(out.actionOutcome).toBe('unapplied');
+    expect(out.actionReason).toBe('mixed_skips');
+    expect(out.skippedResults).toEqual([
+      { circuit: '1', reason: 'already_set' },
+      { circuit: '2', reason: 'no_r1_r2' },
+    ]);
+    expect(out.response).toBe(
+      'Zs for circuit 1 is already recorded, and circuit 2 has no R1 plus R2 to calculate from.'
+    );
+  });
+
+  it('R1+R2: occupied row plus a row with no Zs → both named; a Zs-below-Ze row is named as such', () => {
+    const base = {
+      supply_characteristics: { ze: '0.35' },
+      circuits: [
+        {
+          id: 'c1',
+          circuit_ref: '1',
+          circuit_designation: 'Cooker',
+          measured_zs_ohm: '0.55',
+          r1_r2_ohm: '0.20',
+        },
+        { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets' },
+        { id: 'c3', circuit_ref: '3', circuit_designation: 'Lights' },
+      ],
+    } as VoiceCommandJob;
+    const out = applyVoiceCommand(parseVoiceCommand('calculate R1+R2 for all circuits')!, base);
+    expect(out.patch).toBeUndefined();
+    expect(out.response).toBe(
+      'R1 plus R2 for circuit 1 is already recorded, and circuits 2 and 3 have no Zs to calculate from.'
+    );
+    const below: VoiceCommandJob = {
+      supply_characteristics: { ze: '0.35' },
+      circuits: [
+        {
+          id: 'c1',
+          circuit_ref: '1',
+          circuit_designation: 'Cooker',
+          measured_zs_ohm: '0.55',
+          r1_r2_ohm: '0.20',
+        },
+        { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets', measured_zs_ohm: '0.10' },
+      ],
+    };
+    const out2 = applyVoiceCommand(parseVoiceCommand('calculate R1+R2 for all circuits')!, below);
+    expect(out2.response).toBe(
+      'R1 plus R2 for circuit 1 is already recorded, and circuit 2 has a Zs below Ze to calculate from.'
+    );
+    expect(out2.skippedResults).toEqual([
+      { circuit: '1', reason: 'already_set' },
+      { circuit: '2', reason: 'zs_below_ze' },
+    ]);
+  });
+
+  it('no occupied rows and nothing computable keeps the existing line, now with the skip reasons attached', () => {
+    const job: VoiceCommandJob = {
+      supply_characteristics: { ze: '0.35' },
+      circuits: [{ id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker' }],
+    };
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for all')!, job);
+    expect(out.response).toBe('No circuits had the values needed to calculate Zs.');
+    expect(out.actionOutcome).toBe('unapplied');
+    expect(out.skippedResults).toEqual([{ circuit: '1', reason: 'no_r1_r2' }]);
+  });
+
+  it('one occupied row plus one computed row still speaks only the computed value (applied)', () => {
+    const job: VoiceCommandJob = {
+      supply_characteristics: { ze: '0.35' },
+      circuits: [
+        {
+          id: 'c1',
+          circuit_ref: '1',
+          circuit_designation: 'Cooker',
+          r1_r2_ohm: '0.20',
+          measured_zs_ohm: '0.42',
+        },
+        { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets', r1_r2_ohm: '0.30' },
+      ],
+    };
+    const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for all')!, job);
+    expect(out.actionOutcome).toBe('applied');
+    expect(out.response).toBe('Circuit 2, Zs calculated as 0.65 ohms');
+  });
+});

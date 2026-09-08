@@ -170,7 +170,7 @@ export interface VoiceCommandOutcome {
   appliedResults?: Array<{ circuit: number | string; field: string; value: string }>;
   /** A01P — rows the local calculator deliberately left alone because the
    *  destination was already occupied (a meter reading always wins). */
-  skippedResults?: Array<{ circuit: number | string; reason: 'already_set' }>;
+  skippedResults?: Array<{ circuit: number | string; reason: CalculateSkipReason }>;
   /** Partial JobDetail patch; undefined for pure query commands.
    *  Callers cast to their richer JobDetail shape — the structural
    *  typing here only requires the keys the applier might touch. */
@@ -1346,6 +1346,25 @@ function formatImpedance(value: number): string {
   return value.toFixed(2);
 }
 
+/** A01P — why the local calculator left a selected row alone. Mirrors the
+ *  backend calculators' skip taxonomy (stage6-dispatchers-circuit.js). */
+export type CalculateSkipReason = 'already_set' | 'no_r1_r2' | 'no_zs' | 'zs_below_ze';
+
+function circuitScope(refs: Array<number | string>): string {
+  return refs.length === 1
+    ? `circuit ${refs[0]}`
+    : `circuits ${refs.slice(0, -1).join(', ')} and ${refs[refs.length - 1]}`;
+}
+
+/** Spoken reason for the rows that could not be calculated. */
+function missingInputPhrase(
+  kind: 'zs' | 'r1_r2',
+  unusable: Array<{ reason: CalculateSkipReason }>
+): string {
+  if (kind === 'zs') return 'no R1 plus R2';
+  return unusable.every((s) => s.reason === 'zs_below_ze') ? 'a Zs below Ze' : 'no Zs';
+}
+
 /** Genuinely absent Ze — every ladder tier blank (existing no-Ze wording). */
 export const NO_ZE_RESPONSE = "I can't calculate that — no zed E value has been set yet.";
 /** DictatedReadbackPolicyV1 `strings.ze_unreadable` (config/dictated-readback-policy-v1.json). */
@@ -1397,7 +1416,7 @@ function applyCalculateImpedance(
   // non-blank value) is never overwritten by a derived value, in single,
   // range and all scopes alike; the empty rows in the same command still
   // fill. The read-back names only what was actually written.
-  const skipped: Array<{ circuit: number | string; reason: 'already_set' }> = [];
+  const skipped: Array<{ circuit: number | string; reason: CalculateSkipReason }> = [];
   const refOf = (row: VoiceCommandCircuit, idx: number): string =>
     String(row.circuit_ref ?? row.number ?? idx + 1);
   const destination = command.kind === 'zs' ? 'measured_zs_ohm' : 'r1_r2_ohm';
@@ -1410,9 +1429,11 @@ function applyCalculateImpedance(
     if (command.kind === 'zs') {
       // Zs = Ze + R1+R2
       const r1r2Str = row.r1_r2_ohm;
-      if (String(r1r2Str ?? '').trim() === '') return row;
       const r1r2 = Number(r1r2Str);
-      if (!Number.isFinite(r1r2)) return row;
+      if (String(r1r2Str ?? '').trim() === '' || !Number.isFinite(r1r2)) {
+        skipped.push({ circuit: refOf(row, idx), reason: 'no_r1_r2' });
+        return row;
+      }
       const zs = zeNum + (r1r2 as number);
       const value = formatImpedance(zs);
       appliedResults.push({
@@ -1424,11 +1445,16 @@ function applyCalculateImpedance(
     }
     // r1_r2 = Zs - Ze
     const zsStr = row.measured_zs_ohm;
-    if (String(zsStr ?? '').trim() === '') return row;
     const zs = Number(zsStr);
-    if (!Number.isFinite(zs)) return row;
+    if (String(zsStr ?? '').trim() === '' || !Number.isFinite(zs)) {
+      skipped.push({ circuit: refOf(row, idx), reason: 'no_zs' });
+      return row;
+    }
     const r1r2 = (zs as number) - zeNum;
-    if (r1r2 < 0) return row;
+    if (r1r2 < 0) {
+      skipped.push({ circuit: refOf(row, idx), reason: 'zs_below_ze' });
+      return row;
+    }
     const value = formatImpedance(r1r2);
     appliedResults.push({
       circuit: String(row.circuit_ref ?? row.number ?? idx + 1),
@@ -1439,28 +1465,41 @@ function applyCalculateImpedance(
   });
   const label = command.kind === 'zs' ? 'Zs' : 'R1 plus R2';
   if (appliedResults.length === 0) {
-    if (skipped.length > 0) {
-      // Everything selected already carries a measured value — the honest
-      // outcome is the backend's own "already recorded" line, never a
+    const occupied = skipped.filter((s) => s.reason === 'already_set').map((s) => s.circuit);
+    const unusable = skipped.filter((s) => s.reason !== 'already_set');
+    if (occupied.length > 0 && unusable.length === 0) {
+      // EVERY selected row already carries a measured value — the honest
+      // outcome is the backend's own "already recorded" line (the backend
+      // emits it only when every skip reason is already_set), never a
       // fabricated success and never silence (A04P truthful outcomes).
-      const refs = skipped.map((s) => s.circuit);
-      const scope =
-        refs.length === 1
-          ? `circuit ${refs[0]}`
-          : `circuits ${refs.slice(0, -1).join(', ')} and ${refs[refs.length - 1]}`;
-      const tail =
-        refs.length === 1
-          ? 'say a new reading to replace it.'
-          : 'say new readings to replace them.';
       return {
-        response: `${label} for ${scope} is already recorded — ${tail}`,
+        response: `${label} for ${circuitScope(occupied)} is already recorded — ${
+          occupied.length === 1
+            ? 'say a new reading to replace it.'
+            : 'say new readings to replace them.'
+        }`,
         actionOutcome: 'unapplied',
         actionReason: 'already_set',
         skippedResults: skipped,
       };
     }
+    if (occupied.length > 0) {
+      // Codex EP cycle-2 — a zero-write command with MIXED reasons names
+      // both: the occupied rows AND the rows that could not be calculated.
+      // Silencing either half would misreport what happened.
+      return {
+        response:
+          `${label} for ${circuitScope(occupied)} is already recorded, and ` +
+          `${circuitScope(unusable.map((s) => s.circuit))} ${unusable.length === 1 ? 'has' : 'have'} ` +
+          `${missingInputPhrase(command.kind, unusable)} to calculate from.`,
+        actionOutcome: 'unapplied',
+        actionReason: 'mixed_skips',
+        skippedResults: skipped,
+      };
+    }
     return {
       response: `No circuits had the values needed to calculate ${label}.`,
+      ...(skipped.length > 0 ? { skippedResults: skipped } : {}),
     };
   }
   const groups = new Map<string, Array<number | string>>();

@@ -42,6 +42,7 @@ export type {
   VoiceCommandCircuit,
   VoiceCommandScope,
   ClientCommandMarker,
+  CalculateSkipReason,
 } from './voice-commands';
 export {
   GUARDED_CLOSED_ENUM_FIELDS,
