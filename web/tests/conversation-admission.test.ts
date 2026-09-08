@@ -25,7 +25,7 @@ const fixture = require(fixturePath) as {
   }>;
 };
 
-const PINNED_DIGEST = '4d60771946a9df048dcc1cf44809abd50454deb14f5b99ccaa71af98d6475120';
+const PINNED_DIGEST = '19cfa6878db40320a4704f5f1b1b2e4f09f363f9ae5bf72d6d57628067b6e15f';
 
 describe('ConversationAdmissionV1 cross-client vectors', () => {
   it('pins the exact shared fixture bytes and a non-trivial corpus', () => {

@@ -97,6 +97,7 @@
     { "id": "a01p-calculate-spoken-zs-all-question-mark", "raw": "calculate z s for all?", "classification": "ORDINARY", "bypass_mutation": false, "admits": false, "normalised": "calculate z s for all?" },
     { "id": "a01p-calculate-mixed-query", "raw": "calculate Zs for circuit one, what did I say?", "classification": "QUESTION_SHAPED", "bypass_mutation": true, "admits": false, "normalised": "calculate Zs for circuit 1, what did I say?" },
     { "id": "a01p-calculate-protected-ordinal", "raw": "Calculate Zs for second one?", "classification": "QUESTION_SHAPED", "bypass_mutation": true, "admits": false, "normalised": "Calculate Zs for second one?", "protected": ["second one"] },
+    { "id": "a01p-do-protected-ordinal", "raw": "Do Zs for second one?", "classification": "QUERY_TRIGGER", "bypass_mutation": true, "admits": true, "normalised": "Do Zs for second one?", "protected": ["second one"] },
     { "id": "bathroom-where", "raw": "Where's the bathroom?", "classification": "QUESTION_SHAPED", "bypass_mutation": true, "admits": false, "normalised": "Where's the bathroom?" },
     { "id": "done", "raw": "Is it done?", "classification": "QUESTION_SHAPED", "bypass_mutation": true, "admits": false, "normalised": "Is it done?" },
     { "id": "move-on", "raw": "Can we move on?", "classification": "QUESTION_SHAPED", "bypass_mutation": true, "admits": false, "normalised": "Can we move on?" },
