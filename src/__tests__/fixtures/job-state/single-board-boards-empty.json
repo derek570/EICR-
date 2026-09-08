@@ -1,0 +1,37 @@
+{
+  "id": "job_a01p_single_0002",
+  "address": "7 Fixture Close",
+  "status": "done",
+  "created_at": "2026-09-01T09:00:00.000Z",
+  "updated_at": "2026-09-01T09:30:00.000Z",
+  "certificate_type": "EICR",
+  "circuits": [
+    {
+      "id": "circuit_a01p_single_0001",
+      "circuit_ref": "1",
+      "circuit_designation": "Kitchen Ring",
+      "r1_r2_ohm": "0.20"
+    }
+  ],
+  "observations": [],
+  "board_info": {
+    "manufacturer": "Hager",
+    "ze": "0.35"
+  },
+  "boards": [],
+  "installation_details": {
+    "client_name": "Mrs Smith",
+    "address": "7 Fixture Close",
+    "postcode": "RG6 3EY"
+  },
+  "supply_characteristics": {
+    "earthing_arrangement": "TN-C-S",
+    "ze": "0.50",
+    "earth_loop_impedance_ze": "0.50"
+  },
+  "inspection_schedule": null,
+  "inspector_id": null,
+  "extent_and_type": null,
+  "design_construction": null,
+  "unassigned_photos": null
+}
