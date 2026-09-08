@@ -49,9 +49,13 @@ import { copyAfddPremisesRequirement } from './regulation-lookup.js';
  */
 export function applyReadingToSnapshot(snapshot, { circuit, field, value }) {
   if (!snapshot.circuits[circuit]) snapshot.circuits[circuit] = {};
-  const previous = snapshot.circuits[circuit][field];
-  snapshot.circuits[circuit][field] = value;
-  if (previous !== value) {
+  // A01P — circuit 0 is the supply/board bucket: an accepted Ze/PFC write
+  // there reconciles the alias siblings ALREADY PRESENT in the bucket.
+  const write =
+    circuit === 0
+      ? writeAcceptedAliases(snapshot.circuits[circuit], field, value)
+      : writeExact(snapshot.circuits[circuit], field, value);
+  if (write.changed) {
     if (snapshot[MUTATION_OBSERVER]) {
       emitMutationCommit(snapshot, {
         kind: 'reading',
@@ -59,10 +63,71 @@ export function applyReadingToSnapshot(snapshot, { circuit, field, value }) {
         circuit,
         board_id: getMainBoardId(snapshot),
         value,
-        previous_value: previous == null ? null : String(previous),
+        previous_value: write.previous == null ? null : String(write.previous),
+        detail: aliasRepairDetail(write),
       });
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// A01P (2026-09-08) — ACCEPTED-ALIAS CONSISTENCY.
+//
+// Ze and PFC each live under two spellings (`ze` / `earth_loop_impedance_ze`,
+// `pfc` / `prospective_fault_current`; `boardFieldAliasSet`). A dictated
+// correction is stored under the RAW key the model used, so a bucket hydrated
+// with the other spelling kept the stale value beside the fresh one — and the
+// board-aware calculators (short key first) computed with the old Ze
+// ("Ze 0.35", then "Ze 0.50", Calculate Zs with R1+R2 0.20 gave 0.55).
+//
+// Rule: resolve the physical bucket first (the caller does), then write the
+// accepted raw key and repair ONLY alias siblings ALREADY PRESENT in that
+// same record. Never create an absent wire-canonical key solely for storage
+// (outbound FIELD_CORRECTIONS still supplies `ze`/`pfc`); never copy across
+// buckets; no seed/merge fan-out. ONE receipt per atom when ANY targeted slot
+// changed (alias-only repair included), ZERO for an unchanged replay; the
+// secondary slots ride the receipt's `detail.alias_repairs`.
+// ---------------------------------------------------------------------------
+const ACCEPTED_ALIAS_FAMILIES = Object.freeze(
+  ['ze', 'pfc'].map((f) => Object.freeze(boardFieldAliasSet(f)))
+);
+
+/** Alias siblings of `field` within the accepted families (empty otherwise). */
+export function acceptedAliasSiblings(field) {
+  for (const family of ACCEPTED_ALIAS_FAMILIES) {
+    if (family.has(field)) return [...family].filter((k) => k !== field);
+  }
+  return [];
+}
+
+function writeExact(record, field, value) {
+  const previous = record[field];
+  record[field] = value;
+  return { previous, changed: previous !== value, repaired: [] };
+}
+
+/**
+ * Write `record[field] = value` and reconcile every alias sibling that is
+ * ALREADY a key of `record` to the same value.
+ * @returns {{previous: unknown, changed: boolean,
+ *   repaired: Array<{key: string, previous_value: string|null}>}}
+ */
+export function writeAcceptedAliases(record, field, value) {
+  const out = writeExact(record, field, value);
+  for (const sibling of acceptedAliasSiblings(field)) {
+    if (!(sibling in record)) continue;
+    const prior = record[sibling];
+    if (prior === value) continue;
+    record[sibling] = value;
+    out.repaired.push({ key: sibling, previous_value: prior == null ? null : String(prior) });
+    out.changed = true;
+  }
+  return out;
+}
+
+function aliasRepairDetail(write, base) {
+  if (write.repaired.length === 0) return base;
+  return { ...(base ?? {}), alias_repairs: write.repaired };
 }
 
 /**
@@ -91,9 +156,8 @@ export function applyReadingToSnapshot(snapshot, { circuit, field, value }) {
  */
 export function applyBoardReadingToSnapshot(snapshot, { field, value }) {
   if (!snapshot.circuits[0]) snapshot.circuits[0] = {};
-  const previous = snapshot.circuits[0][field];
-  snapshot.circuits[0][field] = value;
-  if (previous !== value) {
+  const write = writeAcceptedAliases(snapshot.circuits[0], field, value);
+  if (write.changed) {
     if (snapshot[MUTATION_OBSERVER]) {
       emitMutationCommit(snapshot, {
         kind: 'board_reading',
@@ -101,8 +165,8 @@ export function applyBoardReadingToSnapshot(snapshot, { field, value }) {
         circuit: null,
         board_id: getMainBoardId(snapshot),
         value,
-        previous_value: previous == null ? null : String(previous),
-        detail: { storage: 'circuits0' },
+        previous_value: write.previous == null ? null : String(write.previous),
+        detail: aliasRepairDetail(write, { storage: 'circuits0' }),
       });
     }
   }
@@ -332,9 +396,13 @@ export function applyReadingMultiBoard(snapshot, { circuit, field, value, boardI
   if (!snapshot.circuits[key]) {
     snapshot.circuits[key] = { circuit, board_id: id };
   }
-  const previous = snapshot.circuits[key][field];
-  snapshot.circuits[key][field] = value;
-  if (previous !== value) {
+  // A01P — the composite circuit-0 bucket is that board's supply bucket.
+  const write =
+    circuit === 0
+      ? writeAcceptedAliases(snapshot.circuits[key], field, value)
+      : writeExact(snapshot.circuits[key], field, value);
+  const previous = write.previous;
+  if (write.changed) {
     if (snapshot[MUTATION_OBSERVER]) {
       emitMutationCommit(snapshot, {
         kind: 'reading',
@@ -343,6 +411,7 @@ export function applyReadingMultiBoard(snapshot, { circuit, field, value, boardI
         board_id: id,
         value,
         previous_value: previous == null ? null : String(previous),
+        detail: aliasRepairDetail(write),
       });
     }
   }
@@ -542,9 +611,8 @@ export function applyBoardReadingMultiBoard(snapshot, { field, value, boardId })
     };
     snapshot.boards.push(board);
   }
-  const previous = board[field];
-  board[field] = value;
-  if (previous !== value) {
+  const write = writeAcceptedAliases(board, field, value);
+  if (write.changed) {
     if (snapshot[MUTATION_OBSERVER]) {
       emitMutationCommit(snapshot, {
         kind: 'board_reading',
@@ -552,8 +620,8 @@ export function applyBoardReadingMultiBoard(snapshot, { field, value, boardId })
         circuit: null,
         board_id: id,
         value,
-        previous_value: previous == null ? null : String(previous),
-        detail: { storage: 'boards' },
+        previous_value: write.previous == null ? null : String(write.previous),
+        detail: aliasRepairDetail(write, { storage: 'boards' }),
       });
     }
   }

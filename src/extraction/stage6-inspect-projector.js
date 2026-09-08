@@ -19,6 +19,7 @@ import {
   listCircuitRefsInBoard,
 } from './stage6-multi-board-shape.js';
 import { applyWrapPolicy, wrapSnapshotUserTextInline } from './stage6-snapshot-user-text.js';
+import { acceptedAliasSiblings } from './stage6-snapshot-mutators.js';
 
 const require = createRequire(import.meta.url);
 const fieldSchema = require('../../config/field_schema.json');
@@ -300,6 +301,15 @@ export function projectCircuit(snapshot, circuit, boardId, { certType } = {}) {
   };
 }
 
+function readWithAliasFallback(bucket, field) {
+  if (!bucket || typeof bucket !== 'object') return undefined;
+  if (field in bucket) return bucket[field];
+  for (const sibling of acceptedAliasSiblings(field)) {
+    if (sibling in bucket) return bucket[sibling];
+  }
+  return undefined;
+}
+
 export function projectField(snapshot, { field, circuit, boardId }) {
   let value;
   if (circuit == null && boardId == null) {
@@ -327,11 +337,16 @@ export function projectField(snapshot, { field, circuit, boardId }) {
     // Supply/board-level lookup: the legacy circuits[0] bucket first, then the
     // board record itself (ze/ipf_at_db/location live on boards[] for
     // non-main boards).
+    // A01P — exact key first, then an ABSENT-key alias fallback within the
+    // SAME bucket (a bucket hydrated under `ze` answers `earth_loop_impedance_ze`
+    // and vice versa). A bucket holding BOTH spellings answers each with its
+    // own exact key — the hydrated-conflict precedence is A01's to unify.
     const supplyBucket = getCircuitBucket(snapshot, 0, boardId);
-    value = supplyBucket?.[field];
+    value = readWithAliasFallback(supplyBucket, field);
     if (isMissingValue(value)) {
       const board = findBoard(snapshot, boardId);
-      if (board && !isMissingValue(board[field])) value = board[field];
+      const boardValue = readWithAliasFallback(board, field);
+      if (!isMissingValue(boardValue)) value = boardValue;
     }
   }
   const recorded = !isMissingValue(value);
