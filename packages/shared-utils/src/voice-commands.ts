@@ -1356,13 +1356,39 @@ function circuitScope(refs: Array<number | string>): string {
     : `circuits ${refs.slice(0, -1).join(', ')} and ${refs[refs.length - 1]}`;
 }
 
-/** Spoken reason for the rows that could not be calculated. */
-function missingInputPhrase(
-  kind: 'zs' | 'r1_r2',
-  unusable: Array<{ reason: CalculateSkipReason }>
+/** Spoken reason for ONE skip reason. */
+function missingInputPhrase(reason: CalculateSkipReason): string {
+  switch (reason) {
+    case 'no_r1_r2':
+      return 'no R1 plus R2';
+    case 'no_zs':
+      return 'no Zs';
+    case 'zs_below_ze':
+      return 'a Zs below Ze';
+    default:
+      return 'no usable values';
+  }
+}
+
+/**
+ * Codex EP cycle-3 — the unusable rows are GROUPED BY REASON so a mixed
+ * R1+R2 command never collapses "no Zs" and "a Zs below Ze" into one clause
+ * (a row with a Zs below Ze DOES have a Zs). Reason order is the taxonomy
+ * order; circuits keep their command order within each group.
+ */
+function unusableClauses(
+  unusable: Array<{ circuit: number | string; reason: CalculateSkipReason }>
 ): string {
-  if (kind === 'zs') return 'no R1 plus R2';
-  return unusable.every((s) => s.reason === 'zs_below_ze') ? 'a Zs below Ze' : 'no Zs';
+  const order: CalculateSkipReason[] = ['no_r1_r2', 'no_zs', 'zs_below_ze'];
+  const clauses: string[] = [];
+  for (const reason of order) {
+    const refs = unusable.filter((s) => s.reason === reason).map((s) => s.circuit);
+    if (refs.length === 0) continue;
+    clauses.push(
+      `${circuitScope(refs)} ${refs.length === 1 ? 'has' : 'have'} ${missingInputPhrase(reason)} to calculate from`
+    );
+  }
+  return clauses.join(', and ');
 }
 
 /** Genuinely absent Ze — every ladder tier blank (existing no-Ze wording). */
@@ -1490,8 +1516,7 @@ function applyCalculateImpedance(
       return {
         response:
           `${label} for ${circuitScope(occupied)} is already recorded, and ` +
-          `${circuitScope(unusable.map((s) => s.circuit))} ${unusable.length === 1 ? 'has' : 'have'} ` +
-          `${missingInputPhrase(command.kind, unusable)} to calculate from.`,
+          `${unusableClauses(unusable)}.`,
         actionOutcome: 'unapplied',
         actionReason: 'mixed_skips',
         skippedResults: skipped,

@@ -697,6 +697,37 @@ describe('[invariant] A01P Codex cycle-2 — mixed-skip zero-write commands name
     ]);
   });
 
+  it('R1+R2 with ALL THREE reasons in one command: already_set / no_zs / zs_below_ze are stored and each scope is named truthfully (Codex cycle-3)', () => {
+    const job: VoiceCommandJob = {
+      supply_characteristics: { ze: '0.35' },
+      circuits: [
+        {
+          id: 'c1',
+          circuit_ref: '1',
+          circuit_designation: 'Cooker',
+          measured_zs_ohm: '0.55',
+          r1_r2_ohm: '0.20',
+        },
+        { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets' },
+        { id: 'c3', circuit_ref: '3', circuit_designation: 'Lights', measured_zs_ohm: '0.10' },
+      ],
+    };
+    const out = applyVoiceCommand(parseVoiceCommand('calculate R1+R2 for all circuits')!, job);
+    expect(out.patch).toBeUndefined();
+    expect(out.actionOutcome).toBe('unapplied');
+    expect(out.actionReason).toBe('mixed_skips');
+    expect(out.skippedResults).toEqual([
+      { circuit: '1', reason: 'already_set' },
+      { circuit: '2', reason: 'no_zs' },
+      { circuit: '3', reason: 'zs_below_ze' },
+    ]);
+    expect(out.response).toBe(
+      'R1 plus R2 for circuit 1 is already recorded, and circuit 2 has no Zs to calculate from, and circuit 3 has a Zs below Ze to calculate from.'
+    );
+    // Circuit 3 is never described as lacking a Zs.
+    expect(out.response).not.toContain('circuits 2 and 3');
+  });
+
   it('no occupied rows and nothing computable keeps the existing line, now with the skip reasons attached', () => {
     const job: VoiceCommandJob = {
       supply_characteristics: { ze: '0.35' },
