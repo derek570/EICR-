@@ -298,6 +298,86 @@ describe('[invariant] A01P — local Calculate read-back durability in the FIFO 
     });
   }
 
+  // Confirmation 1 already wrote circuit 2's Zs (a meter reading wins), so
+  // the server's `all` action computes circuit 1 only.
+  const LEGACY_ALL_LINE = CALC_LINE;
+  const legacyCalculateAction = {
+    understood: true,
+    spoken_response: 'Done.',
+    action: { type: 'calculate_impedance', params: { calculate: 'zs', circuits: 'all' } },
+  };
+
+  for (const [mode, label] of HINTS_MODES) {
+    it(`hints ${label}: LEGACY server calculate_impedance action — a PLAYING head, then the action, then OVERFLOW pressure → its local read-back delivered exactly once`, async () => {
+      setHints(mode);
+      const player = new ManualPlayer();
+      const harness = await mountAndStart(player);
+      const sonnet = harness.refs.sonnet!;
+
+      await act(async () => {
+        sonnet.emitExtraction(confirmation(1));
+      });
+      await act(async () => {
+        sonnet.emitVoiceCommandResponse(legacyCalculateAction);
+      });
+      // The field is written by the server action's local apply…
+      expect(harness.jobChanges.length).toBeGreaterThan(0);
+      expect(player.scenarioStarted).toEqual(['Confirmation 1']);
+      for (let n = 3; n < 3 + MAX_QUEUE_DEPTH + 2; n++) {
+        await act(async () => {
+          sonnet.emitExtraction(confirmation(n));
+        });
+      }
+      expect(harness.diagnostics.some((d) => d.category === 'tts_queue_overflow')).toBe(true);
+      expect(diag(harness, 'local_calculate_readback_discarded')).toEqual([]);
+      await act(async () => {
+        player.drain();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        player.drain();
+      });
+      // …and its read-back (the local outcome, never the model's "Done.")
+      // survives the pressure exactly once.
+      expect(player.scenarioStarted.filter((t) => t === LEGACY_ALL_LINE)).toHaveLength(1);
+      expect(player.scenarioStarted).not.toContain('Done.');
+      expect(new Set(player.scenarioStarted).size).toBe(player.scenarioStarted.length);
+    });
+
+    it(`hints ${label}: LEGACY server calculate_impedance action — a preempting direct prompt → re-parked, delivered exactly once`, async () => {
+      setHints(mode);
+      const player = new ManualPlayer();
+      const harness = await mountAndStart(player);
+      const sonnet = harness.refs.sonnet!;
+
+      await act(async () => {
+        sonnet.emitExtraction(confirmation(1));
+      });
+      await act(async () => {
+        sonnet.emitVoiceCommandResponse(legacyCalculateAction);
+      });
+      await act(async () => {
+        sonnet.emitQuestion({
+          question: 'Which board is that on?',
+          question_type: 'clarification',
+          tool_call_id: 'toolu_fifo_legacy',
+        });
+        await Promise.resolve();
+      });
+      const discards = diag(harness, 'local_calculate_readback_discarded');
+      expect(discards).toHaveLength(1);
+      expect(discards[0].payload.outcome).toBe('reparked');
+      await act(async () => {
+        player.drain();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        player.drain();
+      });
+      expect(player.scenarioStarted.filter((t) => t === LEGACY_ALL_LINE)).toHaveLength(1);
+    });
+  }
+
   it('a terminal playback failure RETIRES the read-back (no infinite retry) and its tracking entry', () => {
     const queued = speakLocalCommandOutcome(CALC_LINE);
     expect(queued.enqueued).toBe(false); // no TTS backend / no harness player here

@@ -3798,9 +3798,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // never inferred from an absent patch: a legitimately no-op apply
         // (value already set, empty scope) also has no patch.
         let localSpokenOverride: string | null = null;
+        // A01P (Codex EP cycle-2) — a server `calculate_impedance` action has
+        // ALREADY mutated the job by the time it speaks, and no server replay
+        // restores local-only speech: its selected local outcome takes the
+        // protected / re-parking family path, not a bare `speakConfirmation`.
+        let localCalculateSpeech = false;
         if (response.understood && response.action) {
           const command = mapServerActionToVoiceCommand(response.action);
           if (command) {
+            localCalculateSpeech = command.type === 'calculate_impedance';
             // Codex r1 — commit any open designation draft before the
             // voice mutation reads the job (same stale-draft class as
             // the wire-envelope flush in applyExtraction); adopt the
@@ -3943,6 +3949,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             if (!queued.enqueued) {
               discardConfirmationReservation(dedupeKey, 'not_queued');
             }
+          } else if (localCalculateSpeech && localSpokenOverride !== null) {
+            // Same lifecycle as a client-parsed Calculate: protected from
+            // overflow eviction, re-parked on preemption, retired at playback
+            // start or terminal failure (`onDiscarded` / `onPlaybackStarted`).
+            const queued = speakLocalCommandOutcome(spokenText);
+            clientDiagnostic('voice_command_local_calculate_speech', {
+              enqueued: queued.enqueued,
+              dedupeKey: queued.dedupeKey,
+            });
           } else {
             speakConfirmation(spokenText, { force: true });
           }
