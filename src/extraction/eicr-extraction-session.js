@@ -580,6 +580,13 @@ export function selectInstallationContainer(jobState) {
 export function normaliseInstallationIngest(installation) {
   if (!isPlainRecord(installation)) return {};
   const out = {};
+  // A01P (2026-09-08) — the client's name rides the same bucket: web sends
+  // snake `client_name`, iOS camel `clientName`. Snake precedence when both
+  // are present; an absent name produces NO key (never `client_name:
+  // undefined`, which would seed a spurious slot). Seed writes it; the
+  // mid-session merge keeps it READING tier / fill-empty (not FACT_FIELDS).
+  const name = installation.client_name ?? installation.clientName;
+  if (name !== undefined) out.client_name = name;
   if (installation.address !== undefined) out.address = installation.address;
   if (installation.postcode !== undefined) out.postcode = installation.postcode;
   if (installation.town !== undefined) out.town = installation.town;

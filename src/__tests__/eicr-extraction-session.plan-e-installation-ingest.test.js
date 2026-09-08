@@ -330,3 +330,74 @@ describe('PLAN-E — mirror-ask family completeness now satisfiable (provenance 
     expect(store.claim).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// A01P (2026-09-08) — the client's NAME rides the installation bucket too.
+// web sends snake `client_name`; iOS sends camel `clientName`. Snake wins when
+// both are present. Seed writes it; the mid-session merge is fill-empty.
+// ---------------------------------------------------------------------------
+describe('[invariant] A01P — client_name ingest (snake precedence, no spurious key)', () => {
+  test('snake spelling maps through', () => {
+    expect(normaliseInstallationIngest({ client_name: 'Mrs Smith' })).toEqual({
+      client_name: 'Mrs Smith',
+    });
+  });
+
+  test('camel spelling (iOS) maps through', () => {
+    expect(normaliseInstallationIngest({ clientName: 'Mrs Smith' })).toEqual({
+      client_name: 'Mrs Smith',
+    });
+  });
+
+  test('snake takes precedence over camel when both are present', () => {
+    expect(
+      normaliseInstallationIngest({ client_name: 'Mrs Smith', clientName: 'Mr Jones' })
+    ).toEqual({ client_name: 'Mrs Smith' });
+  });
+
+  test('an absent name produces NO client_name key — never an undefined slot', () => {
+    const out = normaliseInstallationIngest({ address: '1 A St' });
+    expect(out).toEqual({ address: '1 A St' });
+    expect('client_name' in out).toBe(false);
+    expect(normaliseInstallationIngest({})).toEqual({});
+  });
+
+  test('an EMPTY string name is passed through as-is (the caller decides; no spurious seed of a different value)', () => {
+    expect(normaliseInstallationIngest({ client_name: '' })).toEqual({ client_name: '' });
+  });
+
+  test('SEED: start() with a web-shaped installation_details writes circuits[0].client_name', () => {
+    const s = makeSession();
+    s.start({
+      circuits: [],
+      installation_details: { client_name: 'Mrs Smith', address: '1 A St' },
+    });
+    expect(s.stateSnapshot.circuits[0].client_name).toBe('Mrs Smith');
+  });
+
+  test('SEED: start() with an iOS-shaped installation (camel) writes circuits[0].client_name', () => {
+    const s = makeSession();
+    s.start({ circuits: [], installation: { clientName: 'Mrs Smith' } });
+    expect(s.stateSnapshot.circuits[0].client_name).toBe('Mrs Smith');
+  });
+
+  test('SEED: an installation with no name seeds no client_name key at all', () => {
+    const s = makeSession();
+    s.start({ circuits: [], installation_details: { address: '1 A St' } });
+    expect('client_name' in s.stateSnapshot.circuits[0]).toBe(false);
+  });
+
+  test('MID-SESSION MERGE: a stale client push never clobbers a fresher dictated name (fill-empty only)', () => {
+    const s = makeSession();
+    s.stateSnapshot.circuits[0] = { client_name: 'Mrs Smith' };
+    s.updateJobState({ installation_details: { client_name: 'Old Cached Name' } });
+    expect(s.stateSnapshot.circuits[0].client_name).toBe('Mrs Smith');
+  });
+
+  test('MID-SESSION MERGE: an empty slot IS filled by a client push', () => {
+    const s = makeSession();
+    s.stateSnapshot.circuits[0] = {};
+    s.updateJobState({ installation: { clientName: 'Mrs Smith' } });
+    expect(s.stateSnapshot.circuits[0].client_name).toBe('Mrs Smith');
+  });
+});
