@@ -79,7 +79,7 @@ describe('[invariant] accepted supply Ze replaces and materialises both aliases'
     expect(applied?.patch.supply_characteristics).toBeUndefined();
   });
 
-  it('[current_behaviour] persisted short 0.35 / long 0.50 → accepted 0.60 → both 0.60, no original retained', () => {
+  it('[current_behaviour] persisted short 0.35 / long 0.50 → accepted 0.60 → both 0.60 in the apply patch, no original retained (the REAL save/reload boundary is proven in harness/a01p-accepted-ze-save-reload.test.tsx)', () => {
     const job = makeJob({
       supply_characteristics: { ze: '0.35', earth_loop_impedance_ze: '0.50' },
     });
@@ -87,7 +87,8 @@ describe('[invariant] accepted supply Ze replaces and materialises both aliases'
     const supply = supplyOf(applied);
     // (M3's silent polarity / continuity derivations ride the same patch — untouched by A01P.)
     expect(supply).toMatchObject({ ze: '0.60', earth_loop_impedance_ze: '0.60' });
-    // "save/reload" — the patch folded into the job is the persisted shape.
+    // Patch-fold view only — the mounted save → PUT → GET → rehydrate proof
+    // lives in harness/a01p-accepted-ze-save-reload.test.tsx.
     const reloaded = { ...job, ...(applied!.patch as Partial<JobDetail>) } as JobDetail;
     const persisted = reloaded.supply_characteristics as Record<string, unknown>;
     expect(persisted.ze).toBe('0.60');
