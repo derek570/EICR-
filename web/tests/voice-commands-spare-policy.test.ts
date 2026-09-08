@@ -220,7 +220,7 @@ describe('spare designation predicate — unified regex semantics ("Spare way", 
 describe('calculate-impedance scope — unaffected by this plan (always spare-excluded)', () => {
   it('calculate Zs for all circuits still computes only on non-spare rows', () => {
     const job: VoiceCommandJob = {
-      supply: { ze: '0.35' },
+      supply_characteristics: { ze: '0.35' },
       circuits: [
         { id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker', r1_r2_ohm: '0.45' },
         { id: 'c2', circuit_ref: '2', circuit_designation: '', r1_r2_ohm: '0.60' },
