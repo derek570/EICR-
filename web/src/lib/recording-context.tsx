@@ -117,6 +117,10 @@ import {
   speak as speakRaw,
   speakConfirmation,
   speakConfirmationModeStatus,
+  speakLocalCommandOutcome,
+  handleLocalCommandOutcomeDiscard,
+  handleLocalCommandOutcomePlaybackStarted,
+  LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX,
   speakPoorSignalAdvisory,
   type SpeakOptions,
 } from './recording/tts';
@@ -381,8 +385,6 @@ const NAMING_BUFFER_TIMEOUT_MS = 3000;
 // description, short enough that single-utterance latency is barely
 // perceptible (Sonnet's own response budget is ~3s).
 const BURST_BUFFER_TIMEOUT_MS = 500;
-/** A01P — FIFO dedupe-key prefix for local Calculate read-backs. */
-const LOCAL_CALCULATE_DEDUPE_PREFIX = 'local_calc:';
 const nowMs = (): number =>
   typeof performance !== 'undefined' && typeof performance.now === 'function'
     ? performance.now()
@@ -1559,6 +1561,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // why this must run FIRST, why it's safe during a full reset, and why
       // `reason` gates re-park vs retire.
       if (handleModeStatusCueDiscard(dedupeKey, reason)) return;
+      // A01P — a local Calculate read-back destroyed before it played
+      // re-parks itself (same family mechanism as the mode-status cue);
+      // a terminal playback failure retires it AND its latency stamp.
+      const localOutcome = handleLocalCommandOutcomeDiscard(dedupeKey, reason);
+      if (localOutcome !== false) {
+        if (localOutcome === 'retired') localCalculateDispatchAtRef.current.delete(dedupeKey);
+        clientDiagnostic('local_calculate_readback_discarded', {
+          dedupeKey,
+          reason,
+          outcome: localOutcome,
+        });
+        return;
+      }
       // PLAN-E1 E3 — the poor-signal advisory releases its coalescing
       // gate on ANY pre-start discard, WITHOUT re-parking (unlike the
       // mode-status cue above) — it can recur only via a fresh
@@ -2094,17 +2109,29 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               // the extra-prompts preference says. One dedupe key per
               // utterance keeps the read-back exactly once and lets the
               // playback-start seam measure its latency.
-              const dedupeKey = `${LOCAL_CALCULATE_DEDUPE_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-              localCalculateDispatchAtRef.current.set(dedupeKey, localDispatchedAt);
+              // Protected + re-parking (the mode-status family mechanism):
+              // overflow cannot evict it and a preempting prompt re-parks
+              // it, so the read-back of a calculation that already mutated
+              // the job is heard exactly once (Audio-First #1) — there is
+              // no server replay to restore local-only speech.
+              const queued = speakLocalCommandOutcome(outcome.response, {
+                // Stamp BEFORE the push: a synchronous player can start
+                // playback inside the enqueue and resolve the latency at once.
+                beforeEnqueue: (key) =>
+                  localCalculateDispatchAtRef.current.set(key, localDispatchedAt),
+              });
+              if (!queued.enqueued && queued.dedupeKey) {
+                localCalculateDispatchAtRef.current.delete(queued.dedupeKey);
+              }
               clientDiagnostic('local_calculate_outcome', {
                 outcome: outcome.actionOutcome ?? 'unknown',
                 reason: outcome.actionReason ?? null,
                 appliedCount: outcome.appliedResults?.length ?? 0,
+                skippedCount: outcome.skippedResults?.length ?? 0,
                 responsePreview: outcome.response.slice(0, 80),
-                dedupeKey,
+                dedupeKey: queued.dedupeKey,
+                enqueued: queued.enqueued,
               });
-              const queued = speakConfirmation(outcome.response, { force: true, dedupeKey });
-              if (!queued.enqueued) localCalculateDispatchAtRef.current.delete(dedupeKey);
             } else {
               speak(outcome.response);
             }
@@ -3238,7 +3265,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // A01P — a local Calculate read-back began real audio: record the
       // final-transcript → playback-start latency (DictatedReadbackPolicyV1's
       // measured point) and retire the dispatch stamp.
-      if (dedupeKey.startsWith(LOCAL_CALCULATE_DEDUPE_PREFIX)) {
+      if (dedupeKey.startsWith(LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX)) {
+        handleLocalCommandOutcomePlaybackStarted(dedupeKey);
         const dispatchedAt = localCalculateDispatchAtRef.current.get(dedupeKey);
         localCalculateDispatchAtRef.current.delete(dedupeKey);
         clientDiagnostic('local_calculate_playback_started', {

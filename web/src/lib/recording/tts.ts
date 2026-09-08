@@ -1119,45 +1119,130 @@ export function speakConfirmation(
 // the discard hook can recognise and re-enqueue it (never for true
 // deduplication — each cue gets its own unique key, so back-to-back
 // identical cues are never collapsed).
+// ── Protected, re-parking outcome families ───────────────────────────────
+//
+// ONE mechanism (originally PLAN-D's mode-status cue block, generalised for
+// A01P) for speech that must never be silently lost to a queue-lifecycle
+// event: the item enters the ordinary confirmation FIFO with `protected:
+// true` (exempt from `MAX_QUEUE_DEPTH` drop-oldest — overflow has no
+// natural pacing, so a re-parked item re-evicted by the NEXT overflowing
+// enqueue could thrash), carries a family-prefixed dedupe key ONLY so the
+// discard hook can recognise it, and when `preemptFlush()` / `purge()` /
+// overflow destroys it before it played, `handleDiscard` re-enqueues it
+// from a MICROTASK (never synchronously — `preemptFlush()` and `reset()`
+// fire `onDiscarded` inside a LIVE `for (const q of queue)` loop over the
+// same array `enqueueConfirmation` pushes into; a synchronous re-enqueue
+// re-enters that loop and cascades). `playback_error` (native AND
+// ElevenLabs both failed before any audio) RETIRES instead of re-parking,
+// or a broken synth backend would be retried forever. A session teardown
+// (`cancelSpeech({resetQueue:true})`) clears the family's map AND bumps its
+// generation BEFORE `reset()`, so neither the discard hook nor an
+// already-scheduled re-park microtask (whose closure captured the text)
+// resurrects the item into the next session. Playback start retires the
+// tracking entry: the item was heard.
+//
+// Families: PLAN-D mode-status cues (fresh key per re-park, historical
+// behaviour) and A01P local-command outcomes (the SAME key across re-parks
+// so the caller's per-key bookkeeping — the latency stamp — survives).
+type DiscardOutcome = 'reparked' | 'retired' | false;
+
+interface ProtectedOutcomeFamily {
+  readonly prefix: string;
+  enqueue(text: string, dedupeKey?: string, beforeEnqueue?: (dedupeKey: string) => void): string;
+  handleDiscard(dedupeKey: string, reason: DiscardReason): DiscardOutcome;
+  handlePlaybackStarted(dedupeKey: string): boolean;
+  has(dedupeKey: string): boolean;
+  teardown(): void;
+  resetForTests(): void;
+}
+
+function createProtectedOutcomeFamily(opts: {
+  prefix: string;
+  freshKeyOnRepark: boolean;
+  abandonedEvent: string;
+}): ProtectedOutcomeFamily {
+  const texts = new Map<string, string>();
+  let counter = 0;
+  let generation = 0;
+  const nextKey = (): string => {
+    counter += 1;
+    return `${opts.prefix}${counter}`;
+  };
+  const enqueue = (
+    text: string,
+    dedupeKey: string = nextKey(),
+    beforeEnqueue?: (key: string) => void
+  ): string => {
+    texts.set(dedupeKey, text);
+    // Caller bookkeeping keyed by this dedupe key must exist BEFORE the push:
+    // a synchronous player can fire playback-start inside `enqueueConfirmation`.
+    beforeEnqueue?.(dedupeKey);
+    const harnessPlayer = getRecordingTestServices()?.ttsConfirmationPlayer;
+    enqueueConfirmation({
+      text,
+      dedupeKey,
+      protected: true,
+      play: harnessPlayer
+        ? (t, controls) => {
+            registerTtsFingerprint(t);
+            harnessPlayer(t, controls);
+          }
+        : playConfirmationHead,
+    });
+    return dedupeKey;
+  };
+  return {
+    prefix: opts.prefix,
+    enqueue,
+    handleDiscard(dedupeKey, reason) {
+      const text = texts.get(dedupeKey);
+      if (text === undefined) return false;
+      texts.delete(dedupeKey);
+      if (reason === 'playback_error') {
+        clientDiagnostic(opts.abandonedEvent, { reason, dedupeKey });
+        return 'retired';
+      }
+      const generationAtDiscard = generation;
+      queueMicrotask(() => {
+        if (generation !== generationAtDiscard) return; // torn down meanwhile
+        enqueue(text, opts.freshKeyOnRepark ? undefined : dedupeKey);
+      });
+      return 'reparked';
+    },
+    handlePlaybackStarted(dedupeKey) {
+      return texts.delete(dedupeKey);
+    },
+    has(dedupeKey) {
+      return texts.has(dedupeKey);
+    },
+    teardown() {
+      texts.clear();
+      generation += 1;
+    },
+    resetForTests() {
+      texts.clear();
+      counter = 0;
+      generation += 1;
+    },
+  };
+}
+
+// ── Confirmation-mode status cues (PLAN-D D2, feedback ids 122/124) ─────────
+//
+// A bare `speakConfirmation(text, {force:true})` call satisfies "bypasses
+// dedupe" and "never resets the FIFO" — but NOT "defers behind an active ask
+// rather than dropping": `speak()`'s `preemptFlush()` and the queue's own
+// overflow drop-oldest both fire `onDiscarded` unconditionally on every
+// QUEUED item, and a bare call passes no `dedupeKey`, so the discard is
+// silent and the cue is gone for good. The protected family above closes
+// that gap; each cue gets its own unique key (never true deduplication —
+// back-to-back identical cues are never collapsed).
 const MODE_STATUS_DEDUPE_PREFIX = 'mode-status:';
-let modeStatusKeyCounter = 0;
-/** dedupeKey → cue text, for cues currently enqueued (or already playing —
- *  see `handleModeStatusCuePlaybackStarted`, which retires the entry once
- *  the cue is actually heard). */
-const modeStatusCueTexts = new Map<string, string>();
-/** Bumped by `cancelSpeech({resetQueue:true})` (session teardown) — see
- *  `handleModeStatusCueDiscard`'s docblock. A deferred re-park microtask
- *  captures the generation at schedule time and checks it's unchanged
- *  before actually enqueueing; `modeStatusCueTexts.clear()` alone cannot
- *  cancel a microtask that was already scheduled (and therefore already
- *  captured its text in a closure) before the clear ran. */
-let modeStatusGeneration = 0;
-
-function buildModeStatusDedupeKey(): string {
-  modeStatusKeyCounter += 1;
-  return `${MODE_STATUS_DEDUPE_PREFIX}${modeStatusKeyCounter}`;
-}
-
-function enqueueModeStatusCue(text: string): void {
-  const dedupeKey = buildModeStatusDedupeKey();
-  modeStatusCueTexts.set(dedupeKey, text);
-  const harnessPlayer = getRecordingTestServices()?.ttsConfirmationPlayer;
-  enqueueConfirmation({
-    text,
-    dedupeKey,
-    // Never evicted by queue-overflow pressure (only preemptFlush()/reset()
-    // can discard it) — overflow has no natural pacing the way a genuine
-    // ask does, so a re-parked cue re-evicted by the NEXT overflowing
-    // enqueue could thrash indefinitely under sustained queue pressure.
-    protected: true,
-    play: harnessPlayer
-      ? (t, controls) => {
-          registerTtsFingerprint(t);
-          harnessPlayer(t, controls);
-        }
-      : playConfirmationHead,
-  });
-}
+const modeStatusCues = createProtectedOutcomeFamily({
+  prefix: MODE_STATUS_DEDUPE_PREFIX,
+  freshKeyOnRepark: true,
+  abandonedEvent: 'tts_mode_status_cue_abandoned',
+});
 
 /**
  * Dedicated speech path for the confirmations-toggle cues ("Voice
@@ -1174,10 +1259,8 @@ function enqueueModeStatusCue(text: string): void {
  *     if a LATER ask's `preemptFlush()` or queue overflow destroys the
  *     still-waiting item, `handleModeStatusCueDiscard` (wired into
  *     recording-context's `onDiscarded` hook) re-enqueues it rather than
- *     letting it vanish — so it plays as soon as the channel clears
- *     instead of being lost. That re-park is reason-gated (see
- *     `handleModeStatusCueDiscard`'s docblock): a genuine terminal
- *     playback failure retires the cue instead of retrying forever.
+ *     letting it vanish — reason-gated: a genuine terminal playback
+ *     failure retires the cue instead of retrying forever.
  *   - Never resets the FIFO itself (enqueues only; never calls
  *     `preemptFlush()`/`reset()`).
  */
@@ -1186,69 +1269,18 @@ export function speakConfirmationModeStatus(text: string): void {
   if (!trimmed) return;
   if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) return;
   clientDiagnostic('tts_speak_mode_status_called', { textPreview: trimmed.slice(0, 80) });
-  enqueueModeStatusCue(trimmed);
+  modeStatusCues.enqueue(trimmed);
 }
 
 /**
  * Called from recording-context's `onDiscarded` hook. Returns true iff
  * `dedupeKey` belongs to a mode-status cue destroyed by a queue-lifecycle
- * event (preempt / overflow) — the caller should not also treat it as an
- * ordinary confirmation reservation. The re-enqueue itself is DEFERRED to a
- * microtask, never called synchronously from here — this is load-bearing,
- * not cosmetic: `preemptFlush()` and `reset()` both fire `onDiscarded` for
- * every queued item via a LIVE `for (const q of queue)` loop, iterating the
- * SAME array `enqueueConfirmation` pushes into. A synchronous re-enqueue
- * from inside that loop pushes a new item onto the array the loop is still
- * iterating, so the iterator visits the freshly-pushed item too — which
- * re-enqueues again, and again, cascading within one synchronous call
- * (confirmed empirically: it took five recursive re-enqueues, each
- * evicting the last via the `MAX_QUEUE_DEPTH` overflow-drop, before one
- * `queue.shift()` happened to remove an index the live iterator hadn't
- * reached yet and it accidentally terminated — not a mechanism to rely on).
- * `queueMicrotask` runs the actual push after the enclosing loop (and, for
- * `reset()`, `cancelSpeech`'s `modeStatusCueTexts.clear()`) has already
- * completed, so by the time it fires there is no iteration in progress to
- * re-enter.
- *
- * During a FULL queue reset (session teardown, `cancelSpeech({resetQueue:
- * true})`), `cancelSpeech` clears `modeStatusCueTexts` BEFORE calling
- * `reset()` — so this returns `false` (nothing scheduled) and the cue is
- * allowed to die with the session rather than being resurrected into the
- * next one.
- *
- * Codex diff-review r2 caught a race `modeStatusCueTexts.clear()` alone
- * doesn't cover: if a re-park microtask is ALREADY SCHEDULED (this
- * function already ran, already captured `text` in a closure) and THEN
- * `cancelSpeech({resetQueue:true})` runs before that microtask fires,
- * clearing the map does nothing to the already-scheduled callback — it
- * would still enqueue the stale cue into the fresh, post-reset queue,
- * resurrecting it into the next session. `modeStatusGeneration` closes
- * this: captured at schedule time, checked before the deferred enqueue
- * runs; `cancelSpeech` bumps it in the same place it clears the map.
- *
- * Codex diff-review r3 caught a second gap: re-parking unconditionally on
- * EVERY discard — including `reason === 'playback_error'` (native AND
- * ElevenLabs both failed before any audio played, e.g. a broken synth
- * backend) — retries forever with no natural pacing, unlike a genuine
- * queue-lifecycle discard (preempt/overflow/purge/reset), which only
- * recurs when something else legitimately re-occupies the channel. Only
- * `playback_error` retires instead of re-parking; every other reason still
- * re-parks via the microtask mechanism above.
+ * event — the caller should not also treat it as an ordinary confirmation
+ * reservation. Re-park vs retire and the microtask deferral are the shared
+ * family's (see the block comment above).
  */
 export function handleModeStatusCueDiscard(dedupeKey: string, reason: DiscardReason): boolean {
-  const text = modeStatusCueTexts.get(dedupeKey);
-  if (text === undefined) return false;
-  modeStatusCueTexts.delete(dedupeKey);
-  if (reason === 'playback_error') {
-    clientDiagnostic('tts_mode_status_cue_abandoned', { reason });
-    return true;
-  }
-  const generationAtDiscard = modeStatusGeneration;
-  queueMicrotask(() => {
-    if (modeStatusGeneration !== generationAtDiscard) return; // torn down meanwhile
-    enqueueModeStatusCue(text);
-  });
-  return true;
+  return modeStatusCues.handleDiscard(dedupeKey, reason) !== false;
 }
 
 /** Called from recording-context's `onPlaybackStarted` hook — the cue was
@@ -1257,7 +1289,66 @@ export function handleModeStatusCueDiscard(dedupeKey: string, reason: DiscardRea
  *  `speakConfirmationModeStatus`). Returns true iff this was a tracked
  *  mode-status key, so the caller can skip its own (irrelevant) handling. */
 export function handleModeStatusCuePlaybackStarted(dedupeKey: string): boolean {
-  return modeStatusCueTexts.delete(dedupeKey);
+  return modeStatusCues.handlePlaybackStarted(dedupeKey);
+}
+
+// ── A01P (2026-09-08) — local-command outcomes ───────────────────────────
+//
+// A client-local Calculate has ALREADY mutated the job when its read-back
+// is enqueued, and no server replay exists to restore local-only speech —
+// so under DictatedReadbackPolicyV1 its outcome (the success line and the
+// `ze_unreadable` / no-Ze policy line alike) gets exactly the protection an
+// accepted read-back gets: forced audible, FIFO-ordered behind earlier
+// read-backs, protected from overflow eviction, re-parked on preempt/purge,
+// retired only by playback start or a terminal playback failure, abandoned
+// only by session teardown. The SAME dedupe key survives a re-park so the
+// caller's latency stamp resolves at the real playback start.
+export const LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX = 'local_calc:';
+const localCommandOutcomes = createProtectedOutcomeFamily({
+  prefix: LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX,
+  freshKeyOnRepark: false,
+  abandonedEvent: 'tts_local_command_outcome_abandoned',
+});
+
+export function speakLocalCommandOutcome(
+  text: string,
+  options?: { beforeEnqueue?: (dedupeKey: string) => void }
+): {
+  enqueued: boolean;
+  dedupeKey: string | null;
+} {
+  const trimmed = text?.trim();
+  if (!trimmed) return { enqueued: false, dedupeKey: null };
+  if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) {
+    clientDiagnostic('tts_local_command_outcome_skipped_unavailable', {});
+    return { enqueued: false, dedupeKey: null };
+  }
+  const dedupeKey = localCommandOutcomes.enqueue(trimmed, undefined, options?.beforeEnqueue);
+  clientDiagnostic('tts_local_command_outcome_enqueued', {
+    dedupeKey,
+    textPreview: trimmed.slice(0, 80),
+  });
+  return { enqueued: true, dedupeKey };
+}
+
+/** `onDiscarded` hook: `'reparked'` (queue-lifecycle discard — it will play
+ *  later), `'retired'` (terminal playback failure — the caller drops its
+ *  per-key bookkeeping), or `false` (not a local-command outcome). */
+export function handleLocalCommandOutcomeDiscard(
+  dedupeKey: string,
+  reason: DiscardReason
+): DiscardOutcome {
+  return localCommandOutcomes.handleDiscard(dedupeKey, reason);
+}
+
+/** `onPlaybackStarted` hook — heard; retire tracking. */
+export function handleLocalCommandOutcomePlaybackStarted(dedupeKey: string): boolean {
+  return localCommandOutcomes.handlePlaybackStarted(dedupeKey);
+}
+
+/** Test seam — whether a local-command outcome is still awaiting playback. */
+export function __isLocalCommandOutcomePendingForTests(dedupeKey: string): boolean {
+  return localCommandOutcomes.has(dedupeKey);
 }
 
 // ── PLAN-E1 E3 — poor-signal advisory ───────────────────────────────────────
@@ -1652,9 +1743,8 @@ export function __resetUplinkLossDisclosureForTests(): void {
 
 /** Test-only. */
 export function __resetModeStatusCuesForTests(): void {
-  modeStatusCueTexts.clear();
-  modeStatusKeyCounter = 0;
-  modeStatusGeneration += 1;
+  modeStatusCues.resetForTests();
+  localCommandOutcomes.resetForTests();
 }
 
 /**
@@ -1706,8 +1796,8 @@ export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
       // discard that fired before this teardown) is a no-op too — clearing
       // the map alone cannot cancel a microtask whose closure already
       // captured the cue's text.
-      modeStatusCueTexts.clear();
-      modeStatusGeneration += 1;
+      modeStatusCues.teardown();
+      localCommandOutcomes.teardown();
       ttsQueueReset();
     }
     return;
@@ -1723,8 +1813,8 @@ export function cancelSpeech(opts?: { resetQueue?: boolean }): void {
     // PLAN-D — clear mode-status tracking + bump the generation BEFORE
     // reset() (see the no-isTtsAvailable() branch above for why ordering,
     // and why the generation bump, are both load-bearing).
-    modeStatusCueTexts.clear();
-    modeStatusGeneration += 1;
+    modeStatusCues.teardown();
+    localCommandOutcomes.teardown();
     ttsQueueReset();
     try {
       window.speechSynthesis.cancel();
