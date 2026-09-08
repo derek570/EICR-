@@ -39,8 +39,11 @@ export interface MockFrame {
    *  canonicalises the outbound key (r1_r2_ohm → r1_plus_r2) except for
    *  the CLEAR_WIRE_EXEMPT set (r2_ohm stays raw); the mock lane pins
    *  that web's apply path maps both onto the right PWA column. */
-  circuit?: number;
+  circuit?: number | null;
   field?: string;
+  /** A01P — BOARD-scope clear frame (`circuit: null` + `board_id`), the
+   *  A1a §3.4b discriminator both clients route through their clear maps. */
+  board_id?: string | null;
   /** voice_command_response (A1 agentic-voice, 2026-07-23) — the model's
    *  spoken answer riding the VCR channel. The PR-1 gate scenario pins that
    *  the web companion force-speaks it with the confirmation toggle OFF. */

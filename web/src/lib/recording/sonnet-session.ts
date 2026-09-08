@@ -1155,6 +1155,17 @@ export class SonnetSession {
         circuit?: number | null;
         purpose?: string | null;
       };
+      /**
+       * A01P (2026-09-08) — additive optional marker stamped ONLY when the
+       * client RECOGNISED a Calculate command but declined to execute it
+       * locally (multi-board job / board-qualified trailing text) and is
+       * forwarding the final as an ordinary transcript. Names the server
+       * calculator the model selects. The backend gate honours it as a
+       * deterministic forward reason (`HAS_RECOGNISED_COMMAND`, independent
+       * of VOICE_AGENTIC_ANSWERS); it is never a write, never a regex hint,
+       * never shown to the model. Older backends ignore it.
+       */
+      clientCommand?: 'calculate_zs' | 'calculate_r1_plus_r2';
     }
   ): void {
     const trimmed = text?.trim();
@@ -1185,6 +1196,9 @@ export class SonnetSession {
     if (options?.postcodeHint) {
       msg.postcode_hint = options.postcodeHint;
     }
+    if (options?.clientCommand) {
+      msg.client_command = options.clientCommand;
+    }
     // iOS canon: ServerWebSocketService.swift:516-518 — only attach when
     // the payload is non-empty. The `question` key is the load-bearer
     // (backend at sonnet-stream.js:3202 short-circuits without it).
@@ -1200,6 +1214,7 @@ export class SonnetSession {
       hasPostcodeHint: Boolean(options?.postcodeHint),
       confirmationsEnabled: options?.confirmationsEnabled ?? false,
       hasInResponseTo: Boolean(options?.inResponseTo?.question),
+      clientCommand: options?.clientCommand ?? null,
       state: this.state,
       willBuffer: this.state !== 'connected',
     });
