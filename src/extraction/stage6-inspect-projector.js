@@ -302,6 +302,23 @@ export function projectCircuit(snapshot, circuit, boardId, { certType } = {}) {
 
 export function projectField(snapshot, { field, circuit, boardId }) {
   let value;
+  if (circuit == null && boardId == null) {
+    // A01P — installation-global lookup (`client_name`): the legacy
+    // circuits[0] bucket is the ONLY home of a global identity value; the
+    // current board is irrelevant and the answer carries board_id null.
+    value = snapshot?.circuits?.[0]?.[field];
+    const recorded = !isMissingValue(value);
+    return {
+      ok: true,
+      scope: 'field',
+      board_id: null,
+      circuit: null,
+      field,
+      recorded,
+      value: recorded ? applyWrapPolicy(field, value) : null,
+      truncated: false,
+    };
+  }
   if (circuit != null) {
     const bucket = getCircuitBucket(snapshot, circuit, boardId);
     if (!bucket || typeof bucket !== 'object') return null; // not_found
@@ -398,7 +415,10 @@ export function capInspectResult(body) {
   // Stage 3: circuit scope — drop `values` entries from the tail.
   if (capped.values && typeof capped.values === 'object') {
     const entries = Object.entries(capped.values);
-    while (entries.length > 0 && byteLength({ ...capped, values: Object.fromEntries(entries) }) > INSPECT_MAX_RESULT_BYTES) {
+    while (
+      entries.length > 0 &&
+      byteLength({ ...capped, values: Object.fromEntries(entries) }) > INSPECT_MAX_RESULT_BYTES
+    ) {
       entries.pop();
     }
     capped.values = Object.fromEntries(entries);

@@ -628,11 +628,37 @@ export function deleteCircuitFlagAware(snapshot, args) {
  * board's BoardInfo entry on `boards[]`.
  */
 export function applyBoardReadingFlagAware(snapshot, args) {
+  // A01P (2026-09-08) — a global identity field has NO board target: it is
+  // written to the legacy circuits[0] bucket whatever board is selected or
+  // named, so "what is the client's name?" is answerable with the garage
+  // selected and a garage-selected write never lands on boards[garage].
+  if (isGlobalIdentityField(args?.field)) {
+    applyBoardReadingToSnapshot(snapshot, args);
+    return;
+  }
   if (isMainBoardTarget(snapshot, args)) {
     applyBoardReadingToSnapshot(snapshot, args);
   } else {
     applyBoardReadingMultiBoard(snapshot, args);
   }
+}
+
+/**
+ * A01P (2026-09-08) — the FIXED set of installation-global identity fields
+ * that bypass board resolution end to end (record, clear, inspect). Only
+ * `client_name` today. Deliberately NOT derived from any wire-scope map
+ * (`BOARD_READING_SCOPE_MAP` / `BOARD_CLEAR_SCOPE_MAP` classify Ze/PFC/
+ * earthing as global too, and those keep their board-scope validation) —
+ * identity is a closed decision, not a classification side effect.
+ * Address-controller ownership and adjacent address scope remain A01's.
+ */
+export const GLOBAL_IDENTITY_FIELDS = Object.freeze(new Set(['client_name']));
+
+/** Canonicalise through FIELD_CORRECTIONS first so an alias spelling of a
+ * global identity field (none today) would still be recognised. */
+export function isGlobalIdentityField(field) {
+  if (typeof field !== 'string') return false;
+  return GLOBAL_IDENTITY_FIELDS.has(FIELD_CORRECTIONS[field] ?? field);
 }
 
 // ---------------------------------------------------------------------------

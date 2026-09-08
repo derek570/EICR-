@@ -123,6 +123,18 @@ lookup in the legacy `circuits[0]` bucket + board record; `board_id` optional)
 Known field with no value → `{ ok: true, ..., "recorded": false, "value": null }` (that IS
 the answer — "no Zs recorded yet"), `is_error: false`.
 
+**Global identity fields (A01P, 2026-09-08).** `client_name` is installation-global: it has
+no board target. For it (and any future member of the fixed `GLOBAL_IDENTITY_FIELDS` set in
+`stage6-snapshot-mutators.js`) the lookup reads the legacy `circuits[0]` bucket BEFORE board
+resolution, `board_id` in the call is ignored, and the answer always carries `board_id: null`:
+```json
+{ "ok": true, "scope": "field", "board_id": null, "circuit": null,
+  "field": "client_name", "recorded": true, "value": "<wrapped>" }
+```
+An explicit unknown `board_id` therefore returns this shape, never `not_found`, and a selected
+sub-board never hides a recorded name. Identity is a closed decision — it is not derived from
+the wire-scope maps that classify Ze/PFC/earthing as global.
+
 ## 4. Serialized-size cap and truncation
 
 `INSPECT_MAX_RESULT_BYTES = 4096` (UTF-8 byte length of the serialized `content`).
@@ -149,6 +161,7 @@ as soon as the cap is met. All byte measures are UTF-8 (`Buffer.byteLength`), ne
 | success (all scopes, incl. `recorded:false`) | `{ok:true, ...}` | `false` |
 | unknown scope value / missing scope-required arg / unknown field name / malformed circuit arg | `{ok:false, code:'invalid_scope'}` | `true` (retry signal — model may correct args) |
 | `board_id` not in `boards[]`, or circuit not present in the target board | `{ok:false, code:'not_found'}` | `true` |
+| scope=field on a global identity field (`client_name`) with ANY `board_id`, including unknown | `{ok:true, board_id:null, ...}` (§3) | `false` |
 
 Both codes are safe as retry signals because `answer_user`/`inspect_session_state` are
 name-guard-excluded from the A3 orphan net's `allRejected` (PLAN Item 4).

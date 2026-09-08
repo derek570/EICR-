@@ -1,5 +1,6 @@
 {
   "ze": "global",
   "pfc": "global",
-  "manufacturer": "board"
+  "manufacturer": "board",
+  "client_name": "global"
 }
