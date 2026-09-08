@@ -136,12 +136,15 @@ const inventory = [];
 for (const [key, status] of jestIndex(fixJest)) {
   const [file, name] = key.split('::');
   if (!BACKEND_TESTS.includes(file)) continue;
-  if (!/A01P|\[invariant\]|\[current_behaviour\]|ze_unreadable|client_command|client_name|alias/i.test(name) && !file.includes('a01p')) continue;
+  // Only classified rows are A01P-owned evidence; unprefixed tests in the
+  // shared files (F/U-4, Plan E, the gate) are pre-existing coverage.
+  const classification = classify(name);
+  if (classification === 'unclassified') continue;
   inventory.push({
     platform: 'backend',
     file,
     name,
-    classification: classify(name),
+    classification,
     fix: status,
     original_baseline: origJest.get(key) ?? 'not_run',
     predecessor_baseline: predJest.get(key) ?? 'not_run',

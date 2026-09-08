@@ -629,7 +629,7 @@ describe('matchToolExpectations', () => {
 // case-insensitive fragments; never pooled into the exactly-once unclaimed
 // sweep (the VCR channel owns that).
 // ---------------------------------------------------------------------------
-describe('matchAudibleOutputs — spoken_response narration oracle (A01P)', () => {
+describe('[invariant] matchAudibleOutputs — spoken_response narration oracle (A01P)', () => {
   const expectation = (over = {}) => [
     {
       output_id: 'out_lim',

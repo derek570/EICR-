@@ -91,7 +91,7 @@ function body(env) {
   return JSON.parse(env.content);
 }
 
-describe('acceptedAliasSiblings / writeAcceptedAliases — the helper', () => {
+describe('[invariant] acceptedAliasSiblings / writeAcceptedAliases — the helper', () => {
   test('families are exactly the ze and pfc alias sets; other fields have no siblings', () => {
     expect(acceptedAliasSiblings('ze')).toEqual(['earth_loop_impedance_ze']);
     expect(acceptedAliasSiblings('earth_loop_impedance_ze')).toEqual(['ze']);
@@ -277,7 +277,7 @@ describe('[invariant] mutation receipts — one per changed atom, attribution pr
   });
 });
 
-describe('real dispatch pins — first write leaves the sibling absent; both correction orders reconcile', () => {
+describe('[invariant] real dispatch pins — first write leaves the sibling absent; both correction orders reconcile', () => {
   test('[current_behaviour] first RAW main `ze` leaves the long alias absent; a sub-board with nothing of its own falls back to origin (no_ze when the origin key is absent)', async () => {
     const session = makeSession();
     await record(session, { field: 'ze', value: '0.35' });
@@ -340,7 +340,7 @@ describe('real dispatch pins — first write leaves the sibling absent; both cor
   });
 });
 
-describe('inspect — exact key first, absent-key alias fallback within the bucket', () => {
+describe('[invariant] inspect — exact key first, absent-key alias fallback within the bucket', () => {
   function inspect(session, input) {
     const dispatch = createInspectDispatcher(
       session,

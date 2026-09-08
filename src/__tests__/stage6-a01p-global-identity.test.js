@@ -81,7 +81,7 @@ afterEach(() => {
   activeSessions.clear();
 });
 
-describe('GLOBAL_IDENTITY_FIELDS — the fixed set', () => {
+describe('[invariant] GLOBAL_IDENTITY_FIELDS — the fixed set', () => {
   test('is exactly {client_name}, frozen, and the predicate canonicalises', () => {
     expect([...GLOBAL_IDENTITY_FIELDS]).toEqual(['client_name']);
     expect(Object.isFrozen(GLOBAL_IDENTITY_FIELDS)).toBe(true);
