@@ -1864,7 +1864,21 @@ function applyCalculatedReading(
  * key is deliberately NOT renamed and slots into this chain exactly where
  * iOS would read it; a SUB-board's live on its `boards[n]` record.
  *
- * @returns {number|null} finite Ze for the target board, or null (→ no_ze).
+ * A01P (2026-09-08) — THREE distinguishable states instead of `number|null`.
+ * Collapsing "present but not a number" (LIM, N/A, a stray array) into the
+ * same `no_ze` skip as "nothing recorded" made the model narrate "Ze is
+ * missing" to an inspector who had dictated a limitation minutes earlier.
+ * The precedence rule is unchanged: highest OCCUPIED source first, parse
+ * once, never fall through from an invalid source to a different one.
+ *
+ * @returns {{state:'finite', value:number}
+ *   | {state:'absent'}
+ *   | {state:'unreadable', source:string, key:string, raw:unknown}}
+ *   `finite` — a usable Ze for the target board (→ compute);
+ *   `absent` — every ladder source is blank (→ `no_ze`);
+ *   `unreadable` — the highest occupied source holds a value that does not
+ *   parse as a finite number (→ `ze_unreadable`, with the selected source,
+ *   key and raw value for the log).
  */
 function resolveBoardAwareZe(snapshot, inputBoardId) {
   const mainId = getMainBoardId(snapshot);
@@ -1894,6 +1908,12 @@ function resolveBoardAwareZe(snapshot, inputBoardId) {
     const str = String(v).trim();
     return str === '' ? null : str;
   };
+  const classify = (str, source, key, raw) => {
+    const n = Number(str);
+    return Number.isFinite(n)
+      ? { state: 'finite', value: n }
+      : { state: 'unreadable', source, key, raw };
+  };
   const sources = isMain ? [boardRecord, circuits0] : [boardRecord];
   for (const key of ['ze', 'earth_loop_impedance_ze', 'ze_at_db', 'zs_at_db']) {
     for (const src of sources) {
@@ -1901,18 +1921,24 @@ function resolveBoardAwareZe(snapshot, inputBoardId) {
       if (key === 'earth_loop_impedance_ze' && src === circuits0) continue; // origin supply, not board-local
       const str = present(src[key]);
       if (str != null) {
-        const n = Number(str);
         // Precedence-first, parse-once: a present-but-invalid board-local
-        // value is a terminal no_ze (never fall through to a DIFFERENT
-        // measurement).
-        return Number.isFinite(n) ? n : null;
+        // value is a terminal `unreadable` (never fall through to a
+        // DIFFERENT measurement).
+        return classify(str, src === circuits0 ? 'circuits0' : 'board', key, src[key]);
       }
     }
   }
   const str = present(circuits0?.earth_loop_impedance_ze);
-  if (str == null) return null;
-  const n = Number(str);
-  return Number.isFinite(n) ? n : null;
+  if (str == null) return { state: 'absent' };
+  return classify(str, 'supply', 'earth_loop_impedance_ze', circuits0.earth_loop_impedance_ze);
+}
+
+/**
+ * A01P — map a non-finite resolver state to the calculator skip reason.
+ * `ring_continuity` never calls this: it does not consult Ze at all.
+ */
+function zeSkipReason(ze) {
+  return ze.state === 'unreadable' ? 'ze_unreadable' : 'no_ze';
 }
 
 /**
@@ -1985,7 +2011,12 @@ function noteAlreadyRecordedIfWhollySkipped(
  * wasn't computed):
  *   - reason='already_set'  : measured_zs_ohm exists (NEVER overwrite).
  *   - reason='no_ze'        : board-aware Ze resolution found none (board.ze →
- *                             board.ze_at_db → supply earth_loop_impedance_ze).
+ *                             board.ze_at_db → supply earth_loop_impedance_ze) —
+ *                             every ladder source is BLANK.
+ *   - reason='ze_unreadable': the highest occupied Ze source holds a value that
+ *                             is not a usable number (LIM, N/A, a non-scalar).
+ *                             Ze IS recorded; it cannot be computed with. Never
+ *                             narrated as "Ze missing" (A01P, 2026-09-08).
  *   - reason='no_r1_r2'     : the circuit has no r1_r2_ohm value.
  *   - reason='circuit_missing' : the ref doesn't exist in the schedule
  *                                 (only possible via circuit_ref / circuit_refs;
@@ -2041,8 +2072,8 @@ export async function dispatchCalculateZs(call, ctx) {
       skipped.push({ circuit_ref: ref, reason: 'already_set' });
       continue;
     }
-    if (ze == null) {
-      skipped.push({ circuit_ref: ref, reason: 'no_ze' });
+    if (ze.state !== 'finite') {
+      skipped.push({ circuit_ref: ref, reason: zeSkipReason(ze) });
       continue;
     }
     const r1r2 = parseFiniteNumber(bucket.r1_r2_ohm);
@@ -2053,7 +2084,7 @@ export async function dispatchCalculateZs(call, ctx) {
     // Round to 2 dp — same precision as a typical multifunction tester. Stored
     // as a string to match the legacy write shape (every reading on the wire
     // is a string; the iOS decoder + PDF generator both expect strings).
-    const value = (Math.round((ze + r1r2) * 100) / 100).toFixed(2);
+    const value = (Math.round((ze.value + r1r2) * 100) / 100).toFixed(2);
     applyCalculatedReading(session, perTurnWrites, {
       circuit: ref,
       field: 'measured_zs_ohm',
@@ -2098,8 +2129,12 @@ export async function dispatchCalculateZs(call, ctx) {
  * array, no errors). Method-specific skip reasons:
  *   zs_minus_ze:
  *     - reason='no_zs'     : measured_zs_ohm missing on this circuit.
- *     - reason='no_ze'     : board-level Ze missing.
- *   ring_continuity:
+ *     - reason='no_ze'     : board-level Ze missing (every ladder source blank).
+ *     - reason='ze_unreadable' : Ze recorded but not a usable number (LIM, N/A,
+ *                                non-scalar) in the highest occupied source
+ *                                (A01P, 2026-09-08).
+ *   ring_continuity (never consults Ze — computes with an absent OR
+ *   unreadable Ze alike):
  *     - reason='no_ring_r1' : ring_r1_ohm missing on this circuit.
  *     - reason='no_ring_r2' : ring_r2_ohm missing on this circuit.
  * Common skips: 'circuit_missing', 'already_set'.
@@ -2154,11 +2189,11 @@ export async function dispatchCalculateR1PlusR2(call, ctx) {
         skipped.push({ circuit_ref: ref, reason: 'no_zs' });
         continue;
       }
-      if (ze == null) {
-        skipped.push({ circuit_ref: ref, reason: 'no_ze' });
+      if (ze.state !== 'finite') {
+        skipped.push({ circuit_ref: ref, reason: zeSkipReason(ze) });
         continue;
       }
-      const raw = zs - ze;
+      const raw = zs - ze.value;
       // Defensive: a Zs measurement smaller than Ze yields a negative R1+R2,
       // which is physically impossible. Clamp at 0 and flag in the skip list
       // so the inspector sees something happened rather than a silent

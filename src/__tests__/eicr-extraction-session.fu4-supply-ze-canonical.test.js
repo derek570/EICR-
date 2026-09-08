@@ -363,7 +363,7 @@ describe('F/U-4 review r2 — resolver value + alias edges', () => {
     expect(body.computed).toEqual([{ circuit_ref: 4, field: 'measured_zs_ohm', value: '0.50' }]);
   });
 
-  test('a PRESENT-but-invalid board Ze (N/A) is a terminal no_ze — never a silent fallback to origin', async () => {
+  test('[invariant] a PRESENT-but-invalid board Ze (N/A) is a terminal ze_unreadable — never a silent fallback to origin (A01P: was collapsed into no_ze)', async () => {
     const session = makeDispatcherSession({
       currentBoardId: 'b2',
       boards: [
@@ -377,7 +377,7 @@ describe('F/U-4 review r2 — resolver value + alias edges', () => {
     });
     const { body } = await calc(session, { circuit_ref: 4, all: false, board_id: 'b2' });
     expect(body.computed).toEqual([]);
-    expect(body.skipped).toEqual([{ circuit_ref: 4, reason: 'no_ze' }]);
+    expect(body.skipped).toEqual([{ circuit_ref: 4, reason: 'ze_unreadable' }]);
   });
 
   test("board_id:'*' is REJECTED (documented-unsupported, was ok:true-with-empty)", async () => {
@@ -724,7 +724,7 @@ describe('F/U-4 review r6 — PWA canonical reading keys at session_start', () =
 });
 
 describe('F/U-4 review r6 — resolver scalar-only board values', () => {
-  test('an ARRAY board Ze is present-but-invalid → terminal no_ze (never a computed write)', async () => {
+  test('[invariant] an ARRAY board Ze is present-but-invalid → terminal ze_unreadable (never a computed write; A01P: was collapsed into no_ze)', async () => {
     const session = {
       sessionId: 'r6',
       toolCallsMode: 'live',
@@ -756,6 +756,6 @@ describe('F/U-4 review r6 — resolver scalar-only board values', () => {
     );
     const body = JSON.parse(res.content);
     expect(body.computed).toEqual([]);
-    expect(body.skipped).toEqual([{ circuit_ref: 4, reason: 'no_ze' }]);
+    expect(body.skipped).toEqual([{ circuit_ref: 4, reason: 'ze_unreadable' }]);
   });
 });
