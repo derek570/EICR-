@@ -44,7 +44,29 @@ if [[ ! -d "${IOS_DIR}" ]]; then
   exit 2
 fi
 
+# The FIXED set both suites depend on (Codex EP cycle 1, iOS finding 1): a
+# missing member fails closed even before byte comparison — an incomplete
+# directory that "happens to match" must never pass.
+REQUIRED_FILES=(
+  input-job.json
+  single-board-boards-null.json
+  single-board-boards-empty.json
+  web-build-job-state-for-wire.json
+  ios-build-job-state-for-server.json
+  manifest.json
+)
 fail=0
+for name in "${REQUIRED_FILES[@]}"; do
+  if [[ ! -f "${BACKEND_DIR}/${name}" ]]; then
+    echo "MISSING  ${name}: required fixture absent from the backend set" >&2
+    fail=1
+  fi
+done
+if [[ "${fail}" -ne 0 ]]; then
+  echo "check-job-state-fixture-sync: FAILED — the backend fixture set is incomplete." >&2
+  exit 1
+fi
+
 count=0
 shopt -s nullglob
 for src in "${BACKEND_DIR}"/*; do
