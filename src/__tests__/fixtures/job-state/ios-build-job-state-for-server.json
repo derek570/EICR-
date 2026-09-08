@@ -1,0 +1,52 @@
+{
+  "boards" : [
+    {
+      "board_type" : "main",
+      "designation" : "Main DB",
+      "id" : "main",
+      "manufacturer" : "Hager",
+      "name" : "",
+      "ze" : "0.35"
+    },
+    {
+      "board_type" : "sub_distribution",
+      "designation" : "Garage CU",
+      "id" : "garage",
+      "manufacturer" : "Crabtree",
+      "name" : "",
+      "ze" : "0.38"
+    }
+  ],
+  "certificateType" : "eicr",
+  "circuits" : [
+    {
+      "boardId" : "main",
+      "designation" : "Kitchen Ring",
+      "r1R2Ohm" : "0.20",
+      "ref" : "1"
+    },
+    {
+      "boardId" : "garage",
+      "designation" : "Garage Sockets",
+      "r1R2Ohm" : "0.30",
+      "ref" : "1"
+    }
+  ],
+  "installation" : {
+    "address" : "12 Example Street",
+    "clientAddress" : "1 Other Road",
+    "clientCounty" : "Berkshire",
+    "clientName" : "Mrs Smith",
+    "clientPostcode" : "RG1 5QA",
+    "clientTown" : "Reading",
+    "county" : "Berkshire",
+    "postcode" : "RG6 3EY",
+    "town" : "Lower Earley"
+  },
+  "supply" : {
+    "earthingArrangement" : "TN-C-S",
+    "pfc" : "1.20",
+    "supplyVoltage" : "230",
+    "ze" : "0.50"
+  }
+}
