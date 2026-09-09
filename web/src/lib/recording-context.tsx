@@ -2580,6 +2580,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             );
             for (const c of fresh) regexShadowRef.current.set(c.trackerKey, c.value);
             gateRegexHit = fresh.length > 0;
+            // A02D — the gate-only lane's observable: which destinations
+            // passed BOTH the occurrence gate and the value gate this
+            // dispatch (the mounted fixture lane asserts exact writes here
+            // the way the hints-ON lane asserts job writes).
+            clientDiagnostic('a02d_gate_only_fresh_writes', {
+              writes: fresh
+                .filter((c) => !c.suppressed)
+                .map((c) => ({ key: c.trackerKey, value: String(c.value) })),
+            });
           }
         } else if (regexMatcherRef.current && (isAnswerToAsk || admission.bypassMutation)) {
           clientDiagnostic('pipeline_regex_skipped_ask_answer', {
