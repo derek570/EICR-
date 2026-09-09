@@ -17,6 +17,9 @@
  *                 any source/fixture/test digest differs from the checkout
  *                 (the generated_from_commit is informational — the commit
  *                 that adds the document cannot contain its own hash).
+ *                 `src/__tests__/evidence-regex-fresh-occurrence-verify.test.js`
+ *                 runs this in CI, so editing an inventoried file means
+ *                 regenerating the document with fresh run inputs.
  *
  * The document pins sha256 digests of the checked-out SOURCE, TEST and
  * FIXTURE bytes (never of the output file), the two baselines, the baseline
@@ -53,6 +56,8 @@ const SOURCES = [
   'web/src/lib/recording/regex-match-result.ts',
   'web/src/lib/recording/apply-regex-match.ts',
   'web/src/lib/recording/sonnet-session.ts',
+  'web/src/lib/recording/field-source-tracker.ts',
+  'scripts/evidence/build-regex-fresh-occurrence-evidence.mjs',
   'web/src/lib/recording/test-services.ts',
   'web/src/lib/recording/transcript-field-matcher.ts',
   'web/src/lib/recording/tts.ts',

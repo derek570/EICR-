@@ -2,8 +2,8 @@
   "schema_version": 1,
   "name": "RegexFreshOccurrenceEvidence",
   "plan": "A02D — Keep regex writes fresh after corrections and clears",
-  "generated_from_commit": "7ebf1e49cbb16c94a655c7757eeeaafabcaa3ed0",
-  "generated_at_commit_subject": "fix(web): one freshness identity per destination, associated with its whole storage alias family",
+  "generated_from_commit": "37eaf6ce075af259eb364af9b58e05853b148a9d",
+  "generated_at_commit_subject": "fix(web): provider-final identity comes only from provider-minted frame fields, never the transcript",
   "original_baseline": {
     "backend_web": "2d7b9874",
     "backend_web_subject": "Merge pull request #208 from derek570/fable/a01p-accepted-field-consistency-20260908",
@@ -19,13 +19,15 @@
   "digests": {
     "sources": {
       "scripts/check-regex-freshness-fixture-sync.sh": "c93e0afb3182cf5d000b5fa617a0f60ac5e8b4d903429e472905116be9d80e9e",
+      "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "87d4cf063f185de7fc648030904d8704626e327e84988032d2581f0cdd3dff42",
       "src/extraction/sonnet-stream.js": "62b79e16870f678363f0fb05648fe0098dfcbf0b910d5ba1e00b315af9d0b96e",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
-      "web/src/lib/recording-context.tsx": "b62d4e8a661b2365c8b5d75fcb78fba41063d1bb4c867bba4418b241aa9a55b3",
+      "web/src/lib/recording-context.tsx": "23a225b13378ceba16c86638d05091d0a7bd83ffbd02526e54da114e7a303d18",
       "web/src/lib/recording/apply-extraction.ts": "c5c3bbd7c0b4b40f93d647555c3549dc4d35b16fa1fadd173570b0b3690be97b",
       "web/src/lib/recording/apply-regex-match.ts": "802dd8a57c229a585937392ebb36d1be7575ee9011b327fd7ab4a9d5af1b9917",
-      "web/src/lib/recording/deepgram-service.ts": "92ada3435faecc328293708150988605127b7c5d53066460bf6b316d539ca3e6",
-      "web/src/lib/recording/final-window.ts": "e38cf5cb6cd9f84c66b30175c37e2d8409a51b30ec6dd3ad9af21686012b8dbc",
+      "web/src/lib/recording/deepgram-service.ts": "287e4b6f374a86cce905a976086759021d323c5a80b785329366c4b50e0d8a92",
+      "web/src/lib/recording/field-source-tracker.ts": "5b23afdcf6f19a872db359ffa2e62ff9e72c6ab6d51c60d817c406ad5f60cdd0",
+      "web/src/lib/recording/final-window.ts": "b179262f4c618f0e713dc136cfe8929e3717cc93bc65675a27fbc1d819ffab35",
       "web/src/lib/recording/held-fragment-clarification.ts": "4d081bff7137bf0dacaff88020fcba63afb68a590fdd01e27161ae2a3ebe22d8",
       "web/src/lib/recording/normalisation-source-map.ts": "15ea899aa4a3c155836e710787104bf8d83a862c0be749a33bebf873da20ea4a",
       "web/src/lib/recording/regex-destination-routing.ts": "4d003dc571d312dbc2bb29b02ca824fe0055da94295644def67584414dc2070a",
@@ -47,10 +49,10 @@
       "src/__tests__/stage6-honest-refusal.test.js": "b74fd1cf6f0e8a80cbd15ec8c887e41d21289a5190182533eec32f8e5498e27d",
       "web/tests/apply-regex-match.test.ts": "0eceb9fbc27d3f15b39fad394a5900a71ce2fffe48045fe59b5a12c22e630bd6",
       "web/tests/closed-enum-guard.test.ts": "c8bd1085b2137307822f42c5780696a79ecafb343d137331931ffbef8c9fbcdc",
-      "web/tests/deepgram-service-final-window.test.ts": "34f8cfeeeca3da9c8a46f2d4b7d35d740c05071bbe210136664899babc82e2de",
+      "web/tests/deepgram-service-final-window.test.ts": "698aaa3d5aab9f5cc10e281c93750d7ef2f89a7d943d1f70be9479e03cdecff3",
       "web/tests/deepgram-service-frozen-surface.test.ts": "fb00ff995821251287bea7760391768b5b2cd4b5fb65303103b1b8fe20eec1b2",
       "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx": "1e0c2c4f8925528aa1e47459c9271138e822a0af54f2713150fc0ab4d46fdb61",
-      "web/tests/harness/a02d-regex-freshness-mounted.test.tsx": "c0c59bc9ebaea9fa6eaeb6d133e018316303348f18f17d13f863433d66501f31",
+      "web/tests/harness/a02d-regex-freshness-mounted.test.tsx": "2e6def68a320188faa4b58ac70e453855529f8222f72a887550c4c6217e0f494",
       "web/tests/held-fragment-clarification.test.ts": "16b8ddf1accabc2d6a8fc0f017857aa497abf66d21f652d1baa5558ba0d69888",
       "web/tests/regex-destination-routing.test.ts": "5111f13f3a174e1dbf716fcd18a50ef0ce9da8e0a7e670bae2801dfdd05dc95e",
       "web/tests/regex-fresh-occurrence.test.ts": "f45cbaff330eea3d04f02d75a0f4418cebfc4df428925bb78bcb76800375d1c5",
@@ -93,13 +95,13 @@
   },
   "summary": {
     "backend_fix": {
-      "total": 9517,
-      "passed": 9498,
+      "total": 9520,
+      "passed": 9501,
       "failed": 0
     },
     "web_fix": {
-      "total": 409,
-      "passed": 409,
+      "total": 412,
+      "passed": 412,
       "failed": 0
     },
     "baseline_lane": {
@@ -111,7 +113,7 @@
     },
     "inventory_counts": {
       "backend:passed": 80,
-      "web:passed": 409
+      "web:passed": 412
     }
   },
   "baseline_lane": [
@@ -1972,7 +1974,13 @@
     {
       "platform": "web",
       "file": "web/tests/deepgram-service-final-window.test.ts",
-      "name": "nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed to the emitting socket [invariant] nova meta comes from the callback wrapper: speech_start/window_end from the word times, identity from the word bounds, and a late final from a superseded socket is inadmissible under ITS epoch",
+      "name": "nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed to the emitting socket [invariant] nova meta comes from the callback wrapper: speech_start/window_end from the word times, identity from the FRAME start/duration, and a late final from a superseded socket is inadmissible under ITS epoch",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "nova-3 provider identity — frame fields only, never the transcript [invariant] two distinct WORDLESS finals with identical text carry distinct identities (different frame start), an exact frame redelivery carries the same one, and a frame with no start/duration carries none",
       "status": "passed"
     },
     {
@@ -2428,6 +2436,12 @@
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] identity is never the transcript: two DISTINCT provider finals with identical text (different turn_index) both execute; frames with NO provider identity (no turn_index, no audio_window_end) are never deduped even when byte-identical",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
       "name": "A02D mounted — hints OFF (gate-only) [invariant] manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
       "status": "passed"
     },
@@ -2615,6 +2629,12 @@
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
       "name": "A02D mounted — hints ON [invariant] hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] identity is never the transcript: two DISTINCT provider finals with identical text (different turn_index) both execute; frames with NO provider identity (no turn_index, no audio_window_end) are never deduped even when byte-identical",
       "status": "passed"
     },
     {
