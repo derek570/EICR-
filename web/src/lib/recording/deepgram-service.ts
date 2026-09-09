@@ -589,12 +589,16 @@ export class DeepgramService {
   private providerFinalId(
     epoch: ConnectionEpoch | null,
     kind: 'flux' | 'nova',
-    parts: unknown[],
-    transcript: string
-  ): string {
-    const named = parts.filter((p) => typeof p === 'number' || (typeof p === 'string' && p));
-    const tail = named.length > 0 ? named.join('|') : `text:${transcript}`;
-    return `${epoch ?? 'e?'}|${kind}|${tail}`;
+    parts: unknown[]
+  ): string | null {
+    // Only PROVIDER-minted frame fields name a final (Flux `turn_index` +
+    // `audio_window_end`; nova-3 frame `start` + `duration`). Transcript
+    // text is never identity — a genuinely repeated dictation is a new
+    // final (Codex diff-review cycle 3, BLOCKER 0). A frame carrying none
+    // of them yields null, and null never dedupes.
+    const named = parts.filter((p): p is number => typeof p === 'number' && Number.isFinite(p));
+    if (named.length === 0) return null;
+    return `${epoch ?? 'e?'}|${kind}|${named.join('|')}`;
   }
 
   /**
@@ -605,7 +609,13 @@ export class DeepgramService {
    * socket's late final is inadmissible, exactly as on Flux) without any
    * change to the frozen `onmessage` / `handleMessage` surface.
    */
-  private dispatchingSocketContext: { epoch: ConnectionEpoch | null; origin: number } | null = null;
+  private dispatchingSocketContext: {
+    epoch: ConnectionEpoch | null;
+    origin: number;
+    /** Frame-level provider fields of the message being delivered (parsed
+     *  here, outside the frozen decoder, which re-parses on its own). */
+    frame: { start?: number; duration?: number } | null;
+  } | null = null;
 
   /**
    * Wrap a freshly constructed socket so that whatever handler the frozen
@@ -641,7 +651,11 @@ export class DeepgramService {
         delegate = fn
           ? function (this: WebSocket, ev: MessageEvent) {
               const previous = service.dispatchingSocketContext;
-              service.dispatchingSocketContext = { epoch, origin };
+              service.dispatchingSocketContext = {
+                epoch,
+                origin,
+                frame: DeepgramService.providerFrameFields(ev.data),
+              };
               try {
                 return fn.call(this, ev);
               } finally {
@@ -653,6 +667,22 @@ export class DeepgramService {
       },
     });
     return ws;
+  }
+
+  /** The nova-3 frame-level provider fields (`start`, `duration`) that name
+   *  a Results message, read from the raw socket payload. Anything else
+   *  (unparseable, non-nova shape) yields null fields. */
+  private static providerFrameFields(data: unknown): { start?: number; duration?: number } | null {
+    try {
+      const text = typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer);
+      const json = JSON.parse(text) as Record<string, unknown>;
+      return {
+        start: typeof json.start === 'number' ? json.start : undefined,
+        duration: typeof json.duration === 'number' ? json.duration : undefined,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -686,12 +716,12 @@ export class DeepgramService {
             socketContext,
             last ? last.end : undefined,
             first ? origin + audioWindowEndToSampleOffset(first.start) : null,
-            this.providerFinalId(
-              socketContext?.epoch ?? null,
-              'nova',
-              [first?.start, last?.end],
-              text
-            )
+            // Identity from the FRAME's own `start`/`duration` (never the
+            // words, never the text); absent → null → no dedupe.
+            this.providerFinalId(socketContext?.epoch ?? null, 'nova', [
+              socketContext?.frame?.start,
+              socketContext?.frame?.duration,
+            ])
           )
         );
       },
@@ -2038,12 +2068,10 @@ export class DeepgramService {
             socketContext,
             json.audio_window_end,
             undefined,
-            this.providerFinalId(
-              socketContext?.epoch ?? null,
-              'flux',
-              [json.turn_index, json.audio_window_end],
-              transcript
-            )
+            this.providerFinalId(socketContext?.epoch ?? null, 'flux', [
+              json.turn_index,
+              json.audio_window_end,
+            ])
           )
         );
         // iOS canon (DeepgramService.swift handleFluxTurnInfo): EndOfTurn with

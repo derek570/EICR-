@@ -2928,8 +2928,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             return;
           }
           // A02D — a DUPLICATE delivery of a provider final already admitted
-          // in this session (same socket epoch, same provider turn) is
-          // dropped HERE, before the naming/burst buffers and every
+          // in this session (same socket epoch, same provider-minted turn
+          // identity — never the text; a frame with no identity is never
+          // deduped) is dropped HERE, before the naming/burst buffers and every
           // mutation-capable or forwarding consumer: one fragment, one
           // mutation, one send, one spoken result per provider final. The
           // service already performed its unconditional PLAN-E2 watermark
@@ -2974,6 +2975,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             speechStart: finalWindow.speechStart,
             windowEnd: finalWindow.windowEnd,
             unbounded: finalWindow.unbounded,
+            providerFinalId,
           });
           // PLAN-E1 E3 — a final can arrive without a preceding interim
           // (idempotent-safe: a no-op if the probe already resolved via

@@ -65,12 +65,14 @@ export interface FinalTranscriptMeta {
   readonly windowEnd: number | null;
   /**
    * A02D — the PROVIDER's identity for this final on its socket (Flux:
-   * epoch + `turn_index` + `audio_window_end`; nova-3: epoch + `start` +
-   * `duration`), assigned BEFORE the client sequence so a duplicate
-   * delivery of the same provider final reuses the same FinalWindowV1
-   * record (and therefore the same held-fragment key) instead of minting
-   * a fresh sequence. Null when the transport has no identity (a legacy
-   * hand-rolled fake) — then every callback is its own final.
+   * epoch + `turn_index` + `audio_window_end`; nova-3: epoch + frame
+   * `start` + `duration`), assigned BEFORE the client sequence so an exact
+   * re-delivery of the same provider final is recognised and dropped at
+   * admission. Built ONLY from provider-minted frame fields — transcript
+   * text is never identity, so a genuinely repeated dictation is a new
+   * final. Null when the frame carries no such field (or a legacy hand-
+   * rolled fake) — then nothing is deduped and every callback is its own
+   * final.
    */
   readonly providerFinalId?: string | null;
 }

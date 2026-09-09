@@ -293,7 +293,7 @@ describe('A02D admission — the service half', () => {
 });
 
 describe('nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed to the emitting socket', () => {
-  it('[invariant] nova meta comes from the callback wrapper: speech_start/window_end from the word times, identity from the word bounds, and a late final from a superseded socket is inadmissible under ITS epoch', async () => {
+  it('[invariant] nova meta comes from the callback wrapper: speech_start/window_end from the word times, identity from the FRAME start/duration, and a late final from a superseded socket is inadmissible under ITS epoch', async () => {
     vi.useFakeTimers();
     try {
       const h = harness('nova3', { fetcher: true });
@@ -314,6 +314,8 @@ describe('nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed t
       oldSocket.emit({
         type: 'Results',
         is_final: true,
+        start: 0.0,
+        duration: 1.6,
         channel: {
           alternatives: [
             {
@@ -332,7 +334,7 @@ describe('nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed t
       expect(first.epoch).toBe(oldEpoch);
       expect(first.speechStart).toBe(1600); // 0.1 s × 16 kHz (provider word start)
       expect(first.windowEnd).toBe(24000); // 1.5 s
-      expect(first.providerFinalId).toBe(`${oldEpoch}|nova|0.1|1.5`);
+      expect(first.providerFinalId).toBe(`${oldEpoch}|nova|0|1.6`);
       // Unowned close → reconnect on a NEW socket / epoch; the OLD socket's
       // late final is attributed to the old epoch and is inadmissible.
       oldSocket.onclose?.({ code: 1006, wasClean: false });
@@ -350,7 +352,8 @@ describe('nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed t
       const late = h.finals[h.finals.length - 1].meta!;
       expect(late.epoch).toBe(oldEpoch);
       expect(late.admissible).toBe(false);
-      expect(late.providerFinalId).toBe(`${oldEpoch}|nova|text:late from old socket`);
+      // No frame fields, no words: NO identity (never the text).
+      expect(late.providerFinalId).toBeNull();
       // A final on the NEW socket is admissible under the new epoch.
       h.ws().emit({
         type: 'Results',
@@ -363,6 +366,42 @@ describe('nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed t
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('nova-3 provider identity — frame fields only, never the transcript', () => {
+  it('[invariant] two distinct WORDLESS finals with identical text carry distinct identities (different frame start), an exact frame redelivery carries the same one, and a frame with no start/duration carries none', () => {
+    const h = harness('nova3');
+    h.ws().open();
+    const wordless = (start: number, duration: number) => ({
+      type: 'Results',
+      is_final: true,
+      start,
+      duration,
+      channel: {
+        alternatives: [{ transcript: 'calculate zs for circuit 4', confidence: 0.9, words: [] }],
+      },
+    });
+    h.ws().emit(wordless(2.0, 1.2));
+    h.ws().emit(wordless(9.0, 1.2)); // the inspector genuinely repeats it
+    h.ws().emit(wordless(2.0, 1.2)); // exact redelivery of the first frame
+    h.ws().emit({
+      type: 'Results',
+      is_final: true,
+      channel: {
+        alternatives: [{ transcript: 'calculate zs for circuit 4', confidence: 0.9, words: [] }],
+      },
+    });
+    const ids = h.finals.map((f) => f.meta!.providerFinalId);
+    const epoch = h.service.liveEpoch;
+    expect(ids).toEqual([
+      `${epoch}|nova|2|1.2`,
+      `${epoch}|nova|9|1.2`,
+      `${epoch}|nova|2|1.2`,
+      null,
+    ]);
+    expect(ids[0]).not.toBe(ids[1]);
+    for (const f of h.finals) expect(f.meta!.speechStart).toBeNull(); // wordless → unbounded
   });
 });
 

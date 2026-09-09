@@ -1058,6 +1058,57 @@ for (const lane of LANES) {
       expect(m.sonnet().sentTranscripts).toHaveLength(2);
     });
 
+    it('[invariant] identity is never the transcript: two DISTINCT provider finals with identical text (different turn_index) both execute; frames with NO provider identity (no turn_index, no audio_window_end) are never deduped even when byte-identical', async () => {
+      const m = await mount(makeCalcJob());
+      const dg = m.dg();
+      const localCount = () =>
+        m.harness.jobChanges.filter((c) => c.source === 'local_command').length;
+      // Distinct turns, identical text: the inspector genuinely repeats.
+      await dictate(dg, 'calculate Zs for circuit 4');
+      await act(async () => {
+        dg.advanceDispatchedStream(1);
+      });
+      await dictate(dg, 'calculate Zs for circuit 4');
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(0);
+      expect(m.diag('a02d_final_window')).toHaveLength(2);
+      // Both EXECUTED locally: the first computes and writes, the second
+      // runs too and speaks its own outcome (the value is already recorded).
+      expect(localCount()).toBe(1);
+      expect(m.harness.tts.played.map((p) => p.text)).toEqual([
+        'Circuit 4, Zs calculated as 0.55 ohms',
+        'Zs for circuit 4 is already recorded — say a new reading to replace it.',
+      ]);
+      // Frames carrying NO provider identity: byte-identical deliveries are
+      // still two finals (null identity never dedupes) — only a provider-
+      // minted identity can say "same final".
+      const bare = {
+        type: 'TurnInfo',
+        event: 'EndOfTurn',
+        transcript: 'Circuit 3 R1 plus R2 is nought point two.',
+        end_of_turn_confidence: 0.9,
+        words: [],
+      };
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.emitSpeechStarted();
+        dg.emitFrame(bare);
+        vi.advanceTimersByTime(700);
+      });
+      await act(async () => {
+        dg.emitFrame(bare);
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(0);
+      expect(m.diag('a02d_final_window')).toHaveLength(4);
+      expect(
+        m
+          .diag('a02d_final_window')
+          .slice(-2)
+          .every((d) => d.payload.providerFinalId === null)
+      ).toBe(true);
+      expect(m.sonnet().sentTranscripts).toHaveLength(2);
+    });
+
     it('[invariant] duplicate delivery of a LOCALLY executed command, inside and after the burst window: one mutation, one spoken result, nothing sent', async () => {
       const m = await mount(makeCalcJob());
       const dg = m.dg();
