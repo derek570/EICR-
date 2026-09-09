@@ -47,7 +47,7 @@ export interface DeepgramServiceLike {
   ): void | Promise<void>;
   disconnect(): void;
   pause(): void;
-  resume(replaySegments?: CapturedPcmSegment[] | null): void;
+  resume(): void;
   sendSamples(samples: Float32Array, capturedAt?: number): CapturedPcmSegment | null;
   sendTaggedAudio(segment: CapturedPcmSegment): void;
   sendInt16PCM(pcm: Int16Array): void;
@@ -67,6 +67,13 @@ export interface DeepgramServiceLike {
    *  by the tap owner at its two write sites (`micRef` set/cleared) and
    *  copied in at construction; read synchronously by the close classifier. */
   captureActive?: boolean;
+  /** A02D — the session-monotonic dispatched-stream position, sampled by
+   *  the provider at a manual tap as that epoch's stream cutoff. */
+  readonly dispatchedStreamOffset?: number;
+  /** A02D FinalWindowV1 — the session VAD's debounced onset/silence,
+   *  forwarded by the provider at the tagging boundary. */
+  noteLocalSpeechOnset?(atMs: number): void;
+  noteLocalSilence?(): void;
 }
 
 /** The SonnetSession surface recording-context actually uses. The real

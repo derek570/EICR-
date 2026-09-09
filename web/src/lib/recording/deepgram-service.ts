@@ -52,6 +52,7 @@ import { classifyPcmEnergy, type VoicedActivityDetector } from './voiced-activit
 import { tagCapturedFloat32 } from './capture-tagging';
 import type { UplinkLossLedger } from './uplink-loss-ledger';
 import { audioWindowEndToSampleOffset } from './sample-offset';
+import { SpeechOnsetTracker, resolveWindowEnd, type FinalTranscriptMeta } from './final-window';
 
 /**
  * STT model selector. `nova3` is the legacy `/v1/listen` path (still the
@@ -85,7 +86,16 @@ export interface DeepgramWord {
 
 export interface DeepgramCallbacks {
   onInterimTranscript: (text: string, confidence: number) => void;
-  onFinalTranscript: (text: string, confidence: number, words: DeepgramWord[]) => void;
+  /** A02D — the optional fourth argument is the transport half of the
+   *  FinalWindowV1 record (epoch, admissibility, `speech_start`,
+   *  `window_end`). Always supplied by the real service; a caller that omits
+   *  it is treated by the provider as an unbounded, admissible final. */
+  onFinalTranscript: (
+    text: string,
+    confidence: number,
+    words: DeepgramWord[],
+    meta?: FinalTranscriptMeta
+  ) => void;
   onUtteranceEnd?: () => void;
   onSpeechStarted?: () => void;
   onStateChange?: (state: DeepgramConnectionState) => void;
@@ -208,6 +218,9 @@ export interface DeepgramSessionContext {
 }
 
 export interface DeepgramServiceOptions {
+  /** A02D test seam — monotonic ms clock for the onset-confirmation
+   *  deadline. Defaults to `performance.now`. */
+  now?: () => number;
   sessionContext?: DeepgramSessionContext;
   /** Test seam — production defaults to `realOpusEncoderFactory`
    *  (WebCodecs). Tests inject a fake since `AudioEncoder`/`AudioData`
@@ -309,6 +322,15 @@ export class DeepgramService {
    *  every tap transition, so a reconnect (no tap transition) on this
    *  reused instance still reads the live value. */
   captureActive = false;
+  /** A02D FinalWindowV1 — per-onset confirmation state for THIS instance
+   *  (session VAD transitions are forwarded by the provider; StartOfTurn /
+   *  non-empty interims confirm). */
+  private readonly onsetTracker = new SpeechOnsetTracker();
+  private readonly nowMs: () => number;
+  /** A02D admission — flipped synchronously at the top of `disconnect()`,
+   *  BEFORE the CloseStream grace during which `this.ws` still equals the
+   *  socket. A final emitted by this instance after that is inadmissible. */
+  private admissionClosed = false;
   private resolvedSenderCodec: UplinkCodec = 'linear16';
   private keepalivePolicy: UplinkKeepalivePolicy = 'disabled';
   // The generation-bound Opus encoder for the CURRENT socket (null when
@@ -435,6 +457,7 @@ export class DeepgramService {
       captureClock: createCaptureClock(),
     };
     this.opusEncoderFactory = options.opusEncoderFactory ?? realOpusEncoderFactory;
+    this.nowMs = options.now ?? (() => performance.now());
     // PLAN-E2 binds PLAN-E1's `onUndispatchedLoss` seam to the session
     // ledger (entry variant d) whenever the session owner supplied one; an
     // explicit handler option still wins (tests of the seam itself).
@@ -490,6 +513,66 @@ export class DeepgramService {
    *  same `EpochScope` this service would resolve internally. */
   get liveEpoch(): ConnectionEpoch | null {
     return this.currentEpoch;
+  }
+
+  /** A02D — the session-monotonic dispatched-stream position (source
+   *  samples handed to ANY socket so far). Sampled by the provider at a
+   *  manual tap as that epoch's dispatched-stream cutoff, on the same
+   *  thread the sender advances it on. */
+  get dispatchedStreamOffset(): number {
+    return this.dispatchedSampleOffset;
+  }
+
+  /** A02D FinalWindowV1 — the session VAD's debounced ONSET, forwarded by
+   *  the provider at the tagging boundary, before the onset frame is sent:
+   *  `dispatchedSampleOffset` here IS the onset frame's dispatched start. */
+  noteLocalSpeechOnset(atMs: number = this.nowMs()): void {
+    this.onsetTracker.onOnset(this.dispatchedSampleOffset, atMs);
+  }
+
+  /** A02D FinalWindowV1 — the session VAD's debounced SILENCE transition:
+   *  an onset still unconfirmed is discarded. */
+  noteLocalSilence(): void {
+    this.onsetTracker.onSilence();
+  }
+
+  /** A02D FinalWindowV1 — provider speech evidence (StartOfTurn or a
+   *  NON-EMPTY interim) confirms a pending onset when it arrives within the
+   *  confirmation window. The transport calls this itself on those frames;
+   *  it is public so a text-only fake can model the VAD-then-Deepgram
+   *  ordering without synthesising audio. */
+  noteProviderSpeechEvidence(atMs: number = this.nowMs()): void {
+    this.onsetTracker.onProviderSpeechEvidence(atMs);
+  }
+
+  /** A02D — the transport half of the admission predicate for a final
+   *  emitted under `socketEpoch`: this instance has not been disconnected
+   *  and the emitting socket is its current one. */
+  private admissibleFor(socketEpoch: ConnectionEpoch | null | undefined): boolean {
+    return (
+      !this.admissionClosed &&
+      socketEpoch != null &&
+      this.currentEpoch !== null &&
+      socketEpoch === this.currentEpoch
+    );
+  }
+
+  private finalMeta(
+    socketContext: { epoch: ConnectionEpoch | null; origin: number } | undefined,
+    rawWindowEnd: unknown,
+    speechStartOverride?: number | null
+  ): FinalTranscriptMeta {
+    const epoch = socketContext?.epoch ?? null;
+    const origin = socketContext?.origin ?? this.epochDispatchOrigin;
+    return {
+      epoch,
+      admissible: this.admissibleFor(epoch),
+      speechStart:
+        speechStartOverride !== undefined
+          ? speechStartOverride
+          : this.onsetTracker.currentSpeechStart(this.nowMs()),
+      windowEnd: resolveWindowEnd(rawWindowEnd, origin),
+    };
   }
 
   /**
@@ -1132,24 +1215,23 @@ export class DeepgramService {
     this.paused = true;
   }
 
-  /** Inverse of `pause()`. Optionally drain a caller-supplied replay
-   *  buffer (typically the 3-second AudioRingBuffer's tagged segments)
-   *  before live samples resume flowing — matches the iOS wake path.
-   *  Segments are dispatched via `sendTaggedAudio` so their ORIGINAL
-   *  capture-time tags survive the replay (no restamping). */
-  resume(replaySegments?: CapturedPcmSegment[]): void {
+  /** Inverse of `pause()`. A02D retired replay: this used to drain a
+   *  caller-supplied ring-buffer replay through `sendTaggedAudio` (the doze
+   *  wake path). No path re-sends ring audio to any socket now — audio no
+   *  socket could take is charged and DISCLOSED through PLAN-E2's staged-loss
+   *  seam by the provider instead. */
+  resume(): void {
     this.paused = false;
-    if (replaySegments) {
-      for (const segment of replaySegments) {
-        this.sendTaggedAudio(segment);
-      }
-    }
   }
 
   /** Request a graceful stream close + tear the socket down. Cancels any
    *  pending auto-reconnect so a mid-backoff `stop()` doesn't leak a
    *  billable WS seconds later. */
   disconnect(): void {
+    // A02D — invalidate admission SYNCHRONOUSLY, before anything else in
+    // this method (the CloseStream grace below keeps `this.ws` alive for
+    // 300 ms; a late final from it must never be admitted).
+    this.admissionClosed = true;
     this.stopKeepAlive();
     this.paused = false;
     // PLAN-E1 (Codex review r1 IMPORTANT fix) — flush any partial Flux
@@ -1642,18 +1724,30 @@ export class DeepgramService {
             confidence: Math.round(confidence * 1000) / 1000,
             wordCount: words.length,
           });
-          this.callbacks.onFinalTranscript(transcript, confidence, words);
+          // A02D FinalWindowV1 (nova-3): first provider word start and last
+          // word end, in this epoch's dispatched domain. No words → unbounded.
+          const origin = socketContext?.origin ?? this.epochDispatchOrigin;
+          const first = words[0];
+          const last = words[words.length - 1];
+          const meta = this.finalMeta(
+            socketContext,
+            last ? last.end : undefined,
+            first ? origin + audioWindowEndToSampleOffset(first.start) : null
+          );
+          this.callbacks.onFinalTranscript(transcript, confidence, words, meta);
         } else {
           pipelineLog('deepgram_interim', {
             textLength: transcript.length,
             confidence: Math.round(confidence * 1000) / 1000,
           });
+          this.noteProviderSpeechEvidence();
           this.callbacks.onInterimTranscript(transcript, confidence);
         }
         break;
       }
       case 'SpeechStarted':
         pipelineLog('deepgram_speech_started', {});
+        this.noteProviderSpeechEvidence();
         this.callbacks.onSpeechStarted?.();
         break;
       case 'UtteranceEnd':
@@ -1762,11 +1856,15 @@ export class DeepgramService {
           textLength: transcript.length,
           confidence: Math.round(confidence * 1000) / 1000,
         });
+        // A02D — a NON-EMPTY interim confirms a pending onset (empty ones
+        // returned above never reach here).
+        this.noteProviderSpeechEvidence();
         this.callbacks.onInterimTranscript(transcript, confidence);
         break;
       }
       case 'StartOfTurn':
         pipelineLog('deepgram_speech_started', {});
+        this.noteProviderSpeechEvidence();
         this.callbacks.onSpeechStarted?.();
         break;
       case 'EndOfTurn': {
@@ -1806,7 +1904,15 @@ export class DeepgramService {
           confidence: Math.round(confidence * 1000) / 1000,
           wordCount: words.length,
         });
-        this.callbacks.onFinalTranscript(transcript, confidence, words);
+        this.callbacks.onFinalTranscript(
+          transcript,
+          confidence,
+          words,
+          // A02D FinalWindowV1 — this final's transport record: the emitting
+          // socket's epoch + admissibility, the confirmed onset (or null) and
+          // the EndOfTurn `audio_window_end` in this epoch's dispatched domain.
+          this.finalMeta(socketContext, json.audio_window_end)
+        );
         // iOS canon (DeepgramService.swift handleFluxTurnInfo): EndOfTurn with
         // a transcript fires BOTH didReceiveFinalTranscript AND
         // didReceiveUtteranceEnd. Without the utterance-end,

@@ -91,6 +91,14 @@ export class FakeDeepgramService implements DeepgramServiceLike {
    *  `capturedAt` the production `onSamples` callback stamped (not just
    *  count the calls). */
   readonly sentTaggedSegments: CapturedPcmSegment[] = [];
+  /** A02D FinalWindowV1 — the harness has no audio, so no session-VAD onset
+   *  ever reaches the sender. By default the fake models the ordinary field
+   *  case (a VAD onset immediately before Deepgram's first speech evidence,
+   *  confirmed within the window) so every final is BOUNDED and prefills
+   *  exactly as before. Set false to model finals with no confirmed onset
+   *  (`unbounded`, client-regex-ineligible). */
+  autoConfirmOnset = true;
+  private onsetNotedForTurn = false;
 
   constructor(
     callbacks: DeepgramCallbacks,
@@ -152,8 +160,8 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   pause(): void {
     this.inner.pause();
   }
-  resume(replaySegments?: CapturedPcmSegment[] | null): void {
-    this.inner.resume(replaySegments ?? undefined);
+  resume(): void {
+    this.inner.resume();
   }
   sendSamples(samples: Float32Array, capturedAt?: number): CapturedPcmSegment | null {
     this.sentSampleBlocks += 1;
@@ -183,10 +191,40 @@ export class FakeDeepgramService implements DeepgramServiceLike {
     if (!this.ws) throw new Error('FakeDeepgramService: connect() has not run');
     this.ws.emit(frame);
   }
+  /** A02D — model the session VAD firing just before this provider event. */
+  private noteOnsetBeforeProviderEvidence(): void {
+    if (!this.autoConfirmOnset || this.onsetNotedForTurn) return;
+    this.inner.noteLocalSpeechOnset(performance.now());
+    this.onsetNotedForTurn = true;
+  }
+  /** A02D — explicitly model the session VAD onset at the CURRENT
+   *  dispatched-stream position (what production forwards from the
+   *  tagging boundary). */
+  noteLocalSpeechOnset(atMs: number = performance.now()): void {
+    this.inner.noteLocalSpeechOnset(atMs);
+    this.onsetNotedForTurn = true;
+  }
+  noteLocalSilence(): void {
+    this.inner.noteLocalSilence();
+  }
+  /** A02D — advance the REAL dispatched-stream position by `frames` exact
+   *  80 ms Flux frames of SILENT audio through the real sender (the
+   *  position a manual tap samples as its stream cutoff). */
+  advanceDispatchedStream(frames: number): void {
+    // SILENT frames: they advance the sender's dispatched position without
+    // flipping the session VAD to "speaking" (which would park a
+    // clarification/disclosure behind local speech).
+    for (let i = 0; i < frames; i++) this.inner.sendSamples(new Float32Array(1280));
+  }
+  get dispatchedStreamOffset(): number {
+    return this.inner.dispatchedStreamOffset;
+  }
   emitSpeechStarted(): void {
+    this.noteOnsetBeforeProviderEvidence();
     this.emitFrame({ type: 'TurnInfo', event: 'StartOfTurn' });
   }
   emitInterim(text: string, confidence = 0.5): void {
+    if (text !== '') this.noteOnsetBeforeProviderEvidence();
     this.emitFrame({
       type: 'TurnInfo',
       event: 'Update',
@@ -196,12 +234,21 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   }
   /** Transcript-bearing EndOfTurn — the REAL mapping decides what fires
    *  (post-A1: final + utterance-end; pre-A1: final only). */
-  emitEndOfTurn(text: string, confidence = 0.9): void {
+  emitEndOfTurn(text: string, confidence = 0.9, audioWindowEndSeconds = 1.0): void {
+    if (this.autoConfirmOnset && !this.onsetNotedForTurn) {
+      // A direct EndOfTurn with no preceding StartOfTurn/interim in the
+      // test: model onset + confirmation at this instant.
+      const t = performance.now();
+      this.inner.noteLocalSpeechOnset(t);
+      this.inner.noteProviderSpeechEvidence(t);
+    }
+    this.onsetNotedForTurn = false;
     this.emitFrame({
       type: 'TurnInfo',
       event: 'EndOfTurn',
       transcript: text,
       end_of_turn_confidence: confidence,
+      audio_window_end: audioWindowEndSeconds,
       words: [],
     });
   }
