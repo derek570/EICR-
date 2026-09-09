@@ -827,7 +827,7 @@ for (const lane of LANES) {
       expect(__heldFragmentClarificationStateForTests().spoken).toBe(2);
     });
 
-    it('a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once', async () => {
+    it('[invariant] a duplicate delivery of the same provider final (same turn_index) dedupes to ONE token before playback; a direct-prompt preemption re-parks and the line still plays exactly once', async () => {
       const m = await mount();
       const dg = m.dg();
       m.harness.tts.manual = true;
@@ -842,9 +842,24 @@ for (const lane of LANES) {
         dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
         vi.advanceTimersByTime(700);
       });
-      const state = __heldFragmentClarificationStateForTests();
+      let state = __heldFragmentClarificationStateForTests();
       expect(state.outstanding).not.toBeNull();
       expect(state.held).toBe(1);
+      // The SAME EndOfTurn frame again (same turn_index, same window end):
+      // the provider reuses the FinalWindowV1 record (same sequence, same
+      // key) and the ledger reports a duplicate — no second token.
+      await act(async () => {
+        dg.emitDuplicateOfLastEndOfTurn();
+        vi.advanceTimersByTime(700);
+      });
+      const windows = m.diag('a02d_final_window');
+      expect(windows).toHaveLength(2);
+      expect(windows[1].payload.finalSequence).toBe(windows[0].payload.finalSequence);
+      expect(windows[1].payload.duplicateDelivery).toBe(true);
+      expect(m.diag('a02d_clarification_duplicate_final')).toHaveLength(1);
+      state = __heldFragmentClarificationStateForTests();
+      expect(state.held).toBe(1);
+      expect(state.outstanding?.finalKeys).toHaveLength(1);
       // A direct prompt (server ask) preempts the prepared-but-unplayed clip.
       await act(async () => {
         m.sonnet().emitQuestion({ question: 'Which board?', question_type: 'clarification' });
@@ -862,6 +877,49 @@ for (const lane of LANES) {
       });
       expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
       expect(__heldFragmentClarificationStateForTests().spoken).toBe(1);
+    });
+
+    it('[invariant] a duplicate delivery AFTER the clarification played to completion speaks nothing more (the disclosed key is remembered); a genuinely new held final still speaks', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(700);
+      });
+      // Instant players: the line has already played to completion.
+      expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
+      expect(__heldFragmentClarificationStateForTests().spoken).toBe(1);
+      expect(__heldFragmentClarificationStateForTests().outstanding).toBeNull();
+      await act(async () => {
+        dg.emitDuplicateOfLastEndOfTurn();
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_clarification_duplicate_final')).toHaveLength(1);
+      expect(m.clarifications()).toHaveLength(1);
+      expect(__heldFragmentClarificationStateForTests().spoken).toBe(1);
+      expect(__heldFragmentClarificationStateForTests().held).toBe(1);
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
+      expect(zsOf(m.jobRef.current!, '4')).toBe('');
+      // A NEW final (a different provider turn) that is ALSO stale under the
+      // still-applying cutoff — here `unbounded` (no confirmed onset) — is
+      // its own obligation and speaks once more.
+      dg.autoConfirmOnset = false;
+      await act(async () => {
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(700);
+      });
+      // Three hold decisions (original, its duplicate delivery, the new
+      // final); two obligations; two lines.
+      expect(m.diag('a02d_final_held')).toHaveLength(3);
+      expect(m.clarifications()).toHaveLength(2);
+      expect(__heldFragmentClarificationStateForTests().held).toBe(2);
     });
 
     it('old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications', async () => {

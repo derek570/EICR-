@@ -99,6 +99,8 @@ export class FakeDeepgramService implements DeepgramServiceLike {
    *  (`unbounded`, client-regex-ineligible). */
   autoConfirmOnset = true;
   private onsetNotedForTurn = false;
+  private nextTurnIndex = 1;
+  private lastEndOfTurnFrame: Record<string, unknown> | null = null;
 
   constructor(
     callbacks: DeepgramCallbacks,
@@ -189,6 +191,7 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   // ── Raw Flux frame drivers — parsed by the REAL service ──
   emitFrame(frame: Record<string, unknown>): void {
     if (!this.ws) throw new Error('FakeDeepgramService: connect() has not run');
+    if (frame.event === 'EndOfTurn' && frame.transcript) this.lastEndOfTurnFrame = frame;
     this.ws.emit(frame);
   }
   /** A02D — model the session VAD firing just before this provider event. */
@@ -234,7 +237,17 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   }
   /** Transcript-bearing EndOfTurn — the REAL mapping decides what fires
    *  (post-A1: final + utterance-end; pre-A1: final only). */
-  emitEndOfTurn(text: string, confidence = 0.9, audioWindowEndSeconds = 1.0): void {
+  emitEndOfTurn(
+    text: string,
+    confidence = 0.9,
+    audioWindowEndSeconds = 1.0,
+    opts: {
+      /** A02D — Flux's `turn_index`; pass the SAME value twice to model a
+       *  duplicate delivery of one provider final. Auto-incremented when
+       *  omitted so distinct EndOfTurns never coincide. */
+      turnIndex?: number;
+    } = {}
+  ): void {
     if (this.autoConfirmOnset && !this.onsetNotedForTurn) {
       // A direct EndOfTurn with no preceding StartOfTurn/interim in the
       // test: model onset + confirmation at this instant.
@@ -243,14 +256,23 @@ export class FakeDeepgramService implements DeepgramServiceLike {
       this.inner.noteProviderSpeechEvidence(t);
     }
     this.onsetNotedForTurn = false;
+    const turnIndex = opts.turnIndex ?? this.nextTurnIndex++;
     this.emitFrame({
       type: 'TurnInfo',
       event: 'EndOfTurn',
       transcript: text,
       end_of_turn_confidence: confidence,
       audio_window_end: audioWindowEndSeconds,
+      turn_index: turnIndex,
       words: [],
     });
+  }
+  /** A02D — re-deliver the last EndOfTurn frame byte-for-byte (same
+   *  `turn_index`, same `audio_window_end`, same transcript). */
+  emitDuplicateOfLastEndOfTurn(): void {
+    const last = this.lastEndOfTurnFrame;
+    if (!last) throw new Error('FakeDeepgramService: no EndOfTurn to duplicate');
+    this.emitFrame(last);
   }
   /** Empty EndOfTurn (silence-driven close). */
   emitEmptyEndOfTurn(): void {

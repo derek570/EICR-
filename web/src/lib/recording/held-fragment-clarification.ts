@@ -21,7 +21,10 @@
  * needed because its line is constant while this one names destinations:
  *
  *  - identity `{session, epoch, final_sequence}` — duplicate callbacks of the
- *    same final dedupe to one token;
+ *    same final dedupe to one token, before AND after that token played
+ *    (the provider reuses the FinalWindowV1 record for a re-delivered
+ *    provider final, so the key coincides; the ledger remembers disclosed
+ *    keys, bounded, until session teardown);
  *  - at most ONE outstanding token per session;
  *  - a second held final MERGES its destinations into the outstanding token
  *    only while that token's text is still unfrozen (unsynthesised and
@@ -77,7 +80,14 @@ export type ClarificationRequestOutcome =
   | { readonly action: 'minted'; readonly token: ClarificationToken }
   | { readonly action: 'merged'; readonly token: ClarificationToken }
   | { readonly action: 'awaiting'; readonly token: ClarificationToken }
-  | { readonly action: 'duplicate'; readonly token: ClarificationToken };
+  /** The final was already disclosed (by the outstanding token, an awaiting
+   *  set, or a token that PLAYED to completion): nothing is minted. `token`
+   *  is the outstanding one when there is one. */
+  | { readonly action: 'duplicate'; readonly token: ClarificationToken | null };
+
+/** Bound on remembered final keys per session (a key is a few dozen bytes;
+ *  a session holds far fewer finals than this). */
+export const HELD_FRAGMENT_KNOWN_FINAL_KEYS_MAX = 512;
 
 export interface HeldFragmentClarificationLedgerOptions {
   /** Deliver (or re-deliver) a token. */
@@ -109,12 +119,24 @@ export class HeldFragmentClarificationLedger {
       this.abandonForSessionTeardown();
     }
     const token = this.outstanding;
-    if (this.knownFinalKeys.has(finalKey) && token) {
-      this.opts.telemetry?.('a02d_clarification_duplicate_final', { token: token.id, finalKey });
+    // Codex diff-review cycle 1, BLOCKER 3: a duplicate delivery is a
+    // duplicate whether or not a token is outstanding — after natural
+    // completion the key is still known, and re-minting would speak the
+    // same final's clarification twice.
+    if (this.knownFinalKeys.has(finalKey)) {
+      this.opts.telemetry?.('a02d_clarification_duplicate_final', {
+        token: token?.id ?? null,
+        finalKey,
+      });
       return { action: 'duplicate', token };
     }
     this.heldTotal += 1;
     this.knownFinalKeys.add(finalKey);
+    while (this.knownFinalKeys.size > HELD_FRAGMENT_KNOWN_FINAL_KEYS_MAX) {
+      const oldest = this.knownFinalKeys.values().next().value;
+      if (oldest === undefined) break;
+      this.knownFinalKeys.delete(oldest);
+    }
     if (!token) {
       const minted: ClarificationToken = {
         id: this.nextId++,

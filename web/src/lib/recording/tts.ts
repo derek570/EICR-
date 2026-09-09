@@ -1963,7 +1963,7 @@ export function requestHeldFragmentClarification(
   const outcome = heldFragmentClarificationLedger.request(sessionId, finalKey, destinations);
   clientDiagnostic('a02d_clarification_requested', {
     action: outcome.action,
-    token: outcome.token.id,
+    token: outcome.token?.id ?? null,
     destinations: destinations.length,
   });
 }

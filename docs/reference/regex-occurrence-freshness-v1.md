@@ -119,6 +119,14 @@ it awaits a successor minted at natural completion. Re-park on preemption,
 overflow, TTS unavailability, playback failure, and discard; abandon at session
 teardown. Held audio is charged to no PLAN-E2 counter.
 
+A duplicate delivery of one provider final is one obligation. The transport
+stamps every final with the provider's identity (`FinalTranscriptMeta.
+providerFinalId`: Flux epoch + `turn_index` + `audio_window_end`; nova-3
+epoch + `start` + `duration`), the provider reuses that final's
+FinalWindowV1 record instead of minting a new sequence, and the ledger
+remembers disclosed keys until session teardown, so the duplicate is a
+duplicate before and after the clarification played.
+
 ## Replay is retired
 
 Both clients keep the tagged ring only for PLAN-E2 loss accounting. The web

@@ -1243,6 +1243,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // A02D — session-monotonic final sequence (never reset on reconnect or
   // service replacement — pause/resume constructs a new DeepgramService).
   const finalSequenceRef = React.useRef(0);
+  // A02D — FinalWindowV1 records by the PROVIDER's final identity, so a
+  // duplicate delivery of the same provider final (same socket epoch, same
+  // turn) reuses its record — same sequence, same held-fragment key —
+  // instead of minting a new sequence (Codex diff-review cycle 1,
+  // BLOCKER 3). Bounded; cleared with the session.
+  const providerFinalRecordsRef = React.useRef<Map<string, FinalWindowV1>>(new Map());
+  const PROVIDER_FINAL_RECORDS_RETENTION = 32;
   // A02D — outbound `utterance_id` → the MAX original constituent final
   // sequence of the released turn, kept for the response/receipt
   // settlement lifetime so an echoed `utterance_id` on a result or a
@@ -1346,6 +1353,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // A02D — a job boundary resets EVERYTHING (final records, cutoffs,
     // settled identities), unlike a bypass boundary.
     freshnessStoreRef.current = new OccurrenceFreshnessStore();
+    providerFinalRecordsRef.current.clear();
     clientDiagnostic('conversation_admission_matcher_reset', { boundary: 'job_change' });
   }, [job?.id]);
   // Phase 4e — 3-second pre-wake PCM ring buffer + state machine driving
@@ -2908,15 +2916,29 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
             return;
           }
-          const finalWindow = buildFinalWindow({
-            recordingSessionId: sessionId,
-            // A hand-rolled fake with no epoch allocator (legacy unit tests)
-            // is admitted under a sentinel epoch.
-            epoch: admissionMeta.epoch ?? (0 as ConnectionEpoch),
-            finalSequence: ++finalSequenceRef.current,
-            speechStart: admissionMeta.speechStart,
-            windowEnd: admissionMeta.windowEnd,
-          });
+          const providerFinalId = admissionMeta.providerFinalId ?? null;
+          const providerKey = providerFinalId ? `${sessionId}|${providerFinalId}` : null;
+          const priorRecord = providerKey ? providerFinalRecordsRef.current.get(providerKey) : null;
+          const finalWindow =
+            priorRecord ??
+            buildFinalWindow({
+              recordingSessionId: sessionId,
+              // A hand-rolled fake with no epoch allocator (legacy unit tests)
+              // is admitted under a sentinel epoch.
+              epoch: admissionMeta.epoch ?? (0 as ConnectionEpoch),
+              finalSequence: ++finalSequenceRef.current,
+              speechStart: admissionMeta.speechStart,
+              windowEnd: admissionMeta.windowEnd,
+            });
+          if (providerKey && !priorRecord) {
+            const records = providerFinalRecordsRef.current;
+            records.set(providerKey, finalWindow);
+            while (records.size > PROVIDER_FINAL_RECORDS_RETENTION) {
+              const oldest = records.keys().next().value;
+              if (oldest === undefined) break;
+              records.delete(oldest);
+            }
+          }
           freshnessStoreRef.current.recordFinal(finalWindow);
           clientDiagnostic('a02d_final_window', {
             finalSequence: finalWindow.finalSequence,
@@ -2924,6 +2946,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             speechStart: finalWindow.speechStart,
             windowEnd: finalWindow.windowEnd,
             unbounded: finalWindow.unbounded,
+            duplicateDelivery: priorRecord != null,
           });
           // PLAN-E1 E3 — a final can arrive without a preceding interim
           // (idempotent-safe: a no-op if the probe already resolved via
@@ -5201,6 +5224,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     freshnessStoreRef.current = new OccurrenceFreshnessStore();
     finalSequenceRef.current = 0;
     utteranceSequenceRef.current.clear();
+    providerFinalRecordsRef.current.clear();
     // Phase E — open a backend recording session in parallel with the
     // mic pipeline. Fire-and-forget: if the call fails (network blip,
     // server hot-reload), recording continues without a backend

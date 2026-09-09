@@ -63,6 +63,16 @@ export interface FinalTranscriptMeta {
   readonly admissible: boolean;
   readonly speechStart: number | null;
   readonly windowEnd: number | null;
+  /**
+   * A02D — the PROVIDER's identity for this final on its socket (Flux:
+   * epoch + `turn_index` + `audio_window_end`; nova-3: epoch + `start` +
+   * `duration`), assigned BEFORE the client sequence so a duplicate
+   * delivery of the same provider final reuses the same FinalWindowV1
+   * record (and therefore the same held-fragment key) instead of minting
+   * a fresh sequence. Null when the transport has no identity (a legacy
+   * hand-rolled fake) — then every callback is its own final.
+   */
+  readonly providerFinalId?: string | null;
 }
 
 /**

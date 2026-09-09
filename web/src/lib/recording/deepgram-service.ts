@@ -560,7 +560,8 @@ export class DeepgramService {
   private finalMeta(
     socketContext: { epoch: ConnectionEpoch | null; origin: number } | undefined,
     rawWindowEnd: unknown,
-    speechStartOverride?: number | null
+    speechStartOverride?: number | null,
+    providerFinalId: string | null = null
   ): FinalTranscriptMeta {
     const epoch = socketContext?.epoch ?? null;
     const origin = socketContext?.origin ?? this.epochDispatchOrigin;
@@ -572,7 +573,23 @@ export class DeepgramService {
           ? speechStartOverride
           : this.onsetTracker.currentSpeechStart(this.nowMs()),
       windowEnd: resolveWindowEnd(rawWindowEnd, origin),
+      providerFinalId,
     };
+  }
+
+  /** A02D — the provider's own identity for a final on `epoch` (see
+   *  `FinalTranscriptMeta.providerFinalId`). `parts` are the frame fields
+   *  that name the turn; a frame with none of them (unknown shape) gets
+   *  the transcript itself, so an exact re-delivery still coincides. */
+  private providerFinalId(
+    epoch: ConnectionEpoch | null,
+    kind: 'flux' | 'nova',
+    parts: unknown[],
+    transcript: string
+  ): string {
+    const named = parts.filter((p) => typeof p === 'number' || (typeof p === 'string' && p));
+    const tail = named.length > 0 ? named.join('|') : `text:${transcript}`;
+    return `${epoch ?? 'e?'}|${kind}|${tail}`;
   }
 
   /**
@@ -1732,7 +1749,13 @@ export class DeepgramService {
           const meta = this.finalMeta(
             socketContext,
             last ? last.end : undefined,
-            first ? origin + audioWindowEndToSampleOffset(first.start) : null
+            first ? origin + audioWindowEndToSampleOffset(first.start) : null,
+            this.providerFinalId(
+              socketContext?.epoch ?? null,
+              'nova',
+              [json.start, json.duration],
+              transcript
+            )
           );
           this.callbacks.onFinalTranscript(transcript, confidence, words, meta);
         } else {
@@ -1909,9 +1932,21 @@ export class DeepgramService {
           confidence,
           words,
           // A02D FinalWindowV1 — this final's transport record: the emitting
-          // socket's epoch + admissibility, the confirmed onset (or null) and
-          // the EndOfTurn `audio_window_end` in this epoch's dispatched domain.
-          this.finalMeta(socketContext, json.audio_window_end)
+          // socket's epoch + admissibility, the confirmed onset (or null),
+          // the EndOfTurn `audio_window_end` in this epoch's dispatched
+          // domain, and the provider's turn identity (a duplicate delivery
+          // of the same EndOfTurn reuses the client's record).
+          this.finalMeta(
+            socketContext,
+            json.audio_window_end,
+            undefined,
+            this.providerFinalId(
+              socketContext?.epoch ?? null,
+              'flux',
+              [json.turn_index, json.audio_window_end],
+              transcript
+            )
+          )
         );
         // iOS canon (DeepgramService.swift handleFluxTurnInfo): EndOfTurn with
         // a transcript fires BOTH didReceiveFinalTranscript AND
