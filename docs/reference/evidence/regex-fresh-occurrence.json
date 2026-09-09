@@ -2,8 +2,8 @@
   "schema_version": 1,
   "name": "RegexFreshOccurrenceEvidence",
   "plan": "A02D — Keep regex writes fresh after corrections and clears",
-  "generated_from_commit": "2336d3a27a3aa2c2f8ac1f50097a0f2bc26b25d9",
-  "generated_at_commit_subject": "docs(web): correct the providerFinalId JSDoc to the complete-tuple contract",
+  "generated_from_commit": "3f1efa78af363085bfb524c14e572ee38e3e2c40",
+  "generated_at_commit_subject": "docs: A02D changelog entry and hub row (RegexFreshOccurrenceV1 + FinalWindowV1)",
   "original_baseline": {
     "backend_web": "2d7b9874",
     "backend_web_subject": "Merge pull request #208 from derek570/fable/a01p-accepted-field-consistency-20260908",
@@ -113,6 +113,7 @@
     },
     "inventory_counts": {
       "backend:passed": 80,
+      "ios:passed": 65,
       "web:passed": 414
     }
   },
@@ -1045,6 +1046,396 @@
       "platform": "backend",
       "file": "src/__tests__/stage6-honest-refusal.test.js",
       "name": "PLAN-3 — regulation-topic mismatch covered-refusal lifecycle solo mismatch speaks the specific line once and suppresses the generic retry prompt",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Database/AppDatabaseTests.swift",
+      "name": "testFreshDatabaseHasCorrectSchema",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerFastPathTerminalResolutionTests.swift",
+      "name": "testDeferredHeadFallback_SweepExpiryWithParkedReplay_ExactlyOneReplacement",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerFastPathTerminalResolutionTests.swift",
+      "name": "testFallbackDiscardThenReplay_ReplaySpeaks",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerFastPathTerminalResolutionTests.swift",
+      "name": "testFallbackPending_ReplayWhileFallbackQueued_ExactlyOneSpeaks",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerFastPathTerminalResolutionTests.swift",
+      "name": "testFallbackQueuedPastTTL_ReplayArrives_ExactlyOneSpeaks",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerFastPathTerminalResolutionTests.swift",
+      "name": "testFallbackQueuedWithParkedReplay_SweepExpiry_PromotesExactlyOneReplacement",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerFastPathTerminalResolutionTests.swift",
+      "name": "testLateRejectionAfterInvalidation_TombstonePreserved_ReplayStaysSuppressed",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerFastPathTerminalResolutionTests.swift",
+      "name": "testPendingTTLTransfer_ReplacementDroppedPrePlay_ReplayStillSpeaks",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerFastPathTerminalResolutionTests.swift",
+      "name": "testReplayWhileParked_FirstReservationRetained",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerUnresolvedAudioCompletionTests.swift",
+      "name": "testNonNaturalTerminalDoesNotFireObserver_replayDoes",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerUplinkLossDisclosureTests.swift",
+      "name": "testDirectPromptReleasedAtPlayingToPendingTransitionBeforeReplay",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerUplinkLossDisclosureTests.swift",
+      "name": "testInterruptionGatesReplayUntilItEnds",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerUplinkLossDisclosureTests.swift",
+      "name": "testPreStartInterruptResetReparksAndReplays",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/AlertManagerUplinkLossDisclosureTests.swift",
+      "name": "testStartedHeadTornDownGoesPlayingToPendingAndReplays",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ApplySonnetObservationsP7Tests.swift",
+      "name": "testIdempotentReplay_NonTailRow_PendingPhotoNotAttached",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ApplySonnetObservationsP7Tests.swift",
+      "name": "testRefineThenReplay_DoesNotRestoreStaleFields",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ApplySonnetObservationsP7Tests.swift",
+      "name": "testReplay_DoesNotRestoreClearedCanonicalWording",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ApplySonnetObservationsP7Tests.swift",
+      "name": "testSameServerId_Replay_PureNoOp_NoCreationSideEffects",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ConfirmationDedupeKeyTests.swift",
+      "name": "testAnsweredFamilyP4AckTokenIsLikewiseTokenAwareAndReplayStable",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ConfirmationDedupeKeyTests.swift",
+      "name": "testDegenerateBranchTokenReplayIsStable",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ConfirmationDedupeKeyTests.swift",
+      "name": "testPostcodeSectionTokensSeparateDistinctSameTextOperationsAndReplayIsStable",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ConfirmationDedupeKeyTests.swift",
+      "name": "testSameBulkOutcomeTokenReplayIsStable",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ConfirmationDedupeKeyTests.swift",
+      "name": "testSameDuplicateTokenReplayIsStable",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ConfirmationDedupeKeyTests.swift",
+      "name": "testSameP4AckTokenReplayIsStable",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/ConfirmationKeyReservationTests.swift",
+      "name": "testPostcodeReplayStaysSuppressedBeyond30SecondsButDistinctTokenSpeaks",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/DeepgramRecordingViewModelResumeJWTTests.swift",
+      "name": "testResumeRecordingFetchesFreshJWTNotCachedOne",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/HeldFragmentClarificationTests.swift",
+      "name": "testClarificationIsNotBlockedByAwaitingResponseState",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/HeldFragmentClarificationTests.swift",
+      "name": "testClarificationSpeaksExactlyOnceThroughTheFIFOEvenWithConfirmationsOff",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/MisheardNetRetirementTests.swift",
+      "name": "testDecimalElectricalUtteranceForwardsAndNeverDrawsMisheardClarification",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/MisheardNetRetirementTests.swift",
+      "name": "testReconnectGraceSuppressesReplayBurstConfirmations",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RecordingSessionCoordinatorTests.swift",
+      "name": "testCancelPostTTSCaptureDropsHeldFramesNoReplay",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RecordingSessionCoordinatorTests.swift",
+      "name": "testPostTTSHoldingBufferReplaysHeldAudioOnWindowExpiry",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessFixtureContractTests.swift",
+      "name": "test_invariant_freshnessSequencesThroughTheRealCallbacks",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessFixtureContractTests.swift",
+      "name": "test_invariant_sleepWakeAfterAClearReSendsNothingDisclosesOnceAndAFreshRedictationAppliesOnce",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessFixtureContractTests.swift",
+      "name": "testClarificationTemplatesAndRenderVectors",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessFixtureContractTests.swift",
+      "name": "testFinalWindowVectorsThroughTheRealFluxHandler",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "test_invariant_crossFinalOccurrenceIsStaleWhenAnyContributingFinalPrecedesTheCutoff",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "test_invariant_unretiredManualCutoffStillProtectsItsEpoch",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "testBoardQualifiedCircuitCutoffAppliesToTheRegexCircuitDestination",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "testBypassResetKeepsRecordsCutoffsAndSettledIdentitiesButDropsMatcherText",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "testClarificationLines",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "testFreshThenSettledThenStaleAfterUtteranceCutoff",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "testManualCutoffHoldsOnsetBelowTapAndUnboundedButNotEqualOrAbove",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "testManualCutoffMakesPreCutoffFragmentStaleForItsDestinationOnly",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessStoreTests.swift",
+      "name": "testManualCutoffStopsApplyingToUnboundedFinalsAfterTheEpochsNextAcceptedFinal",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "test_invariant_boundedPostCutoffQueryKeepsCutoffsAndNeverRetiresThem",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "test_invariant_preCutoffOnsetQueryIsForwardedNotHeld",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "test_invariant_serverClearWithoutAUsableUtteranceIdRecordsNoCutoff",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "testFastPathTTSSitsBehindTheHoldAndFiresForAFreshFragment",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "testFreshReadingWhoseOnsetFollowsTheTapIsForwardedWrittenAndEqualityIsFresh",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "testManualClearBeforeDelayedSameSocketFinalIsHeldWithOneClarificationAndZeroSends",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "testManualClearThenUnrelatedSpeechDoesNotRestore_andFreshIdenticalRedictationApplies",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "testNamingBufferWhoseConstituentsAreAllPostCutoffReleasesNormally",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "testSessionEndClearsEveryFreshnessRecord",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "testUnboundedFinalForwardsWithoutPrefillingAndIsHeldOnlyWhenAManualCutoffApplies",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/RegexFreshnessViewModelTests.swift",
+      "name": "testUtteranceDrivenCorrectionFollowedImmediatelyByTheNextReadingAppliesWithNoClarification",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/TranscriptFieldMatcherFreshnessTests.swift",
+      "name": "testCircuitHitEmitsOccurrenceKeyedByCircuitAndFieldWithinItsSegment",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/TranscriptFieldMatcherFreshnessTests.swift",
+      "name": "testOldOverlapHitStillReportsItsOldSpanWhenFreshSpeechIsUnrelated",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/TranscriptFieldMatcherFreshnessTests.swift",
+      "name": "testSupplyHitEmitsAnOccurrenceWhoseSpanMapsBackToTheWindowText",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/UnresolvedAudioStoreTests.swift",
+      "name": "testLateReportOnDisclosedEpochRefreshesRecordWithoutRedisclosure",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/UnresolvedAudioStoreTests.swift",
+      "name": "testPartialWatermarkRetirementRefreshesEvidenceNeverResolves",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Services/DeepgramGraceLifecycleTokenTests.swift",
+      "name": "test_noiseHeldRunThatStartedBeforeTheTapNeverRebasesAsFresh",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Services/DeepgramServiceTests.swift",
+      "name": "testNoReplaySeamExistsOnTheService",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Services/Stage6AnswerPathContractTests.swift",
+      "name": "testDisconnectReleasesDeferredDeliveryTokenSoReplayCanSpeak",
+      "status": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Services/Stage6AnswerPathContractTests.swift",
+      "name": "testPlaybackStartPersistsBeforeAckAndRestartReplayOnlyReacks",
       "status": "passed"
     },
     {
