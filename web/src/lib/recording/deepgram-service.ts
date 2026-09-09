@@ -583,9 +583,11 @@ export class DeepgramService {
   }
 
   /** A02D — the provider's own identity for a final on `epoch` (see
-   *  `FinalTranscriptMeta.providerFinalId`). `parts` are the frame fields
-   *  that name the turn; a frame with none of them (unknown shape) gets
-   *  the transcript itself, so an exact re-delivery still coincides. */
+   *  `FinalTranscriptMeta.providerFinalId`). Flux names a turn by the
+   *  COMPLETE pair `turn_index` + `audio_window_end`; nova-3 by the frame's
+   *  `start` + `duration`. A missing or non-finite member yields null: the
+   *  final has no identity and is never deduplicated. Transcript text is
+   *  never identity. */
   private providerFinalId(
     epoch: ConnectionEpoch | null,
     tuple:
