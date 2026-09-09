@@ -45,6 +45,8 @@ import {
   type RegexMatchResult,
 } from './regex-match-result';
 import { normalise as normaliseNumbers } from './number-normaliser';
+import { buildSourceMap } from './normalisation-source-map';
+import type { RawOccurrence } from './regex-match-result';
 
 // MARK: — Word maps (mirrors Swift lines 184-201)
 
@@ -659,7 +661,133 @@ function freshScan(re: RegExp): RegExp {
   return re;
 }
 
+// MARK: — A02D occurrence trace (RegexFreshOccurrenceV1)
+//
+// Every successful regex match inside `match()` is recorded here with its
+// NORMALISED-window span; every write into the result's section objects
+// (through the Proxies `match()` installs) is attributed, AT THE WRITE, to
+// the regex evidence recorded since the previous write (or the most recent
+// helper call for loop-style writers), unioned with the current segment's
+// anchor (the "circuit N" / designation match that scoped the segment).
+// Provenance is therefore produced at match time — never reconstructed
+// afterwards from the aggregate field/value output.
+
+interface TraceSpan {
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+}
+
+class OccurrenceTrace {
+  readonly occurrences: RawOccurrence[] = [];
+  /** Offset of the text currently being scanned inside the normalised window. */
+  segmentBase = 0;
+  /** The ref/designation match that scoped the current segment, if any. */
+  anchor: TraceSpan | null = null;
+  private sinceWrite: TraceSpan[] = [];
+  private lastCall: TraceSpan[] = [];
+
+  recordMatches(matches: readonly RegExpExecArray[]): void {
+    if (matches.length === 0) return;
+    const spans = matches.map((m) => ({
+      start: this.segmentBase + m.index,
+      end: this.segmentBase + m.index + m[0].length,
+      text: m[0],
+    }));
+    this.lastCall = spans;
+    this.sinceWrite.push(...spans);
+  }
+
+  attribute(destination: string, value: unknown): void {
+    let pool = this.sinceWrite.length > 0 ? this.sinceWrite : this.lastCall;
+    if (typeof value === 'string' && value.trim() !== '' && pool.length > 1) {
+      const containing = pool.filter((sp) => sp.text.includes(value));
+      if (containing.length > 0) pool = containing;
+    }
+    this.sinceWrite = [];
+    const spans = this.anchor ? [...pool, this.anchor] : pool;
+    if (spans.length === 0) {
+      this.occurrences.push({ destination, normalisedStart: -1, normalisedEnd: -1 });
+      return;
+    }
+    let start = Number.POSITIVE_INFINITY;
+    let end = Number.NEGATIVE_INFINITY;
+    for (const sp of spans) {
+      if (sp.start < start) start = sp.start;
+      if (sp.end > end) end = sp.end;
+    }
+    this.occurrences.push({ destination, normalisedStart: start, normalisedEnd: end });
+  }
+}
+
+let activeTrace: OccurrenceTrace | null = null;
+
+function setTraceSegment(base: number, anchor: RegExpExecArray | null, anchorBase = 0): void {
+  if (!activeTrace) return;
+  activeTrace.segmentBase = base;
+  activeTrace.anchor = anchor
+    ? {
+        start: anchorBase + anchor.index,
+        end: anchorBase + anchor.index + anchor[0].length,
+        text: anchor[0],
+      }
+    : null;
+}
+
+/** Proxy a section object so each field write attributes an occurrence. */
+function tracedSection<T extends object>(target: T, prefix: string, trace: OccurrenceTrace): T {
+  return new Proxy(target, {
+    set(t, prop, value) {
+      (t as Record<PropertyKey, unknown>)[prop] = value;
+      if (typeof prop === 'string' && value !== undefined) trace.attribute(prefix + prop, value);
+      return true;
+    },
+  });
+}
+
+/** Proxy `circuit_updates` so `result.circuit_updates[ref]` always yields a
+ *  traced per-ref object (a not-yet-stored one for a missing ref — the
+ *  matcher's `?? {}` idiom then never allocates an untraced object) and a
+ *  store writes the PLAIN target back. */
+function tracedCircuitUpdates(
+  target: Record<string, CircuitUpdates>,
+  trace: OccurrenceTrace
+): Record<string, CircuitUpdates> {
+  const proxies = new Map<string, { plain: CircuitUpdates; proxy: CircuitUpdates }>();
+  const proxyToPlain = new WeakMap<object, CircuitUpdates>();
+  const wrap = (ref: string, plain: CircuitUpdates): CircuitUpdates => {
+    const cached = proxies.get(ref);
+    if (cached && cached.plain === plain) return cached.proxy;
+    const proxy = tracedSection(plain, `circuit.${ref}.`, trace);
+    proxies.set(ref, { plain, proxy });
+    proxyToPlain.set(proxy, plain);
+    return proxy;
+  };
+  return new Proxy(target, {
+    get(t, prop, receiver) {
+      if (typeof prop !== 'string') return Reflect.get(t, prop, receiver);
+      const existing = t[prop];
+      if (existing) return wrap(prop, existing);
+      const cached = proxies.get(prop);
+      if (cached) return cached.proxy;
+      return wrap(prop, {});
+    },
+    set(t, prop, value) {
+      if (typeof prop !== 'string') return Reflect.set(t, prop, value);
+      const plain = (value && proxyToPlain.get(value as object)) ?? (value as CircuitUpdates);
+      t[prop] = plain;
+      return true;
+    },
+  });
+}
+
 function hasMatch(re: RegExp, text: string): boolean {
+  if (activeTrace) {
+    const m = freshScan(re).exec(text);
+    re.lastIndex = 0;
+    if (m) activeTrace.recordMatches([m]);
+    return m !== null;
+  }
   return freshScan(re).test(text);
 }
 
@@ -672,6 +800,7 @@ function lastCapture(re: RegExp, text: string, group: number = 1): string | unde
     if (re.lastIndex === m.index) re.lastIndex += 1; // zero-width safety
   }
   if (!lastMatch) return undefined;
+  activeTrace?.recordMatches([lastMatch]);
   return lastMatch[group < lastMatch.length ? group : 0];
 }
 
@@ -683,6 +812,7 @@ function lastMatch(re: RegExp, text: string): RegExpExecArray | undefined {
     last = m;
     if (re.lastIndex === m.index) re.lastIndex += 1;
   }
+  if (last) activeTrace?.recordMatches([last]);
   return last ?? undefined;
 }
 
@@ -694,6 +824,7 @@ function allMatches(re: RegExp, text: string): RegExpExecArray[] {
     out.push(m);
     if (re.lastIndex === m.index) re.lastIndex += 1;
   }
+  activeTrace?.recordMatches(out);
   return out;
 }
 
@@ -1026,34 +1157,70 @@ export class TranscriptFieldMatcher {
       this.activeCircuitRefTimestamp = undefined;
     }
 
-    // Normalise window only.
+    // Normalise window only. A02D — the source map from the normalised
+    // window back to the raw window is built HERE, at normalisation time.
     const preNormalised = normaliseBeforeMatch(window);
     const normalised = normalizeTranscript(preNormalised);
+    const sourceMap = buildSourceMap(window, normalised);
 
-    const result = emptyRegexMatchResult();
+    const plain = emptyRegexMatchResult();
+    const trace = new OccurrenceTrace();
+    const result: RegexMatchResult = {
+      ...plain,
+      supply_updates: tracedSection(plain.supply_updates, 'supply.', trace),
+      board_updates: tracedSection(plain.board_updates, 'board.', trace),
+      installation_updates: tracedSection(plain.installation_updates, 'install.', trace),
+      circuit_updates: tracedCircuitUpdates(plain.circuit_updates, trace),
+    };
+    activeTrace = trace;
+    try {
+      setTraceSegment(0, null);
+      this.detectBoardSwitch(normalised, result);
+      this.detectNewCircuits(normalised, existingJob, result);
+      this.matchSupplyFields(normalised, result);
+      this.matchBoardFields(normalised, result);
+      this.matchInstallationFields(normalised, result);
 
-    this.detectBoardSwitch(normalised, result);
-    this.detectNewCircuits(normalised, existingJob, result);
-    this.matchSupplyFields(normalised, result);
-    this.matchBoardFields(normalised, result);
-    this.matchInstallationFields(normalised, result);
-
-    // Global RCD button — apply to every non-spare circuit.
-    if (hasMatch(RCD_BUTTON_ALL_PATTERN, normalised)) {
-      for (const circuit of existingJob.circuits ?? []) {
-        const ref = circuitRefOf(circuit);
-        if (!ref) continue;
-        if (circuitDesignationOf(circuit).toLowerCase() === 'spare') continue;
-        const updates = result.circuit_updates[ref] ?? {};
-        updates.rcd_button_confirmed = '✓';
-        result.circuit_updates[ref] = updates;
+      // Global RCD button — apply to every non-spare circuit.
+      setTraceSegment(0, null);
+      if (hasMatch(RCD_BUTTON_ALL_PATTERN, normalised)) {
+        for (const circuit of existingJob.circuits ?? []) {
+          const ref = circuitRefOf(circuit);
+          if (!ref) continue;
+          if (circuitDesignationOf(circuit).toLowerCase() === 'spare') continue;
+          const updates = result.circuit_updates[ref] ?? {};
+          updates.rcd_button_confirmed = '✓';
+          result.circuit_updates[ref] = updates;
+        }
       }
+
+      setTraceSegment(0, null);
+      this.matchCompoundPhrases(normalised, existingJob, result);
+      this.matchCircuitFieldsBySegment(normalised, existingJob, result);
+    } finally {
+      activeTrace = null;
     }
 
-    this.matchCompoundPhrases(normalised, existingJob, result);
-    this.matchCircuitFieldsBySegment(normalised, existingJob, result);
+    // Hand back PLAIN section objects (the proxies were a scan-time device).
+    const out: RegexMatchResult = {
+      ...plain,
+      new_circuits: result.new_circuits,
+      board_switch: result.board_switch,
+    };
+    if (out.board_switch === undefined) delete out.board_switch;
+    Object.defineProperty(out, 'provenance', {
+      value: { windowStart, sourceMap, occurrences: trace.occurrences },
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+    return out;
+  }
 
-    return result;
+  /** A02D — the admitted buffer front-trimmed `delta` characters off its
+   *  head; keep the cursor pointing at the same text. */
+  shiftProcessedOffset(delta: number): void {
+    this.lastProcessedOffset = Math.max(0, this.lastProcessedOffset - delta);
   }
 
   // MARK: — Compound phrase matching
@@ -1166,6 +1333,7 @@ export class TranscriptFieldMatcher {
             : transcript.length;
         if (segEnd <= segStart) continue;
         const segText = transcript.slice(segStart, segEnd);
+        setTraceSegment(segStart, refMatch);
         this.matchCircuitFields(segText, job, ref, result);
       }
 
@@ -1183,6 +1351,7 @@ export class TranscriptFieldMatcher {
           if (!circuit) continue;
           const ref = circuitRefOf(circuit);
           if (!ref) continue;
+          setTraceSegment(0, desigMatch);
           this.matchCircuitFields(orphanedText, job, ref, result);
         }
       }
@@ -1193,6 +1362,9 @@ export class TranscriptFieldMatcher {
     if (desigMatches.length === 0) {
       // Path 3: active circuit ref carryover.
       if (this.activeCircuitRef !== undefined && this.activeCircuitRefTimestamp !== undefined) {
+        // Path 3 carries CONTEXT, not an anchor in this window: a value in an
+        // older fragment stays old overlap (A02D never retargets it).
+        setTraceSegment(0, null);
         this.matchCircuitFields(transcript, job, this.activeCircuitRef, result);
       }
       return;
@@ -1219,6 +1391,7 @@ export class TranscriptFieldMatcher {
       const lookbackStart = Math.max(prevEnd, (desigMatch.index ?? 0) - 80);
       const segText = transcript.slice(lookbackStart, fwdEnd);
       void fwdStart; // segText already includes the lookback span
+      setTraceSegment(lookbackStart, desigMatch);
       this.matchCircuitFields(segText, job, ref, result);
     }
   }

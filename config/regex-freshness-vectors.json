@@ -1,0 +1,2604 @@
+{
+  "$comment": "A02D RegexFreshOccurrenceV1 + FinalWindowV1 shared raw-final vectors. Byte-identical copy pinned on web (web/tests/regex-freshness-fixture.test.ts) and iOS; scripts/check-regex-freshness-fixture-sync.sh fails closed on drift. Sample positions are 16 kHz dispatched-stream offsets of ONE epoch; speech_start null = unbounded.",
+  "plan": "A02D — Keep regex writes fresh after corrections and clears",
+  "version": 1,
+  "constants": {
+    "sample_rate_hz": 16000,
+    "match_window_chars": 800,
+    "onset_confirmation_window_ms": 2500,
+    "silence_hold_ms": 500,
+    "clarification_max_named_destinations": 3
+  },
+  "destination_grammar": {
+    "$comment": "scope:field | circuit:<ref>:<field>[@<board_slug>]. Spoken form: circuit destinations say 'circuit <ref as displayed> <label>' plus ' on the <board> board' only when the job has more than one board; other scopes say the label alone.",
+    "circuit_phrase": "circuit {ref} {label}",
+    "circuit_board_suffix": " on the {board} board"
+  },
+  "field_labels": {
+    "circuit": {
+      "measured_zs_ohm": "Zs",
+      "r1_r2_ohm": "R1 plus R2",
+      "ring_r1_ohm": "ring r1",
+      "ring_rn_ohm": "ring rn",
+      "ring_r2_ohm": "ring r2",
+      "ir_live_earth_mohm": "insulation resistance live to earth",
+      "ir_live_live_mohm": "insulation resistance live to live",
+      "rcd_time_ms": "RCD trip time",
+      "ocpd_rating_a": "OCPD rating",
+      "ocpd_type": "OCPD type",
+      "ocpd_bs_en": "OCPD BS EN",
+      "polarity_confirmed": "polarity",
+      "rcd_button_confirmed": "RCD button",
+      "afdd_button_confirmed": "AFDD button",
+      "live_csa_mm2": "live conductor size",
+      "cpc_csa_mm2": "CPC size",
+      "number_of_points": "number of points",
+      "wiring_type": "wiring type",
+      "ref_method": "reference method",
+      "rcd_type": "RCD type"
+    },
+    "supply": {
+      "ze": "Ze",
+      "pfc": "PFC",
+      "earthing_arrangement": "earthing arrangement",
+      "supply_polarity_confirmed": "supply polarity",
+      "main_earth_csa": "main earth size",
+      "bonding_csa": "bonding size",
+      "bonding_water": "water bonding",
+      "bonding_gas": "gas bonding",
+      "main_bonding_continuity": "main bonding continuity",
+      "earth_electrode_type": "earth electrode type",
+      "earth_electrode_resistance": "earth electrode resistance",
+      "nominal_voltage": "nominal voltage",
+      "nominal_frequency": "nominal frequency"
+    },
+    "board": {
+      "main_switch_bs_en": "main switch BS EN",
+      "main_switch_current": "main switch rating",
+      "main_switch_conductor_csa": "main switch conductor size",
+      "spd_bs_en": "SPD BS EN",
+      "spd_rated_current": "SPD rated current",
+      "manufacturer": "board manufacturer",
+      "ze_at_db": "Ze at the board"
+    },
+    "install": {
+      "client_name": "client name",
+      "premises_description": "premises description",
+      "next_inspection_years": "next inspection",
+      "client_phone": "client phone",
+      "client_email": "client email",
+      "reason_for_report": "reason for report",
+      "occupier_name": "occupier name",
+      "date_of_previous_inspection": "date of previous inspection",
+      "previous_certificate_number": "previous certificate number",
+      "estimated_age_of_installation": "estimated age",
+      "general_condition_of_installation": "general condition",
+      "date_of_inspection": "date of inspection"
+    }
+  },
+  "clarification_templates": {
+    "named": "I heard something just as you cleared {destinations}. Say it again if it should apply.",
+    "list_separator": ", ",
+    "list_final_separator_two": " and ",
+    "list_final_separator_three": ", and ",
+    "many": "I heard something just as you cleared those fields. Say it again if it should apply."
+  },
+  "clarification_render_vectors": [
+    {
+      "destinations": [
+        "circuit 4 Zs"
+      ],
+      "expected": "I heard something just as you cleared circuit 4 Zs. Say it again if it should apply."
+    },
+    {
+      "destinations": [
+        "circuit 4 Zs",
+        "client name"
+      ],
+      "expected": "I heard something just as you cleared circuit 4 Zs and client name. Say it again if it should apply."
+    },
+    {
+      "destinations": [
+        "circuit 4 Zs",
+        "circuit 3 R1 plus R2",
+        "Ze"
+      ],
+      "expected": "I heard something just as you cleared circuit 4 Zs, circuit 3 R1 plus R2, and Ze. Say it again if it should apply."
+    },
+    {
+      "destinations": [
+        "circuit 4 Zs",
+        "circuit 3 R1 plus R2",
+        "Ze",
+        "main switch BS EN"
+      ],
+      "expected": "I heard something just as you cleared those fields. Say it again if it should apply."
+    },
+    {
+      "destinations": [
+        "circuit 1a Zs"
+      ],
+      "expected": "I heard something just as you cleared circuit 1a Zs. Say it again if it should apply."
+    },
+    {
+      "destinations": [
+        "circuit 4 Zs on the garage board"
+      ],
+      "expected": "I heard something just as you cleared circuit 4 Zs on the garage board. Say it again if it should apply."
+    }
+  ],
+  "normalisation_source_map_vectors": [
+    {
+      "id": "spoken_decimal",
+      "raw": "Circuit 4 Zs is nought point three five.",
+      "raw_value_text": "nought point three five",
+      "normalised_value": "0.35",
+      "ambiguous": false
+    },
+    {
+      "id": "implied_zero_decimal",
+      "raw": "R1 plus R2 is point two two.",
+      "raw_value_text": "point two two",
+      "normalised_value": "0.22",
+      "ambiguous": false
+    },
+    {
+      "id": "spoken_whole_number",
+      "raw": "RCD trip time is thirty two milliseconds.",
+      "raw_value_text": "thirty two",
+      "normalised_value": "32",
+      "ambiguous": false
+    },
+    {
+      "id": "spoken_hundreds",
+      "raw": "Insulation resistance is two hundred megohms.",
+      "raw_value_text": "two hundred",
+      "normalised_value": "200",
+      "ambiguous": false
+    },
+    {
+      "id": "spoken_spaced_postcode",
+      "raw": "The postcode is s w one nine two a b.",
+      "raw_value_text": "s w one nine two a b",
+      "normalised_value": "SW192AB",
+      "ambiguous": false
+    },
+    {
+      "id": "unchanged_text_identity",
+      "raw": "Circuit 4 Zs is 0.35.",
+      "raw_value_text": "0.35",
+      "normalised_value": "0.35",
+      "ambiguous": false
+    },
+    {
+      "id": "length_changing_cross_final",
+      "raw": "Circuit 3 R1 plus R2 is nought point two.",
+      "raw_value_text": "nought point two",
+      "normalised_value": "0.2",
+      "ambiguous": false
+    }
+  ],
+  "final_window_vectors": [
+    {
+      "id": "confirmed_by_start_of_turn",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 180,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 2000,
+          "kind": "end_of_turn",
+          "window_end_s": 2.0
+        }
+      ],
+      "expect_speech_start": 6720,
+      "expect_window_end": 32000
+    },
+    {
+      "id": "confirmed_by_interim",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 900,
+          "kind": "interim",
+          "text": "circuit"
+        },
+        {
+          "at_ms": 2000,
+          "kind": "end_of_turn",
+          "window_end_s": 2.0
+        }
+      ],
+      "expect_speech_start": 6720,
+      "expect_window_end": 32000
+    },
+    {
+      "id": "empty_interim_does_not_confirm",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 900,
+          "kind": "interim",
+          "text": ""
+        },
+        {
+          "at_ms": 4000,
+          "kind": "end_of_turn",
+          "window_end_s": 4.0
+        }
+      ],
+      "expect_speech_start": null,
+      "expect_window_end": 64000
+    },
+    {
+      "id": "noise_held_run_never_confirms",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 4000,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 6000,
+          "kind": "end_of_turn",
+          "window_end_s": 6.0
+        }
+      ],
+      "expect_speech_start": null,
+      "expect_window_end": 96000
+    },
+    {
+      "id": "silence_before_confirmation_discards_onset",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 700,
+          "kind": "silence"
+        },
+        {
+          "at_ms": 1000,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 2000,
+          "kind": "end_of_turn",
+          "window_end_s": 2.0
+        }
+      ],
+      "expect_speech_start": null,
+      "expect_window_end": 32000
+    },
+    {
+      "id": "two_runs_second_confirms",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 700,
+          "kind": "silence"
+        },
+        {
+          "at_ms": 3000,
+          "kind": "onset",
+          "dispatched_offset": 48000
+        },
+        {
+          "at_ms": 3200,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 5000,
+          "kind": "end_of_turn",
+          "window_end_s": 5.0
+        }
+      ],
+      "expect_speech_start": 48000,
+      "expect_window_end": 80000
+    },
+    {
+      "id": "deadline_boundary_2500ms_is_inclusive",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 2500,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 4000,
+          "kind": "end_of_turn",
+          "window_end_s": 4.0
+        }
+      ],
+      "expect_speech_start": 6720,
+      "expect_window_end": 64000
+    },
+    {
+      "id": "just_past_deadline_is_unbounded",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 2501,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 4000,
+          "kind": "end_of_turn",
+          "window_end_s": 4.0
+        }
+      ],
+      "expect_speech_start": null,
+      "expect_window_end": 64000
+    },
+    {
+      "id": "confirmed_run_serves_following_turn",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 180,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 2000,
+          "kind": "end_of_turn",
+          "window_end_s": 2.0
+        },
+        {
+          "at_ms": 2100,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 4000,
+          "kind": "end_of_turn",
+          "window_end_s": 4.0
+        }
+      ],
+      "expect_speech_start": 6720,
+      "expect_window_end": 64000
+    },
+    {
+      "id": "malformed_window_end_is_unbounded",
+      "onset": {
+        "at_ms": 0,
+        "dispatched_offset": 6720
+      },
+      "events": [
+        {
+          "at_ms": 180,
+          "kind": "start_of_turn"
+        },
+        {
+          "at_ms": 2000,
+          "kind": "end_of_turn",
+          "window_end_s": -1
+        }
+      ],
+      "expect_speech_start": 6720,
+      "expect_window_end": null
+    }
+  ],
+  "replay_retired": {
+    "$comment": "Both clients keep a tagged ring only for PLAN-E2 loss accounting; no path re-sends ring audio. Sleep-wake and reconnect after a clear send zero audio, the cleared field stays empty, the E2 disclosure speaks once, then a fresh identical dictation applies once.",
+    "web_removed_drains": [
+      "handleWake sleeping branch",
+      "handleWake doze branch (resume(replaySegments))",
+      "resume() automatic full-sleep branch"
+    ],
+    "ios_removed_drains": [
+      "reconnectDeepgramFromSleep replayBuffer"
+    ],
+    "expected_resent_audio_blocks": 0,
+    "expected_disclosure_count": 1
+  },
+  "freshness_sequences": [
+    {
+      "id": "old_overlap_then_unrelated_speech",
+      "description": "A reading matched once is settled; the 800-character overlap rescanned by later unrelated finals never re-emits it as a write, even though the destination value is unchanged and later cleared.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "What do you think of the weather today.",
+          "epoch": 1,
+          "speech_start": 64000,
+          "window_end": 96000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "server_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "causative": "F2",
+          "expect": {
+            "buffer_cutoff": "F2"
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Feedback that was fine.",
+          "epoch": 1,
+          "speech_start": 112000,
+          "window_end": 144000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "manual_clear_then_delayed_same_socket_final_held",
+      "description": "Manual tap at dispatched offset 80000 (5.0 s). A same-socket final whose confirmed onset (70000) precedes the tap is held whole with one clarification line; the inspector's repeat with an onset after the tap applies and speaks once.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs. Say it again if it should apply."
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 96000,
+          "window_end": 128000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "manual_clear_then_fresh_reading_forwarded",
+      "description": "A reading whose confirmed onset follows the tap is forwarded, written and spoken once with no clarification.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point four.",
+          "epoch": 1,
+          "speech_start": 90000,
+          "window_end": 120000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.4"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "equality_boundary_is_fresh",
+      "description": "speech_start equal to the manual stream cutoff is fresh (>=).",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 80000,
+          "window_end": 112000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "onset_race_042_050_060",
+      "description": "Onset 0.42 s (6720 samples), tap 0.50 s (8000), StartOfTurn window end 0.60 s (9600): the final is stale. The genuinely post-cutoff control at 0.75 s applies.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 8000
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 6720,
+          "window_end": 40000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs. Say it again if it should apply."
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 12000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "concurrent_tap_final_race_both_orderings",
+      "description": "A final delivered before the tap with an onset below the cutoff is stale; one delivered after the tap with an onset at or above it is fresh.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 50000
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 49000,
+          "window_end": 56000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs. Say it again if it should apply."
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 50000,
+          "window_end": 64000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "server_clear_then_next_reading_no_false_stale",
+      "description": "An utterance-driven clear settles the earlier occurrence and takes the causative final's sequence as the buffer cutoff; the very next reading applies with no clarification.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "server_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "causative": "F1",
+          "expect": {
+            "buffer_cutoff": "F1"
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point four.",
+          "epoch": 1,
+          "speech_start": 30000,
+          "window_end": 64000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.4"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Okay.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 80000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "server_replacement_before_delayed_final_never_restores",
+      "description": "After the server replaces 0.35 with 0.5, the overlap still contains 'nought point three five'; the settled occurrence must not restore it when a later unrelated reading rescans the window.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "server_replace",
+          "destination": "circuit:4:measured_zs_ohm",
+          "value": "0.5",
+          "causative": "F1",
+          "expect": {
+            "buffer_cutoff": "F1"
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 3 R1 plus R2 is nought point two.",
+          "epoch": 1,
+          "speech_start": 64000,
+          "window_end": 96000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:3:r1_r2_ohm",
+                "value": "0.2"
+              }
+            ],
+            "clarification": null,
+            "job_value": {
+              "circuit:4:measured_zs_ohm": "0.5"
+            }
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "rejected_clear_leaves_cutoffs_unchanged",
+      "description": "A rejected or pending edit records no cutoff: a later identical final is not held (it is merely settled).",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "rejected_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Okay.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null,
+            "job_value": {
+              "circuit:4:measured_zs_ohm": "0.35"
+            }
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "clear_then_fresh_identical_redictation_applies_once",
+      "description": "A clear never blacklists a value: a new fragment carrying the same value is a new occurrence.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "server_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "causative": "F1"
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 64000,
+          "window_end": 96000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Right.",
+          "epoch": 1,
+          "speech_start": 112000,
+          "window_end": 120000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "cross_final_completion_unions_fragments",
+      "description": "A length-changing reading completed across two finals writes once when the completing fragment arrives (contributing fragment ids F1+F2) and never again.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 3 R1 plus R2 is",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 32000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "nought point two.",
+          "epoch": 1,
+          "speech_start": 36000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:3:r1_r2_ohm",
+                "value": "0.2"
+              }
+            ],
+            "clarification": null,
+            "occurrence_fragments": {
+              "circuit:3:r1_r2_ohm": [
+                "F1",
+                "F2"
+              ]
+            }
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "That is all for that one.",
+          "epoch": 1,
+          "speech_start": 64000,
+          "window_end": 80000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "unrelated_reading_in_race_window_held_whole",
+      "description": "The hold is fragment-wide: an R1+R2 reading for circuit 3 spoken inside the race window after clearing circuit 4 Zs is held with one line naming circuit 4 Zs; the repeat applies once.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 3 R1 plus R2 is nought point two.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs. Say it again if it should apply."
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 3 R1 plus R2 is nought point two.",
+          "epoch": 1,
+          "speech_start": 100000,
+          "window_end": 130000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:3:r1_r2_ohm",
+                "value": "0.2"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "unbounded_final_forwards_without_cutoff_held_with_one",
+      "description": "A final with no confirmed onset is client-regex-ineligible: forwarded (no write) when no manual cutoff applies, held with one clarification when one does.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": null,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": null,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs. Say it again if it should apply."
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 96000,
+          "window_end": 128000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "three_destinations_named_individually",
+      "description": "Three manual clears since the epoch's last accepted final are all named, spoken once.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:3:r1_r2_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80100
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "supply:ze",
+          "epoch": 1,
+          "dispatched_offset": 80200
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs, circuit 3 R1 plus R2, and Ze. Say it again if it should apply."
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "four_destinations_use_those_fields",
+      "description": "Beyond three destinations the line uses the 'those fields' form.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:3:r1_r2_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80100
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "supply:ze",
+          "epoch": 1,
+          "dispatched_offset": 80200
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "board:main_switch_bs_en",
+          "epoch": 1,
+          "dispatched_offset": 80300
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared those fields. Say it again if it should apply."
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "two_destinations_joined_with_and",
+      "description": "Two destinations are joined with 'and'.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "install:client_name",
+          "epoch": 1,
+          "dispatched_offset": 80100
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs and client name. Say it again if it should apply."
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "circuit_1a_reference_spoken_as_displayed",
+      "description": "The stored circuit reference is spoken exactly as displayed.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1a",
+            "designation": "Garage lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Sockets"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:1a:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 1a Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 1a Zs. Say it again if it should apply."
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "two_board_same_ref_names_only_the_cleared_board",
+      "description": "Circuit 4 on the garage board and circuit 4 on main are distinct destinations; only the cleared one is named, with its board.",
+      "job": {
+        "boards": [
+          {
+            "id": "b_main",
+            "designation": "main",
+            "slug": "main"
+          },
+          {
+            "id": "b_garage",
+            "designation": "garage",
+            "slug": "garage"
+          }
+        ],
+        "circuits": [
+          {
+            "ref": "4",
+            "designation": "Cooker",
+            "board_id": "b_main"
+          },
+          {
+            "ref": "4",
+            "designation": "Garage sockets",
+            "board_id": "b_garage"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm@garage",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs on the garage board. Say it again if it should apply."
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "manual_cutoff_does_not_apply_after_an_accepted_final",
+      "description": "A manual cutoff names destinations cleared since that epoch's last accepted final; once a post-tap final has been accepted, a later unbounded final is not held.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point four.",
+          "epoch": 1,
+          "speech_start": 90000,
+          "window_end": 120000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.4"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "And the earthing is TN-S.",
+          "epoch": 1,
+          "speech_start": null,
+          "window_end": 150000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "old_epoch_final_dropped_at_admission",
+      "description": "A final from a superseded epoch is dropped before this plan's pipeline: no record, no hold, no clarification, no write.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 2
+        },
+        {
+          "kind": "server_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "causative": "F1"
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 60000,
+          "window_end": 90000,
+          "expect": {
+            "admitted": false,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Circuit 4 Zs is nought point four.",
+          "epoch": 2,
+          "speech_start": 10000,
+          "window_end": 40000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.4"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "old_session_final_dropped_at_admission",
+      "description": "A final from a previous recording session is dropped at admission even when the job is the same.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "session": "S1",
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "new_session",
+          "session": "S2",
+          "epoch": 1
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point four.",
+          "epoch": 1,
+          "speech_start": 60000,
+          "window_end": 90000,
+          "session": "S1",
+          "expect": {
+            "admitted": false,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "reconnect_rotates_epoch_not_settlement",
+      "description": "Reconnect rotates the epoch: the settled occurrence survives (no phantom rewrite), and a manual stream cutoff sampled on epoch 1 does not apply to epoch 2 finals (finals on a new socket are ordered by sequence alone).",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 2
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Okay then.",
+          "epoch": 2,
+          "speech_start": 100,
+          "window_end": 16000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 2,
+          "speech_start": 200,
+          "window_end": 32000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "bypass_boundary_resets_matcher_not_cutoffs",
+      "description": "An A02B bypass boundary resets matcher text, cursor, context and gate-only scan/shadow state; final records, destination cutoffs and settled occurrence identities survive it.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "bypass_final",
+          "text": "What is the Zs for circuit 4?"
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs. Say it again if it should apply."
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 96000,
+          "window_end": 128000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "held_answer_leaves_ask_pending",
+      "description": "A held final consumes no ask: the pending ask stays pending and the repeat answers it (asserted by the mounted lanes; the module lane pins the hold).",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "manual_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "epoch": 1,
+          "dispatched_offset": 80000
+        },
+        {
+          "kind": "open_ask",
+          "question": "Which circuit is the Zs of 0.65 for?"
+        },
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 2.",
+          "epoch": 1,
+          "speech_start": 70000,
+          "window_end": 100000,
+          "expect": {
+            "admitted": true,
+            "held": true,
+            "writes": [],
+            "clarification": "I heard something just as you cleared circuit 4 Zs. Say it again if it should apply.",
+            "ask_pending": true
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 2.",
+          "epoch": 1,
+          "speech_start": 100000,
+          "window_end": 120000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null,
+            "ask_pending": false
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "f1_opens_ask_f2_answer_causes_clear",
+      "description": "F1 opens an ask and the answer F2 causes the clear: the causative final is F2, never F1 (server turn_id spans both).",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Clear the Zs on circuit 4.",
+          "epoch": 1,
+          "speech_start": 64000,
+          "window_end": 96000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Yes, circuit 4.",
+          "epoch": 1,
+          "speech_start": 112000,
+          "window_end": 128000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "server_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "causative": "F3",
+          "expect": {
+            "buffer_cutoff": "F3"
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F4",
+          "text": "Circuit 4 Zs is nought point four.",
+          "epoch": 1,
+          "speech_start": 140000,
+          "window_end": 160000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.4"
+              }
+            ],
+            "clarification": null
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "server_clear_after_fresh_f2_keeps_f2_applied",
+      "description": "A server clear caused by F1 arriving after fresh F2 was regex-applied leaves F2 applied and sets the cutoff to F1's sequence.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Clear circuit 4 Zs.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 32000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "Circuit 4 Zs is nought point four.",
+          "epoch": 1,
+          "speech_start": 40000,
+          "window_end": 64000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.4"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "server_clear",
+          "destination": "circuit:4:measured_zs_ohm",
+          "causative": "F1",
+          "expect": {
+            "buffer_cutoff": "F1"
+          }
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Okay.",
+          "epoch": 1,
+          "speech_start": 80000,
+          "window_end": 90000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null,
+            "job_value": {
+              "circuit:4:measured_zs_ohm": null
+            }
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    },
+    {
+      "id": "long_session_bounded_state_over_reconnects",
+      "description": "Eight reconnects, each with its own final; the settled store and final records stay bounded by the front-trim watermark and old epochs are evicted once settled.",
+      "job": {
+        "circuits": [
+          {
+            "ref": "1",
+            "designation": "Downstairs lights"
+          },
+          {
+            "ref": "2",
+            "designation": "Upstairs sockets"
+          },
+          {
+            "ref": "3",
+            "designation": "Kitchen ring"
+          },
+          {
+            "ref": "4",
+            "designation": "Cooker"
+          }
+        ]
+      },
+      "steps": [
+        {
+          "kind": "final",
+          "id": "F1",
+          "text": "Circuit 4 Zs is nought point three five.",
+          "epoch": 1,
+          "speech_start": 16000,
+          "window_end": 48000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.35"
+              }
+            ],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 2
+        },
+        {
+          "kind": "final",
+          "id": "F2",
+          "text": "The weather is mild.",
+          "epoch": 2,
+          "speech_start": 100,
+          "window_end": 20000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 3
+        },
+        {
+          "kind": "final",
+          "id": "F3",
+          "text": "Checking the kitchen ring now.",
+          "epoch": 3,
+          "speech_start": 100,
+          "window_end": 20000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 4
+        },
+        {
+          "kind": "final",
+          "id": "F4",
+          "text": "Nothing much to report on the landing.",
+          "epoch": 4,
+          "speech_start": 100,
+          "window_end": 20000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 5
+        },
+        {
+          "kind": "final",
+          "id": "F5",
+          "text": "Moving to the garage.",
+          "epoch": 5,
+          "speech_start": 100,
+          "window_end": 20000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 6
+        },
+        {
+          "kind": "final",
+          "id": "F6",
+          "text": "The loft hatch is fine.",
+          "epoch": 6,
+          "speech_start": 100,
+          "window_end": 20000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 7
+        },
+        {
+          "kind": "final",
+          "id": "F7",
+          "text": "Back downstairs.",
+          "epoch": 7,
+          "speech_start": 100,
+          "window_end": 20000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 8
+        },
+        {
+          "kind": "final",
+          "id": "F8",
+          "text": "Looking at the main board again.",
+          "epoch": 8,
+          "speech_start": 100,
+          "window_end": 20000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [],
+            "clarification": null
+          }
+        },
+        {
+          "kind": "reconnect",
+          "epoch": 9
+        },
+        {
+          "kind": "final",
+          "id": "F9",
+          "text": "Circuit 4 Zs is nought point four.",
+          "epoch": 9,
+          "speech_start": 100,
+          "window_end": 20000,
+          "expect": {
+            "admitted": true,
+            "held": false,
+            "writes": [
+              {
+                "destination": "circuit:4:measured_zs_ohm",
+                "value": "0.4"
+              }
+            ],
+            "clarification": null,
+            "bounded": true
+          }
+        }
+      ],
+      "lanes": [
+        "hints_on",
+        "hints_off"
+      ]
+    }
+  ]
+}
