@@ -40,6 +40,7 @@ import {
   type GuardedTarget,
 } from './closed-enum-guard';
 import { repairCircuitDesignation } from './designation-canonicaliser';
+import { resolveJobZe, type JobZeLike } from './circuit-derivations';
 
 // We use local structural types rather than pulling from @certmate/shared-types
 // because the iOS-oriented shared-types `JobDetail` uses nested sections
@@ -68,6 +69,12 @@ export interface VoiceCommandJob {
   board?: Record<string, unknown>;
   extent?: Record<string, unknown>;
   design?: Record<string, unknown>;
+  /** A01P — the REAL web job keys the local Calculate route reads
+   *  (`resolveJobZe`). The singular `supply` / `board` bags above are
+   *  unpopulated on the web JobDetail and were the original Ze bug. */
+  supply_characteristics?: Record<string, unknown> | null;
+  boards?: Array<Record<string, unknown>> | null;
+  board_info?: Record<string, unknown> | null;
   [key: string]: unknown;
 }
 
@@ -108,6 +115,12 @@ export type VoiceCommand =
       type: 'calculate_impedance';
       kind: 'zs' | 'r1_r2';
       scope: VoiceCommandScope;
+      /** A01P — additive remainder metadata: the normalised text left
+       *  after the scope match, terminal punctuation stripped (`''` when
+       *  the scope consumed everything). The CALLER forwards a Calculate
+       *  with unconsumed text ("… on the garage board") as an ordinary
+       *  transcript; the parser's recognition set is unchanged. */
+      remainder?: string;
     }
   | {
       /** Apply a single (field, value) to every circuit in the scope.
@@ -155,6 +168,9 @@ export interface VoiceCommandOutcome {
   actionOutcome?: 'applied' | 'unapplied' | 'failed' | 'unsupported';
   actionReason?: string;
   appliedResults?: Array<{ circuit: number | string; field: string; value: string }>;
+  /** A01P — rows the local calculator deliberately left alone because the
+   *  destination was already occupied (a meter reading always wins). */
+  skippedResults?: Array<{ circuit: number | string; reason: CalculateSkipReason }>;
   /** Partial JobDetail patch; undefined for pure query commands.
    *  Callers cast to their richer JobDetail shape — the structural
    *  typing here only requires the keys the applier might touch. */
@@ -529,6 +545,70 @@ function stripPrefix(text: string, prefixes: readonly string[]): string | null {
   return null;
 }
 
+/**
+ * A01P — remainder-aware sibling of `parseScopeText`, used ONLY by the
+ * Calculate caller (`parseScopeText` and its `apply_field` caller are
+ * untouched). Same recognised shapes; additionally tolerates terminal
+ * `.`, `,`, `!` or `?` (Deepgram finals carry them) and reports the text
+ * left after the scope so the caller can forward board-qualified trailing
+ * text ("… on the garage board") instead of executing locally.
+ */
+export function parseScopeTextWithRemainder(
+  text: string
+): { scope: VoiceCommandScope; remainder: string } | null {
+  let rest = text
+    .trim()
+    .replace(/[.,!?]+$/, '')
+    .trim();
+  if (rest.startsWith('for ')) rest = rest.slice(4).trim();
+  if (rest === 'all' || rest === 'all circuits') return { scope: { kind: 'all' }, remainder: '' };
+  const allMatch = /^all(?:\s+circuits)?\b\s*(.*)$/.exec(rest);
+  if (allMatch) return { scope: { kind: 'all' }, remainder: allMatch[1].trim() };
+  const rangeMatch = /^(?:circuits?)\s+(\d+)\s+to\s+(\d+)\b\s*(.*)$/.exec(rest);
+  if (rangeMatch) {
+    const from = Number(rangeMatch[1]);
+    const to = Number(rangeMatch[2]);
+    if (Number.isFinite(from) && Number.isFinite(to)) {
+      return { scope: { kind: 'range', from, to }, remainder: rangeMatch[3].trim() };
+    }
+  }
+  const singleMatch = /^(?:circuits?)\s+(\d+)\b\s*(.*)$/.exec(rest);
+  if (singleMatch) {
+    const ref = Number(singleMatch[1]);
+    if (Number.isFinite(ref) && ref >= 1) {
+      return { scope: { kind: 'single', circuit: ref }, remainder: singleMatch[2].trim() };
+    }
+  }
+  return null;
+}
+
+/** A01P — the additive optional `client_command` transcript-frame marker a
+ *  client stamps when it RECOGNISED a Calculate but declined to run it
+ *  locally (multi-board job). Names the server calculator the model selects. */
+export type ClientCommandMarker = 'calculate_zs' | 'calculate_r1_plus_r2';
+
+export function clientCommandForCalculate(
+  command: Extract<VoiceCommand, { type: 'calculate_impedance' }>
+): ClientCommandMarker {
+  return command.kind === 'r1_r2' ? 'calculate_r1_plus_r2' : 'calculate_zs';
+}
+
+/**
+ * A01P — Calculate-only parse entry for the ConversationAdmissionV1 probe.
+ * Identical grammar to `parseVoiceCommand`'s Calculate branch (this IS that
+ * branch); the probe asks for a complete Calculate with NO unconsumed
+ * remainder, which `command.remainder === ''` answers.
+ */
+export function parseCalculateCommand(
+  transcript: string
+): Extract<VoiceCommand, { type: 'calculate_impedance' }> | null {
+  if (!transcript) return null;
+  const trimmed = transcript.trim();
+  if (trimmed.length === 0) return null;
+  const cmd = parseCalculate(trimmed);
+  return cmd && cmd.type === 'calculate_impedance' ? cmd : null;
+}
+
 function parseScopeText(text: string): VoiceCommandScope | null {
   let rest = text.trim();
   if (rest.startsWith('for ')) rest = rest.slice(4).trim();
@@ -573,11 +653,13 @@ function parseCalculate(transcript: string): VoiceCommand | null {
   if (!kind) return null;
   // Bare "calculate Zs" with no scope is ambiguous — refuse rather than
   // guess. Mirrors iOS line 666–667. The inspector should re-issue with
-  // a scope. parseScopeText returns null for empty input so we naturally
-  // bail.
-  const scope = parseScopeText(rest);
-  if (!scope) return null;
-  return { type: 'calculate_impedance', kind, scope };
+  // a scope. The remainder sibling returns null for empty input so we
+  // naturally bail. A01P: the sibling also tolerates terminal punctuation
+  // (`calculate impedance for all.` now parses) and reports unconsumed
+  // trailing text for the caller's forwarding decision.
+  const parsed = parseScopeTextWithRemainder(rest);
+  if (!parsed) return null;
+  return { type: 'calculate_impedance', kind, scope: parsed.scope, remainder: parsed.remainder };
 }
 
 /** All known field-alias phrases, sorted longest-first so prefix
@@ -1264,6 +1346,56 @@ function formatImpedance(value: number): string {
   return value.toFixed(2);
 }
 
+/** A01P — why the local calculator left a selected row alone. Mirrors the
+ *  backend calculators' skip taxonomy (stage6-dispatchers-circuit.js). */
+export type CalculateSkipReason = 'already_set' | 'no_r1_r2' | 'no_zs' | 'zs_below_ze';
+
+function circuitScope(refs: Array<number | string>): string {
+  return refs.length === 1
+    ? `circuit ${refs[0]}`
+    : `circuits ${refs.slice(0, -1).join(', ')} and ${refs[refs.length - 1]}`;
+}
+
+/** Spoken reason for ONE skip reason. */
+function missingInputPhrase(reason: CalculateSkipReason): string {
+  switch (reason) {
+    case 'no_r1_r2':
+      return 'no R1 plus R2';
+    case 'no_zs':
+      return 'no Zs';
+    case 'zs_below_ze':
+      return 'a Zs below Ze';
+    default:
+      return 'no usable values';
+  }
+}
+
+/**
+ * Codex EP cycle-3 — the unusable rows are GROUPED BY REASON so a mixed
+ * R1+R2 command never collapses "no Zs" and "a Zs below Ze" into one clause
+ * (a row with a Zs below Ze DOES have a Zs). Reason order is the taxonomy
+ * order; circuits keep their command order within each group.
+ */
+function unusableClauses(
+  unusable: Array<{ circuit: number | string; reason: CalculateSkipReason }>
+): string {
+  const order: CalculateSkipReason[] = ['no_r1_r2', 'no_zs', 'zs_below_ze'];
+  const clauses: string[] = [];
+  for (const reason of order) {
+    const refs = unusable.filter((s) => s.reason === reason).map((s) => s.circuit);
+    if (refs.length === 0) continue;
+    clauses.push(
+      `${circuitScope(refs)} ${refs.length === 1 ? 'has' : 'have'} ${missingInputPhrase(reason)} to calculate from`
+    );
+  }
+  return clauses.join(', and ');
+}
+
+/** Genuinely absent Ze — every ladder tier blank (existing no-Ze wording). */
+export const NO_ZE_RESPONSE = "I can't calculate that — no zed E value has been set yet.";
+/** DictatedReadbackPolicyV1 `strings.ze_unreadable` (config/dictated-readback-policy-v1.json). */
+const ZE_UNREADABLE_RESPONSE = 'I couldn’t apply that calculation.';
+
 function applyCalculateImpedance(
   command: Extract<VoiceCommand, { type: 'calculate_impedance' }>,
   job: VoiceCommandJob
@@ -1275,34 +1407,59 @@ function applyCalculateImpedance(
   if (indices.length === 0) {
     return respondUnknown('No circuits found in the specified range.');
   }
-  // Read Ze from supply.ze. iOS also tries the active board's Ze
-  // first — the PWA doesn't yet carry a board-level Ze override, so
-  // supply Ze is the only source. If that's absent, refuse cleanly.
-  // Note `Number('')` returns 0 (finite) — so an empty/whitespace
-  // string must short-circuit BEFORE the numeric coercion.
-  const supply = (job.supply ?? {}) as Record<string, unknown>;
-  const zeRaw = supply.ze;
-  const zeStr = typeof zeRaw === 'number' ? String(zeRaw) : String(zeRaw ?? '');
-  if (zeStr.trim() === '') {
-    return respondUnknown("I can't calculate that — no zed E value has been set yet.");
-  }
-  const zeNum = Number(zeStr);
-  if (!Number.isFinite(zeNum)) {
+  // A01P — resolve Ze exactly once for the JOB through the real job keys
+  // (`boards[]` / `board_info` / `supply_characteristics`), never through a
+  // circuit anchor and never through the unpopulated singular `supply` bag
+  // that caused the original bug. Three states, parse-once, no fall-through
+  // from an occupied-but-invalid tier (mirrors iOS `findZe`).
+  const ze = resolveJobZe(job as JobZeLike);
+  if (ze.state === 'multi_board') {
+    // The caller forwards multi-board Calculates before reaching here; this
+    // is the truthful terminal if it ever does not.
     return {
-      response: 'I couldn’t apply that calculation.',
+      response: ZE_UNREADABLE_RESPONSE,
+      actionOutcome: 'unsupported',
+      actionReason: 'multi_board',
+    };
+  }
+  if (ze.state === 'absent') {
+    return respondUnknown(NO_ZE_RESPONSE);
+  }
+  if (ze.state === 'unreadable') {
+    // DictatedReadbackPolicyV1 `strings.ze_unreadable` — spoken exactly once
+    // by the caller's FIFO; a recorded LIM / N/A is never narrated as "no Ze".
+    return {
+      response: ZE_UNREADABLE_RESPONSE,
       actionOutcome: 'unsupported',
       actionReason: 'ze_unreadable',
     };
   }
+  const zeNum = ze.value;
   const appliedResults: Array<{ circuit: number | string; field: string; value: string }> = [];
+  // Codex cycle-1 BLOCKER — a meter reading always wins. Mirrors the backend
+  // calculators' `already_set` skip (stage6-dispatchers-circuit.js): a row
+  // whose DESTINATION field is already occupied (a number, LIM, N/A — any
+  // non-blank value) is never overwritten by a derived value, in single,
+  // range and all scopes alike; the empty rows in the same command still
+  // fill. The read-back names only what was actually written.
+  const skipped: Array<{ circuit: number | string; reason: CalculateSkipReason }> = [];
+  const refOf = (row: VoiceCommandCircuit, idx: number): string =>
+    String(row.circuit_ref ?? row.number ?? idx + 1);
+  const destination = command.kind === 'zs' ? 'measured_zs_ohm' : 'r1_r2_ohm';
   const next = circuits.map((row, idx) => {
     if (!indices.includes(idx)) return row;
+    if (String(row[destination] ?? '').trim() !== '') {
+      skipped.push({ circuit: refOf(row, idx), reason: 'already_set' });
+      return row;
+    }
     if (command.kind === 'zs') {
       // Zs = Ze + R1+R2
       const r1r2Str = row.r1_r2_ohm;
-      if (String(r1r2Str ?? '').trim() === '') return row;
       const r1r2 = Number(r1r2Str);
-      if (!Number.isFinite(r1r2)) return row;
+      if (String(r1r2Str ?? '').trim() === '' || !Number.isFinite(r1r2)) {
+        skipped.push({ circuit: refOf(row, idx), reason: 'no_r1_r2' });
+        return row;
+      }
       const zs = zeNum + (r1r2 as number);
       const value = formatImpedance(zs);
       appliedResults.push({
@@ -1314,11 +1471,16 @@ function applyCalculateImpedance(
     }
     // r1_r2 = Zs - Ze
     const zsStr = row.measured_zs_ohm;
-    if (String(zsStr ?? '').trim() === '') return row;
     const zs = Number(zsStr);
-    if (!Number.isFinite(zs)) return row;
+    if (String(zsStr ?? '').trim() === '' || !Number.isFinite(zs)) {
+      skipped.push({ circuit: refOf(row, idx), reason: 'no_zs' });
+      return row;
+    }
     const r1r2 = (zs as number) - zeNum;
-    if (r1r2 < 0) return row;
+    if (r1r2 < 0) {
+      skipped.push({ circuit: refOf(row, idx), reason: 'zs_below_ze' });
+      return row;
+    }
     const value = formatImpedance(r1r2);
     appliedResults.push({
       circuit: String(row.circuit_ref ?? row.number ?? idx + 1),
@@ -1329,8 +1491,40 @@ function applyCalculateImpedance(
   });
   const label = command.kind === 'zs' ? 'Zs' : 'R1 plus R2';
   if (appliedResults.length === 0) {
+    const occupied = skipped.filter((s) => s.reason === 'already_set').map((s) => s.circuit);
+    const unusable = skipped.filter((s) => s.reason !== 'already_set');
+    if (occupied.length > 0 && unusable.length === 0) {
+      // EVERY selected row already carries a measured value — the honest
+      // outcome is the backend's own "already recorded" line (the backend
+      // emits it only when every skip reason is already_set), never a
+      // fabricated success and never silence (A04P truthful outcomes).
+      return {
+        response: `${label} for ${circuitScope(occupied)} is already recorded — ${
+          occupied.length === 1
+            ? 'say a new reading to replace it.'
+            : 'say new readings to replace them.'
+        }`,
+        actionOutcome: 'unapplied',
+        actionReason: 'already_set',
+        skippedResults: skipped,
+      };
+    }
+    if (occupied.length > 0) {
+      // Codex EP cycle-2 — a zero-write command with MIXED reasons names
+      // both: the occupied rows AND the rows that could not be calculated.
+      // Silencing either half would misreport what happened.
+      return {
+        response:
+          `${label} for ${circuitScope(occupied)} is already recorded, and ` +
+          `${unusableClauses(unusable)}.`,
+        actionOutcome: 'unapplied',
+        actionReason: 'mixed_skips',
+        skippedResults: skipped,
+      };
+    }
     return {
       response: `No circuits had the values needed to calculate ${label}.`,
+      ...(skipped.length > 0 ? { skippedResults: skipped } : {}),
     };
   }
   const groups = new Map<string, Array<number | string>>();
@@ -1353,6 +1547,7 @@ function applyCalculateImpedance(
     response,
     actionOutcome: 'applied',
     appliedResults,
+    ...(skipped.length > 0 ? { skippedResults: skipped } : {}),
     changedKeys: command.kind === 'zs' ? ['measured_zs_ohm'] : ['r1_r2_ohm'],
   };
 }

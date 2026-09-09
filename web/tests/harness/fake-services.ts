@@ -307,7 +307,12 @@ export class FakeSonnetSession implements SonnetSessionLike {
   /** Stage 6 STI-05 `field_corrected` frame (clear_reading wire). Drives
    *  the REAL recording-context onFieldCorrected → field_clears apply
    *  path — the A2 canonicalised-clear-key mock-lane pin rides this. */
-  emitFieldCorrected(msg: { circuit: number; field: string }): void {
+  emitFieldCorrected(msg: {
+    circuit: number | null;
+    field: string;
+    board_id?: string | null;
+    previous_value?: string | null;
+  }): void {
     this.callbacks.onFieldCorrected?.(msg);
   }
   /** A1 agentic-voice — `voice_command_response` frame (spoken answers).

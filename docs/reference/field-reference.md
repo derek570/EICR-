@@ -172,7 +172,7 @@ a plausible-looking first word, destroying the evidence a guard would need.
 
 | Field | Type | Options | AI Extraction Guidance |
 |-------|------|---------|----------------------|
-| `client_name` | text | - | Name of client/property owner. Listen for "Mrs Smith", "Mr Jones", etc. Dispatcher REJECTS address-shaped values written here (`client_name_looks_like_address`) — those belong in the `client_*` family below (Phase 4.3). |
+| `client_name` | text | - | Name of client/property owner. Listen for "Mrs Smith", "Mr Jones", etc. Dispatcher REJECTS address-shaped values written here (`client_name_looks_like_address`) — those belong in the `client_*` family below (Phase 4.3). **Installation-GLOBAL identity field (A01P, 2026-09-08):** the fixed `GLOBAL_IDENTITY_FIELDS` set in `stage6-snapshot-mutators.js` makes record, clear, and inspect bypass board scope for it — it always lives in `circuits[0]`, never on a `boards[]` record, any `board_id` spelling (absent, current, other, unknown, empty) reaches it, and `inspect_session_state` answers it with `board_id: null`. Seeded from the job's installation bucket (`client_name` or iOS `clientName`, snake precedence). |
 | `client_address` | text | - | BILLING address — distinct from site address. Voice writes are server-owned. When the inspector accepts or explicitly commands a site→client mirror, the deterministic backend controller copies a complete captured source family as designed-silent `derived:true` writes; clients never perform a local mirror. |
 | `client_postcode` | text | UK postcode pattern | BILLING postcode. Companion to `client_address`. |
 | `client_town` | text | - | BILLING town. Derived from postcode when omitted. |

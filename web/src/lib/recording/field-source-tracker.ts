@@ -39,6 +39,26 @@ function hasValue(v: unknown): boolean {
   return true;
 }
 
+/**
+ * A01P (2026-09-08) — ALIAS FAMILIES tracked together. Supply Ze lives under
+ * two client spellings (`supply.ze` wire / `supply.earth_loop_impedance_ze`
+ * PWA column) that the apply path materialises as ONE value; ownership is
+ * therefore one decision per family: seeding either marks both, a regex or
+ * Sonnet write on either records both, `forget` releases both, and
+ * `canRegexWrite` refuses when ANY member is owned by a higher tier. Never
+ * inferred from value equality — provenance is recorded at the write.
+ */
+const ALIAS_FAMILIES: ReadonlyArray<readonly string[]> = [
+  ['supply.ze', 'supply.earth_loop_impedance_ze'],
+];
+
+function familyOf(key: string): readonly string[] {
+  for (const family of ALIAS_FAMILIES) {
+    if (family.includes(key)) return family;
+  }
+  return [key];
+}
+
 export class FieldSourceTracker {
   private readonly fieldSources = new Map<string, FieldSource>();
   private readonly thisTurnRegexWrites = new Set<string>();
@@ -53,7 +73,9 @@ export class FieldSourceTracker {
       if (!section) return;
       for (const [key, value] of Object.entries(section)) {
         if (hasValue(value)) {
-          this.fieldSources.set(`${prefix}.${key}`, 'preExisting');
+          for (const member of familyOf(`${prefix}.${key}`)) {
+            this.fieldSources.set(member, 'preExisting');
+          }
         }
       }
     };
@@ -77,8 +99,10 @@ export class FieldSourceTracker {
   /** Regex may write only when the field is unset OR its current source
    *  is also `'regex'` (regex-overwrite-regex is fine — last hit wins). */
   canRegexWrite(key: string): boolean {
-    const src = this.fieldSources.get(key);
-    return src === undefined || src === 'regex';
+    return familyOf(key).every((member) => {
+      const src = this.fieldSources.get(member);
+      return src === undefined || src === 'regex';
+    });
   }
 
   /**
@@ -97,12 +121,12 @@ export class FieldSourceTracker {
   /** Mark a regex write — also adds to the per-turn set consumed by
    *  `buildRegexSummary` to build the `regexResults` wire payload. */
   recordRegexWrite(key: string): void {
-    this.fieldSources.set(key, 'regex');
+    for (const member of familyOf(key)) this.fieldSources.set(member, 'regex');
     this.thisTurnRegexWrites.add(key);
   }
 
   recordSonnetWrite(key: string): void {
-    this.fieldSources.set(key, 'sonnet');
+    for (const member of familyOf(key)) this.fieldSources.set(member, 'sonnet');
   }
 
   /** PLAN-C Codex cycle 3 — EVIDENCE without OWNERSHIP.
@@ -162,12 +186,14 @@ export class FieldSourceTracker {
    */
   forget(keys: readonly string[]): void {
     for (const key of keys) {
-      this.fieldSources.delete(key);
-      this.thisTurnRegexWrites.delete(key);
-      // A cleared cell forgets its suppression shadow too, or a re-dictation
-      // of the same off-list value into the emptied slot would be judged a
-      // stale repeat and lose its gate evidence.
-      this.suppressedRegexValues.delete(key);
+      for (const member of familyOf(key)) {
+        this.fieldSources.delete(member);
+        this.thisTurnRegexWrites.delete(member);
+        // A cleared cell forgets its suppression shadow too, or a re-dictation
+        // of the same off-list value into the emptied slot would be judged a
+        // stale repeat and lose its gate evidence.
+        this.suppressedRegexValues.delete(member);
+      }
     }
   }
 

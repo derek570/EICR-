@@ -158,6 +158,14 @@ describe('A2-multiboard item 7 round 2 — append/merge fields are collapse-UNRE
     // blast radius of A1b's classification sweep. If A1b widens the map, this
     // expectation is meant to be updated DELIBERATELY, after re-running the
     // per-field checks above.
-    expect(Object.keys(BOARD_CLEAR_SCOPE_MAP).sort()).toEqual(['manufacturer', 'pfc', 'ze']);
+    // A01P (2026-09-08) — `client_name` added deliberately: it is not in
+    // NARRATIVE_FIELDS or the comments append/merge set, so the per-field
+    // checks above stay green; only this key-list literal changes.
+    expect(Object.keys(BOARD_CLEAR_SCOPE_MAP).sort()).toEqual([
+      'client_name',
+      'manufacturer',
+      'pfc',
+      'ze',
+    ]);
   });
 });

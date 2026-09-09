@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "plan": "A01P accepted-field consistency (2026-09-08)",
+  "note": "sha256 of every job-state fixture byte-for-byte; input-job.json is the shared input both clients start from; the two *-build-* files are each client's real builder output (key-sorted); the single-board twins feed the local Calculate route. Never digests itself.",
+  "files": {
+    "input-job.json": "103832fb0a21b4a7a08bfc5adf684b5688bfc87714dad3275c0aead5ee76a281",
+    "ios-build-job-state-for-server.json": "aeaac87193e9f704a2aa1665ef478811e43923b0b4164d9c8bda1ba879735c0b",
+    "single-board-boards-empty.json": "f0e10e171171bb6773e558931bdb6e10b3669f4a4f2fd7447b0f433e0295f542",
+    "single-board-boards-null.json": "5653856cda773a89c3d23b77fafd174e30f6bdc62fe6577a98ce20647298b536",
+    "web-build-job-state-for-wire.json": "d1df27c2e88f2aeaba52620ed6bde92a015b031a44f5b3fd523295355dc7b2ef"
+  }
+}

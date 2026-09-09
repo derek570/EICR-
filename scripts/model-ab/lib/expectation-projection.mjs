@@ -147,6 +147,10 @@ export const POST_00B_CORPUS_FIXTURE_IDS = Object.freeze([
   // PLAN-D 2026-08-23 (id 130) — create-ack merge fixture; owned by the
   // merge-blocking field-replay gate, post-dates the frozen 00B cohort.
   'frc_1e2f5aabe7e7a73f522d98582f6ab734',
+  // A01P 2026-09-08 — LIM `ze_unreadable` narration fixture; owned by the
+  // merge-blocking field-replay gate (recorded no-write half; live-lane
+  // narration oracle), post-dates the frozen 00B cohort.
+  'frc_cb24ba8b8edae9677281a9f8f6a1af2d',
 ]);
 
 /**

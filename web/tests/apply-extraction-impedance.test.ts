@@ -132,9 +132,15 @@ describe('apply-extraction H3 — ocpd_max_zs_ohm auto-compute', () => {
 
 // ────────────────────────────────────────────────────────────────────
 // H4 — Zs ↔ R1+R2 ↔ Ze derivation
-// ────────────────────────────────────────────────────────────────────
-describe('apply-extraction H4 — Zs derivation on Sonnet writes', () => {
-  it('fills Zs when Ze (supply) + R1+R2 (circuit) both present', () => {
+// ───────────────────────────────────────
+// A01P (2026-09-08): the IMPLICIT voice-extraction derivation pass
+// (`recomputeAll` after every apply) is REMOVED, matching iOS. A Ze
+// correction must never silently rewrite every circuit's Zs; a requested
+// calculation is now an explicit spoken Calculate (client-local on
+// ≤1-board jobs, server calculators otherwise) read back exactly once.
+// These pins are the INVERSE of the pre-A01P H4 rows.
+describe('apply-extraction H4 — NO implicit Zs / R1+R2 derivation on voice writes (A01P)', () => {
+  it('[invariant] Ze (supply) + R1+R2 (circuit) present → Zs is NOT filled implicitly', () => {
     const row: CircuitRow = {
       id: 'c-1',
       circuit_ref: '1',
@@ -145,34 +151,49 @@ describe('apply-extraction H4 — Zs derivation on Sonnet writes', () => {
       circuits: [row],
       supply_characteristics: { earth_loop_impedance_ze: '0.35' },
     });
-    // Trigger by writing any reading on the circuit (or just rely on
-    // a no-op extraction triggering the recompute pass).
     const result = makeResult({
       readings: [{ circuit: 1, field: 'r1_r2_ohm', value: '0.42' }],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied!.patch.circuits![0].measured_zs_ohm).toBe('0.77');
+    expect(applied?.patch.circuits?.[0]?.measured_zs_ohm).toBeUndefined();
   });
 
-  it('fills Zs from short-form ze alias (wire-shape dual-write)', () => {
-    // The supply tab apply-path dual-writes Ze under both
-    // `earth_loop_impedance_ze` (PWA col) AND `ze` (wire). Resolve
-    // should accept either.
+  it('[invariant] short-form ze alias present → Zs is NOT filled implicitly either', () => {
     const row: CircuitRow = {
       id: 'c-1',
       circuit_ref: '1',
       circuit_designation: 'Lights',
       r1_r2_ohm: '0.2',
     };
-    const job = makeJob({
-      circuits: [row],
-      supply_characteristics: { ze: '0.35' },
-    });
+    const job = makeJob({ circuits: [row], supply_characteristics: { ze: '0.35' } });
     const result = makeResult({
       readings: [{ circuit: 1, field: 'r1_r2_ohm', value: '0.2' }],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied!.patch.circuits![0].measured_zs_ohm).toBe('0.55');
+    expect(applied?.patch.circuits?.[0]?.measured_zs_ohm).toBeUndefined();
+  });
+
+  it('[invariant] a Ze correction does not implicitly rewrite an existing Zs (0.35 → 0.50 leaves Zs alone)', () => {
+    const row: CircuitRow = {
+      id: 'c-1',
+      circuit_ref: '1',
+      circuit_designation: 'Cooker',
+      r1_r2_ohm: '0.20',
+      measured_zs_ohm: '0.55',
+    };
+    const job = makeJob({
+      circuits: [row],
+      supply_characteristics: { ze: '0.35', earth_loop_impedance_ze: '0.35' },
+    });
+    const applied = applyExtractionToJob(
+      job,
+      makeResult({ readings: [{ circuit: 0, field: 'ze', value: '0.50' }] })
+    );
+    expect(applied).not.toBeNull();
+    expect(applied!.patch.circuits).toBeUndefined();
+    const supply = applied!.patch.supply_characteristics as Record<string, unknown>;
+    expect(supply.ze).toBe('0.50');
+    expect(supply.earth_loop_impedance_ze).toBe('0.50');
   });
 
   it('does NOT overwrite an inspector-typed Zs', () => {
@@ -192,7 +213,7 @@ describe('apply-extraction H4 — Zs derivation on Sonnet writes', () => {
     expect((after as CircuitRow).measured_zs_ohm).toBe('0.99');
   });
 
-  it('fills R1+R2 when Ze + Zs both present (and Zs ≥ Ze)', () => {
+  it('[invariant] Ze + Zs present → R1+R2 is NOT filled implicitly', () => {
     const row: CircuitRow = {
       id: 'c-1',
       circuit_ref: '1',
@@ -207,7 +228,7 @@ describe('apply-extraction H4 — Zs derivation on Sonnet writes', () => {
       readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.77' }],
     });
     const applied = applyExtractionToJob(job, result);
-    expect(applied!.patch.circuits![0].r1_r2_ohm).toBe('0.42');
+    expect(applied?.patch.circuits?.[0]?.r1_r2_ohm).toBeUndefined();
   });
 });
 

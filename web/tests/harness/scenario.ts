@@ -39,8 +39,11 @@ export interface MockFrame {
    *  canonicalises the outbound key (r1_r2_ohm → r1_plus_r2) except for
    *  the CLEAR_WIRE_EXEMPT set (r2_ohm stays raw); the mock lane pins
    *  that web's apply path maps both onto the right PWA column. */
-  circuit?: number;
+  circuit?: number | null;
   field?: string;
+  /** A01P — BOARD-scope clear frame (`circuit: null` + `board_id`), the
+   *  A1a §3.4b discriminator both clients route through their clear maps. */
+  board_id?: string | null;
   /** voice_command_response (A1 agentic-voice, 2026-07-23) — the model's
    *  spoken answer riding the VCR channel. The PR-1 gate scenario pins that
    *  the web companion force-speaks it with the confirmation toggle OFF. */
@@ -95,11 +98,21 @@ export interface ReplayScenario {
   env?: { regex_hints?: string };
   job_state?: {
     supply?: Record<string, unknown>;
-    boards?: Array<{
-      id: string;
-      designation?: string;
-      circuits?: Array<{ number: number | string; designation?: string } & Record<string, unknown>>;
-    }>;
+    /** A01P — legacy single-board summary (the sole board when `boards` is
+     *  null/empty on the API-shaped job). */
+    board_info?: Record<string, unknown>;
+    boards?: Array<
+      {
+        id: string;
+        designation?: string;
+        circuits?: Array<
+          { number: number | string; designation?: string } & Record<string, unknown>
+        >;
+      } & Record<string, unknown>
+    >;
+    /** A01P — raw JobDetail keys merged LAST over the built job (for
+     *  API-shaped fixtures such as `boards: null` + `board_info`). */
+    job_detail?: Record<string, unknown>;
   };
   transcript: ScenarioTranscriptEntry[];
   mock_frames?: MockFrameEntry[];
@@ -143,7 +156,19 @@ export function scenarioJob(scenario: ReplayScenario): JobDetail {
     last_modified: new Date(0).toISOString(),
     circuits,
     supply: scenario.job_state?.supply ?? {},
-    boards: boards.map((b) => ({ id: b.id, designation: b.designation ?? '' })),
+    // A01P — the local Calculate route reads the REAL job keys. Mirror the
+    // scenario supply into `supply_characteristics` and carry any board
+    // fields (a Ze override, an at-DB value) onto the boards[] records.
+    supply_characteristics: scenario.job_state?.supply ?? {},
+    board_info: scenario.job_state?.board_info ?? {},
+    boards: boards.map((b) => ({
+      id: b.id,
+      designation: b.designation ?? '',
+      ...Object.fromEntries(
+        Object.entries(b).filter(([k]) => k !== 'id' && k !== 'designation' && k !== 'circuits')
+      ),
+    })),
+    ...(scenario.job_state?.job_detail ?? {}),
   } as unknown as JobDetail;
 }
 

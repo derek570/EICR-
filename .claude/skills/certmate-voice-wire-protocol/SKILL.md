@@ -196,7 +196,7 @@ wired dark).
 
 | Frame | Shape (load-bearing fields) | Notes |
 |---|---|---|
-| `transcript` | `{text, timestamp, utterance_id?, confirmations_enabled?, regexResults?, in_response_to?, regex_fast_correlation_id?}` | The workhorse. `confirmations_enabled` is emitted **only when true** (iOS-conditional; omitting = no read-back synthesis for the turn — see §4). `utterance_id` is client-minted, used for ask/transcript dedupe and echoed back on `extraction`. `regexResults` = `[{field, value?}]` regex hints (chitchat wake + counter reset + Sonnet context). `in_response_to` = `{type, question, field?, circuit?}` — the preceding TTS question, so bare "yes"/"code 2" keeps attribution; `question` is the load-bearing key. |
+| `transcript` | `{text, timestamp, utterance_id?, confirmations_enabled?, regexResults?, in_response_to?, regex_fast_correlation_id?, client_command?}` | The workhorse. `confirmations_enabled` is emitted **only when true** (iOS-conditional; omitting = no read-back synthesis for the turn — see §4). `utterance_id` is client-minted, used for ask/transcript dedupe and echoed back on `extraction`. `regexResults` = `[{field, value?}]` regex hints (chitchat wake + counter reset + Sonnet context). `in_response_to` = `{type, question, field?, circuit?}` — the preceding TTS question, so bare "yes"/"code 2" keeps attribution; `question` is the load-bearing key. `client_command` (A01P, 2026-09-08) = `'calculate_zs' \| 'calculate_r1_plus_r2'`, set ONLY when a client recognised a Calculate locally but declined to run it (two-or-more-board job) and forwards the final as an ordinary transcript: the backend gate honours it as a deterministic forward reason (`has_recognised_command`) independent of `VOICE_AGENTIC_ANSWERS`; it is never a write, never a regex hint, never shown to the model; absent/malformed/unknown = ordinary gate. |
 | `ask_user_answered` | `{tool_call_id, user_text, consumed_utterance_id?}` | Resolves a blocking ask. **Ordering invariant:** send the matching `transcript` (with `utterance_id=X`) FIRST, then `ask_user_answered` (`consumed_utterance_id=X`) — the backend keeps symmetric FIFO dedupe ledgers (`consumedAskUtterances` / `seenTranscriptUtterances`) plus content-anchor fallbacks for legacy clients; wrong order degrades to fuzzy text matching that collides on short answers. `tool_call_id` starting `srv-` short-circuits to the dialogue engine (never a Sonnet tool_result). Unknown/stale ids are logged and dropped. |
 | `correction` | `{field, circuit, value}` | Manual UI edit forwarded as a pseudo-transcript so Sonnet state stays consistent. |
 | `job_state_update` | `{...jobState}` (circuits or boards[]) | Refreshes the server StateSnapshot; if missing after a CCU extraction, Sonnet asks about circuits already on screen. |
@@ -357,7 +357,7 @@ Empty/missing `prefix` → ignore the frame.
 `VOICE_PRE_LLM_GATE=false`). Blocks no-chance transcripts BEFORE the Anthropic
 call. Forward-decision order (memorise it before debugging "Sonnet ignored
 me"): gate-disabled → drained-retry → pending-ask → active dialogue script →
-`in_response_to` → regex hints → (empty text: block) → has-digit →
+`in_response_to` → regex hints → (empty text: block) → recognised `client_command` marker (forward) → has-digit →
 observation-prefix (fuzzy "observation" incl. Deepgram garbles) → strong
 trigger (~20 domain words) → weak trigger (~75) → **A1 (2026-07-23): when the
 session's latched `VOICE_AGENTIC_ANSWERS` flag is on, forward

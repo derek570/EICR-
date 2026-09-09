@@ -53,6 +53,7 @@ import {
   appendBoardToSnapshot,
   setCurrentBoardInSnapshot,
   markDistributionCircuitInSnapshot,
+  isGlobalIdentityField,
 } from './stage6-snapshot-mutators.js';
 import {
   encodeBoardReadingKey,
@@ -241,9 +242,16 @@ export async function dispatchRecordBoardReading(call, ctx) {
     ctx.allowFrozenAutoResolveBoardScope === true &&
     String(call.tool_call_id ?? '').includes('::auto::') &&
     !isUnscopedBoardId(input.board_id);
-  const scopeErr = frozenAutoResolveBoardScope
-    ? null
-    : validateBoardScope(input, session.stateSnapshot);
+  // A01P (2026-09-08) — a global identity field (`client_name`) has no board
+  // target, so board-scope validation is skipped for it ONLY: absent, current,
+  // explicit non-matching, unknown and empty-string board ids all reach the
+  // circuits[0] write. Confidence, value, address-shape and every other
+  // validation below run unchanged. Every other field keeps wrong_board.
+  const globalIdentityWrite = isGlobalIdentityField(input.field);
+  const scopeErr =
+    frozenAutoResolveBoardScope || globalIdentityWrite
+      ? null
+      : validateBoardScope(input, session.stateSnapshot);
   if (scopeErr) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -451,6 +459,11 @@ export async function dispatchRecordBoardReading(call, ctx) {
     value: input.value,
     boardId: input.board_id,
   });
+  // A01P — the journal entry for a global identity write is board-INSENSITIVE:
+  // no raw board on the mirror (so the wire never attributes the name to a
+  // board) and a boardless journal key (so two writes in one turn coalesce
+  // by field, as they do for every other global section field).
+  const journalBoardId = globalIdentityWrite ? undefined : input.board_id;
 
   // 4) track in perTurnWrites for the bundler / shadow comparator.
   // Map keyed by field-only (degenerate circuit half — every board reading
@@ -476,7 +489,7 @@ export async function dispatchRecordBoardReading(call, ctx) {
     confidence: input.confidence ?? 1.0,
     source_turn_id: input.source_turn_id,
     auto_resolved: autoResolved || undefined,
-    boardId: input.board_id ?? undefined,
+    boardId: journalBoardId ?? undefined,
   };
   // id-100(b) — stash the clamp correction on the mirror entry so the bundler
   // can name it aloud ("Ze recorded as 1.6 — I corrected 16 to 1.6"). A Symbol
@@ -545,7 +558,7 @@ export async function dispatchRecordBoardReading(call, ctx) {
   // dictated board reading that had already been read back aloud.
   recordBoardReadingWrite(
     perTurnWrites,
-    encodeBoardReadingKey(input.field, input.board_id),
+    encodeBoardReadingKey(input.field, journalBoardId),
     boardMirror
   );
 
@@ -1230,6 +1243,13 @@ export const BOARD_CLEAR_SCOPE_MAP = Object.freeze({
   ze: 'global',
   pfc: 'global',
   manufacturer: 'board',
+  // A01P (2026-09-08) — installation-global identity. Classification ONLY:
+  // the board-scope BYPASS for this field comes from the fixed
+  // GLOBAL_IDENTITY_FIELDS set in stage6-snapshot-mutators.js, never from
+  // this map (ze/pfc stay 'global' here yet keep unconditional wrong_board
+  // on any mismatched or empty board_id). Both client route manifests and
+  // the committed fixture grow in the same delivery (set-equality gate).
+  client_name: 'global',
 });
 
 // Plan B (honest-refusal, 2026-07-28) §3.1 — the notice-family machinery
@@ -1396,7 +1416,18 @@ export async function dispatchClearBoardReading(call, ctx) {
   //    BEFORE any effective-target normalisation: an empty string returns
   //    wrong_board (validateBoardScope's deliberate contract) rather than
   //    silently retargeting a destructive clear at the current board.
-  const scopeErr = validateBoardScope(input, session.stateSnapshot);
+  //    A01P (2026-09-08) — mirror of the record path: a global identity field
+  //    (`client_name`, canonicalised through FIELD_CORRECTIONS first) has no
+  //    board target, so board-scope validation is skipped for it ONLY and the
+  //    explicit board spelling is dropped before classification — absent,
+  //    current, explicit non-matching, unknown and empty-string board ids all
+  //    reach the global sweep. The empty-string retarget guard protects a
+  //    board-targeted clear; a global identity field has nothing to retarget.
+  //    BOARD_CLEAR_SCOPE_MAP is never the bypass source: ze/pfc keep today's
+  //    unconditional wrong_board on any mismatched or empty board_id.
+  const canonicalField = FIELD_CORRECTIONS[input.field] ?? input.field;
+  const globalIdentityClear = isGlobalIdentityField(canonicalField);
+  const scopeErr = globalIdentityClear ? null : validateBoardScope(input, session.stateSnapshot);
   if (scopeErr) {
     logToolCall(logger, {
       sessionId: session.sessionId,
@@ -1411,8 +1442,12 @@ export async function dispatchClearBoardReading(call, ctx) {
     });
     return envelope(call.tool_call_id, { ok: false, error: scopeErr }, true);
   }
-
-  const canonicalField = FIELD_CORRECTIONS[input.field] ?? input.field;
+  if (globalIdentityClear && 'board_id' in input) {
+    // Drop the spelling, not the request: the effective board on the
+    // field_corrected frame is then the CURRENT board (a real id both
+    // clients can discriminate on), never an unknown or empty string.
+    delete input.board_id;
+  }
 
   // 3–5) Capability/kill-switch denial → cert-type applicability refusal →
   //    scope classification, via the PURE classifier (plan B §3.2 extraction

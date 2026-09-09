@@ -19,6 +19,7 @@ import {
   listCircuitRefsInBoard,
 } from './stage6-multi-board-shape.js';
 import { applyWrapPolicy, wrapSnapshotUserTextInline } from './stage6-snapshot-user-text.js';
+import { acceptedAliasSiblings } from './stage6-snapshot-mutators.js';
 
 const require = createRequire(import.meta.url);
 const fieldSchema = require('../../config/field_schema.json');
@@ -300,8 +301,34 @@ export function projectCircuit(snapshot, circuit, boardId, { certType } = {}) {
   };
 }
 
+function readWithAliasFallback(bucket, field) {
+  if (!bucket || typeof bucket !== 'object') return undefined;
+  if (field in bucket) return bucket[field];
+  for (const sibling of acceptedAliasSiblings(field)) {
+    if (sibling in bucket) return bucket[sibling];
+  }
+  return undefined;
+}
+
 export function projectField(snapshot, { field, circuit, boardId }) {
   let value;
+  if (circuit == null && boardId == null) {
+    // A01P — installation-global lookup (`client_name`): the legacy
+    // circuits[0] bucket is the ONLY home of a global identity value; the
+    // current board is irrelevant and the answer carries board_id null.
+    value = snapshot?.circuits?.[0]?.[field];
+    const recorded = !isMissingValue(value);
+    return {
+      ok: true,
+      scope: 'field',
+      board_id: null,
+      circuit: null,
+      field,
+      recorded,
+      value: recorded ? applyWrapPolicy(field, value) : null,
+      truncated: false,
+    };
+  }
   if (circuit != null) {
     const bucket = getCircuitBucket(snapshot, circuit, boardId);
     if (!bucket || typeof bucket !== 'object') return null; // not_found
@@ -310,11 +337,16 @@ export function projectField(snapshot, { field, circuit, boardId }) {
     // Supply/board-level lookup: the legacy circuits[0] bucket first, then the
     // board record itself (ze/ipf_at_db/location live on boards[] for
     // non-main boards).
+    // A01P — exact key first, then an ABSENT-key alias fallback within the
+    // SAME bucket (a bucket hydrated under `ze` answers `earth_loop_impedance_ze`
+    // and vice versa). A bucket holding BOTH spellings answers each with its
+    // own exact key — the hydrated-conflict precedence is A01's to unify.
     const supplyBucket = getCircuitBucket(snapshot, 0, boardId);
-    value = supplyBucket?.[field];
+    value = readWithAliasFallback(supplyBucket, field);
     if (isMissingValue(value)) {
       const board = findBoard(snapshot, boardId);
-      if (board && !isMissingValue(board[field])) value = board[field];
+      const boardValue = readWithAliasFallback(board, field);
+      if (!isMissingValue(boardValue)) value = boardValue;
     }
   }
   const recorded = !isMissingValue(value);
@@ -398,7 +430,10 @@ export function capInspectResult(body) {
   // Stage 3: circuit scope — drop `values` entries from the tail.
   if (capped.values && typeof capped.values === 'object') {
     const entries = Object.entries(capped.values);
-    while (entries.length > 0 && byteLength({ ...capped, values: Object.fromEntries(entries) }) > INSPECT_MAX_RESULT_BYTES) {
+    while (
+      entries.length > 0 &&
+      byteLength({ ...capped, values: Object.fromEntries(entries) }) > INSPECT_MAX_RESULT_BYTES
+    ) {
       entries.pop();
     }
     capped.values = Object.fromEntries(entries);

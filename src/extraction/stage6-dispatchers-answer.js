@@ -38,6 +38,7 @@
  */
 
 import { logToolCall } from './stage6-dispatcher-logger.js';
+import { isGlobalIdentityField } from './stage6-snapshot-mutators.js';
 import { checkForPromptLeak } from './stage6-prompt-leak-filter.js';
 import {
   projectSummary,
@@ -364,6 +365,18 @@ export function createInspectDispatcher(session, logger, turnId, perTurnWrites) 
         }
         if (circuit != null && !isCircuitFieldKey(input.field)) {
           return emit('rejected', { ok: false, code: 'invalid_scope' }, true, { scope });
+        }
+        // A01P (2026-09-08) — a global identity field (`client_name`) is
+        // installation-global: it is answered BEFORE board resolution with
+        // `board_id: null`, so an explicit unknown board never turns a
+        // recorded name into not_found and the garage being selected never
+        // hides it (policy §3 scope=field, §5).
+        if (circuit == null && isGlobalIdentityField(input.field)) {
+          body = projectField(snapshot, { field: input.field, circuit: null, boardId: null });
+          if (body == null) {
+            return emit('rejected', { ok: false, code: 'not_found' }, true, { scope, circuit });
+          }
+          break;
         }
         const boardId = resolveBoard();
         if (boardId == null) {

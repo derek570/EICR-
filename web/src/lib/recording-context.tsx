@@ -117,6 +117,10 @@ import {
   speak as speakRaw,
   speakConfirmation,
   speakConfirmationModeStatus,
+  speakLocalCommandOutcome,
+  handleLocalCommandOutcomeDiscard,
+  handleLocalCommandOutcomePlaybackStarted,
+  LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX,
   speakPoorSignalAdvisory,
   type SpeakOptions,
 } from './recording/tts';
@@ -165,8 +169,12 @@ import { api } from './api-client';
 import { useJobContext } from './job-context';
 import {
   applyVoiceCommand,
+  clientCommandForCalculate,
+  jobBoardCount,
   parseVoiceCommand,
   voiceCommandTargetsDesignation,
+  type ClientCommandMarker,
+  type JobZeLike,
   type VoiceCommandJob,
 } from '@certmate/shared-utils';
 import { mapServerActionToVoiceCommand } from './recording/voice-command-action';
@@ -377,6 +385,10 @@ const NAMING_BUFFER_TIMEOUT_MS = 3000;
 // description, short enough that single-utterance latency is barely
 // perceptible (Sonnet's own response budget is ~3s).
 const BURST_BUFFER_TIMEOUT_MS = 500;
+const nowMs = (): number =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
 
 /**
  * Heartbeat cadence — 5 s. Sized to be:
@@ -1177,6 +1189,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // review finding F2).
   const regexMatcherRef = React.useRef<TranscriptFieldMatcher | null>(null);
   const fieldSourceTrackerRef = React.useRef<FieldSourceTracker | null>(null);
+  // A01P — local Calculate latency: final-transcript dispatch time keyed by the
+  // FIFO dedupe key of its read-back, resolved at the playback-start seam.
+  const localCalculateDispatchAtRef = React.useRef<Map<string, number>>(new Map());
   const cumulativeTranscriptRef = React.useRef<string>('');
   const matcherJobIdRef = React.useRef<string | null>(job?.id ?? null);
   // A3 hints-OFF freshness shadow — last gate-passed regex candidate value
@@ -1546,6 +1561,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // why this must run FIRST, why it's safe during a full reset, and why
       // `reason` gates re-park vs retire.
       if (handleModeStatusCueDiscard(dedupeKey, reason)) return;
+      // A01P — a local Calculate read-back destroyed before it played
+      // re-parks itself (same family mechanism as the mode-status cue);
+      // a terminal playback failure retires it AND its latency stamp.
+      const localOutcome = handleLocalCommandOutcomeDiscard(dedupeKey, reason);
+      if (localOutcome !== false) {
+        if (localOutcome === 'retired') localCalculateDispatchAtRef.current.delete(dedupeKey);
+        clientDiagnostic('local_calculate_readback_discarded', {
+          dedupeKey,
+          reason,
+          outcome: localOutcome,
+        });
+        return;
+      }
       // PLAN-E1 E3 — the poor-signal advisory releases its coalescing
       // gate on ANY pre-start discard, WITHOUT re-parking (unlike the
       // mode-status cue above) — it can recur only via a fresh
@@ -2009,7 +2037,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // the same transcript. Anything the parser doesn't recognise
         // continues to the server-side extraction path.
         const command = admission.bypassMutation ? null : parseVoiceCommand(text);
-        if (command) {
+        // A01P (2026-09-08) — a RECOGNISED Calculate executes locally ONLY when
+        // the job has at most one board (`boards` absent, empty, or exactly one
+        // entry — the same test on iOS) and the parser consumed the whole
+        // utterance. Two or more boards, or board-qualified trailing text
+        // ("… on the garage board"), discard the parse and let the final
+        // continue as an ORDINARY transcript — the existing unscoped-Calculate
+        // precedent — carrying the same forward authority a regex hit does
+        // plus the additive `client_command` marker, so the trigger-less
+        // grammar ("calculate impedance for all", the spoken "z s") is never
+        // gate-blocked here or at the backend gate. Never a regex hint.
+        let forwardedCalculate: ClientCommandMarker | null = null;
+        if (command && command.type === 'calculate_impedance') {
+          const remainder = command.remainder ?? '';
+          const boardCount = jobBoardCount(jobRef.current as unknown as JobZeLike);
+          if (remainder !== '' || boardCount > 1) {
+            forwardedCalculate = clientCommandForCalculate(command);
+            clientDiagnostic('local_calculate_forwarded', {
+              reason: remainder !== '' ? 'trailing_text' : 'multi_board',
+              boardCount,
+              remainderPreview: remainder.slice(0, 40),
+              clientCommand: forwardedCalculate,
+              textPreview: text.slice(0, 80),
+            });
+          }
+        }
+        if (command && forwardedCalculate === null) {
           // Cycle-5 — the LOCAL parse path mutates the job exactly like
           // the server voice-response path, so it needs the same
           // stale-draft guard: commit any focused designation draft and
@@ -2025,6 +2078,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           ) {
             recordDesignationAliasRef.current(command.value);
           }
+          const localDispatchedAt = nowMs();
           const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
           if (outcome.patch) {
             updateJobRef.current(outcome.patch);
@@ -2032,13 +2086,55 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               ...jobRef.current,
               ...(outcome.patch as Partial<typeof jobRef.current>),
             };
+            // B1 seam — the harness job-state observer (local-command tier).
+            getRecordingTestServices()?.jobStateObserver?.({
+              source: 'local_command',
+              patch: outcome.patch as Partial<typeof jobRef.current>,
+              job: jobRef.current,
+              changedKeys: outcome.changedKeys ?? [],
+            });
             if (outcome.changedKeys && outcome.changedKeys.length > 0) {
               liveFill.markUpdated(outcome.changedKeys);
             }
           }
           if (outcome.response) {
             if (outcome.patch) playConfirmationChime();
-            speak(outcome.response);
+            if (command.type === 'calculate_impedance') {
+              // A01P — local Calculate outcomes (the success read-back and the
+              // `ze_unreadable` / no-Ze policy line alike) are ACCEPTED
+              // operations under DictatedReadbackPolicyV1: they enter the
+              // mandatory confirmation FIFO behind any earlier queued or
+              // playing read-back (never the pre-empting direct `speak()`,
+              // which flushes the queue), and are forced audible whatever
+              // the extra-prompts preference says. One dedupe key per
+              // utterance keeps the read-back exactly once and lets the
+              // playback-start seam measure its latency.
+              // Protected + re-parking (the mode-status family mechanism):
+              // overflow cannot evict it and a preempting prompt re-parks
+              // it, so the read-back of a calculation that already mutated
+              // the job is heard exactly once (Audio-First #1) — there is
+              // no server replay to restore local-only speech.
+              const queued = speakLocalCommandOutcome(outcome.response, {
+                // Stamp BEFORE the push: a synchronous player can start
+                // playback inside the enqueue and resolve the latency at once.
+                beforeEnqueue: (key) =>
+                  localCalculateDispatchAtRef.current.set(key, localDispatchedAt),
+              });
+              if (!queued.enqueued && queued.dedupeKey) {
+                localCalculateDispatchAtRef.current.delete(queued.dedupeKey);
+              }
+              clientDiagnostic('local_calculate_outcome', {
+                outcome: outcome.actionOutcome ?? 'unknown',
+                reason: outcome.actionReason ?? null,
+                appliedCount: outcome.appliedResults?.length ?? 0,
+                skippedCount: outcome.skippedResults?.length ?? 0,
+                responsePreview: outcome.response.slice(0, 80),
+                dedupeKey: queued.dedupeKey,
+                enqueued: queued.enqueued,
+              });
+            } else {
+              speak(outcome.response);
+            }
           }
           sleepManagerRef.current?.onSpeechActivity();
           return;
@@ -2243,7 +2339,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // in_response_to payload is a gate-PASS by definition.
         const existingForwardDecision = shouldForward({
           text,
-          hasRegexHit: admission.bypassMutation ? false : gateRegexHit,
+          // A01P — a discarded (forwarded) Calculate carries the same forward
+          // authority a regex hit does; its grammar has no digit and no
+          // trigger word, so without this it would be rejected and lost.
+          hasRegexHit: admission.bypassMutation
+            ? false
+            : gateRegexHit || forwardedCalculate !== null,
           hasPendingAsk: isAnswerToAsk,
           inResponseTo: peekedPayload != null,
         });
@@ -2288,6 +2389,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           regexHintsCount: regexResults?.length ?? 0,
           admission: admission.classification,
           admissionDirect: admission.admits,
+          clientCommand: forwardedCalculate,
         });
         // iOS canon DeepgramRecordingViewModel.swift:2122 — attach
         // `in_response_to` when a TTS question is alive within the 10 s
@@ -2326,6 +2428,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           regexResults,
           inResponseTo,
           postcodeHint,
+          // A01P — additive optional marker; absent on every other frame.
+          clientCommand: forwardedCalculate ?? undefined,
         });
         if (inFlightToolCallId) {
           // Force-clear: takePayload above only burned the slot on a
@@ -2842,6 +2946,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       try {
         applied = applyExtractionToJob(jobRef.current, result, {
           userDefaults: userDefaultsRef.current,
+          // A01P — a landed accepted supply Ze promotes its alias family to
+          // Sonnet ownership so a later regex re-hit respects the correction.
+          fieldSourceTracker: fieldSourceTrackerRef.current,
           // L2 obs-photo sprint — thread the pending tuple so an
           // observation arriving within the 60 s auto-link window can
           // claim the photo. The callback drains both the in-memory
@@ -3155,6 +3262,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
     ttsQueueSetOnPlaybackStarted((dedupeKey) => {
+      // A01P — a local Calculate read-back began real audio: record the
+      // final-transcript → playback-start latency (DictatedReadbackPolicyV1's
+      // measured point) and retire the dispatch stamp.
+      if (dedupeKey.startsWith(LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX)) {
+        handleLocalCommandOutcomePlaybackStarted(dedupeKey);
+        const dispatchedAt = localCalculateDispatchAtRef.current.get(dedupeKey);
+        localCalculateDispatchAtRef.current.delete(dedupeKey);
+        clientDiagnostic('local_calculate_playback_started', {
+          dedupeKey,
+          latencyMs: dispatchedAt == null ? null : Math.round(nowMs() - dispatchedAt),
+        });
+        return;
+      }
       // PLAN-D — a mode-status cue was actually heard; retire its re-park
       // tracking entry (nothing left to protect it from).
       if (handleModeStatusCuePlaybackStarted(dedupeKey)) return;
@@ -3678,9 +3798,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // never inferred from an absent patch: a legitimately no-op apply
         // (value already set, empty scope) also has no patch.
         let localSpokenOverride: string | null = null;
+        // A01P (Codex EP cycle-2) — a server `calculate_impedance` action has
+        // ALREADY mutated the job by the time it speaks, and no server replay
+        // restores local-only speech: its selected local outcome takes the
+        // protected / re-parking family path, not a bare `speakConfirmation`.
+        let localCalculateSpeech = false;
         if (response.understood && response.action) {
           const command = mapServerActionToVoiceCommand(response.action);
           if (command) {
+            localCalculateSpeech = command.type === 'calculate_impedance';
             // Codex r1 — commit any open designation draft before the
             // voice mutation reads the job (same stale-draft class as
             // the wire-envelope flush in applyExtraction); adopt the
@@ -3823,6 +3949,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             if (!queued.enqueued) {
               discardConfirmationReservation(dedupeKey, 'not_queued');
             }
+          } else if (localCalculateSpeech && localSpokenOverride !== null) {
+            // Same lifecycle as a client-parsed Calculate: protected from
+            // overflow eviction, re-parked on preemption, retired at playback
+            // start or terminal failure (`onDiscarded` / `onPlaybackStarted`).
+            const queued = speakLocalCommandOutcome(spokenText);
+            clientDiagnostic('voice_command_local_calculate_speech', {
+              enqueued: queued.enqueued,
+              dedupeKey: queued.dedupeKey,
+            });
           } else {
             speakConfirmation(spokenText, { force: true });
           }

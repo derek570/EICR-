@@ -581,8 +581,13 @@ describe('test 19 (envelope half) — unknown scope fails CLOSED', () => {
     expect(ptw.mandatoryNotices[0].family).toBe('board_clear_scope_unclassified');
   });
 
-  test('the pinned A1a scope map is exactly the minimal literal (ze/pfc global, manufacturer board)', () => {
-    expect(BOARD_CLEAR_SCOPE_MAP).toEqual({ ze: 'global', pfc: 'global', manufacturer: 'board' });
+  test('the pinned scope map is exactly the literal (ze/pfc global, manufacturer board, A01P client_name global)', () => {
+    expect(BOARD_CLEAR_SCOPE_MAP).toEqual({
+      ze: 'global',
+      pfc: 'global',
+      manufacturer: 'board',
+      client_name: 'global',
+    });
   });
 });
 

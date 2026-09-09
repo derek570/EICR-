@@ -1,0 +1,2031 @@
+{
+  "schema_version": 1,
+  "name": "AcceptedFieldConsistencyEvidence",
+  "plan": "A01P — Keep Ze corrections and client-name answers consistent",
+  "generated_from_commit": "5d1d553087f5ad7d04386bf1a5d7e00df102bb6b",
+  "generated_at_commit_subject": "fix(scripts): enumerate the job-state fixture directories with find so dot-prefixed extras fail the preflight",
+  "original_baseline": {
+    "backend_web": "37dfde39e73e505301a812b1901d6a9f944c8259",
+    "ios": "02dca8926105e72bc4c148939756e93c8ab0bea8",
+    "note": "Original alias/name/CONV defects (backend/web); green numeric routing/builders (iOS)."
+  },
+  "predecessor_baseline": {
+    "backend_web": "298e5ae0",
+    "backend_web_subject": "Merge pull request #207 from derek570/codex/a04p-dictated-readback-20260907",
+    "ios": "2d1056b7",
+    "ios_subject": "Merge pull request #83 from derek570/codex/a04p-testflight-448",
+    "policy_digest": "05936a20f2f4443f8b366abe0105020f5b7520461756c0e0e4cb31132b5ecdb9",
+    "admission_vectors_digest": "19cfa6878db40320a4704f5f1b1b2e4f09f363f9ae5bf72d6d57628067b6e15f"
+  },
+  "classification_rule": "Jest/Vitest names carry [invariant] or [current_behaviour]; XCTest names carry test_invariant_ / test_currentBehaviour_. Invariants are A01P-owned behaviour (red on the baselines where the defect reproduces); current_behaviour rows are pinned for A01 to adjudicate. Control cases inside an [invariant] group are green on the baselines by design (already-correct cases).",
+  "red_proof_rule": "Missing imports or compile failures are never behavioural red proof; the baseline runs load the test files against the baseline sources (a static-import variant of the gate suite was used because the named export did not exist there).",
+  "digests": {
+    "sources": {
+      "config/conversation-admission-vectors.json": "19cfa6878db40320a4704f5f1b1b2e4f09f363f9ae5bf72d6d57628067b6e15f",
+      "config/dictated-readback-policy-v1.json": "05936a20f2f4443f8b366abe0105020f5b7520461756c0e0e4cb31132b5ecdb9",
+      "config/prompts/sonnet_agentic_system.md": "b55d60cb8381d829e32e715e6b091effb4995503a4f6ba4da4ebf26265b5c3e8",
+      "packages/shared-utils/src/circuit-derivations.ts": "00727617a1b6a21e91f2c012aef697e5289c5f58b3a3c850e8594625b750292f",
+      "packages/shared-utils/src/voice-commands.ts": "688f5876df319b2f3aac6f2f8b82f343bb5424ccc96281e62cfaea47f27ea4eb",
+      "scripts/check-job-state-fixture-sync.sh": "87346b99e975a81e95f5d51864ae73fa7b750f148280e57c41a30cb37afdb19e",
+      "scripts/field-replay/lib/fixture-schema.mjs": "de607faaec5db02bd5f4b0c4d32cb50c45825968bad3d890a2d6619159e4276b",
+      "scripts/field-replay/lib/replay-assertions.mjs": "a6ccf621d175d959dd80677f2a85cb1d8df48831b1b222726fba8684471b951c",
+      "src/extraction/eicr-extraction-session.js": "9d950fb0f743e92a6da2ac6c73de6c9ea98217f0429c854b223a2d9a4760daee",
+      "src/extraction/pre-llm-gate.js": "c1bf02b3c170c21ba41a2a7a24d17bd68d137697a30cf348e164ad65efcae9d7",
+      "src/extraction/sonnet-stream.js": "cd92083e3b64cf2ef1adb93205ffa29134bf6c792da82e87835d86249db42619",
+      "src/extraction/stage6-dispatchers-answer.js": "6bb9910bb56fb7049b62b16908e7f3b62fd692e96c110065996f2afa753253ea",
+      "src/extraction/stage6-dispatchers-board.js": "a3a31946dbdad1c5119ec22f499f9d116cc02891ee7779f798ad27dd3934d414",
+      "src/extraction/stage6-dispatchers-circuit.js": "fd2984c000cb0f6f83d5c692cf4884a20386b519891485e24cd3a505bc970755",
+      "src/extraction/stage6-inspect-projector.js": "708bda4b1dc66fd8d9f85bc15d5194b668ce18e52e6c42f8f79f8405a445a071",
+      "src/extraction/stage6-snapshot-mutators.js": "8a7b2952578d84984b182717f2c692d54fb738e09c005a4f64136dbbc9a32eea",
+      "src/extraction/stage6-tool-schemas.js": "742c2de9b22a2842082bd00bbee7c8c73a4eba3e8a839ffc20929bc967a2a953",
+      "web/src/lib/recording-context.tsx": "2f13eb7a14eca279f021b5a2bfe144e8ba0ad6dc9162ef61a4be6cde411641f2",
+      "web/src/lib/recording/apply-extraction.ts": "c0c04827a972636f99f2f70c5b8faa270c270a5603c874eea638f9bc581887b2",
+      "web/src/lib/recording/board-clear.ts": "968de1e34f0694dc25da361efcf11165c0b3cf564c2eaa112a07397b5aa36be8",
+      "web/src/lib/recording/conversation-admission.ts": "7a85567f5a9666401854895b3d141a2b2c6a15c8d6f83370d416a74fc154540a",
+      "web/src/lib/recording/sonnet-session.ts": "d28fb845fd6dba75ec5113d4a232c1cd03c54cc27527bea073f899eff9c944e3",
+      "web/src/lib/recording/transcript-gate.ts": "826fe729161a3c23aede350382a00dc891906a194acb7edcb83ba80666ea21be"
+    },
+    "fixtures": {
+      "src/__tests__/fixtures/job-state/input-job.json": "103832fb0a21b4a7a08bfc5adf684b5688bfc87714dad3275c0aead5ee76a281",
+      "src/__tests__/fixtures/job-state/ios-build-job-state-for-server.json": "aeaac87193e9f704a2aa1665ef478811e43923b0b4164d9c8bda1ba879735c0b",
+      "src/__tests__/fixtures/job-state/manifest.json": "5c02a82e95db8d808e3c9480327b2fe0f8a60aa6e71b52d6ef659c9f6cc8eaab",
+      "src/__tests__/fixtures/job-state/single-board-boards-empty.json": "f0e10e171171bb6773e558931bdb6e10b3669f4a4f2fd7447b0f433e0295f542",
+      "src/__tests__/fixtures/job-state/single-board-boards-null.json": "5653856cda773a89c3d23b77fafd174e30f6bdc62fe6577a98ce20647298b536",
+      "src/__tests__/fixtures/job-state/web-build-job-state-for-wire.json": "d1df27c2e88f2aeaba52620ed6bde92a015b031a44f5b3fd523295355dc7b2ef",
+      "tests/fixtures/field-replay-corpus/frc_cb24ba8b8edae9677281a9f8f6a1af2d/fixture.yaml": "a58ad179554af9b7fb61665e7c446ad1979eceb663eb962985d9af74475d06cb",
+      "tests/fixtures/test-contracts/board-clear-scope-keys.json": "e7bb2b6a2b012a0cd8bf1e554f7b4dcf780b117c1eab827c46a714811c285fc0"
+    },
+    "tests": {
+      "src/__tests__/eicr-extraction-session.fu4-supply-ze-canonical.test.js": "0a75768ad5b51b445da6a0752927f6385852c5f6c75f0d8430061f495166ed41",
+      "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js": "1bf4ea24f146ad26d8213c9753e459925030a5e3cc25da5b4fe492ac233e04ad",
+      "src/__tests__/field-replay/replay-assertions.test.js": "27a0e968f2822ede4a27255cad7b2b385a9af335aacec6b456cc86bff1479d94",
+      "src/__tests__/pre-llm-gate.test.js": "c29f0cec689772ca4e6d67320ae0a67d6148edb088cbc771a4cd69938d7cd3d4",
+      "src/__tests__/stage6-a01p-accepted-alias.test.js": "55681066470f2102ce9c2cdbd1e0ac97fbb01f3ab29033c3f664a9caf3b58316",
+      "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js": "bcae19584c523e0656a122601384969121abd9b640f61a0837f82e9074d7bd6e",
+      "src/__tests__/stage6-a01p-client-command-wire.test.js": "1484d98538157b036abd75a54df865f840133ed6aef296804aa1143c4302d070",
+      "src/__tests__/stage6-a01p-global-identity.test.js": "2f5fc2131c330fa53c0e2708aec9224cb6dbbbe117eb1889efbb7a73a27ea596",
+      "src/__tests__/stage6-a01p-job-state-fixture-seed.test.js": "98bdad66ee4aa1c72f91303b6a3b54c93ec078b50bc73e01a4156191c530f06e"
+    }
+  },
+  "destinations": {
+    "backend": [
+      "src/extraction/*",
+      "config/prompts/sonnet_agentic_system.md",
+      "tests/fixtures/*",
+      "scripts/*"
+    ],
+    "web": [
+      "web/src/lib/recording/*",
+      "web/src/app/job/[id]/board/page.tsx",
+      "packages/shared-utils/src/*",
+      "web/docs/parity-ledger.md"
+    ],
+    "ios": [
+      "Sources/Recording/*",
+      "Sources/Models/Job.swift",
+      "Sources/Services/ServerWebSocketService.swift",
+      "Tests/CertMateUnifiedTests/Fixtures/job-state/*",
+      "deploy-testflight.sh"
+    ]
+  },
+  "summary": {
+    "backend_fix": {
+      "total": 9515,
+      "passed": 9496,
+      "failed": 0
+    },
+    "inventory_counts": {
+      "backend:invariant": 95,
+      "backend:current_behaviour": 7,
+      "ios:current_behaviour": 3,
+      "ios:invariant": 36,
+      "web:current_behaviour": 3,
+      "web:invariant": 101
+    },
+    "baseline_red": {
+      "original": 59,
+      "predecessor": 59
+    }
+  },
+  "tests": [
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.fu4-supply-ze-canonical.test.js",
+      "name": "F/U-4 review r2 — resolver value + alias edges [invariant] a PRESENT-but-invalid board Ze (N/A) is a terminal ze_unreadable — never a silent fallback to origin (A01P: was collapsed into no_ze)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.fu4-supply-ze-canonical.test.js",
+      "name": "F/U-4 review r6 — resolver scalar-only board values [invariant] an ARRAY board Ze is present-but-invalid → terminal ze_unreadable (never a computed write; A01P: was collapsed into no_ze)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) an absent name produces NO client_name key — never an undefined slot",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) an EMPTY string name is passed through as-is (the caller decides; no spurious seed of a different value)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) camel spelling (iOS) maps through",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) MID-SESSION MERGE: a stale client push never clobbers a fresher dictated name (fill-empty only)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) MID-SESSION MERGE: an empty slot IS filled by a client push",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) SEED: an installation with no name seeds no client_name key at all",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) SEED: start() with a web-shaped installation_details writes circuits[0].client_name",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) SEED: start() with an iOS-shaped installation (camel) writes circuits[0].client_name",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) snake spelling maps through",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/eicr-extraction-session.plan-e-installation-ingest.test.js",
+      "name": "[invariant] A01P — client_name ingest (snake precedence, no spurious key) snake takes precedence over camel when both are present",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/field-replay/replay-assertions.test.js",
+      "name": "[invariant] matchAudibleOutputs — spoken_response narration oracle (A01P) a compliant narration passes (contains LIM, never says missing)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/field-replay/replay-assertions.test.js",
+      "name": "[invariant] matchAudibleOutputs — spoken_response narration oracle (A01P) a spoken_response is NOT an unclaimed audible output when no expectation names it",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/field-replay/replay-assertions.test.js",
+      "name": "[invariant] matchAudibleOutputs — spoken_response narration oracle (A01P) count 0 asserts ABSENCE of a matching narration",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/field-replay/replay-assertions.test.js",
+      "name": "[invariant] matchAudibleOutputs — spoken_response narration oracle (A01P) RED: \"not recorded\" fails; matching is case-insensitive",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/field-replay/replay-assertions.test.js",
+      "name": "[invariant] matchAudibleOutputs — spoken_response narration oracle (A01P) RED: \"Ze is missing\" fails the declared id",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/field-replay/replay-assertions.test.js",
+      "name": "[invariant] matchAudibleOutputs — spoken_response narration oracle (A01P) RED: no spoken_response staged at all fails with the no-answer message",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) \"calculate impedance for all.\" + client_command calculate_zs forwards with the flag OFF",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) \"calculate impedance for all\" + client_command calculate_zs forwards with the flag OFF",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) \"calculate z s for all\" + client_command calculate_zs forwards with the flag OFF",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) a malformed marker (empty string) is ignored — ordinary gate result (blocked, flag off)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) a malformed marker (null) is ignored — ordinary gate result (blocked, flag off)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) a malformed marker (number) is ignored — ordinary gate result (blocked, flag off)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) a malformed marker (object) is ignored — ordinary gate result (blocked, flag off)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) a malformed marker (unknown string) is ignored — ordinary gate result (blocked, flag off)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) control: unmarked \"calculate impedance for all.\" is still LOW_CONTENT-blocked with the flag off",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) control: unmarked \"calculate impedance for all\" is still LOW_CONTENT-blocked with the flag off",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) control: unmarked \"calculate z s for all\" is still LOW_CONTENT-blocked with the flag off",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) forwards with the flag ON too, and the reason is the marker (not borderline)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) RECOGNISED_CLIENT_COMMANDS is exactly the two server calculators",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) the marker is not a regex hint: with regexResults present the reason stays HAS_REGEX_HINT",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/pre-llm-gate.test.js",
+      "name": "[invariant] A01P — client_command marker (HAS_RECOGNISED_COMMAND) the marker never carries an EMPTY transcript through",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] acceptedAliasSiblings / writeAcceptedAliases — the helper [invariant] a present sibling is reconciled; an absent sibling is never created",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] acceptedAliasSiblings / writeAcceptedAliases — the helper [invariant] alias-ONLY repair counts as a change; an unchanged replay does not",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] acceptedAliasSiblings / writeAcceptedAliases — the helper families are exactly the ze and pfc alias sets; other fields have no siblings",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] inspect — exact key first, absent-key alias fallback within the bucket [current_behaviour] bucket holds BOTH spellings with different values → each spelling answers its exact key",
+      "classification": "current_behaviour",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] inspect — exact key first, absent-key alias fallback within the bucket [invariant] bucket holds only `ze` → asking for earth_loop_impedance_ze answers it (and vice versa)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] inspect — exact key first, absent-key alias fallback within the bucket fallback never crosses buckets: a sub-board record answers from its own record only",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] mutation receipts — one per changed atom, attribution preserved, alias slots in detail alias-ONLY repair (primary already equal, sibling stale) still emits exactly one receipt",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] mutation receipts — one per changed atom, attribution preserved, alias slots in detail an unchanged replay emits ZERO receipts",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] mutation receipts — one per changed atom, attribution preserved, alias slots in detail legacy leg: applyReadingToSnapshot circuit 0 keeps kind reading + its origin, alias slot in detail",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] mutation receipts — one per changed atom, attribution preserved, alias slots in detail live dispatch: both spellings present, raw `ze` accepted → ONE board_reading receipt with alias_repairs",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] mutation receipts — one per changed atom, attribution preserved, alias slots in detail no-sibling write keeps the receipt detail exactly as before (no alias_repairs key)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] real dispatch pins — first write leaves the sibling absent; both correction orders reconcile [current_behaviour] first LONG-form main Ze leaves the short key absent",
+      "classification": "current_behaviour",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] real dispatch pins — first write leaves the sibling absent; both correction orders reconcile [current_behaviour] first RAW main `ze` leaves the long alias absent; a sub-board with nothing of its own falls back to origin (no_ze when the origin key is absent)",
+      "classification": "current_behaviour",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] real dispatch pins — first write leaves the sibling absent; both correction orders reconcile [invariant] hydrated {ze:0.35, earth_loop_impedance_ze:0.50}: a fresh accepted write of EITHER spelling reconciles both, then Calculate uses it",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] real dispatch pins — first write leaves the sibling absent; both correction orders reconcile [invariant] the repro: Ze 0.35 (raw ze), then Ze 0.50 as the long form, R1+R2 0.20 → Calculate 0.70",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] the four atoms reconcile within their OWN bucket only applyBoardReadingMultiBoard (boards[b2]) — sibling present on the record is reconciled",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] the four atoms reconcile within their OWN bucket only applyBoardReadingToSnapshot (circuits[0]) — both spellings present → both updated; boards[main] untouched",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] the four atoms reconcile within their OWN bucket only applyReadingMultiBoard circuit 0 on a sub-board composite bucket reconciles",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] the four atoms reconcile within their OWN bucket only applyReadingToSnapshot circuit 0 (legacy atom) reconciles; circuit 1 is exact-key only",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-accepted-alias.test.js",
+      "name": "[invariant] the four atoms reconcile within their OWN bucket only legacy off-mode path (applyReadingFlagAware, main, circuit 0) reconciles the same way",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[current_behaviour] hydrated alias conflict precedence (A01-adjudicable) first LONG-form main Ze leaves the short alias absent: at-DB 0.60 + R1+R2 0.20 stays 0.80",
+      "classification": "current_behaviour",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[current_behaviour] hydrated alias conflict precedence (A01-adjudicable) main circuits[0] {ze:0.35, earth_loop_impedance_ze:0.50}, no board override, R1+R2 0.20 → 0.55 (short board-local key wins over origin)",
+      "classification": "current_behaviour",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_r1_plus_r2 — zs_minus_ze mirrors the Ze states; ring_continuity ignores Ze [current_behaviour] ring_continuity still computes with a LIM Ze",
+      "classification": "current_behaviour",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_r1_plus_r2 — zs_minus_ze mirrors the Ze states; ring_continuity ignores Ze [current_behaviour] ring_continuity still computes with an absent Ze",
+      "classification": "current_behaviour",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_r1_plus_r2 — zs_minus_ze mirrors the Ze states; ring_continuity ignores Ze zs_minus_ze with a fully absent ladder → no_ze (control)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_r1_plus_r2 — zs_minus_ze mirrors the Ze states; ring_continuity ignores Ze zs_minus_ze with LIM in the highest occupied source → ze_unreadable, zero mutation",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_zs — LIM in the highest occupied source is ze_unreadable, never no_ze a fully ABSENT ladder is still no_ze (control)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_zs — LIM in the highest occupied source is ze_unreadable, never no_ze main at-DB `ze_at_db` N/A (short and long Ze absent) → ze_unreadable, not no_ze",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_zs — LIM in the highest occupied source is ze_unreadable, never no_ze main board-local `ze` LIM with a FINITE supply Ze below it → ze_unreadable, zero mutation",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_zs — LIM in the highest occupied source is ze_unreadable, never no_ze sub-board LIM with a finite origin supply Ze → ze_unreadable (no fall-through to origin)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_zs — LIM in the highest occupied source is ze_unreadable, never no_ze supply-tier LIM (no board-local value anywhere) → ze_unreadable",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-calculate-ze-unreadable.test.js",
+      "name": "[invariant] calculate_zs — LIM in the highest occupied source is ze_unreadable, never no_ze whitespace-only sources count as absent (no_ze), a LIM further down the ladder still wins as unreadable",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-client-command-wire.test.js",
+      "name": "[invariant] client_command through the real seam with VOICE_AGENTIC_ANSWERS off \"calculate impedance for all.\" + client_command calculate_zs → model round runs, calculate_zs resolves the CURRENT board, one mutation, one read-back",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-client-command-wire.test.js",
+      "name": "[invariant] client_command through the real seam with VOICE_AGENTIC_ANSWERS off \"calculate impedance for all\" + client_command calculate_zs → model round runs, calculate_zs resolves the CURRENT board, one mutation, one read-back",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-client-command-wire.test.js",
+      "name": "[invariant] client_command through the real seam with VOICE_AGENTIC_ANSWERS off \"calculate z s for all\" + client_command calculate_zs → model round runs, calculate_zs resolves the CURRENT board, one mutation, one read-back",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-client-command-wire.test.js",
+      "name": "[invariant] client_command through the real seam with VOICE_AGENTIC_ANSWERS off control: a MALFORMED marker is ignored — still gate-blocked",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-client-command-wire.test.js",
+      "name": "[invariant] client_command through the real seam with VOICE_AGENTIC_ANSWERS off control: the SAME unmarked trigger-less transcript is gate-blocked — no model call, no extraction frame",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-client-command-wire.test.js",
+      "name": "[invariant] client_command through the real seam with VOICE_AGENTIC_ANSWERS off the marker never reaches the model as a regex hint: the user turn carries no regex-hint context for it",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] clear_board_reading client_name — global sweep from any board spelling an already-empty client_name clear is the spoken already-empty notice, not silence",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] clear_board_reading client_name — global sweep from any board spelling board_id absent → every bucket cleared, one board-insensitive frame, one read-back frame",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] clear_board_reading client_name — global sweep from any board spelling board_id current (garage) → every bucket cleared, one board-insensitive frame, one read-back frame",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] clear_board_reading client_name — global sweep from any board spelling board_id empty string → every bucket cleared, one board-insensitive frame, one read-back frame",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] clear_board_reading client_name — global sweep from any board spelling board_id mismatched existing (main) → every bucket cleared, one board-insensitive frame, one read-back frame",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] clear_board_reading client_name — global sweep from any board spelling board_id unknown → every bucket cleared, one board-insensitive frame, one read-back frame",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] clear_board_reading client_name — global sweep from any board spelling control: a Ze clear naming the non-current main board is still wrong_board — no mutation, no notice, no frame",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] clear_board_reading client_name — global sweep from any board spelling control: a Ze clear with an empty-string board_id is still wrong_board",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] GLOBAL_IDENTITY_FIELDS — the fixed set BOARD_CLEAR_SCOPE_MAP classifies client_name global, but the set is not derived from it",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] GLOBAL_IDENTITY_FIELDS — the fixed set is exactly {client_name}, frozen, and the predicate canonicalises",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] GLOBAL_IDENTITY_FIELDS — the fixed set the mutator wrapper writes circuits[0] with a sub-board selected or named",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] inspect_session_state scope=field client_name — global, board_id null, before resolveBoard a boards-less snapshot (legacy) still answers the name with board_id null",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] inspect_session_state scope=field client_name — global, board_id null, before resolveBoard board_id absent → {ok:true, board_id:null, recorded:true}",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] inspect_session_state scope=field client_name — global, board_id null, before resolveBoard board_id current (garage) → {ok:true, board_id:null, recorded:true}",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] inspect_session_state scope=field client_name — global, board_id null, before resolveBoard board_id main → {ok:true, board_id:null, recorded:true}",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] inspect_session_state scope=field client_name — global, board_id null, before resolveBoard board_id unknown → {ok:true, board_id:null, recorded:true}",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] inspect_session_state scope=field client_name — global, board_id null, before resolveBoard control: a Ze lookup with an unknown board is still not_found",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] inspect_session_state scope=field client_name — global, board_id null, before resolveBoard no mutation from any identity inspect",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] inspect_session_state scope=field client_name — global, board_id null, before resolveBoard no name recorded → recorded:false, board_id null (never not_found)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] record_board_reading client_name with the garage selected board_id absent → circuits[0] only, null effective slot, one journal winner",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] record_board_reading client_name with the garage selected board_id current (garage) → circuits[0] only, null effective slot, one journal winner",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] record_board_reading client_name with the garage selected board_id empty string → circuits[0] only, null effective slot, one journal winner",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] record_board_reading client_name with the garage selected board_id main (non-current) → circuits[0] only, null effective slot, one journal winner",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] record_board_reading client_name with the garage selected board_id unknown → circuits[0] only, null effective slot, one journal winner",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] record_board_reading client_name with the garage selected control: a Ze write naming the non-current main board is still wrong_board with no mutation",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "passed",
+      "predecessor_baseline": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-global-identity.test.js",
+      "name": "[invariant] record_board_reading client_name with the garage selected every other validation still runs: an address-shaped client_name is rejected regardless of board",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "failed",
+      "predecessor_baseline": "failed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-job-state-fixture-seed.test.js",
+      "name": "[invariant] A01P — both client wire outputs seed the session with the client name and canonical supply Ze input fixture carries what the outputs must preserve",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-job-state-fixture-seed.test.js",
+      "name": "[invariant] A01P — both client wire outputs seed the session with the client name and canonical supply Ze ios output → session_start seeds circuits[0].client_name and earth_loop_impedance_ze",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-job-state-fixture-seed.test.js",
+      "name": "[invariant] A01P — both client wire outputs seed the session with the client name and canonical supply Ze manifest.json digests the input and both outputs, never itself",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-job-state-fixture-seed.test.js",
+      "name": "[invariant] A01P — both client wire outputs seed the session with the client name and canonical supply Ze the committed outputs exist for BOTH clients (generated once from the real builders)",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a01p-job-state-fixture-seed.test.js",
+      "name": "[invariant] A01P — both client wire outputs seed the session with the client name and canonical supply Ze web output → session_start seeds circuits[0].client_name and earth_loop_impedance_ze",
+      "classification": "invariant",
+      "fix": "passed",
+      "original_baseline": "not_run",
+      "predecessor_baseline": "not_run"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_currentBehaviour_applyFieldOnTheTwoBoardJobIsUnchanged",
+      "classification": "current_behaviour",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_apiFixturesWithNullAndEmptyBoardsSelectBoardInfoOverSupply",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_atDbValueUsedWhenTheOverrideIsAbsent",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_boardOverrideUsedForRowsWithNilAndEmptyBoardId",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_boardsLessJobUsesTheSupplyLadder",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_genuinelyAbsentZeIsUnappliedNotUnsupported",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_genuinelyAbsentZeKeepsTheNoZeWording",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_jobLevelZeLadderTreatsBlankAsAbsentAndNeverFallsThroughFromInvalid",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_localCalculateJoinsTheFifoBehindPlayingAndQueued_productionLatencyFromRawFinal",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_localCalculateReadsBackExactlyOnceInEveryExtraPromptsState",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_localCalculateSkipsOccupiedDestinationsAndFillsEmptyRowsInEveryScope",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_mixedQueryControlStaysNonOrdinaryAndExecutesNothing",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_occupiedDestinationIsAlreadyRecordedRegardlessOfZeState_oneSuccessfulPlayback",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_protectedOrdinalNegativeKeepsClassificationSpansAndText",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_punctuatedAndQuestionShapedCalculatesExecuteLocallyAsOrdinary",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_queryTriggerOverrideIsOnlyTheLeadingImperativeDo",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_queueOverflowReparksTheLocalCalculate_deliveredExactlyOnceAfterTheFlood",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_queueResetBeforeStartReparksTheLocalCalculate_deliveredExactlyOnce",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_recordedLimZeIsTypedUnsupportedAndSpeaksPolicyLineOnce",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_recordedNaZeAtDbIsUnreadableNotAbsent",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_reparkedCalculateWaitsForTheDirectPathToFinishSynthesisingAndPlaying",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_soleGarageControlForwardsBoardQualifiedCalculateToo",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_soleMainJobForwardsBoardQualifiedCalculate",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_twoBoardJobForwardsEveryRecognisedCalculateWithTheMarker",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_twoBoardRawFinalPunctuatedCalculatesForwardConcreteFrameWithMarker",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_unparsedTriggerlessRawFinalIsBlockedBeforeTheRealService",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_unparsedTriggerlessUtteranceIsStillBlockedClientSide",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/A01PLocalCalculateTests.swift",
+      "name": "test_invariant_zeCorrectionThenLocalCalculateUsesLatestValue",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/BoardClearContractTests.swift",
+      "name": "test_invariant_clientNameGlobalClearIgnoresTheFrameBoardId",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/CalculateImpedanceIntentTests.swift",
+      "name": "test_currentBehaviour_baseParseKeepsItsFormerRecognition",
+      "classification": "current_behaviour",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/CalculateImpedanceIntentTests.swift",
+      "name": "test_invariant_duplicatedTrailingCircuitsTokenIsConsumed",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/CalculateImpedanceIntentTests.swift",
+      "name": "test_invariant_parseWithRemainderReturnsTheUnconsumedTail",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/CalculateImpedanceIntentTests.swift",
+      "name": "test_invariant_terminalPunctuationIsNotRemainder",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/DictatedReadbackPolicyContractTests.swift",
+      "name": "test_invariant_zeUnreadableLineIsThePolicyString",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/JobStateFixtureTests.swift",
+      "name": "test_currentBehaviour_populatedBoardsArrayStillWins",
+      "classification": "current_behaviour",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/JobStateFixtureTests.swift",
+      "name": "test_invariant_apiDecoderMaterialisesBoardInfoForNullAndEmptyBoards",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/JobStateFixtureTests.swift",
+      "name": "test_invariant_manifestDigestsEveryFixtureAndNeverItself",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/JobStateFixtureTests.swift",
+      "name": "test_invariant_realBuilderOutputMatchesTheCommittedExpectedShape",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "ios",
+      "file": "Tests/CertMateUnifiedTests/Recording/JobStateFixtureTests.swift",
+      "name": "test_invariant_theFixedFixtureSetIsComplete",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] accepted supply Ze replaces and materialises both aliases [current_behaviour] persisted short 0.35 / long 0.50 → accepted 0.60 → both 0.60 in the apply patch, no original retained (the REAL save/reload boundary is proven in harness/a01p-accepted-ze-save-reload.test.tsx)",
+      "classification": "current_behaviour",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] accepted supply Ze replaces and materialises both aliases a regex prefill wrote only the short key; the accepted EQUAL value still materialises the long alias",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] accepted supply Ze replaces and materialises both aliases accepted earth_loop_impedance_ze 0.50 replaces a differing seeded short/long 0.35 pair",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] accepted supply Ze replaces and materialises both aliases accepted ze 0.50 replaces a differing seeded short/long 0.35 pair",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] accepted supply Ze replaces and materialises both aliases both aliases already equal to the accepted value → no supply write (unchanged replay)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] accepted supply Ze replaces and materialises both aliases manual BOARD Ze overrides are a separate cell — untouched by an accepted supply Ze",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] accepted supply Ze replaces and materialises both aliases PFC is NOT part of this family (A01B-owned): the fill-only gate still keeps a pre-existing pfc",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] FieldSourceTracker — the Ze alias family is seeded, promoted and released together a regex write on the short key records the family; forget releases both members",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] FieldSourceTracker — the Ze alias family is seeded, promoted and released together a session reset (fresh tracker seeded from the reloaded job) re-derives the family from the persisted values",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-accepted-ze.test.ts",
+      "name": "[invariant] FieldSourceTracker — the Ze alias family is seeded, promoted and released together seeding either spelling marks both; a landed server Ze promotes both to sonnet; regex then respects ownership",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-board-page-ze-labels.test.tsx",
+      "name": "[invariant] A01P — Board tab Ze labels a blank override shows an empty override cell while the origin still reads the supply value",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-board-page-ze-labels.test.tsx",
+      "name": "[invariant] A01P — Board tab Ze labels editing the override persists boards[main].ze and board_info.ze; the origin fallback is never persisted",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/a01p-board-page-ze-labels.test.tsx",
+      "name": "[invariant] A01P — Board tab Ze labels labels the stored cell \"Board Ze override\" and shows a read-only \"Origin Ze\" from supply",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-extraction-boards-mirror.test.ts",
+      "name": "apply-extraction boards[0] mirror — A01P no new Ze mirror [current_behaviour] explicit NON-main legacy attribution keeps its boards[] routing",
+      "classification": "current_behaviour",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-extraction-boards-mirror.test.ts",
+      "name": "apply-extraction boards[0] mirror — A01P no new Ze mirror [invariant] a supply Ze with NO board attribution is section-only: boards[] gets no ze (legacy flat job)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-extraction-boards-mirror.test.ts",
+      "name": "apply-extraction boards[0] mirror — A01P no new Ze mirror [invariant] canonical-main and empty-string attribution never seed boards[main].ze; an existing board override survives",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-extraction-impedance.test.ts",
+      "name": "apply-extraction H4 — NO implicit Zs / R1+R2 derivation on voice writes (A01P) [invariant] a Ze correction does not implicitly rewrite an existing Zs (0.35 → 0.50 leaves Zs alone)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-extraction-impedance.test.ts",
+      "name": "apply-extraction H4 — NO implicit Zs / R1+R2 derivation on voice writes (A01P) [invariant] short-form ze alias present → Zs is NOT filled implicitly either",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-extraction-impedance.test.ts",
+      "name": "apply-extraction H4 — NO implicit Zs / R1+R2 derivation on voice writes (A01P) [invariant] Ze (supply) + R1+R2 (circuit) present → Zs is NOT filled implicitly",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-extraction-impedance.test.ts",
+      "name": "apply-extraction H4 — NO implicit Zs / R1+R2 derivation on voice writes (A01P) [invariant] Ze + Zs present → R1+R2 is NOT filled implicitly",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-extraction-replaces-cleared-board.test.ts",
+      "name": "item 7 — boardless flagged reading (global scope) writes the section alone [invariant] A01P — the identical boardless `ze` WITHOUT the flag now REPLACES too (accepted supply Ze supersedes a differing value)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/board-clear.test.ts",
+      "name": "global scope — atomic sweep of every representation [invariant] client_name already empty → accepted-empty shape with the install ownership released",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/board-clear.test.ts",
+      "name": "global scope — atomic sweep of every representation [invariant] client_name: clears installation_details.client_name only; boards, supply and board_info untouched",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/conversation-admission.test.ts",
+      "name": "[invariant] A01P — whole-Calculate carve-out is a probe of the real parser, not a grammar a probe that parses only because an unprotected ordinal was rewritten never overrides",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/conversation-admission.test.ts",
+      "name": "[invariant] A01P — whole-Calculate carve-out is a probe of the real parser, not a grammar never overrides on an unconsumed remainder (board-qualified or mixed query)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/conversation-admission.test.ts",
+      "name": "[invariant] A01P — whole-Calculate carve-out is a probe of the real parser, not a grammar QUERY_TRIGGER, REFERENCE_TRIGGER and MIXED are never probed on web (calculate is not an auxiliary)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/conversation-admission.test.ts",
+      "name": "[invariant] A01P — whole-Calculate carve-out is a probe of the real parser, not a grammar rescues a punctuated complete Calculate to ORDINARY with bypassMutation false (both spellings, spoken numbers)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-accepted-ze-save-reload.test.tsx",
+      "name": "[invariant] A01P — accepted Ze survives the REAL save and reload boundary; Calculate then speaks 0.70 once regex 0.35 → accepted → echo → server 0.50 (no fresh regex) → echo → SAVE → RELOAD → displays 0.50 → Calculate 0.70 spoken once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) a terminal playback failure RETIRES the read-back (no infinite retry) and its tracking entry",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints OFF: a PLAYING head + a QUEUED head, then Calculate, then OVERFLOW pressure — ordered starts, the calculation read-back exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints OFF: a preempting direct prompt destroys the queued calculation read-back → re-parked, then delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints OFF: LEGACY server calculate_impedance action — a PLAYING head, then the action, then OVERFLOW pressure → its local read-back delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints OFF: LEGACY server calculate_impedance action — a preempting direct prompt → re-parked, delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints ON: a PLAYING head + a QUEUED head, then Calculate, then OVERFLOW pressure — ordered starts, the calculation read-back exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints ON: a preempting direct prompt destroys the queued calculation read-back → re-parked, then delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints ON: LEGACY server calculate_impedance action — a PLAYING head, then the action, then OVERFLOW pressure → its local read-back delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints ON: LEGACY server calculate_impedance action — a preempting direct prompt → re-parked, delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints UNSET: a PLAYING head + a QUEUED head, then Calculate, then OVERFLOW pressure — ordered starts, the calculation read-back exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints UNSET: a preempting direct prompt destroys the queued calculation read-back → re-parked, then delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints UNSET: LEGACY server calculate_impedance action — a PLAYING head, then the action, then OVERFLOW pressure → its local read-back delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate-fifo-durability.test.tsx",
+      "name": "[invariant] A01P — local Calculate read-back durability in the FIFO (manual player) hints UNSET: LEGACY server calculate_impedance action — a preempting direct prompt → re-parked, delivered exactly once",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[current_behaviour] legacy server action path uses the same three-state calculator a server `calculate_impedance` action over a recorded LIM speaks only the policy line, never the model success",
+      "classification": "current_behaviour",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] board-qualified trailing text forwards on ANY job; a bare scope stays local sole-garage job: \"… on the garage board\" and its range form forward; \"calculate Zs for circuit 1.\" stays local",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] board-qualified trailing text forwards on ANY job; a bare scope stays local sole-main job: \"… on the garage board\" and its range form forward; \"calculate Zs for circuit 1.\" stays local",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] client_name — the web half of the global identity route a board-scope clear frame for client_name from a garage-selected job clears installation_details.client_name only",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate impedance for all.\" → zero local mutation, zero local read-back, sent with calculate_zs",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate impedance for all\" → zero local mutation, zero local read-back, sent with calculate_zs",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate R1 plus R2 for all\" → zero local mutation, zero local read-back, sent with calculate_r1_plus_r2",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate z s for all?\" → zero local mutation, zero local read-back, sent with calculate_zs",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate z s for all\" → zero local mutation, zero local read-back, sent with calculate_zs",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate Zs for all\" → zero local mutation, zero local read-back, sent with calculate_zs",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate Zs for circuit 1 on the garage board\" → zero local mutation, zero local read-back, sent with calculate_zs",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate Zs for circuit 1\" → zero local mutation, zero local read-back, sent with calculate_zs",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command \"calculate Zs for circuits 1 to 2\" → zero local mutation, zero local read-back, sent with calculate_zs",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command apply_field on the same two-board job is unchanged: still local, no send, no marker",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] multi-board forwarding — the parse is discarded, the final is an ordinary transcript with client_command control: an UNPARSED trigger-less utterance on the same job is still gate-blocked client-side",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board local Calculate (hints ON and OFF) \"calculate Zs for circuit 1\" computes locally through the typed calculator, one read-back, no server send (hints=0)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board local Calculate (hints ON and OFF) \"calculate Zs for circuit 1\" computes locally through the typed calculator, one read-back, no server send (hints=1)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board local Calculate (hints ON and OFF) a mixed-query control and the protected-ordinal negative execute nothing locally",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board local Calculate (hints ON and OFF) punctuation controls execute locally, classified ORDINARY at the raw-final classifier, exactly one read-back",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board local Calculate (hints ON and OFF) the trigger-less grammars (\"calculate impedance for all\", \"calculate z s for all\") compute locally too",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board Ze ladder through the real job keys a boards-less job (boards null, empty board_info) uses the supply ladder",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board Ze ladder through the real job keys a one-board job whose circuits carry absent and empty board_id uses the board Ze override, not supply, and touches the addressed row",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board Ze ladder through the real job keys a recorded LIM Ze speaks the policy line exactly once and mutates nothing; an absent Ze keeps the no-Ze wording",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board Ze ladder through the real job keys fixture single-board-boards-empty.json (board_info.ze 0.35, supply 0.50, R1+R2 0.20) through the real adapter selects board_info and writes 0.55",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board Ze ladder through the real job keys fixture single-board-boards-null.json (board_info.ze 0.35, supply 0.50, R1+R2 0.20) through the real adapter selects board_info and writes 0.55",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] single-board Ze ladder through the real job keys separately, the at-DB value (zs_at_db) beats supply when the override is blank",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] the accepted-Ze sequence: regex 0.35 → echo → server 0.50 (no fresh regex) → echo → Calculate → 0.70 an earlier queued accepted-reading confirmation followed by a local Calculate: both play exactly once, in order",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] the accepted-Ze sequence: regex 0.35 → echo → server 0.50 (no fresh regex) → echo → Calculate → 0.70 both supply aliases persist 0.50, no implicit 0.55, requested Zs 0.70, one read-back per accepted operation",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a01p-local-calculate.test.tsx",
+      "name": "[invariant] the accepted-Ze sequence: regex 0.35 → echo → server 0.50 (no fresh regex) → echo → Calculate → 0.70 R1+R2 dictated between the Ze steps and both alias orders still yield the requested Zs from the LATEST Ze",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/job-state-fixture.test.ts",
+      "name": "[invariant] A01P shared job-state fixture — web builder JobDetailSchema.parse → buildJobStateForWire equals the committed key-sorted expected shape",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/job-state-fixture.test.ts",
+      "name": "[invariant] A01P shared job-state fixture — web builder the input fixture is the shared bytes (digest pinned so a drifted copy is caught here, not on iOS)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/job-state-fixture.test.ts",
+      "name": "[invariant] A01P shared job-state fixture — web builder the two twins are byte-identical apart from `boards` (null vs []) and their ids",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/job-state-fixture.test.ts",
+      "name": "[invariant] A01P shared job-state fixture — web builder the wire shape carries the identity and alias carriers the backend seeds from",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/job-state-fixture.test.ts",
+      "name": "[invariant] A01P shared job-state fixture — web builder twin single-board-boards-empty.json through the real adapter into the local Calculate path selects board_info over supply → 0.55",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/job-state-fixture.test.ts",
+      "name": "[invariant] A01P shared job-state fixture — web builder twin single-board-boards-null.json through the real adapter into the local Calculate path selects board_info over supply → 0.55",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/sonnet-session.test.ts",
+      "name": "SonnetSession Stage 6 ask_user_answered wire [invariant] A01P — sendTranscript stamps the additive `client_command` marker only when given",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate at-DB tier (zs_at_db, and the iOS ze_at_db alias) beats supply when the override is blank",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate boards-less job with no board_info values reaches the supply ladder: long alias, then short",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate boards: [] behaves identically to boards: null (board_info is the sole board)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate boards: null + populated board_info → board_info.ze wins over supply Ze (0.35 + 0.20 = 0.55)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate genuinely absent Ze keeps the existing no-Ze wording",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate one board with a Ze override uses it whatever the circuit board_id says (absent / empty)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate present-but-invalid at the highest occupied tier is unreadable — never a fall-through to a finite lower tier",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate the singular legacy `supply` bag is NOT a Ze source any more",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — job-level Ze ladder (resolveJobZe) and three-state local Calculate two or more boards → multi_board (the caller forwards; the calculator never computes)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — parseScopeTextWithRemainder / terminal punctuation clientCommandForCalculate names the server calculator",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — parseScopeTextWithRemainder / terminal punctuation parseCalculateCommand is the Calculate branch only; a mixed query keeps its remainder",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — parseScopeTextWithRemainder / terminal punctuation reports board-qualified trailing text as an unconsumed remainder (recognition unchanged)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — parseScopeTextWithRemainder / terminal punctuation the spoken \"z s\" prefix parses as Zs (no \\bzs\\b trigger word on the wire)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P — parseScopeTextWithRemainder / terminal punctuation tolerates a terminal full stop, comma, bang or question mark on every scope shape",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-1 — a meter reading always wins (already_set skip, every scope) all scope with every destination occupied → the plural already-recorded line, nothing written",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-1 — a meter reading always wins (already_set skip, every scope) all scope: two skipped, two filled",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-1 — a meter reading always wins (already_set skip, every scope) R1+R2 branch: an occupied r1_r2_ohm is never overwritten by Zs − Ze",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-1 — a meter reading always wins (already_set skip, every scope) range scope: occupied rows (a number AND a LIM) are skipped, the empty row in the same command fills; read-back names only what was written",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-1 — a meter reading always wins (already_set skip, every scope) single scope: an occupied destination is left unchanged and the outcome says so",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-1 — at-DB alias selected by occupancy a BLANK zs_at_db beside a populated ze_at_db uses ze_at_db (0.40 + 0.20 = 0.60, not supply 0.70)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-1 — at-DB alias selected by occupancy an occupied-INVALID zs_at_db still wins the tier: unreadable, never the sibling or supply",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-1 — at-DB alias selected by occupancy both at-DB aliases blank → supply ladder",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-2 — mixed-skip zero-write commands name BOTH reasons no occupied rows and nothing computable keeps the existing line, now with the skip reasons attached",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-2 — mixed-skip zero-write commands name BOTH reasons one occupied row plus one computed row still speaks only the computed value (applied)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-2 — mixed-skip zero-write commands name BOTH reasons R1+R2 with ALL THREE reasons in one command: already_set / no_zs / zs_below_ze are stored and each scope is named truthfully (Codex cycle-3)",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-2 — mixed-skip zero-write commands name BOTH reasons R1+R2: occupied row plus a row with no Zs → both named; a Zs-below-Ze row is named as such",
+      "classification": "invariant",
+      "fix": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voice-commands.test.ts",
+      "name": "[invariant] A01P Codex cycle-2 — mixed-skip zero-write commands name BOTH reasons Zs: circuit 1 occupied, circuit 2 blank but lacking R1+R2 → both named, nothing written, unapplied",
+      "classification": "invariant",
+      "fix": "passed"
+    }
+  ]
+}

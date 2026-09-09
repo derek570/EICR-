@@ -1,0 +1,120 @@
+# A01P (2026-09-08) — a RECORDED-but-unusable Ze is narrated as such, never as
+# "missing". Before A01P, `resolveBoardAwareZe` collapsed a present-but-invalid
+# Ze (LIM / N/A / non-scalar) into the same `no_ze` skip as an absent one, so an
+# explicit "Calculate Zs" on a job whose supply Ze is the limitation `LIM`
+# came back `skipped:[{reason:'no_ze'}]` and the model — reading the prompt's
+# closed skip-reason list — told the inspector Ze was missing or not
+# recorded, minutes after they had dictated the limitation.
+#
+# Post-fix: the dispatcher skips with `reason:'ze_unreadable'`, the prompt's
+# Example 8 list carries that reason with the rule "never say Ze is missing
+# or not recorded", and the model narrates accordingly through answer_user.
+#
+# LANE SEMANTICS. The value of this fixture is the LIVE lane (real model,
+# `--model-lane=live`, nightly/manual): the `spoken_response` oracle below
+# asserts the NARRATION mentions the recorded limitation and never claims Ze
+# is missing / not recorded. In the RECORDED lane the frozen rounds replay a
+# compliant answer, so the narration oracle is trivially satisfied there; the
+# recorded lane still proves the deterministic backend half — the tool call
+# is accepted, no measured_zs_ohm write lands (expected_operations is empty
+# and any write would be an undeclared mutation), and the model's answer
+# rides the VCR channel.
+#
+# RED PROOF (dual-proof rule): `audibility.output.out_lim_narration` is the
+# documented RED id, and it is LIVE-LANE red only. On pre-fix code the
+# dispatcher reported `no_ze` and the prompt had no `ze_unreadable` rule, so
+# a real model told the inspector Ze was missing — the narration oracle
+# fails. The recorded lane replays a frozen compliant answer and therefore
+# cannot be red on either side by construction; there is no executed
+# recorded red proof for this fixture, and the recorded lane's job here is the
+# no-write half only.
+#
+# Provenance: HAND-AUTHORED from the A01P defect description (unit-test twin:
+# stage6-a01p-calculate-ze-unreadable.test.js pins the dispatcher reason;
+# stage6-agentic-prompt.test.js pins the prompt list). No captured PII.
+schema_version: 1
+corpus_id: frc_cb24ba8b8edae9677281a9f8f6a1af2d
+purpose: regression
+gate_state: required_green
+red_proof_failure_id: audibility.output.out_lim_narration
+owner: Derek Beckley
+introduced_at: '2026-09-08T00:00:00Z'
+expires_at: '2099-01-01T00:00:00.000Z'
+initial_state_fidelity: hand_authored
+is_keystone: false
+live_lane:
+  enabled: true
+  hard_max_vendor_calls: 4
+notes: >-
+  A01P ze_unreadable narration: an explicit "Calculate Zs for circuit 1" on a
+  job whose supply Ze is recorded as LIM (R1+R2 0.20 present) must skip the
+  calculation with reason ze_unreadable and be narrated as a recorded
+  limitation — never as a missing or unrecorded Ze. Live-lane narration
+  oracle; recorded lane proves the no-write half.
+job_state:
+  certificateType: eicr
+  boards:
+    - id: main
+      board_type: main
+  supply:
+    ze: LIM
+  circuits:
+    - number: 1
+      designation: Kitchen Ring
+      r1R2Ohm: '0.20'
+client_capabilities:
+  value:
+    - regex_fast_v2
+    - client_playback_telemetry
+    - low_conf_readback_v1
+  provenance: recorded_full
+fallback_to_legacy:
+  value: false
+  provenance: recorded_full
+turns:
+  - turn_index: 1
+    at_ms: 0
+    at_ms_provenance: recorded_full
+    transcript: Calculate Zs for circuit 1.
+    regex_results: []
+    confirmations_enabled:
+      value: true
+      provenance: recorded_full
+    in_response_to:
+      value: false
+      provenance: recorded_full
+    ws_mode: open
+    chime_observed: true
+    model_rounds:
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_a01p_calc_lim
+            name: calculate_zs
+            input:
+              circuit_ref: 1
+              all: false
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: tool_use
+        tool_calls:
+          - id: toolu_a01p_answer_lim
+            name: answer_user
+            input:
+              answer_text: Ze is recorded as LIM, so I can't calculate Zs for circuit 1.
+            schema_expectation: accept
+            dispatcher_expectation: accept
+      - stop_reason: end_turn
+        text: ''
+    expected_operations: []
+    expected_audible_outputs:
+      - output_id: out_lim_narration
+        kind: spoken_response
+        count: 1
+        match:
+          text_contains: LIM
+          text_not_contains:
+            - missing
+            - not recorded
+            - no Ze
+            - isn't recorded
+            - is not recorded

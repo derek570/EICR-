@@ -66,6 +66,21 @@ It byte-compares `config/dictated-readback-policy-v1.json` with the XCTest copy.
 This must pass before TestFlight so backend, web, and iOS use the same mandatory,
 silent, optional, cue, and typed-action-outcome vectors.
 
+A01P (2026-09-08) adds the job-state fixture check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-job-state-fixture-sync.sh
+```
+
+It byte-compares every file in `src/__tests__/fixtures/job-state/` (the shared
+API-shaped `input-job.json` plus the two single-board twins) with the XCTest copies
+under `Tests/CertMateUnifiedTests/Fixtures/job-state/`. Both clients must start from
+identical bytes: web's `buildJobStateForWire` and iOS's decoder-to-builder path each
+produce a key-sorted output that the backend Jest suite replays through
+`session_start`. A missing file, an extra file, or a differing byte fails closed.
+`deploy-testflight.sh` runs this as a named preflight.
+
 ## App Store Connect credentials
 
 | Field | Value |

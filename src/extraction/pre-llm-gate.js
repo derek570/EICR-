@@ -393,6 +393,15 @@ export const GATE_REASONS = Object.freeze({
   // will narrow to zero post-deploy.
   HAS_TRIGGER: 'has_trigger',
   HAS_REGEX_HINT: 'has_regex_hint',
+  // A01P (2026-09-08) — a client that RECOGNISED a Calculate command locally
+  // but declined to execute it (multi-board job) forwards the final as an
+  // ordinary transcript and stamps `client_command` on the frame. The
+  // recognised grammar carries no digit and no trigger word ("calculate
+  // impedance for all"; the spoken "z s" never matches \bzs\b), so without
+  // this authority the transcript would be LOW_CONTENT-blocked whenever
+  // VOICE_AGENTIC_ANSWERS is off and silently lost. The marker is a forward
+  // reason only: never a write, never a regex hint, never shown to the model.
+  HAS_RECOGNISED_COMMAND: 'has_recognised_command',
   // PLAN-backend-final.md Phase 5.1 (2026-06-04) — explicit forward
   // authority for inspector complaints / negations. 3 of session
   // 60754E4D's 6 voiced frustrations dropped to LOW_CONTENT under the
@@ -501,9 +510,24 @@ export const STANDALONE_NEGATION_PATTERN = /^\s*(no|nope|nah)[.!?]*\s*$/i;
  *                  produce an ordinary-path EMPTY after a chime.
  * @returns {{forward: boolean, reason: string, distinctContentWords?: number, borderline?: boolean}}
  */
+/**
+ * A01P — the closed set of `client_command` marker values the gate honours.
+ * Anything else (absent, non-string, unknown) changes nothing: the ordinary
+ * gate runs exactly as before. Mirrors the two server calculators the model
+ * can select for a forwarded Calculate (`stage6-tool-schemas.js`).
+ */
+export const RECOGNISED_CLIENT_COMMANDS = Object.freeze(
+  new Set(['calculate_zs', 'calculate_r1_plus_r2'])
+);
+
+export function isRecognisedClientCommand(marker) {
+  return typeof marker === 'string' && RECOGNISED_CLIENT_COMMANDS.has(marker);
+}
+
 export function shouldForwardToSonnet(text, opts = {}) {
   const {
     regexResults,
+    clientCommand = null,
     hasPendingAsk = false,
     hasActiveDialogueScript = false,
     inResponseTo = false,
@@ -534,6 +558,13 @@ export function shouldForwardToSonnet(text, opts = {}) {
   const trimmed = typeof text === 'string' ? text.trim() : '';
   if (!trimmed) {
     return { forward: false, reason: GATE_REASONS.EMPTY };
+  }
+  // A01P — deterministic forward authority for a client-recognised Calculate
+  // that the client declined to run locally (multi-board job). Independent of
+  // VOICE_AGENTIC_ANSWERS; sits after EMPTY so a marker can never carry an
+  // empty transcript through. See GATE_REASONS.HAS_RECOGNISED_COMMAND.
+  if (isRecognisedClientCommand(clientCommand)) {
+    return { forward: true, reason: GATE_REASONS.HAS_RECOGNISED_COMMAND };
   }
   // PLAN-backend-final.md Phase 5.1 — complaint / negation BEFORE
   // HAS_DIGIT (deliberately). Complaints sometimes contain digits

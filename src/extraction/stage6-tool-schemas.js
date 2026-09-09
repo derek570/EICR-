@@ -1349,7 +1349,7 @@ const resolveObservationClarification = makeTool({
 const inspectSessionState = makeTool({
   name: 'inspect_session_state',
   description:
-    "Query the authoritative session state when the facts you need are NOT visible in the state snapshot above (an older circuit's readings, another board, or whole-certificate completeness). Read-only. Call it FIRST, then speak the result via answer_user. scope: 'summary' = per-board completeness counts; 'board' = incomplete circuits + missing-field names for one board; 'circuit' = all recorded values for one circuit; 'field' = one field's value (omit circuit for a supply/board-level field).",
+    "Query the authoritative session state when the facts you need are NOT visible in the state snapshot above (an older circuit's readings, another board, or whole-certificate completeness). Read-only. Call it FIRST, then speak the result via answer_user. scope: 'summary' = per-board completeness counts; 'board' = incomplete circuits + missing-field names for one board; 'circuit' = all recorded values for one circuit; 'field' = one field's value (omit circuit for a supply/board-level field; client_name is installation-global — board_id is ignored and the answer carries board_id null).",
   properties: {
     scope: {
       type: 'string',
@@ -1372,7 +1372,7 @@ const inspectSessionState = makeTool({
     field: {
       type: 'string',
       description:
-        "Schema field key (e.g. 'measured_zs_ohm', 'earth_loop_impedance_ze'). Required for scope 'field'.",
+        "Schema field key (e.g. 'measured_zs_ohm', 'earth_loop_impedance_ze'). Required for scope 'field'. For 'client_name' the lookup is installation-global: omit board_id (it is ignored).",
     },
   },
   required: ['scope'],

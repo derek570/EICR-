@@ -497,11 +497,11 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "0d14b44d8c745e3bb4c367ece44a10775604a7a5bfdbf80128f068023342c8b0",
+  "semantic_oracle_digest": "0845f9db9c01db5466caa4617cfe21500740f8b428a8becac986a13936b22672",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
-      "sha256": "2b8afa8f75e3a187674bef32ce128cd0d9bfa65059a5ef79941dad782f5e107c"
+      "sha256": "8a7b2952578d84984b182717f2c692d54fb738e09c005a4f64136dbbc9a32eea"
     },
     {
       "path": "src/extraction/plan00-semantic-capture.js",
@@ -517,7 +517,7 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "d4d5607847ffbb7e85629a56a80390a143d442a85eba13da8bf421668a887dc7"
+      "sha256": "cd92083e3b64cf2ef1adb93205ffa29134bf6c792da82e87835d86249db42619"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
@@ -525,7 +525,7 @@
     },
     {
       "path": "src/extraction/eicr-extraction-session.js",
-      "sha256": "cf50a6aa6aa7d9b45626ac7090a5d2c4eb351b479c8e1484473757ff88ad3436"
+      "sha256": "9d950fb0f743e92a6da2ac6c73de6c9ea98217f0429c854b223a2d9a4760daee"
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
@@ -561,7 +561,7 @@
     },
     {
       "path": "scripts/model-ab/lib/expectation-projection.mjs",
-      "sha256": "1aff82abab137d88b89fab937ae1a05eb5dfb9bb9692ff13e6d7cf203e498ada"
+      "sha256": "e5dc7ede75120e2e4e6add783ba8a6a34e2d76fa84b5c01b12e500df8e069854"
     },
     {
       "path": "scripts/model-ab/lib/semantic-judge.mjs",
@@ -569,7 +569,7 @@
     },
     {
       "path": "scripts/field-replay/lib/fixture-schema.mjs",
-      "sha256": "918817d831260e5334ae01254c056066db170b10623853aff5d2c786bc096da8"
+      "sha256": "de607faaec5db02bd5f4b0c4d32cb50c45825968bad3d890a2d6619159e4276b"
     },
     {
       "path": "scripts/model-ab/run-semantic-lane.mjs",

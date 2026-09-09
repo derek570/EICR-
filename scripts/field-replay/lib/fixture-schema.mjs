@@ -78,6 +78,14 @@ export const AUDIBLE_OUTPUT_KINDS = Object.freeze([
   'state_confirmation',
   'ask_user',
   'field_null_fallback',
+  // A01P (2026-09-08) — the turn's model-staged spoken answer
+  // (`result.spoken_response`, answer_user). Matched by text_contains /
+  // text_not_contains (case-insensitive); count 1 = present and matching,
+  // count 0 = absent or not matching. Deliberately OUTSIDE the exactly-once
+  // unclaimed sweep (the VCR channel owns its exactly-once); it exists so a
+  // live-lane fixture can pin NARRATION (for example "never says Ze is
+  // missing" when Ze is recorded as LIM).
+  'spoken_response',
 ]);
 
 export const ADVISORY_LIFECYCLES = Object.freeze(['known_red', 'monitor', 'green_evidence']);
@@ -449,6 +457,9 @@ export const FIXTURE_JSON_SCHEMA = {
             dedupe_token: { type: 'string' },
             expected_key: { type: 'string' },
             text_exact: { type: 'string' }, // trimmed BYTE-EXACT (field_null_fallback)
+            // spoken_response only — case-insensitive fragment(s).
+            text_contains: { type: ['string', 'array'], items: { type: 'string' } },
+            text_not_contains: { type: ['string', 'array'], items: { type: 'string' } },
             tool_call_id: { type: 'string' },
             reason: { type: 'string' },
             context_field: { type: 'string' },
