@@ -885,6 +885,8 @@
   ],
   "spoken_distinctness_union": [
     "Transcription is running slowly — confirmations may take a few seconds.",
-    "Some recent audio may not have been transcribed. Check your recent readings and repeat only anything that's missing."
+    "Some recent audio may not have been transcribed. Check your recent readings and repeat only anything that's missing.",
+    "I heard something just as you cleared {destinations}. Say it again if it should apply.",
+    "I heard something just as you cleared those fields. Say it again if it should apply."
   ]
 }
