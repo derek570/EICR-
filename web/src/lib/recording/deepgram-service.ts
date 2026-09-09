@@ -435,7 +435,12 @@ export class DeepgramService {
     sttModel: SttModel = 'nova3',
     options: DeepgramServiceOptions = {}
   ) {
-    this.callbacks = callbacks;
+    // A02D — the FROZEN nova-3 `handleMessage` path invokes the callbacks
+    // with no FinalWindowV1 meta and no provider speech evidence; the
+    // wrapper derives both OUTSIDE the frozen surface (see
+    // `wrapCallbacksForFinalWindow`). Flux (`handleFluxMessage`, unfrozen)
+    // supplies its own meta and evidence and passes straight through.
+    this.callbacks = this.wrapCallbacksForFinalWindow(callbacks);
     // Default to the real global WebSocket. Tests pass a factory whose
     // sockets expose a mutable `bufferedAmount` so the KeepAlive gate
     // can be exercised deterministically. Kept as an optional second
@@ -590,6 +595,117 @@ export class DeepgramService {
     const named = parts.filter((p) => typeof p === 'number' || (typeof p === 'string' && p));
     const tail = named.length > 0 ? named.join('|') : `text:${transcript}`;
     return `${epoch ?? 'e?'}|${kind}|${tail}`;
+  }
+
+  /**
+   * A02D — the socket whose message is being delivered RIGHT NOW, with the
+   * epoch and dispatch origin `openSocket` bound to it. Set around every
+   * `onmessage` delivery by `bindDispatchContext`, so the callback wrapper
+   * can attribute a nova-3 final to the EMITTING socket (a superseded
+   * socket's late final is inadmissible, exactly as on Flux) without any
+   * change to the frozen `onmessage` / `handleMessage` surface.
+   */
+  private dispatchingSocketContext: { epoch: ConnectionEpoch | null; origin: number } | null = null;
+
+  /**
+   * Wrap a freshly constructed socket so that whatever handler the frozen
+   * `openSocket` code assigns to `onmessage` runs with
+   * `dispatchingSocketContext` set to THIS socket's epoch/origin. The
+   * assignment site (`ws.onmessage = (event) => { … }`) is byte-for-byte
+   * unchanged; only the instance's `onmessage` property is intercepted
+   * (an own accessor shadowing the prototype's — legal on `WebSocket` and
+   * on the harness's captive socket alike).
+   */
+  private bindDispatchContext(ws: WebSocket): WebSocket {
+    type Handler = ((this: WebSocket, ev: MessageEvent) => unknown) | null;
+    const service = this;
+    const epoch = this.currentEpoch;
+    const origin = this.epochDispatchOrigin;
+    // The prototype accessor (a real `WebSocket`); a plain-field fake has
+    // none and is served entirely by the own accessor below.
+    let protoSetter: ((this: WebSocket, fn: Handler) => void) | undefined;
+    for (let proto = Object.getPrototypeOf(ws); proto && proto !== Object.prototype; ) {
+      const desc = Object.getOwnPropertyDescriptor(proto, 'onmessage');
+      if (desc?.set) {
+        protoSetter = desc.set as typeof protoSetter;
+        break;
+      }
+      proto = Object.getPrototypeOf(proto);
+    }
+    let delegate: Handler = null;
+    Object.defineProperty(ws, 'onmessage', {
+      configurable: true,
+      enumerable: true,
+      get: () => delegate,
+      set: (fn: Handler) => {
+        delegate = fn
+          ? function (this: WebSocket, ev: MessageEvent) {
+              const previous = service.dispatchingSocketContext;
+              service.dispatchingSocketContext = { epoch, origin };
+              try {
+                return fn.call(this, ev);
+              } finally {
+                service.dispatchingSocketContext = previous;
+              }
+            }
+          : null;
+        protoSetter?.call(ws, delegate);
+      },
+    });
+    return ws;
+  }
+
+  /**
+   * A02D FinalWindowV1 for the frozen nova-3 path. `handleMessage` (byte-
+   * for-byte the pre-A02D method) delivers `onFinalTranscript(text,
+   * confidence, words)` with no meta and never notes provider speech
+   * evidence; this wrapper adds both from the words and the emitting
+   * socket's context: `speech_start` from the first provider word start,
+   * `window_end` from the last word end (no words → unbounded), and the
+   * provider-final identity from the word bounds. Flux calls arrive WITH
+   * meta and pass through untouched (its evidence is noted inside the
+   * unfrozen `handleFluxMessage`).
+   */
+  private wrapCallbacksForFinalWindow(callbacks: DeepgramCallbacks): DeepgramCallbacks {
+    return {
+      ...callbacks,
+      onFinalTranscript: (text, confidence, words, meta) => {
+        if (meta !== undefined) {
+          callbacks.onFinalTranscript(text, confidence, words, meta);
+          return;
+        }
+        const socketContext = this.dispatchingSocketContext ?? undefined;
+        const origin = socketContext?.origin ?? this.epochDispatchOrigin;
+        const first = words[0];
+        const last = words[words.length - 1];
+        callbacks.onFinalTranscript(
+          text,
+          confidence,
+          words,
+          this.finalMeta(
+            socketContext,
+            last ? last.end : undefined,
+            first ? origin + audioWindowEndToSampleOffset(first.start) : null,
+            this.providerFinalId(
+              socketContext?.epoch ?? null,
+              'nova',
+              [first?.start, last?.end],
+              text
+            )
+          )
+        );
+      },
+      onInterimTranscript: (text, confidence) => {
+        // nova-3 interims are non-empty by construction (the frozen path
+        // returns on an empty transcript); Flux notes its own evidence.
+        if (this.sttModel !== 'flux') this.noteProviderSpeechEvidence();
+        callbacks.onInterimTranscript(text, confidence);
+      },
+      onSpeechStarted: () => {
+        if (this.sttModel !== 'flux') this.noteProviderSpeechEvidence();
+        callbacks.onSpeechStarted?.();
+      },
+    };
   }
 
   /**
@@ -755,7 +871,7 @@ export class DeepgramService {
     //
     // `wsFactory` defaults to the global `WebSocket` constructor; see
     // `WebSocketFactory` doc comment for the test seam.
-    const ws = this.wsFactory(url, ['bearer', apiKey]);
+    const ws = this.bindDispatchContext(this.wsFactory(url, ['bearer', apiKey]));
     ws.binaryType = 'arraybuffer';
     // PLAN-E2 (Codex cycle-1 BLOCKER fix) — the epoch THIS socket was
     // minted under, bound into its error/close callbacks. A late callback
@@ -1741,36 +1857,18 @@ export class DeepgramService {
             confidence: Math.round(confidence * 1000) / 1000,
             wordCount: words.length,
           });
-          // A02D FinalWindowV1 (nova-3): first provider word start and last
-          // word end, in this epoch's dispatched domain. No words → unbounded.
-          const origin = socketContext?.origin ?? this.epochDispatchOrigin;
-          const first = words[0];
-          const last = words[words.length - 1];
-          const meta = this.finalMeta(
-            socketContext,
-            last ? last.end : undefined,
-            first ? origin + audioWindowEndToSampleOffset(first.start) : null,
-            this.providerFinalId(
-              socketContext?.epoch ?? null,
-              'nova',
-              [json.start, json.duration],
-              transcript
-            )
-          );
-          this.callbacks.onFinalTranscript(transcript, confidence, words, meta);
+          this.callbacks.onFinalTranscript(transcript, confidence, words);
         } else {
           pipelineLog('deepgram_interim', {
             textLength: transcript.length,
             confidence: Math.round(confidence * 1000) / 1000,
           });
-          this.noteProviderSpeechEvidence();
           this.callbacks.onInterimTranscript(transcript, confidence);
         }
         break;
       }
       case 'SpeechStarted':
         pipelineLog('deepgram_speech_started', {});
-        this.noteProviderSpeechEvidence();
         this.callbacks.onSpeechStarted?.();
         break;
       case 'UtteranceEnd':

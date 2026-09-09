@@ -292,6 +292,80 @@ describe('A02D admission — the service half', () => {
   });
 });
 
+describe('nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed to the emitting socket', () => {
+  it('[invariant] nova meta comes from the callback wrapper: speech_start/window_end from the word times, identity from the word bounds, and a late final from a superseded socket is inadmissible under ITS epoch', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness('nova3', { fetcher: true });
+      await flush();
+      h.ws().open();
+      h.service.sendSamples(voiced());
+      const oldSocket = h.ws();
+      const oldEpoch = h.service.liveEpoch;
+      // Onset, confirmed by a NON-EMPTY nova interim (the frozen path never
+      // notes evidence itself — the callback wrapper does).
+      h.service.noteLocalSpeechOnset(h.nowMs());
+      h.tick(300);
+      oldSocket.emit({
+        type: 'Results',
+        is_final: false,
+        channel: { alternatives: [{ transcript: 'circuit', confidence: 0.5, words: [] }] },
+      });
+      oldSocket.emit({
+        type: 'Results',
+        is_final: true,
+        channel: {
+          alternatives: [
+            {
+              transcript: 'circuit 4 zs 0.35',
+              confidence: 0.9,
+              words: [
+                { word: 'circuit', start: 0.1, end: 0.4, confidence: 0.9 },
+                { word: '0.35', start: 1.0, end: 1.5, confidence: 0.9 },
+              ],
+            },
+          ],
+        },
+      });
+      const first = h.finals[0].meta!;
+      expect(first.admissible).toBe(true);
+      expect(first.epoch).toBe(oldEpoch);
+      expect(first.speechStart).toBe(1600); // 0.1 s × 16 kHz (provider word start)
+      expect(first.windowEnd).toBe(24000); // 1.5 s
+      expect(first.providerFinalId).toBe(`${oldEpoch}|nova|0.1|1.5`);
+      // Unowned close → reconnect on a NEW socket / epoch; the OLD socket's
+      // late final is attributed to the old epoch and is inadmissible.
+      oldSocket.onclose?.({ code: 1006, wasClean: false });
+      vi.advanceTimersByTime(5_000);
+      await flush();
+      h.ws().open();
+      expect(h.service.liveEpoch).not.toBe(oldEpoch);
+      oldSocket.emit({
+        type: 'Results',
+        is_final: true,
+        channel: {
+          alternatives: [{ transcript: 'late from old socket', confidence: 0.9, words: [] }],
+        },
+      });
+      const late = h.finals[h.finals.length - 1].meta!;
+      expect(late.epoch).toBe(oldEpoch);
+      expect(late.admissible).toBe(false);
+      expect(late.providerFinalId).toBe(`${oldEpoch}|nova|text:late from old socket`);
+      // A final on the NEW socket is admissible under the new epoch.
+      h.ws().emit({
+        type: 'Results',
+        is_final: true,
+        channel: { alternatives: [{ transcript: 'fresh', confidence: 0.9, words: [] }] },
+      });
+      const fresh = h.finals[h.finals.length - 1].meta!;
+      expect(fresh.epoch).toBe(h.service.liveEpoch);
+      expect(fresh.admissible).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('nova-3 uses first word start and last word end', () => {
   it('[invariant] word-timed final → speech_start and window_end from provider word times; no words → unbounded', () => {
     const h = harness('nova3');

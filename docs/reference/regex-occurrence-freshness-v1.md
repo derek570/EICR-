@@ -26,8 +26,13 @@ Both clients perform this sequence once per admitted final:
    active recording session. `disconnect()` invalidates the instance
    synchronously, before its 300 ms CloseStream grace. A failing final is
    dropped with no record, no hold, no clarification, and no send.
-   `onmessage`, `handleMessage`, and `advanceProcessedWatermark` are unchanged,
-   so PLAN-E2 still retires a superseded socket's own epoch.
+   `onmessage`, `handleMessage`, and `advanceProcessedWatermark` are unchanged
+   byte-for-byte (`web/tests/deepgram-service-frozen-surface.test.ts` pins
+   their digests), so PLAN-E2 still retires a superseded socket's own epoch.
+   The nova-3 path's meta (word-time `speech_start`/`window_end`, provider
+   identity, speech evidence) is derived in a callback wrapper outside the
+   frozen decoder, attributed to the emitting socket through a per-socket
+   dispatch context bound around delivery.
 2. **FinalWindowV1 record.** `{session, epoch, final_sequence, speech_start,
    window_end}`. `speech_start` is the session VAD's onset, recorded at the
    onset frame's send as the epoch's `dispatchedSampleOffset`, and it counts
