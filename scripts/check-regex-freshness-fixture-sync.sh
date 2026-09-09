@@ -30,7 +30,7 @@ elif [[ -d "${EICR_ROOT}/CertMateUnified/Tests" ]]; then
 elif [[ -d "${EICR_ROOT}/../CertMateUnified/Tests" ]]; then
   ios_root="$(cd "${EICR_ROOT}/../CertMateUnified" && pwd)"
 else
-  echo "check-job-state-fixture-sync: iOS repo not found. Set IOS_REPO_ROOT." >&2
+  echo "check-regex-freshness-fixture-sync: iOS repo not found. Set IOS_REPO_ROOT." >&2
   exit 2
 fi
 SRC="${EICR_ROOT}/config/regex-freshness-vectors.json"
