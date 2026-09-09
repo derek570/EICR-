@@ -334,7 +334,7 @@ describe('nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed t
       expect(first.epoch).toBe(oldEpoch);
       expect(first.speechStart).toBe(1600); // 0.1 s × 16 kHz (provider word start)
       expect(first.windowEnd).toBe(24000); // 1.5 s
-      expect(first.providerFinalId).toBe(`${oldEpoch}|nova|0|1.6`);
+      expect(first.providerFinalId).toBe(`${oldEpoch}|nova|s=0|d=1.6`);
       // Unowned close → reconnect on a NEW socket / epoch; the OLD socket's
       // late final is attributed to the old epoch and is inadmissible.
       oldSocket.onclose?.({ code: 1006, wasClean: false });
@@ -395,13 +395,57 @@ describe('nova-3 provider identity — frame fields only, never the transcript',
     const ids = h.finals.map((f) => f.meta!.providerFinalId);
     const epoch = h.service.liveEpoch;
     expect(ids).toEqual([
-      `${epoch}|nova|2|1.2`,
-      `${epoch}|nova|9|1.2`,
-      `${epoch}|nova|2|1.2`,
+      `${epoch}|nova|s=2|d=1.2`,
+      `${epoch}|nova|s=9|d=1.2`,
+      `${epoch}|nova|s=2|d=1.2`,
       null,
     ]);
     expect(ids[0]).not.toBe(ids[1]);
     for (const f of h.finals) expect(f.meta!.speechStart).toBeNull(); // wordless → unbounded
+  });
+
+  it('[invariant] a PARTIAL nova tuple is no identity: {duration} alone, {start} alone, and {start:1} vs {duration:1} all yield null (never a positional collapse); a non-finite or non-numeric member yields null', () => {
+    const h = harness('nova3');
+    h.ws().open();
+    const frame = (fields: Record<string, unknown>) => ({
+      type: 'Results',
+      is_final: true,
+      ...fields,
+      channel: {
+        alternatives: [{ transcript: 'calculate zs for circuit 4', confidence: 0.9, words: [] }],
+      },
+    });
+    h.ws().emit(frame({ duration: 1.2 }));
+    h.ws().emit(frame({ duration: 1.2 })); // same lone duration, distinct final
+    h.ws().emit(frame({ start: 1 }));
+    h.ws().emit(frame({ duration: 1 }));
+    h.ws().emit(frame({ start: Number.NaN, duration: 1.2 }));
+    h.ws().emit(frame({ start: '1', duration: 1.2 }));
+    h.ws().emit(frame({ start: 1, duration: 1.2 })); // the complete pair
+    const ids = h.finals.map((f) => f.meta!.providerFinalId);
+    expect(ids.slice(0, 6)).toEqual([null, null, null, null, null, null]);
+    expect(ids[6]).toBe(`${h.service.liveEpoch}|nova|s=1|d=1.2`);
+  });
+});
+
+describe('Flux provider identity — the complete pair or nothing', () => {
+  it('[invariant] turn_index without audio_window_end, audio_window_end without turn_index, and a non-finite member yield null; the complete pair names the turn', () => {
+    const h = harness('flux');
+    h.ws().open();
+    const frame = (fields: Record<string, unknown>) => ({
+      type: 'TurnInfo',
+      event: 'EndOfTurn',
+      transcript: 'Circuit 4 Zs is 0.35.',
+      end_of_turn_confidence: 0.9,
+      words: [],
+      ...fields,
+    });
+    h.ws().emit(frame({ turn_index: 3 }));
+    h.ws().emit(frame({ audio_window_end: 2.0 }));
+    h.ws().emit(frame({ turn_index: 3, audio_window_end: Number.POSITIVE_INFINITY }));
+    h.ws().emit(frame({ turn_index: 3, audio_window_end: 2.0 }));
+    const ids = h.finals.map((f) => f.meta!.providerFinalId);
+    expect(ids).toEqual([null, null, null, `${h.service.liveEpoch}|flux|t=3|w=2`]);
   });
 });
 

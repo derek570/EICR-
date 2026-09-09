@@ -588,17 +588,28 @@ export class DeepgramService {
    *  the transcript itself, so an exact re-delivery still coincides. */
   private providerFinalId(
     epoch: ConnectionEpoch | null,
-    kind: 'flux' | 'nova',
-    parts: unknown[]
+    tuple:
+      | { readonly flux: { turn_index: unknown; audio_window_end: unknown } }
+      | { readonly nova: { start: unknown; duration: unknown } }
   ): string | null {
-    // Only PROVIDER-minted frame fields name a final (Flux `turn_index` +
-    // `audio_window_end`; nova-3 frame `start` + `duration`). Transcript
-    // text is never identity — a genuinely repeated dictation is a new
-    // final (Codex diff-review cycle 3, BLOCKER 0). A frame carrying none
-    // of them yields null, and null never dedupes.
-    const named = parts.filter((p): p is number => typeof p === 'number' && Number.isFinite(p));
-    if (named.length === 0) return null;
-    return `${epoch ?? 'e?'}|${kind}|${named.join('|')}`;
+    // Only the COMPLETE provider-minted tuple names a final: Flux
+    // `turn_index` AND `audio_window_end`; nova-3 frame `start` AND
+    // `duration`. Transcript text is never identity (a genuinely repeated
+    // dictation is a new final — Codex cycle 3), and a PARTIAL tuple is not
+    // identity either: one surviving member would make two distinct finals
+    // that share it collide, and a positional join would let nova
+    // `{start: 1}` and `{duration: 1}` collapse (Codex cycle 4). Every
+    // member must be a finite number; the key names each member. Null
+    // otherwise, and null never dedupes.
+    const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+    if ('flux' in tuple) {
+      const { turn_index, audio_window_end } = tuple.flux;
+      if (!finite(turn_index) || !finite(audio_window_end)) return null;
+      return `${epoch ?? 'e?'}|flux|t=${turn_index}|w=${audio_window_end}`;
+    }
+    const { start, duration } = tuple.nova;
+    if (!finite(start) || !finite(duration)) return null;
+    return `${epoch ?? 'e?'}|nova|s=${start}|d=${duration}`;
   }
 
   /**
@@ -718,10 +729,12 @@ export class DeepgramService {
             first ? origin + audioWindowEndToSampleOffset(first.start) : null,
             // Identity from the FRAME's own `start`/`duration` (never the
             // words, never the text); absent → null → no dedupe.
-            this.providerFinalId(socketContext?.epoch ?? null, 'nova', [
-              socketContext?.frame?.start,
-              socketContext?.frame?.duration,
-            ])
+            this.providerFinalId(socketContext?.epoch ?? null, {
+              nova: {
+                start: socketContext?.frame?.start,
+                duration: socketContext?.frame?.duration,
+              },
+            })
           )
         );
       },
@@ -2068,10 +2081,9 @@ export class DeepgramService {
             socketContext,
             json.audio_window_end,
             undefined,
-            this.providerFinalId(socketContext?.epoch ?? null, 'flux', [
-              json.turn_index,
-              json.audio_window_end,
-            ])
+            this.providerFinalId(socketContext?.epoch ?? null, {
+              flux: { turn_index: json.turn_index, audio_window_end: json.audio_window_end },
+            })
           )
         );
         // iOS canon (DeepgramService.swift handleFluxTurnInfo): EndOfTurn with

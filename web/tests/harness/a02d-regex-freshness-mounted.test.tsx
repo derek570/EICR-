@@ -1107,6 +1107,44 @@ for (const lane of LANES) {
           .every((d) => d.payload.providerFinalId === null)
       ).toBe(true);
       expect(m.sonnet().sentTranscripts).toHaveLength(2);
+      // PARTIAL tuples are no identity either: a lone shared `turn_index`,
+      // or a lone shared `audio_window_end`, never makes two finals collide.
+      for (const partial of [{ turn_index: 7 }, { audio_window_end: 3.5 }]) {
+        const windowsBefore = m.diag('a02d_final_window').length;
+        const sentBefore = m.sonnet().sentTranscripts.length;
+        const frame = { ...bare, transcript: 'Circuit 1 Zs is nought point four.', ...partial };
+        await act(async () => {
+          dg.advanceDispatchedStream(1);
+          dg.noteLocalSpeechOnset();
+          dg.emitSpeechStarted();
+          dg.emitFrame(frame);
+          vi.advanceTimersByTime(700);
+        });
+        await act(async () => {
+          dg.emitFrame(frame);
+          vi.advanceTimersByTime(700);
+        });
+        expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(0);
+        expect(m.diag('a02d_final_window')).toHaveLength(windowsBefore + 2);
+        expect(
+          m
+            .diag('a02d_final_window')
+            .slice(-2)
+            .every((d) => d.payload.providerFinalId === null)
+        ).toBe(true);
+        expect(m.sonnet().sentTranscripts).toHaveLength(sentBefore + 2);
+      }
+      // The COMPLETE pair, redelivered, is still dropped.
+      await act(async () => {
+        dg.advanceDispatchedStream(1);
+        dg.noteLocalSpeechOnset();
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 2 Zs is nought point five.');
+        vi.advanceTimersByTime(700);
+        dg.emitDuplicateOfLastEndOfTurn();
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(1);
     });
 
     it('[invariant] duplicate delivery of a LOCALLY executed command, inside and after the burst window: one mutation, one spoken result, nothing sent', async () => {

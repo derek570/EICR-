@@ -138,12 +138,15 @@ teardown. Held audio is charged to no PLAN-E2 counter.
 
 A duplicate delivery of one provider final is dropped at the admission
 boundary. The transport stamps every final with the provider's identity
-(`FinalTranscriptMeta.providerFinalId`: Flux epoch + `turn_index` +
-`audio_window_end`; nova-3 epoch + the frame's `start` + `duration`, read
-in the per-socket dispatch wrapper outside the frozen decoder). Identity is
-built only from provider-minted frame fields, never from the transcript, so
-a genuinely repeated dictation is a new final; a frame carrying no such
-field has no identity and is never deduped. The
+(`FinalTranscriptMeta.providerFinalId`: Flux
+`<epoch>|flux|t=<turn_index>|w=<audio_window_end>`; nova-3
+`<epoch>|nova|s=<start>|d=<duration>`, the frame fields read in the
+per-socket dispatch wrapper outside the frozen decoder). Identity is built
+only from the COMPLETE provider-minted tuple, each member named in the key:
+never from the transcript (a genuinely repeated dictation is a new final)
+and never from a partial tuple (a lone shared member must not make two
+finals collide, and `{start: 1}` cannot collapse onto `{duration: 1}`). A
+frame missing any member has no identity and is never deduped. The
 provider remembers admitted identities per session (bounded), and a
 re-delivery never reaches the naming or burst buffers, a local command, the
 regex pass, the chime, an ask, or the send — one fragment, one mutation, one

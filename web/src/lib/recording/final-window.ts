@@ -65,14 +65,16 @@ export interface FinalTranscriptMeta {
   readonly windowEnd: number | null;
   /**
    * A02D — the PROVIDER's identity for this final on its socket (Flux:
-   * epoch + `turn_index` + `audio_window_end`; nova-3: epoch + frame
-   * `start` + `duration`), assigned BEFORE the client sequence so an exact
-   * re-delivery of the same provider final is recognised and dropped at
-   * admission. Built ONLY from provider-minted frame fields — transcript
-   * text is never identity, so a genuinely repeated dictation is a new
-   * final. Null when the frame carries no such field (or a legacy hand-
-   * rolled fake) — then nothing is deduped and every callback is its own
-   * final.
+   * `<epoch>|flux|t=<turn_index>|w=<audio_window_end>`; nova-3:
+   * `<epoch>|nova|s=<start>|d=<duration>`), assigned BEFORE the client
+   * sequence so an exact re-delivery of the same provider final is
+   * recognised and dropped at admission. Built ONLY from the COMPLETE
+   * provider-minted tuple, each member named in the key — transcript text
+   * is never identity (a genuinely repeated dictation is a new final) and
+   * a partial tuple is never identity (a lone shared member must not make
+   * two finals collide). Null when any member is missing (or on a legacy
+   * hand-rolled fake) — then nothing is deduped and every callback is its
+   * own final.
    */
   readonly providerFinalId?: string | null;
 }
