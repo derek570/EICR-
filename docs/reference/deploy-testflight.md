@@ -81,6 +81,18 @@ produce a key-sorted output that the backend Jest suite replays through
 `session_start`. A missing file, an extra file, or a differing byte fails closed.
 `deploy-testflight.sh` runs this as a named preflight.
 
+A02D (2026-09-09) adds the regex-freshness vector check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-regex-freshness-fixture-sync.sh
+```
+
+It byte-compares `config/regex-freshness-vectors.json` (RegexFreshOccurrenceV1's
+shared raw-final vectors, SHA-256-pinned in Vitest and XCTest) with the XCTest copy
+under `Tests/CertMateUnifiedTests/Fixtures/`. A missing file on either side or a
+differing byte fails closed. `deploy-testflight.sh` runs this as a named preflight.
+
 ## App Store Connect credentials
 
 | Field | Value |
