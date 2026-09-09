@@ -124,13 +124,15 @@ it awaits a successor minted at natural completion. Re-park on preemption,
 overflow, TTS unavailability, playback failure, and discard; abandon at session
 teardown. Held audio is charged to no PLAN-E2 counter.
 
-A duplicate delivery of one provider final is one obligation. The transport
-stamps every final with the provider's identity (`FinalTranscriptMeta.
-providerFinalId`: Flux epoch + `turn_index` + `audio_window_end`; nova-3
-epoch + `start` + `duration`), the provider reuses that final's
-FinalWindowV1 record instead of minting a new sequence, and the ledger
-remembers disclosed keys until session teardown, so the duplicate is a
-duplicate before and after the clarification played.
+A duplicate delivery of one provider final is dropped at the admission
+boundary. The transport stamps every final with the provider's identity
+(`FinalTranscriptMeta.providerFinalId`: Flux epoch + `turn_index` +
+`audio_window_end`; nova-3 epoch + first word start + last word end), the
+provider remembers admitted identities per session (bounded), and a
+re-delivery never reaches the naming or burst buffers, a local command, the
+regex pass, the chime, an ask, or the send — one fragment, one mutation, one
+send, one spoken result per provider final. The clarification ledger also
+remembers disclosed keys until session teardown as a second line of defence.
 
 ## Replay is retired
 

@@ -1245,9 +1245,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const finalSequenceRef = React.useRef(0);
   // A02D — FinalWindowV1 records by the PROVIDER's final identity, so a
   // duplicate delivery of the same provider final (same socket epoch, same
-  // turn) reuses its record — same sequence, same held-fragment key —
-  // instead of minting a new sequence (Codex diff-review cycle 1,
-  // BLOCKER 3). Bounded; cleared with the session.
+  // turn) is recognised and DROPPED at admission instead of minting a new
+  // sequence (Codex diff-review cycles 1 and 2). Bounded; cleared with the
+  // session.
   const providerFinalRecordsRef = React.useRef<Map<string, FinalWindowV1>>(new Map());
   const PROVIDER_FINAL_RECORDS_RETENTION = 32;
   // A02D — outbound `utterance_id` → the MAX original constituent final
@@ -2927,21 +2927,38 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
             return;
           }
+          // A02D — a DUPLICATE delivery of a provider final already admitted
+          // in this session (same socket epoch, same provider turn) is
+          // dropped HERE, before the naming/burst buffers and every
+          // mutation-capable or forwarding consumer: one fragment, one
+          // mutation, one send, one spoken result per provider final. The
+          // service already performed its unconditional PLAN-E2 watermark
+          // handling for the frame; the clarification ledger's own key
+          // memory stays as a second line of defence. (Codex diff-review
+          // cycle 2, BLOCKER 2: reusing the record but letting the callback
+          // proceed concatenated an immediate duplicate with itself and
+          // re-executed one arriving after the 500 ms burst release.)
           const providerFinalId = admissionMeta.providerFinalId ?? null;
           const providerKey = providerFinalId ? `${sessionId}|${providerFinalId}` : null;
           const priorRecord = providerKey ? providerFinalRecordsRef.current.get(providerKey) : null;
-          const finalWindow =
-            priorRecord ??
-            buildFinalWindow({
-              recordingSessionId: sessionId,
-              // A hand-rolled fake with no epoch allocator (legacy unit tests)
-              // is admitted under a sentinel epoch.
-              epoch: admissionMeta.epoch ?? (0 as ConnectionEpoch),
-              finalSequence: ++finalSequenceRef.current,
-              speechStart: admissionMeta.speechStart,
-              windowEnd: admissionMeta.windowEnd,
+          if (priorRecord) {
+            clientDiagnostic('a02d_final_duplicate_dropped', {
+              textPreview: text.slice(0, 60),
+              finalSequence: priorRecord.finalSequence,
+              epoch: priorRecord.epoch,
             });
-          if (providerKey && !priorRecord) {
+            return;
+          }
+          const finalWindow = buildFinalWindow({
+            recordingSessionId: sessionId,
+            // A hand-rolled fake with no epoch allocator (legacy unit tests)
+            // is admitted under a sentinel epoch.
+            epoch: admissionMeta.epoch ?? (0 as ConnectionEpoch),
+            finalSequence: ++finalSequenceRef.current,
+            speechStart: admissionMeta.speechStart,
+            windowEnd: admissionMeta.windowEnd,
+          });
+          if (providerKey) {
             const records = providerFinalRecordsRef.current;
             records.set(providerKey, finalWindow);
             while (records.size > PROVIDER_FINAL_RECORDS_RETENTION) {
@@ -2957,7 +2974,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             speechStart: finalWindow.speechStart,
             windowEnd: finalWindow.windowEnd,
             unbounded: finalWindow.unbounded,
-            duplicateDelivery: priorRecord != null,
           });
           // PLAN-E1 E3 — a final can arrive without a preceding interim
           // (idempotent-safe: a no-op if the probe already resolved via

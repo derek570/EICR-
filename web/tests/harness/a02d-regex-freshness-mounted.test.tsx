@@ -869,17 +869,15 @@ for (const lane of LANES) {
       expect(state.outstanding).not.toBeNull();
       expect(state.held).toBe(1);
       // The SAME EndOfTurn frame again (same turn_index, same window end):
-      // the provider reuses the FinalWindowV1 record (same sequence, same
-      // key) and the ledger reports a duplicate — no second token.
+      // the provider recognises the provider final and DROPS the delivery
+      // at admission — no second record, no second hold, no second token.
       await act(async () => {
         dg.emitDuplicateOfLastEndOfTurn();
         vi.advanceTimersByTime(700);
       });
-      const windows = m.diag('a02d_final_window');
-      expect(windows).toHaveLength(2);
-      expect(windows[1].payload.finalSequence).toBe(windows[0].payload.finalSequence);
-      expect(windows[1].payload.duplicateDelivery).toBe(true);
-      expect(m.diag('a02d_clarification_duplicate_final')).toHaveLength(1);
+      expect(m.diag('a02d_final_window')).toHaveLength(1);
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(1);
+      expect(m.diag('a02d_final_held')).toHaveLength(1);
       state = __heldFragmentClarificationStateForTests();
       expect(state.held).toBe(1);
       expect(state.outstanding?.finalKeys).toHaveLength(1);
@@ -900,6 +898,74 @@ for (const lane of LANES) {
       });
       expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
       expect(__heldFragmentClarificationStateForTests().spoken).toBe(1);
+    });
+
+    it('[invariant] duplicate delivery of an ORDINARY server-bound final, inside and after the 500 ms burst window: one fragment (never concatenated with itself), one write, one send', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      // Inside the burst window: the duplicate arrives before the release.
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(200);
+        dg.emitDuplicateOfLastEndOfTurn();
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(1);
+      expect(m.diag('a02d_final_window')).toHaveLength(1);
+      expect(m.diag('pipeline_burst_buffer_concat')).toHaveLength(0);
+      expect(m.sonnet().sentTranscripts).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts[0].text).toBe('Circuit 4 Zs is 0.35.');
+      expect(m.diag('a02d_occurrence_decisions')).toHaveLength(1);
+      expect(m.regexWrites().length).toBe(lane.env === '1' ? 1 : 0);
+      expect(m.harness.chimes.count).toBe(1);
+      // After the release: a late re-delivery of the same provider final.
+      await act(async () => {
+        dg.emitDuplicateOfLastEndOfTurn();
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(2);
+      expect(m.diag('a02d_final_window')).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts).toHaveLength(1);
+      expect(m.diag('a02d_occurrence_decisions')).toHaveLength(1);
+      expect(m.harness.chimes.count).toBe(1);
+      expect(m.regexWrites().length).toBe(lane.env === '1' ? 1 : 0);
+      // A genuinely NEW final (next provider turn) still flows.
+      await dictate(dg, 'Circuit 3 R1 plus R2 is nought point two.');
+      expect(m.diag('a02d_final_window')).toHaveLength(2);
+      expect(m.sonnet().sentTranscripts).toHaveLength(2);
+    });
+
+    it('[invariant] duplicate delivery of a LOCALLY executed command, inside and after the burst window: one mutation, one spoken result, nothing sent', async () => {
+      const m = await mount(makeCalcJob());
+      const dg = m.dg();
+      const localBefore = m.harness.jobChanges.filter((c) => c.source === 'local_command').length;
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('calculate Zs for circuit 4');
+        vi.advanceTimersByTime(200);
+        dg.emitDuplicateOfLastEndOfTurn();
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(1);
+      expect(m.harness.jobChanges.filter((c) => c.source === 'local_command')).toHaveLength(
+        localBefore + 1
+      );
+      expect(zsOf(m.jobRef.current!, '4')).toBe('0.55');
+      expect(m.harness.tts.played.filter((p) => /0\.55/.test(p.text))).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
+      await act(async () => {
+        dg.emitDuplicateOfLastEndOfTurn();
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(2);
+      expect(m.harness.jobChanges.filter((c) => c.source === 'local_command')).toHaveLength(
+        localBefore + 1
+      );
+      expect(m.harness.tts.played.filter((p) => /0\.55/.test(p.text))).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
     });
 
     it('[invariant] a duplicate delivery AFTER the clarification played to completion speaks nothing more (the disclosed key is remembered); a genuinely new held final still speaks', async () => {
@@ -924,7 +990,8 @@ for (const lane of LANES) {
         dg.emitDuplicateOfLastEndOfTurn();
         vi.advanceTimersByTime(700);
       });
-      expect(m.diag('a02d_clarification_duplicate_final')).toHaveLength(1);
+      expect(m.diag('a02d_final_duplicate_dropped')).toHaveLength(1);
+      expect(m.diag('a02d_final_held')).toHaveLength(1);
       expect(m.clarifications()).toHaveLength(1);
       expect(__heldFragmentClarificationStateForTests().spoken).toBe(1);
       expect(__heldFragmentClarificationStateForTests().held).toBe(1);
@@ -938,9 +1005,9 @@ for (const lane of LANES) {
         dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
         vi.advanceTimersByTime(700);
       });
-      // Three hold decisions (original, its duplicate delivery, the new
-      // final); two obligations; two lines.
-      expect(m.diag('a02d_final_held')).toHaveLength(3);
+      // Two hold decisions (the duplicate never reached the hold); two
+      // obligations; two lines.
+      expect(m.diag('a02d_final_held')).toHaveLength(2);
       expect(m.clarifications()).toHaveLength(2);
       expect(__heldFragmentClarificationStateForTests().held).toBe(2);
     });
