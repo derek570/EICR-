@@ -1751,16 +1751,18 @@ describe('§5.13 — PLAN-E1 poor-signal advisory joins the distinctness union',
     // source. The poor-signal advisory + D3 cues live in `tts.ts`; the
     // PLAN-E2 uplink-loss disclosure line is defined as
     // `UPLINK_LOSS_DISCLOSURE_TEXT` in `uplink-loss-disclosure.ts` (tts.ts
-    // only re-exports the constant), so the guard reads BOTH sources.
-    const ttsSource = readFileSync(
-      new URL('../../web/src/lib/recording/tts.ts', import.meta.url),
-      'utf8'
-    );
-    const disclosureSource = readFileSync(
-      new URL('../../web/src/lib/recording/uplink-loss-disclosure.ts', import.meta.url),
-      'utf8'
-    );
-    const combined = ttsSource + '\n' + disclosureSource;
+    // only re-exports the constant); A02D's two held-fragment clarification
+    // TEMPLATES (`{destinations}` placeholder kept verbatim — the union pins
+    // the template, not a rendered instance) live in
+    // `held-fragment-clarification.ts`. The guard reads all THREE sources.
+    const sources = [
+      '../../web/src/lib/recording/tts.ts',
+      '../../web/src/lib/recording/uplink-loss-disclosure.ts',
+      '../../web/src/lib/recording/held-fragment-clarification.ts',
+    ];
+    const combined = sources
+      .map((rel) => readFileSync(new URL(rel, import.meta.url), 'utf8'))
+      .join('\n');
     for (const wording of unionTexts) {
       expect(combined).toContain(wording);
     }
