@@ -674,6 +674,127 @@ for (const lane of LANES) {
       expect(m.clarifications()).toHaveLength(1);
     });
 
+    it("[invariant] alias families — the SAME patches the Installation and Supply pages make (general_condition_of_installation, earth_loop_impedance_ze, prospective_fault_current cleared to '') record manual cutoffs: a delayed pre-tap final is held naming the destination; the fresh post-tap control writes every alias", async () => {
+      const m = await mount();
+      const dg = m.dg();
+      const cases: Array<{
+        dictation: string;
+        section: 'installation_details' | 'supply_characteristics';
+        canonical: string;
+        ui: string;
+        key: string;
+        label: string;
+        value: string;
+      }> = [
+        {
+          dictation: 'General condition is satisfactory.',
+          section: 'installation_details',
+          canonical: 'general_condition',
+          ui: 'general_condition_of_installation',
+          key: 'install.general_condition',
+          label: 'general condition',
+          // The matcher's capture keeps the copula ("is satisfactory") — a
+          // pre-existing pattern quirk, irrelevant to the alias contract.
+          value: 'is satisfactory',
+        },
+        {
+          dictation: 'Ze is nought point three five.',
+          section: 'supply_characteristics',
+          canonical: 'ze',
+          ui: 'earth_loop_impedance_ze',
+          key: 'supply.ze',
+          label: 'Ze',
+          value: '0.35',
+        },
+        {
+          dictation: 'PFC is 2.5 kA.',
+          section: 'supply_characteristics',
+          canonical: 'pfc',
+          ui: 'prospective_fault_current',
+          key: 'supply.pfc',
+          label: 'PFC',
+          value: '2.5',
+        },
+      ];
+      const sectionOf = (name: string) =>
+        (m.jobRef.current!.job as unknown as Record<string, Record<string, unknown>>)[name] ?? {};
+      /** EXACTLY what the page does: `updateJob({ <section>: { ...details, <uiAlias>: v } })`. */
+      const pagePatch = async (section: string, ui: string, v: string) => {
+        await act(async () => {
+          m.jobRef.current!.updateJob((prev) => ({
+            [section]: {
+              ...((prev as unknown as Record<string, Record<string, unknown>>)[section] ?? {}),
+              [ui]: v,
+            },
+          }));
+        });
+      };
+      for (const c of cases) {
+        const heldBefore = m.diag('a02d_final_held').length;
+        const clarBefore = m.clarifications().length;
+        // The value on the destination: a regex write (hints ON — lands on
+        // BOTH aliases) or the page's own edit (hints OFF).
+        await act(async () => {
+          dg.advanceDispatchedStream(1);
+        });
+        if (lane.env === '1') {
+          await dictate(dg, c.dictation);
+          expect(sectionOf(c.section)[c.canonical], `${c.key} wire alias written`).toBe(c.value);
+          expect(sectionOf(c.section)[c.ui], `${c.key} UI alias written`).toBe(c.value);
+        } else {
+          await pagePatch(c.section, c.ui, c.value);
+          await dictate(dg, 'Moving on.');
+        }
+        // In-flight repeat (onset BEFORE the tap), then the page clears the
+        // VISIBLE alias only — the wire alias may still carry the value.
+        await act(async () => {
+          dg.noteLocalSpeechOnset();
+          dg.advanceDispatchedStream(10);
+        });
+        await pagePatch(c.section, c.ui, '');
+        const boundary = m.diag('a02d_manual_boundary').slice(-1)[0].payload;
+        expect(boundary.destination, `${c.key} boundary`).toBe(c.key);
+        expect(boundary.cleared, `${c.key} cleared`).toBe(true);
+        expect(boundary.label, `${c.key} label`).toBe(c.label);
+        await act(async () => {
+          dg.emitSpeechStarted();
+          dg.emitEndOfTurn(c.dictation);
+          vi.advanceTimersByTime(700);
+        });
+        expect(m.diag('a02d_final_held').length, `${c.key} held`).toBe(heldBefore + 1);
+        expect(
+          m
+            .clarifications()
+            .slice(clarBefore)
+            .map((p) => p.text),
+          `${c.key} clarification`
+        ).toEqual([
+          `I heard something just as you cleared ${c.label}. Say it again if it should apply.`,
+        ]);
+        expect(sectionOf(c.section)[c.ui] ?? '', `${c.key} UI alias stays cleared`).toBe('');
+        // Fresh identical post-tap control: writes again, on EVERY alias.
+        await act(async () => {
+          dg.advanceDispatchedStream(2);
+        });
+        await dictate(dg, c.dictation);
+        expect(m.diag('a02d_final_held').length, `${c.key} control not held`).toBe(heldBefore + 1);
+        const last = m.diag('a02d_occurrence_decisions').slice(-1)[0].payload;
+        expect(last.fresh, `${c.key} control fresh`).toEqual([c.key]);
+        if (lane.env === '1') {
+          expect(sectionOf(c.section)[c.ui], `${c.key} UI alias rewritten`).toBe(c.value);
+          expect(sectionOf(c.section)[c.canonical], `${c.key} wire alias rewritten`).toBe(c.value);
+        } else {
+          const gate = m.diag('a02d_gate_only_fresh_writes').slice(-1)[0].payload.writes as Array<{
+            key: string;
+          }>;
+          expect(
+            gate.map((w) => w.key),
+            `${c.key} gate-only write`
+          ).toEqual([c.key]);
+        }
+      }
+    });
+
     it('[invariant] the five board-routed supply fields (main_switch_* / spd_*) pass the freshness gate under their board.* keys, apply once, settle on repeat, and a manual clear of one names its board label', async () => {
       const m = await mount();
       const dg = m.dg();

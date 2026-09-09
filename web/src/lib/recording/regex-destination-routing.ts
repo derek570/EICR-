@@ -106,6 +106,82 @@ export const INSTALLATION_FIELD_TO_KEY: Record<
   date_of_inspection: 'date_of_inspection',
 };
 
+/**
+ * Storage ALIAS FAMILIES per canonical section field (Codex diff-review
+ * cycle 2, BLOCKER 0). One freshness identity, several stored keys: the
+ * wire/legacy key the extraction layer and LiveFill use, plus the PWA-column
+ * key the Supply / Installation pages edit
+ * (`apply-extraction.ts LEGACY_TO_PWA_SECTION_FIELD` dual-writes the same
+ * pairs). Every consumer that reads, diffs or writes a destination goes
+ * through the family: a manual clear of the VISIBLE alias is a clear of the
+ * destination, and a regex write lands on every alias.
+ *
+ * Order: canonical first, UI aliases after. The EFFECTIVE value prefers the
+ * UI alias — the inspector's view — so a cleared page field reads as empty
+ * even while the wire key still carries the old value.
+ */
+export const SECTION_FIELD_ALIASES: Readonly<
+  Record<RegexSectionTarget, Readonly<Record<string, readonly string[]>>>
+> = {
+  supply_characteristics: {
+    ze: ['ze', 'earth_loop_impedance_ze'],
+    pfc: ['pfc', 'prospective_fault_current'],
+  },
+  board_info: {},
+  installation_details: {
+    general_condition: ['general_condition', 'general_condition_of_installation'],
+  },
+};
+
+/** Every stored key for a canonical section field (`[fieldKey]` when it
+ *  has no alias). */
+export function aliasFamily(target: RegexSectionTarget, fieldKey: string): readonly string[] {
+  return SECTION_FIELD_ALIASES[target][fieldKey] ?? [fieldKey];
+}
+
+const CANONICAL_BY_ALIAS: ReadonlyMap<string, string> = (() => {
+  const out = new Map<string, string>();
+  for (const target of Object.keys(SECTION_FIELD_ALIASES) as RegexSectionTarget[]) {
+    for (const [canonical, family] of Object.entries(SECTION_FIELD_ALIASES[target])) {
+      for (const alias of family) out.set(`${target}.${alias}`, canonical);
+    }
+  }
+  return out;
+})();
+
+/** The canonical field for a stored key (itself when it is not an alias). */
+export function canonicalFieldForAlias(target: RegexSectionTarget, storedKey: string): string {
+  return CANONICAL_BY_ALIAS.get(`${target}.${storedKey}`) ?? storedKey;
+}
+
+function isEmptyValue(v: unknown): boolean {
+  return v == null || (typeof v === 'string' && v.trim() === '');
+}
+
+/**
+ * The destination's EFFECTIVE stored value. The most UI-ward alias that is
+ * PRESENT on the section (own key, even when empty) is authoritative — the
+ * inspector's page is the truth once it has written the key, so a visible
+ * field cleared to '' reads as empty even while the wire key still carries
+ * the old value. A section that never had the UI key (data written only to
+ * the wire key) falls back to the wire key. Null when empty.
+ */
+export function readEffectiveSectionValue(
+  section: Record<string, unknown> | null | undefined,
+  target: RegexSectionTarget,
+  fieldKey: string
+): unknown {
+  if (!section) return null;
+  const family = aliasFamily(target, fieldKey);
+  for (let i = family.length - 1; i >= 0; i--) {
+    const alias = family[i];
+    if (!Object.prototype.hasOwnProperty.call(section, alias)) continue;
+    const v = section[alias];
+    return isEmptyValue(v) ? null : v;
+  }
+  return null;
+}
+
 const SECTION_SCOPE: Record<RegexSectionTarget, Exclude<RegexTrackerScope, 'circuit'>> = {
   supply_characteristics: 'supply',
   board_info: 'board',

@@ -42,7 +42,14 @@ import type { JobDetail } from '../types';
 import type { RegexMatchResult, CircuitUpdates } from './regex-match-result';
 import { normaliseBeforeMatch, normalizeTranscript } from './transcript-field-matcher';
 import { buildSourceMap, type SourceMap } from './normalisation-source-map';
-import { resolveRegexDestination, routeSectionField } from './regex-destination-routing';
+import {
+  aliasFamily,
+  canonicalFieldForAlias,
+  readEffectiveSectionValue,
+  resolveRegexDestination,
+  routeSectionField,
+  type RegexSectionTarget,
+} from './regex-destination-routing';
 
 export type { SourceMap, RawSpanMapping } from './normalisation-source-map';
 export type { RawOccurrence } from './regex-match-result';
@@ -352,10 +359,14 @@ export function diffRegexDestinations(
     const next = (after[section] as Record<string, unknown> | null | undefined) ?? {};
     if (prev === next) continue;
     for (const field of CANONICAL_SECTION_FIELDS[scope]) {
-      const a = norm(prev[field]);
-      const b = norm(next[field]);
-      if (a === b) continue;
-      out.push({ key: `${scope}.${field}`, cleared: b === '' });
+      // Any alias of the family changing is a change of the destination
+      // (the Installation page edits `general_condition_of_installation`,
+      // the Supply page `earth_loop_impedance_ze` / `prospective_fault_current`);
+      // cleared iff the EFFECTIVE value is now empty.
+      const family = aliasFamily(section as RegexSectionTarget, field);
+      if (!family.some((alias) => norm(prev[alias]) !== norm(next[alias]))) continue;
+      const after = norm(readEffectiveSectionValue(next, section as RegexSectionTarget, field));
+      out.push({ key: `${scope}.${field}`, cleared: after === '' });
     }
   }
   const prevRows = new Map<string, Record<string, unknown>>();
@@ -853,8 +864,22 @@ export function destinationKeyFromChangedKey(changedKey: string): string | null 
   const key = changedKey.startsWith('installation.')
     ? `install.${changedKey.slice('installation.'.length)}`
     : changedKey;
+  // A stored ALIAS (`supply.earth_loop_impedance_ze`,
+  // `install.general_condition_of_installation`) names its canonical
+  // destination.
+  const parsed = parseTrackerKey(key);
+  if (parsed && parsed.scope !== 'circuit') {
+    const canonical = `${parsed.scope}.${canonicalFieldForAlias(SECTION_TARGET[parsed.scope], parsed.field)}`;
+    return isRegexDestinationKey(canonical) ? canonical : null;
+  }
   return isRegexDestinationKey(key) ? key : null;
 }
+
+const SECTION_TARGET: Record<'supply' | 'board' | 'install', RegexSectionTarget> = {
+  supply: 'supply_characteristics',
+  board: 'board_info',
+  install: 'installation_details',
+};
 
 /** Read a destination's stored value from a job snapshot (null when empty). */
 export function readRegexDestinationValue(job: JobDetail, key: string): unknown {
@@ -865,14 +890,9 @@ export function readRegexDestinationValue(job: JobDetail, key: string): unknown 
     const row = (job.circuits ?? []).find((c) => c.id === parsed.rowId);
     value = row ? (row as Record<string, unknown>)[parsed.field] : undefined;
   } else {
-    const sectionName =
-      parsed.scope === 'supply'
-        ? 'supply_characteristics'
-        : parsed.scope === 'board'
-          ? 'board_info'
-          : 'installation_details';
+    const sectionName = SECTION_TARGET[parsed.scope];
     const section = job[sectionName] as Record<string, unknown> | null | undefined;
-    value = section?.[parsed.field];
+    value = readEffectiveSectionValue(section, sectionName, parsed.field);
   }
   return value == null || value === '' ? null : value;
 }

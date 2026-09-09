@@ -29,7 +29,12 @@ import type { JobDetail, CircuitRow } from '@/lib/types';
 import type { FieldSourceTracker } from './field-source-tracker';
 import type { CircuitUpdates, RegexMatchResult } from './regex-match-result';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
-import { indexCircuitRowsByRef, routeSectionField } from './regex-destination-routing';
+import {
+  aliasFamily,
+  indexCircuitRowsByRef,
+  readEffectiveSectionValue,
+  routeSectionField,
+} from './regex-destination-routing';
 
 // MARK: — Field-name → JobDetail-section routing
 //
@@ -96,8 +101,10 @@ export function jobBaselineReader(job: JobDetail): BaselineReader {
       const row = (job.circuits ?? [])[c.circuitIdx ?? -1] as Record<string, unknown> | undefined;
       return row?.[c.fieldKey];
     }
+    // Section destinations compare against the EFFECTIVE alias family (a
+    // page-cleared visible alias reads as empty — `regex-destination-routing`).
     const section = job[c.target] as Record<string, unknown> | null | undefined;
-    return section?.[c.fieldKey];
+    return readEffectiveSectionValue(section, c.target, c.fieldKey);
   };
 }
 
@@ -302,12 +309,17 @@ export function applyRegexMatchToJob(
       const row = circuits[idx];
       if (!row) continue;
       circuits[idx] = { ...row, [c.fieldKey]: c.value };
-    } else if (c.target === 'board_info') {
-      boardPatch[c.fieldKey] = c.value;
-    } else if (c.target === 'installation_details') {
-      installPatch[c.fieldKey] = c.value;
     } else {
-      supplyPatch[c.fieldKey] = c.value;
+      // Every stored alias of the destination receives the value (wire key
+      // + PWA-column key), so the page the inspector edits and the wire
+      // snapshot never disagree after a regex write.
+      const bucket =
+        c.target === 'board_info'
+          ? boardPatch
+          : c.target === 'installation_details'
+            ? installPatch
+            : supplyPatch;
+      for (const key of aliasFamily(c.target, c.fieldKey)) bucket[key] = c.value;
     }
     tracker.recordRegexWrite(c.trackerKey);
     changedKeys.push(c.trackerKey);

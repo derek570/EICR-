@@ -88,6 +88,18 @@ board, then a row without `board_id`, then the first row in job order. Two
 boards sharing "circuit 4" are therefore two destinations, and the row the
 gate evaluated is the row the apply layer writes.
 
+Three section destinations are stored under an alias family — one
+freshness identity, two keys: `supply.ze` (`ze` / `earth_loop_impedance_ze`),
+`supply.pfc` (`pfc` / `prospective_fault_current`) and
+`install.general_condition` (`general_condition` /
+`general_condition_of_installation`). The Supply and Installation pages
+edit the second key of each pair. Every consumer reads the family's
+effective value (the page's key is authoritative once present, even when
+empty), a change to any alias is a boundary for the destination, a regex
+write lands on every alias, and the field-source tracker owns the family as
+one unit (`SECTION_FIELD_ALIASES` in `regex-destination-routing.ts` is the
+single table).
+
 ## Clear and replacement cutoffs
 
 | Boundary | Buffer cutoff | Stream cutoff | Source on web |

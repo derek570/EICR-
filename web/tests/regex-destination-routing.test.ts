@@ -8,9 +8,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  aliasFamily,
+  canonicalFieldForAlias,
   indexCircuitRowsByRef,
+  readEffectiveSectionValue,
   resolveRegexDestination,
   routeSectionField,
+  SECTION_FIELD_ALIASES,
   SUPPLY_FIELD_TO_KEY,
   BOARD_FIELD_TO_KEY,
   INSTALLATION_FIELD_TO_KEY,
@@ -19,10 +23,16 @@ import {
   DESTINATION_FIELD_LABELS,
   canonicalDestinationKey,
   describeDestination,
+  destinationKeyFromChangedKey,
   diffRegexDestinations,
   isRegexDestinationKey,
+  readRegexDestinationValue,
 } from '@/lib/recording/regex-fresh-occurrence';
-import { computeFreshRegexWrites, jobBaselineReader } from '@/lib/recording/apply-regex-match';
+import {
+  applyRegexMatchToJob,
+  computeFreshRegexWrites,
+  jobBaselineReader,
+} from '@/lib/recording/apply-regex-match';
 import { emptyRegexMatchResult } from '@/lib/recording/regex-match-result';
 import { FieldSourceTracker } from '@/lib/recording/field-source-tracker';
 import type { JobDetail } from '@/lib/types';
@@ -133,6 +143,119 @@ describe('[invariant] regex destination routing — one rule for every consumer'
       ],
     } as unknown as JobDetail;
     expect(indexCircuitRowsByRef(legacy).get('4')).toBe(1);
+  });
+
+  it('alias families: the UI alias is the effective value; a page-style clear of the VISIBLE alias is a clear of the destination; a regex write lands on every alias; alias changed-keys name the canonical destination', () => {
+    const j = twoBoardJob();
+    expect(SECTION_FIELD_ALIASES.supply_characteristics.ze).toEqual([
+      'ze',
+      'earth_loop_impedance_ze',
+    ]);
+    expect(aliasFamily('installation_details', 'general_condition')).toEqual([
+      'general_condition',
+      'general_condition_of_installation',
+    ]);
+    expect(aliasFamily('installation_details', 'client_name')).toEqual(['client_name']);
+    expect(canonicalFieldForAlias('supply_characteristics', 'prospective_fault_current')).toBe(
+      'pfc'
+    );
+    expect(canonicalFieldForAlias('supply_characteristics', 'ze')).toBe('ze');
+    // Effective value prefers the UI alias.
+    expect(
+      readEffectiveSectionValue(
+        { ze: '0.35', earth_loop_impedance_ze: '0.5' },
+        'supply_characteristics',
+        'ze'
+      )
+    ).toBe('0.5');
+    // The UI key PRESENT and empty is authoritative (a page clear)…
+    expect(
+      readEffectiveSectionValue(
+        { ze: '0.35', earth_loop_impedance_ze: '' },
+        'supply_characteristics',
+        'ze'
+      )
+    ).toBeNull();
+    // …while a section that never had the UI key falls back to the wire key.
+    expect(readEffectiveSectionValue({ ze: '0.35' }, 'supply_characteristics', 'ze')).toBe('0.35');
+    expect(
+      readEffectiveSectionValue(
+        { ze: '', earth_loop_impedance_ze: '' },
+        'supply_characteristics',
+        'ze'
+      )
+    ).toBeNull();
+    // The Installation page's patch: only `general_condition_of_installation` changes.
+    const before = {
+      ...j,
+      installation_details: {
+        general_condition: 'Satisfactory',
+        general_condition_of_installation: 'Satisfactory',
+      },
+    } as JobDetail;
+    const after = {
+      ...j,
+      installation_details: {
+        general_condition: 'Satisfactory',
+        general_condition_of_installation: '',
+      },
+    } as JobDetail;
+    expect(diffRegexDestinations(before, after)).toEqual([
+      { key: 'install.general_condition', cleared: true },
+    ]);
+    expect(readRegexDestinationValue(after, 'install.general_condition')).toBeNull();
+    // The Supply page's Ze / PFC patches.
+    const s1 = {
+      ...j,
+      supply_characteristics: {
+        ze: '0.35',
+        earth_loop_impedance_ze: '0.35',
+        pfc: '1.2',
+        prospective_fault_current: '1.2',
+      },
+    } as JobDetail;
+    const s2 = {
+      ...j,
+      supply_characteristics: {
+        ze: '0.35',
+        earth_loop_impedance_ze: '',
+        pfc: '1.2',
+        prospective_fault_current: '2.0',
+      },
+    } as JobDetail;
+    expect(diffRegexDestinations(s1, s2)).toEqual([
+      { key: 'supply.ze', cleared: true },
+      { key: 'supply.pfc', cleared: false },
+    ]);
+    // Changed keys from the extraction dual-write name the canonical destination.
+    expect(destinationKeyFromChangedKey('supply.earth_loop_impedance_ze')).toBe('supply.ze');
+    expect(destinationKeyFromChangedKey('installation.general_condition_of_installation')).toBe(
+      'install.general_condition'
+    );
+    // A regex write after the visible clear: the effective baseline is empty,
+    // so the identical value is fresh again and lands on BOTH aliases. (An
+    // UNSEEDED tracker: ownership is a separate, higher-tier gate — a
+    // family still owned by Sonnet or a pre-existing value refuses the
+    // regex write regardless of freshness; seeding is exercised below.)
+    const tracker = new FieldSourceTracker();
+    const result = emptyRegexMatchResult();
+    result.installation_updates = { general_condition_of_installation: 'Satisfactory' };
+    const applied = applyRegexMatchToJob(after, result, tracker);
+    expect(applied?.changedKeys).toEqual(['install.general_condition']);
+    expect(applied?.patch.installation_details).toEqual({
+      general_condition: 'Satisfactory',
+      general_condition_of_installation: 'Satisfactory',
+    });
+    // The tracker shares the SAME families: seeding either alias owns both.
+    const seeded = new FieldSourceTracker();
+    seeded.seedFromJob({
+      ...j,
+      supply_characteristics: { prospective_fault_current: '1.2' },
+      installation_details: { general_condition_of_installation: 'Fair' },
+    } as JobDetail);
+    expect(seeded.canRegexWrite('supply.pfc')).toBe(false);
+    expect(seeded.canRegexWrite('install.general_condition')).toBe(false);
+    expect(seeded.canRegexWrite('supply.ze')).toBe(true);
   });
 
   it('computeFreshRegexWrites targets the SAME row the freshness gate canonicalised', () => {

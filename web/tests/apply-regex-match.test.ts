@@ -54,7 +54,12 @@ describe('applyRegexMatchToJob', () => {
     const job = makeJob();
     const out = applyRegexMatchToJob(job, makeResult({ supply_updates: { ze: '0.34' } }), tracker);
     expect(out).not.toBeNull();
-    expect(out!.patch.supply_characteristics).toEqual({ ze: '0.34' });
+    // A02D — the write lands on every stored alias of the destination (the
+    // wire key + the Supply page's column), one tracker key.
+    expect(out!.patch.supply_characteristics).toEqual({
+      ze: '0.34',
+      earth_loop_impedance_ze: '0.34',
+    });
     expect(out!.changedKeys).toEqual(['supply.ze']);
     expect(tracker.getSource('supply.ze')).toBe('regex');
   });
@@ -81,9 +86,15 @@ describe('applyRegexMatchToJob', () => {
     const tracker = new FieldSourceTracker();
     const job = makeJob();
     const out1 = applyRegexMatchToJob(job, makeResult({ supply_updates: { ze: '0.34' } }), tracker);
-    expect(out1?.patch.supply_characteristics).toEqual({ ze: '0.34' });
+    expect(out1?.patch.supply_characteristics).toEqual({
+      ze: '0.34',
+      earth_loop_impedance_ze: '0.34',
+    });
     const out2 = applyRegexMatchToJob(job, makeResult({ supply_updates: { ze: '0.42' } }), tracker);
-    expect(out2?.patch.supply_characteristics).toEqual({ ze: '0.42' });
+    expect(out2?.patch.supply_characteristics).toEqual({
+      ze: '0.42',
+      earth_loop_impedance_ze: '0.42',
+    });
     expect(tracker.getSource('supply.ze')).toBe('regex');
   });
 
