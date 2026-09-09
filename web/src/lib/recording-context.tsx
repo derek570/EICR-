@@ -36,6 +36,7 @@ import {
   applyBoardOpsToJob,
   applyExtractionToJob,
   applyObservationUpdate,
+  resolveCircuitFieldKey,
 } from './recording/apply-extraction';
 import { applyBoardClearToJob } from './recording/board-clear';
 import {
@@ -157,6 +158,33 @@ import {
 } from './recording/tts-prompt-helpers';
 import { setActiveSessionId as setTtsSessionId } from './recording/elevenlabs-tts';
 import { setUplinkLossDisclosureCompletionObserver } from './recording/tts';
+// A02D — RegexFreshOccurrenceV1 / FinalWindowV1 / held-fragment clarification.
+import {
+  AdmittedBuffer,
+  OccurrenceFreshnessStore,
+  applyOccurrenceFreshness,
+  describeDestination,
+  destinationKeyFromChangedKey,
+  diffRegexDestinations,
+  readRegexDestinationValue,
+} from './recording/regex-fresh-occurrence';
+import {
+  buildFinalWindow,
+  finalWindowKey,
+  type FinalTranscriptMeta,
+  type FinalWindowV1,
+} from './recording/final-window';
+import {
+  abandonHeldFragmentClarificationForSessionTeardown,
+  handleHeldFragmentClarificationDiscard,
+  handleHeldFragmentClarificationPlaybackStarted,
+  handleHeldFragmentClarificationTornDown,
+  notifyHeldFragmentLocalSilence,
+  requestHeldFragmentClarification,
+} from './recording/tts';
+import { classifyPcmEnergy } from './recording/voiced-activity';
+import type { ConnectionEpoch } from './recording/uplink-scope-allocator';
+import type { JobMutationEvent } from './job-context';
 import { clientDiagnostic, setDiagnosticSink } from './recording/client-diagnostic';
 import { record as recordLifecycle } from './diagnostics/lifecycle-log';
 import { pipelineLog } from './diagnostics/pipeline-log';
@@ -435,7 +463,12 @@ function isTrailingCircuitNamingPattern(text: string): boolean {
 const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
-  const { job, updateJob, flushDraftsAndGetSnapshot } = useJobContext();
+  const { job, updateJobFromRecording, subscribeJobMutations, flushDraftsAndGetSnapshot } =
+    useJobContext();
+  // A02D — every write this provider makes goes through the RECORDING-tagged
+  // path so the manual-edit observer below never samples a cutoff for the
+  // pipeline's own writes.
+  const updateJob = updateJobFromRecording;
   // H7 — user-scoped circuit-field defaults. iOS canon applies these to
   // any newly-created circuit (`DefaultsService.applyDefaults` +
   // `CertificateDefaultsService.applyCableDefaults`) so a Sonnet-
@@ -1065,6 +1098,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     text: string;
     confidence: number;
     timer: ReturnType<typeof setTimeout>;
+    /** A02D — every constituent final's FinalWindowV1 record, captured at
+     *  arm time; re-evaluated against the CURRENT cutoffs at release. */
+    finals: FinalWindowV1[];
   } | null>(null);
 
   // Observation regression (2026-05-13, session sess_mp4jg2mt_231n) —
@@ -1084,6 +1120,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     text: string;
     confidence: number;
     timer: ReturnType<typeof setTimeout>;
+    /** A02D — constituent finals (see pendingNamingBufferRef). */
+    finals: FinalWindowV1[];
   } | null>(null);
 
   // Synchronous mirror of `questions`. Bug L (2026-05-11) — the dedup logic
@@ -1192,7 +1230,102 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // A01P — local Calculate latency: final-transcript dispatch time keyed by the
   // FIFO dedupe key of its read-back, resolved at the playback-start seam.
   const localCalculateDispatchAtRef = React.useRef<Map<string, number>>(new Map());
-  const cumulativeTranscriptRef = React.useRef<string>('');
+  // A02D — the cumulative matcher text is now an ADMITTED BUFFER of
+  // fragments with stable ids, epochs, final sequences and absolute raw
+  // spans (RegexFreshOccurrenceV1). `resetText()` at the same boundaries the
+  // plain string used to be emptied at; positions stay session-monotonic.
+  const cumulativeTranscriptRef = React.useRef<AdmittedBuffer>(new AdmittedBuffer());
+  // A02D — settled occurrence identities, destination cutoffs, final
+  // records and the hold decision. Session-scoped: rebuilt at start(),
+  // wholesale-cleared at job change; survives A02B bypass boundaries.
+  const freshnessStoreRef = React.useRef<OccurrenceFreshnessStore>(new OccurrenceFreshnessStore());
+  // A02D — session-monotonic final sequence (never reset on reconnect or
+  // service replacement — pause/resume constructs a new DeepgramService).
+  const finalSequenceRef = React.useRef(0);
+  // A02D — outbound `utterance_id` → the MAX original constituent final
+  // sequence of the released turn, kept for the response/receipt
+  // settlement lifetime so an echoed `utterance_id` on a result or a
+  // `field_corrected` frame locates its CAUSATIVE final. Bounded.
+  const utteranceSequenceRef = React.useRef<Map<string, number>>(new Map());
+  const UTTERANCE_SEQUENCE_RETENTION = 64;
+  /** A02D — hints-OFF companion of a clear/replacement boundary: the
+   *  gate-only shadow baseline forgets a cleared destination (a fresh
+   *  identical re-dictation must pass the gate again) and adopts a replaced
+   *  value (a re-hit of the replacement is not fresh). No-op in hints-ON
+   *  builds (the map stays empty there). */
+  const noteShadowBoundaryRef = React.useRef((key: string, value: unknown) => {
+    if (value == null || value === '') regexShadowRef.current.delete(key);
+    else regexShadowRef.current.set(key, value);
+  });
+  /** A02D — the causative final sequence for an echoed `utterance_id`, or
+   *  null when the identity is absent/unknown (the cutoff then does not
+   *  advance across newer finals). Ref-wrapped so wire handlers defined
+   *  earlier in this file can call it. */
+  const causativeSequenceRef = React.useRef((utteranceId: unknown): number | null => {
+    if (typeof utteranceId !== 'string' || !utteranceId) return null;
+    return utteranceSequenceRef.current.get(utteranceId) ?? null;
+  });
+  /** A02D — the id-based destination key for a circuit-scope server clear
+   *  (`field_corrected` / `field_clears` carry the numeric circuit ref). */
+  const circuitClearDestinationRef = React.useRef(
+    (circuit: number | null, field: string): string | null => {
+      if (circuit == null) return null;
+      const row = (jobRef.current.circuits ?? []).find((c) => c.circuit_ref === String(circuit));
+      if (!row) return null;
+      const key = `circuit.${row.id}.${resolveCircuitFieldKey(field)}`;
+      return destinationKeyFromChangedKey(key);
+    }
+  );
+  // A02D — MANUAL clear/replacement boundaries, sampled AT THE TAP on the
+  // sender's thread: the emitting epoch's dispatched-stream offset, the
+  // admitted-buffer head and the latest final sequence. Only the
+  // inspector's own edits (`source: 'manual'`) count; the pipeline's writes
+  // are tagged `recording`. A rejected/pending edit never reaches here.
+  React.useEffect(() => {
+    return subscribeJobMutations((event: JobMutationEvent) => {
+      if (event.source !== 'manual') return;
+      if (!sessionIdRef.current || statusRef.current === 'idle') return;
+      const changes = diffRegexDestinations(event.prev, event.next);
+      if (changes.length === 0) return;
+      const service = deepgramRef.current;
+      const epoch = service?.liveEpoch ?? null;
+      const store = freshnessStoreRef.current;
+      const buffer = cumulativeTranscriptRef.current;
+      const bufferFinalSequence = finalSequenceRef.current > 0 ? finalSequenceRef.current : null;
+      for (const change of changes) {
+        const label =
+          describeDestination(change.key, event.next) ??
+          describeDestination(change.key, event.prev) ??
+          change.key;
+        if (epoch != null && service) {
+          const snapshot = {
+            epoch,
+            dispatchedOffset: service.dispatchedStreamOffset ?? 0,
+            bufferOffset: buffer.head,
+            bufferFinalSequence,
+          };
+          store.recordManualCutoff(change.key, label, snapshot);
+          store.recordProducer(epoch, { kind: 'manual', snapshot });
+        } else {
+          // No live socket (paused/sleeping): there is no dispatched stream
+          // to compare against — the buffer cutoff alone settles history.
+          store.recordUtteranceCutoff(change.key, bufferFinalSequence);
+        }
+        noteShadowBoundaryRef.current(
+          change.key,
+          readRegexDestinationValue(event.next, change.key)
+        );
+        clientDiagnostic('a02d_manual_boundary', {
+          destination: change.key,
+          label,
+          cleared: change.cleared,
+          epoch,
+          dispatchedOffset: service?.dispatchedStreamOffset ?? null,
+          bufferFinalSequence,
+        });
+      }
+    });
+  }, [subscribeJobMutations]);
   const matcherJobIdRef = React.useRef<string | null>(job?.id ?? null);
   // A3 hints-OFF freshness shadow — last gate-passed regex candidate value
   // per tracker key. In hints-OFF builds the regex value is deliberately
@@ -1204,9 +1337,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     const nextJobId = job?.id ?? null;
     if (matcherJobIdRef.current === nextJobId) return;
     matcherJobIdRef.current = nextJobId;
-    cumulativeTranscriptRef.current = '';
+    cumulativeTranscriptRef.current.resetText();
     regexMatcherRef.current?.reset();
     regexShadowRef.current = new Map();
+    // A02D — a job boundary resets EVERYTHING (final records, cutoffs,
+    // settled identities), unlike a bypass boundary.
+    freshnessStoreRef.current = new OccurrenceFreshnessStore();
     clientDiagnostic('conversation_admission_matcher_reset', { boundary: 'job_change' });
   }, [job?.id]);
   // Phase 4e — 3-second pre-wake PCM ring buffer + state machine driving
@@ -1583,6 +1719,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // lifecycle discard and is ABANDONED only by session teardown
       // (`reset`); it is retired solely by natural completion.
       if (handleUplinkLossDisclosureDiscard(dedupeKey, reason)) return;
+      // A02D — a never-started held-fragment clarification re-parks on any
+      // lifecycle discard and is abandoned only by session teardown.
+      if (handleHeldFragmentClarificationDiscard(dedupeKey, reason)) return;
       const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
       if (addressToken) {
         const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -1880,7 +2019,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     regexMatcherRef.current?.reset();
     regexMatcherRef.current = null;
     fieldSourceTrackerRef.current = null;
-    cumulativeTranscriptRef.current = '';
+    cumulativeTranscriptRef.current.resetText();
     regexShadowRef.current = new Map();
   }, []);
 
@@ -1948,8 +2087,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // route through this wrapper, not dispatchFinal directly. The
       // dispatchFinal closure stays unchanged so the actual send path
       // is one definition.
-      const dispatchFinalBurstBuffered = (text: string, confidence: number) => {
-        const pending = burstBufferRef.current;
+      const dispatchFinalBurstBuffered = (
+        text: string,
+        confidence: number,
+        finals: FinalWindowV1[]
+      ) => {
+        let pending = burstBufferRef.current;
+        if (pending && pending.finals[0]?.epoch !== finals[0]?.epoch) {
+          // A02D — cross-epoch concatenation is prohibited: release the
+          // pending (older-epoch) constituent ALONE, then treat this final
+          // as a fresh arm.
+          clearTimeout(pending.timer);
+          burstBufferRef.current = null;
+          clientDiagnostic('a02d_burst_buffer_epoch_split', {
+            pendingEpoch: pending.finals[0]?.epoch ?? null,
+            arrivingEpoch: finals[0]?.epoch ?? null,
+          });
+          dispatchFinal(pending.text, pending.confidence, pending.finals);
+          pending = null;
+        }
         if (pending) {
           // Second final arrived inside the window — merge and fire
           // immediately. ' ... ' separator mirrors the server's legacy
@@ -1966,7 +2122,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             combinedPreview: combinedText.slice(0, 80),
             combinedLength: combinedText.length,
           });
-          dispatchFinal(combinedText, combinedConfidence);
+          dispatchFinal(combinedText, combinedConfidence, [...pending.finals, ...finals]);
           return;
         }
         const timer = setTimeout(() => {
@@ -1981,17 +2137,54 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             textPreview: buffered.text.slice(0, 80),
             timeoutMs: BURST_BUFFER_TIMEOUT_MS,
           });
-          dispatchFinal(buffered.text, buffered.confidence);
+          dispatchFinal(buffered.text, buffered.confidence, buffered.finals);
         }, BURST_BUFFER_TIMEOUT_MS);
-        burstBufferRef.current = { text, confidence, timer };
+        burstBufferRef.current = { text, confidence, timer, finals };
         clientDiagnostic('pipeline_burst_buffer_armed', {
           textPreview: text.slice(0, 80),
           timeoutMs: BURST_BUFFER_TIMEOUT_MS,
         });
       };
 
-      const dispatchFinal = (rawText: string, confidence: number) => {
+      const dispatchFinal = (rawText: string, confidence: number, finals: FinalWindowV1[]) => {
         const admission = classifyConversationAdmission(rawText);
+        // A02D — ONE raw-final HOLD decision for the whole dispatch, taken
+        // immediately after FinalWindowV1 resolution (the records arrived
+        // with the finals) and BEFORE every mutation-capable consumer below:
+        // parseVoiceCommand/applyVoiceCommand, the feedback capture, the
+        // admitted-buffer append, regex application and hints, the chime,
+        // ask-state consumption and the send. When any constituent's
+        // confirmed onset precedes a manual clear/replacement tap on its
+        // epoch (or it is unbounded while such a cutoff applies), the whole
+        // dispatch is held: nothing forwarded, nothing written, no local
+        // command, no board switch, no ask consumed — and exactly ONE
+        // clarification line through the FIFO naming the destinations
+        // cleared or replaced manually since that epoch's last accepted
+        // final. The inspector's repeat is an ordinary fresh final.
+        const hold = freshnessStoreRef.current.holdDecision(finals);
+        if (hold.held) {
+          const anchorFinal = finals.reduce((a, b) => (b.finalSequence > a.finalSequence ? b : a));
+          console.info(
+            `[recording:pipeline] stage=a02d_held text="${rawText.slice(0, 60)}" destinations=${hold.destinations.length}`
+          );
+          clientDiagnostic('a02d_final_held', {
+            textPreview: rawText.slice(0, 80),
+            finalSequence: anchorFinal.finalSequence,
+            epoch: anchorFinal.epoch,
+            speechStart: anchorFinal.speechStart,
+            unbounded: anchorFinal.unbounded,
+            constituents: finals.length,
+            destinations: hold.destinations,
+          });
+          requestHeldFragmentClarification(
+            finalWindowKey(anchorFinal),
+            hold.destinations,
+            sessionId
+          );
+          sleepManagerRef.current?.onSpeechActivity();
+          return;
+        }
+        freshnessStoreRef.current.noteAccepted(finals);
         // iOS canon (DeepgramRecordingViewModel.swift:1798): normalise
         // BEFORE every downstream pass. The web pipeline previously called
         // `normaliseTranscriptText(text)` only inside the regex-hints
@@ -2184,7 +2377,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // The admitted matcher buffer is a separate local-mutation domain.
           // A query/reference boundary must not inherit an active circuit or
           // leave query digits available to a following ordinary final.
-          cumulativeTranscriptRef.current = '';
+          // A02D — a bypass boundary resets ONLY matcher text, cursor, active
+          // context, the gate-only shadow and now-unreferenced source-map
+          // fragments; final records, destination cutoffs and settled
+          // occurrence identities survive it (`freshnessStoreRef` untouched).
+          cumulativeTranscriptRef.current.resetText();
           regexMatcherRef.current?.reset();
           regexShadowRef.current = new Map();
           clientDiagnostic('conversation_admission_matcher_reset', {
@@ -2256,11 +2453,56 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // — normaliseBeforeMatch + normalizeTranscript) on the sliding
           // window so the cumulative buffer can stay in the same form
           // the matcher expects.
-          cumulativeTranscriptRef.current += (cumulativeTranscriptRef.current ? ' ' : '') + text;
-          const matchResult = regexMatcherRef.current.match(
-            cumulativeTranscriptRef.current,
-            jobRef.current
+          // A02D — admit this dispatch as ONE fragment (its constituents'
+          // MAX final sequence, their shared epoch, its absolute raw span),
+          // scan, then settle occurrence freshness BEFORE any value gate:
+          // the result handed on carries only destinations with a FRESH
+          // occurrence. Old overlap is parsing context, never a write.
+          const admittedBuffer = cumulativeTranscriptRef.current;
+          const fragment = admittedBuffer.append(text, finals, finals[0].epoch);
+          const rawMatchResult = regexMatcherRef.current.match(admittedBuffer.text, jobRef.current);
+          const freshness = applyOccurrenceFreshness(
+            rawMatchResult,
+            admittedBuffer,
+            fragment,
+            jobRef.current,
+            freshnessStoreRef.current
           );
+          const matchResult = freshness.result;
+          {
+            const tally: Record<string, number> = {};
+            for (const d of freshness.decisions.values()) tally[d] = (tally[d] ?? 0) + 1;
+            clientDiagnostic('a02d_occurrence_decisions', {
+              fragmentId: fragment.id,
+              finalSequence: fragment.finalSequence,
+              epoch: fragment.epoch,
+              decisions: tally,
+              fresh: [...freshness.decisions.entries()]
+                .filter(([, d]) => d === 'fresh')
+                .map(([k]) => k)
+                .slice(0, 8),
+            });
+          }
+          // Bounded retention: front-trim the admitted buffer at a fragment
+          // boundary and evict what no retained overlap can reference.
+          const trimmed = admittedBuffer.trimIfNeeded();
+          if (trimmed > 0) {
+            regexMatcherRef.current.shiftProcessedOffset(trimmed);
+            const retained = admittedBuffer.fragments;
+            const retainedEpochs = new Set<ConnectionEpoch>(retained.map((f) => f.epoch));
+            const liveEpoch = deepgramRef.current?.liveEpoch ?? null;
+            if (liveEpoch != null) retainedEpochs.add(liveEpoch);
+            freshnessStoreRef.current.evict(
+              admittedBuffer.baseOffset,
+              retained.length > 0 ? Math.min(...retained.map((f) => f.finalSequence)) : null,
+              retainedEpochs
+            );
+            clientDiagnostic('a02d_admitted_buffer_trimmed', {
+              trimmedChars: trimmed,
+              retainedFragments: retained.length,
+              retainedRecords: freshnessStoreRef.current.retainedRecordCount,
+            });
+          }
           if (regexHintsEnabled) {
             const applied = applyRegexMatchToJob(
               jobRef.current,
@@ -2422,6 +2664,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // diagnostic.)
         (getRecordingTestServices()?.chime ?? playSentForProcessingChime)();
         (getRecordingTestServices()?.haptic ?? haptic)('heavy');
+        // A02D — bind the ACTUAL outbound `utterance_id` of this released
+        // turn to the MAX original constituent final sequence (the whole
+        // dispatch shares one epoch by construction) BEFORE sending, and
+        // keep the association for the settlement lifetime (bounded).
+        {
+          const maxSequence = Math.max(...finals.map((f) => f.finalSequence));
+          const map = utteranceSequenceRef.current;
+          map.set(utteranceId, maxSequence);
+          while (map.size > UTTERANCE_SEQUENCE_RETENTION) {
+            const oldest = map.keys().next().value;
+            if (oldest === undefined) break;
+            map.delete(oldest);
+          }
+        }
         sonnetRef.current?.sendTranscript(text, {
           confirmationsEnabled: getConfirmationModeEnabled(),
           utteranceId,
@@ -2602,7 +2858,59 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
           onInspectorStoppedSpeaking();
         },
-        onFinalTranscript: (text, confidence) => {
+        onFinalTranscript: (text, confidence, _words, meta) => {
+          // A02D ADMISSION BOUNDARY — `onmessage`/`handleMessage`/
+          // `advanceProcessedWatermark` stay unconditional (PLAN-E2 retires
+          // a superseded socket's OWN epoch from its late TurnInfo), so
+          // old-epoch and old-session finals are dropped HERE instead:
+          // FinalWindowV1 record creation and every mutation-capable
+          // consumer downstream accept a final only when ALL of (1) the
+          // emitting service is the provider's CURRENT `deepgramRef` (a
+          // replacement is a different object; the service also
+          // invalidates itself synchronously inside `disconnect()`, before
+          // its 300 ms CloseStream grace), (2) the emitting socket's epoch is
+          // that service's current epoch, and (3) the session is the active
+          // recording session. A failing final is dropped with no record, no
+          // hold, no clarification and no send. What its audio means is
+          // PLAN-E2's close-ownership call, unchanged.
+          const admissionMeta: FinalTranscriptMeta = meta ?? {
+            epoch: emittingService?.liveEpoch ?? null,
+            admissible: true,
+            speechStart: null,
+            windowEnd: null,
+          };
+          if (
+            !admissionMeta.admissible ||
+            emittingService === null ||
+            emittingService !== deepgramRef.current ||
+            sessionIdRef.current !== sessionId
+          ) {
+            clientDiagnostic('a02d_final_dropped_at_admission', {
+              textPreview: text.slice(0, 60),
+              serviceCurrent: emittingService !== null && emittingService === deepgramRef.current,
+              serviceAdmissible: admissionMeta.admissible,
+              sessionCurrent: sessionIdRef.current === sessionId,
+              epoch: admissionMeta.epoch,
+            });
+            return;
+          }
+          const finalWindow = buildFinalWindow({
+            recordingSessionId: sessionId,
+            // A hand-rolled fake with no epoch allocator (legacy unit tests)
+            // is admitted under a sentinel epoch.
+            epoch: admissionMeta.epoch ?? (0 as ConnectionEpoch),
+            finalSequence: ++finalSequenceRef.current,
+            speechStart: admissionMeta.speechStart,
+            windowEnd: admissionMeta.windowEnd,
+          });
+          freshnessStoreRef.current.recordFinal(finalWindow);
+          clientDiagnostic('a02d_final_window', {
+            finalSequence: finalWindow.finalSequence,
+            epoch: finalWindow.epoch,
+            speechStart: finalWindow.speechStart,
+            windowEnd: finalWindow.windowEnd,
+            unbounded: finalWindow.unbounded,
+          });
           // PLAN-E1 E3 — a final can arrive without a preceding interim
           // (idempotent-safe: a no-op if the probe already resolved via
           // `onInterimTranscript` this turn).
@@ -2717,10 +3025,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // full rationale and the iOS-parity note.
           let effectiveText = text;
           let effectiveConfidence = confidence;
-          const pending = pendingNamingBufferRef.current;
+          let effectiveFinals: FinalWindowV1[] = [finalWindow];
+          let pending = pendingNamingBufferRef.current;
+          if (pending && pending.finals[0]?.epoch !== finalWindow.epoch) {
+            // A02D — cross-epoch concatenation is prohibited: the held
+            // preface releases ALONE under its own identity; this final
+            // proceeds on its own.
+            clearTimeout(pending.timer);
+            pendingNamingBufferRef.current = null;
+            clientDiagnostic('a02d_naming_buffer_epoch_split', {
+              pendingEpoch: pending.finals[0]?.epoch ?? null,
+              arrivingEpoch: finalWindow.epoch,
+            });
+            dispatchFinalBurstBuffered(pending.text, pending.confidence, pending.finals);
+            pending = null;
+          }
           if (pending) {
             clearTimeout(pending.timer);
             pendingNamingBufferRef.current = null;
+            effectiveFinals = [...pending.finals, finalWindow];
             effectiveText = (pending.text + ' ' + text).trim();
             // Combined confidence is the LOWER of the two — pessimistic,
             // mirrors how a single transcript would carry one confidence.
@@ -2759,12 +3082,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               // canon ports the same single-gate model. Route through
               // dispatchFinalBurstBuffered so a subsequent final
               // within 500ms can still be merged.
-              dispatchFinalBurstBuffered(buffered.text, buffered.confidence);
+              dispatchFinalBurstBuffered(buffered.text, buffered.confidence, buffered.finals);
             }, NAMING_BUFFER_TIMEOUT_MS);
             pendingNamingBufferRef.current = {
               text: effectiveText,
               confidence: effectiveConfidence,
               timer,
+              finals: effectiveFinals,
             };
             clientDiagnostic('pipeline_naming_buffer_armed', {
               textPreview: effectiveText.slice(0, 80),
@@ -2778,7 +3102,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // so consecutive Deepgram finals within 500ms get merged
           // into a single Sonnet turn (mitigates the "Observation."
           // + "There is a crack…" split that prompted this fix).
-          dispatchFinalBurstBuffered(effectiveText, effectiveConfidence);
+          dispatchFinalBurstBuffered(effectiveText, effectiveConfidence, effectiveFinals);
         },
         onReconnected: () => {
           // PLAN-E1 E3 — reconnect is one of the probe's three reset
@@ -3019,6 +3343,39 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (applied.changedKeys.length > 0) {
           liveFill.markUpdated(applied.changedKeys);
         }
+        // A02D — every server REPLACEMENT (an applied reading over a regex
+        // destination) and every server CLEAR in this envelope is an
+        // utterance-driven boundary: the buffer cutoff is the CAUSATIVE
+        // final's sequence, located through the echoed additive
+        // `utterance_id` (never `turn_id`, which spans an ask and its
+        // answer). Without the identity the cutoff does not advance.
+        {
+          const causative = causativeSequenceRef.current(
+            (result as { utterance_id?: unknown }).utterance_id
+          );
+          const keys = new Set<string>();
+          for (const changed of applied.changedKeys) {
+            const key = destinationKeyFromChangedKey(changed);
+            if (key) keys.add(key);
+          }
+          for (const clear of result.field_clears ?? []) {
+            const key = circuitClearDestinationRef.current(clear.circuit, clear.field);
+            if (key) keys.add(key);
+          }
+          for (const key of keys) {
+            freshnessStoreRef.current.recordUtteranceCutoff(key, causative);
+            noteShadowBoundaryRef.current(key, readRegexDestinationValue(jobRef.current, key));
+          }
+          if (keys.size > 0) {
+            clientDiagnostic('a02d_server_boundary', {
+              source: 'extraction',
+              destinations: keys.size,
+              causativeSequence: causative,
+              hasUtteranceId:
+                typeof (result as { utterance_id?: unknown }).utterance_id === 'string',
+            });
+          }
+        }
         // Push the new job state back to the server (debounced, 120ms)
         // so Sonnet's next-turn snapshot sees the mutated circuits /
         // sections / observations. iOS parity — see schedulePushJobState
@@ -3214,7 +3571,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     }
     fieldSourceTrackerRef.current = new FieldSourceTracker();
     fieldSourceTrackerRef.current.seedFromJob(jobRef.current);
-    cumulativeTranscriptRef.current = '';
+    cumulativeTranscriptRef.current.resetText();
     regexShadowRef.current = new Map();
 
     // Register the confirmation-FIFO session wiring (the ONLY registrations —
@@ -3257,7 +3614,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       if (handlePoorSignalAdvisoryTornDown(dedupeKey)) return;
       // PLAN-E2 — a PLAYING disclosure head torn down mid-clip goes
       // atomically playing → pending and replays (teardown `reset` abandons).
-      handleUplinkLossDisclosureTornDown(dedupeKey, reason);
+      if (handleUplinkLossDisclosureTornDown(dedupeKey, reason)) return;
+      // A02D — a PLAYING clarification head torn down (direct-prompt
+      // preemption, purge) re-parks and speaks once afterwards.
+      handleHeldFragmentClarificationTornDown(dedupeKey, reason);
     });
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
@@ -3280,6 +3640,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       if (handleModeStatusCuePlaybackStarted(dedupeKey)) return;
       // PLAN-E2 — the disclosure clip began real audio → token `playing`.
       if (handleUplinkLossDisclosurePlaybackStarted(dedupeKey)) return;
+      // A02D — the clarification clip began real audio → token `playing`.
+      if (handleHeldFragmentClarificationPlaybackStarted(dedupeKey)) return;
       const addressToken = tokenFromAddressMirrorDeliveryDedupeKey(dedupeKey);
       if (addressToken) {
         const reservation = addressMirrorQueueReservationsRef.current.get(dedupeKey);
@@ -3528,6 +3890,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             // release tracker ownership so the next dictation into the
             // now-empty slot is not rejected as preExisting-owned.
             fieldSourceTrackerRef.current?.forget(appliedClear.ownershipKeys);
+            // A02D — an accepted board-scope clear is an utterance-driven
+            // boundary for every destination it cleared.
+            const causative = causativeSequenceRef.current(
+              (msg as { utterance_id?: unknown }).utterance_id
+            );
+            for (const key of appliedClear.ownershipKeys) {
+              freshnessStoreRef.current.recordUtteranceCutoff(key, causative);
+              noteShadowBoundaryRef.current(key, null);
+            }
+            clientDiagnostic('a02d_server_boundary', {
+              source: 'field_corrected_board',
+              destinations: appliedClear.ownershipKeys.length,
+              causativeSequence: causative,
+            });
           }
           if (appliedClear && appliedClear.changedKeys.length > 0) {
             updateJobRef.current(appliedClear.patch);
@@ -3560,6 +3936,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         const applied = applyExtractionToJob(jobRef.current, synthetic, {
           userDefaults: userDefaultsRef.current,
         });
+        // A02D — an accepted circuit-scope clear is an utterance-driven
+        // boundary (causative final via the echoed `utterance_id`).
+        {
+          const key = circuitClearDestinationRef.current(msg.circuit, msg.field);
+          if (key) {
+            const causative = causativeSequenceRef.current(
+              (msg as { utterance_id?: unknown }).utterance_id
+            );
+            freshnessStoreRef.current.recordUtteranceCutoff(key, causative);
+            noteShadowBoundaryRef.current(key, null);
+            clientDiagnostic('a02d_server_boundary', {
+              source: 'field_corrected_circuit',
+              destinations: 1,
+              causativeSequence: causative,
+            });
+          }
+        }
         if (applied) {
           updateJobRef.current(applied.patch);
           jobRef.current = {
@@ -4312,6 +4705,33 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    *  buffer's contents are valid in every wake case. Swallows failures
    *  rather than flipping the UI red: wake is best-effort, and the next
    *  user action will surface any real problem. */
+  /** A02D — replay is RETIRED. The 3 s tagged ring exists only for
+   *  PLAN-E2's loss accounting; no path re-sends its audio to any socket.
+   *  At a wake or resume its contents — audio captured while no socket could
+   *  take it — are charged through E2's staged-loss seam so E2's own
+   *  disclosure ("Some recent audio may not have been transcribed…") fires
+   *  under E2's unchanged materiality rules. With nothing re-sent, no
+   *  fragment can duplicate speech the server already received. */
+  const chargeRingAsStagedLoss = React.useCallback((reason: string) => {
+    const segments = ringBufferRef.current?.drainTagged() ?? [];
+    const ledger = sessionUplinkContextRef.current?.lossLedger ?? null;
+    let voicedSources = 0;
+    for (const segment of segments) {
+      const sourceId = ledger?.recordStagedLoss({
+        epochScope: segment.epochScope,
+        captureSampleRange: segment.captureSampleRange,
+        voiced: classifyPcmEnergy(segment.samples),
+      });
+      if (sourceId) voicedSources += 1;
+    }
+    clientDiagnostic('a02d_ring_charged_as_staged_loss', {
+      reason,
+      segments: segments.length,
+      voicedSources,
+      resentAudioBlocks: 0,
+    });
+  }, []);
+
   const handleWake = React.useCallback(
     async (from: Exclude<SleepState, 'active'>) => {
       // Snapshot sessionId + initial status — the SleepManager fires
@@ -4335,21 +4755,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             // Ring buffer is already 16kHz (see beginMicPipeline) and
             // the onSamples callback keeps resampling upstream, so
             // DeepgramService always speaks 16kHz for this session.
+            // A02D — charge the ring BEFORE the reopen so the staged report
+            // joins the disclosure moment of the open that follows; nothing
+            // is re-sent.
+            chargeRingAsStagedLoss('wake_from_sleep');
             await openDeepgram(16000);
             openSonnet();
-            const replaySegments = ringBufferRef.current?.drainTagged();
-            if (replaySegments && replaySegments.length > 0) {
-              for (const segment of replaySegments) {
-                deepgramRef.current?.sendTaggedAudio(segment);
-              }
-            }
           }
         } else {
-          // Doze — Deepgram + Sonnet are still open, just paused.
-          // Resume with the ring-buffer replay so pre-wake audio
-          // reaches the ASR. Each segment keeps its ORIGINAL tag.
-          const replaySegments = ringBufferRef.current?.drainTagged();
-          deepgramRef.current?.resume(replaySegments);
+          // Doze — Deepgram + Sonnet are still open, just paused. A02D:
+          // the pre-wake ring audio is charged as staged loss, never
+          // replayed into the socket.
+          chargeRingAsStagedLoss('wake_from_doze');
+          deepgramRef.current?.resume();
           sonnetRef.current?.resume();
         }
         // Session rotated while awaiting mic/WS reopen — drop the work
@@ -4660,7 +5078,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // rather than letting the probe read a fresh `nowFn()` at
         // whatever later moment this callback happens to run.
         poorSignalProbeRef.current?.onOnset(transition.capturedAt);
+        // A02D FinalWindowV1 — the onset reaches the CURRENT sender before
+        // the onset frame is sent (this fires inside the tagging boundary),
+        // so the sender records its dispatched offset as the candidate
+        // `speech_start`, pending Deepgram's confirmation.
+        deepgramRef.current?.noteLocalSpeechOnset?.(transition.capturedAt);
       } else {
+        // A02D — an unconfirmed onset is discarded at silence; a parked
+        // held-fragment clarification is released by local silence.
+        deepgramRef.current?.noteLocalSilence?.();
+        notifyHeldFragmentLocalSilence();
         // PLAN-E2 — debounced LOCAL silence releases a parked
         // disclosure (the parking primitive E1's detector exists to
         // provide; continuous across socket epochs by contract).
@@ -4753,6 +5180,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // SpeechSynthesis fallback because tts.ts requires an active
     // sessionId before routing through ElevenLabs.
     setTtsSessionId(sessionId);
+    // A02D — fresh freshness state per recording session: final records,
+    // cutoffs, settled identities, the final-sequence counter and the
+    // utterance→sequence map. (The admitted buffer resets with the matcher.)
+    freshnessStoreRef.current = new OccurrenceFreshnessStore();
+    finalSequenceRef.current = 0;
+    utteranceSequenceRef.current.clear();
     // Phase E — open a backend recording session in parallel with the
     // mic pipeline. Fire-and-forget: if the call fails (network blip,
     // server hot-reload), recording continues without a backend
@@ -4916,6 +5349,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // ElevenLabs path and degrade to native TTS — mirrors the
     // sessionIdRef rotation guard everywhere else in this file.
     setTtsSessionId(null);
+    // A02D — a pending held-fragment clarification token is abandoned at
+    // teardown, never spoken into the next session.
+    abandonHeldFragmentClarificationForSessionTeardown();
     // Clear active board id so the next recording session starts with
     // no banner state; the backend will re-broadcast on the new session.
     setCurrentBoardId(null);
@@ -5148,14 +5584,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // Ingress resample in `beginMicPipeline` keeps the ring buffer
           // + DeepgramService in 16kHz for this session — no need to
           // forward the raw device rate here.
+          // A02D — replay retired: charge the ring as staged loss, re-send
+          // nothing.
+          chargeRingAsStagedLoss('resume_from_full_sleep');
           await openDeepgram(16000);
           openSonnet();
-          const replaySegments = ringBufferRef.current?.drainTagged();
-          if (replaySegments && replaySegments.length > 0) {
-            for (const segment of replaySegments) {
-              deepgramRef.current?.sendTaggedAudio(segment);
-            }
-          }
         }
       }
       // stop() ran while we awaited openDeepgram / beginMicPipeline —

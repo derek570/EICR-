@@ -24,6 +24,13 @@ import {
   type DisclosureToken,
 } from './uplink-loss-disclosure';
 import type { LossSourceId } from './uplink-loss-ledger';
+import {
+  HeldFragmentClarificationLedger,
+  renderHeldFragmentClarification,
+  HELD_FRAGMENT_CLARIFICATION_NAMED_TEMPLATE,
+  HELD_FRAGMENT_CLARIFICATION_MANY_TEXT,
+  type ClarificationToken,
+} from './held-fragment-clarification';
 
 /**
  * Text-to-speech wrapper — ElevenLabs primary, browser SpeechSynthesis
@@ -1891,4 +1898,222 @@ function humaniseField(field: string): string {
   const lower = field.toLowerCase();
   if (lower in specials) return specials[lower];
   return lower.replace(/_/g, ' ');
+}
+
+// ── A02D — held-fragment clarification obligation ────────────────────────
+//
+// Distinct from PLAN-E2's disclosure token but built on the same delivery
+// contract: ONE protected, forced item per token in the confirmation FIFO
+// (never `speak()`, so it consumes no outstanding ask and is never blocked
+// by awaiting-response state); parked behind local speech and TTS
+// unavailability; re-parked on preemption/overflow/discard/playback
+// failure; terminal only on natural completion; abandoned at teardown.
+// Unlike E2, a direct prompt PREEMPTS a playing clarification (it re-parks
+// and speaks once afterwards) — the plan's own lifecycle vector — so
+// nothing here touches `speak()`'s E2 deferral branch.
+//
+// TEXT FREEZE: the wording is rendered exactly once, at `freezeText`, the
+// moment the clip is prepared for the queue. A later held final can merge
+// into the token only before that; afterwards it awaits a successor.
+
+export { HELD_FRAGMENT_CLARIFICATION_NAMED_TEMPLATE, HELD_FRAGMENT_CLARIFICATION_MANY_TEXT };
+export { renderHeldFragmentClarification };
+
+const HELD_FRAGMENT_DEDUPE_PREFIX = 'held-fragment:';
+
+function heldFragmentDedupeKey(token: ClarificationToken): string {
+  return `${HELD_FRAGMENT_DEDUPE_PREFIX}${token.id}`;
+}
+
+function tokenIdFromHeldFragmentDedupeKey(dedupeKey: string): number | null {
+  if (!dedupeKey.startsWith(HELD_FRAGMENT_DEDUPE_PREFIX)) return null;
+  const n = Number(dedupeKey.slice(HELD_FRAGMENT_DEDUPE_PREFIX.length));
+  return Number.isFinite(n) ? n : null;
+}
+
+let parkedHeldFragmentToken: ClarificationToken | null = null;
+let heldFragmentGeneration = 0;
+const HELD_FRAGMENT_TTS_UNAVAILABLE_RETRY_MS = 2000;
+
+function createHeldFragmentClarificationLedger(): HeldFragmentClarificationLedger {
+  return new HeldFragmentClarificationLedger({
+    onMint: (token) => speakHeldFragmentClarification(token),
+    telemetry: (event, payload) => clientDiagnostic(event, payload),
+  });
+}
+let heldFragmentClarificationLedger = createHeldFragmentClarificationLedger();
+
+/** The hold's ONE obligation for a held final: mint-or-merge-or-await a
+ *  clarification token in the CURRENT TTS session. `expectedSessionId` is
+ *  the originating recording session; a request landing after that session
+ *  ended is rejected rather than adopted by the next one. */
+export function requestHeldFragmentClarification(
+  finalKey: string,
+  destinations: readonly string[],
+  expectedSessionId?: string
+): void {
+  const sessionId = getActiveSessionId() ?? '';
+  if (expectedSessionId !== undefined && expectedSessionId !== sessionId) {
+    clientDiagnostic('a02d_clarification_stale_session', {
+      expected: expectedSessionId,
+      active: sessionId,
+    });
+    return;
+  }
+  const outcome = heldFragmentClarificationLedger.request(sessionId, finalKey, destinations);
+  clientDiagnostic('a02d_clarification_requested', {
+    action: outcome.action,
+    token: outcome.token.id,
+    destinations: destinations.length,
+  });
+}
+
+/** Deliver (or re-deliver) `token`: park behind TTS unavailability and
+ *  local speech, otherwise FREEZE the wording and enqueue ONE protected,
+ *  forced item carrying the token's dedupe key. */
+export function speakHeldFragmentClarification(token: ClarificationToken): void {
+  if (heldFragmentClarificationLedger.outstandingToken?.id !== token.id) return; // stale
+  if (token.sessionId !== (getActiveSessionId() ?? '')) return; // earlier session
+  if (!isTtsAvailable() && !getRecordingTestServices()?.ttsConfirmationPlayer) {
+    parkedHeldFragmentToken = token;
+    const generation = heldFragmentGeneration;
+    clientDiagnostic('a02d_clarification_unavailable', { token: token.id });
+    setTimeout(() => {
+      if (generation !== heldFragmentGeneration) return;
+      if (parkedHeldFragmentToken !== token) return;
+      parkedHeldFragmentToken = null;
+      speakHeldFragmentClarification(token);
+    }, HELD_FRAGMENT_TTS_UNAVAILABLE_RETRY_MS);
+    return;
+  }
+  if (uplinkLossLocalSpeakingGate?.()) {
+    parkedHeldFragmentToken = token;
+    clientDiagnostic('a02d_clarification_parked', { token: token.id });
+    return;
+  }
+  parkedHeldFragmentToken = null;
+  // TEXT FREEZE — from here on a later held final awaits a successor.
+  const text = heldFragmentClarificationLedger.freezeText(token.id);
+  if (text === null) return;
+  const harnessPlayer = getRecordingTestServices()?.ttsConfirmationPlayer;
+  const result = enqueueConfirmation({
+    text,
+    dedupeKey: heldFragmentDedupeKey(token),
+    protected: true,
+    play: harnessPlayer
+      ? (t, controls) => {
+          registerTtsFingerprint(t);
+          harnessPlayer(t, controls);
+        }
+      : playConfirmationHead,
+    onEnd: () => handleHeldFragmentNaturalCompletion(token.id),
+    onPlaybackFailed: () => reparkHeldFragmentClarification(token.id, 1500),
+  });
+  clientDiagnostic('a02d_clarification_enqueued', {
+    token: token.id,
+    enqueued: result.enqueued,
+    textPreview: text.slice(0, 80),
+  });
+}
+
+/** Provider wiring: the session VAD's debounced SILENCE releases a park. */
+export function notifyHeldFragmentLocalSilence(): void {
+  const token = parkedHeldFragmentToken;
+  if (!token) return;
+  parkedHeldFragmentToken = null;
+  speakHeldFragmentClarification(token);
+}
+
+export function handleHeldFragmentClarificationPlaybackStarted(dedupeKey: string): boolean {
+  const id = tokenIdFromHeldFragmentDedupeKey(dedupeKey);
+  if (id === null) return false;
+  heldFragmentClarificationLedger.onPlaybackStarted(id);
+  return true;
+}
+
+/** Queue hook: a NEVER-started clarification item was discarded. `reset` =
+ *  session teardown → abandon; anything else → re-park the same token. */
+export function handleHeldFragmentClarificationDiscard(
+  dedupeKey: string,
+  reason: DiscardReason
+): boolean {
+  const id = tokenIdFromHeldFragmentDedupeKey(dedupeKey);
+  if (id === null) return false;
+  if (reason === 'reset') {
+    abandonHeldFragmentClarificationForTeardown();
+    return true;
+  }
+  reparkHeldFragmentClarification(id, reason === 'playback_error' ? 1500 : 0);
+  return true;
+}
+
+/** Queue hook: a STARTED clarification head was torn down (preemption or
+ *  purge re-parks; `reset` abandons). */
+export function handleHeldFragmentClarificationTornDown(
+  dedupeKey: string,
+  reason: DiscardReason
+): boolean {
+  const id = tokenIdFromHeldFragmentDedupeKey(dedupeKey);
+  if (id === null) return false;
+  if (reason === 'reset') {
+    abandonHeldFragmentClarificationForTeardown();
+    return true;
+  }
+  reparkHeldFragmentClarification(id, 0);
+  return true;
+}
+
+function handleHeldFragmentNaturalCompletion(tokenId: number): void {
+  // A successor (finals that awaited while this one played) is minted by
+  // the ledger and handed straight to `speakHeldFragmentClarification`.
+  heldFragmentClarificationLedger.onNaturalCompletion(tokenId);
+}
+
+function reparkHeldFragmentClarification(tokenId: number, delayMs: number): void {
+  const token = heldFragmentClarificationLedger.onNonNaturalTerminal(tokenId);
+  if (!token) return;
+  const generation = heldFragmentGeneration;
+  const replay = () => {
+    if (heldFragmentGeneration !== generation) return;
+    speakHeldFragmentClarification(token);
+  };
+  // Deferred (never synchronous): the queue's discard hooks fire from
+  // inside a live iteration over the queue array.
+  if (delayMs > 0) setTimeout(replay, delayMs);
+  else queueMicrotask(replay);
+}
+
+function abandonHeldFragmentClarificationForTeardown(): void {
+  heldFragmentClarificationLedger.abandonForSessionTeardown();
+  parkedHeldFragmentToken = null;
+  heldFragmentGeneration += 1;
+}
+
+/** Session teardown (the provider's `stop()`): abandon any pending token so
+ *  it is never spoken into the next session. */
+export function abandonHeldFragmentClarificationForSessionTeardown(): void {
+  abandonHeldFragmentClarificationForTeardown();
+}
+
+/** Read-only introspection for tests. */
+export function __heldFragmentClarificationStateForTests(): {
+  outstanding: ClarificationToken | null;
+  parked: ClarificationToken | null;
+  awaitingFinals: number;
+  held: number;
+  spoken: number;
+} {
+  return {
+    outstanding: heldFragmentClarificationLedger.outstandingToken,
+    parked: parkedHeldFragmentToken,
+    awaitingFinals: heldFragmentClarificationLedger.awaitingFinalCount,
+    held: heldFragmentClarificationLedger.heldFinalCount,
+    spoken: heldFragmentClarificationLedger.spokenCount,
+  };
+}
+
+/** Test-only — fresh ledger (token ids and counters restart). */
+export function __resetHeldFragmentClarificationForTests(): void {
+  abandonHeldFragmentClarificationForTeardown();
+  heldFragmentClarificationLedger = createHeldFragmentClarificationLedger();
 }

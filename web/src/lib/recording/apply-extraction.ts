@@ -129,6 +129,13 @@ type Section =
  * shared types are immutable during parity work — iOS is canon for
  * the data contract. Any wire-shape adjustment lands on the PWA only.
  */
+/** A02D — resolve a wire-side circuit reading/clear field name (`zs`,
+ *  `r1_plus_r2`, …) to the PWA `CircuitRow` key (`measured_zs_ohm`, …).
+ *  Already-canonical keys pass through unchanged. */
+export function resolveCircuitFieldKey(field: string): string {
+  return LEGACY_TO_PWA_CIRCUIT_FIELD[field] ?? field;
+}
+
 const LEGACY_TO_PWA_CIRCUIT_FIELD: Record<string, string> = {
   designation: 'circuit_designation',
   ocpd_rating: 'ocpd_rating_a',
