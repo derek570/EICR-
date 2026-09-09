@@ -61,6 +61,12 @@ const nextConfig: NextConfig = {
   // bundle still gets the full `dist/ort.bundle.min.mjs` (WASM inline,
   // no separate .wasm files to host).
   serverExternalPackages: ['onnxruntime-web'],
+  // Next 16.3 type-checks the whole tsconfig program at build time, which
+  // pulls in the Vitest suites (`tests/**`) that have their own harness
+  // typings and pre-existing test-only type errors CI tolerates via
+  // `npx tsc --noEmit || true`. The build checks the app program only;
+  // editor/tsc behaviour on `tsconfig.json` is unchanged.
+  typescript: { tsconfigPath: 'tsconfig.build.json' },
 };
 
 export default withSerwist(nextConfig);
