@@ -279,3 +279,23 @@ describe('isLocalSpeakingWithin — time-bounded gate read (2026-08-29, sessions
     expect(vad.isLocalSpeakingWithin(2_500, 11_100)).toBe(false);
   });
 });
+
+describe('isLocalSpeakingWithin — default clock matches capturedAt (A02D, 2026-09-09)', () => {
+  it('a frame stamped with performance.now() reads as speaking through the DEFAULT nowMs', () => {
+    const vad = new VoicedActivityDetector(() => {});
+    const samples = new Int16Array(1600);
+    for (let i = 0; i < samples.length; i++) samples[i] = i % 2 === 0 ? 8000 : -8000;
+    vad.processFrame({
+      origin: 'captured',
+      samples,
+      recordingSessionId: 's',
+      captureSampleRange: { start: 0, end: 1600 },
+      epochScope: { kind: 'unscoped' } as never,
+      capturedAt: performance.now(),
+    });
+    expect(vad.isLocalSpeaking).toBe(true);
+    // Pre-fix this compared a performance.now() stamp against Date.now().
+    expect(vad.isLocalSpeakingWithin()).toBe(true);
+    expect(vad.isLocalSpeakingWithin(2_500, performance.now() + 3_000)).toBe(false);
+  });
+});
