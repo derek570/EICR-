@@ -1,0 +1,2524 @@
+{
+  "schema_version": 1,
+  "name": "RegexFreshOccurrenceEvidence",
+  "plan": "A02D — Keep regex writes fresh after corrections and clears",
+  "generated_from_commit": "623f287d91338152fb6cc485316f424a72dc07ca",
+  "generated_at_commit_subject": "test(backend): read the held-fragment clarification source in the spoken-union drift guard",
+  "original_baseline": {
+    "backend_web": "2d7b9874",
+    "backend_web_subject": "Merge pull request #208 from derek570/fable/a01p-accepted-field-consistency-20260908",
+    "ios": "ed58177",
+    "note": "A01P merged on both repos; the regex matcher compared transcript LENGTH, replayed audio after sleep, and re-applied a cleared occurrence."
+  },
+  "fixture_digests_pinned_by_clients": {
+    "regex_freshness_vectors": "d0f71c86b9f0b1838ac5be387ca3fce96e64f5783052224bc06ed0b6d8c2661b",
+    "closed_enum_vectors": "6486b80f8f9de75be1edc17b1c2da7b30f9cdee1f04f2a6a31fa484153170922",
+    "sync_preflight": "scripts/check-regex-freshness-fixture-sync.sh"
+  },
+  "red_proof_rule": "The baseline lane runs the fix-branch mounted harness test against the PRE-A02D web sources with only the held-fragment clarification hooks and the fake service forwarders made optional (their targets do not exist there). A failure whose first line is a missing-hook TypeError is harness_incompatible and is NOT red proof; an assertion on sends, writes, spoken counts or re-sent audio is behavioural red proof.",
+  "digests": {
+    "sources": {
+      "scripts/check-regex-freshness-fixture-sync.sh": "c67cb2ef50d0042f56ad1057bc1a007a6b99a007649e04be4f822a6df3d85459",
+      "src/extraction/sonnet-stream.js": "62b79e16870f678363f0fb05648fe0098dfcbf0b910d5ba1e00b315af9d0b96e",
+      "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
+      "web/src/lib/recording-context.tsx": "9c4902ae47ff36d5e7f6e820ed7daa70e7fce2a04a4902e4d7a89d5a33136b94",
+      "web/src/lib/recording/apply-extraction.ts": "c5c3bbd7c0b4b40f93d647555c3549dc4d35b16fa1fadd173570b0b3690be97b",
+      "web/src/lib/recording/deepgram-service.ts": "4165fe1e55b1203c3c4aab6910cca87cb3ed9de391255d229d68232c714a76a2",
+      "web/src/lib/recording/final-window.ts": "edc52f7ad7eee640232ee89b62c03deb219066926be057b4e3aa36f198a9cc5f",
+      "web/src/lib/recording/held-fragment-clarification.ts": "31a81fbefbaa0e0369666d6d1aab81083fa5115a435eacec40aa03a608b7e098",
+      "web/src/lib/recording/normalisation-source-map.ts": "15ea899aa4a3c155836e710787104bf8d83a862c0be749a33bebf873da20ea4a",
+      "web/src/lib/recording/regex-fresh-occurrence.ts": "63764458918f00b32ea80ca86a958cf2e8da627c7c52a8bb4f77f16dfeadd74f",
+      "web/src/lib/recording/regex-match-result.ts": "132f52a97a38a78fb5686ecb10eeea4fa9c23ef8c92ef9e4c34c2ba7a2dd72ce",
+      "web/src/lib/recording/test-services.ts": "d2ecc96ca6cb900e537ce181d00cf1fcc068bfaec5a205da45f4c2bacd04e08e",
+      "web/src/lib/recording/transcript-field-matcher.ts": "d347031736db487cff2df473d4cea4e04d3cca061fae109b6117e5bf3beb78f6",
+      "web/src/lib/recording/tts.ts": "46cd2ac9a66b0e0af6e94cf58d739dff3ae73ef8c06e8658441c6788efdde3d1",
+      "web/src/lib/recording/voiced-activity.ts": "58e5261ea695a2be8df415ac5741bab018a42f257add0cd2ec7cd7b20ec2fdad"
+    },
+    "fixtures": {
+      "config/closed-enum-vectors.json": "6486b80f8f9de75be1edc17b1c2da7b30f9cdee1f04f2a6a31fa484153170922",
+      "config/regex-freshness-vectors.json": "d0f71c86b9f0b1838ac5be387ca3fce96e64f5783052224bc06ed0b6d8c2661b"
+    },
+    "tests": {
+      "src/__tests__/stage6-a02d-field-corrected-utterance-id.test.js": "2229976fc08b295ee29a49e2daffb0539528fc0df8caa06c8676f58c8c9c6227",
+      "src/__tests__/stage6-clear-board-reading-session-seam.test.js": "41c30587894d38ac008c34e9d25d097643e87e29adb451a4496d05502305fd17",
+      "src/__tests__/stage6-honest-refusal.test.js": "b74fd1cf6f0e8a80cbd15ec8c887e41d21289a5190182533eec32f8e5498e27d",
+      "web/tests/closed-enum-guard.test.ts": "c8bd1085b2137307822f42c5780696a79ecafb343d137331931ffbef8c9fbcdc",
+      "web/tests/deepgram-service-final-window.test.ts": "e23ab0942d1f296a8ac00288bc2b5fa82871ce569edc2be30ff65ecfa56c0c67",
+      "web/tests/harness/a02d-regex-freshness-mounted.test.tsx": "6d9906a374eb8502965d10f48d9fead33bf03f2f7e4f04699d8da8cad75f975a",
+      "web/tests/held-fragment-clarification.test.ts": "9df649e50cfb5e64f81100fbae08d10f044f708afb7529bbd95ea212b7e0093d",
+      "web/tests/regex-fresh-occurrence.test.ts": "a3e1fa3547afedc5176f1eed41007298ee573e1ee8e793db5596dc1170f3b858",
+      "web/tests/regex-freshness-fixture.test.ts": "531b40485ce07d74c28fe8615995ee5de023db7c1e33fc6543d2bdd0f651b46f",
+      "web/tests/uplink-loss-recording-context-wiring.test.ts": "abb689645d4b4e69b9bfbb09adb5a21b8121096028a169a20f147bde498b0760",
+      "web/tests/voiced-activity.test.ts": "162584aeb477a0cec949b85b0606d26c1e10c70296bcc0981cf07d686669247c"
+    }
+  },
+  "bounded_work_latency": {
+    "method": "TranscriptFieldMatcher.match() over ONE growing cumulative transcript of N finals (the provider call), median of REPS runs; on the fix the same call also builds the normalisation source map and the occurrence trace. A last-quartile mean that does not grow past the first-quartile mean shows per-final work is bounded by the sliding window, not the session length.",
+    "fix": {
+      "finals": 600,
+      "reps": 5,
+      "per_call_ms": {
+        "p50": 0.19641700000011042,
+        "p95": 0.2112090000000535,
+        "p99": 0.3638339999999971,
+        "max": 0.5034579999999096,
+        "first_quartile_mean": 0.17999636666665234,
+        "last_quartile_mean": 0.20273333333333995,
+        "total": 117.65412500000002
+      },
+      "final_transcript_chars": 22050
+    },
+    "baseline": {
+      "finals": 600,
+      "reps": 5,
+      "per_call_ms": {
+        "p50": 0.07708400000001348,
+        "p95": 0.08075000000008004,
+        "p99": 0.08225000000004457,
+        "max": 0.247208999999998,
+        "first_quartile_mean": 0.07094532000000071,
+        "last_quartile_mean": 0.08022194666666715,
+        "total": 45.956923000000984
+      },
+      "final_transcript_chars": 22050
+    },
+    "delta_p50_ms": 0.1193
+  },
+  "summary": {
+    "backend_fix": {
+      "total": 9517,
+      "passed": 9498,
+      "failed": 0
+    },
+    "web_fix": {
+      "total": 289,
+      "passed": 289,
+      "failed": 0
+    },
+    "baseline_lane": {
+      "total": 28,
+      "passed": 2,
+      "failed": 26,
+      "behavioural_red": 23,
+      "harness_incompatible": 3
+    },
+    "inventory_counts": {
+      "backend:passed": 80,
+      "web:passed": 289
+    }
+  },
+  "baseline_lane": [
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected +0 to be 1 // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "status": "passed",
+      "failure_class": null,
+      "first_line": null
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: actual value must be number or bigint, received \"undefined\""
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected 0 to be greater than or equal to 1"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [ { source: 'regex', …(1) } ] to have a length of +0 but got 1"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null not to be null"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null not to be null"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected 2 to be +0 // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected +0 to be 2 // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "status": "passed",
+      "failure_class": null,
+      "first_line": null
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: actual value must be number or bigint, received \"undefined\""
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected 0 to be greater than or equal to 1"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null not to be null"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null not to be null"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected 2 to be +0 // Object.is equality"
+    }
+  ],
+  "tests": [
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a02d-field-corrected-utterance-id.test.js",
+      "name": "[invariant] A02D — field_corrected frames echo the causative utterance_id [current_behaviour] a result WITHOUT utterance_id emits byte-identical pre-A02D frames (no key)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-a02d-field-corrected-utterance-id.test.js",
+      "name": "[invariant] A02D — field_corrected frames echo the causative utterance_id a result with utterance_id stamps every standalone field_corrected frame that lacks one; an explicit one is kept",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-clear-board-reading-session-seam.test.js",
+      "name": "REAL session seam — capability parse, live emission bytes, reconnect re-parse capability ABSENT and MALFORMED session_starts both DENY through the real chain",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-clear-board-reading-session-seam.test.js",
+      "name": "REAL session seam — capability parse, live emission bytes, reconnect re-parse capable session_start → clear mutates; the standalone field_corrected frame carries the POST-canonicalisation pfc name AFTER the extraction envelope",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-clear-board-reading-session-seam.test.js",
+      "name": "REAL session seam — capability parse, live emission bytes, reconnect re-parse reconnect flush KICKS BPG4 refinement for observations first delivered via replay (Codex r2): pendingRefinements is seeded after the ledger completes",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-clear-board-reading-session-seam.test.js",
+      "name": "REAL session seam — capability parse, live emission bytes, reconnect re-parse reconnect frame that OMITS the capabilities block is DENY-FIRST: the stale advert is revoked (mini-review M1)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-clear-board-reading-session-seam.test.js",
+      "name": "REAL session seam — capability parse, live emission bytes, reconnect re-parse RECONNECT RE-PARSE: capable → downgraded reconnect is DENIED; a later capable reconnect re-authorises",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-clear-board-reading-session-seam.test.js",
+      "name": "REAL session seam — capability parse, live emission bytes, reconnect re-parse select_board board-op leg: current_board_changed rides BETWEEN the extraction envelope and the field_corrected frame (ledger order on the live path)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.1 — unsupported_clear: known circuit field with no clear support clear_reading on circuit_ref speaks the unsupported_clear family; REJECTED_PROMPTS suppressed; one audible line; envelope byte-identical",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.1 — unsupported_clear: known circuit field with no clear support next-turn no-reinjection pin: a fully-covered refusal turn does NOT set session.orphanContext",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.10 — A1a DIRECT-denial terminals (attempt 6+) + shared-helper parity interleaved TWO-FIELD direct denials in one family: family-wide ordinal scope + per-render distinctness",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.10 — A1a DIRECT-denial terminals (attempt 6+) + shared-helper parity shared-helper parity: the board-file re-export IS the shared module’s object; selection semantics pinned (seeded first selection, monotonic rotation, no wrap-repeat)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.10 — A1a DIRECT-denial terminals (attempt 6+) + shared-helper parity six consecutive already-empty clears keep the empty-flavoured terminal",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.10 — A1a DIRECT-denial terminals (attempt 6+) + shared-helper parity six consecutive DARK denials on one family: five distinct variants then the family’s OWN truthful terminal (never the \"nothing recorded\" string), never a byte-identical pair",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.11 — centralised distinctness inventory + wording contract equal ordinals across routes never collide (terminal cross-template distinctness at n=7)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.11 — centralised distinctness inventory + wording contract every B-staged family/route has ≥3 byte-distinct variants; bridge pools are byte-distinct from the A1a direct pools",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.11 — centralised distinctness inventory + wording contract every rendered string across ALL families/routes/terminals is mutually full-string distinct (the client dedupe is family-blind)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.11 — centralised distinctness inventory + wording contract no rendered string is retry-inviting or collides with the generic apology families",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.12 — PLAN-C closed-enum re-ask wordings join the distinctness union every re-ask render vector is internally unique",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.12 — PLAN-C closed-enum re-ask wordings join the distinctness union no re-ask collides with ANY rendered notice, apology family, or D3 cue",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.12 — PLAN-C closed-enum re-ask wordings join the distinctness union re-asks are self-contained restatements, not bare retry invitations",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.12 — PLAN-C closed-enum re-ask wordings join the distinctness union the D3 literals above are still byte-identical to their web source (drift guard)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.13 — PLAN-E1 poor-signal advisory joins the distinctness union no union entry collides with any rendered notice, apology family, D3 cue, or PLAN-C re-ask",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.13 — PLAN-E1 poor-signal advisory joins the distinctness union the union is byte-identical to its web source (drift guard)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.13 — PLAN-E1 poor-signal advisory joins the distinctness union the union is internally unique",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.2 — the HEADLINE Ze bridge (clear_reading on a board-coverable field) CAPABLE with same-turn correction, BOTH orders: the clear_board_reading success reconciles the wrong_tool_clear away (key = boardSlotKey(ze, null), the GLOBAL null board component)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.2 — the HEADLINE Ze bridge (clear_reading on a board-coverable field) CAPABLE-uncorrected: one wrong_tool_clear routing-snag line, never \"say it again\"; the bridge NEVER mutates",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.2 — the HEADLINE Ze bridge (clear_reading on a board-coverable field) clear_board_reading on Ze still stages A1a’s own DIRECT notice byte-identically (dark)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.2 — the HEADLINE Ze bridge (clear_reading on a board-coverable field) DARK, raw prospective_fault_current AND canonical ze/pfc all route to the bridge (canonical-vs-canonical membership)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.2 — the HEADLINE Ze bridge (clear_reading on a board-coverable field) DARK, raw spelling: earth_loop_impedance_ze canonicalises to ze and routes to the BRIDGE — capability_missing denial with bridge wording, exactly ONE audible line, REJECTED_PROMPTS suppressed",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.3 — off-schema field string (leak pin) model_contract off-schema route: no unsupported_clear, the raw string NEVER renders, one audible line",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.4 — unknown-tool: both envelope routes object-form (createWriteDispatcher route via null-asks ask_user): counts as rejected (round-15 predicate), suppression works, one audible line",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.4 — unknown-tool: both envelope routes object-form route, recovery-success variant: a structurally complete reading in the transcript is STILL recovered and read back; the refusal drains additively beside it",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.4 — unknown-tool: both envelope routes off-schema clear + genuine unknown-tool in one window keep SEPARATE ordinals (neither inflates the other)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.4 — unknown-tool: both envelope routes string-form (composer route): model_contract wording, envelope byte-identical, REJECTED_PROMPTS suppressed, one audible line",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.5 — recoverable errors stage NOTHING (fail-audible pin) circuit_not_found keeps today’s A3 behaviour byte-identically: REJECTED_PROMPTS speaks, no notice",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.6 — mixed turns one refused op + one successful write: refusal AND read-back both speak (additive channel), no generic prompt",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.6 — mixed turns round-18 pin — A1a soft-skip denial + UNCOVERED hard rejection: the drained direct notice IS the audible output; no REJECTED_PROMPTS; never silent",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.7 — partial coverage (round-2 double-speak case) one unsupported_clear + one ordinary validation rejection ⇒ exactly ONE generic line, ZERO refusal lines",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.8 — coalescing + across-turn repeat contract five ACROSS-turn repeats ⇒ five audible lines, all full-string-distinct (pool → ordinal terminal from attempt 3), never silence; refusedOps resets after the 30 s window",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.8 — coalescing + across-turn repeat contract five same-turn rejections of one op ⇒ ONE line covering all five ids (coverage appended; ordinal NOT inflated)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.8 — coalescing + across-turn repeat contract two different excluded fields in one turn ⇒ two lines",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "§5.9 — mixed-route provenance (round-14): direct→bridge and bridge→direct both orders produce IDENTICAL state (count 1) and identical B-staged wording",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals ANSWER-turn partial coverage (inResponseTo:true): covered notices stamp drain:false immediately — one marker-② catch-all line, zero refusal lines (mini-review gate parity)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals ANSWER-turn partial coverage (pendingAsks.size>0): covered notices stamp drain:false immediately — one marker-② catch-all line, zero refusal lines (mini-review gate parity)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals attempt-6 direct terminals for the remaining families: board_clear_disabled, field_not_applicable_on_eicr, board_clear_scope_unclassified — each renders its OWN truthful terminal",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals BOARD-SCOPED direct↔bridge provenance, both orders: identical output carrying the board ordinal; distinct bytes across two boards sharing a designation",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals branch 1 with PARTIAL coverage: a recovered reading speaks AND the covered refusal drains additively; no generic prompt",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals CAPABLE correction via ALREADY-EMPTY, both orders: wrong_tool_clear reconciled away; the already-blank notice speaks alone",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals cross-turn direct↔bridge on Ze at attempts 1–2 never collide (route-distinct pools inside one 30 s window)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals fake-clock: the 30 s expiry anchors at DRAIN time, not stage time (a late-draining attempt keeps the next attempt in-window)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals object-form route with PARTIAL coverage: one generic line, zero refusal lines",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals same label, two circuits, interleaved through attempt 3+: separate counters, every render byte-distinct, terminals carry their own circuit",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals unknown_tool and offschema_clear driven to attempt 3 render DISTINCT terminals with their own ordinals",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals untrusted discriminators stage NOTHING (fail-audible): a malformed circuit keeps today’s generic A3 wording, never a covered refusal",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals board structural member board_type is terminal and never mutates",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals board structural member feed_circuit_ref is terminal and never mutates",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals board structural member parent_board_id is terminal and never mutates",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals board structural member sort_order is terminal and never mutates",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals circuit structural member circuit_ref is terminal and never mutates",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals circuit structural member feeds_board_id is terminal and never mutates",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals circuit structural member is_distribution_circuit is terminal and never mutates",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals feeds_board_id stays terminal beside mark_distribution_circuit success (reject-first)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals feeds_board_id stays terminal beside mark_distribution_circuit success (success-first)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals mixed off-schema calls coalesce leak-free beside one surviving read-back",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals mixed sub-main rejection + surviving write speaks both outcomes",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals off-enum record_reading is rejected before mutation and speaks one leak-safe refusal",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals record_board_reading off-enum field outranks malformed companion arguments and stays leak-free",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals recoverable distribution-link reading names mark_distribution_circuit",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals same-turn mark_distribution_circuit success reconciles the recoverable notice (reject-first)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals same-turn mark_distribution_circuit success reconciles the recoverable notice (success-first)",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals set_field_for_all_circuits off-enum field outranks malformed companion arguments and stays leak-free",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals sub_main_cable_csa solo refusal names the Board tab and suppresses the generic retry prompt",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals sub_main_cable_material solo refusal names the Board tab and suppresses the generic retry prompt",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals sub_main_cpc_csa solo refusal names the Board tab and suppresses the generic retry prompt",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-2D — structural and unroutable reading refusals third same-slot unroutable attempt carries an ordinal instead of deduping to silence",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-3 — regulation-topic mismatch covered-refusal lifecycle ignored mismatch stays audible beside an unrelated surviving reading without leaking the raw ref",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-3 — regulation-topic mismatch covered-refusal lifecycle mismatch and one emitted clarification speak both the ask and the specific refusal",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-3 — regulation-topic mismatch covered-refusal lifecycle same-turn corrected re-record speaks its read-back beside the first-attempt refusal",
+      "status": "passed"
+    },
+    {
+      "platform": "backend",
+      "file": "src/__tests__/stage6-honest-refusal.test.js",
+      "name": "PLAN-3 — regulation-topic mismatch covered-refusal lifecycle solo mismatch speaks the specific line once and suppresses the generic retry prompt",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"1361\" → \"BS 1361\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"3036\" → \"BS 3036\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"6 0 8 9 8\" → \"BS EN 60898\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"60269-2\" → \"BS EN 60269-2\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"60898\" → \"BS EN 60898\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"60947 3\" → \"BS EN 60947-3\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"60947-2\" → \"BS EN 60947-2\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"61009\" → \"BS EN 61009\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"88-2\" → \"BS EN 60269-2\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"BS 60898\" → \"BS EN 60898\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"BS 88-3\" → \"BS EN 60269-2\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"BS EN 60898-1\" → \"BS EN 60898\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"bs en 60898\" → \"BS EN 60898\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"BS EN 61009-1\" → \"BS EN 61009\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"N.A.\" → \"N/A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"n/a\" → \"N/A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"N/A\" → \"N/A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"na\" → \"N/A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_bs_en \"not applicable\" → \"N/A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_type \"am\" → \"aM\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_type \"b\" → \"B\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_type \"B\" → \"B\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_type \"gg\" → \"gG\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_type \"gM\" → \"gM\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_type \"hrc\" → \"HRC\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_type \"n/a\" → \"N/A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ocpd_type \"rew\" → \"Rew\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_bs_en \"61008\" → \"BS EN 61008\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_bs_en \"61009\" → \"BS EN 61009\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_bs_en \"62423\" → \"BS EN 62423\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_bs_en \"BS EN 61008-1\" → \"BS EN 61008\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_bs_en \"BS EN 61009-1\" → \"BS EN 61009\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_bs_en \"not applicable\" → \"N/A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_type \"a-s\" → \"A-S\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_type \"a\" → \"A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_type \"ac\" → \"AC\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_type \"AC\" → \"AC\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_type \"b-s\" → \"B-S\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_type \"b+\" → \"B+\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_type \"n/a\" → \"N/A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors rcd_type \"s\" → \"S\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"100 and 1\" → \"101\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"100 and 3\" → \"103\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"100\" → \"100\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"1001\" → \"101\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"1002\" → \"102\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"1003\" → \"103\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"101\" → \"101\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"c\" → \"C\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"C\" → \"C\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"method C.\" → \"C\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"one hundred and one\" → \"101\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"one hundred\" → \"100\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors ref_method \"reference method c\" → \"C\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \" A \" → \"A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \" A. \" → \"A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"a\" → \"A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"A\" → \"A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"fp200\" → \"O\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"micc\" → \"H\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"O\" → \"O\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"other\" → \"O\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"pyro\" → \"H\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"swa\" → \"F\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"T&E\" → \"A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"twin and earth\" → \"A\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — accepted vectors wiring_type \"XLPE\" → \"G\"",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors edge punctuation is stripped but internal / - + & survive",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors never snaps a near-miss BS code onto a neighbouring standard (Lev-1 NOT ported)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors non-string values: finite numbers are echoed, structural non-values are missing",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_bs_en \"1362\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_bs_en \"60898 and 61009\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_bs_en \"62423\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_bs_en \"6898\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_bs_en \"88-2 for circuit\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_bs_en \"MCB\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_type \"1\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_type \"MCB\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ocpd_type \"RCBO\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors rcd_bs_en \"3036\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors rcd_bs_en \"60898\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors rcd_type \"AC-S\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors rcd_type \"RCBO\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ref_method \"104\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ref_method \"A1\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors ref_method \"for\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors unknown / unguarded fields are passed through untouched",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors wiring_type \"   \" → missing_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors wiring_type \".\" → missing_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors wiring_type \"\" → missing_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors wiring_type \"for\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors wiring_type \"FOR\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors wiring_type \"twin and earth cable\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "canonicaliseClosedEnumValue — rejected vectors wiring_type \"Z\" → invalid_value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "closed-enum fixture — cross-platform pins every wiring-description target is itself a schema option",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "closed-enum fixture — cross-platform pins fixture bytes match the pinned cross-platform digest",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "closed-enum fixture — cross-platform pins fixture options are exactly field_schema.json minus the empty sentinel",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "closed-enum fixture — cross-platform pins spoken_distinctness_union is internally unique and contains the E1 advisory, byte-identical to its source",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "closed-enum fixture — cross-platform pins the four boolean/confirmable selects are NOT guarded",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "closed-enum fixture — cross-platform pins the guard module tracks the fixture (options, labels, wiring map, guarded set)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "deliberate divergence — codes the iOS dropdown offers but the schema does not ocpd_type 1 is refused (a device-count digit is not a trip curve)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "deliberate divergence — codes the iOS dropdown offers but the schema does not ref_method A1 is refused even though the iOS picker lists it",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "deliberate divergence — codes the iOS dropdown offers but the schema does not the refusal is audible and restates the field, not a silent drop",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors every rendered re-ask is mutually full-string distinct",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ocpd_bs_en/invalid_value/all",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ocpd_bs_en/invalid_value/single",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ocpd_bs_en/missing_target/unknown",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ocpd_bs_en/missing_value/range",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ocpd_type/invalid_value/single",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ocpd_type/missing_target/unknown",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ocpd_type/missing_value/all",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors rcd_bs_en/invalid_value/single",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors rcd_bs_en/missing_target/unknown",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors rcd_bs_en/missing_value/all",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors rcd_type/invalid_value/range",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors rcd_type/invalid_value/single",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors rcd_type/missing_target/unknown",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors rcd_type/missing_value/single",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors re-asks name the field, echo the value, and carry a complete restatement example",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ref_method/invalid_value/single",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ref_method/missing_target/unknown",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors ref_method/missing_value/all",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors spare policy is echoed on bulk targets so the restatement is complete",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors wiring_type/invalid_value/all",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors wiring_type/invalid_value/all",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors wiring_type/invalid_value/range",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors wiring_type/invalid_value/range",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors wiring_type/invalid_value/single",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors wiring_type/missing_target/unknown",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/closed-enum-guard.test.ts",
+      "name": "renderClosedEnumReask — frozen render vectors wiring_type/missing_value/single",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "A02D admission — the service half a final from a superseded socket (old epoch) is inadmissible, yet advanceProcessedWatermark still retires ITS epoch",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "A02D admission — the service half disconnect() invalidates admission SYNCHRONOUSLY, before the CloseStream grace; the late final still retires its watermark",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "FinalWindowV1 meta on Flux finals a malformed audio_window_end yields window_end null",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "FinalWindowV1 meta on Flux finals a non-empty interim confirms; an empty interim, a silence transition, or a late StartOfTurn does not (unbounded)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "FinalWindowV1 meta on Flux finals speech_start = dispatched offset at the onset frame, confirmed by StartOfTurn inside 2.5 s; window_end = origin + audio_window_end",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "nova-3 uses first word start and last word end word-timed final → speech_start and window_end from provider word times; no words → unbounded",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/held-fragment-clarification.test.ts",
+      "name": "rendering one, two, three named; four → those fields; duplicates collapse",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/held-fragment-clarification.test.ts",
+      "name": "token lifecycle a non-natural terminal re-parks the same token (wording kept); teardown abandons",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/held-fragment-clarification.test.ts",
+      "name": "token lifecycle a token from an earlier session is abandoned when a new session requests",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/held-fragment-clarification.test.ts",
+      "name": "token lifecycle mint → merge (unfrozen) → freeze → await → successor at natural completion",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/held-fragment-clarification.test.ts",
+      "name": "token lifecycle playback-started freezes the text if nothing else did; completion of a stale id is a no-op",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "AdmittedBuffer — positions are session-monotonic append/reset/trim never reuse an absolute position",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "AdmittedBuffer — positions are session-monotonic front-trims at a fragment boundary once over the threshold and keeps the tail",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "bounded retention across N reconnects twenty reconnects with long finals: the buffer front-trims and the store evicts settled epochs",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "destinations — labels, diffs, canonical keys, producer table canonicalDestinationKey translates matcher refs to row ids and rejects unknown refs/fields",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "destinations — labels, diffs, canonical keys, producer table describeDestination speaks the stored ref as displayed and the board only on multi-board jobs",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "destinations — labels, diffs, canonical keys, producer table diffRegexDestinations reports cleared and replaced regex destinations only, by stable row id",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "destinations — labels, diffs, canonical keys, producer table producer table: keyed by A01B {session_epoch, mutation_id}; resolves by identity only",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "OccurrenceFreshnessStore — evaluation order a concatenated dispatch is held whole when ANY constituent is pre-cutoff",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "OccurrenceFreshnessStore — evaluation order ambiguous → unbounded → old overlap → settled → buffer cutoff → stream cutoff → fresh",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "OccurrenceFreshnessStore — evaluation order an identity-less utterance boundary settles nothing new and never advances the cutoff",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "OccurrenceFreshnessStore — evaluation order hold decision: applies only to cutoffs recorded since the epoch's last accepted final; unbounded held; equality fresh; other epochs unaffected",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "source map — ambiguity and identity a changed run maps to the raw run between the same anchors",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "source map — ambiguity and identity a pure insertion (no raw tokens) is ambiguous",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "source map — ambiguity and identity an empty or whitespace-only span is ambiguous",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-fresh-occurrence.test.ts",
+      "name": "source map — ambiguity and identity anchored tokens map 1:1 with identity inside the token",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "config/regex-freshness-vectors.json — byte pin and source equality clarification templates and constants match the web source",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "config/regex-freshness-vectors.json — byte pin and source equality field labels are byte-equal to DESTINATION_FIELD_LABELS",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "config/regex-freshness-vectors.json — byte pin and source equality pins the fixture bytes (update the iOS copy and this pin together)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "config/regex-freshness-vectors.json — byte pin and source equality renders every clarification vector exactly",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors confirmed_by_interim",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors confirmed_by_start_of_turn",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors confirmed_run_serves_following_turn",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors deadline_boundary_2500ms_is_inclusive",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors empty_interim_does_not_confirm",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors just_past_deadline_is_unbounded",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors malformed_window_end_is_unbounded",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors noise_held_run_never_confirms",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors silence_before_confirmation_discards_onset",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "FinalWindowV1 — onset confirmation vectors two_runs_second_confirms",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes bypass_boundary_resets_matcher_not_cutoffs [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes bypass_boundary_resets_matcher_not_cutoffs [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes circuit_1a_reference_spoken_as_displayed [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes circuit_1a_reference_spoken_as_displayed [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes clear_then_fresh_identical_redictation_applies_once [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes clear_then_fresh_identical_redictation_applies_once [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes concurrent_tap_final_race_both_orderings [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes concurrent_tap_final_race_both_orderings [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes cross_final_completion_unions_fragments [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes cross_final_completion_unions_fragments [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes equality_boundary_is_fresh [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes equality_boundary_is_fresh [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes f1_opens_ask_f2_answer_causes_clear [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes f1_opens_ask_f2_answer_causes_clear [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes four_destinations_use_those_fields [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes four_destinations_use_those_fields [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes held_answer_leaves_ask_pending [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes held_answer_leaves_ask_pending [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes long_session_bounded_state_over_reconnects [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes long_session_bounded_state_over_reconnects [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_clear_then_delayed_same_socket_final_held [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_clear_then_delayed_same_socket_final_held [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_clear_then_fresh_reading_forwarded [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_clear_then_fresh_reading_forwarded [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_cutoff_does_not_apply_after_an_accepted_final [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_cutoff_does_not_apply_after_an_accepted_final [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes old_epoch_final_dropped_at_admission [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes old_epoch_final_dropped_at_admission [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes old_overlap_then_unrelated_speech [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes old_overlap_then_unrelated_speech [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes old_session_final_dropped_at_admission [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes old_session_final_dropped_at_admission [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes onset_race_042_050_060 [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes onset_race_042_050_060 [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes reconnect_rotates_epoch_not_settlement [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes reconnect_rotates_epoch_not_settlement [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes rejected_clear_leaves_cutoffs_unchanged [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes rejected_clear_leaves_cutoffs_unchanged [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes server_clear_after_fresh_f2_keeps_f2_applied [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes server_clear_after_fresh_f2_keeps_f2_applied [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes server_clear_then_next_reading_no_false_stale [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes server_clear_then_next_reading_no_false_stale [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes server_replacement_before_delayed_final_never_restores [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes server_replacement_before_delayed_final_never_restores [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes three_destinations_named_individually [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes three_destinations_named_individually [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes two_board_same_ref_names_only_the_cleared_board [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes two_board_same_ref_names_only_the_cleared_board [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes two_destinations_joined_with_and [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes two_destinations_joined_with_and [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes unbounded_final_forwards_without_cutoff_held_with_one [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes unbounded_final_forwards_without_cutoff_held_with_one [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes unrelated_reading_in_race_window_held_whole [hints_off]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes unrelated_reading_in_race_window_held_whole [hints_on]",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "normalisation source map — shared vectors implied_zero_decimal",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "normalisation source map — shared vectors length_changing_cross_final",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "normalisation source map — shared vectors spoken_decimal",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "normalisation source map — shared vectors spoken_hundreds",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "normalisation source map — shared vectors spoken_spaced_postcode",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "normalisation source map — shared vectors spoken_whole_number",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-freshness-fixture.test.ts",
+      "name": "normalisation source map — shared vectors unchanged_text_identity",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (1) — every-open observation via onStateChange, not onReconnected `onStateChange` → 'connected' calls the ledger's onSocketOpened; `onReconnected` does not",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (1) — every-open observation via onStateChange, not onReconnected `ws.onopen` in the service is byte-for-byte free of E2 (the observation is downstream)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (1) — every-open observation via onStateChange, not onReconnected raw-VAD silence resumes a FIFO-deferred disclosure (Codex E2 cycle-5) — notifyUplinkLossLocalSilence is followed by ttsQueueResumeIfDeferred",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (1) — every-open observation via onStateChange, not onReconnected the frozen surfaces carry no E2 edit",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (2) — captureActive has exactly two writers + the construction copy no high-level entry point (start/stop/pause/resume) writes the flag directly",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (2) — captureActive has exactly two writers + the construction copy ownership is marked in ONE place — inside `disconnect()`, the only `ws.close()` site",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (2) — captureActive has exactly two writers + the construction copy the provider copies the CURRENT value into every newly constructed sender",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (2) — captureActive has exactly two writers + the construction copy the service treats captureActive as a classification signal only — the sender never reads it",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (2) — captureActive has exactly two writers + the construction copy TRUE is pushed only where `micRef.current = handle`; FALSE only in `teardownMic`",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (3) — unexpected-reconnect ring drain REMOVED; sleep drains untouched `onReconnected` no longer drains the ring buffer or replays into the sender",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (3) — unexpected-reconnect ring drain REMOVED; sleep drains untouched `openDeepgram` still resolves immediately — no awaited-open plumbing (round-29 carve-out)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (3) — unexpected-reconnect ring drain REMOVED; sleep drains untouched A02D — the sleep/doze drains are RETIRED: the ring is charged as E2 staged loss, nothing is re-sent",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "classifyPcmEnergy classifies a loud frame as voiced and silence as not",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "classifyPcmEnergy empty samples are never voiced",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "classifyPcmEnergy RMS right at the threshold classifies voiced (>= not >)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "isLocalSpeakingWithin — default clock matches capturedAt (A02D, 2026-09-09) a frame stamped with performance.now() reads as speaking through the DEFAULT nowMs",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "isLocalSpeakingWithin — time-bounded gate read (2026-08-29, sessions 38670CD6 / BD7B24C3) is true inside the window and false after it while the unbounded state is still speaking",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "isLocalSpeakingWithin — time-bounded gate read (2026-08-29, sessions 38670CD6 / BD7B24C3) restarts the window on a new run after debounced silence, and reset clears it",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector a delayed processFrame call does not change the recorded capturedAt (real queue hop)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector a preOpen -> epoch(id) rotation on continuous speech keeps isLocalSpeaking continuous while per-range classifications reflect the changing scope",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector classifySnapshot is stateless and does not affect debouncing",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector debounces silence — a brief sub-threshold gap does not flip to silence",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector does not re-fire onset on consecutive voiced frames",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector fires an onset transition on the first voiced frame",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector fires silence only after continuous sub-threshold audio exceeds the hold",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector is CONTINUOUS across an epoch rotation — reconnect does not reset speaking state",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector onClassification fires for EVERY frame, not just frames that produce a transition",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector onClassification fires once per processFrame call with the exact tuple, including capturedAt",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector publishes the triggering classification (with updated isLocalSpeaking) BEFORE the onset/silence transition fires",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/voiced-activity.test.ts",
+      "name": "VoicedActivityDetector reset() clears speaking state (session-boundary only)",
+      "status": "passed"
+    }
+  ]
+}
