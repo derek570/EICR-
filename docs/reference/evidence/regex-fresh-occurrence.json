@@ -2,8 +2,8 @@
   "schema_version": 1,
   "name": "RegexFreshOccurrenceEvidence",
   "plan": "A02D — Keep regex writes fresh after corrections and clears",
-  "generated_from_commit": "623f287d91338152fb6cc485316f424a72dc07ca",
-  "generated_at_commit_subject": "test(backend): read the held-fragment clarification source in the spoken-union drift guard",
+  "generated_from_commit": "7ebf1e49cbb16c94a655c7757eeeaafabcaa3ed0",
+  "generated_at_commit_subject": "fix(web): one freshness identity per destination, associated with its whole storage alias family",
   "original_baseline": {
     "backend_web": "2d7b9874",
     "backend_web_subject": "Merge pull request #208 from derek570/fable/a01p-accepted-field-consistency-20260908",
@@ -15,23 +15,26 @@
     "closed_enum_vectors": "6486b80f8f9de75be1edc17b1c2da7b30f9cdee1f04f2a6a31fa484153170922",
     "sync_preflight": "scripts/check-regex-freshness-fixture-sync.sh"
   },
-  "red_proof_rule": "The baseline lane runs the fix-branch mounted harness test against the PRE-A02D web sources with only the held-fragment clarification hooks and the fake service forwarders made optional (their targets do not exist there). A failure whose first line is a missing-hook TypeError is harness_incompatible and is NOT red proof; an assertion on sends, writes, spoken counts or re-sent audio is behavioural red proof.",
+  "red_proof_rule": "The baseline lane runs the fix-branch mounted harness test against the PRE-A02D web sources with only the held-fragment clarification hooks and the fake service forwarders made optional (their targets do not exist there) and the session harness switched from real-decoder to the fake session (the real decoder's createSocket/getToken seams do not exist there). A failure whose first line is a missing-hook TypeError is harness_incompatible and is NOT red proof; an assertion on sends, writes, spoken counts or re-sent audio is behavioural red proof.",
   "digests": {
     "sources": {
-      "scripts/check-regex-freshness-fixture-sync.sh": "c67cb2ef50d0042f56ad1057bc1a007a6b99a007649e04be4f822a6df3d85459",
+      "scripts/check-regex-freshness-fixture-sync.sh": "c93e0afb3182cf5d000b5fa617a0f60ac5e8b4d903429e472905116be9d80e9e",
       "src/extraction/sonnet-stream.js": "62b79e16870f678363f0fb05648fe0098dfcbf0b910d5ba1e00b315af9d0b96e",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
-      "web/src/lib/recording-context.tsx": "9c4902ae47ff36d5e7f6e820ed7daa70e7fce2a04a4902e4d7a89d5a33136b94",
+      "web/src/lib/recording-context.tsx": "b62d4e8a661b2365c8b5d75fcb78fba41063d1bb4c867bba4418b241aa9a55b3",
       "web/src/lib/recording/apply-extraction.ts": "c5c3bbd7c0b4b40f93d647555c3549dc4d35b16fa1fadd173570b0b3690be97b",
-      "web/src/lib/recording/deepgram-service.ts": "4165fe1e55b1203c3c4aab6910cca87cb3ed9de391255d229d68232c714a76a2",
-      "web/src/lib/recording/final-window.ts": "edc52f7ad7eee640232ee89b62c03deb219066926be057b4e3aa36f198a9cc5f",
-      "web/src/lib/recording/held-fragment-clarification.ts": "31a81fbefbaa0e0369666d6d1aab81083fa5115a435eacec40aa03a608b7e098",
+      "web/src/lib/recording/apply-regex-match.ts": "802dd8a57c229a585937392ebb36d1be7575ee9011b327fd7ab4a9d5af1b9917",
+      "web/src/lib/recording/deepgram-service.ts": "92ada3435faecc328293708150988605127b7c5d53066460bf6b316d539ca3e6",
+      "web/src/lib/recording/final-window.ts": "e38cf5cb6cd9f84c66b30175c37e2d8409a51b30ec6dd3ad9af21686012b8dbc",
+      "web/src/lib/recording/held-fragment-clarification.ts": "4d081bff7137bf0dacaff88020fcba63afb68a590fdd01e27161ae2a3ebe22d8",
       "web/src/lib/recording/normalisation-source-map.ts": "15ea899aa4a3c155836e710787104bf8d83a862c0be749a33bebf873da20ea4a",
-      "web/src/lib/recording/regex-fresh-occurrence.ts": "63764458918f00b32ea80ca86a958cf2e8da627c7c52a8bb4f77f16dfeadd74f",
+      "web/src/lib/recording/regex-destination-routing.ts": "4d003dc571d312dbc2bb29b02ca824fe0055da94295644def67584414dc2070a",
+      "web/src/lib/recording/regex-fresh-occurrence.ts": "033f1c6a53324593ec5a374c850c2962782091e227bdd7af87befc9f469d7dc0",
       "web/src/lib/recording/regex-match-result.ts": "132f52a97a38a78fb5686ecb10eeea4fa9c23ef8c92ef9e4c34c2ba7a2dd72ce",
+      "web/src/lib/recording/sonnet-session.ts": "cc957f73851120fcb154479b9bb881ff29408857646d2d403c8bd26645ceb5c4",
       "web/src/lib/recording/test-services.ts": "d2ecc96ca6cb900e537ce181d00cf1fcc068bfaec5a205da45f4c2bacd04e08e",
       "web/src/lib/recording/transcript-field-matcher.ts": "d347031736db487cff2df473d4cea4e04d3cca061fae109b6117e5bf3beb78f6",
-      "web/src/lib/recording/tts.ts": "46cd2ac9a66b0e0af6e94cf58d739dff3ae73ef8c06e8658441c6788efdde3d1",
+      "web/src/lib/recording/tts.ts": "1f8f9c30a8a36a78e91cb760dc8dd0302f5764f97edce728acb2e234614a63d0",
       "web/src/lib/recording/voiced-activity.ts": "58e5261ea695a2be8df415ac5741bab018a42f257add0cd2ec7cd7b20ec2fdad"
     },
     "fixtures": {
@@ -42,14 +45,18 @@
       "src/__tests__/stage6-a02d-field-corrected-utterance-id.test.js": "2229976fc08b295ee29a49e2daffb0539528fc0df8caa06c8676f58c8c9c6227",
       "src/__tests__/stage6-clear-board-reading-session-seam.test.js": "41c30587894d38ac008c34e9d25d097643e87e29adb451a4496d05502305fd17",
       "src/__tests__/stage6-honest-refusal.test.js": "b74fd1cf6f0e8a80cbd15ec8c887e41d21289a5190182533eec32f8e5498e27d",
+      "web/tests/apply-regex-match.test.ts": "0eceb9fbc27d3f15b39fad394a5900a71ce2fffe48045fe59b5a12c22e630bd6",
       "web/tests/closed-enum-guard.test.ts": "c8bd1085b2137307822f42c5780696a79ecafb343d137331931ffbef8c9fbcdc",
-      "web/tests/deepgram-service-final-window.test.ts": "e23ab0942d1f296a8ac00288bc2b5fa82871ce569edc2be30ff65ecfa56c0c67",
-      "web/tests/harness/a02d-regex-freshness-mounted.test.tsx": "6d9906a374eb8502965d10f48d9fead33bf03f2f7e4f04699d8da8cad75f975a",
-      "web/tests/held-fragment-clarification.test.ts": "9df649e50cfb5e64f81100fbae08d10f044f708afb7529bbd95ea212b7e0093d",
-      "web/tests/regex-fresh-occurrence.test.ts": "a3e1fa3547afedc5176f1eed41007298ee573e1ee8e793db5596dc1170f3b858",
-      "web/tests/regex-freshness-fixture.test.ts": "531b40485ce07d74c28fe8615995ee5de023db7c1e33fc6543d2bdd0f651b46f",
-      "web/tests/uplink-loss-recording-context-wiring.test.ts": "abb689645d4b4e69b9bfbb09adb5a21b8121096028a169a20f147bde498b0760",
-      "web/tests/voiced-activity.test.ts": "162584aeb477a0cec949b85b0606d26c1e10c70296bcc0981cf07d686669247c"
+      "web/tests/deepgram-service-final-window.test.ts": "34f8cfeeeca3da9c8a46f2d4b7d35d740c05071bbe210136664899babc82e2de",
+      "web/tests/deepgram-service-frozen-surface.test.ts": "fb00ff995821251287bea7760391768b5b2cd4b5fb65303103b1b8fe20eec1b2",
+      "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx": "1e0c2c4f8925528aa1e47459c9271138e822a0af54f2713150fc0ab4d46fdb61",
+      "web/tests/harness/a02d-regex-freshness-mounted.test.tsx": "c0c59bc9ebaea9fa6eaeb6d133e018316303348f18f17d13f863433d66501f31",
+      "web/tests/held-fragment-clarification.test.ts": "16b8ddf1accabc2d6a8fc0f017857aa497abf66d21f652d1baa5558ba0d69888",
+      "web/tests/regex-destination-routing.test.ts": "5111f13f3a174e1dbf716fcd18a50ef0ce9da8e0a7e670bae2801dfdd05dc95e",
+      "web/tests/regex-fresh-occurrence.test.ts": "f45cbaff330eea3d04f02d75a0f4418cebfc4df428925bb78bcb76800375d1c5",
+      "web/tests/regex-freshness-fixture.test.ts": "9167ba32705947c721d72e72a039e4705f5a02f6c2ec870aee8dafd0dc054f72",
+      "web/tests/uplink-loss-recording-context-wiring.test.ts": "a53a038ac8b01b3cb3dc7b426b5cc3a9a2b51ea19e87ed88660d02cebc8869ad",
+      "web/tests/voiced-activity.test.ts": "c9bb9c51e09b48debb9623e9f7f2277130cbff2c8384f07bd7c8223ed76e6c8d"
     }
   },
   "bounded_work_latency": {
@@ -91,215 +98,467 @@
       "failed": 0
     },
     "web_fix": {
-      "total": 289,
-      "passed": 289,
+      "total": 409,
+      "passed": 409,
       "failed": 0
     },
     "baseline_lane": {
-      "total": 28,
+      "total": 64,
       "passed": 2,
-      "failed": 26,
-      "behavioural_red": 23,
-      "harness_incompatible": 3
+      "failed": 62,
+      "behavioural_red": 52,
+      "harness_incompatible": 10
     },
     "inventory_counts": {
       "backend:passed": 80,
-      "web:passed": 289
+      "web:passed": 409
     }
   },
   "baseline_lane": [
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "name": "A02D mounted — hints ON [invariant] ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "name": "A02D mounted — hints ON [invariant] manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected +0 to be 1 // Object.is equality"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "name": "A02D mounted — hints ON [invariant] manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
       "status": "passed",
       "failure_class": null,
       "first_line": null
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "name": "A02D mounted — hints ON [invariant] hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
       "status": "failed",
       "failure_class": "harness_incompatible",
       "first_line": "TypeError: actual value must be number or bigint, received \"undefined\""
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "name": "A02D mounted — hints ON [invariant] an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "name": "A02D mounted — hints ON [invariant] a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected 0 to be greater than or equal to 1"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "name": "A02D mounted — hints ON [invariant] REAL decoder: F1 opens an incomplete occurrence, F2 answers the ask and causes the server clear (echoed utterance_id decoded), the completing F3 is STALE — the cleared value is never restored",
       "status": "failed",
       "failure_class": "behavioural",
-      "first_line": "AssertionError: expected [ { source: 'regex', …(1) } ] to have a length of +0 but got 1"
+      "first_line": "AssertionError: expected null to be 'tool_f2' // Object.is equality"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected null not to be null"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON session stop abandons a pending clarification token — nothing is spoken into the next session",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected null not to be null"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected 2 to be +0 // Object.is equality"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected +0 to be 2 // Object.is equality"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
-      "status": "passed",
-      "failure_class": null,
-      "first_line": null
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
-      "status": "failed",
-      "failure_class": "harness_incompatible",
-      "first_line": "TypeError: actual value must be number or bigint, received \"undefined\""
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
-      "status": "failed",
-      "failure_class": "behavioural",
-      "first_line": "AssertionError: expected 0 to be greater than or equal to 1"
-    },
-    {
-      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "name": "A02D mounted — hints ON [invariant] two boards sharing circuit 4: the ACTIVE board picks the row for provenance, cutoff and write alike; the clarification names only the cleared board; the other board’s row is untouched",
       "status": "failed",
       "failure_class": "harness_incompatible",
       "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "name": "A02D mounted — hints ON [invariant] alias families — the SAME patches the Installation and Supply pages make (general_condition_of_installation, earth_loop_impedance_ze, prospective_fault_current cleared to '') record manual cutoffs: a delayed pre-tap final is held naming the destination; the fresh post-tap control writes every alias",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: install.general_condition UI alias written: expected undefined to be 'is satisfactory' // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] the five board-routed supply fields (main_switch_* / spd_*) pass the freshness gate under their board.* keys, apply once, settle on repeat, and a manual clear of one names its board label",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [ { source: 'regex', …(1) } ] to have a length of +0 but got 1"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "name": "A02D mounted — hints ON [invariant] text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "name": "A02D mounted — hints ON [invariant] a duplicate delivery of the same provider final (same turn_index) dedupes to ONE token before playback; a direct-prompt preemption re-parks and the line still plays exactly once",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected null not to be null"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "name": "A02D mounted — hints ON [invariant] duplicate delivery of an ORDINARY server-bound final, inside and after the 500 ms burst window: one fragment (never concatenated with itself), one write, one send",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "name": "A02D mounted — hints ON [invariant] duplicate delivery of a LOCALLY executed command, inside and after the burst window: one mutation, one spoken result, nothing sent",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] a duplicate delivery AFTER the clarification played to completion speaks nothing more (the disclosed key is remembered); a genuinely new held final still speaks",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] hold ordering — a pre-cutoff LOCAL Calculate runs nothing (no mutation, no read-back, no send); the post-tap repeat computes and speaks exactly once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] hold ordering — a pre-cutoff board-switch phrase is held (nothing forwarded, no board change); the post-tap repeat is forwarded as an ordinary transcript",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] hold ordering — a pre-cutoff answer to a LEGACY server question is held and consumes nothing (the question stays armed); the post-tap repeat answers it with the in-response-to context",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] 500 ms burst release: a tap between two finals of one burst holds the released dispatch WHOLE (two constituents), naming only the cleared destination",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] FIFO overflow pressure never evicts the prepared clarification (protected): it plays exactly once after the pressure",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected null not to be null"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "name": "A02D mounted — hints ON [invariant] TTS unavailable at delivery: the token is parked and retried after 2 s, then plays exactly once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] playback failure re-parks the same token (wording kept) and replays it after 1.5 s: exactly one completed line",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] prepared-but-deferred text freeze: a second held final after the wording is frozen (enqueued, not yet played) awaits a SUCCESSOR with its own wording",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected undefined to be 'I heard something just as you cleared…' // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] UNOWNED reconnect: the socket dies under the client and reopens under a new epoch — a late old-socket final is dropped, ZERO audio is re-sent, epoch-1 cutoffs do not apply to epoch 2, settlement survives, and a fresh reading applies",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] rapid stop/start on the SAME job: a pre-stop cutoff never holds a post-start final, the old session’s late final is dropped, and the new session writes afresh",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] a DIFFERENT job mid-session resets everything: a pre-switch cutoff never holds, the previous job’s overlap never writes into the new job",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null not to be null"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
     },
     {
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "name": "A02D mounted — hints ON [invariant] replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected 2 to be +0 // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected +0 to be 2 // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "status": "passed",
+      "failure_class": null,
+      "first_line": null
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: actual value must be number or bigint, received \"undefined\""
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected 0 to be greater than or equal to 1"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] REAL decoder: F1 opens an incomplete occurrence, F2 answers the ask and causes the server clear (echoed utterance_id decoded), the completing F3 is STALE — the cleared value is never restored",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null to be 'tool_f2' // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] two boards sharing circuit 4: the ACTIVE board picks the row for provenance, cutoff and write alike; the clarification names only the cleared board; the other board’s row is untouched",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] alias families — the SAME patches the Installation and Supply pages make (general_condition_of_installation, earth_loop_impedance_ze, prospective_fault_current cleared to '') record manual cutoffs: a delayed pre-tap final is held naming the destination; the fresh post-tap control writes every alias",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] the five board-routed supply fields (main_switch_* / spd_*) pass the freshness gate under their board.* keys, apply once, settle on repeat, and a manual clear of one names its board label",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] a duplicate delivery of the same provider final (same turn_index) dedupes to ONE token before playback; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null not to be null"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] duplicate delivery of an ORDINARY server-bound final, inside and after the 500 ms burst window: one fragment (never concatenated with itself), one write, one send",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] duplicate delivery of a LOCALLY executed command, inside and after the burst window: one mutation, one spoken result, nothing sent",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] a duplicate delivery AFTER the clarification played to completion speaks nothing more (the disclosed key is remembered); a genuinely new held final still speaks",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] hold ordering — a pre-cutoff LOCAL Calculate runs nothing (no mutation, no read-back, no send); the post-tap repeat computes and speaks exactly once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] hold ordering — a pre-cutoff board-switch phrase is held (nothing forwarded, no board change); the post-tap repeat is forwarded as an ordinary transcript",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] hold ordering — a pre-cutoff answer to a LEGACY server question is held and consumes nothing (the question stays armed); the post-tap repeat answers it with the in-response-to context",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] 500 ms burst release: a tap between two finals of one burst holds the released dispatch WHOLE (two constituents), naming only the cleared destination",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] FIFO overflow pressure never evicts the prepared clarification (protected): it plays exactly once after the pressure",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null not to be null"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] TTS unavailable at delivery: the token is parked and retried after 2 s, then plays exactly once",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] playback failure re-parks the same token (wording kept) and replays it after 1.5 s: exactly one completed line",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to deeply equal [ Array(1) ]"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] prepared-but-deferred text freeze: a second held final after the wording is frozen (enqueued, not yet played) awaits a SUCCESSOR with its own wording",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected undefined to be 'I heard something just as you cleared…' // Object.is equality"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] UNOWNED reconnect: the socket dies under the client and reopens under a new epoch — a late old-socket final is dropped, ZERO audio is re-sent, epoch-1 cutoffs do not apply to epoch 2, settlement survives, and a fresh reading applies",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] rapid stop/start on the SAME job: a pre-stop cutoff never holds a post-start final, the old session’s late final is dropped, and the new session writes afresh",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] a DIFFERENT job mid-session resets everything: a pre-switch cutoff never holds, the previous job’s overlap never writes into the new job",
+      "status": "failed",
+      "failure_class": "harness_incompatible",
+      "first_line": "TypeError: Cannot read properties of undefined (reading 'payload')"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected null not to be null"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "status": "failed",
+      "failure_class": "behavioural",
+      "first_line": "AssertionError: expected [] to have a length of 2 but got +0"
+    },
+    {
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
       "status": "failed",
       "failure_class": "behavioural",
       "first_line": "AssertionError: expected 2 to be +0 // Object.is equality"
@@ -784,6 +1043,114 @@
       "platform": "backend",
       "file": "src/__tests__/stage6-honest-refusal.test.js",
       "name": "PLAN-3 — regulation-topic mismatch covered-refusal lifecycle solo mismatch speaks the specific line once and suppresses the generic retry prompt",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard a canonicalised re-hit is NOT fresh against the already-stored canonical value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard a DIFFERENT off-list value is fresh evidence again",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard a same-shaped SUPPLY field outside the guarded six is untouched",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard a suppressed value does NOT mark the field regex-owned (the real value can still land)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard a suppressed value STILL emits its hint, so the forward gate stays open",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard CANONICALISES a valid alias so regex and Sonnet agree on one string",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard leaves an unguarded column alone",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard SUPPRESSES a device class dictated into a closed-enum column",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob closed-enum guard the same suppressed value does not re-emit on the next cumulative pass",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob consumeTurnWrites returns and clears between calls",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob does not overwrite a pre-existing supply value",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob does not overwrite a Sonnet-owned field",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob drops circuit_updates whose ref is not in the job (out of scope here)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob overwrites a previous regex write (last-hit-wins)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob returns null when nothing matched",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob routes circuit_updates by row UUID",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob routes main_switch_* to board_info",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/apply-regex-match.test.ts",
+      "name": "applyRegexMatchToJob writes ze on a fresh job and reports the key",
       "status": "passed"
     },
     {
@@ -1569,295 +1936,907 @@
     {
       "platform": "web",
       "file": "web/tests/deepgram-service-final-window.test.ts",
-      "name": "A02D admission — the service half a final from a superseded socket (old epoch) is inadmissible, yet advanceProcessedWatermark still retires ITS epoch",
+      "name": "A02D admission — the service half [invariant] a final from a superseded socket (old epoch) is inadmissible, yet advanceProcessedWatermark still retires ITS epoch",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/deepgram-service-final-window.test.ts",
-      "name": "A02D admission — the service half disconnect() invalidates admission SYNCHRONOUSLY, before the CloseStream grace; the late final still retires its watermark",
+      "name": "A02D admission — the service half [invariant] disconnect() invalidates admission SYNCHRONOUSLY, before the CloseStream grace; the late final still retires its watermark",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/deepgram-service-final-window.test.ts",
-      "name": "FinalWindowV1 meta on Flux finals a malformed audio_window_end yields window_end null",
+      "name": "FinalWindowV1 meta on Flux finals [invariant] a confirmed run followed by silence and then an UNCONFIRMED run: the second run’s final is unbounded (it never inherits the first run’s onset); a confirmed run still serves its own later turns",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/deepgram-service-final-window.test.ts",
-      "name": "FinalWindowV1 meta on Flux finals a non-empty interim confirms; an empty interim, a silence transition, or a late StartOfTurn does not (unbounded)",
+      "name": "FinalWindowV1 meta on Flux finals [invariant] a malformed audio_window_end yields window_end null",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/deepgram-service-final-window.test.ts",
-      "name": "FinalWindowV1 meta on Flux finals speech_start = dispatched offset at the onset frame, confirmed by StartOfTurn inside 2.5 s; window_end = origin + audio_window_end",
+      "name": "FinalWindowV1 meta on Flux finals [invariant] a non-empty interim confirms; an empty interim, a silence transition, or a late StartOfTurn does not (unbounded)",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/deepgram-service-final-window.test.ts",
-      "name": "nova-3 uses first word start and last word end word-timed final → speech_start and window_end from provider word times; no words → unbounded",
+      "name": "FinalWindowV1 meta on Flux finals [invariant] speech_start = dispatched offset at the onset frame, confirmed by StartOfTurn inside 2.5 s; window_end = origin + audio_window_end",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "nova-3 — meta derived OUTSIDE the frozen handleMessage, attributed to the emitting socket [invariant] nova meta comes from the callback wrapper: speech_start/window_end from the word times, identity from the word bounds, and a late final from a superseded socket is inadmissible under ITS epoch",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-final-window.test.ts",
+      "name": "nova-3 uses first word start and last word end [invariant] word-timed final → speech_start and window_end from provider word times; no words → unbounded",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-frozen-surface.test.ts",
+      "name": "[invariant] A02D — frozen DeepgramService surface `advanceProcessedWatermark` is byte-for-byte the pre-A02D method",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-frozen-surface.test.ts",
+      "name": "[invariant] A02D — frozen DeepgramService surface `handleMessage` is byte-for-byte the pre-A02D method",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-frozen-surface.test.ts",
+      "name": "[invariant] A02D — frozen DeepgramService surface `onmessage` is byte-for-byte the pre-A02D closure",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/deepgram-service-frozen-surface.test.ts",
+      "name": "[invariant] A02D — frozen DeepgramService surface exactly one `onmessage` assignment exists (no second delivery path was added)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] bypass_boundary_resets_matcher_not_cutoffs",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] circuit_1a_reference_spoken_as_displayed",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] clear_then_fresh_identical_redictation_applies_once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] concurrent_tap_final_race_both_orderings",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] cross_final_completion_unions_fragments",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] equality_boundary_is_fresh",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] f1_opens_ask_f2_answer_causes_clear",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] four_destinations_use_those_fields",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] held_answer_leaves_ask_pending",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] long_session_bounded_state_over_reconnects",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] manual_clear_then_delayed_same_socket_final_held",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] manual_clear_then_fresh_reading_forwarded",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] manual_cutoff_does_not_apply_after_an_accepted_final",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] old_epoch_final_dropped_at_admission",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] old_overlap_then_unrelated_speech",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] old_session_final_dropped_at_admission",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] onset_race_042_050_060",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] reconnect_rotates_epoch_not_settlement",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] rejected_clear_leaves_cutoffs_unchanged",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] server_clear_after_fresh_f2_keeps_f2_applied",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] server_clear_then_next_reading_no_false_stale",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] server_replacement_before_delayed_final_never_restores",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] three_destinations_named_individually",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] two_board_same_ref_names_only_the_cleared_board",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] two_destinations_joined_with_and",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] unbounded_final_forwards_without_cutoff_held_with_one",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_off [invariant] unrelated_reading_in_race_window_held_whole",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] bypass_boundary_resets_matcher_not_cutoffs",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] circuit_1a_reference_spoken_as_displayed",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] clear_then_fresh_identical_redictation_applies_once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] concurrent_tap_final_race_both_orderings",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] cross_final_completion_unions_fragments",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] equality_boundary_is_fresh",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] f1_opens_ask_f2_answer_causes_clear",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] four_destinations_use_those_fields",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] held_answer_leaves_ask_pending",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] long_session_bounded_state_over_reconnects",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] manual_clear_then_delayed_same_socket_final_held",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] manual_clear_then_fresh_reading_forwarded",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] manual_cutoff_does_not_apply_after_an_accepted_final",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] old_epoch_final_dropped_at_admission",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] old_overlap_then_unrelated_speech",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] old_session_final_dropped_at_admission",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] onset_race_042_050_060",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] reconnect_rotates_epoch_not_settlement",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] rejected_clear_leaves_cutoffs_unchanged",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] server_clear_after_fresh_f2_keeps_f2_applied",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] server_clear_then_next_reading_no_false_stale",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] server_replacement_before_delayed_final_never_restores",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] three_destinations_named_individually",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] two_board_same_ref_names_only_the_cleared_board",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] two_destinations_joined_with_and",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] unbounded_final_forwards_without_cutoff_held_with_one",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx",
+      "name": "[invariant] A02D freshness sequences — mounted provider, hints_on [invariant] unrelated_reading_in_race_window_held_whole",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] 500 ms burst release: a tap between two finals of one burst holds the released dispatch WHOLE (two constituents), naming only the cleared destination",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] a DIFFERENT job mid-session resets everything: a pre-switch cutoff never holds, the previous job’s overlap never writes into the new job",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] a duplicate delivery AFTER the clarification played to completion speaks nothing more (the disclosed key is remembered); a genuinely new held final still speaks",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] a duplicate delivery of the same provider final (same turn_index) dedupes to ONE token before playback; a direct-prompt preemption re-parks and the line still plays exactly once",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] alias families — the SAME patches the Installation and Supply pages make (general_condition_of_installation, earth_loop_impedance_ze, prospective_fault_current cleared to '') record manual cutoffs: a delayed pre-tap final is held naming the destination; the fresh post-tap control writes every alias",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] duplicate delivery of a LOCALLY executed command, inside and after the burst window: one mutation, one spoken result, nothing sent",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] duplicate delivery of an ORDINARY server-bound final, inside and after the 500 ms burst window: one fragment (never concatenated with itself), one write, one send",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] FIFO overflow pressure never evicts the prepared clarification (protected): it plays exactly once after the pressure",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] hold ordering — a pre-cutoff answer to a LEGACY server question is held and consumes nothing (the question stays armed); the post-tap repeat answers it with the in-response-to context",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints OFF (gate-only) unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] hold ordering — a pre-cutoff board-switch phrase is held (nothing forwarded, no board change); the post-tap repeat is forwarded as an ordinary transcript",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON a duplicate callback of the same final dedupes to one token; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] hold ordering — a pre-cutoff LOCAL Calculate runs nothing (no mutation, no read-back, no send); the post-tap repeat computes and speaks exactly once",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] playback failure re-parks the same token (wording kept) and replays it after 1.5 s: exactly one completed line",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] prepared-but-deferred text freeze: a second held final after the wording is frozen (enqueued, not yet played) awaits a SUCCESSOR with its own wording",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] rapid stop/start on the SAME job: a pre-stop cutoff never holds a post-start final, the old session’s late final is dropped, and the new session writes afresh",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] REAL decoder: F1 opens an incomplete occurrence, F2 answers the ask and causes the server clear (echoed utterance_id decoded), the completing F3 is STALE — the cleared value is never restored",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] session stop abandons a pending clarification token — nothing is spoken into the next session",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
-      "name": "A02D mounted — hints ON unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] the five board-routed supply fields (main_switch_* / spd_*) pass the freshness gate under their board.* keys, apply once, settle on repeat, and a manual clear of one names its board label",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] TTS unavailable at delivery: the token is parked and retried after 2 s, then plays exactly once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] two boards sharing circuit 4: the ACTIVE board picks the row for provenance, cutoff and write alike; the clarification names only the cleared board; the other board’s row is untouched",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints OFF (gate-only) [invariant] UNOWNED reconnect: the socket dies under the client and reopens under a new epoch — a late old-socket final is dropped, ZERO audio is re-sent, epoch-1 cutoffs do not apply to epoch 2, settlement survives, and a fresh reading applies",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] 500 ms burst release: a tap between two finals of one burst holds the released dispatch WHOLE (two constituents), naming only the cleared destination",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] a DIFFERENT job mid-session resets everything: a pre-switch cutoff never holds, the previous job’s overlap never writes into the new job",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] a duplicate delivery AFTER the clarification played to completion speaks nothing more (the disclosed key is remembered); a genuinely new held final still speaks",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] a duplicate delivery of the same provider final (same turn_index) dedupes to ONE token before playback; a direct-prompt preemption re-parks and the line still plays exactly once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] alias families — the SAME patches the Installation and Supply pages make (general_condition_of_installation, earth_loop_impedance_ze, prospective_fault_current cleared to '') record manual cutoffs: a delayed pre-tap final is held naming the destination; the fresh post-tap control writes every alias",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] duplicate delivery of a LOCALLY executed command, inside and after the burst window: one mutation, one spoken result, nothing sent",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] duplicate delivery of an ORDINARY server-bound final, inside and after the 500 ms burst window: one fragment (never concatenated with itself), one write, one send",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] FIFO overflow pressure never evicts the prepared clarification (protected): it plays exactly once after the pressure",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] hold ordering — a pre-cutoff answer to a LEGACY server question is held and consumes nothing (the question stays armed); the post-tap repeat answers it with the in-response-to context",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] hold ordering — a pre-cutoff board-switch phrase is held (nothing forwarded, no board change); the post-tap repeat is forwarded as an ordinary transcript",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] hold ordering — a pre-cutoff LOCAL Calculate runs nothing (no mutation, no read-back, no send); the post-tap repeat computes and speaks exactly once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] playback failure re-parks the same token (wording kept) and replays it after 1.5 s: exactly one completed line",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] prepared-but-deferred text freeze: a second held final after the wording is frozen (enqueued, not yet played) awaits a SUCCESSOR with its own wording",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] rapid stop/start on the SAME job: a pre-stop cutoff never holds a post-start final, the old session’s late final is dropped, and the new session writes afresh",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] REAL decoder: F1 opens an incomplete occurrence, F2 answers the ask and causes the server clear (echoed utterance_id decoded), the completing F3 is STALE — the cleared value is never restored",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] session stop abandons a pending clarification token — nothing is spoken into the next session",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] the five board-routed supply fields (main_switch_* / spd_*) pass the freshness gate under their board.* keys, apply once, settle on repeat, and a manual clear of one names its board label",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] TTS unavailable at delivery: the token is parked and retried after 2 s, then plays exactly once",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] two boards sharing circuit 4: the ACTIVE board picks the row for provenance, cutoff and write alike; the clarification names only the cleared board; the other board’s row is untouched",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/harness/a02d-regex-freshness-mounted.test.tsx",
+      "name": "A02D mounted — hints ON [invariant] UNOWNED reconnect: the socket dies under the client and reopens under a new epoch — a late old-socket final is dropped, ZERO audio is re-sent, epoch-1 cutoffs do not apply to epoch 2, settlement survives, and a fresh reading applies",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/held-fragment-clarification.test.ts",
-      "name": "rendering one, two, three named; four → those fields; duplicates collapse",
+      "name": "rendering [invariant] one, two, three named; four → those fields; duplicates collapse",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/held-fragment-clarification.test.ts",
-      "name": "token lifecycle a non-natural terminal re-parks the same token (wording kept); teardown abandons",
+      "name": "token lifecycle [invariant] a duplicate final key is a duplicate BEFORE and AFTER the token played: nothing is re-minted, counters unchanged; teardown forgets the keys",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/held-fragment-clarification.test.ts",
-      "name": "token lifecycle a token from an earlier session is abandoned when a new session requests",
+      "name": "token lifecycle [invariant] a non-natural terminal re-parks the same token (wording kept); teardown abandons",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/held-fragment-clarification.test.ts",
-      "name": "token lifecycle mint → merge (unfrozen) → freeze → await → successor at natural completion",
+      "name": "token lifecycle [invariant] a token from an earlier session is abandoned when a new session requests",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/held-fragment-clarification.test.ts",
-      "name": "token lifecycle playback-started freezes the text if nothing else did; completion of a stale id is a no-op",
+      "name": "token lifecycle [invariant] mint → merge (unfrozen) → freeze → await → successor at natural completion",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/held-fragment-clarification.test.ts",
+      "name": "token lifecycle [invariant] playback-started freezes the text if nothing else did; completion of a stale id is a no-op",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-destination-routing.test.ts",
+      "name": "[invariant] regex destination routing — one rule for every consumer alias families: the UI alias is the effective value; a page-style clear of the VISIBLE alias is a clear of the destination; a regex write lands on every alias; alias changed-keys name the canonical destination",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-destination-routing.test.ts",
+      "name": "[invariant] regex destination routing — one rule for every consumer computeFreshRegexWrites targets the SAME row the freshness gate canonicalised",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-destination-routing.test.ts",
+      "name": "[invariant] regex destination routing — one rule for every consumer duplicate circuit refs resolve by ACTIVE board, then the default (first) board, never by array order",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-destination-routing.test.ts",
+      "name": "[invariant] regex destination routing — one rule for every consumer every matcher-emittable section field routes to a labelled canonical destination",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/regex-destination-routing.test.ts",
+      "name": "[invariant] regex destination routing — one rule for every consumer the five board-routed supply fields canonicalise to board.* with their board labels",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "AdmittedBuffer — positions are session-monotonic append/reset/trim never reuse an absolute position",
+      "name": "AdmittedBuffer — positions are session-monotonic [invariant] append/reset/trim never reuse an absolute position",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "AdmittedBuffer — positions are session-monotonic front-trims at a fragment boundary once over the threshold and keeps the tail",
+      "name": "AdmittedBuffer — positions are session-monotonic [invariant] front-trims at a fragment boundary once over the threshold and keeps the tail",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "bounded retention across N reconnects twenty reconnects with long finals: the buffer front-trims and the store evicts settled epochs",
+      "name": "bounded retention across N reconnects [invariant] twenty reconnects with long finals: the buffer front-trims and the store evicts settled epochs",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "destinations — labels, diffs, canonical keys, producer table canonicalDestinationKey translates matcher refs to row ids and rejects unknown refs/fields",
+      "name": "destinations — labels, diffs, canonical keys, producer table [invariant] canonicalDestinationKey translates matcher refs to row ids and rejects unknown refs/fields",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "destinations — labels, diffs, canonical keys, producer table describeDestination speaks the stored ref as displayed and the board only on multi-board jobs",
+      "name": "destinations — labels, diffs, canonical keys, producer table [invariant] describeDestination speaks the stored ref as displayed and the board only on multi-board jobs",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "destinations — labels, diffs, canonical keys, producer table diffRegexDestinations reports cleared and replaced regex destinations only, by stable row id",
+      "name": "destinations — labels, diffs, canonical keys, producer table [invariant] diffRegexDestinations reports cleared and replaced regex destinations only, by stable row id",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "destinations — labels, diffs, canonical keys, producer table producer table: keyed by A01B {session_epoch, mutation_id}; resolves by identity only",
+      "name": "destinations — labels, diffs, canonical keys, producer table [invariant] producer table: keyed ONLY by an A01B {session_epoch, mutation_id}; dormant otherwise; evicted with its epoch and counted as retained state",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "OccurrenceFreshnessStore — evaluation order a concatenated dispatch is held whole when ANY constituent is pre-cutoff",
+      "name": "OccurrenceFreshnessStore — evaluation order [invariant] a concatenated dispatch is held whole when ANY constituent is pre-cutoff",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "OccurrenceFreshnessStore — evaluation order ambiguous → unbounded → old overlap → settled → buffer cutoff → stream cutoff → fresh",
+      "name": "OccurrenceFreshnessStore — evaluation order [invariant] ambiguous → unbounded → old overlap → settled → buffer cutoff → stream cutoff → fresh",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "OccurrenceFreshnessStore — evaluation order an identity-less utterance boundary settles nothing new and never advances the cutoff",
+      "name": "OccurrenceFreshnessStore — evaluation order [invariant] an identity-less utterance boundary settles nothing new and never advances the cutoff",
       "status": "passed"
     },
     {
@@ -1869,49 +2848,49 @@
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "source map — ambiguity and identity a changed run maps to the raw run between the same anchors",
+      "name": "source map — ambiguity and identity [invariant] a changed run maps to the raw run between the same anchors",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "source map — ambiguity and identity a pure insertion (no raw tokens) is ambiguous",
+      "name": "source map — ambiguity and identity [invariant] a pure insertion (no raw tokens) is ambiguous",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "source map — ambiguity and identity an empty or whitespace-only span is ambiguous",
+      "name": "source map — ambiguity and identity [invariant] an empty or whitespace-only span is ambiguous",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-fresh-occurrence.test.ts",
-      "name": "source map — ambiguity and identity anchored tokens map 1:1 with identity inside the token",
+      "name": "source map — ambiguity and identity [invariant] anchored tokens map 1:1 with identity inside the token",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "config/regex-freshness-vectors.json — byte pin and source equality clarification templates and constants match the web source",
+      "name": "config/regex-freshness-vectors.json — byte pin and source equality [invariant] clarification templates and constants match the web source",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "config/regex-freshness-vectors.json — byte pin and source equality field labels are byte-equal to DESTINATION_FIELD_LABELS",
+      "name": "config/regex-freshness-vectors.json — byte pin and source equality [invariant] field labels are byte-equal to DESTINATION_FIELD_LABELS",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "config/regex-freshness-vectors.json — byte pin and source equality pins the fixture bytes (update the iOS copy and this pin together)",
+      "name": "config/regex-freshness-vectors.json — byte pin and source equality [invariant] pins the fixture bytes (update the iOS copy and this pin together)",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "config/regex-freshness-vectors.json — byte pin and source equality renders every clarification vector exactly",
+      "name": "config/regex-freshness-vectors.json — byte pin and source equality [invariant] renders every clarification vector exactly",
       "status": "passed"
     },
     {
@@ -1977,325 +2956,325 @@
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes bypass_boundary_resets_matcher_not_cutoffs [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] bypass_boundary_resets_matcher_not_cutoffs [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes bypass_boundary_resets_matcher_not_cutoffs [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] bypass_boundary_resets_matcher_not_cutoffs [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes circuit_1a_reference_spoken_as_displayed [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] circuit_1a_reference_spoken_as_displayed [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes circuit_1a_reference_spoken_as_displayed [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] circuit_1a_reference_spoken_as_displayed [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes clear_then_fresh_identical_redictation_applies_once [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] clear_then_fresh_identical_redictation_applies_once [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes clear_then_fresh_identical_redictation_applies_once [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] clear_then_fresh_identical_redictation_applies_once [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes concurrent_tap_final_race_both_orderings [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] concurrent_tap_final_race_both_orderings [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes concurrent_tap_final_race_both_orderings [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] concurrent_tap_final_race_both_orderings [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes cross_final_completion_unions_fragments [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] cross_final_completion_unions_fragments [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes cross_final_completion_unions_fragments [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] cross_final_completion_unions_fragments [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes equality_boundary_is_fresh [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] equality_boundary_is_fresh [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes equality_boundary_is_fresh [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] equality_boundary_is_fresh [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes f1_opens_ask_f2_answer_causes_clear [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] f1_opens_ask_f2_answer_causes_clear [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes f1_opens_ask_f2_answer_causes_clear [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] f1_opens_ask_f2_answer_causes_clear [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes four_destinations_use_those_fields [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] four_destinations_use_those_fields [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes four_destinations_use_those_fields [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] four_destinations_use_those_fields [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes held_answer_leaves_ask_pending [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] held_answer_leaves_ask_pending [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes held_answer_leaves_ask_pending [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] held_answer_leaves_ask_pending [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes long_session_bounded_state_over_reconnects [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] long_session_bounded_state_over_reconnects [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes long_session_bounded_state_over_reconnects [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] long_session_bounded_state_over_reconnects [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_clear_then_delayed_same_socket_final_held [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] manual_clear_then_delayed_same_socket_final_held [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_clear_then_delayed_same_socket_final_held [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] manual_clear_then_delayed_same_socket_final_held [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_clear_then_fresh_reading_forwarded [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] manual_clear_then_fresh_reading_forwarded [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_clear_then_fresh_reading_forwarded [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] manual_clear_then_fresh_reading_forwarded [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_cutoff_does_not_apply_after_an_accepted_final [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] manual_cutoff_does_not_apply_after_an_accepted_final [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes manual_cutoff_does_not_apply_after_an_accepted_final [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] manual_cutoff_does_not_apply_after_an_accepted_final [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes old_epoch_final_dropped_at_admission [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] old_epoch_final_dropped_at_admission [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes old_epoch_final_dropped_at_admission [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] old_epoch_final_dropped_at_admission [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes old_overlap_then_unrelated_speech [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] old_overlap_then_unrelated_speech [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes old_overlap_then_unrelated_speech [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] old_overlap_then_unrelated_speech [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes old_session_final_dropped_at_admission [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] old_session_final_dropped_at_admission [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes old_session_final_dropped_at_admission [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] old_session_final_dropped_at_admission [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes onset_race_042_050_060 [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] onset_race_042_050_060 [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes onset_race_042_050_060 [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] onset_race_042_050_060 [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes reconnect_rotates_epoch_not_settlement [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] reconnect_rotates_epoch_not_settlement [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes reconnect_rotates_epoch_not_settlement [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] reconnect_rotates_epoch_not_settlement [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes rejected_clear_leaves_cutoffs_unchanged [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] rejected_clear_leaves_cutoffs_unchanged [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes rejected_clear_leaves_cutoffs_unchanged [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] rejected_clear_leaves_cutoffs_unchanged [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes server_clear_after_fresh_f2_keeps_f2_applied [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] server_clear_after_fresh_f2_keeps_f2_applied [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes server_clear_after_fresh_f2_keeps_f2_applied [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] server_clear_after_fresh_f2_keeps_f2_applied [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes server_clear_then_next_reading_no_false_stale [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] server_clear_then_next_reading_no_false_stale [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes server_clear_then_next_reading_no_false_stale [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] server_clear_then_next_reading_no_false_stale [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes server_replacement_before_delayed_final_never_restores [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] server_replacement_before_delayed_final_never_restores [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes server_replacement_before_delayed_final_never_restores [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] server_replacement_before_delayed_final_never_restores [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes three_destinations_named_individually [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] three_destinations_named_individually [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes three_destinations_named_individually [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] three_destinations_named_individually [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes two_board_same_ref_names_only_the_cleared_board [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] two_board_same_ref_names_only_the_cleared_board [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes two_board_same_ref_names_only_the_cleared_board [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] two_board_same_ref_names_only_the_cleared_board [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes two_destinations_joined_with_and [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] two_destinations_joined_with_and [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes two_destinations_joined_with_and [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] two_destinations_joined_with_and [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes unbounded_final_forwards_without_cutoff_held_with_one [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] unbounded_final_forwards_without_cutoff_held_with_one [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes unbounded_final_forwards_without_cutoff_held_with_one [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] unbounded_final_forwards_without_cutoff_held_with_one [hints_on]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes unrelated_reading_in_race_window_held_whole [hints_off]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] unrelated_reading_in_race_window_held_whole [hints_off]",
       "status": "passed"
     },
     {
       "platform": "web",
       "file": "web/tests/regex-freshness-fixture.test.ts",
-      "name": "freshness sequences — real matcher + real apply layer, both lanes unrelated_reading_in_race_window_held_whole [hints_on]",
+      "name": "freshness sequences — real matcher + real apply layer, both lanes [invariant] unrelated_reading_in_race_window_held_whole [hints_on]",
       "status": "passed"
     },
     {
@@ -2397,6 +3376,12 @@
     {
       "platform": "web",
       "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
+      "name": "family (3) — unexpected-reconnect ring drain REMOVED; sleep drains untouched [invariant] A02D — the sleep/doze drains are RETIRED: the ring is charged as E2 staged loss, nothing is re-sent",
+      "status": "passed"
+    },
+    {
+      "platform": "web",
+      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
       "name": "family (3) — unexpected-reconnect ring drain REMOVED; sleep drains untouched `onReconnected` no longer drains the ring buffer or replays into the sender",
       "status": "passed"
     },
@@ -2404,12 +3389,6 @@
       "platform": "web",
       "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
       "name": "family (3) — unexpected-reconnect ring drain REMOVED; sleep drains untouched `openDeepgram` still resolves immediately — no awaited-open plumbing (round-29 carve-out)",
-      "status": "passed"
-    },
-    {
-      "platform": "web",
-      "file": "web/tests/uplink-loss-recording-context-wiring.test.ts",
-      "name": "family (3) — unexpected-reconnect ring drain REMOVED; sleep drains untouched A02D — the sleep/doze drains are RETIRED: the ring is charged as E2 staged loss, nothing is re-sent",
       "status": "passed"
     },
     {
@@ -2433,7 +3412,7 @@
     {
       "platform": "web",
       "file": "web/tests/voiced-activity.test.ts",
-      "name": "isLocalSpeakingWithin — default clock matches capturedAt (A02D, 2026-09-09) a frame stamped with performance.now() reads as speaking through the DEFAULT nowMs",
+      "name": "isLocalSpeakingWithin — default clock matches capturedAt (A02D, 2026-09-09) [invariant] A02D — a frame stamped with performance.now() reads as speaking through the DEFAULT nowMs",
       "status": "passed"
     },
     {

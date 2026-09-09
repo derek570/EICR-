@@ -13,6 +13,10 @@
  *   --ios-tests=<dir> --ios-root=<dir>        iOS test sources to inventory
  *   --ios-results=<json {name: status}>
  *   --out=<path>  default docs/reference/evidence/regex-fresh-occurrence.json
+ *   --verify      read the committed document instead of writing: exit 1 when
+ *                 any source/fixture/test digest differs from the checkout
+ *                 (the generated_from_commit is informational — the commit
+ *                 that adds the document cannot contain its own hash).
  *
  * The document pins sha256 digests of the checked-out SOURCE, TEST and
  * FIXTURE bytes (never of the output file), the two baselines, the baseline
@@ -44,8 +48,11 @@ const SOURCES = [
   'web/src/lib/recording/final-window.ts',
   'web/src/lib/recording/held-fragment-clarification.ts',
   'web/src/lib/recording/normalisation-source-map.ts',
+  'web/src/lib/recording/regex-destination-routing.ts',
   'web/src/lib/recording/regex-fresh-occurrence.ts',
   'web/src/lib/recording/regex-match-result.ts',
+  'web/src/lib/recording/apply-regex-match.ts',
+  'web/src/lib/recording/sonnet-session.ts',
   'web/src/lib/recording/test-services.ts',
   'web/src/lib/recording/transcript-field-matcher.ts',
   'web/src/lib/recording/tts.ts',
@@ -59,6 +66,7 @@ const BACKEND_TESTS = [
 ];
 const WEB_TESTS = [
   'web/tests/harness/a02d-regex-freshness-mounted.test.tsx',
+  'web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx',
   'web/tests/regex-fresh-occurrence.test.ts',
   'web/tests/regex-freshness-fixture.test.ts',
   'web/tests/held-fragment-clarification.test.ts',
@@ -66,6 +74,9 @@ const WEB_TESTS = [
   'web/tests/closed-enum-guard.test.ts',
   'web/tests/voiced-activity.test.ts',
   'web/tests/uplink-loss-recording-context-wiring.test.ts',
+  'web/tests/deepgram-service-frozen-surface.test.ts',
+  'web/tests/regex-destination-routing.test.ts',
+  'web/tests/apply-regex-match.test.ts',
 ];
 
 function sha256File(rel) {
@@ -114,6 +125,34 @@ const HARNESS_INCOMPATIBLE = /is not a function|Cannot read properties of undefi
 function classifyBaselineFailure(message) {
   if (!message) return null;
   return HARNESS_INCOMPATIBLE.test(message) ? 'harness_incompatible' : 'behavioural';
+}
+
+if (args.verify) {
+  const committed = loadJson(OUT);
+  if (!committed) {
+    console.error(`verify: ${OUT} missing`);
+    process.exit(1);
+  }
+  const expected = {
+    sources: digests(SOURCES),
+    fixtures: digests(FIXTURES),
+    tests: digests([...BACKEND_TESTS, ...WEB_TESTS]),
+  };
+  const drift = [];
+  for (const group of Object.keys(expected)) {
+    for (const [file, digest] of Object.entries(expected[group])) {
+      if ((committed.digests?.[group] ?? {})[file] !== digest) drift.push(`${group}: ${file}`);
+    }
+    for (const file of Object.keys(committed.digests?.[group] ?? {})) {
+      if (!(file in expected[group])) drift.push(`${group}: ${file} (no longer inventoried)`);
+    }
+  }
+  if (drift.length) {
+    console.error(`verify: ${drift.length} digest(s) differ from the checkout:\n  ${drift.join('\n  ')}`);
+    process.exit(1);
+  }
+  console.log(`verify: ${OUT} digests match the checkout (generated from ${committed.generated_from_commit})`);
+  process.exit(0);
 }
 
 const fixJest = loadJson(args['fix-jest']);
@@ -174,7 +213,7 @@ const doc = {
     sync_preflight: 'scripts/check-regex-freshness-fixture-sync.sh',
   },
   red_proof_rule:
-    'The baseline lane runs the fix-branch mounted harness test against the PRE-A02D web sources with only the held-fragment clarification hooks and the fake service forwarders made optional (their targets do not exist there). A failure whose first line is a missing-hook TypeError is harness_incompatible and is NOT red proof; an assertion on sends, writes, spoken counts or re-sent audio is behavioural red proof.',
+    'The baseline lane runs the fix-branch mounted harness test against the PRE-A02D web sources with only the held-fragment clarification hooks and the fake service forwarders made optional (their targets do not exist there) and the session harness switched from real-decoder to the fake session (the real decoder\'s createSocket/getToken seams do not exist there). A failure whose first line is a missing-hook TypeError is harness_incompatible and is NOT red proof; an assertion on sends, writes, spoken counts or re-sent audio is behavioural red proof.',
   digests: {
     sources: digests(SOURCES),
     fixtures: digests(FIXTURES),
