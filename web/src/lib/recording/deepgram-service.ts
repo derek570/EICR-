@@ -52,6 +52,7 @@ import { classifyPcmEnergy, type VoicedActivityDetector } from './voiced-activit
 import { tagCapturedFloat32 } from './capture-tagging';
 import type { UplinkLossLedger } from './uplink-loss-ledger';
 import { audioWindowEndToSampleOffset } from './sample-offset';
+import { SpeechOnsetTracker, resolveWindowEnd, type FinalTranscriptMeta } from './final-window';
 
 /**
  * STT model selector. `nova3` is the legacy `/v1/listen` path (still the
@@ -85,7 +86,16 @@ export interface DeepgramWord {
 
 export interface DeepgramCallbacks {
   onInterimTranscript: (text: string, confidence: number) => void;
-  onFinalTranscript: (text: string, confidence: number, words: DeepgramWord[]) => void;
+  /** A02D — the optional fourth argument is the transport half of the
+   *  FinalWindowV1 record (epoch, admissibility, `speech_start`,
+   *  `window_end`). Always supplied by the real service; a caller that omits
+   *  it is treated by the provider as an unbounded, admissible final. */
+  onFinalTranscript: (
+    text: string,
+    confidence: number,
+    words: DeepgramWord[],
+    meta?: FinalTranscriptMeta
+  ) => void;
   onUtteranceEnd?: () => void;
   onSpeechStarted?: () => void;
   onStateChange?: (state: DeepgramConnectionState) => void;
@@ -208,6 +218,9 @@ export interface DeepgramSessionContext {
 }
 
 export interface DeepgramServiceOptions {
+  /** A02D test seam — monotonic ms clock for the onset-confirmation
+   *  deadline. Defaults to `performance.now`. */
+  now?: () => number;
   sessionContext?: DeepgramSessionContext;
   /** Test seam — production defaults to `realOpusEncoderFactory`
    *  (WebCodecs). Tests inject a fake since `AudioEncoder`/`AudioData`
@@ -309,6 +322,15 @@ export class DeepgramService {
    *  every tap transition, so a reconnect (no tap transition) on this
    *  reused instance still reads the live value. */
   captureActive = false;
+  /** A02D FinalWindowV1 — per-onset confirmation state for THIS instance
+   *  (session VAD transitions are forwarded by the provider; StartOfTurn /
+   *  non-empty interims confirm). */
+  private readonly onsetTracker = new SpeechOnsetTracker();
+  private readonly nowMs: () => number;
+  /** A02D admission — flipped synchronously at the top of `disconnect()`,
+   *  BEFORE the CloseStream grace during which `this.ws` still equals the
+   *  socket. A final emitted by this instance after that is inadmissible. */
+  private admissionClosed = false;
   private resolvedSenderCodec: UplinkCodec = 'linear16';
   private keepalivePolicy: UplinkKeepalivePolicy = 'disabled';
   // The generation-bound Opus encoder for the CURRENT socket (null when
@@ -413,7 +435,12 @@ export class DeepgramService {
     sttModel: SttModel = 'nova3',
     options: DeepgramServiceOptions = {}
   ) {
-    this.callbacks = callbacks;
+    // A02D — the FROZEN nova-3 `handleMessage` path invokes the callbacks
+    // with no FinalWindowV1 meta and no provider speech evidence; the
+    // wrapper derives both OUTSIDE the frozen surface (see
+    // `wrapCallbacksForFinalWindow`). Flux (`handleFluxMessage`, unfrozen)
+    // supplies its own meta and evidence and passes straight through.
+    this.callbacks = this.wrapCallbacksForFinalWindow(callbacks);
     // Default to the real global WebSocket. Tests pass a factory whose
     // sockets expose a mutable `bufferedAmount` so the KeepAlive gate
     // can be exercised deterministically. Kept as an optional second
@@ -435,6 +462,7 @@ export class DeepgramService {
       captureClock: createCaptureClock(),
     };
     this.opusEncoderFactory = options.opusEncoderFactory ?? realOpusEncoderFactory;
+    this.nowMs = options.now ?? (() => performance.now());
     // PLAN-E2 binds PLAN-E1's `onUndispatchedLoss` seam to the session
     // ledger (entry variant d) whenever the session owner supplied one; an
     // explicit handler option still wins (tests of the seam itself).
@@ -490,6 +518,239 @@ export class DeepgramService {
    *  same `EpochScope` this service would resolve internally. */
   get liveEpoch(): ConnectionEpoch | null {
     return this.currentEpoch;
+  }
+
+  /** A02D — the session-monotonic dispatched-stream position (source
+   *  samples handed to ANY socket so far). Sampled by the provider at a
+   *  manual tap as that epoch's dispatched-stream cutoff, on the same
+   *  thread the sender advances it on. */
+  get dispatchedStreamOffset(): number {
+    return this.dispatchedSampleOffset;
+  }
+
+  /** A02D FinalWindowV1 — the session VAD's debounced ONSET, forwarded by
+   *  the provider at the tagging boundary, before the onset frame is sent:
+   *  `dispatchedSampleOffset` here IS the onset frame's dispatched start. */
+  noteLocalSpeechOnset(atMs: number = this.nowMs()): void {
+    this.onsetTracker.onOnset(this.dispatchedSampleOffset, atMs);
+  }
+
+  /** A02D FinalWindowV1 — the session VAD's debounced SILENCE transition:
+   *  an onset still unconfirmed is discarded. */
+  noteLocalSilence(): void {
+    this.onsetTracker.onSilence();
+  }
+
+  /** A02D FinalWindowV1 — provider speech evidence (StartOfTurn or a
+   *  NON-EMPTY interim) confirms a pending onset when it arrives within the
+   *  confirmation window. The transport calls this itself on those frames;
+   *  it is public so a text-only fake can model the VAD-then-Deepgram
+   *  ordering without synthesising audio. */
+  noteProviderSpeechEvidence(atMs: number = this.nowMs()): void {
+    this.onsetTracker.onProviderSpeechEvidence(atMs);
+  }
+
+  /** A02D — the transport half of the admission predicate for a final
+   *  emitted under `socketEpoch`: this instance has not been disconnected
+   *  and the emitting socket is its current one. */
+  private admissibleFor(socketEpoch: ConnectionEpoch | null | undefined): boolean {
+    return (
+      !this.admissionClosed &&
+      socketEpoch != null &&
+      this.currentEpoch !== null &&
+      socketEpoch === this.currentEpoch
+    );
+  }
+
+  private finalMeta(
+    socketContext: { epoch: ConnectionEpoch | null; origin: number } | undefined,
+    rawWindowEnd: unknown,
+    speechStartOverride?: number | null,
+    providerFinalId: string | null = null
+  ): FinalTranscriptMeta {
+    const epoch = socketContext?.epoch ?? null;
+    const origin = socketContext?.origin ?? this.epochDispatchOrigin;
+    return {
+      epoch,
+      admissible: this.admissibleFor(epoch),
+      speechStart:
+        speechStartOverride !== undefined
+          ? speechStartOverride
+          : this.onsetTracker.currentSpeechStart(this.nowMs()),
+      windowEnd: resolveWindowEnd(rawWindowEnd, origin),
+      providerFinalId,
+    };
+  }
+
+  /** A02D — the provider's own identity for a final on `epoch` (see
+   *  `FinalTranscriptMeta.providerFinalId`). Flux names a turn by the
+   *  COMPLETE pair `turn_index` + `audio_window_end`; nova-3 by the frame's
+   *  `start` + `duration`. A missing or non-finite member yields null: the
+   *  final has no identity and is never deduplicated. Transcript text is
+   *  never identity. */
+  private providerFinalId(
+    epoch: ConnectionEpoch | null,
+    tuple:
+      | { readonly flux: { turn_index: unknown; audio_window_end: unknown } }
+      | { readonly nova: { start: unknown; duration: unknown } }
+  ): string | null {
+    // Only the COMPLETE provider-minted tuple names a final: Flux
+    // `turn_index` AND `audio_window_end`; nova-3 frame `start` AND
+    // `duration`. Transcript text is never identity (a genuinely repeated
+    // dictation is a new final — Codex cycle 3), and a PARTIAL tuple is not
+    // identity either: one surviving member would make two distinct finals
+    // that share it collide, and a positional join would let nova
+    // `{start: 1}` and `{duration: 1}` collapse (Codex cycle 4). Every
+    // member must be a finite number; the key names each member. Null
+    // otherwise, and null never dedupes.
+    const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+    if ('flux' in tuple) {
+      const { turn_index, audio_window_end } = tuple.flux;
+      if (!finite(turn_index) || !finite(audio_window_end)) return null;
+      return `${epoch ?? 'e?'}|flux|t=${turn_index}|w=${audio_window_end}`;
+    }
+    const { start, duration } = tuple.nova;
+    if (!finite(start) || !finite(duration)) return null;
+    return `${epoch ?? 'e?'}|nova|s=${start}|d=${duration}`;
+  }
+
+  /**
+   * A02D — the socket whose message is being delivered RIGHT NOW, with the
+   * epoch and dispatch origin `openSocket` bound to it. Set around every
+   * `onmessage` delivery by `bindDispatchContext`, so the callback wrapper
+   * can attribute a nova-3 final to the EMITTING socket (a superseded
+   * socket's late final is inadmissible, exactly as on Flux) without any
+   * change to the frozen `onmessage` / `handleMessage` surface.
+   */
+  private dispatchingSocketContext: {
+    epoch: ConnectionEpoch | null;
+    origin: number;
+    /** Frame-level provider fields of the message being delivered (parsed
+     *  here, outside the frozen decoder, which re-parses on its own). */
+    frame: { start?: number; duration?: number } | null;
+  } | null = null;
+
+  /**
+   * Wrap a freshly constructed socket so that whatever handler the frozen
+   * `openSocket` code assigns to `onmessage` runs with
+   * `dispatchingSocketContext` set to THIS socket's epoch/origin. The
+   * assignment site (`ws.onmessage = (event) => { … }`) is byte-for-byte
+   * unchanged; only the instance's `onmessage` property is intercepted
+   * (an own accessor shadowing the prototype's — legal on `WebSocket` and
+   * on the harness's captive socket alike).
+   */
+  private bindDispatchContext(ws: WebSocket): WebSocket {
+    type Handler = ((this: WebSocket, ev: MessageEvent) => unknown) | null;
+    const service = this;
+    const epoch = this.currentEpoch;
+    const origin = this.epochDispatchOrigin;
+    // The prototype accessor (a real `WebSocket`); a plain-field fake has
+    // none and is served entirely by the own accessor below.
+    let protoSetter: ((this: WebSocket, fn: Handler) => void) | undefined;
+    for (let proto = Object.getPrototypeOf(ws); proto && proto !== Object.prototype; ) {
+      const desc = Object.getOwnPropertyDescriptor(proto, 'onmessage');
+      if (desc?.set) {
+        protoSetter = desc.set as typeof protoSetter;
+        break;
+      }
+      proto = Object.getPrototypeOf(proto);
+    }
+    let delegate: Handler = null;
+    Object.defineProperty(ws, 'onmessage', {
+      configurable: true,
+      enumerable: true,
+      get: () => delegate,
+      set: (fn: Handler) => {
+        delegate = fn
+          ? function (this: WebSocket, ev: MessageEvent) {
+              const previous = service.dispatchingSocketContext;
+              service.dispatchingSocketContext = {
+                epoch,
+                origin,
+                frame: DeepgramService.providerFrameFields(ev.data),
+              };
+              try {
+                return fn.call(this, ev);
+              } finally {
+                service.dispatchingSocketContext = previous;
+              }
+            }
+          : null;
+        protoSetter?.call(ws, delegate);
+      },
+    });
+    return ws;
+  }
+
+  /** The nova-3 frame-level provider fields (`start`, `duration`) that name
+   *  a Results message, read from the raw socket payload. Anything else
+   *  (unparseable, non-nova shape) yields null fields. */
+  private static providerFrameFields(data: unknown): { start?: number; duration?: number } | null {
+    try {
+      const text = typeof data === 'string' ? data : new TextDecoder().decode(data as ArrayBuffer);
+      const json = JSON.parse(text) as Record<string, unknown>;
+      return {
+        start: typeof json.start === 'number' ? json.start : undefined,
+        duration: typeof json.duration === 'number' ? json.duration : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * A02D FinalWindowV1 for the frozen nova-3 path. `handleMessage` (byte-
+   * for-byte the pre-A02D method) delivers `onFinalTranscript(text,
+   * confidence, words)` with no meta and never notes provider speech
+   * evidence; this wrapper adds both from the words and the emitting
+   * socket's context: `speech_start` from the first provider word start,
+   * `window_end` from the last word end (no words → unbounded), and the
+   * provider-final identity from the word bounds. Flux calls arrive WITH
+   * meta and pass through untouched (its evidence is noted inside the
+   * unfrozen `handleFluxMessage`).
+   */
+  private wrapCallbacksForFinalWindow(callbacks: DeepgramCallbacks): DeepgramCallbacks {
+    return {
+      ...callbacks,
+      onFinalTranscript: (text, confidence, words, meta) => {
+        if (meta !== undefined) {
+          callbacks.onFinalTranscript(text, confidence, words, meta);
+          return;
+        }
+        const socketContext = this.dispatchingSocketContext ?? undefined;
+        const origin = socketContext?.origin ?? this.epochDispatchOrigin;
+        const first = words[0];
+        const last = words[words.length - 1];
+        callbacks.onFinalTranscript(
+          text,
+          confidence,
+          words,
+          this.finalMeta(
+            socketContext,
+            last ? last.end : undefined,
+            first ? origin + audioWindowEndToSampleOffset(first.start) : null,
+            // Identity from the FRAME's own `start`/`duration` (never the
+            // words, never the text); absent → null → no dedupe.
+            this.providerFinalId(socketContext?.epoch ?? null, {
+              nova: {
+                start: socketContext?.frame?.start,
+                duration: socketContext?.frame?.duration,
+              },
+            })
+          )
+        );
+      },
+      onInterimTranscript: (text, confidence) => {
+        // nova-3 interims are non-empty by construction (the frozen path
+        // returns on an empty transcript); Flux notes its own evidence.
+        if (this.sttModel !== 'flux') this.noteProviderSpeechEvidence();
+        callbacks.onInterimTranscript(text, confidence);
+      },
+      onSpeechStarted: () => {
+        if (this.sttModel !== 'flux') this.noteProviderSpeechEvidence();
+        callbacks.onSpeechStarted?.();
+      },
+    };
   }
 
   /**
@@ -655,7 +916,7 @@ export class DeepgramService {
     //
     // `wsFactory` defaults to the global `WebSocket` constructor; see
     // `WebSocketFactory` doc comment for the test seam.
-    const ws = this.wsFactory(url, ['bearer', apiKey]);
+    const ws = this.bindDispatchContext(this.wsFactory(url, ['bearer', apiKey]));
     ws.binaryType = 'arraybuffer';
     // PLAN-E2 (Codex cycle-1 BLOCKER fix) — the epoch THIS socket was
     // minted under, bound into its error/close callbacks. A late callback
@@ -1132,24 +1393,23 @@ export class DeepgramService {
     this.paused = true;
   }
 
-  /** Inverse of `pause()`. Optionally drain a caller-supplied replay
-   *  buffer (typically the 3-second AudioRingBuffer's tagged segments)
-   *  before live samples resume flowing — matches the iOS wake path.
-   *  Segments are dispatched via `sendTaggedAudio` so their ORIGINAL
-   *  capture-time tags survive the replay (no restamping). */
-  resume(replaySegments?: CapturedPcmSegment[]): void {
+  /** Inverse of `pause()`. A02D retired replay: this used to drain a
+   *  caller-supplied ring-buffer replay through `sendTaggedAudio` (the doze
+   *  wake path). No path re-sends ring audio to any socket now — audio no
+   *  socket could take is charged and DISCLOSED through PLAN-E2's staged-loss
+   *  seam by the provider instead. */
+  resume(): void {
     this.paused = false;
-    if (replaySegments) {
-      for (const segment of replaySegments) {
-        this.sendTaggedAudio(segment);
-      }
-    }
   }
 
   /** Request a graceful stream close + tear the socket down. Cancels any
    *  pending auto-reconnect so a mid-backoff `stop()` doesn't leak a
    *  billable WS seconds later. */
   disconnect(): void {
+    // A02D — invalidate admission SYNCHRONOUSLY, before anything else in
+    // this method (the CloseStream grace below keeps `this.ws` alive for
+    // 300 ms; a late final from it must never be admitted).
+    this.admissionClosed = true;
     this.stopKeepAlive();
     this.paused = false;
     // PLAN-E1 (Codex review r1 IMPORTANT fix) — flush any partial Flux
@@ -1762,11 +2022,15 @@ export class DeepgramService {
           textLength: transcript.length,
           confidence: Math.round(confidence * 1000) / 1000,
         });
+        // A02D — a NON-EMPTY interim confirms a pending onset (empty ones
+        // returned above never reach here).
+        this.noteProviderSpeechEvidence();
         this.callbacks.onInterimTranscript(transcript, confidence);
         break;
       }
       case 'StartOfTurn':
         pipelineLog('deepgram_speech_started', {});
+        this.noteProviderSpeechEvidence();
         this.callbacks.onSpeechStarted?.();
         break;
       case 'EndOfTurn': {
@@ -1806,7 +2070,24 @@ export class DeepgramService {
           confidence: Math.round(confidence * 1000) / 1000,
           wordCount: words.length,
         });
-        this.callbacks.onFinalTranscript(transcript, confidence, words);
+        this.callbacks.onFinalTranscript(
+          transcript,
+          confidence,
+          words,
+          // A02D FinalWindowV1 — this final's transport record: the emitting
+          // socket's epoch + admissibility, the confirmed onset (or null),
+          // the EndOfTurn `audio_window_end` in this epoch's dispatched
+          // domain, and the provider's turn identity (a duplicate delivery
+          // of the same EndOfTurn reuses the client's record).
+          this.finalMeta(
+            socketContext,
+            json.audio_window_end,
+            undefined,
+            this.providerFinalId(socketContext?.epoch ?? null, {
+              flux: { turn_index: json.turn_index, audio_window_end: json.audio_window_end },
+            })
+          )
+        );
         // iOS canon (DeepgramService.swift handleFluxTurnInfo): EndOfTurn with
         // a transcript fires BOTH didReceiveFinalTranscript AND
         // didReceiveUtteranceEnd. Without the utterance-end,

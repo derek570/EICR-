@@ -29,74 +29,18 @@ import type { JobDetail, CircuitRow } from '@/lib/types';
 import type { FieldSourceTracker } from './field-source-tracker';
 import type { CircuitUpdates, RegexMatchResult } from './regex-match-result';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
+import {
+  aliasFamily,
+  indexCircuitRowsByRef,
+  readEffectiveSectionValue,
+  routeSectionField,
+} from './regex-destination-routing';
 
 // MARK: — Field-name → JobDetail-section routing
 //
 // Mirrors the `CIRCUIT_0_SECTION` map in apply-extraction.ts (which is
 // keyed by Sonnet's field names). The matcher uses the same names, so we
 // route by the same map.
-
-type Section = 'supply_characteristics' | 'board_info' | 'installation_details';
-
-const SUPPLY_FIELD_TO_KEY: Record<keyof NonNullable<RegexMatchResult['supply_updates']>, string> = {
-  ze: 'ze',
-  pfc: 'pfc',
-  earthing_arrangement: 'earthing_arrangement',
-  supply_polarity_confirmed: 'supply_polarity_confirmed',
-  main_earth_csa: 'main_earth_csa',
-  bonding_csa: 'bonding_csa',
-  bonding_water: 'bonding_water',
-  bonding_gas: 'bonding_gas',
-  main_bonding_continuity: 'main_bonding_continuity',
-  earth_electrode_type: 'earth_electrode_type',
-  earth_electrode_resistance: 'earth_electrode_resistance',
-  nominal_voltage: 'nominal_voltage',
-  nominal_frequency: 'nominal_frequency',
-  main_switch_bs_en: 'main_switch_bs_en',
-  main_switch_current: 'main_switch_current',
-  main_switch_conductor_csa: 'main_switch_conductor_csa',
-  // Supply protective device / DNO cutout / "main fuse" (Option A — distinct
-  // from the consumer-unit main switch). surge-protection-box 2026-06-17.
-  spd_bs_en: 'spd_bs_en',
-  spd_rated_current: 'spd_rated_current',
-};
-
-const BOARD_FIELD_TO_KEY: Record<keyof NonNullable<RegexMatchResult['board_updates']>, string> = {
-  manufacturer: 'manufacturer',
-  ze_at_db: 'ze_at_db',
-};
-
-// Section assignment for board / supply field routing — main_switch_*
-// lives on board_info, the rest on supply_characteristics. Ze-at-DB is
-// routed to board_info (mirrors iOS, where boardUpdates.zeAtDb is the
-// board-end Zs).
-const SUPPLY_FIELD_SECTION: Record<string, Section> = {
-  main_switch_bs_en: 'board_info',
-  main_switch_current: 'board_info',
-  main_switch_conductor_csa: 'board_info',
-  // spd_* (main fuse) mirrors the main_switch_* live-fill convention — the
-  // LiveFillView reads board_info during recording. surge-protection-box.
-  spd_bs_en: 'board_info',
-  spd_rated_current: 'board_info',
-};
-
-const INSTALLATION_FIELD_TO_KEY: Record<
-  keyof NonNullable<RegexMatchResult['installation_updates']>,
-  string
-> = {
-  client_name: 'client_name',
-  premises_description: 'premises_description',
-  next_inspection_years: 'next_inspection_years',
-  client_phone: 'client_phone',
-  client_email: 'client_email',
-  reason_for_report: 'reason_for_report',
-  occupier_name: 'occupier_name',
-  date_of_previous_inspection: 'date_of_previous_inspection',
-  previous_certificate_number: 'previous_certificate_number',
-  estimated_age_of_installation: 'estimated_age_of_installation',
-  general_condition_of_installation: 'general_condition',
-  date_of_inspection: 'date_of_inspection',
-};
 
 export interface RegexApplyOutput {
   patch: Partial<JobDetail>;
@@ -157,8 +101,10 @@ export function jobBaselineReader(job: JobDetail): BaselineReader {
       const row = (job.circuits ?? [])[c.circuitIdx ?? -1] as Record<string, unknown> | undefined;
       return row?.[c.fieldKey];
     }
+    // Section destinations compare against the EFFECTIVE alias family (a
+    // page-cleared visible alias reads as empty — `regex-destination-routing`).
     const section = job[c.target] as Record<string, unknown> | null | undefined;
-    return section?.[c.fieldKey];
+    return readEffectiveSectionValue(section, c.target, c.fieldKey);
   };
 }
 
@@ -230,7 +176,11 @@ export function computeFreshRegexWrites(
   job: JobDetail,
   result: RegexMatchResult,
   tracker: FieldSourceTracker,
-  baseline: BaselineReader
+  baseline: BaselineReader,
+  /** A02D — the active board (`current_board_changed`), so a duplicate
+   *  circuit ref resolves to the SAME row the freshness gate evaluated
+   *  (`regex-destination-routing.ts`). */
+  activeBoardId: string | null = null
 ): RegexWriteCandidate[] {
   const fresh: RegexWriteCandidate[] = [];
   const consider = (raw: RegexWriteCandidate) => {
@@ -254,51 +204,33 @@ export function computeFreshRegexWrites(
     fresh.push(candidate);
   };
 
-  // Supply (some fields route to board_info — main_switch_* / spd_*).
-  for (const [matcherField, value] of Object.entries(result.supply_updates)) {
-    if (value === undefined) continue;
-    const fieldKey =
-      SUPPLY_FIELD_TO_KEY[matcherField as keyof typeof SUPPLY_FIELD_TO_KEY] ?? matcherField;
-    const section = SUPPLY_FIELD_SECTION[matcherField] ?? 'supply_characteristics';
-    consider({
-      trackerKey: `${section === 'board_info' ? 'board' : 'supply'}.${fieldKey}`,
-      target: section,
-      fieldKey,
-      value,
-    });
-  }
-
-  // Board.
-  for (const [matcherField, value] of Object.entries(result.board_updates)) {
-    if (value === undefined) continue;
-    const fieldKey =
-      BOARD_FIELD_TO_KEY[matcherField as keyof typeof BOARD_FIELD_TO_KEY] ?? matcherField;
-    consider({ trackerKey: `board.${fieldKey}`, target: 'board_info', fieldKey, value });
-  }
-
-  // Installation.
-  for (const [matcherField, value] of Object.entries(result.installation_updates)) {
-    if (value === undefined) continue;
-    const fieldKey =
-      INSTALLATION_FIELD_TO_KEY[matcherField as keyof typeof INSTALLATION_FIELD_TO_KEY] ??
-      matcherField;
-    consider({
-      trackerKey: `install.${fieldKey}`,
-      target: 'installation_details',
-      fieldKey,
-      value,
-    });
+  // Sections — ONE routing rule shared with the freshness gate (A02D):
+  // some "supply" matcher fields live on board_info (main_switch_* / spd_*)
+  // and one installation field is renamed at the store.
+  const sections = [
+    ['supply', result.supply_updates],
+    ['board', result.board_updates],
+    ['install', result.installation_updates],
+  ] as const;
+  for (const [scope, updates] of sections) {
+    for (const [matcherField, value] of Object.entries(updates ?? {})) {
+      if (value === undefined) continue;
+      const route = routeSectionField(scope, matcherField);
+      consider({
+        trackerKey: route.trackerKey,
+        target: route.target,
+        fieldKey: route.fieldKey,
+        value,
+      });
+    }
   }
 
   // Per-circuit. Translate matcher's `circuit_ref` keys to row UUIDs so
-  // the tracker key uses the stable id.
+  // the tracker key uses the stable id; duplicate refs resolve by board
+  // (never by array order) through the shared index.
   if (Object.keys(result.circuit_updates).length > 0) {
     const circuits = job.circuits ?? [];
-    const indexByRef = new Map<string, number>();
-    circuits.forEach((row, idx) => {
-      const ref = (row as { circuit_ref?: unknown }).circuit_ref;
-      if (typeof ref === 'string') indexByRef.set(ref, idx);
-    });
+    const indexByRef = indexCircuitRowsByRef(job, activeBoardId);
     for (const [ref, updates] of Object.entries(result.circuit_updates)) {
       const idx = indexByRef.get(ref);
       if (idx === undefined) continue; // ref without a row — out of scope
@@ -335,7 +267,8 @@ export function computeFreshRegexWrites(
 export function applyRegexMatchToJob(
   job: JobDetail,
   result: RegexMatchResult,
-  tracker: FieldSourceTracker
+  tracker: FieldSourceTracker,
+  activeBoardId: string | null = null
 ): RegexApplyOutput | null {
   pipelineLog('apply_regex_entry', {
     supply: Object.keys(result.supply_updates ?? {}).length,
@@ -346,7 +279,13 @@ export function applyRegexMatchToJob(
   const patch: Partial<JobDetail> = {};
   const changedKeys: string[] = [];
 
-  const freshWrites = computeFreshRegexWrites(job, result, tracker, jobBaselineReader(job));
+  const freshWrites = computeFreshRegexWrites(
+    job,
+    result,
+    tracker,
+    jobBaselineReader(job),
+    activeBoardId
+  );
 
   // Section buckets — accumulated and folded into the patch at the end so
   // multiple section writes don't smear across each other.
@@ -370,12 +309,17 @@ export function applyRegexMatchToJob(
       const row = circuits[idx];
       if (!row) continue;
       circuits[idx] = { ...row, [c.fieldKey]: c.value };
-    } else if (c.target === 'board_info') {
-      boardPatch[c.fieldKey] = c.value;
-    } else if (c.target === 'installation_details') {
-      installPatch[c.fieldKey] = c.value;
     } else {
-      supplyPatch[c.fieldKey] = c.value;
+      // Every stored alias of the destination receives the value (wire key
+      // + PWA-column key), so the page the inspector edits and the wire
+      // snapshot never disagree after a regex write.
+      const bucket =
+        c.target === 'board_info'
+          ? boardPatch
+          : c.target === 'installation_details'
+            ? installPatch
+            : supplyPatch;
+      for (const key of aliasFamily(c.target, c.fieldKey)) bucket[key] = c.value;
     }
     tracker.recordRegexWrite(c.trackerKey);
     changedKeys.push(c.trackerKey);

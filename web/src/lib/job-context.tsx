@@ -65,10 +65,35 @@ import type { UnresolvedAudioRecord } from './recording/unresolved-audio-record'
  */
 type JobPatch = Partial<JobDetail> | ((prev: JobDetail) => Partial<JobDetail>);
 
+/** A02D — who produced a job mutation. `manual` = the inspector's own
+ *  typed/tapped edit through `updateJob`/`commitJobPatch` (a designation
+ *  draft commit included); `recording` = the recording pipeline's own writes
+ *  (`updateJobFromRecording`); listeners ignore the latter. */
+export type JobMutationSource = 'manual' | 'recording';
+
+export interface JobMutationEvent {
+  readonly prev: JobDetail;
+  readonly next: JobDetail;
+  readonly source: JobMutationSource;
+}
+
 interface JobContextValue {
   job: JobDetail;
   certificateType: CertificateType;
   updateJob: (patch: JobPatch) => void;
+  /** A02D — the recording pipeline's own write path. Identical merge to
+   *  `updateJob` but tagged `recording`, so the manual-edit observer never
+   *  mistakes a regex/Sonnet/local-command write for an inspector tap. */
+  updateJobFromRecording: (patch: JobPatch) => void;
+  /**
+   * A02D — observe every job mutation SYNCHRONOUSLY at the tap, with the
+   * exact pre/post snapshots and its source. The recording provider samples
+   * its manual clear/replacement cutoffs inside this callback (the
+   * dispatched-stream position and the admitted-buffer head at the tap),
+   * which is only sound because the notification runs on the same tick as
+   * the mutation, before any await.
+   */
+  subscribeJobMutations: (listener: (event: JobMutationEvent) => void) => () => void;
   setJob: (next: JobDetail) => void;
   isDirty: boolean;
   isSaving: boolean;
@@ -452,6 +477,54 @@ export function JobProvider({
     // seeders simply never run for that mount.
   }, [initial, isDirty, hydrated, networkRejected, scheduleSave]);
 
+  // A02D — synchronous mutation observers (see `subscribeJobMutations`).
+  const mutationListenersRef = React.useRef<Set<(event: JobMutationEvent) => void>>(new Set());
+  const subscribeJobMutations = React.useCallback(
+    (listener: (event: JobMutationEvent) => void): (() => void) => {
+      mutationListenersRef.current.add(listener);
+      return () => {
+        mutationListenersRef.current.delete(listener);
+      };
+    },
+    []
+  );
+  const notifyMutation = React.useCallback(
+    (prev: JobDetail, next: JobDetail, source: JobMutationSource) => {
+      if (prev === next) return;
+      for (const listener of mutationListenersRef.current) {
+        try {
+          listener({ prev, next, source });
+        } catch (err) {
+          console.warn('[job-context] mutation listener threw', err);
+        }
+      }
+    },
+    []
+  );
+
+  const applyPatch = React.useCallback(
+    (patch: JobPatch, source: JobMutationSource): JobDetail => {
+      const prev = jobRef.current;
+      const resolved = typeof patch === 'function' ? patch(prev) : patch;
+      const merged = { ...prev, ...resolved } as JobDetail;
+      jobRef.current = merged;
+      pendingPatchRef.current = { ...pendingPatchRef.current, ...resolved };
+      setJob(merged);
+      setIsDirty(true);
+      scheduleSave();
+      notifyMutation(prev, merged, source);
+      return merged;
+    },
+    [scheduleSave, notifyMutation]
+  );
+
+  const updateJobFromRecording = React.useCallback(
+    (patch: JobPatch) => {
+      applyPatch(patch, 'recording');
+    },
+    [applyPatch]
+  );
+
   const updateJob = React.useCallback(
     (patch: JobPatch) => {
       // PLAN-B2 Codex r1 — SAME synchronous primitive as commitJobPatch.
@@ -462,15 +535,9 @@ export function JobProvider({
       // leaving state/jobRef without A even though the queued save had
       // A+B. Resolving against jobRef.current here keeps state, jobRef,
       // and the pending patch in lock-step for every interleaving.
-      const resolved = typeof patch === 'function' ? patch(jobRef.current) : patch;
-      const merged = { ...jobRef.current, ...resolved } as JobDetail;
-      jobRef.current = merged;
-      pendingPatchRef.current = { ...pendingPatchRef.current, ...resolved };
-      setJob(merged);
-      setIsDirty(true);
-      scheduleSave();
+      applyPatch(patch, 'manual');
     },
-    [scheduleSave]
+    [applyPatch]
   );
 
   // Flush on unmount so edits don't get stranded when the inspector
@@ -523,16 +590,9 @@ export function JobProvider({
     (patch: JobPatch): JobDetail => {
       // The functional form resolves against jobRef (the freshest
       // committed snapshot), mirroring updateJob's stale-closure guard.
-      const resolved = typeof patch === 'function' ? patch(jobRef.current) : patch;
-      const merged = { ...jobRef.current, ...resolved } as JobDetail;
-      jobRef.current = merged;
-      pendingPatchRef.current = { ...pendingPatchRef.current, ...resolved };
-      setJob(merged);
-      setIsDirty(true);
-      scheduleSave();
-      return merged;
+      return applyPatch(patch, 'manual');
     },
-    [scheduleSave]
+    [applyPatch]
   );
 
   // PLAN-B2 atomic-commit contract (b) — flush drafts, return the exact
@@ -632,6 +692,8 @@ export function JobProvider({
       job,
       certificateType: job.certificate_type ?? 'EICR',
       updateJob,
+      updateJobFromRecording,
+      subscribeJobMutations,
       setJob,
       isDirty,
       isSaving,
@@ -647,6 +709,8 @@ export function JobProvider({
     [
       job,
       updateJob,
+      updateJobFromRecording,
+      subscribeJobMutations,
       isDirty,
       isSaving,
       saveError,

@@ -1545,9 +1545,23 @@ function buildResultFrameLedger(snapshot, result, session = {}) {
     }
   }
   if (Array.isArray(result.field_corrections)) {
+    // A02D (2026-09-09) — standalone `field_corrected` frames carry the
+    // ADDITIVE optional `utterance_id` of the utterance that fed the turn
+    // (the same client-minted id the extraction frame and the VCR already
+    // echo). The client maps it to that final's sequence to place its
+    // clear/replacement cutoff on the CAUSATIVE final (server `turn_id` is
+    // not that identity: one tool turn can open on F1, ask, and resume on
+    // F2). Absent when the result has none — byte-identical to the pre-A02D
+    // frame; older builds ignore the key.
+    const utteranceId =
+      typeof result.utterance_id === 'string' && result.utterance_id ? result.utterance_id : null;
     for (const evt of result.field_corrections) {
       if (!evt) continue;
-      frames.push({ kind: 'field_corrected', json: JSON.stringify(evt) });
+      const frame =
+        utteranceId && typeof evt.utterance_id !== 'string'
+          ? { ...evt, utterance_id: utteranceId }
+          : evt;
+      frames.push({ kind: 'field_corrected', json: JSON.stringify(frame) });
     }
   }
   // The audible frame is LAST (exactly-once contract, P4d row 7): if any

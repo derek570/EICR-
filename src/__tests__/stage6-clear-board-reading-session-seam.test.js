@@ -189,6 +189,9 @@ describe('REAL session seam — capability parse, live emission bytes, reconnect
       previous_value: '2.3',
       reason: 'clear_reading',
       board_id: 'main',
+      // A02D (2026-09-09): the standalone frame echoes the causative utterance_id
+      // (additive) — pinned deliberately as the new live byte.
+      utterance_id: 'utt-seam-1',
     });
     // The spoken clear rides the extraction envelope's confirmations.
     const extraction = ws._sent[extractionIdx];

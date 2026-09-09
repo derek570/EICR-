@@ -73,7 +73,7 @@ describe('closed-enum fixture — cross-platform pins', () => {
    *  BOTH constants in the same coordinated change. */
   it('fixture bytes match the pinned cross-platform digest', () => {
     const digest = createHash('sha256').update(readFileSync(FIXTURE_PATH)).digest('hex');
-    expect(digest).toBe('6ed9eb2a4d91ca578a1add1c5bcef304d945dc7eb279291e95c3e3fc0c130753');
+    expect(digest).toBe('6486b80f8f9de75be1edc17b1c2da7b30f9cdee1f04f2a6a31fa484153170922');
   });
 
   it('fixture options are exactly field_schema.json minus the empty sentinel', () => {

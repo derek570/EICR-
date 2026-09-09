@@ -211,6 +211,9 @@ export interface Stage6FieldCorrected {
   reason?: string | null;
   /** Non-null on board-scope frames; absent/null on circuit frames. */
   board_id?: string | null;
+  /** A02D — the additive optional echo of the causative transcript's
+   *  `utterance_id` (see `ExtractionResult.utterance_id`). */
+  utterance_id?: string;
 }
 
 /** STI-06 — emitted when `create_circuit` dispatches. iOS appends to
@@ -340,6 +343,12 @@ export interface ExtractionResult {
   /** Multi-board mutation ops — Phase 6 wire channel. Decoded on the
    *  PWA via `apply-extraction.ts applyBoardOpsToJob`. */
   board_ops?: BoardOp[];
+  /** A02D (2026-09-09) — the additive optional echo of the CAUSATIVE
+   *  transcript's `utterance_id`. The provider maps it to that final's
+   *  sequence so a server replacement or clear in this envelope records
+   *  an utterance-driven cutoff (never `turn_id`, which spans an ask and
+   *  its answer). Absent from older backends; never fabricated here. */
+  utterance_id?: string;
 }
 
 /** Unified `current_board_changed` broadcast — fired by the backend on
@@ -527,6 +536,17 @@ export interface SonnetSessionDeps {
    * settle).
    */
   heartbeatIntervalMs?: number;
+  /**
+   * A02D harness seam — construct the socket. Production never sets this
+   * (`new WebSocket(url)`); the mounted harness supplies a captive socket
+   * so scripted backend frames run through the REAL `handleMessage`
+   * decoder instead of a fake that invokes callbacks with undecoded
+   * objects (which is how the `utterance_id` decoder omission stayed
+   * green — Codex diff-review cycle 1).
+   */
+  createSocket?: (url: string) => WebSocket;
+  /** A02D harness seam — token source (defaults to the auth store). */
+  getToken?: () => string | null;
 }
 
 export interface SessionStartOptions {
@@ -786,6 +806,8 @@ export class SonnetSession {
   // mid-session dirty close doesn't keep firing into a dead socket).
   private heartbeatTimer: unknown = null;
   private heartbeatIntervalMs: number;
+  private readonly createSocket: (url: string) => WebSocket;
+  private readonly tokenSource: () => string | null;
   // Diagnostic — last-seen timestamps + message types for both
   // directions on the WS, so a `sonnet_ws_close` row can show
   // "ms since last server message" / "last sent type". Critical
@@ -801,6 +823,8 @@ export class SonnetSession {
     this.clearSchedule =
       deps.clearScheduler ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
+    this.createSocket = deps.createSocket ?? ((url) => new WebSocket(url));
+    this.tokenSource = deps.getToken ?? getToken;
   }
 
   /**
@@ -862,7 +886,7 @@ export class SonnetSession {
   private openSocket(): void {
     this.setState('connecting');
 
-    const token = getToken();
+    const token = this.tokenSource();
     if (!token) {
       this.setState('error');
       pipelineLog('sonnet_ws_no_token', {
@@ -882,7 +906,7 @@ export class SonnetSession {
     });
     let ws: WebSocket;
     try {
-      ws = new WebSocket(url);
+      ws = this.createSocket(url);
     } catch (err) {
       this.setState('error');
       pipelineLog('sonnet_ws_construct_throw', {
@@ -1846,6 +1870,14 @@ export class SonnetSession {
             extraction_failed: result.extraction_failed,
             error_message: result.error_message,
             board_ops: boardOps,
+            // A02D — preserve the echoed causative identity (a validated
+            // non-empty string only). Codex diff-review cycle 1 BLOCKER:
+            // the decoder previously rebuilt the result without it, so the
+            // provider's utterance-driven cutoffs never advanced.
+            utterance_id:
+              typeof result.utterance_id === 'string' && result.utterance_id !== ''
+                ? result.utterance_id
+                : undefined,
           };
           // Wire-shape audit — log the actual keys present on each
           // circuit_update so we can SEE whether the backend is sending
@@ -2089,6 +2121,11 @@ export class SonnetSession {
           previous_value: (json.previous_value as string | null | undefined) ?? null,
           reason: (json.reason as string | null | undefined) ?? null,
           board_id: boardId,
+          // A02D — the standalone frame's echoed causative identity.
+          utterance_id:
+            typeof json.utterance_id === 'string' && json.utterance_id !== ''
+              ? json.utterance_id
+              : undefined,
         };
         this.callbacks.onFieldCorrected?.(msg);
         break;

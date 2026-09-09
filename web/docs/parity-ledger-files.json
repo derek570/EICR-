@@ -515,7 +515,8 @@
     "observations/obs-photo-autolink"
   ],
   "web/src/lib/job-context.tsx": [
-    "crosscutting/offline-dirty-guard"
+    "crosscutting/offline-dirty-guard",
+    "recording/regex-occurrence-freshness"
   ],
   "web/src/lib/pdf/generate-certificate.ts": [
     "pdf/pdf-fidelity",
@@ -567,7 +568,8 @@
     "recording/tts-fifo",
     "recording/voice-command-executor-e-g-move",
     "recording/dictated-readback-policy",
-    "recording/ze-accepted-alias-consistency"
+    "recording/ze-accepted-alias-consistency",
+    "recording/regex-occurrence-freshness"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
@@ -606,7 +608,8 @@
   ],
   "web/src/lib/recording/deepgram-service.ts": [
     "recording/flux-kill-switch",
-    "recording/flux-migration"
+    "recording/flux-migration",
+    "recording/regex-occurrence-freshness"
   ],
   "web/src/lib/recording/elevenlabs-tts.ts": [
     "recording/tts-fifo",
@@ -647,7 +650,8 @@
     "recording/gate-pass-chime"
   ],
   "web/src/lib/recording/transcript-field-matcher.ts": [
-    "recording/garble-aliases-f8-f10"
+    "recording/garble-aliases-f8-f10",
+    "recording/regex-occurrence-freshness"
   ],
   "web/src/lib/recording/transcript-gate.ts": [
     "recording/transcript-gate"
@@ -663,7 +667,8 @@
   "web/src/lib/recording/tts.ts": [
     "recording/readback-dedup-rekey",
     "recording/recordingoverlay-47",
-    "recording/tts-fifo"
+    "recording/tts-fifo",
+    "recording/regex-occurrence-freshness"
   ],
   "web/src/lib/runtime-config.ts": [
     "recording/flux-kill-switch"
@@ -695,5 +700,17 @@
   ],
   "web/tests/pwa-pending-photo-store.test.ts": [
     "observations/obs-photo-autolink"
+  ],
+  "web/src/lib/recording/final-window.ts": [
+    "recording/regex-occurrence-freshness"
+  ],
+  "web/src/lib/recording/normalisation-source-map.ts": [
+    "recording/regex-occurrence-freshness"
+  ],
+  "web/src/lib/recording/regex-fresh-occurrence.ts": [
+    "recording/regex-occurrence-freshness"
+  ],
+  "web/src/lib/recording/held-fragment-clarification.ts": [
+    "recording/regex-occurrence-freshness"
   ]
 }

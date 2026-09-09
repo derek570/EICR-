@@ -15,6 +15,8 @@
  * directly into the section buckets.
  */
 
+import type { SourceMap } from './normalisation-source-map';
+
 // MARK: — Per-section update shapes
 
 export interface SupplyUpdates {
@@ -105,6 +107,28 @@ export interface BoardSwitchEvent {
  *
  *  Using a plain object map (not Map<string, CircuitUpdates>) so the result
  *  is JSON-serialisable for snapshot tests and for the wire-shape adapter. */
+/** A02D RegexFreshOccurrenceV1 — one occurrence candidate emitted AT the
+ *  successful regex match, in NORMALISED-window coordinates. `destination`
+ *  is the matcher's own key (`supply.<f>` | `board.<f>` | `install.<f>` |
+ *  `circuit.<ref>.<f>`). A candidate with a negative span had no regex
+ *  evidence at write time and maps as ambiguous (client-regex-ineligible). */
+export interface RawOccurrence {
+  destination: string;
+  normalisedStart: number;
+  normalisedEnd: number;
+}
+
+/** A02D — provenance produced by `TranscriptFieldMatcher.match` for the
+ *  window it scanned: the window's offset in the transcript it was given,
+ *  the normalisation source map for that window, and every occurrence
+ *  candidate. Attached NON-enumerably so structural equality of results in
+ *  existing tests is unchanged. */
+export interface RegexMatchProvenance {
+  windowStart: number;
+  sourceMap: SourceMap;
+  occurrences: RawOccurrence[];
+}
+
 export interface RegexMatchResult {
   supply_updates: SupplyUpdates;
   circuit_updates: Record<string, CircuitUpdates>;
@@ -112,6 +136,8 @@ export interface RegexMatchResult {
   installation_updates: InstallationUpdates;
   new_circuits: NewCircuit[];
   board_switch?: BoardSwitchEvent;
+  /** A02D — see `RegexMatchProvenance`. Absent on the empty result. */
+  provenance?: RegexMatchProvenance;
 }
 
 export function emptyRegexMatchResult(): RegexMatchResult {

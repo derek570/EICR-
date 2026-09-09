@@ -52,14 +52,31 @@ describe('family (3) — unexpected-reconnect ring drain REMOVED; sleep drains u
     expect(body).not.toContain('sendInt16PCM');
   });
 
-  it('the AUTOMATIC full-sleep drains still exist, gated on the sleeping branch (byte-for-byte)', () => {
-    // handleWake's drain sits inside its `from === 'sleeping'` branch.
+  it('[invariant] A02D — the sleep/doze drains are RETIRED: the ring is charged as E2 staged loss, nothing is re-sent', () => {
+    // A02D (2026-09-09) removed the automatic full-sleep and doze drains
+    // that PLAN-E2 had left in place (`handleWake`'s two branches and
+    // `resume()`'s full-sleep branch). The ring's contents are charged
+    // through E2's own `recordStagedLoss` seam instead, so E2's disclosure
+    // fires under E2's unchanged materiality rules.
     const wake = fnBody('handleWake');
     expect(wake).toContain("from === 'sleeping'");
-    expect(wake).toContain('drainTagged');
-    // resume()'s automatic full-sleep branch keeps its drain too.
+    expect(wake).not.toContain('drainTagged');
+    expect(wake).not.toContain('sendTaggedAudio');
+    expect(wake).toContain("chargeRingAsStagedLoss('wake_from_sleep')");
+    expect(wake).toContain("chargeRingAsStagedLoss('wake_from_doze')");
     const resume = fnBody('resume');
-    expect(resume).toContain('drainTagged');
+    expect(resume).not.toContain('drainTagged');
+    expect(resume).not.toContain('sendTaggedAudio');
+    expect(resume).toContain("chargeRingAsStagedLoss('resume_from_full_sleep')");
+    // The ONLY drain left in the provider is the staged-loss charge itself.
+    const charge = fnBody('chargeRingAsStagedLoss');
+    expect(charge).toContain('drainTagged');
+    expect(charge).toContain('recordStagedLoss');
+    expect(charge).not.toContain('sendTaggedAudio');
+    expect(SRC.match(/drainTagged\(\)/g)).toHaveLength(1);
+    // No provider path re-sends ring audio: `sendTaggedAudio` is called from
+    // the live tap only.
+    expect(SRC.match(/\.sendTaggedAudio\(/g)).toHaveLength(1);
   });
 
   it('`openDeepgram` still resolves immediately — no awaited-open plumbing (round-29 carve-out)', () => {
@@ -83,7 +100,10 @@ describe('family (2) — captureActive has exactly two writers + the constructio
   });
 
   it('the provider copies the CURRENT value into every newly constructed sender', () => {
-    const construct = between('new DeepgramService(deepgramCallbacks', 'service.connect(async () => {');
+    const construct = between(
+      'new DeepgramService(deepgramCallbacks',
+      'service.connect(async () => {'
+    );
     expect(construct).toContain('service.captureActive = captureActiveRef.current');
   });
 
@@ -95,16 +115,25 @@ describe('family (2) — captureActive has exactly two writers + the constructio
 
   it('the service treats captureActive as a classification signal only — the sender never reads it', () => {
     // `captureActive` appears in the close/error classifiers, never in a send path.
-    const sendSamples = SERVICE.slice(SERVICE.indexOf('  sendSamples('), SERVICE.indexOf('  sendTaggedAudio('));
+    const sendSamples = SERVICE.slice(
+      SERVICE.indexOf('  sendSamples('),
+      SERVICE.indexOf('  sendTaggedAudio(')
+    );
     expect(sendSamples).not.toContain('captureActive');
-    const dispatch = SERVICE.slice(SERVICE.indexOf('  private dispatchFrame('), SERVICE.indexOf('  private handleOpusPacket('));
+    const dispatch = SERVICE.slice(
+      SERVICE.indexOf('  private dispatchFrame('),
+      SERVICE.indexOf('  private handleOpusPacket(')
+    );
     expect(dispatch).not.toContain('captureActive');
   });
 
   it('ownership is marked in ONE place — inside `disconnect()`, the only `ws.close()` site', () => {
     // Executable `ws.close(…)` statements (not doc-comment mentions).
     expect(SERVICE.match(/^\s*ws\.close\(1000\);/gm)).toHaveLength(1);
-    const disconnect = SERVICE.slice(SERVICE.indexOf('  disconnect(): void {'), SERVICE.indexOf('  // ── Internals'));
+    const disconnect = SERVICE.slice(
+      SERVICE.indexOf('  disconnect(): void {'),
+      SERVICE.indexOf('  // ── Internals')
+    );
     expect(disconnect).toContain('ws.close(1000);');
     expect(disconnect).toContain('this.ownedCloseEpoch = this.currentEpoch');
     expect(SERVICE.match(/this\.ownedCloseEpoch = /g)).toHaveLength(1);
@@ -129,7 +158,10 @@ describe('family (1) — every-open observation via onStateChange, not onReconne
   });
 
   it('`ws.onopen` in the service is byte-for-byte free of E2 (the observation is downstream)', () => {
-    const onopen = SERVICE.slice(SERVICE.indexOf('    ws.onopen = () => {'), SERVICE.indexOf('    ws.onmessage = (event) => {'));
+    const onopen = SERVICE.slice(
+      SERVICE.indexOf('    ws.onopen = () => {'),
+      SERVICE.indexOf('    ws.onmessage = (event) => {')
+    );
     expect(onopen).not.toContain('PLAN-E2');
     expect(onopen).not.toContain('lossLedger');
   });

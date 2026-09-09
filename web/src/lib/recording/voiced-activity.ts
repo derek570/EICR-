@@ -169,7 +169,15 @@ export class VoicedActivityDetector {
    *  noise, not the inspector. Materiality consumers keep the unbounded form. */
   isLocalSpeakingWithin(
     windowMs: number = VAD_LOCAL_SPEAKING_GATE_WINDOW_MS,
-    nowMs: number = Date.now()
+    // A02D (2026-09-09) — the SAME clock as `capturedAt` (`performance.now()`
+    // at the tap's ingress; see `recording-context.tsx` `onSamples` and
+    // `CapturedPcmSegment.capturedAt`). The 2026-08-29 gate defaulted to
+    // `Date.now()`, so `nowMs - speakingSinceMs` was ~1.7e12 ms in
+    // production and the time-bounded read was never true: the raw-VAD
+    // parking of PLAN-E2's disclosure (and this plan's clarification) never
+    // engaged. Unit tests always passed `nowMs` explicitly, which is why the
+    // mismatch was invisible until a mounted test drove real samples.
+    nowMs: number = performance.now()
   ): boolean {
     if (!this.speaking || this.speakingSinceMs === null) return false;
     return nowMs - this.speakingSinceMs < windowMs;

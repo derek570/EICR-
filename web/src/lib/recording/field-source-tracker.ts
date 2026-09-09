@@ -28,6 +28,7 @@
 export type FieldSource = 'regex' | 'sonnet' | 'preExisting';
 
 import type { JobDetail } from '@/lib/types';
+import { SECTION_FIELD_ALIASES } from './regex-destination-routing';
 
 /** Helper — value is "present" iff it's a non-empty string / non-null /
  *  non-undefined / non-empty array. Mirrors iOS `hasValue`. */
@@ -48,9 +49,22 @@ function hasValue(v: unknown): boolean {
  * `canRegexWrite` refuses when ANY member is owned by a higher tier. Never
  * inferred from value equality — provenance is recorded at the write.
  */
-const ALIAS_FAMILIES: ReadonlyArray<readonly string[]> = [
-  ['supply.ze', 'supply.earth_loop_impedance_ze'],
-];
+// A02D — ONE alias table for every consumer: the families come from
+// `regex-destination-routing.ts` (`supply.ze`/`earth_loop_impedance_ze`,
+// `supply.pfc`/`prospective_fault_current`,
+// `install.general_condition`/`general_condition_of_installation`).
+const TRACKER_SCOPE: Record<keyof typeof SECTION_FIELD_ALIASES, string> = {
+  supply_characteristics: 'supply',
+  board_info: 'board',
+  installation_details: 'install',
+};
+const ALIAS_FAMILIES: ReadonlyArray<readonly string[]> = (
+  Object.keys(SECTION_FIELD_ALIASES) as Array<keyof typeof SECTION_FIELD_ALIASES>
+).flatMap((target) =>
+  Object.values(SECTION_FIELD_ALIASES[target]).map((family) =>
+    family.map((alias) => `${TRACKER_SCOPE[target]}.${alias}`)
+  )
+);
 
 function familyOf(key: string): readonly string[] {
   for (const family of ALIAS_FAMILIES) {
