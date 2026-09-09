@@ -1315,7 +1315,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             bufferFinalSequence,
           };
           store.recordManualCutoff(change.key, label, snapshot);
-          store.recordProducer(epoch, { kind: 'manual', snapshot });
+          // No producer row: A01B's `field_commit` (absent from main) is the
+          // only source of a `{session_epoch, mutation_id}` identity; the
+          // table stays dormant until it lands.
         } else {
           // No live socket (paused/sleeping): there is no dispatched stream
           // to compare against — the buffer cutoff alone settles history.

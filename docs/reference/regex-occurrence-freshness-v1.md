@@ -90,7 +90,7 @@ gate evaluated is the row the apply layer writes.
 | Manual clear or replacement | Latest minted final sequence at the tap | Emitting epoch's `dispatchedSampleOffset` at the tap | `JobProvider` mutation observer, `source: 'manual'` |
 | Server clear frame | Causative final's sequence via echoed `utterance_id` | none | `field_corrected` handler |
 | Server replacement or clear in a result | Causative final's sequence via echoed `utterance_id` | none | `applyExtraction` changed keys and `field_clears` |
-| A01B accepted receipt | Producer table by `{session_epoch, mutation_id}` | Manual snapshot when the producer was a tap | Not on `main` yet; join key prepared |
+| A01B accepted receipt | Producer table by `{session_epoch, mutation_id}` | Manual snapshot when the producer was a tap | Not on `main` yet; the table is dormant (no local identities are minted) and its rows are evicted with their epoch |
 
 Sampling happens at the tap, on the same tick as the mutation, because
 `JobProvider.subscribeJobMutations` notifies synchronously. A rejected or
@@ -165,7 +165,9 @@ unchanged materiality rules. No path re-sends ring audio to any socket.
 - After an owned close (stop, pause, sleep, replacement) a late final is
   dropped without disclosure. That is PLAN-E2's accepted design.
 - A01B is not on `main`. The producer table keeps the join-key shape so an
-  accepted receipt can resolve its cutoff by identity when A01B lands.
+  accepted receipt can resolve its cutoff by identity when A01B lands; until
+  then nothing writes to it (a manual tap records its cutoff, not a
+  producer row).
 - `VoicedActivityDetector.isLocalSpeakingWithin` compared a
   `performance.now()` stamp against `Date.now()` since 2026-08-29, so the
   raw-VAD parking never engaged in production. A02D fixed the default clock.

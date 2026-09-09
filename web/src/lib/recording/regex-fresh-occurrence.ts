@@ -449,10 +449,13 @@ export interface HoldDecision {
 /** A02D's client-local PRODUCER TABLE, keyed by A01B's `{session_epoch,
  *  mutation_id}` identity as a JOIN key. A01B is not on `main` (verified
  *  2026-09-09: only a shadow-harness mention of `mutation_id`), so nothing
- *  submits `field_commit` receipts yet; the table records manual taps and
- *  utterance producers under the same key shape so an A01B-accepted receipt
- *  can resolve its cutoff by identity when A01B lands. When the identity is
- *  unavailable the cutoff does not advance across newer finals. */
+ *  submits `field_commit` receipts yet and the table stays DORMANT: a
+ *  producer is recorded only under an identity A01B's `field_commit`
+ *  submission supplies — never a locally minted one (Codex diff-review
+ *  cycle 1, IMPORTANT 4: synthetic `local_N` rows were unbounded, invisible
+ *  to the retention metric and not A01B identities). When the identity is
+ *  unavailable the cutoff does not advance across newer finals. Producers
+ *  are evicted with their epoch and counted in `retainedRecordCount`. */
 export type ProducerRecord =
   | { readonly kind: 'manual'; readonly snapshot: ManualCutoffSnapshot }
   | { readonly kind: 'utterance'; readonly utteranceId: string };
@@ -472,8 +475,11 @@ export class OccurrenceFreshnessStore {
   private readonly lastAccepted = new Map<ConnectionEpoch, number>();
   /** Final records by sequence — bounded by the eviction watermark. */
   private readonly finals = new Map<number, FinalWindowV1>();
-  private readonly producers = new Map<string, ProducerRecord>();
-  private producerMutationCounter = 0;
+  /** `{session_epoch, mutation_id}` → producer; epoch kept for eviction. */
+  private readonly producers = new Map<
+    string,
+    { readonly epoch: string | number; readonly record: ProducerRecord }
+  >();
   private heldCount = 0;
 
   // ── final records ──
@@ -543,21 +549,24 @@ export class OccurrenceFreshnessStore {
 
   // ── producer table (A01B join) ──
 
-  /** Record a producer at `field_commit` submission time. Returns the join
-   *  key. `mutationId` is minted locally until A01B supplies its own. */
+  /** Record a producer at `field_commit` submission time under A01B's OWN
+   *  `mutation_id`. Returns the join key. There is no local fallback
+   *  identity: without A01B nothing calls this. */
   recordProducer(
     sessionEpoch: string | number,
-    producer: ProducerRecord,
-    mutationId?: string
+    mutationId: string,
+    producer: ProducerRecord
   ): string {
-    const id = mutationId ?? `local_${++this.producerMutationCounter}`;
-    const key = producerJoinKey(sessionEpoch, id);
-    this.producers.set(key, producer);
+    const key = producerJoinKey(sessionEpoch, mutationId);
+    this.producers.set(key, { epoch: sessionEpoch, record: producer });
     return key;
   }
   /** Resolve an accepted receipt's producer by A01B identity. */
   resolveProducer(sessionEpoch: string | number, mutationId: string): ProducerRecord | null {
-    return this.producers.get(producerJoinKey(sessionEpoch, mutationId)) ?? null;
+    return this.producers.get(producerJoinKey(sessionEpoch, mutationId))?.record ?? null;
+  }
+  get producerCount(): number {
+    return this.producers.size;
   }
 
   // ── hold decision ──
@@ -694,13 +703,24 @@ export class OccurrenceFreshnessStore {
         this.lastAccepted.delete(epoch);
       }
     }
+    // Producers ride the same watermark: an epoch no retained fragment
+    // references can receive no receipt whose cutoff could still matter.
+    for (const [key, entry] of [...this.producers]) {
+      if (!retainedEpochs.has(entry.epoch as ConnectionEpoch)) this.producers.delete(key);
+    }
   }
 
   /** Total retained state, for the bounded-growth test. */
   get retainedRecordCount(): number {
     let manual = 0;
     for (const list of this.manualCutoffs.values()) manual += list.length;
-    return this.finals.size + this.settledCount() + manual + this.bufferCutoffs.size;
+    return (
+      this.finals.size +
+      this.settledCount() +
+      manual +
+      this.bufferCutoffs.size +
+      this.producers.size
+    );
   }
 }
 

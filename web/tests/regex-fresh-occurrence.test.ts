@@ -382,16 +382,23 @@ describe('destinations — labels, diffs, canonical keys, producer table', () =>
     expect(canonicalDestinationKey('supply.unknown', j)).toBeNull();
   });
 
-  it('producer table: keyed by A01B {session_epoch, mutation_id}; resolves by identity only', () => {
+  it('[invariant] producer table: keyed ONLY by an A01B {session_epoch, mutation_id}; dormant otherwise; evicted with its epoch and counted as retained state', () => {
     const s = new OccurrenceFreshnessStore();
-    const key = s.recordProducer(7, { kind: 'utterance', utteranceId: 'u-1' }, 'm-1');
+    expect(s.producerCount).toBe(0);
+    const key = s.recordProducer(7, 'm-1', { kind: 'utterance', utteranceId: 'u-1' });
     expect(key).toBe(producerJoinKey(7, 'm-1'));
     expect(s.resolveProducer(7, 'm-1')).toEqual({ kind: 'utterance', utteranceId: 'u-1' });
     expect(s.resolveProducer(8, 'm-1')).toBeNull();
-    const local = s.recordProducer(7, {
+    s.recordProducer(8, 'm-2', {
       kind: 'manual',
-      snapshot: { epoch: E(7), dispatchedOffset: 10, bufferOffset: 0, bufferFinalSequence: null },
+      snapshot: { epoch: E(8), dispatchedOffset: 10, bufferOffset: 0, bufferFinalSequence: null },
     });
-    expect(local.startsWith('7:local_')).toBe(true);
+    expect(s.producerCount).toBe(2);
+    expect(s.retainedRecordCount).toBe(2);
+    // Epoch 7 leaves the retained window: its producer goes with it.
+    s.evict(0, null, new Set<ConnectionEpoch>([E(8)]));
+    expect(s.resolveProducer(7, 'm-1')).toBeNull();
+    expect(s.resolveProducer(8, 'm-2')).not.toBeNull();
+    expect(s.producerCount).toBe(1);
   });
 });
