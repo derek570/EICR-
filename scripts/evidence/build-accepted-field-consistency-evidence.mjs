@@ -110,7 +110,12 @@ function jestIndex(doc) {
   const m = new Map();
   if (!doc) return m;
   for (const tr of doc.testResults ?? []) {
-    const file = path.relative(repoRoot, tr.name).replace(/^.*?src\/__tests__\//, 'src/__tests__/');
+    const file = path
+      .relative(repoRoot, tr.name)
+      .replace(/^.*?src\/__tests__\//, 'src/__tests__/')
+      // The baseline runs use a loadable variant of the gate suite (the named
+      // export did not exist there); map it back to the real file.
+      .replace('pre-llm-gate.a01p-baseline.test.js', 'pre-llm-gate.test.js');
     for (const a of tr.assertionResults ?? []) m.set(`${file}::${a.fullName}`, a.status);
   }
   return m;
