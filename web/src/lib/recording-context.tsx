@@ -163,6 +163,7 @@ import {
   AdmittedBuffer,
   OccurrenceFreshnessStore,
   applyOccurrenceFreshness,
+  canonicalDestinationKey,
   describeDestination,
   destinationKeyFromChangedKey,
   diffRegexDestinations,
@@ -1270,10 +1271,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const circuitClearDestinationRef = React.useRef(
     (circuit: number | null, field: string): string | null => {
       if (circuit == null) return null;
-      const row = (jobRef.current.circuits ?? []).find((c) => c.circuit_ref === String(circuit));
-      if (!row) return null;
-      const key = `circuit.${row.id}.${resolveCircuitFieldKey(field)}`;
-      return destinationKeyFromChangedKey(key);
+      // Same row resolution as the apply layer (duplicate refs by board).
+      return canonicalDestinationKey(
+        `circuit.${circuit}.${resolveCircuitFieldKey(field)}`,
+        jobRef.current,
+        currentBoardIdRef.current
+      );
     }
   );
   // A02D — MANUAL clear/replacement boundaries, sampled AT THE TAP on the
@@ -1462,6 +1465,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // Circuits / banner consumers can filter to the active board
   // without separately decoding the WS message.
   const [currentBoardId, setCurrentBoardId] = React.useState<string | null>(null);
+  // A02D — ref mirror for the regex routing (a duplicate circuit ref
+  // resolves to the row on the ACTIVE board — `regex-destination-routing`).
+  // Written at every `setCurrentBoardId` site so a final in the same tick
+  // as the board switch already routes to the new board.
+  const currentBoardIdRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    currentBoardIdRef.current = currentBoardId;
+  }, [currentBoardId]);
   const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   // 5-second heartbeat — pinpoints "did the JS event loop freeze" without
   // needing the WS to be alive. Each fire writes `pipelineLog('heartbeat',
@@ -2466,7 +2477,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             admittedBuffer,
             fragment,
             jobRef.current,
-            freshnessStoreRef.current
+            freshnessStoreRef.current,
+            currentBoardIdRef.current
           );
           const matchResult = freshness.result;
           {
@@ -2507,7 +2519,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             const applied = applyRegexMatchToJob(
               jobRef.current,
               matchResult,
-              fieldSourceTrackerRef.current
+              fieldSourceTrackerRef.current,
+              currentBoardIdRef.current
             );
             console.info(
               `[recording:pipeline] stage=regex_applied changedKeys=${applied?.changedKeys.length ?? 0} keys=${(applied?.changedKeys ?? []).slice(0, 5).join(',')}`
@@ -2552,7 +2565,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               jobRef.current,
               matchResult,
               fieldSourceTrackerRef.current,
-              shadowBaselineReader(regexShadowRef.current)
+              shadowBaselineReader(regexShadowRef.current),
+              currentBoardIdRef.current
             );
             for (const c of fresh) regexShadowRef.current.set(c.trackerKey, c.value);
             gateRegexHit = fresh.length > 0;
@@ -4385,6 +4399,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           source: msg.source,
           board_id_short: msg.board_id.slice(0, 8),
         });
+        currentBoardIdRef.current = msg.board_id;
         setCurrentBoardId(msg.board_id);
       },
       onSelectBoardAck: (msg) => {
@@ -5198,6 +5213,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // re-emit a `current_board_changed` once the session_resume / fresh
     // session_ack settles, populating this from the canonical
     // currentBoardId in the snapshot.
+    currentBoardIdRef.current = null;
     setCurrentBoardId(null);
     void api
       .recordingStart({
@@ -5354,6 +5370,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     abandonHeldFragmentClarificationForSessionTeardown();
     // Clear active board id so the next recording session starts with
     // no banner state; the backend will re-broadcast on the new session.
+    currentBoardIdRef.current = null;
     setCurrentBoardId(null);
     // Phase E — close the backend session asynchronously. Fire-and-
     // forget so a slow finish() call doesn't block the UI rolling

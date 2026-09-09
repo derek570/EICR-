@@ -70,6 +70,19 @@ Both clients perform this sequence once per admitted final:
    occurrences below the watermark, final records of evicted fragments, and
    manual cutoff lists of epochs no retained fragment references.
 
+## Destination routing
+
+`web/src/lib/recording/regex-destination-routing.ts` is the ONE routing rule
+for every regex consumer: matcher provenance, the freshness gate, cutoff
+identity, clarification naming, and the apply layer. It translates the
+matcher's `supply.main_switch_*` and `supply.spd_*` keys to `board.*`
+(their `board_info` store), renames `install.general_condition_of_installation`
+to `install.general_condition`, and resolves a circuit ref to a row by
+board: the active board (`current_board_changed`), then the job's first
+board, then a row without `board_id`, then the first row in job order. Two
+boards sharing "circuit 4" are therefore two destinations, and the row the
+gate evaluated is the row the apply layer writes.
+
 ## Clear and replacement cutoffs
 
 | Boundary | Buffer cutoff | Stream cutoff | Source on web |
@@ -127,6 +140,8 @@ unchanged materiality rules. No path re-sends ring audio to any socket.
 
 - `web/src/lib/recording/final-window.ts` — record, onset tracker, transport meta.
 - `web/src/lib/recording/normalisation-source-map.ts` — token-aligned source map.
+- `web/src/lib/recording/regex-destination-routing.ts` — the shared
+  destination routing (section aliases, duplicate refs by board).
 - `web/src/lib/recording/regex-fresh-occurrence.ts` — admitted buffer, store,
   cutoffs, hold decision, labels, freshness gate.
 - `web/src/lib/recording/held-fragment-clarification.ts` — templates and token ledger.

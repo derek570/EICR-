@@ -80,6 +80,23 @@ function makeJob(): JobDetail {
   } as unknown as JobDetail;
 }
 
+/** Two boards sharing circuit ref "4" (the fixture's two_board_same_ref job). */
+function makeTwoBoardJob(): JobDetail {
+  const base = makeJob() as unknown as Record<string, unknown>;
+  return {
+    ...base,
+    boards: [
+      { id: 'b_main', designation: 'main', slug: 'main' },
+      { id: 'b_garage', designation: 'garage', slug: 'garage' },
+    ],
+    circuits: [
+      { id: 'c4', circuit_ref: '4', circuit_designation: 'Cooker', board_id: 'b_main' },
+      { id: 'c3', circuit_ref: '3', circuit_designation: 'Kitchen ring', board_id: 'b_main' },
+      { id: 'c4g', circuit_ref: '4', circuit_designation: 'Garage sockets', board_id: 'b_garage' },
+    ],
+  } as unknown as JobDetail;
+}
+
 const LANES: Array<{ name: string; env: string | undefined }> = [
   { name: 'hints ON', env: '1' },
   { name: 'hints OFF (gate-only)', env: undefined },
@@ -202,6 +219,31 @@ for (const lane of LANES) {
           circuits: (prev.circuits ?? []).map((c) =>
             c.circuit_ref === ref ? { ...c, [field]: '' } : c
           ),
+        }));
+      });
+    }
+    /** Manual edit of ONE row by stable id (two boards may share a ref). */
+    async function manualEditRow(jobApi: JobApi, rowId: string, field: string, value: string) {
+      await act(async () => {
+        jobApi.updateJob((prev) => ({
+          circuits: (prev.circuits ?? []).map((c) =>
+            c.id === rowId ? { ...c, [field]: value } : c
+          ),
+        }));
+      });
+    }
+    function rowValue(jobApi: JobApi, rowId: string, field: string): unknown {
+      return (
+        (jobApi.job.circuits ?? []).find((c) => c.id === rowId) as
+          | Record<string, unknown>
+          | undefined
+      )?.[field];
+    }
+    /** Manual edit of a section field (`board_info` here). */
+    async function manualEditBoardInfo(jobApi: JobApi, field: string, value: string) {
+      await act(async () => {
+        jobApi.updateJob((prev) => ({
+          board_info: { ...(prev.board_info ?? {}), [field]: value },
         }));
       });
     }
@@ -539,6 +581,149 @@ for (const lane of LANES) {
       expect(after[after.length - 1].payload.source).toBe('extraction');
       expect(after[after.length - 1].payload.causativeSequence).toBe(2);
       expect(after[after.length - 1].payload.hasUtteranceId).toBe(true);
+    });
+
+    it('[invariant] two boards sharing circuit 4: the ACTIVE board picks the row for provenance, cutoff and write alike; the clarification names only the cleared board; the other board’s row is untouched', async () => {
+      const m = await mount(makeTwoBoardJob());
+      const dg = m.dg();
+      // Default (no active board yet) = the job's first board: main.
+      await dictate(dg, 'Circuit 4 Zs is nought point three five.');
+      let decisions = m.diag('a02d_occurrence_decisions').slice(-1)[0].payload;
+      expect(decisions.fresh).toEqual(['circuit.c4.measured_zs_ohm']);
+      if (lane.env === '1') {
+        expect(rowValue(m.jobRef.current!, 'c4', 'measured_zs_ohm')).toBe('0.35');
+        expect(rowValue(m.jobRef.current!, 'c4g', 'measured_zs_ohm')).toBeUndefined();
+      }
+      // The server switches the active board to the garage (real decoder).
+      await act(async () => {
+        m.sonnet().emitRaw({
+          type: 'current_board_changed',
+          board_id: 'b_garage',
+          source: 'select_board',
+        });
+        dg.advanceDispatchedStream(1);
+      });
+      await dictate(dg, 'Circuit 4 Zs is nought point four.');
+      decisions = m.diag('a02d_occurrence_decisions').slice(-1)[0].payload;
+      expect(decisions.fresh).toEqual(['circuit.c4g.measured_zs_ohm']);
+      if (lane.env === '1') {
+        expect(rowValue(m.jobRef.current!, 'c4g', 'measured_zs_ohm')).toBe('0.4');
+        expect(rowValue(m.jobRef.current!, 'c4', 'measured_zs_ohm')).toBe('0.35'); // main untouched
+      } else {
+        await manualEditRow(m.jobRef.current!, 'c4g', 'measured_zs_ohm', '0.4');
+        await act(async () => {
+          dg.advanceDispatchedStream(1);
+        });
+      }
+      // Pre-tap onset, then the garage row is cleared by hand, then the
+      // in-flight final: HELD, naming circuit 4 Zs ON THE GARAGE BOARD.
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualEditRow(m.jobRef.current!, 'c4g', 'measured_zs_ohm', '');
+      const boundary = m.diag('a02d_manual_boundary').slice(-1)[0].payload;
+      expect(boundary.destination).toBe('circuit.c4g.measured_zs_ohm');
+      expect(boundary.label).toBe('circuit 4 Zs on the garage board');
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point four.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_held')).toHaveLength(1);
+      expect(m.clarifications().map((p) => p.text)).toEqual([
+        'I heard something just as you cleared circuit 4 Zs on the garage board. Say it again if it should apply.',
+      ]);
+      expect(rowValue(m.jobRef.current!, 'c4g', 'measured_zs_ohm')).toBe('');
+      if (lane.env === '1')
+        expect(rowValue(m.jobRef.current!, 'c4', 'measured_zs_ohm')).toBe('0.35');
+      // The repeat (post-tap onset) applies to the GARAGE row only.
+      await act(async () => {
+        dg.advanceDispatchedStream(2);
+      });
+      await dictate(dg, 'Circuit 4 Zs is nought point four.');
+      decisions = m.diag('a02d_occurrence_decisions').slice(-1)[0].payload;
+      expect(decisions.fresh).toEqual(['circuit.c4g.measured_zs_ohm']);
+      if (lane.env === '1') {
+        expect(rowValue(m.jobRef.current!, 'c4g', 'measured_zs_ohm')).toBe('0.4');
+        expect(rowValue(m.jobRef.current!, 'c4', 'measured_zs_ohm')).toBe('0.35');
+      }
+      expect(m.clarifications()).toHaveLength(1);
+    });
+
+    it('[invariant] the five board-routed supply fields (main_switch_* / spd_*) pass the freshness gate under their board.* keys, apply once, settle on repeat, and a manual clear of one names its board label', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      await dictate(
+        dg,
+        'Main switch is BS EN 60947 rated 100 amps, tails 25 mm, main fuse is BS 1361 rated 80 amps.'
+      );
+      const fresh = (
+        m.diag('a02d_occurrence_decisions').slice(-1)[0].payload.fresh as string[]
+      ).sort();
+      expect(fresh).toEqual([
+        'board.main_switch_bs_en',
+        'board.main_switch_conductor_csa',
+        'board.main_switch_current',
+        'board.spd_bs_en',
+        'board.spd_rated_current',
+      ]);
+      if (lane.env === '1') {
+        const board = m.jobRef.current!.job.board_info as Record<string, unknown>;
+        expect(board.main_switch_current).toBe('100');
+        expect(board.main_switch_conductor_csa).toBe('25');
+        expect(board.spd_rated_current).toBe('80');
+        expect(typeof board.main_switch_bs_en).toBe('string');
+        expect(typeof board.spd_bs_en).toBe('string');
+        expect(m.regexWrites()).toHaveLength(1);
+        expect(m.regexWrites()[0].changedKeys.sort()).toEqual(fresh);
+      } else {
+        expect(m.regexWrites()).toHaveLength(0);
+      }
+      // Identical repeat: the occurrences are new but every value is a
+      // re-hit — the value gate writes nothing, and nothing is stale.
+      await act(async () => {
+        dg.advanceDispatchedStream(1);
+      });
+      await dictate(
+        dg,
+        'Main switch is BS EN 60947 rated 100 amps, tails 25 mm, main fuse is BS 1361 rated 80 amps.'
+      );
+      expect(m.regexWrites().length).toBe(lane.env === '1' ? 1 : 0);
+      expect(m.clarifications()).toHaveLength(0);
+      // A manual clear of the rating (a board_info field the Supply tab
+      // also renders) is diffed under `board.main_switch_current`; the
+      // in-flight final is held naming its BOARD label.
+      if (lane.env !== '1')
+        await manualEditBoardInfo(m.jobRef.current!, 'main_switch_current', '100');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualEditBoardInfo(m.jobRef.current!, 'main_switch_current', '');
+      const boundary = m.diag('a02d_manual_boundary').slice(-1)[0].payload;
+      expect(boundary.destination).toBe('board.main_switch_current');
+      expect(boundary.label).toBe('main switch rating');
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Main switch is 100 amps.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_held')).toHaveLength(1);
+      expect(m.clarifications().map((p) => p.text)).toEqual([
+        'I heard something just as you cleared main switch rating. Say it again if it should apply.',
+      ]);
+      // Post-tap repeat applies again (hints ON).
+      await act(async () => {
+        dg.advanceDispatchedStream(2);
+      });
+      await dictate(dg, 'Main switch is 100 amps.');
+      if (lane.env === '1') {
+        expect(
+          (m.jobRef.current!.job.board_info as Record<string, unknown>).main_switch_current
+        ).toBe('100');
+      }
+      expect(m.clarifications()).toHaveLength(1);
     });
 
     it('unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies', async () => {

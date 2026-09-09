@@ -42,6 +42,7 @@ import type { JobDetail } from '../types';
 import type { RegexMatchResult, CircuitUpdates } from './regex-match-result';
 import { normaliseBeforeMatch, normalizeTranscript } from './transcript-field-matcher';
 import { buildSourceMap, type SourceMap } from './normalisation-source-map';
+import { resolveRegexDestination, routeSectionField } from './regex-destination-routing';
 
 export type { SourceMap, RawSpanMapping } from './normalisation-source-map';
 export type { RawOccurrence } from './regex-match-result';
@@ -251,11 +252,52 @@ export function parseTrackerKey(
   return { scope, field: key.slice(dot + 1) };
 }
 
-/** True iff the key names a destination the client regex can write. */
-export function isRegexDestinationKey(key: string): boolean {
+/**
+ * Labels keyed by the ROUTED (canonical, id-based) tracker key's
+ * `<scope>.<fieldKey>`. `DESTINATION_FIELD_LABELS` is keyed by the matcher's
+ * own field names (the shared fixture pins those bytes); the apply router
+ * stores some of them elsewhere (`supply.main_switch_*` → `board.*`,
+ * `install.general_condition_of_installation` → `install.general_condition`),
+ * so every consumer that holds a canonical key looks its label up here.
+ */
+const LABEL_BY_CANONICAL_SECTION_KEY: ReadonlyMap<string, string> = (() => {
+  const out = new Map<string, string>();
+  for (const scope of ['supply', 'board', 'install'] as const) {
+    for (const [matcherField, label] of Object.entries(DESTINATION_FIELD_LABELS[scope])) {
+      out.set(routeSectionField(scope, matcherField).trackerKey, label);
+    }
+  }
+  return out;
+})();
+
+/** Canonical section destination keys per scope (for diffing snapshots). */
+const CANONICAL_SECTION_FIELDS: Readonly<
+  Record<'supply' | 'board' | 'install', readonly string[]>
+> = (() => {
+  const by: Record<'supply' | 'board' | 'install', string[]> = {
+    supply: [],
+    board: [],
+    install: [],
+  };
+  for (const key of LABEL_BY_CANONICAL_SECTION_KEY.keys()) {
+    const parsed = parseTrackerKey(key);
+    if (parsed && parsed.scope !== 'circuit' && !by[parsed.scope].includes(parsed.field))
+      by[parsed.scope].push(parsed.field);
+  }
+  return by;
+})();
+
+function labelForCanonical(key: string): string | null {
   const parsed = parseTrackerKey(key);
-  if (!parsed) return false;
-  return Boolean(DESTINATION_FIELD_LABELS[parsed.scope]?.[parsed.field]);
+  if (!parsed) return null;
+  if (parsed.scope === 'circuit') return DESTINATION_FIELD_LABELS.circuit[parsed.field] ?? null;
+  return LABEL_BY_CANONICAL_SECTION_KEY.get(`${parsed.scope}.${parsed.field}`) ?? null;
+}
+
+/** True iff the (canonical, id-based) key names a destination the client
+ *  regex can write. */
+export function isRegexDestinationKey(key: string): boolean {
+  return labelForCanonical(key) !== null;
 }
 
 function boardNameFor(job: JobDetail, boardId: unknown): string | null {
@@ -275,7 +317,7 @@ function boardNameFor(job: JobDetail, boardId: unknown): string | null {
 export function describeDestination(key: string, job: JobDetail): string | null {
   const parsed = parseTrackerKey(key);
   if (!parsed) return null;
-  const label = DESTINATION_FIELD_LABELS[parsed.scope]?.[parsed.field];
+  const label = labelForCanonical(key);
   if (!label) return null;
   if (parsed.scope !== 'circuit') return label;
   const row = (job.circuits ?? []).find((c) => c.id === parsed.rowId);
@@ -309,7 +351,7 @@ export function diffRegexDestinations(
     const prev = (before[section] as Record<string, unknown> | null | undefined) ?? {};
     const next = (after[section] as Record<string, unknown> | null | undefined) ?? {};
     if (prev === next) continue;
-    for (const field of Object.keys(DESTINATION_FIELD_LABELS[scope])) {
+    for (const field of CANONICAL_SECTION_FIELDS[scope]) {
       const a = norm(prev[field]);
       const b = norm(next[field]);
       if (a === b) continue;
@@ -333,22 +375,21 @@ export function diffRegexDestinations(
   return out;
 }
 
-/** Translate a matcher-emitted destination (`circuit.<ref>.<field>`) to the
- *  id-based tracker key the rest of the pipeline uses. Non-circuit keys are
- *  already canonical. Returns null when the ref has no row (out of scope —
- *  exactly the rows `applyRegexMatchToJob` skips). */
-export function canonicalDestinationKey(matcherKey: string, job: JobDetail): string | null {
-  if (!matcherKey.startsWith('circuit.'))
-    return isRegexDestinationKey(matcherKey) ? matcherKey : null;
-  const rest = matcherKey.slice('circuit.'.length);
-  const dot = rest.lastIndexOf('.');
-  if (dot <= 0) return null;
-  const ref = rest.slice(0, dot);
-  const field = rest.slice(dot + 1);
-  const row = (job.circuits ?? []).find((c) => c.circuit_ref === ref);
-  if (!row) return null;
-  if (!DESTINATION_FIELD_LABELS.circuit[field]) return null;
-  return `circuit.${row.id}.${field}`;
+/** Translate a matcher-emitted destination to the id-based tracker key the
+ *  rest of the pipeline uses, through the SAME routing the apply layer
+ *  applies (`regex-destination-routing.ts`): `circuit.<ref>.<f>` → the row
+ *  chosen by board, `supply.main_switch_*` → `board.*`, renamed install
+ *  fields. Returns null when the ref has no row (out of scope — exactly
+ *  the rows `applyRegexMatchToJob` skips) or the field is not a regex
+ *  destination. */
+export function canonicalDestinationKey(
+  matcherKey: string,
+  job: JobDetail,
+  activeBoardId: string | null = null
+): string | null {
+  const route = resolveRegexDestination(matcherKey, job, activeBoardId);
+  if (!route) return null;
+  return isRegexDestinationKey(route.trackerKey) ? route.trackerKey : null;
 }
 
 // ── Occurrence candidates and the freshness store ────────────────────────
@@ -687,7 +728,10 @@ export function applyOccurrenceFreshness(
   buffer: AdmittedBuffer,
   fragment: AdmittedFragment,
   job: JobDetail,
-  store: OccurrenceFreshnessStore
+  store: OccurrenceFreshnessStore,
+  /** The active board, so a duplicate circuit ref resolves to the same row
+   *  the apply layer will write. */
+  activeBoardId: string | null = null
 ): OccurrenceFreshnessOutcome {
   const decisions = new Map<string, OccurrenceDecision>();
   const candidates: OccurrenceCandidate[] = [];
@@ -700,7 +744,7 @@ export function applyOccurrenceFreshness(
   const lastByDestination = new Map<string, (typeof prov.occurrences)[number]>();
   for (const occ of prov.occurrences) lastByDestination.set(occ.destination, occ);
   for (const occ of lastByDestination.values()) {
-    const canonical = canonicalDestinationKey(occ.destination, job);
+    const canonical = canonicalDestinationKey(occ.destination, job, activeBoardId);
     if (!canonical) continue;
     let candidate: OccurrenceCandidate;
     if (occ.normalisedStart < 0 || occ.normalisedEnd <= occ.normalisedStart) {
