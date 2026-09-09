@@ -131,7 +131,7 @@ for (const lane of LANES) {
     });
 
     async function mount(initial: JobDetail = makeJob()) {
-      const harness = buildHarnessServices();
+      const harness = buildHarnessServices({ sonnet: 'real-decoder' });
       const writes: Array<{ source: string; changedKeys: string[] }> = [];
       const baseObserver = harness.services.jobStateObserver;
       harness.services.jobStateObserver = (change) => {
@@ -446,6 +446,99 @@ for (const lane of LANES) {
       if (lane.env === '1') expect(zsOf(m.jobRef.current!, '4')).toBe('0.35');
       expect(m.sonnet().sentTranscripts).toHaveLength(3);
       expect(m.clarifications()).toHaveLength(0);
+    });
+
+    it('[invariant] REAL decoder: F1 opens an incomplete occurrence, F2 answers the ask and causes the server clear (echoed utterance_id decoded), the completing F3 is STALE — the cleared value is never restored', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      // Pre-existing value the server will clear (a real change).
+      await manualSet(m.jobRef.current!, '3', 'r1_r2_ohm', '0.4');
+      await act(async () => {
+        dg.advanceDispatchedStream(1);
+      });
+      // F1 — a length-changing reading left incomplete (no value yet).
+      await dictate(dg, 'Circuit 3 R1 plus R2 is');
+      expect(m.sonnet().sentTranscripts).toHaveLength(1);
+      expect(m.regexWrites()).toHaveLength(0);
+      // The server asks (Stage 6 ask_user_started, through the REAL decoder).
+      await act(async () => {
+        m.sonnet().emitQuestion({
+          question: 'Which circuit did you mean?',
+          question_type: 'clarification',
+          tool_call_id: 'tool_f2',
+        });
+        vi.advanceTimersByTime(50);
+        await Promise.resolve();
+      });
+      for (let i = 0; i < 5 && m.sonnet().peekInFlightToolCallId() === null; i++) {
+        await act(async () => {
+          vi.advanceTimersByTime(600);
+          await Promise.resolve();
+        });
+      }
+      expect(m.sonnet().peekInFlightToolCallId()).toBe('tool_f2');
+      __resetTtsWindowForTests();
+      await act(async () => {
+        dg.advanceDispatchedStream(1);
+      });
+      // F2 — the answer (sequence 2). Its utterance_id is the CAUSATIVE
+      // identity the server echoes on the clear it triggers.
+      await dictate(dg, 'Yes, circuit 3.');
+      expect(m.sonnet().sentAskAnswers).toHaveLength(1);
+      const f2 = m.sonnet().sentAskAnswers[0].utteranceId;
+      expect(typeof f2).toBe('string');
+      // The server's standalone clear frame, as the ALB delivers it — JSON
+      // through the REAL `handleMessage` decoder (a fake invoking the
+      // callback with an undecoded object would hide a decoder that drops
+      // the echo, which is exactly Codex cycle-1 BLOCKER 0).
+      await act(async () => {
+        m.sonnet().emitRaw({
+          type: 'field_corrected',
+          circuit: 3,
+          field: 'r1_r2_ohm',
+          previous_value: '0.4',
+          utterance_id: f2,
+        });
+      });
+      expect(r1r2Of(m.jobRef.current!, '3') ?? '').toBe('');
+      const boundaries = m.diag('a02d_server_boundary');
+      expect(boundaries.length).toBeGreaterThanOrEqual(1);
+      expect(boundaries[boundaries.length - 1].payload.causativeSequence).toBe(2);
+      // F3 completes F1's occurrence across the cutoff: F1 (sequence 1) is
+      // at or below the causative sequence, so the union is STALE — no
+      // write in either lane, and the cleared cell stays empty.
+      await act(async () => {
+        dg.advanceDispatchedStream(1);
+      });
+      const sentBeforeF3 = m.sonnet().sentTranscripts.length;
+      await dictate(dg, 'nought point two.');
+      expect(m.sonnet().sentTranscripts).toHaveLength(sentBeforeF3 + 1);
+      const last = m.diag('a02d_occurrence_decisions').slice(-1)[0].payload.decisions as Record<
+        string,
+        number
+      >;
+      expect(last.stale_buffer).toBe(1);
+      expect(last.fresh ?? 0).toBe(0);
+      expect(m.regexWrites()).toHaveLength(0);
+      expect(r1r2Of(m.jobRef.current!, '3') ?? '').toBe('');
+      expect(m.clarifications()).toHaveLength(0);
+      // The same echo on an EXTRACTION envelope (a server replacement) is
+      // decoded too: the boundary names the causative sequence.
+      await act(async () => {
+        m.sonnet().emitRaw({
+          type: 'extraction',
+          result: {
+            utterance_id: f2,
+            readings: [{ circuit: 3, field: 'r1_r2', value: '0.5' }],
+            confirmations: [{ field: 'r1_r2', circuit: 3, text: 'Circuit 3 R1 plus R2 0.5' }],
+          },
+        });
+      });
+      expect(r1r2Of(m.jobRef.current!, '3')).toBe('0.5');
+      const after = m.diag('a02d_server_boundary');
+      expect(after[after.length - 1].payload.source).toBe('extraction');
+      expect(after[after.length - 1].payload.causativeSequence).toBe(2);
+      expect(after[after.length - 1].payload.hasUtteranceId).toBe(true);
     });
 
     it('unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies', async () => {

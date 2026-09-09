@@ -55,8 +55,10 @@ Both clients perform this sequence once per admitted final:
    raw window.
 6. **Occurrence freshness before value gates.** Each candidate is evaluated in
    this order: ambiguous span, unbounded contributing final, old overlap
-   (candidate touches no current fragment), settled identity, buffer cutoff,
-   manual stream cutoff, fresh. Only fresh candidates reach
+   (candidate touches no current fragment), settled identity, buffer cutoff
+   (any contributing final at or below the destination's cutoff, so a
+   cross-final completion whose anchor preceded the clear is stale), manual
+   stream cutoff, fresh. Only fresh candidates reach
    `applyRegexMatchToJob` (hints on) or `computeFreshRegexWrites` (hints off).
    A fresh candidate is settled whether or not the value gate writes it.
 7. **Retention.** The admitted buffer front-trims at a fragment boundary above
@@ -75,9 +77,12 @@ Both clients perform this sequence once per admitted final:
 
 Sampling happens at the tap, on the same tick as the mutation, because
 `JobProvider.subscribeJobMutations` notifies synchronously. A rejected or
-pending edit never reaches the observer. Without an echoed `utterance_id` the
-cutoff does not advance across newer finals. A clear never blacklists a value:
-a later fragment may apply the same value.
+pending edit never reaches the observer. The `utterance_id` echo is decoded
+by `SonnetSession` on both the `extraction` envelope and the standalone
+`field_corrected` frame (`ExtractionResult.utterance_id`,
+`Stage6FieldCorrected.utterance_id`); without it the cutoff does not advance
+across newer finals. A clear never blacklists a value: a later fragment may
+apply the same value.
 
 ## Clarification obligation
 

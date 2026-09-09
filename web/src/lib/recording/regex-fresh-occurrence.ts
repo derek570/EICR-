@@ -576,8 +576,17 @@ export class OccurrenceFreshnessStore {
         if (overlaps && s.maxFinalSequence >= candidate.maxFinalSequence) return 'settled';
       }
     }
+    // Buffer cutoff (utterance-driven or manual): ANY contributing final at
+    // or below the cutoff makes the occurrence stale for this destination —
+    // a cross-final completion whose anchor arrived before the causative
+    // clear must not restore the cleared value just because its value
+    // fragment arrived after it (Codex diff-review cycle 1, BLOCKER 0's
+    // trigger: F1 "Circuit 3 R1 plus R2 is", the clear, then "nought point
+    // two" completing F1).
     const cutoff = this.bufferCutoffs.get(candidate.destination);
-    if (cutoff !== undefined && candidate.maxFinalSequence <= cutoff) return 'stale_buffer';
+    if (cutoff !== undefined && candidate.finals.some((f) => f.finalSequence <= cutoff)) {
+      return 'stale_buffer';
+    }
     // Manual stream cutoff on a contributing fragment's epoch: a final whose
     // confirmed onset precedes the tap is stale for that destination even
     // if a later fragment completed the reading.

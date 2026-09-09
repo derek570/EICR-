@@ -185,6 +185,21 @@ describe('OccurrenceFreshnessStore — evaluation order', () => {
         3
       )
     ).toBe('fresh');
+    // A cross-final completion with ANY constituent at or below the buffer
+    // cutoff is stale even though its max sequence is above it (the anchor
+    // arrived before the causative clear; the value fragment after it).
+    expect(
+      s.evaluate(
+        cand({
+          rawStart: 5,
+          rawEnd: 40,
+          maxFinalSequence: 3,
+          finals: [final(1), final(3)],
+          fragmentIds: ['frag_1', 'frag_3'],
+        }),
+        3
+      )
+    ).toBe('stale_buffer');
     // Manual stream cutoff on the fragment's epoch: onset below the tap → stale_stream.
     s.recordManualCutoff('circuit.row4.measured_zs_ohm', 'circuit 4 Zs', {
       epoch: E(1),
