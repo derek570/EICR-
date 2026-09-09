@@ -23,7 +23,7 @@ function ledger() {
 }
 
 describe('rendering', () => {
-  it('one, two, three named; four → those fields; duplicates collapse', () => {
+  it('[invariant] one, two, three named; four → those fields; duplicates collapse', () => {
     expect(renderHeldFragmentClarification(['circuit 4 Zs'])).toBe(
       'I heard something just as you cleared circuit 4 Zs. Say it again if it should apply.'
     );
@@ -37,26 +37,26 @@ describe('rendering', () => {
 });
 
 describe('token lifecycle', () => {
-  it('mint → merge (unfrozen) → freeze → await → successor at natural completion', () => {
+  it('[invariant] mint → merge (unfrozen) → freeze → await → successor at natural completion', () => {
     const { l, minted } = ledger();
     const r1 = l.request('S', 'S|1|1', ['circuit 4 Zs']);
     expect(r1.action).toBe('minted');
     expect(minted).toHaveLength(1);
     const r2 = l.request('S', 'S|1|2', ['Ze']);
     expect(r2.action).toBe('merged');
-    expect(r2.token.destinations).toEqual(['circuit 4 Zs', 'Ze']);
+    expect(r2.token!.destinations).toEqual(['circuit 4 Zs', 'Ze']);
     // Duplicate callback of the same final: one token.
     expect(l.request('S', 'S|1|2', ['Ze']).action).toBe('duplicate');
-    const text = l.freezeText(r1.token.id);
+    const text = l.freezeText(r1.token!.id);
     expect(text).toContain('circuit 4 Zs and Ze');
     // After the freeze a third held final AWAITS a successor with its own wording.
     const r3 = l.request('S', 'S|1|3', ['client name']);
     expect(r3.action).toBe('awaiting');
     expect(l.awaitingFinalCount).toBe(1);
-    expect(r1.token.frozenText).toBe(text); // unchanged by the later fragment
-    l.onPlaybackStarted(r1.token.id);
+    expect(r1.token!.frozenText).toBe(text); // unchanged by the later fragment
+    l.onPlaybackStarted(r1.token!.id);
     expect(l.isPlaying).toBe(true);
-    const successor = l.onNaturalCompletion(r1.token.id);
+    const successor = l.onNaturalCompletion(r1.token!.id);
     expect(successor).not.toBeNull();
     expect(successor!.destinations).toEqual(['client name']);
     expect(successor!.finalKeys).toEqual(['S|1|3']);
@@ -66,9 +66,9 @@ describe('token lifecycle', () => {
     expect(l.outstandingToken?.id).toBe(successor!.id);
   });
 
-  it('a non-natural terminal re-parks the same token (wording kept); teardown abandons', () => {
+  it('[invariant] a non-natural terminal re-parks the same token (wording kept); teardown abandons', () => {
     const { l } = ledger();
-    const t = l.request('S', 'S|1|1', ['Ze']).token;
+    const t = l.request('S', 'S|1|1', ['Ze']).token!;
     l.freezeText(t.id);
     l.onPlaybackStarted(t.id);
     const reparked = l.onNonNaturalTerminal(t.id);
@@ -84,16 +84,16 @@ describe('token lifecycle', () => {
     expect(l.request('S2', 'S|1|1', ['Ze']).action).toBe('minted');
   });
 
-  it('a token from an earlier session is abandoned when a new session requests', () => {
+  it('[invariant] a token from an earlier session is abandoned when a new session requests', () => {
     const { l } = ledger();
-    const old = l.request('S1', 'S1|1|1', ['Ze']).token;
+    const old = l.request('S1', 'S1|1|1', ['Ze']).token!;
     const fresh = l.request('S2', 'S2|1|1', ['PFC']);
     expect(fresh.action).toBe('minted');
-    expect(fresh.token.id).not.toBe(old.id);
+    expect(fresh.token!.id).not.toBe(old.id);
     expect(l.outstandingToken?.sessionId).toBe('S2');
   });
 
-  it('playback-started freezes the text if nothing else did; completion of a stale id is a no-op', () => {
+  it('[invariant] playback-started freezes the text if nothing else did; completion of a stale id is a no-op', () => {
     const { l } = ledger();
     const t = l.request('S', 'S|1|1', ['Ze']).token!;
     l.onPlaybackStarted(t.id);

@@ -120,7 +120,7 @@ const endOfTurn = (transcript: string, windowEnd = 2.0) => ({
 });
 
 describe('FinalWindowV1 meta on Flux finals', () => {
-  it('speech_start = dispatched offset at the onset frame, confirmed by StartOfTurn inside 2.5 s; window_end = origin + audio_window_end', () => {
+  it('[invariant] speech_start = dispatched offset at the onset frame, confirmed by StartOfTurn inside 2.5 s; window_end = origin + audio_window_end', () => {
     const h = harness();
     h.ws().open();
     // 3 frames (3840 samples) dispatched before the onset.
@@ -140,7 +140,7 @@ describe('FinalWindowV1 meta on Flux finals', () => {
     expect(meta.windowEnd).toBe(32000);
   });
 
-  it('a non-empty interim confirms; an empty interim, a silence transition, or a late StartOfTurn does not (unbounded)', () => {
+  it('[invariant] a non-empty interim confirms; an empty interim, a silence transition, or a late StartOfTurn does not (unbounded)', () => {
     const h = harness();
     h.ws().open();
     h.service.noteLocalSpeechOnset(h.nowMs());
@@ -219,7 +219,7 @@ describe('FinalWindowV1 meta on Flux finals', () => {
     expect(h.finals[4].meta!.speechStart).toBe(run3Onset);
   });
 
-  it('a malformed audio_window_end yields window_end null', () => {
+  it('[invariant] a malformed audio_window_end yields window_end null', () => {
     const h = harness();
     h.ws().open();
     h.ws().emit({
@@ -243,7 +243,7 @@ describe('FinalWindowV1 meta on Flux finals', () => {
 });
 
 describe('A02D admission — the service half', () => {
-  it('disconnect() invalidates admission SYNCHRONOUSLY, before the CloseStream grace; the late final still retires its watermark', () => {
+  it('[invariant] disconnect() invalidates admission SYNCHRONOUSLY, before the CloseStream grace; the late final still retires its watermark', () => {
     const h = harness();
     h.ws().open();
     for (let i = 0; i < 3; i++) h.service.sendSamples(voiced());
@@ -260,7 +260,7 @@ describe('A02D admission — the service half', () => {
     expect(h.ledger.isEpisodeOpen).toBe(false);
   });
 
-  it('a final from a superseded socket (old epoch) is inadmissible, yet advanceProcessedWatermark still retires ITS epoch', async () => {
+  it('[invariant] a final from a superseded socket (old epoch) is inadmissible, yet advanceProcessedWatermark still retires ITS epoch', async () => {
     vi.useFakeTimers();
     try {
       const h = harness('flux', { fetcher: true });
@@ -293,7 +293,7 @@ describe('A02D admission — the service half', () => {
 });
 
 describe('nova-3 uses first word start and last word end', () => {
-  it('word-timed final → speech_start and window_end from provider word times; no words → unbounded', () => {
+  it('[invariant] word-timed final → speech_start and window_end from provider word times; no words → unbounded', () => {
     const h = harness('nova3');
     h.ws().open();
     h.ws().emit({

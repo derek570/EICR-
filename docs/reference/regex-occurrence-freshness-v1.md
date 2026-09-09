@@ -138,7 +138,11 @@ unchanged materiality rules. No path re-sends ring audio to any socket.
 ## Fixture and pins
 
 - Canonical: `config/regex-freshness-vectors.json`.
-- Web pin: `web/tests/regex-freshness-fixture.test.ts` (SHA-256).
+- Web pin: `web/tests/regex-freshness-fixture.test.ts` (SHA-256), which also
+  runs every sequence through the pure helpers; `web/tests/harness/
+  a02d-regex-freshness-fixture-mounted.test.tsx` runs every sequence through
+  the mounted provider (real Deepgram frames and the real `SonnetSession`
+  decoder behind captive sockets) in both hint lanes.
 - iOS pin: byte copy under the iOS test fixtures.
 - Sync: `scripts/check-regex-freshness-fixture-sync.sh` fails closed on drift.
 - The clarification templates are also in `config/closed-enum-vectors.json`

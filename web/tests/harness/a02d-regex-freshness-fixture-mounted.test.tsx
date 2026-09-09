@@ -627,7 +627,7 @@ for (const { lane, env } of LANES) {
 
     for (const seq of fixture.freshness_sequences) {
       if (!seq.lanes.includes(lane)) continue;
-      it(`${seq.id}`, async () => {
+      it(`[invariant] ${seq.id}`, async () => {
         await runSequence(seq);
       });
     }

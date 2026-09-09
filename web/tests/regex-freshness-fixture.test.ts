@@ -424,24 +424,24 @@ function runSequence(seq: Sequence, lane: 'hints_on' | 'hints_off'): void {
 // ── tests ────────────────────────────────────────────────────────────────
 
 describe('config/regex-freshness-vectors.json — byte pin and source equality', () => {
-  it('pins the fixture bytes (update the iOS copy and this pin together)', () => {
+  it('[invariant] pins the fixture bytes (update the iOS copy and this pin together)', () => {
     const digest = createHash('sha256').update(bytes).digest('hex');
     expect(digest).toBe(REGEX_FRESHNESS_FIXTURE_SHA256);
     expect(fixture.version).toBe(1);
   });
 
-  it('field labels are byte-equal to DESTINATION_FIELD_LABELS', () => {
+  it('[invariant] field labels are byte-equal to DESTINATION_FIELD_LABELS', () => {
     expect(fixture.field_labels).toEqual(DESTINATION_FIELD_LABELS);
   });
 
-  it('clarification templates and constants match the web source', () => {
+  it('[invariant] clarification templates and constants match the web source', () => {
     expect(fixture.clarification_templates.named).toBe(HELD_FRAGMENT_CLARIFICATION_NAMED_TEMPLATE);
     expect(fixture.clarification_templates.many).toBe(HELD_FRAGMENT_CLARIFICATION_MANY_TEXT);
     expect(fixture.constants.onset_confirmation_window_ms).toBe(ONSET_CONFIRMATION_WINDOW_MS);
     expect(fixture.constants.clarification_max_named_destinations).toBe(3);
   });
 
-  it('renders every clarification vector exactly', () => {
+  it('[invariant] renders every clarification vector exactly', () => {
     for (const v of fixture.clarification_render_vectors) {
       expect(renderHeldFragmentClarification(v.destinations), v.destinations.join('|')).toBe(
         v.expected
@@ -498,7 +498,7 @@ describe('FinalWindowV1 — onset confirmation vectors', () => {
 describe('freshness sequences — real matcher + real apply layer, both lanes', () => {
   for (const seq of fixture.freshness_sequences) {
     for (const lane of seq.lanes) {
-      it(`${seq.id} [${lane}]`, () => {
+      it(`[invariant] ${seq.id} [${lane}]`, () => {
         runSequence(seq, lane);
       });
     }

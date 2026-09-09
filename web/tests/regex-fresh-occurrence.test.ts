@@ -63,7 +63,7 @@ function job(): JobDetail {
 }
 
 describe('AdmittedBuffer — positions are session-monotonic', () => {
-  it('append/reset/trim never reuse an absolute position', () => {
+  it('[invariant] append/reset/trim never reuse an absolute position', () => {
     const b = new AdmittedBuffer();
     const f1 = b.append('one', [final(1)], E(1));
     const f2 = b.append('two', [final(2)], E(1));
@@ -81,7 +81,7 @@ describe('AdmittedBuffer — positions are session-monotonic', () => {
     expect(b.fragmentsIn(headBefore, headBefore + 1).map((f) => f.id)).toEqual([f3.id]);
   });
 
-  it('front-trims at a fragment boundary once over the threshold and keeps the tail', () => {
+  it('[invariant] front-trims at a fragment boundary once over the threshold and keeps the tail', () => {
     const b = new AdmittedBuffer();
     const chunk = 'x'.repeat(100);
     let seq = 0;
@@ -98,23 +98,23 @@ describe('AdmittedBuffer — positions are session-monotonic', () => {
 });
 
 describe('source map — ambiguity and identity', () => {
-  it('anchored tokens map 1:1 with identity inside the token', () => {
+  it('[invariant] anchored tokens map 1:1 with identity inside the token', () => {
     const sm = buildSourceMap('Circuit 4 Zs is 0.35.', 'Circuit 4 Zs is 0.35.');
     const idx = sm.normalised.indexOf('0.35');
     const m = sm.mapSpan(idx, idx + 4);
     expect(m).toEqual({ rawStart: idx, rawEnd: idx + 4, ambiguous: false });
   });
-  it('a pure insertion (no raw tokens) is ambiguous', () => {
+  it('[invariant] a pure insertion (no raw tokens) is ambiguous', () => {
     const sm = buildSourceMap('Zs is', 'Zs is 0.35');
     const idx = sm.normalised.indexOf('0.35');
     expect(sm.mapSpan(idx, idx + 4).ambiguous).toBe(true);
   });
-  it('an empty or whitespace-only span is ambiguous', () => {
+  it('[invariant] an empty or whitespace-only span is ambiguous', () => {
     const sm = buildSourceMap('a b', 'a b');
     expect(sm.mapSpan(1, 2).ambiguous).toBe(true);
     expect(sm.mapSpan(2, 2).ambiguous).toBe(true);
   });
-  it('a changed run maps to the raw run between the same anchors', () => {
+  it('[invariant] a changed run maps to the raw run between the same anchors', () => {
     const raw = 'Zs is nought point three five ohms';
     const norm = 'Zs is 0.35 ohms';
     const sm = buildSourceMap(raw, norm);
@@ -137,7 +137,7 @@ describe('OccurrenceFreshnessStore — evaluation order', () => {
     ...over,
   });
 
-  it('ambiguous → unbounded → old overlap → settled → buffer cutoff → stream cutoff → fresh', () => {
+  it('[invariant] ambiguous → unbounded → old overlap → settled → buffer cutoff → stream cutoff → fresh', () => {
     const s = new OccurrenceFreshnessStore();
     expect(s.evaluate(cand({ ambiguous: true }), 1)).toBe('ambiguous');
     expect(s.evaluate(cand({ finals: [final(1, 1, null)] }), 1)).toBe('ineligible_unbounded');
@@ -233,7 +233,7 @@ describe('OccurrenceFreshnessStore — evaluation order', () => {
     ).toBe('fresh');
   });
 
-  it('an identity-less utterance boundary settles nothing new and never advances the cutoff', () => {
+  it('[invariant] an identity-less utterance boundary settles nothing new and never advances the cutoff', () => {
     const s = new OccurrenceFreshnessStore();
     s.recordUtteranceCutoff('supply.ze', null);
     expect(s.bufferCutoffFor('supply.ze')).toBeNull();
@@ -260,7 +260,7 @@ describe('OccurrenceFreshnessStore — evaluation order', () => {
     expect(s.heldFinalCount).toBe(2);
   });
 
-  it('a concatenated dispatch is held whole when ANY constituent is pre-cutoff', () => {
+  it('[invariant] a concatenated dispatch is held whole when ANY constituent is pre-cutoff', () => {
     const s = new OccurrenceFreshnessStore();
     s.recordManualCutoff('supply.ze', 'Ze', {
       epoch: E(1),
@@ -274,7 +274,7 @@ describe('OccurrenceFreshnessStore — evaluation order', () => {
 });
 
 describe('bounded retention across N reconnects', () => {
-  it('twenty reconnects with long finals: the buffer front-trims and the store evicts settled epochs', () => {
+  it('[invariant] twenty reconnects with long finals: the buffer front-trims and the store evicts settled epochs', () => {
     const j = job();
     const matcher = new TranscriptFieldMatcher();
     const buffer = new AdmittedBuffer();
@@ -326,7 +326,7 @@ describe('bounded retention across N reconnects', () => {
 });
 
 describe('destinations — labels, diffs, canonical keys, producer table', () => {
-  it('describeDestination speaks the stored ref as displayed and the board only on multi-board jobs', () => {
+  it('[invariant] describeDestination speaks the stored ref as displayed and the board only on multi-board jobs', () => {
     const j = job();
     expect(describeDestination('circuit.row4.measured_zs_ohm', j)).toBe('circuit 4 Zs');
     expect(describeDestination('supply.ze', j)).toBe('Ze');
@@ -353,7 +353,7 @@ describe('destinations — labels, diffs, canonical keys, producer table', () =>
     );
   });
 
-  it('diffRegexDestinations reports cleared and replaced regex destinations only, by stable row id', () => {
+  it('[invariant] diffRegexDestinations reports cleared and replaced regex destinations only, by stable row id', () => {
     const before = job();
     const after = {
       ...before,
@@ -372,7 +372,7 @@ describe('destinations — labels, diffs, canonical keys, producer table', () =>
     expect(readRegexDestinationValue(after, 'supply.ze')).toBeNull();
   });
 
-  it('canonicalDestinationKey translates matcher refs to row ids and rejects unknown refs/fields', () => {
+  it('[invariant] canonicalDestinationKey translates matcher refs to row ids and rejects unknown refs/fields', () => {
     const j = job();
     expect(canonicalDestinationKey('circuit.4.measured_zs_ohm', j)).toBe(
       'circuit.row4.measured_zs_ohm'

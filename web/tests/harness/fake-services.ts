@@ -102,16 +102,31 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   private nextTurnIndex = 1;
   private lastEndOfTurnFrame: Record<string, unknown> | null = null;
 
+  /** A02D — when true, `connect()` uses the real service's FETCHER mode
+   *  (auto-reconnect with backoff on an unowned close), and every captive
+   *  socket opens itself on the next microtask. */
+  readonly reconnectable: boolean;
+  /** Every captive socket ever created, oldest first (a superseded one
+   *  still answers `emitFrame` — that is the late-final case). */
+  readonly sockets: CaptiveWS[] = [];
+
   constructor(
     callbacks: DeepgramCallbacks,
     model: SttModel,
-    sessionContext?: DeepgramSessionContext
+    sessionContext?: DeepgramSessionContext,
+    opts: { reconnectable?: boolean } = {}
   ) {
     this.model = model;
+    this.reconnectable = opts.reconnectable ?? false;
     this.inner = new DeepgramService(
       callbacks,
       (url, protocols) => {
         this.ws = new CaptiveWS(url, protocols);
+        this.sockets.push(this.ws);
+        if (this.reconnectable) {
+          const ws = this.ws;
+          queueMicrotask(() => ws.open());
+        }
         return this.ws as unknown as WebSocket;
       },
       model,
@@ -151,10 +166,29 @@ export class FakeDeepgramService implements DeepgramServiceLike {
     _keyOrFetcher: string | (() => Promise<DeepgramStreamingKeyConfig>),
     sourceSampleRate: number
   ): void {
+    if (this.reconnectable) {
+      // Fetcher mode: the real service awaits the (fake) key fetch, opens
+      // the socket, and on a reconnectable close reopens it under a NEW
+      // epoch after its own backoff — the unowned-reconnect case.
+      this.inner.connect(async () => ({ key: 'harness-fetched-key' }), sourceSampleRate);
+      return;
+    }
     // Static-key mode constructs the socket synchronously (same recipe as
     // the flux unit tests); the production fetcher is ignored — no network.
     this.inner.connect('harness-static-key', sourceSampleRate);
     this.ws?.open();
+  }
+  /** A02D — the socket dies UNDER the client (code 1006, not a close the
+   *  client owns). In reconnectable mode the real service reconnects. */
+  emitUnownedClose(code = 1006): void {
+    if (!this.ws) throw new Error('FakeDeepgramService: connect() has not run');
+    this.ws.onclose?.({ code, wasClean: false, reason: 'harness: unowned close' });
+  }
+  /** A02D — emit a frame on a SUPERSEDED socket (index into `sockets`). */
+  emitFrameOnSocket(index: number, frame: Record<string, unknown>): void {
+    const ws = this.sockets[index];
+    if (!ws) throw new Error(`FakeDeepgramService: no socket #${index}`);
+    ws.emit(frame);
   }
   disconnect(): void {
     this.inner.disconnect();
@@ -579,11 +613,22 @@ export class FakeTtsPlayers {
   /** When true, prepared confirmation audio must be released via
    *  `releaseAll()` (models the ElevenLabs fetch window). */
   manual = false;
+  /** A02D — the NEXT started confirmation fails after `onStart` (the
+   *  player's terminal `onError`), then the flag clears. */
+  failNextPlayback = false;
+  readonly failed: string[] = [];
   private pendingPlays: Array<() => void> = [];
 
   confirmationPlayer = (text: string, controls: QueuePlayControls): void => {
     const prepared: PreparedAudio = {
       play: () => {
+        if (this.failNextPlayback) {
+          this.failNextPlayback = false;
+          this.failed.push(text);
+          controls.onStart();
+          controls.onError(new Error('harness: playback failed'));
+          return;
+        }
         this.played.push({ kind: 'confirmation', text });
         controls.onStart();
         // Synchronous end — the queue advances immediately.
@@ -643,12 +688,16 @@ export interface HarnessBundle<S extends FakeSonnetSession | RealDecoderSonnetSe
  */
 export function buildHarnessServices(opts: {
   sonnet: 'real-decoder';
+  deepgram?: 'static' | 'reconnectable';
 }): HarnessBundle<RealDecoderSonnetSession>;
 // Declared LAST so `ReturnType<typeof buildHarnessServices>` (runner.tsx)
 // resolves to the fake-session bundle the existing harness code expects.
-export function buildHarnessServices(opts?: { sonnet?: 'fake' }): HarnessBundle<FakeSonnetSession>;
+export function buildHarnessServices(opts?: {
+  sonnet?: 'fake';
+  deepgram?: 'static' | 'reconnectable';
+}): HarnessBundle<FakeSonnetSession>;
 export function buildHarnessServices(
-  opts: { sonnet?: 'fake' | 'real-decoder' } = {}
+  opts: { sonnet?: 'fake' | 'real-decoder'; deepgram?: 'static' | 'reconnectable' } = {}
 ): HarnessBundle<FakeSonnetSession | RealDecoderSonnetSession> {
   const refs: {
     deepgram: FakeDeepgramService | null;
@@ -665,7 +714,9 @@ export function buildHarnessServices(
   const services: RecordingTestServices = {
     deepgramServiceFactory: (callbacks, model, sessionContext) => {
       counts.deepgramConstructed += 1;
-      refs.deepgram = new FakeDeepgramService(callbacks, model, sessionContext);
+      refs.deepgram = new FakeDeepgramService(callbacks, model, sessionContext, {
+        reconnectable: opts.deepgram === 'reconnectable',
+      });
       return refs.deepgram;
     },
     sonnetSessionFactory: (callbacks) => {

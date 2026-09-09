@@ -23,7 +23,7 @@ import { JobProvider, useJobContext } from '@/lib/job-context';
 import { RecordingProvider, useRecording } from '@/lib/recording-context';
 import { __setRecordingTestServices } from '@/lib/recording/test-services';
 import { setDiagnosticTap } from '@/lib/recording/client-diagnostic';
-import { __resetForTests as resetTtsQueue } from '@/lib/recording/tts-queue';
+import { __resetForTests as resetTtsQueue, MAX_QUEUE_DEPTH } from '@/lib/recording/tts-queue';
 import {
   __heldFragmentClarificationStateForTests,
   __resetHeldFragmentClarificationForTests,
@@ -34,7 +34,7 @@ import {
   setConfirmationModeEnabled,
   UPLINK_LOSS_DISCLOSURE_TEXT,
 } from '@/lib/recording/tts';
-import { buildHarnessServices } from './fake-services';
+import { buildHarnessServices, type FakeDeepgramService } from './fake-services';
 import type { JobDetail } from '@/lib/types';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -77,6 +77,19 @@ function makeJob(): JobDetail {
     supply_characteristics: {},
     board_info: {},
     installation_details: {},
+  } as unknown as JobDetail;
+}
+
+/** Single-board job with the inputs a local Calculate needs (Ze + R1+R2). */
+function makeCalcJob(): JobDetail {
+  const base = makeJob() as unknown as Record<string, unknown>;
+  return {
+    ...base,
+    supply_characteristics: { ze: '0.35' },
+    circuits: [
+      { id: 'c1', circuit_ref: '1', circuit_designation: 'Downstairs lights' },
+      { id: 'c4', circuit_ref: '4', circuit_designation: 'Cooker', r1_r2_ohm: '0.20' },
+    ],
   } as unknown as JobDetail;
 }
 
@@ -147,8 +160,11 @@ for (const lane of LANES) {
       onSamples = null;
     });
 
-    async function mount(initial: JobDetail = makeJob()) {
-      const harness = buildHarnessServices({ sonnet: 'real-decoder' });
+    async function mount(
+      initial: JobDetail = makeJob(),
+      opts: { deepgram?: 'static' | 'reconnectable' } = {}
+    ) {
+      const harness = buildHarnessServices({ sonnet: 'real-decoder', deepgram: opts.deepgram });
       const writes: Array<{ source: string; changedKeys: string[] }> = [];
       const baseObserver = harness.services.jobStateObserver;
       harness.services.jobStateObserver = (change) => {
@@ -178,6 +194,13 @@ for (const lane of LANES) {
       await act(async () => {
         await apiRef.current!.start();
       });
+      if (opts.deepgram === 'reconnectable') {
+        // Fetcher mode opens the captive socket on a microtask.
+        await act(async () => {
+          for (let i = 0; i < 4; i++) await Promise.resolve();
+        });
+        expect(harness.refs.deepgram!.connectionState).toBe('connected');
+      }
       expect(apiRef.current!.state).toBe('active');
       const dg = () => harness.refs.deepgram!;
       const sonnet = () => harness.refs.sonnet!;
@@ -258,7 +281,7 @@ for (const lane of LANES) {
       });
     }
 
-    it('ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert', async () => {
+    it('[invariant] ordinary fresh final prefills (hints ON) / passes the gate (hints OFF) and is sent once; a later unrelated final is inert', async () => {
       const m = await mount();
       await dictate(m.dg(), 'Circuit 4 Zs is nought point three five.');
       expect(m.sonnet().sentTranscripts).toHaveLength(1);
@@ -291,7 +314,7 @@ for (const lane of LANES) {
       expect(m.clarifications()).toHaveLength(0);
     });
 
-    it('manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once', async () => {
+    it('[invariant] manual clear then a delayed same-socket final (onset before the tap) is HELD: zero sends, zero writes, no chime, one clarification; the repeat applies and speaks once', async () => {
       const m = await mount();
       const dg = m.dg();
       await dictate(dg, 'Circuit 4 Zs is nought point three five.');
@@ -333,7 +356,7 @@ for (const lane of LANES) {
       expect(m.clarifications()).toHaveLength(1);
     });
 
-    it('manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh', async () => {
+    it('[invariant] manual clear then a fresh reading whose onset follows the tap is forwarded with no clarification; equality is fresh', async () => {
       const m = await mount();
       const dg = m.dg();
       await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
@@ -349,7 +372,7 @@ for (const lane of LANES) {
       expect(m.clarifications()).toHaveLength(0);
     });
 
-    it('hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending', async () => {
+    it('[invariant] hold ordering: a pre-cutoff LOCAL apply command runs nothing — zero writes, zero sends, no chime, one clarification; the pending ask stays pending', async () => {
       const m = await mount();
       const dg = m.dg();
       await act(async () => {
@@ -404,7 +427,7 @@ for (const lane of LANES) {
       expect(m.clarifications()).toHaveLength(1);
     });
 
-    it('an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds', async () => {
+    it('[invariant] an unrelated reading in the race window is held WHOLE naming the cleared destination; an utterance-driven server clear never holds', async () => {
       const m = await mount();
       const dg = m.dg();
       await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
@@ -453,7 +476,7 @@ for (const lane of LANES) {
       expect(m.clarifications()).toHaveLength(1);
     });
 
-    it('a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once', async () => {
+    it('[invariant] a server replacement never lets the overlap restore the old value; a fresh identical re-dictation after a clear applies once', async () => {
       const m = await mount();
       const dg = m.dg();
       await dictate(dg, 'Circuit 4 Zs is nought point three five.');
@@ -726,7 +749,7 @@ for (const lane of LANES) {
       expect(m.clarifications()).toHaveLength(1);
     });
 
-    it('unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies', async () => {
+    it('[invariant] unbounded final: forwarded (no write) with no cutoff; held with one clarification once a manual cutoff applies', async () => {
       const m = await mount();
       const dg = m.dg();
       dg.autoConfirmOnset = false;
@@ -748,7 +771,7 @@ for (const lane of LANES) {
       expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
     });
 
-    it('burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)', async () => {
+    it('[invariant] burst/naming buffers: a manual clear during the 3 s naming hold holds the released concatenation whole (zero sends, zero writes, one clarification)', async () => {
       const m = await mount();
       const dg = m.dg();
       await manualSet(m.jobRef.current!, '2', 'measured_zs_ohm', '0.9');
@@ -777,7 +800,7 @@ for (const lane of LANES) {
       expect(m.clarifications()[0].text).toContain('circuit 2 Zs');
     });
 
-    it('text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor', async () => {
+    it('[invariant] text freeze: two held finals while the token is parked behind local speech merge into ONE line; a third after the freeze gets a successor', async () => {
       const m = await mount();
       const dg = m.dg();
       await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
@@ -922,7 +945,412 @@ for (const lane of LANES) {
       expect(__heldFragmentClarificationStateForTests().held).toBe(2);
     });
 
-    it('old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications', async () => {
+    /** Settle queued TTS and the post-playback sender gate. */
+    async function settleTts(dg: FakeDeepgramService) {
+      for (let i = 0; i < 5; i++) {
+        await act(async () => {
+          vi.advanceTimersByTime(600);
+          await Promise.resolve();
+        });
+        if (dg.dispatchedStreamOffset > 0) break;
+      }
+      __resetTtsWindowForTests();
+    }
+
+    it('[invariant] hold ordering — a pre-cutoff LOCAL Calculate runs nothing (no mutation, no read-back, no send); the post-tap repeat computes and speaks exactly once', async () => {
+      const m = await mount(makeCalcJob());
+      const dg = m.dg();
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.9');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      const localBefore = m.harness.jobChanges.filter((c) => c.source === 'local_command').length;
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('calculate Zs for circuit 4');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_held')).toHaveLength(1);
+      expect(m.harness.jobChanges.filter((c) => c.source === 'local_command')).toHaveLength(
+        localBefore
+      );
+      expect(zsOf(m.jobRef.current!, '4')).toBe('');
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
+      expect(m.harness.tts.played.filter((p) => /0\.55/.test(p.text))).toHaveLength(0);
+      expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
+      // Post-tap repeat: the local calculator runs (Ze 0.35 + R1+R2 0.20).
+      await act(async () => {
+        dg.advanceDispatchedStream(2);
+      });
+      await dictate(dg, 'calculate Zs for circuit 4');
+      expect(m.harness.jobChanges.filter((c) => c.source === 'local_command')).toHaveLength(
+        localBefore + 1
+      );
+      expect(zsOf(m.jobRef.current!, '4')).toBe('0.55');
+      expect(m.harness.tts.played.filter((p) => /0\.55/.test(p.text))).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
+      expect(m.clarifications()).toHaveLength(1);
+    });
+
+    it('[invariant] hold ordering — a pre-cutoff board-switch phrase is held (nothing forwarded, no board change); the post-tap repeat is forwarded as an ordinary transcript', async () => {
+      const m = await mount(makeTwoBoardJob());
+      const dg = m.dg();
+      await manualEditRow(m.jobRef.current!, 'c4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualEditRow(m.jobRef.current!, 'c4', 'measured_zs_ohm', '');
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Switch to the garage board.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_held')).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
+      expect(m.harness.chimes.count).toBe(0);
+      expect(m.diag('current_board_changed_received')).toHaveLength(0);
+      expect(m.clarifications()).toHaveLength(1);
+      await act(async () => {
+        dg.advanceDispatchedStream(2);
+      });
+      await dictate(dg, 'Switch to the garage board.');
+      expect(m.diag('a02d_final_held')).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts[0].text.toLowerCase()).toContain('garage');
+    });
+
+    it('[invariant] hold ordering — a pre-cutoff answer to a LEGACY server question is held and consumes nothing (the question stays armed); the post-tap repeat answers it with the in-response-to context', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      await act(async () => {
+        m.sonnet().emitQuestion({
+          question: 'Is that a code two?',
+          question_type: 'clarification',
+        });
+        vi.advanceTimersByTime(50);
+        await Promise.resolve();
+      });
+      await settleTts(dg);
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Yes.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_held')).toHaveLength(1);
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
+      expect(m.clarifications()).toHaveLength(1);
+      await act(async () => {
+        dg.advanceDispatchedStream(2);
+      });
+      await dictate(dg, 'Yes.');
+      expect(m.sonnet().sentTranscripts).toHaveLength(1);
+      const options = m.sonnet().sentTranscripts[0].options as {
+        inResponseTo?: { question: string };
+      };
+      expect(options.inResponseTo?.question).toBe('Is that a code two?');
+    });
+
+    it('[invariant] 500 ms burst release: a tap between two finals of one burst holds the released dispatch WHOLE (two constituents), naming only the cleared destination', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(4);
+      });
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(200); // inside the 500 ms burst window
+      });
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
+      await manualClear(m.jobRef.current!, '4');
+      dg.autoConfirmOnset = false; // same run: no new onset
+      await act(async () => {
+        dg.emitEndOfTurn('and circuit 3 R1 plus R2 is nought point two.');
+        vi.advanceTimersByTime(700);
+      });
+      const held = m.diag('a02d_final_held');
+      expect(held).toHaveLength(1);
+      expect(held[0].payload.constituents).toBe(2);
+      expect(m.sonnet().sentTranscripts).toHaveLength(0);
+      expect(m.regexWrites()).toHaveLength(0);
+      expect(r1r2Of(m.jobRef.current!, '3')).toBeUndefined();
+      expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
+    });
+
+    it('[invariant] FIFO overflow pressure never evicts the prepared clarification (protected): it plays exactly once after the pressure', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      m.harness.tts.manual = true;
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(__heldFragmentClarificationStateForTests().outstanding).not.toBeNull();
+      // Overflow pressure while the clarification is prepared but deferred.
+      for (let n = 0; n < MAX_QUEUE_DEPTH + 3; n++) {
+        await act(async () => {
+          m.sonnet().emitRaw({
+            type: 'extraction',
+            result: {
+              readings: [{ circuit: 2, field: 'measured_zs_ohm', value: `0.4${n}` }],
+              confirmations: [{ field: 'measured_zs_ohm', circuit: 2, text: `Confirmation ${n}` }],
+            },
+          });
+        });
+      }
+      expect(m.diag('tts_queue_overflow').length).toBeGreaterThan(0);
+      for (let i = 0; i < MAX_QUEUE_DEPTH + 6; i++) {
+        await act(async () => {
+          m.harness.tts.releaseAll();
+          vi.advanceTimersByTime(100);
+          await Promise.resolve();
+        });
+      }
+      expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
+      expect(__heldFragmentClarificationStateForTests().spoken).toBe(1);
+      expect(__heldFragmentClarificationStateForTests().outstanding).toBeNull();
+    });
+
+    it('[invariant] TTS unavailable at delivery: the token is parked and retried after 2 s, then plays exactly once', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      const player = m.harness.services.ttsConfirmationPlayer;
+      m.harness.services.ttsConfirmationPlayer = undefined; // no engine at all
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_clarification_unavailable')).toHaveLength(1);
+      expect(m.clarifications()).toHaveLength(0);
+      expect(__heldFragmentClarificationStateForTests().outstanding?.state).toBe('pending');
+      m.harness.services.ttsConfirmationPlayer = player;
+      await act(async () => {
+        vi.advanceTimersByTime(2100);
+        await Promise.resolve();
+      });
+      expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
+      expect(__heldFragmentClarificationStateForTests().spoken).toBe(1);
+    });
+
+    it('[invariant] playback failure re-parks the same token (wording kept) and replays it after 1.5 s: exactly one completed line', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      m.harness.tts.failNextPlayback = true;
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.harness.tts.failed).toEqual([CLARIFY_ONE]);
+      expect(m.diag('a02d_clarification_reparked')).toHaveLength(1);
+      expect(m.clarifications()).toHaveLength(0);
+      expect(__heldFragmentClarificationStateForTests().spoken).toBe(0);
+      await act(async () => {
+        vi.advanceTimersByTime(1600);
+        await Promise.resolve();
+      });
+      expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE]);
+      expect(__heldFragmentClarificationStateForTests().spoken).toBe(1);
+      expect(__heldFragmentClarificationStateForTests().held).toBe(1);
+    });
+
+    it('[invariant] prepared-but-deferred text freeze: a second held final after the wording is frozen (enqueued, not yet played) awaits a SUCCESSOR with its own wording', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await manualSet(m.jobRef.current!, '3', 'r1_r2_ohm', '0.2');
+      // An accepted final after the seeds: their replacement cutoffs no
+      // longer apply, so the first hold names circuit 4 alone.
+      await dictate(dg, 'Nothing to report yet.');
+      m.harness.tts.manual = true;
+      await act(async () => {
+        dg.advanceDispatchedStream(1);
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(700);
+      });
+      // Enqueued → wording frozen; the manual player has not played it.
+      const first = __heldFragmentClarificationStateForTests().outstanding;
+      expect(first?.frozenText).toBe(CLARIFY_ONE);
+      expect(m.clarifications()).toHaveLength(0);
+      await manualClear(m.jobRef.current!, '3', 'r1_r2_ohm');
+      dg.autoConfirmOnset = false;
+      await act(async () => {
+        dg.emitEndOfTurn('Circuit 3 R1 plus R2 is nought point two.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_clarification_awaiting')).toHaveLength(1);
+      expect(__heldFragmentClarificationStateForTests().outstanding?.frozenText).toBe(CLARIFY_ONE);
+      for (let i = 0; i < 4; i++) {
+        await act(async () => {
+          m.harness.tts.releaseAll();
+          vi.advanceTimersByTime(100);
+          await Promise.resolve();
+        });
+      }
+      expect(m.clarifications().map((p) => p.text)).toEqual([CLARIFY_ONE, CLARIFY_TWO]);
+      expect(__heldFragmentClarificationStateForTests().spoken).toBe(2);
+    });
+
+    it('[invariant] UNOWNED reconnect: the socket dies under the client and reopens under a new epoch — a late old-socket final is dropped, ZERO audio is re-sent, epoch-1 cutoffs do not apply to epoch 2, settlement survives, and a fresh reading applies', async () => {
+      const m = await mount(makeJob(), { deepgram: 'reconnectable' });
+      const dg = m.dg();
+      await dictate(dg, 'Circuit 4 Zs is nought point three five.');
+      const epoch1 = dg.liveEpoch;
+      if (lane.env !== '1') await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.advanceDispatchedStream(4);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      // The socket dies under the client (not a close the client owns).
+      await act(async () => {
+        dg.emitUnownedClose();
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(1500); // past the first backoff
+        for (let i = 0; i < 6; i++) await Promise.resolve();
+      });
+      expect(dg.connectionState).toBe('connected');
+      expect(dg.sockets).toHaveLength(2);
+      expect(dg.liveEpoch).not.toBe(epoch1);
+      expect(dg.sentTaggedAudioBlocks).toBe(0); // replay retired: nothing re-sent
+      // A late final from the DEAD socket (epoch 1): dropped at admission.
+      const windowsBefore = m.diag('a02d_final_window').length;
+      await act(async () => {
+        dg.emitFrameOnSocket(0, {
+          type: 'TurnInfo',
+          event: 'EndOfTurn',
+          transcript: 'Circuit 4 Zs is nought point three five.',
+          end_of_turn_confidence: 0.9,
+          audio_window_end: 9.0,
+          turn_index: 99,
+          words: [],
+        });
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_window')).toHaveLength(windowsBefore);
+      expect(m.diag('a02d_final_dropped_at_admission')).toHaveLength(1);
+      expect(m.diag('a02d_final_held')).toHaveLength(0);
+      expect(m.sonnet().sentTranscripts).toHaveLength(1);
+      // A fresh reading on epoch 2: the epoch-1 manual cutoff does not
+      // apply (its epoch is not this one), the settled epoch-1 occurrence
+      // does not rewrite, and the new dictation applies once.
+      await dictate(dg, 'Circuit 4 Zs is nought point four.');
+      expect(m.diag('a02d_final_held')).toHaveLength(0);
+      expect(m.sonnet().sentTranscripts).toHaveLength(2);
+      if (lane.env === '1') expect(zsOf(m.jobRef.current!, '4')).toBe('0.4');
+      const last = m.diag('a02d_occurrence_decisions').slice(-1)[0].payload;
+      expect(last.fresh).toEqual(['circuit.c4.measured_zs_ohm']);
+      expect(m.clarifications()).toHaveLength(0);
+      expect(
+        m.harness.tts.played.filter((p) => p.text === UPLINK_LOSS_DISCLOSURE_TEXT)
+      ).toHaveLength(0);
+    });
+
+    it('[invariant] rapid stop/start on the SAME job: a pre-stop cutoff never holds a post-start final, the old session’s late final is dropped, and the new session writes afresh', async () => {
+      const m = await mount();
+      const oldDg = m.dg();
+      await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        oldDg.noteLocalSpeechOnset();
+        oldDg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      await act(async () => {
+        m.apiRef.current!.stop();
+      });
+      await act(async () => {
+        await m.apiRef.current!.start();
+      });
+      const dg = m.dg();
+      expect(dg).not.toBe(oldDg);
+      // The old session's in-flight final (its onset preceded the tap).
+      await act(async () => {
+        oldDg.emitEndOfTurn('Circuit 4 Zs is nought point three five.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_dropped_at_admission')).toHaveLength(1);
+      expect(m.diag('a02d_final_held')).toHaveLength(0);
+      expect(m.clarifications()).toHaveLength(0);
+      // The new session: no cutoff carried over; the first reading writes.
+      await dictate(dg, 'Circuit 4 Zs is nought point three five.');
+      expect(m.diag('a02d_final_held')).toHaveLength(0);
+      if (lane.env === '1') expect(zsOf(m.jobRef.current!, '4')).toBe('0.35');
+      const last = m.diag('a02d_occurrence_decisions').slice(-1)[0].payload;
+      expect(last.fresh).toEqual(['circuit.c4.measured_zs_ohm']);
+    });
+
+    it('[invariant] a DIFFERENT job mid-session resets everything: a pre-switch cutoff never holds, the previous job’s overlap never writes into the new job', async () => {
+      const m = await mount();
+      const dg = m.dg();
+      await dictate(dg, 'Circuit 4 Zs is nought point three five.');
+      if (lane.env !== '1') await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
+      await act(async () => {
+        dg.noteLocalSpeechOnset();
+        dg.advanceDispatchedStream(10);
+      });
+      await manualClear(m.jobRef.current!, '4');
+      const other = { ...makeJob(), id: 'job_other', job_id: 'job_other' } as JobDetail;
+      await act(async () => {
+        m.jobRef.current!.setJob(other);
+      });
+      expect(
+        m
+          .diag('conversation_admission_matcher_reset')
+          .some((d) => d.payload.boundary === 'job_change')
+      ).toBe(true);
+      // Unrelated speech after the switch: the old overlap is gone — nothing
+      // is rescanned into the new job, and the old cutoff does not hold.
+      dg.autoConfirmOnset = false;
+      await act(async () => {
+        dg.emitEndOfTurn('Nothing to report in the hallway.');
+        vi.advanceTimersByTime(700);
+      });
+      expect(m.diag('a02d_final_held')).toHaveLength(0);
+      expect(m.clarifications()).toHaveLength(0);
+      expect(zsOf(m.jobRef.current!, '4')).toBeUndefined();
+      const decisions = m.diag('a02d_occurrence_decisions').slice(-1)[0].payload
+        .decisions as Record<string, number>;
+      expect(decisions.fresh ?? 0).toBe(0);
+    });
+
+    it('[invariant] old-service finals are dropped at the admission boundary after pause (inside the 300 ms close grace) and after stop (session replacement): zero sends, zero holds, zero clarifications', async () => {
       const m = await mount();
       const oldDg = m.dg();
       await dictate(oldDg, 'Circuit 4 Zs is nought point three five.');
@@ -965,7 +1393,7 @@ for (const lane of LANES) {
       expect(m.clarifications()).toHaveLength(0);
     });
 
-    it('session stop abandons a pending clarification token — nothing is spoken into the next session', async () => {
+    it('[invariant] session stop abandons a pending clarification token — nothing is spoken into the next session', async () => {
       const m = await mount();
       const dg = m.dg();
       m.harness.tts.manual = true;
@@ -997,7 +1425,7 @@ for (const lane of LANES) {
       expect(__heldFragmentClarificationStateForTests().spoken).toBe(0);
     });
 
-    it('an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state', async () => {
+    it('[invariant] an A02B bypass boundary (a question) is forwarded directly and resets only matcher text; cutoffs are provider state, not matcher state', async () => {
       const m = await mount();
       const dg = m.dg();
       await manualSet(m.jobRef.current!, '4', 'measured_zs_ohm', '0.35');
@@ -1014,7 +1442,7 @@ for (const lane of LANES) {
       expect(m.regexWrites()).toHaveLength(0);
     });
 
-    it('replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once', async () => {
+    it('[invariant] replay retired: automatic full sleep → resume re-sends ZERO audio, charges the ring as E2 staged loss, the E2 disclosure speaks once, the cleared field stays empty, and a fresh identical dictation applies once', async () => {
       window.localStorage.setItem('autoSleepEnabled', 'true');
       const m = await mount();
       const dg = m.dg();

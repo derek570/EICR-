@@ -52,7 +52,7 @@ describe('family (3) — unexpected-reconnect ring drain REMOVED; sleep drains u
     expect(body).not.toContain('sendInt16PCM');
   });
 
-  it('A02D — the sleep/doze drains are RETIRED: the ring is charged as E2 staged loss, nothing is re-sent', () => {
+  it('[invariant] A02D — the sleep/doze drains are RETIRED: the ring is charged as E2 staged loss, nothing is re-sent', () => {
     // A02D (2026-09-09) removed the automatic full-sleep and doze drains
     // that PLAN-E2 had left in place (`handleWake`'s two branches and
     // `resume()`'s full-sleep branch). The ring's contents are charged
