@@ -172,6 +172,53 @@ describe('FinalWindowV1 meta on Flux finals', () => {
     expect(h.finals[2].meta!.windowEnd).toBe(80000);
   });
 
+  it('[invariant] a confirmed run followed by silence and then an UNCONFIRMED run: the second run’s final is unbounded (it never inherits the first run’s onset); a confirmed run still serves its own later turns', () => {
+    const h = harness();
+    h.ws().open();
+    // Run 1: onset at 1280, confirmed by StartOfTurn, final emitted, silence.
+    h.service.sendSamples(voiced());
+    h.service.noteLocalSpeechOnset(h.nowMs());
+    h.service.sendSamples(voiced());
+    h.tick(180);
+    h.ws().emit({ type: 'TurnInfo', event: 'StartOfTurn' });
+    h.tick(1500);
+    // Flux may close a second turn inside the SAME run — still served.
+    h.ws().emit(endOfTurn('Circuit 4 Zs is 0.35.', 2.0));
+    h.tick(100);
+    h.ws().emit({ type: 'TurnInfo', event: 'StartOfTurn' });
+    h.tick(1000);
+    h.ws().emit(endOfTurn('and circuit 3 R1 plus R2 0.2.', 3.0));
+    expect(h.finals.map((f) => f.meta!.speechStart)).toEqual([1280, 1280]);
+    // The VAD's debounced silence lands AFTER the run's own EndOfTurn in the
+    // field; a final that follows the silence but precedes any new onset is
+    // still run 1's (its confirmation survives the transition).
+    h.service.noteLocalSilence();
+    h.tick(300);
+    h.ws().emit(endOfTurn('tail of run one', 3.5));
+    expect(h.finals[2].meta!.speechStart).toBe(1280);
+    // Run 2: a new onset with NO provider evidence inside 2.5 s (noise).
+    for (let i = 0; i < 10; i++) h.service.sendSamples(voiced());
+    h.service.noteLocalSpeechOnset(h.nowMs());
+    h.tick(3000);
+    h.ws().emit(endOfTurn('noise that Deepgram closed late', 6.0));
+    expect(h.finals[3].meta!.speechStart).toBeNull();
+    // Run 3 confirms normally and carries ITS OWN offset.
+    h.service.noteLocalSilence();
+    h.service.sendSamples(voiced());
+    const run3Onset = h.service.dispatchedStreamOffset;
+    h.service.noteLocalSpeechOnset(h.nowMs());
+    h.service.sendSamples(voiced());
+    h.tick(200);
+    h.ws().emit({
+      type: 'TurnInfo',
+      event: 'Update',
+      transcript: 'circuit',
+      end_of_turn_confidence: 0.1,
+    });
+    h.ws().emit(endOfTurn('Circuit 2 Zs is 0.4.', 8.0));
+    expect(h.finals[4].meta!.speechStart).toBe(run3Onset);
+  });
+
   it('a malformed audio_window_end yields window_end null', () => {
     const h = harness();
     h.ws().open();

@@ -32,7 +32,11 @@ Both clients perform this sequence once per admitted final:
    window_end}`. `speech_start` is the session VAD's onset, recorded at the
    onset frame's send as the epoch's `dispatchedSampleOffset`, and it counts
    only when Deepgram emits a StartOfTurn or a non-empty interim within 2.5 s
-   of the onset and before the run's silence transition. `window_end` is the
+   of the onset and before the run's silence transition. The confirmation
+   belongs to its own VAD run: it serves every provider turn of that run,
+   including a final that lands after the run's debounced silence, and it is
+   superseded when the next onset begins, so a later run whose onset never
+   confirms emits `unbounded` finals. `window_end` is the
    EndOfTurn `audio_window_end` converted through `audioWindowEndToSampleOffset`
    plus the epoch's dispatch origin. A final with no confirmed onset or a
    malformed window is `unbounded`. Nova-3 uses the first word start and the

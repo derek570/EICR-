@@ -73,19 +73,29 @@ export interface FinalTranscriptMeta {
  * Confirmation rule (plan § FinalWindowV1): an onset is CONFIRMED iff
  * provider speech evidence arrives at most `ONSET_CONFIRMATION_WINDOW_MS`
  * after the onset AND before the run's silence transition. A confirmed
- * onset stays the current `speech_start` until a later onset is
- * confirmed (a confirmed run serves every turn it precedes); an
- * unconfirmed onset is discarded at its deadline or silence and never
- * rebases anything.
+ * onset serves every provider turn of ITS OWN VAD run (Flux can close
+ * several turns inside one continuous run); an unconfirmed onset is
+ * discarded at its deadline or silence and never rebases anything.
+ *
+ * Run boundary (Codex diff-review cycle 1, BLOCKER 1): the confirmation
+ * belongs to one run. It survives the run's silence transition — the
+ * run's own EndOfTurn arrives AFTER the VAD's debounced silence, so
+ * clearing at silence would make every ordinary final unbounded — and is
+ * superseded the moment the NEXT onset begins. A later run whose onset
+ * never confirms therefore emits `unbounded` finals (forwarded, never
+ * client-prefilled), instead of inheriting the previous run's offset and
+ * becoming falsely regex-eligible.
  */
 export class SpeechOnsetTracker {
   private pending: { dispatchedOffset: number; atMs: number } | null = null;
   private confirmed: number | null = null;
 
   /** The session VAD's debounced onset, with the epoch's dispatched offset
-   *  at the onset frame's send. */
+   *  at the onset frame's send. A new run supersedes the previous run's
+   *  confirmation: until THIS onset confirms there is no `speech_start`. */
   onOnset(dispatchedOffset: number, atMs: number): void {
     this.pending = { dispatchedOffset, atMs };
+    this.confirmed = null;
   }
 
   /** The session VAD's debounced silence transition: an unconfirmed onset
