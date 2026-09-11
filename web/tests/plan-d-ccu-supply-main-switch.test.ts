@@ -123,9 +123,11 @@ describe('PLAN-D — CCU photo fills the Supply main-switch box (web)', () => {
     expect(supplyOf(patch)).toBeUndefined();
   });
 
-  it('ignores id-less rows when counting usable boards', () => {
-    // "Usable" matches the canonical-main rule's own filter. A job carrying one
-    // real board plus an unaddressable id-less row is still a single-board job.
+  it('counts an id-less row as a second board and fails closed', () => {
+    // iOS's `JobViewModel.load` mints a UUID for every id-less row, so such a
+    // row IS a second board there once the job is hydrated. Counting raw rows
+    // keeps the two clients identical instead of promoting on web and refusing
+    // on iOS.
     const job = makeJob([
       { id: 'board-main', designation: 'DB1', board_type: 'main' },
       { id: '', designation: 'ghost' } as { id: string; designation: string },
@@ -135,7 +137,46 @@ describe('PLAN-D — CCU photo fills the Supply main-switch box (web)', () => {
       targetBoardId: 'board-main',
     });
 
+    expect(supplyOf(patch)).toBeUndefined();
+  });
+
+  it('treats an empty board_type as absent, so a legacy single board still fills', () => {
+    // Backend and web read `""` as falsy/absent. iOS used to decode it as a
+    // present-but-unknown type and refuse the row, leaving Section J blank on
+    // one client only.
+    const job = makeJob([{ id: 'board-main', designation: 'DB1', board_type: '' }]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+      targetBoardId: 'board-main',
+    });
+
     expect(supplyOf(patch)?.main_switch_current).toBe('100');
+  });
+
+  it('treats a whitespace-only existing rating as empty and fills it', () => {
+    // `hasValue` trims. iOS's untrimmed `isEmpty` used to let a blank-looking
+    // value block the write there while web filled it.
+    const job = makeJob([{ id: 'board-main', designation: 'DB1', board_type: 'main' }], {
+      main_switch_current: '   ',
+    });
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+      targetBoardId: 'board-main',
+    });
+
+    expect(supplyOf(patch)?.main_switch_current).toBe('100');
+  });
+
+  it('rejects a whitespace-only observed rating', () => {
+    const job = makeJob([{ id: 'board-main', designation: 'DB1', board_type: 'main' }]);
+
+    const { patch } = applyCcuAnalysisToJob(
+      job,
+      makeAnalysis({ main_switch_current: '   ', main_switch_rating: null }),
+      { targetBoardId: 'board-main' }
+    );
+
+    expect(supplyOf(patch)?.main_switch_current).toBeUndefined();
   });
 
   it('never writes supply from the sub board of a reordered [sub, main] job', () => {
@@ -267,6 +308,43 @@ describe('PLAN-D — CCU photo fills the Supply main-switch box (web)', () => {
     const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), { targetBoardId: 'main' });
 
     expect(supplyOf(patch)?.main_switch_current).toBe('100');
+  });
+
+  it('add_new_board on an empty job leaves a main placeholder, not a lone sub board', () => {
+    // iOS's applier guarantees a board exists before any mode handler runs, so
+    // it ends with [main-placeholder, newBoard]. Web used to end with just
+    // [newBoard] — and a lone type-absent row reads as the canonical main, so a
+    // LATER photo of that board could fill Section J from a board the inspector
+    // captured as a new one.
+    const job = makeJob([]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+      mode: 'add_new_board',
+    });
+
+    const boards = patch.boards as Array<Record<string, unknown>>;
+    expect(boards).toHaveLength(2);
+    expect(boards[0].board_type).toBe('main');
+    // The appended board is NOT the main one, and supply is untouched.
+    expect(boards[1].board_type).toBeUndefined();
+    expect(supplyOf(patch)).toBeUndefined();
+  });
+
+  it('a board appended by add_new_board on an empty job can never later fill Section J', () => {
+    // The end-to-end shape of the gap above: append, then re-photograph the
+    // appended board. Two usable boards now exist, so the single-board rule
+    // refuses regardless of how the appended row is typed.
+    const job = makeJob([]);
+    const first = applyCcuAnalysisToJob(job, makeAnalysis(), { mode: 'add_new_board' });
+    const boards = first.patch.boards as Array<Record<string, unknown>>;
+    const appendedId = boards[1].id as string;
+
+    const secondJob = { ...job, boards } as unknown as JobDetail;
+    const { patch } = applyCcuAnalysisToJob(secondJob, makeAnalysis(), {
+      targetBoardId: appendedId,
+    });
+
+    expect(supplyOf(patch)).toBeUndefined();
   });
 
   it('skips supply entirely in names_only mode', () => {

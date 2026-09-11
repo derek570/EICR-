@@ -315,11 +315,13 @@ function buildSupplyPatch(
   // mints for a board-less snapshot — would pass an equality test against the
   // fallback and write its rating into installation-level supply. A board list
   // with no main-shaped entry has no main board, and gets no supply write.
-  // "Usable" matches the canonical-main rule's own filter: a record carrying a
-  // truthy id, because nothing can address a write to an id-less row.
-  const usableBoards = boards.filter((b) => b && typeof b === 'object' && b.id);
+  // Count RAW board rows, not just id-bearing ones. iOS's `JobViewModel.load`
+  // mints a local UUID for every id-less row, so an id-less row IS a second
+  // board there the moment the job is hydrated; web has no such repair.
+  // Filtering them out here would make web promote where iOS refuses, on the
+  // exact field this plan is defining.
   const mainBoard = findCanonicalMainBoard(boards);
-  if (usableBoards.length === 1 && mainBoard && mainBoard.id && mainBoard.id === appliedBoardId) {
+  if (boards.length === 1 && mainBoard && mainBoard.id && mainBoard.id === appliedBoardId) {
     apply('main_switch_current', analysis.main_switch_current ?? analysis.main_switch_rating);
   }
 
@@ -921,6 +923,21 @@ function applyAppendedBoardMode(
 ): CcuApplyResult {
   const patch: Partial<JobDetail> = {};
   const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
+  // iOS parity (PLAN-D review fix). `FuseboardAnalysisApplier.apply`
+  // guarantees a board exists BEFORE dispatching to any mode handler, so
+  // appending a sub-board to a job with no `boards[]` leaves iOS with
+  // [main-placeholder, newBoard] and web with just [newBoard]. A lone
+  // type-absent row reads as the canonical main under the shared rule, so web
+  // alone would then let a later photo of that board — one the inspector
+  // explicitly captured as a NEW board, not the main one — fill Section J of
+  // the certificate. Establish the same main placeholder first.
+  if (existingBoards.length === 0) {
+    existingBoards.push({
+      id: globalThis.crypto?.randomUUID?.() ?? `board-main-${Date.now()}`,
+      designation: 'DB1',
+      board_type: 'main',
+    });
+  }
   const newId = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
   const newBoard: Record<string, unknown> = {
     id: newId,
