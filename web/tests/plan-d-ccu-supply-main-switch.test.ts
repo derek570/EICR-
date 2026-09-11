@@ -415,6 +415,31 @@ describe('PLAN-D — CCU photo fills the Supply main-switch box (web)', () => {
     expect(supplyOf(patch)).toBeUndefined();
   });
 
+  it('refuses every non-string, non-number wire board id', () => {
+    // One definition of a usable id across both clients. Web's truthiness filter
+    // rejects false/0 but accepts {}/[]; iOS's old decoder did the opposite, so
+    // an invalidly addressable row could fill Section J on one client only.
+    for (const bogus of [false, {}, [], null]) {
+      const job = makeJob([
+        { id: bogus as unknown as string, designation: 'DB1', board_type: 'main' },
+      ]);
+
+      const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {});
+
+      expect(supplyOf(patch)).toBeUndefined();
+    }
+  });
+
+  it('accepts a numeric wire board id, which both clients stringify', () => {
+    const job = makeJob([{ id: 123 as unknown as string, designation: 'DB1', board_type: 'main' }]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+      targetBoardId: 123 as unknown as string,
+    });
+
+    expect(supplyOf(patch)?.main_switch_current).toBe('100');
+  });
+
   it('skips supply entirely in names_only mode', () => {
     const job = makeJob([{ id: 'board-main', designation: 'DB1', board_type: 'main' }]);
 

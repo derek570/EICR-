@@ -259,6 +259,19 @@ function buildBoardPatch(
  *    `buildBoardPatch` synthesises the main board; evaluating main-board
  *    identity against the original job would miss the board just created.
  *  @param appliedBoardId  the board `buildBoardPatch` actually wrote to. */
+/** One definition of a usable wire board id, shared by both clients for the
+ *  Section J write. `findCanonicalMainBoard` uses a plain truthiness test, so it
+ *  rejects `false`/`0` and ACCEPTS `{}`/`[]`; iOS's decoder did the opposite.
+ *  Either way an invalidly addressable row could fill the certificate on one
+ *  client only. A usable id is a non-empty string, or a finite number — nothing
+ *  else. The shared attribution rule is deliberately left alone; this strictness
+ *  applies only where a certificate particular is written. */
+function isUsableWireId(id: unknown): boolean {
+  if (typeof id === 'string') return id.length > 0;
+  if (typeof id === 'number') return Number.isFinite(id);
+  return false;
+}
+
 function buildSupplyPatch(
   job: JobDetail,
   analysis: CCUAnalysis,
@@ -335,7 +348,7 @@ function buildSupplyPatch(
   if (
     boards.length === 1 &&
     mainBoard &&
-    mainBoard.id &&
+    isUsableWireId(mainBoard.id) &&
     mainBoard.id === appliedBoardId &&
     unambiguouslyMain
   ) {
