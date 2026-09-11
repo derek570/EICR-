@@ -34,6 +34,7 @@
  */
 
 import type { CCUAnalysis, CCUAnalysisCircuit, CircuitRow, JobDetail } from '../types';
+import { findCanonicalMainBoard } from '../boards/canonical-main';
 import { hasValue } from './apply-extraction';
 import { repairCircuitDesignation, type CircuitMatch } from '@certmate/shared-utils';
 
@@ -247,8 +248,40 @@ function buildBoardPatch(
  *  in the supply `spd_*` (cutout / "main fuse") fields, which would pollute
  *  the relabelled Main Fuse box. The old main-switch-derived spd_* fallbacks
  *  (analysis.spd_rated_current / analysis.spd_type_supply) were removed from
- *  the backend (routes/extraction.js) and no longer arrive. */
-function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string, unknown> | null {
+ *  the backend (routes/extraction.js) and no longer arrive.
+ *
+ *  PLAN-D (feedback id 136a) also promotes the OBSERVED main-switch rating
+ *  here. See `promoteMainSwitchRating` below for why that write is gated on
+ *  canonical main-board identity, is empty-only, and carries the rating alone.
+ *
+ *  @param boards  the POST-patch board list from `buildBoardPatch`, not
+ *    `job.boards`. On a first capture against a job with no `boards[]`,
+ *    `buildBoardPatch` synthesises the main board; evaluating main-board
+ *    identity against the original job would miss the board just created.
+ *  @param appliedBoardId  the board `buildBoardPatch` actually wrote to. */
+/** One definition of a usable wire board id, shared by both clients for the
+ *  Section J write. `findCanonicalMainBoard` uses a plain truthiness test, so it
+ *  rejects `false`/`0` and ACCEPTS `{}`/`[]`; iOS's decoder did the opposite.
+ *  Either way an invalidly addressable row could fill the certificate on one
+ *  client only. A usable id is a non-empty string, or a finite number — nothing
+ *  else. The shared attribution rule is deliberately left alone; this strictness
+ *  applies only where a certificate particular is written. */
+function isUsableWireId(id: unknown): boolean {
+  if (typeof id === 'string') return id.length > 0;
+  // Zero is excluded deliberately. It is falsy, so `findCanonicalMainBoard`
+  // already skips such a row at `if (!b.id)` before this predicate is ever
+  // consulted; accepting it here would state a rule the election step does not
+  // honour, and iOS would then elect a row web refuses.
+  if (typeof id === 'number') return Number.isFinite(id) && id !== 0;
+  return false;
+}
+
+function buildSupplyPatch(
+  job: JobDetail,
+  analysis: CCUAnalysis,
+  boards: readonly Record<string, unknown>[],
+  appliedBoardId: string
+): Record<string, unknown> | null {
   const existing = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
   const next: Record<string, unknown> = { ...existing };
   let changed = false;
@@ -259,6 +292,76 @@ function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string,
     next[key] = incoming;
     changed = true;
   };
+
+  // PLAN-D (feedback id 136a) — a CU photo must fill the Supply tab's
+  // main-switch box. The model forms carry exactly ONE main-switch box, at
+  // installation level (EICR Section J), and with a single consumer unit that
+  // CU's integral main switch IS the installation main switch (Reg 462.1.201).
+  // Supply is canon; before this, web wrote the board record only.
+  //
+  // SINGLE-BOARD JOBS ONLY (Derek, 2026-09-11). The model-forms argument for
+  // promoting at all is explicitly the single-consumer-unit case: with one CU,
+  // that CU's integral main switch IS the installation main switch. On a
+  // MULTI-board job the premise does not hold — the installation main switch
+  // may be a separate upstream device. iOS additionally cannot tell which board
+  // was photographed (`CCUExtractionViewModel.targetBoardIndex` is always 0 and
+  // there is no board selector), so promoting on multi-board jobs would put a
+  // sub-board's rating into Section J of a signed certificate on that client.
+  // Both clients therefore fail CLOSED above one usable board and let the
+  // inspector dictate the main switch instead.
+  //
+  // Identity is still checked on top, never array position — web lets the
+  // inspector reorder boards. Same rule iOS (`CanonicalMainBoard`) and the
+  // backend state.
+  //
+  // `apply` is empty-only for every key, including this one: `buildSupplyPatch`
+  // takes no `overwrite` axis by construction, so a Hardware Update reading
+  // 100 A cannot replace an inspector-entered 80 A certificate particular.
+  //
+  // Rating ONLY. `main_switch_bs_en`, `_poles` and `_voltage` are synthetic
+  // backend defaults, not observations — `src/routes/extraction.js:2707-2722`
+  // stamps `60947-3` / `DP` / `230` unconditionally, by its own comment "only
+  // fields the classifier doesn't attempt". They keep going to the board
+  // record exactly as before (`buildBoardPatch`); promoting them would place
+  // unverified values in Section J where a reader takes them as inspected
+  // findings, with no provenance flag to tell the two apart once written.
+  // Compare against an ACTUAL canonical record, never
+  // `resolveCanonicalMainBoardId`. That resolver falls back to the backend's
+  // synthesised `'main'` identity when no board qualifies, so a real sole
+  // sub-board that happens to carry id `'main'` — the id the backend itself
+  // mints for a board-less snapshot — would pass an equality test against the
+  // fallback and write its rating into installation-level supply. A board list
+  // with no main-shaped entry has no main board, and gets no supply write.
+  // Count RAW board rows, not just id-bearing ones. iOS's `JobViewModel.load`
+  // mints a local UUID for every id-less row, so an id-less row IS a second
+  // board there the moment the job is hydrated; web has no such repair.
+  // Filtering them out here would make web promote where iOS refuses, on the
+  // exact field this plan is defining.
+  const mainBoard = findCanonicalMainBoard(boards);
+  // STRICTER than `findCanonicalMainBoard` on purpose, and only for this
+  // certificate write. That shared rule uses a falsiness test, so a
+  // `board_type` of `false` or `0` reads as absent and therefore main-shaped,
+  // while iOS's decoder turns those same payloads into the unknown strings
+  // "false"/"0" and refuses them. Rather than change the shared attribution
+  // rule — which every board consumer depends on — the Section J write demands
+  // an UNAMBIGUOUSLY main-shaped row: the key missing, null, empty, or exactly
+  // the string "main". Every other payload fails closed on both clients.
+  const rawType = mainBoard?.board_type;
+  const unambiguouslyMain =
+    rawType === undefined || rawType === null || rawType === '' || rawType === 'main';
+  if (
+    boards.length === 1 &&
+    mainBoard &&
+    isUsableWireId(mainBoard.id) &&
+    mainBoard.id === appliedBoardId &&
+    unambiguouslyMain
+  ) {
+    // Store the TRIMMED value, not merely gate on it: iOS writes `100` for a
+    // padded `" 100 "`, so persisting the padded string here would put a
+    // different value on the certificate for the same reading.
+    const rawRating = analysis.main_switch_current ?? analysis.main_switch_rating;
+    apply('main_switch_current', typeof rawRating === 'string' ? rawRating.trim() : rawRating);
+  }
 
   if (analysis.spd_present === true) {
     apply('surge_spd_present', 'Yes');
@@ -648,7 +751,10 @@ export function applyCcuAnalysisToJob(
     );
     patch.boards = boards;
 
-    const supply = buildSupplyPatch(job, analysis);
+    // PLAN-D: `boards`/`boardId` are `buildBoardPatch`'s POST-patch results,
+    // so a first capture on a job with no `boards[]` resolves main-board
+    // identity against the board that call just synthesised.
+    const supply = buildSupplyPatch(job, analysis, boards, boardId);
     if (supply) patch.supply_characteristics = supply;
 
     if (mode === 'hardware_update') {
@@ -821,9 +927,10 @@ function applyAppendRailMode(
  * Board tab "Fed From" picker, not the CCU photo.
  */
 function applyAddNewBoardMode(job: JobDetail, analysis: CCUAnalysis): CcuApplyResult {
-  return applyAppendedBoardMode(job, analysis, {
-    designation: `DB-${(job.boards ?? []).length + 1}`,
-  });
+  // Designation deliberately omitted — `applyAppendedBoardMode` derives `DB-N`
+  // from the board list AFTER it has established the main placeholder, so an
+  // empty job numbers the appended board the same way iOS does.
+  return applyAppendedBoardMode(job, analysis, {});
 }
 
 /**
@@ -851,14 +958,33 @@ function applyAddOffPeakBoardMode(job: JobDetail, analysis: CCUAnalysis): CcuApp
 function applyAppendedBoardMode(
   job: JobDetail,
   analysis: CCUAnalysis,
-  seed: { designation: string; board_type?: string }
+  // `designation` is omitted when the caller wants the auto `DB-N` name. It
+  // MUST be computed after the main placeholder below is inserted, or an empty
+  // job yields `[DB1, DB-1]` here against iOS's `[placeholder, DB-2]`.
+  seed: { designation?: string; board_type?: string }
 ): CcuApplyResult {
   const patch: Partial<JobDetail> = {};
   const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
+  // iOS parity (PLAN-D review fix). `FuseboardAnalysisApplier.apply`
+  // guarantees a board exists BEFORE dispatching to any mode handler, so
+  // appending a sub-board to a job with no `boards[]` leaves iOS with
+  // [main-placeholder, newBoard] and web with just [newBoard]. A lone
+  // type-absent row reads as the canonical main under the shared rule, so web
+  // alone would then let a later photo of that board — one the inspector
+  // explicitly captured as a NEW board, not the main one — fill Section J of
+  // the certificate. Establish the same main placeholder first.
+  if (existingBoards.length === 0) {
+    existingBoards.push({
+      id: globalThis.crypto?.randomUUID?.() ?? `board-main-${Date.now()}`,
+      designation: 'DB1',
+      board_type: 'main',
+    });
+  }
   const newId = globalThis.crypto?.randomUUID?.() ?? `board-${Date.now()}`;
   const newBoard: Record<string, unknown> = {
     id: newId,
     ...seed,
+    designation: seed.designation ?? `DB-${existingBoards.length + 1}`,
   };
   // Apply analysis to the new board — re-use the buildBoardPatch
   // logic by synthesising a temp `job` whose only board is the new
