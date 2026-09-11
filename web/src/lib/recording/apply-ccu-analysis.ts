@@ -34,6 +34,7 @@
  */
 
 import type { CCUAnalysis, CCUAnalysisCircuit, CircuitRow, JobDetail } from '../types';
+import { resolveCanonicalMainBoardId } from '../boards/canonical-main';
 import { hasValue } from './apply-extraction';
 import { repairCircuitDesignation, type CircuitMatch } from '@certmate/shared-utils';
 
@@ -247,8 +248,23 @@ function buildBoardPatch(
  *  in the supply `spd_*` (cutout / "main fuse") fields, which would pollute
  *  the relabelled Main Fuse box. The old main-switch-derived spd_* fallbacks
  *  (analysis.spd_rated_current / analysis.spd_type_supply) were removed from
- *  the backend (routes/extraction.js) and no longer arrive. */
-function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string, unknown> | null {
+ *  the backend (routes/extraction.js) and no longer arrive.
+ *
+ *  PLAN-D (feedback id 136a) also promotes the OBSERVED main-switch rating
+ *  here. See `promoteMainSwitchRating` below for why that write is gated on
+ *  canonical main-board identity, is empty-only, and carries the rating alone.
+ *
+ *  @param boards  the POST-patch board list from `buildBoardPatch`, not
+ *    `job.boards`. On a first capture against a job with no `boards[]`,
+ *    `buildBoardPatch` synthesises the main board; evaluating main-board
+ *    identity against the original job would miss the board just created.
+ *  @param appliedBoardId  the board `buildBoardPatch` actually wrote to. */
+function buildSupplyPatch(
+  job: JobDetail,
+  analysis: CCUAnalysis,
+  boards: readonly Record<string, unknown>[],
+  appliedBoardId: string
+): Record<string, unknown> | null {
   const existing = (job.supply_characteristics as Record<string, unknown> | undefined) ?? {};
   const next: Record<string, unknown> = { ...existing };
   let changed = false;
@@ -259,6 +275,32 @@ function buildSupplyPatch(job: JobDetail, analysis: CCUAnalysis): Record<string,
     next[key] = incoming;
     changed = true;
   };
+
+  // PLAN-D (feedback id 136a) — a CU photo must fill the Supply tab's
+  // main-switch box. The model forms carry exactly ONE main-switch box, at
+  // installation level (EICR Section J), and with a single consumer unit that
+  // CU's integral main switch IS the installation main switch (Reg 462.1.201).
+  // Supply is canon; before this, web wrote the board record only.
+  //
+  // Gated on canonical main-board IDENTITY, never array position — web lets
+  // the inspector reorder boards, so `[sub, main]` would otherwise let a
+  // sub-board photo redirect a supply write. Same rule iOS
+  // (`CanonicalMainBoard`) and the backend state.
+  //
+  // `apply` is empty-only for every key, including this one: `buildSupplyPatch`
+  // takes no `overwrite` axis by construction, so a Hardware Update reading
+  // 100 A cannot replace an inspector-entered 80 A certificate particular.
+  //
+  // Rating ONLY. `main_switch_bs_en`, `_poles` and `_voltage` are synthetic
+  // backend defaults, not observations — `src/routes/extraction.js:2707-2722`
+  // stamps `60947-3` / `DP` / `230` unconditionally, by its own comment "only
+  // fields the classifier doesn't attempt". They keep going to the board
+  // record exactly as before (`buildBoardPatch`); promoting them would place
+  // unverified values in Section J where a reader takes them as inspected
+  // findings, with no provenance flag to tell the two apart once written.
+  if (resolveCanonicalMainBoardId(boards) === appliedBoardId) {
+    apply('main_switch_current', analysis.main_switch_current ?? analysis.main_switch_rating);
+  }
 
   if (analysis.spd_present === true) {
     apply('surge_spd_present', 'Yes');
@@ -648,7 +690,10 @@ export function applyCcuAnalysisToJob(
     );
     patch.boards = boards;
 
-    const supply = buildSupplyPatch(job, analysis);
+    // PLAN-D: `boards`/`boardId` are `buildBoardPatch`'s POST-patch results,
+    // so a first capture on a job with no `boards[]` resolves main-board
+    // identity against the board that call just synthesised.
+    const supply = buildSupplyPatch(job, analysis, boards, boardId);
     if (supply) patch.supply_characteristics = supply;
 
     if (mode === 'hardware_update') {

@@ -28,6 +28,12 @@ monorepo — not tracked inside it). Web paths are relative to the
 
 ---
 
+## PLAN-D CCU main-switch target — 2026-09-11
+
+| id | iOS source | PWA counterpart | status | last-verified | owner | notes |
+| --- | ---------- | --------------- | ------ | ------------- | ----- | ----- |
+| ccu/main-switch-target | `FuseboardAnalysisApplier.swift` (`promoteMainSwitchRatingToSupply`, called from `applyBoardInfo`), `JobViewModel.swift` (`applyHardwareUpdate`, the second live copy reached from `CCUExtractionViewModel.confirmMatches`) | `web/src/lib/recording/apply-ccu-analysis.ts` (`buildSupplyPatch` gains the board-identity parameter and the POST-patch board list) | partial | 2026-09-11 | Derek | PLAN-D (feedback id 136a). A consumer-unit photo now fills the Supply tab's main-switch box, not just the board record: the model forms carry exactly ONE main-switch box, at installation level (EICR Section J), and with a single CU that unit's integral main switch IS the installation main switch (Reg 462.1.201). Identical rule on both clients — gated on canonical main-board IDENTITY rather than array position (both clients let boards be reordered), empty-only regardless of any caller `overwrite` (a photo must never replace an inspector-entered certificate particular), and the OBSERVED rating alone. `main_switch_bs_en`, `_poles` and `_voltage` are deliberately NOT promoted: `src/routes/extraction.js:2707-2722` stamps `60947-3` / `DP` / `230` unconditionally as defaults, and Section J would present them as inspected findings. They keep going to the board record as before, which narrows but does not close that exposure — the backend decision is recorded in the wave HANDOFF. iOS covers TWO apply paths because `JobViewModel.applyHardwareUpdate` is an older duplicate of the applier; merging them is PLAN-G's consolidation, not this plan's. Stays `partial` until the device smoke on both clients: photograph a real CU, confirm the Supply tab's main-switch section shows the rating. Todo in `todos-certmate.md`. |
+
 ## A02D regex occurrence freshness — 2026-09-09
 
 | id | iOS source | PWA counterpart | status | last-verified | owner | notes |

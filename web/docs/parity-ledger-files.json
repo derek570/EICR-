@@ -573,6 +573,7 @@
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
+    "ccu/main-switch-target",
     "supply/surge-namespace"
   ],
   "web/src/lib/recording/apply-document-extraction.ts": [
