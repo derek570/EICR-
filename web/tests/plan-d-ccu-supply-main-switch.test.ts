@@ -419,7 +419,10 @@ describe('PLAN-D — CCU photo fills the Supply main-switch box (web)', () => {
     // One definition of a usable id across both clients. Web's truthiness filter
     // rejects false/0 but accepts {}/[]; iOS's old decoder did the opposite, so
     // an invalidly addressable row could fill Section J on one client only.
-    for (const bogus of [false, {}, [], null]) {
+    // 0 is included: it is falsy, so `findCanonicalMainBoard` skips the row
+    // before `isUsableWireId` is consulted. iOS used to stringify it to "0" and
+    // promote a rating web refused.
+    for (const bogus of [false, 0, {}, [], null]) {
       const job = makeJob([
         { id: bogus as unknown as string, designation: 'DB1', board_type: 'main' },
       ]);

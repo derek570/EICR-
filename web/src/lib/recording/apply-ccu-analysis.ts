@@ -268,7 +268,11 @@ function buildBoardPatch(
  *  applies only where a certificate particular is written. */
 function isUsableWireId(id: unknown): boolean {
   if (typeof id === 'string') return id.length > 0;
-  if (typeof id === 'number') return Number.isFinite(id);
+  // Zero is excluded deliberately. It is falsy, so `findCanonicalMainBoard`
+  // already skips such a row at `if (!b.id)` before this predicate is ever
+  // consulted; accepting it here would state a rule the election step does not
+  // honour, and iOS would then elect a row web refuses.
+  if (typeof id === 'number') return Number.isFinite(id) && id !== 0;
   return false;
 }
 
