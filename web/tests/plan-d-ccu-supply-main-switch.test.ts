@@ -198,6 +198,40 @@ describe('PLAN-D — CCU photo fills the Supply main-switch box (web)', () => {
     expect(supplyOf(patch)?.main_switch_current).toBeUndefined();
   });
 
+  it('never treats a sub board carrying the backend default id as the main board', () => {
+    // `resolveCanonicalMainBoardId` falls back to the backend's synthesised
+    // `'main'` identity when nothing qualifies. A sole sub board whose id IS
+    // `'main'` — the id the backend mints for a board-less snapshot — would
+    // pass an equality test against that fallback and write its rating into
+    // installation-level supply. Gate on an actual canonical record instead.
+    const job = makeJob([{ id: 'main', designation: 'DB2', board_type: 'sub_distribution' }]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), { targetBoardId: 'main' });
+
+    expect(supplyOf(patch)).toBeUndefined();
+  });
+
+  it('never treats an unknown board_type carrying the default id as the main board', () => {
+    // Same collision via a board_type the client does not recognise. Backend
+    // and web both keep the raw string and skip such rows, so no board
+    // qualifies and the resolver would again fall back to `'main'`.
+    const job = makeJob([{ id: 'main', designation: 'DB1', board_type: 'something_new' }]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), { targetBoardId: 'main' });
+
+    expect(supplyOf(patch)).toBeUndefined();
+  });
+
+  it('still writes supply when the main board legitimately carries the default id', () => {
+    // The fallback id is only dangerous when it belongs to a NON-main board.
+    // A genuine main board with that id must still be recognised.
+    const job = makeJob([{ id: 'main', designation: 'DB1', board_type: 'main' }]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), { targetBoardId: 'main' });
+
+    expect(supplyOf(patch)?.main_switch_current).toBe('100');
+  });
+
   it('skips supply entirely in names_only mode', () => {
     const job = makeJob([{ id: 'board-main', designation: 'DB1', board_type: 'main' }]);
 

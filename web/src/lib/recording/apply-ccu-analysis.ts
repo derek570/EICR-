@@ -34,7 +34,7 @@
  */
 
 import type { CCUAnalysis, CCUAnalysisCircuit, CircuitRow, JobDetail } from '../types';
-import { resolveCanonicalMainBoardId } from '../boards/canonical-main';
+import { findCanonicalMainBoard } from '../boards/canonical-main';
 import { hasValue } from './apply-extraction';
 import { repairCircuitDesignation, type CircuitMatch } from '@certmate/shared-utils';
 
@@ -298,7 +298,15 @@ function buildSupplyPatch(
   // record exactly as before (`buildBoardPatch`); promoting them would place
   // unverified values in Section J where a reader takes them as inspected
   // findings, with no provenance flag to tell the two apart once written.
-  if (resolveCanonicalMainBoardId(boards) === appliedBoardId) {
+  // Compare against an ACTUAL canonical record, never
+  // `resolveCanonicalMainBoardId`. That resolver falls back to the backend's
+  // synthesised `'main'` identity when no board qualifies, so a real sole
+  // sub-board that happens to carry id `'main'` — the id the backend itself
+  // mints for a board-less snapshot — would pass an equality test against the
+  // fallback and write its rating into installation-level supply. A board list
+  // with no main-shaped entry has no main board, and gets no supply write.
+  const mainBoard = findCanonicalMainBoard(boards);
+  if (mainBoard && mainBoard.id && mainBoard.id === appliedBoardId) {
     apply('main_switch_current', analysis.main_switch_current ?? analysis.main_switch_rating);
   }
 
