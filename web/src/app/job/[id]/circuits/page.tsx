@@ -767,10 +767,14 @@ export default function CircuitsPage() {
     // selected board).
     const appendsBoard = mode === 'add_new_board' || mode === 'add_off_peak_board';
     const patchedBoards = (patch.boards ?? []) as { id: string }[];
-    if (!targetBoardId && patchedBoards.length > 0) {
-      setSelectedBoardId(patchedBoards[0].id);
-    } else if (appendsBoard && patchedBoards.length > 0) {
+    // Append modes are checked FIRST. On a job with no boards, add_new_board
+    // now synthesises a main placeholder before appending, so the no-target
+    // branch would have selected that empty placeholder and the freshly
+    // analysed circuits would appear to vanish.
+    if (appendsBoard && patchedBoards.length > 0) {
       setSelectedBoardId(patchedBoards[patchedBoards.length - 1].id);
+    } else if (!targetBoardId && patchedBoards.length > 0) {
+      setSelectedBoardId(patchedBoards[0].id);
     }
     const added = analysis.circuits?.length ?? 0;
     const verb = mode === 'append_rail' ? 'appended' : appendsBoard ? 'added' : 'merged';

@@ -347,6 +347,74 @@ describe('PLAN-D — CCU photo fills the Supply main-switch box (web)', () => {
     expect(supplyOf(patch)).toBeUndefined();
   });
 
+  it('numbers the appended board DB-2 on an empty job, matching iOS', () => {
+    // Round-3 regression: the auto `DB-N` name was computed from the ORIGINAL
+    // board list, so inserting the main placeholder produced `[DB1, DB-1]` here
+    // against iOS's `[placeholder, DB-2]`.
+    const job = makeJob([]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+      mode: 'add_new_board',
+    });
+
+    const boards = patch.boards as Array<Record<string, unknown>>;
+    expect(boards).toHaveLength(2);
+    expect(boards[1].designation).toBe('DB-2');
+  });
+
+  it('refuses a board_type that is falsy but not absent', () => {
+    // The shared canonical rule uses a falsiness test, so `false` and `0` read
+    // as absent there. iOS decodes them as the unknown strings "false"/"0" and
+    // refuses. The Section J write demands an unambiguously main-shaped row.
+    for (const bogus of [false, 0]) {
+      const job = makeJob([
+        { id: 'board-main', designation: 'DB1', board_type: bogus as unknown as string },
+      ]);
+
+      const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+        targetBoardId: 'board-main',
+      });
+
+      expect(supplyOf(patch)).toBeUndefined();
+    }
+  });
+
+  it('refuses a board_type that is an object or an array', () => {
+    for (const bogus of [{}, []]) {
+      const job = makeJob([
+        { id: 'board-main', designation: 'DB1', board_type: bogus as unknown as string },
+      ]);
+
+      const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+        targetBoardId: 'board-main',
+      });
+
+      expect(supplyOf(patch)).toBeUndefined();
+    }
+  });
+
+  it('stores the TRIMMED rating, not the padded original', () => {
+    // Both iOS paths write `100` for `" 100 "`. Persisting the padded string
+    // here would put a different value on the certificate for the same reading.
+    const job = makeJob([{ id: 'board-main', designation: 'DB1', board_type: 'main' }]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis({ main_switch_current: '  100  ' }), {
+      targetBoardId: 'board-main',
+    });
+
+    expect(supplyOf(patch)?.main_switch_current).toBe('100');
+  });
+
+  it('refuses a sole board whose wire payload carried no id', () => {
+    // iOS mints a UUID for such a row at hydration; web never repairs it. Both
+    // must refuse, or the same wire payload fills Section J on one client only.
+    const job = makeJob([{ designation: 'DB1' } as unknown as BoardSeed]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {});
+
+    expect(supplyOf(patch)).toBeUndefined();
+  });
+
   it('skips supply entirely in names_only mode', () => {
     const job = makeJob([{ id: 'board-main', designation: 'DB1', board_type: 'main' }]);
 

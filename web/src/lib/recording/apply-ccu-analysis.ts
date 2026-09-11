@@ -321,8 +321,29 @@ function buildSupplyPatch(
   // Filtering them out here would make web promote where iOS refuses, on the
   // exact field this plan is defining.
   const mainBoard = findCanonicalMainBoard(boards);
-  if (boards.length === 1 && mainBoard && mainBoard.id && mainBoard.id === appliedBoardId) {
-    apply('main_switch_current', analysis.main_switch_current ?? analysis.main_switch_rating);
+  // STRICTER than `findCanonicalMainBoard` on purpose, and only for this
+  // certificate write. That shared rule uses a falsiness test, so a
+  // `board_type` of `false` or `0` reads as absent and therefore main-shaped,
+  // while iOS's decoder turns those same payloads into the unknown strings
+  // "false"/"0" and refuses them. Rather than change the shared attribution
+  // rule — which every board consumer depends on — the Section J write demands
+  // an UNAMBIGUOUSLY main-shaped row: the key missing, null, empty, or exactly
+  // the string "main". Every other payload fails closed on both clients.
+  const rawType = mainBoard?.board_type;
+  const unambiguouslyMain =
+    rawType === undefined || rawType === null || rawType === '' || rawType === 'main';
+  if (
+    boards.length === 1 &&
+    mainBoard &&
+    mainBoard.id &&
+    mainBoard.id === appliedBoardId &&
+    unambiguouslyMain
+  ) {
+    // Store the TRIMMED value, not merely gate on it: iOS writes `100` for a
+    // padded `" 100 "`, so persisting the padded string here would put a
+    // different value on the certificate for the same reading.
+    const rawRating = analysis.main_switch_current ?? analysis.main_switch_rating;
+    apply('main_switch_current', typeof rawRating === 'string' ? rawRating.trim() : rawRating);
   }
 
   if (analysis.spd_present === true) {
@@ -889,9 +910,10 @@ function applyAppendRailMode(
  * Board tab "Fed From" picker, not the CCU photo.
  */
 function applyAddNewBoardMode(job: JobDetail, analysis: CCUAnalysis): CcuApplyResult {
-  return applyAppendedBoardMode(job, analysis, {
-    designation: `DB-${(job.boards ?? []).length + 1}`,
-  });
+  // Designation deliberately omitted — `applyAppendedBoardMode` derives `DB-N`
+  // from the board list AFTER it has established the main placeholder, so an
+  // empty job numbers the appended board the same way iOS does.
+  return applyAppendedBoardMode(job, analysis, {});
 }
 
 /**
@@ -919,7 +941,10 @@ function applyAddOffPeakBoardMode(job: JobDetail, analysis: CCUAnalysis): CcuApp
 function applyAppendedBoardMode(
   job: JobDetail,
   analysis: CCUAnalysis,
-  seed: { designation: string; board_type?: string }
+  // `designation` is omitted when the caller wants the auto `DB-N` name. It
+  // MUST be computed after the main placeholder below is inserted, or an empty
+  // job yields `[DB1, DB-1]` here against iOS's `[placeholder, DB-2]`.
+  seed: { designation?: string; board_type?: string }
 ): CcuApplyResult {
   const patch: Partial<JobDetail> = {};
   const existingBoards = ((job.boards as Record<string, unknown>[] | undefined) ?? []).slice();
@@ -942,6 +967,7 @@ function applyAppendedBoardMode(
   const newBoard: Record<string, unknown> = {
     id: newId,
     ...seed,
+    designation: seed.designation ?? `DB-${existingBoards.length + 1}`,
   };
   // Apply analysis to the new board — re-use the buildBoardPatch
   // logic by synthesising a temp `job` whose only board is the new
