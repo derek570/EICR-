@@ -86,12 +86,49 @@ describe('PLAN-D — CCU photo fills the Supply main-switch box (web)', () => {
     expect(supplyOf(patch)?.main_switch_current).toBe('80');
   });
 
-  it('follows canonical main-board IDENTITY when the boards are reordered to [sub, main]', () => {
-    // The round-2 guard. `board-main` sits at index 1; array position must not
-    // decide which board owns the supply write.
+  it('fails closed on a multi-board job, even photographing the main board', () => {
+    // Derek, 2026-09-11. The model-forms argument for promoting at all is the
+    // single-consumer-unit case. On a multi-board job the installation main
+    // switch may be a separate upstream device, and iOS cannot tell which board
+    // was photographed at all (no board selector), so both clients refuse and
+    // the inspector dictates the main switch.
+    const job = makeJob([
+      { id: 'board-main', designation: 'DB1', board_type: 'main' },
+      { id: 'board-sub', designation: 'DB2', board_type: 'sub_distribution' },
+    ]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+      targetBoardId: 'board-main',
+    });
+
+    expect(supplyOf(patch)).toBeUndefined();
+    // The board record still takes the reading — only Section J is withheld.
+    const boards = patch.boards as Array<Record<string, unknown>>;
+    expect(boards[0].rated_current).toBe('100');
+  });
+
+  it('fails closed on a reordered [sub, main] multi-board job too', () => {
+    // Array position is not what decides this; board COUNT is. Pinned
+    // separately so a future change that restores multi-board promotion has to
+    // confront the reordering case explicitly.
     const job = makeJob([
       { id: 'board-sub', designation: 'DB2', board_type: 'sub_distribution' },
       { id: 'board-main', designation: 'DB1', board_type: 'main' },
+    ]);
+
+    const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {
+      targetBoardId: 'board-main',
+    });
+
+    expect(supplyOf(patch)).toBeUndefined();
+  });
+
+  it('ignores id-less rows when counting usable boards', () => {
+    // "Usable" matches the canonical-main rule's own filter. A job carrying one
+    // real board plus an unaddressable id-less row is still a single-board job.
+    const job = makeJob([
+      { id: 'board-main', designation: 'DB1', board_type: 'main' },
+      { id: '', designation: 'ghost' } as { id: string; designation: string },
     ]);
 
     const { patch } = applyCcuAnalysisToJob(job, makeAnalysis(), {

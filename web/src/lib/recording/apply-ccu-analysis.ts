@@ -282,10 +282,20 @@ function buildSupplyPatch(
   // CU's integral main switch IS the installation main switch (Reg 462.1.201).
   // Supply is canon; before this, web wrote the board record only.
   //
-  // Gated on canonical main-board IDENTITY, never array position — web lets
-  // the inspector reorder boards, so `[sub, main]` would otherwise let a
-  // sub-board photo redirect a supply write. Same rule iOS
-  // (`CanonicalMainBoard`) and the backend state.
+  // SINGLE-BOARD JOBS ONLY (Derek, 2026-09-11). The model-forms argument for
+  // promoting at all is explicitly the single-consumer-unit case: with one CU,
+  // that CU's integral main switch IS the installation main switch. On a
+  // MULTI-board job the premise does not hold — the installation main switch
+  // may be a separate upstream device. iOS additionally cannot tell which board
+  // was photographed (`CCUExtractionViewModel.targetBoardIndex` is always 0 and
+  // there is no board selector), so promoting on multi-board jobs would put a
+  // sub-board's rating into Section J of a signed certificate on that client.
+  // Both clients therefore fail CLOSED above one usable board and let the
+  // inspector dictate the main switch instead.
+  //
+  // Identity is still checked on top, never array position — web lets the
+  // inspector reorder boards. Same rule iOS (`CanonicalMainBoard`) and the
+  // backend state.
   //
   // `apply` is empty-only for every key, including this one: `buildSupplyPatch`
   // takes no `overwrite` axis by construction, so a Hardware Update reading
@@ -305,8 +315,11 @@ function buildSupplyPatch(
   // mints for a board-less snapshot — would pass an equality test against the
   // fallback and write its rating into installation-level supply. A board list
   // with no main-shaped entry has no main board, and gets no supply write.
+  // "Usable" matches the canonical-main rule's own filter: a record carrying a
+  // truthy id, because nothing can address a write to an id-less row.
+  const usableBoards = boards.filter((b) => b && typeof b === 'object' && b.id);
   const mainBoard = findCanonicalMainBoard(boards);
-  if (mainBoard && mainBoard.id && mainBoard.id === appliedBoardId) {
+  if (usableBoards.length === 1 && mainBoard && mainBoard.id && mainBoard.id === appliedBoardId) {
     apply('main_switch_current', analysis.main_switch_current ?? analysis.main_switch_rating);
   }
 
