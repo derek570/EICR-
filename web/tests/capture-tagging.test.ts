@@ -107,6 +107,11 @@ describe('recording-context.tsx onSamples wiring (source-adjacency — see file 
   });
 
   it("wires the VAD onset transition's OWN capturedAt into the poor-signal probe, not a freshly-read clock value", () => {
-    expect(src).toMatch(/poorSignalProbeRef\.current\?\.onOnset\(transition\.capturedAt\);/);
+    // PLAN-C added the socket-epoch stamp as a second argument; the property
+    // this test exists for is that the FIRST argument is still the
+    // transition's own `capturedAt` and not a freshly-read clock.
+    expect(src).toMatch(
+      /poorSignalProbeRef\.current\?\.onOnset\(\s*\n\s*transition\.capturedAt,\s*\n\s*deepgramRef\.current\?\.liveEpoch \?\? null\s*\n\s*\);/
+    );
   });
 });

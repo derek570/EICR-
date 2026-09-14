@@ -1,0 +1,430 @@
+{
+  "$comment": "PLAN-C (feedback wave 2026-09-10, Derek's spoken report) — SYNTHETIC event sequence for the poor-signal latency probe. THIS IS NOT A SESSION REPLAY. A production replay fixture would need a complete client-timestamped onset/interim/reset/pause sequence, and no such export exists: the backend deletes every client timestamp before logging (src/extraction/sonnet-stream.js:2542, `delete parsed.timestamp`), so the CloudWatch rows for session 2026-09-10 cannot carry intervals or pause overlap. This sequence instead REPRODUCES the observed shape — a bimodal split of a fast cluster (3-124 ms) against a slow cluster (2630-13878 ms), with pause boundaries placed so the slow samples span them. If a client-timestamped export ever becomes available it replaces this file and the assertions are unchanged.",
+  "synthetic": true,
+  "not_a_session_replay": true,
+  "config": {
+    "windowSize": 8,
+    "minSamples": 4,
+    "armMedianMs": 1500,
+    "recoverMedianMs": 1000,
+    "cooldownMs": 300000
+  },
+  "clusters": {
+    "fast_ms": [
+      3,
+      47,
+      60,
+      98,
+      124
+    ],
+    "slow_ms": [
+      2630,
+      3400,
+      5200,
+      9100,
+      13878
+    ]
+  },
+  "doors": {
+    "B": "Reachable on BOTH clients: an onset armed BEFORE the TTS pause whose interim lands after the resume, so the sample carries the pause duration. On the shipped iOS path this is recorded as a CENSORED sample by pauseAudioStream's reset; on the shipped web path it survives as a huge OBSERVED sample because the TTS-start handler never cleared it.",
+    "A": "iOS ONLY: the speaker echo arms a fresh onset DURING the pause (capture stays live and the detector keeps running), which then resolves against the first post-resume interim. Unreachable on web, whose shared VAD receives no samples while TTS is active — events carrying \"during_pause\": true are SKIPPED by the web harness. That single difference is this plan's recorded deliberate divergence."
+  },
+  "expected": {
+    "arm_transitions_after_fix": 0,
+    "arm_transitions_before_fix": {
+      "ios": 3,
+      "web": 3
+    },
+    "note": "Before the fix both clients arm three times, matching the reported session's three advisories at cooldown spacing. After the fix neither arms at all: every poisoned sample is dropped rather than censored, and censored samples no longer take part in the arm decision. The shipped tests assert the zero; the three is recorded as red-on-base proof in the execution log."
+  },
+  "events": [
+    {
+      "kind": "onset",
+      "t_ms": 0
+    },
+    {
+      "kind": "interim",
+      "t_ms": 3
+    },
+    {
+      "kind": "onset",
+      "t_ms": 4003
+    },
+    {
+      "kind": "interim",
+      "t_ms": 4050
+    },
+    {
+      "kind": "onset",
+      "t_ms": 8050
+    },
+    {
+      "kind": "interim",
+      "t_ms": 8110
+    },
+    {
+      "kind": "onset",
+      "t_ms": 12110
+    },
+    {
+      "kind": "interim",
+      "t_ms": 12208
+    },
+    {
+      "kind": "onset",
+      "t_ms": 16208
+    },
+    {
+      "kind": "interim",
+      "t_ms": 16332
+    },
+    {
+      "kind": "onset",
+      "t_ms": 20332
+    },
+    {
+      "kind": "pause",
+      "t_ms": 22032
+    },
+    {
+      "kind": "resume",
+      "t_ms": 22662
+    },
+    {
+      "kind": "interim",
+      "t_ms": 22962
+    },
+    {
+      "kind": "onset",
+      "t_ms": 26962
+    },
+    {
+      "kind": "pause",
+      "t_ms": 28662
+    },
+    {
+      "kind": "resume",
+      "t_ms": 30062
+    },
+    {
+      "kind": "interim",
+      "t_ms": 30362
+    },
+    {
+      "kind": "onset",
+      "t_ms": 34362
+    },
+    {
+      "kind": "pause",
+      "t_ms": 36062
+    },
+    {
+      "kind": "resume",
+      "t_ms": 39262
+    },
+    {
+      "kind": "interim",
+      "t_ms": 39562
+    },
+    {
+      "kind": "onset",
+      "t_ms": 43562
+    },
+    {
+      "kind": "pause",
+      "t_ms": 45262
+    },
+    {
+      "kind": "resume",
+      "t_ms": 52362
+    },
+    {
+      "kind": "interim",
+      "t_ms": 52662
+    },
+    {
+      "kind": "onset",
+      "t_ms": 56662
+    },
+    {
+      "kind": "pause",
+      "t_ms": 58362
+    },
+    {
+      "kind": "resume",
+      "t_ms": 70240
+    },
+    {
+      "kind": "interim",
+      "t_ms": 70540
+    },
+    {
+      "kind": "pause",
+      "t_ms": 74540
+    },
+    {
+      "kind": "onset",
+      "t_ms": 74740,
+      "during_pause": true
+    },
+    {
+      "kind": "resume",
+      "t_ms": 79940
+    },
+    {
+      "kind": "interim",
+      "t_ms": 80060
+    },
+    {
+      "kind": "pause",
+      "t_ms": 84060
+    },
+    {
+      "kind": "onset",
+      "t_ms": 84260,
+      "during_pause": true
+    },
+    {
+      "kind": "resume",
+      "t_ms": 98138
+    },
+    {
+      "kind": "interim",
+      "t_ms": 98258
+    },
+    {
+      "kind": "onset",
+      "t_ms": 402258
+    },
+    {
+      "kind": "interim",
+      "t_ms": 402261
+    },
+    {
+      "kind": "onset",
+      "t_ms": 406261
+    },
+    {
+      "kind": "interim",
+      "t_ms": 406308
+    },
+    {
+      "kind": "onset",
+      "t_ms": 410308
+    },
+    {
+      "kind": "interim",
+      "t_ms": 410368
+    },
+    {
+      "kind": "onset",
+      "t_ms": 414368
+    },
+    {
+      "kind": "interim",
+      "t_ms": 414466
+    },
+    {
+      "kind": "onset",
+      "t_ms": 418466
+    },
+    {
+      "kind": "interim",
+      "t_ms": 418590
+    },
+    {
+      "kind": "onset",
+      "t_ms": 422590
+    },
+    {
+      "kind": "reset",
+      "t_ms": 425220
+    },
+    {
+      "kind": "onset",
+      "t_ms": 429220
+    },
+    {
+      "kind": "reset",
+      "t_ms": 432620
+    },
+    {
+      "kind": "onset",
+      "t_ms": 436620
+    },
+    {
+      "kind": "reset",
+      "t_ms": 441820
+    },
+    {
+      "kind": "onset",
+      "t_ms": 445820
+    },
+    {
+      "kind": "reset",
+      "t_ms": 454920
+    },
+    {
+      "kind": "onset",
+      "t_ms": 458920
+    },
+    {
+      "kind": "reset",
+      "t_ms": 472798
+    },
+    {
+      "kind": "onset",
+      "t_ms": 776798
+    },
+    {
+      "kind": "interim",
+      "t_ms": 776801
+    },
+    {
+      "kind": "onset",
+      "t_ms": 780801
+    },
+    {
+      "kind": "interim",
+      "t_ms": 780848
+    },
+    {
+      "kind": "onset",
+      "t_ms": 784848
+    },
+    {
+      "kind": "interim",
+      "t_ms": 784908
+    },
+    {
+      "kind": "onset",
+      "t_ms": 788908
+    },
+    {
+      "kind": "interim",
+      "t_ms": 789006
+    },
+    {
+      "kind": "onset",
+      "t_ms": 793006
+    },
+    {
+      "kind": "interim",
+      "t_ms": 793130
+    },
+    {
+      "kind": "onset",
+      "t_ms": 797130
+    },
+    {
+      "kind": "pause",
+      "t_ms": 798830
+    },
+    {
+      "kind": "resume",
+      "t_ms": 799460
+    },
+    {
+      "kind": "interim",
+      "t_ms": 799760
+    },
+    {
+      "kind": "onset",
+      "t_ms": 803760
+    },
+    {
+      "kind": "pause",
+      "t_ms": 805460
+    },
+    {
+      "kind": "resume",
+      "t_ms": 806860
+    },
+    {
+      "kind": "interim",
+      "t_ms": 807160
+    },
+    {
+      "kind": "onset",
+      "t_ms": 811160
+    },
+    {
+      "kind": "pause",
+      "t_ms": 812860
+    },
+    {
+      "kind": "resume",
+      "t_ms": 816060
+    },
+    {
+      "kind": "interim",
+      "t_ms": 816360
+    },
+    {
+      "kind": "onset",
+      "t_ms": 820360
+    },
+    {
+      "kind": "pause",
+      "t_ms": 822060
+    },
+    {
+      "kind": "resume",
+      "t_ms": 829160
+    },
+    {
+      "kind": "interim",
+      "t_ms": 829460
+    },
+    {
+      "kind": "onset",
+      "t_ms": 833460
+    },
+    {
+      "kind": "pause",
+      "t_ms": 835160
+    },
+    {
+      "kind": "resume",
+      "t_ms": 847038
+    },
+    {
+      "kind": "interim",
+      "t_ms": 847338
+    },
+    {
+      "kind": "pause",
+      "t_ms": 851338
+    },
+    {
+      "kind": "onset",
+      "t_ms": 851538,
+      "during_pause": true
+    },
+    {
+      "kind": "resume",
+      "t_ms": 856738
+    },
+    {
+      "kind": "interim",
+      "t_ms": 856858
+    },
+    {
+      "kind": "pause",
+      "t_ms": 860858
+    },
+    {
+      "kind": "onset",
+      "t_ms": 861058,
+      "during_pause": true
+    },
+    {
+      "kind": "resume",
+      "t_ms": 874936
+    },
+    {
+      "kind": "interim",
+      "t_ms": 875056
+    }
+  ]
+}

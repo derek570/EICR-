@@ -307,6 +307,19 @@ export function setTtsLifecycleObserver(observer: ((event: 'start' | 'end') => v
   ttsLifecycleObserver = observer;
 }
 
+/** TEST SEAM (PLAN-C). Returns the currently registered observer so a mounted
+ *  harness test can fire the REAL production callback.
+ *
+ *  `notifyTtsLifecycle` is called from inside `playConfirmationHead`'s
+ *  ElevenLabs path, which an injected harness player replaces wholesale — so
+ *  no harness test can reach the lifecycle observer through playback, and the
+ *  TTS-start branch of `RecordingProvider`'s observer (mic gate, Deepgram
+ *  pause, PLAN-C's probe discard) had no executable production coverage at
+ *  all. This accessor changes no behaviour and is read-only. */
+export function __ttsLifecycleObserverForTests(): ((event: 'start' | 'end') => void) | null {
+  return ttsLifecycleObserver;
+}
+
 /**
  * Internal helper — fires the observer if any. Wrapped in try/catch so
  * a bad consumer can't blow up the TTS path (every call to this is

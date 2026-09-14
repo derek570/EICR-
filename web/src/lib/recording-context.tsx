@@ -2820,7 +2820,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // coalesces a repeat arm, but there's no reason to call it on
           // every still-armed interim).
           if (
-            poorSignalProbeRef.current?.onInterimReceived() &&
+            emittingService !== null &&
+            emittingService === deepgramRef.current &&
+            poorSignalProbeRef.current?.onInterimReceived(emittingService.liveEpoch ?? null) &&
             poorSignalProbeRef.current.isArmed
           ) {
             speakPoorSignalAdvisory();
@@ -2981,7 +2983,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // (idempotent-safe: a no-op if the probe already resolved via
           // `onInterimTranscript` this turn).
           if (
-            poorSignalProbeRef.current?.onInterimReceived() &&
+            emittingService !== null &&
+            emittingService === deepgramRef.current &&
+            poorSignalProbeRef.current?.onInterimReceived(emittingService.liveEpoch ?? null) &&
             poorSignalProbeRef.current.isArmed
           ) {
             speakPoorSignalAdvisory();
@@ -5070,6 +5074,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           ttsResumeTimerRef.current = null;
         }
         ttsActiveRef.current = true;
+        // PLAN-C — drop any pending poor-signal probe onset BEFORE the
+        // uplink pauses. Web's shared VAD is starved while TTS plays, so
+        // no onset can be armed DURING the pause here — but one armed just
+        // BEFORE it survives: the playback gate turns permissive 2.5s after
+        // onset even while the raw VAD still reads speaking, and nothing
+        // here used to clear the pending onset. It then resolved against an
+        // interim on the far side of the pause and charged the whole pause
+        // duration as network latency, which is what armed a "transcription
+        // is running slowly" advisory on a healthy link.
+        //
+        // Discard, not `onResetWithoutInterim()`: that records a censored
+        // sample, and a censored stand-in carries the same poison into the
+        // window that the discard exists to keep out.
+        poorSignalProbeRef.current?.discardPendingOnset();
         deepgramRef.current?.pause();
         clientDiagnostic('tts_pcm_gate_engaged', {});
       } else {
@@ -5144,7 +5162,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // `capturedAt` through, mirroring iOS's `onOnset(at:)` contract,
         // rather than letting the probe read a fresh `nowFn()` at
         // whatever later moment this callback happens to run.
-        poorSignalProbeRef.current?.onOnset(transition.capturedAt);
+        // PLAN-C — stamp the pending onset with the socket it was armed
+        // under, so a trailing interim from a REPLACED service (pause/resume
+        // constructs a new one, and `disconnect()` keeps the outgoing socket
+        // alive for 300ms) cannot resolve it.
+        poorSignalProbeRef.current?.onOnset(
+          transition.capturedAt,
+          deepgramRef.current?.liveEpoch ?? null
+        );
         // A02D FinalWindowV1 — the onset reaches the CURRENT sender before
         // the onset frame is sent (this fires inside the tagging boundary),
         // so the sender records its dispatched offset as the candidate

@@ -15,16 +15,35 @@
  * pause) fires with NO interim received and the armed age exceeds the arm
  * threshold, a CENSORED sample is recorded — its value is a conservative
  * LOWER BOUND (the true latency, had the interim ever arrived, could only
- * be larger). The rolling median used to ARM uses lower-bound values for
- * every sample (a lower-bound median above the threshold still proves the
- * true median is above it); the median used to RECOVER uses ONLY observed
- * samples (a lower bound can never prove recovery — the true value might
- * still be arbitrarily large).
+ * be larger). They are still recorded, and since PLAN-C they no longer
+ * take part in EITHER decision (see `reevaluate`).
+ *
+ * PLAN-C (2026-09-14) — the advisory fired three times in a 25-minute
+ * session on home Wi-Fi while transcription was fast, because of what the
+ * state machine was fed rather than how it decided. Two changes:
+ *
+ *  1. Censored samples no longer arm. A lower-bound median above the
+ *     threshold is sound arithmetic about a quantity nobody measured: the
+ *     detector is a fixed RMS threshold, so "an onset with no transcript
+ *     after 1.5 s" far more often means "that was not speech" than "the
+ *     network is slow". Arm and recover are now symmetric — both decide on
+ *     observed samples only, and both need `minSamples` of them.
+ *  2. `discardPendingOnset()` lets a caller invalidate a pending window
+ *     while pushing NOTHING. Web's TTS-start handler uses it: it pauses the
+ *     uplink, and an onset armed just before that pause would otherwise
+ *     resolve against an interim on the far side and carry the whole pause
+ *     duration as network latency.
+ *
+ * Both clients correlate a pending onset with the SOCKET it was armed
+ * under. The PAUSE half of iOS's scope is the one thing web omits: its
+ * shared VAD is starved of samples while TTS plays (`voiced-activity.ts`,
+ * `recording-context.tsx`'s `onSamples` gate), so no onset can be armed
+ * DURING a pause here and there is no pause to straddle that the discard
+ * does not already remove. That one difference is the recorded deliberate
+ * divergence — see the `recording/poor-signal-probe` parity-ledger row.
  */
 
-export type ProbeSample =
-  | { readonly kind: 'observed'; readonly ms: number }
-  | { readonly kind: 'censored'; readonly lowerBoundMs: number };
+import type { ConnectionEpoch } from './uplink-scope-allocator';
 
 export interface PoorSignalProbeConfig {
   readonly windowSize: number;
@@ -42,10 +61,6 @@ export const DEFAULT_POOR_SIGNAL_PROBE_CONFIG: PoorSignalProbeConfig = {
   cooldownMs: 5 * 60 * 1000,
 };
 
-function sampleLowerBound(s: ProbeSample): number {
-  return s.kind === 'observed' ? s.ms : s.lowerBoundMs;
-}
-
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -53,8 +68,30 @@ function median(values: readonly number[]): number {
 }
 
 export class PoorSignalLatencyProbe {
-  private window: ProbeSample[] = [];
+  /** The DECISION window: OBSERVED samples only.
+   *
+   *  Review found the first cut of this fix could silence a genuine
+   *  warning. Censored entries shared these `windowSize` slots while being
+   *  excluded from both decisions, so on a bad link — where onsets that
+   *  never produce a transcript are COMMON — they evicted the observed
+   *  evidence and `observed.length >= minSamples` was never reached. A
+   *  steady one-observed-to-two-censored stream left at most three observed
+   *  samples in any window of eight, and a genuinely slow link never armed;
+   *  the same eviction could strand an already armed probe, unable to
+   *  recover. Censored entries therefore no longer live here at all. */
+  private window: number[] = [];
+  /** Censored lower bounds, kept for telemetry ONLY and never consulted by
+   *  `reevaluate`. Bounded by the same `windowSize`. */
+  private censoredWindow: number[] = [];
   private armedOnsetAtMs: number | null = null;
+  /** PLAN-C — the epoch of the socket the pending onset was armed under.
+   *  Web has no pause generation (its VAD is starved during TTS, so no onset
+   *  can be armed inside a pause), but it DOES need socket identity: this
+   *  probe is session-scoped while `DeepgramService` instances are not, and
+   *  `disconnect()` deliberately keeps the outgoing socket alive for 300 ms.
+   *  A trailing interim from the outgoing service could otherwise resolve an
+   *  onset armed under its replacement. */
+  private armedOnsetEpoch: ConnectionEpoch | null = null;
   private armed = false;
   private lastArmedAtMs = -Infinity;
 
@@ -73,66 +110,104 @@ export class PoorSignalLatencyProbe {
    *  instant, never a later time read at the moment `onOnset` happens to
    *  be invoked (a queue hop between capture and VAD processing must not
    *  be misread as capture latency). */
-  onOnset(capturedAt: number): void {
+  onOnset(capturedAt: number, epoch: ConnectionEpoch | null = null): void {
     if (this.armedOnsetAtMs === null) {
       this.armedOnsetAtMs = capturedAt;
+      this.armedOnsetEpoch = epoch;
     }
   }
 
   /** The first interim (or final) transcript arrived. Resolves the
    *  pending sample as OBSERVED. Returns true iff the armed state
    *  CHANGED (arm↔recover) this call. */
-  onInterimReceived(): boolean {
+  onInterimReceived(epoch: ConnectionEpoch | null = null): boolean {
     if (this.armedOnsetAtMs === null) return false;
-    const elapsedMs = this.nowFn() - this.armedOnsetAtMs;
+    const onsetAtMs = this.armedOnsetAtMs;
+    const onsetEpoch = this.armedOnsetEpoch;
     this.armedOnsetAtMs = null;
-    return this.pushAndReevaluate({ kind: 'observed', ms: elapsedMs });
+    this.armedOnsetEpoch = null;
+    // PLAN-C — an interim delivered by a DIFFERENT socket than the one the
+    // onset was armed under does not measure that onset. Drop it; push
+    // nothing, for the same reason a straddling window is dropped rather
+    // than censored.
+    if (epoch !== onsetEpoch) return false;
+    const elapsedMs = this.nowFn() - onsetAtMs;
+    // A negative interval is not a measurement.
+    if (elapsedMs < 0) return false;
+    return this.pushObservedAndReevaluate(elapsedMs);
   }
 
   /** Utterance-end / reconnect / pause fired with NO interim received
    *  since the last onset. A CENSORED sample is recorded only if the
    *  armed age already exceeds the arm threshold (a short, unremarkable
    *  gap is not evidence of anything). Returns true iff the armed state
-   *  changed this call. */
+   *  changed this call.
+   *
+   *  PLAN-C — still recorded, and no longer able to arm. */
   onResetWithoutInterim(): boolean {
     if (this.armedOnsetAtMs === null) return false;
     const ageMs = this.nowFn() - this.armedOnsetAtMs;
     this.armedOnsetAtMs = null;
+    this.armedOnsetEpoch = null;
     if (ageMs < this.config.armMedianMs) return false;
-    return this.pushAndReevaluate({ kind: 'censored', lowerBoundMs: ageMs });
+    this.censoredWindow.push(ageMs);
+    if (this.censoredWindow.length > this.config.windowSize) this.censoredWindow.shift();
+    // Always false since PLAN-C: a censored sample takes no part in either
+    // decision, so it can never change the armed state.
+    return false;
   }
 
-  private pushAndReevaluate(sample: ProbeSample): boolean {
-    this.window.push(sample);
+  /** PLAN-C — clear the pending onset and push NOTHING: the drop-only
+   *  counterpart to `onResetWithoutInterim`, for a caller that knows the
+   *  pending window is about to be invalidated and must not leave a
+   *  censored stand-in behind. Censoring would not do: the arm decision
+   *  medians across the window, so a stand-in carries the same poison it
+   *  was meant to remove. */
+  discardPendingOnset(): void {
+    this.armedOnsetAtMs = null;
+    this.armedOnsetEpoch = null;
+  }
+
+  /** Test/diagnostic visibility into the decision window's real occupancy,
+   *  so a test can distinguish "nothing was pushed" from "something was
+   *  pushed that the filter happens to ignore". */
+  get observedSampleCount(): number {
+    return this.window.length;
+  }
+
+  get censoredSampleCount(): number {
+    return this.censoredWindow.length;
+  }
+
+  private pushObservedAndReevaluate(ms: number): boolean {
+    this.window.push(ms);
     if (this.window.length > this.config.windowSize) this.window.shift();
     return this.reevaluate();
   }
 
+  /** PLAN-C — arm and recover are SYMMETRIC: both decide on OBSERVED
+   *  samples only, and both need `minSamples` of them.
+   *
+   *  The count gate moved with the decision. It used to require
+   *  `minSamples` samples of ANY kind before computing the arm median, so
+   *  excluding censored samples from the median alone would have left a
+   *  window of four censored samples able to satisfy the gate and then
+   *  median nothing. */
   private reevaluate(): boolean {
-    if (this.window.length < this.config.minSamples) return false;
     const wasArmed = this.armed;
+    if (this.window.length < this.config.minSamples) return false;
+    const observedMedian = median(this.window);
 
     if (!this.armed) {
-      const lowerBoundMedian = median(this.window.map(sampleLowerBound));
-      if (lowerBoundMedian > this.config.armMedianMs) {
+      if (observedMedian > this.config.armMedianMs) {
         const now = this.nowFn();
         if (now - this.lastArmedAtMs >= this.config.cooldownMs) {
           this.armed = true;
           this.lastArmedAtMs = now;
         }
       }
-    } else {
-      // Recovery hysteresis: censored samples never count — recompute
-      // using ONLY observed samples.
-      const observed = this.window.filter(
-        (s): s is Extract<ProbeSample, { kind: 'observed' }> => s.kind === 'observed'
-      );
-      if (observed.length >= this.config.minSamples) {
-        const observedMedian = median(observed.map((s) => s.ms));
-        if (observedMedian < this.config.recoverMedianMs) {
-          this.armed = false;
-        }
-      }
+    } else if (observedMedian < this.config.recoverMedianMs) {
+      this.armed = false;
     }
     return this.armed !== wasArmed;
   }
@@ -146,7 +221,9 @@ export class PoorSignalLatencyProbe {
    *  TRIGGERS this probe listens for, not a probe-state boundary. */
   reset(): void {
     this.window = [];
+    this.censoredWindow = [];
     this.armedOnsetAtMs = null;
+    this.armedOnsetEpoch = null;
     this.armed = false;
     this.lastArmedAtMs = -Infinity;
   }
