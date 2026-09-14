@@ -75,6 +75,9 @@ function makeClock(): { now: () => number; set: (ms: number) => void } {
 function replayWeb(events: readonly ProbeEvent[], config: PoorSignalProbeConfig): number {
   const clock = makeClock();
   const probe = new PoorSignalLatencyProbe(config, clock.now);
+  // One socket for the whole fixture: it exercises PAUSE straddling, not
+  // reconnects, which have their own test.
+  const EPOCH = 1 as unknown as Parameters<typeof probe.onOnset>[1];
   let armTransitions = 0;
   for (const event of events) {
     if (event.kind === 'onset' && event.during_pause) continue;
@@ -86,10 +89,10 @@ function replayWeb(events: readonly ProbeEvent[], config: PoorSignalProbeConfig)
       case 'resume':
         break;
       case 'onset':
-        probe.onOnset(event.t_ms);
+        probe.onOnset(event.t_ms, EPOCH);
         break;
       case 'interim':
-        if (probe.onInterimReceived() && probe.isArmed) armTransitions += 1;
+        if (probe.onInterimReceived(EPOCH) && probe.isArmed) armTransitions += 1;
         break;
       case 'reset':
         if (probe.onResetWithoutInterim() && probe.isArmed) armTransitions += 1;
@@ -139,7 +142,12 @@ describe('PLAN-C — the advisory never arms on the fixture', () => {
     );
   });
 
-  it('the fixture would have armed three times before the fix', () => {
+  /** This checks only that the RECORDED expectation still says three. It
+   *  does NOT execute pre-fix semantics and is not red-on-base proof. That
+   *  proof was taken separately, by replaying this same fixture through
+   *  `origin/main`'s probe on both clients; it is written up in the run's
+   *  execution log. */
+  it('records the baseline arm count (a recorded expectation, not an executed one)', () => {
     expect(fixture.expected.arm_transitions_before_fix.web).toBe(3);
     expect(fixture.expected.arm_transitions_before_fix.ios).toBe(3);
   });
@@ -219,15 +227,80 @@ describe('PLAN-C — sample admission on web', () => {
       probe.discardPendingOnset();
     }
     expect(probe.isArmed).toBe(false);
-    // Prove emptiness rather than assuming it: four fast observed samples
-    // now arrive, and a window still holding the four discards would need
-    // more than four to reach minSamples.
+    // Prove emptiness DIRECTLY. Review caught the earlier version of this
+    // assertion: because censored samples are filtered out of the decision
+    // anyway, it still passed if `discardPendingOnset` wrongly recorded one.
+    expect(probe.observedSampleCount, 'a discard must push no observed sample').toBe(0);
+    expect(probe.censoredSampleCount, 'a discard must not censor either').toBe(0);
     for (let i = 0; i < 4; i++) {
       probe.onOnset(clock.now());
       clock.advance(2000);
       probe.onInterimReceived();
     }
     expect(probe.isArmed).toBe(true);
+  });
+
+  it('censored samples do not evict observed evidence from the decision window', () => {
+    const clock = makeAdvancingClock();
+    const probe = new PoorSignalLatencyProbe(CONFIG, clock.now);
+    // One genuine slow observed sample per two noise-driven censored
+    // terminals: at most three observed in any window of eight if the two
+    // kinds shared slots, so a genuinely slow link would never arm.
+    for (let i = 0; i < 6; i++) {
+      probe.onOnset(clock.now());
+      clock.advance(2000);
+      probe.onInterimReceived();
+      clock.advance(500);
+      for (let j = 0; j < 2; j++) {
+        probe.onOnset(clock.now());
+        clock.advance(1600);
+        probe.onResetWithoutInterim();
+        clock.advance(500);
+      }
+    }
+    expect(probe.isArmed, 'a slow link must arm through a stream of censored noise onsets').toBe(
+      true
+    );
+  });
+
+  it('censored samples do not block recovery either', () => {
+    const clock = makeAdvancingClock();
+    const probe = new PoorSignalLatencyProbe(CONFIG, clock.now);
+    for (let i = 0; i < 4; i++) {
+      probe.onOnset(clock.now());
+      clock.advance(2000);
+      probe.onInterimReceived();
+      clock.advance(500);
+    }
+    expect(probe.isArmed).toBe(true);
+    for (let i = 0; i < 5; i++) {
+      probe.onOnset(clock.now());
+      clock.advance(200);
+      probe.onInterimReceived();
+      clock.advance(500);
+      probe.onOnset(clock.now());
+      clock.advance(1600);
+      probe.onResetWithoutInterim();
+      clock.advance(500);
+    }
+    expect(probe.isArmed, 'censored noise must not strand the advisory armed').toBe(false);
+  });
+
+  it('an interim from a REPLACED socket never resolves an onset armed under its successor', () => {
+    const clock = makeAdvancingClock();
+    const probe = new PoorSignalLatencyProbe(CONFIG, clock.now);
+    const oldEpoch = 7 as unknown as Parameters<typeof probe.onOnset>[1];
+    const newEpoch = 8 as unknown as Parameters<typeof probe.onOnset>[1];
+    // `disconnect()` keeps the outgoing socket alive for 300ms, and a
+    // pause/resume constructs a replacement service that shares this
+    // session-scoped probe.
+    for (let i = 0; i < 4; i++) {
+      probe.onOnset(clock.now(), newEpoch);
+      clock.advance(12000);
+      expect(probe.onInterimReceived(oldEpoch)).toBe(false);
+    }
+    expect(probe.observedSampleCount).toBe(0);
+    expect(probe.isArmed).toBe(false);
   });
 
   it('discarding when nothing is pending is a no-op', () => {

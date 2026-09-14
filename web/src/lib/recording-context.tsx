@@ -2820,7 +2820,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // coalesces a repeat arm, but there's no reason to call it on
           // every still-armed interim).
           if (
-            poorSignalProbeRef.current?.onInterimReceived() &&
+            emittingService !== null &&
+            emittingService === deepgramRef.current &&
+            poorSignalProbeRef.current?.onInterimReceived(emittingService.liveEpoch ?? null) &&
             poorSignalProbeRef.current.isArmed
           ) {
             speakPoorSignalAdvisory();
@@ -2981,7 +2983,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // (idempotent-safe: a no-op if the probe already resolved via
           // `onInterimTranscript` this turn).
           if (
-            poorSignalProbeRef.current?.onInterimReceived() &&
+            emittingService !== null &&
+            emittingService === deepgramRef.current &&
+            poorSignalProbeRef.current?.onInterimReceived(emittingService.liveEpoch ?? null) &&
             poorSignalProbeRef.current.isArmed
           ) {
             speakPoorSignalAdvisory();
@@ -5158,7 +5162,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // `capturedAt` through, mirroring iOS's `onOnset(at:)` contract,
         // rather than letting the probe read a fresh `nowFn()` at
         // whatever later moment this callback happens to run.
-        poorSignalProbeRef.current?.onOnset(transition.capturedAt);
+        // PLAN-C — stamp the pending onset with the socket it was armed
+        // under, so a trailing interim from a REPLACED service (pause/resume
+        // constructs a new one, and `disconnect()` keeps the outgoing socket
+        // alive for 300ms) cannot resolve it.
+        poorSignalProbeRef.current?.onOnset(
+          transition.capturedAt,
+          deepgramRef.current?.liveEpoch ?? null
+        );
         // A02D FinalWindowV1 — the onset reaches the CURRENT sender before
         // the onset frame is sent (this fires inside the tagging boundary),
         // so the sender records its dispatched offset as the candidate

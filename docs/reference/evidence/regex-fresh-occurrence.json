@@ -22,7 +22,7 @@
       "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "87d4cf063f185de7fc648030904d8704626e327e84988032d2581f0cdd3dff42",
       "src/extraction/sonnet-stream.js": "62b79e16870f678363f0fb05648fe0098dfcbf0b910d5ba1e00b315af9d0b96e",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
-      "web/src/lib/recording-context.tsx": "c3d8355835814bf098e86dbf10768bacdee2f8797e4f5d5c19e316dbb5529bb2",
+      "web/src/lib/recording-context.tsx": "eda1d15866136567f81ad4af18deeb99df20e689b590398e099c5450469f5580",
       "web/src/lib/recording/apply-extraction.ts": "c5c3bbd7c0b4b40f93d647555c3549dc4d35b16fa1fadd173570b0b3690be97b",
       "web/src/lib/recording/apply-regex-match.ts": "802dd8a57c229a585937392ebb36d1be7575ee9011b327fd7ab4a9d5af1b9917",
       "web/src/lib/recording/deepgram-service.ts": "2f76ccfc46a430acc1f559896ab90a4e2e7ba5a700711e4797cc1ebc73d056a8",
@@ -36,7 +36,7 @@
       "web/src/lib/recording/sonnet-session.ts": "cc957f73851120fcb154479b9bb881ff29408857646d2d403c8bd26645ceb5c4",
       "web/src/lib/recording/test-services.ts": "d2ecc96ca6cb900e537ce181d00cf1fcc068bfaec5a205da45f4c2bacd04e08e",
       "web/src/lib/recording/transcript-field-matcher.ts": "d347031736db487cff2df473d4cea4e04d3cca061fae109b6117e5bf3beb78f6",
-      "web/src/lib/recording/tts.ts": "1f8f9c30a8a36a78e91cb760dc8dd0302f5764f97edce728acb2e234614a63d0",
+      "web/src/lib/recording/tts.ts": "9b3a5cafe909e08d33e3e8ea77d6f1be3865d5f90617e5a97a61ad08666d75ad",
       "web/src/lib/recording/voiced-activity.ts": "58e5261ea695a2be8df415ac5741bab018a42f257add0cd2ec7cd7b20ec2fdad"
     },
     "fixtures": {

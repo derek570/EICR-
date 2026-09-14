@@ -670,7 +670,8 @@
     "recording/readback-dedup-rekey",
     "recording/recordingoverlay-47",
     "recording/tts-fifo",
-    "recording/regex-occurrence-freshness"
+    "recording/regex-occurrence-freshness",
+    "recording/poor-signal-probe"
   ],
   "web/src/lib/runtime-config.ts": [
     "recording/flux-kill-switch"
