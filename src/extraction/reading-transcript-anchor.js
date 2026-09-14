@@ -129,6 +129,30 @@ function fieldLabel(field) {
  * @param {string} transcript — session.activeTurnTranscript at dispatch time
  * @returns {boolean}
  */
+/**
+ * Word-boundary variant of `hasReadingFieldAnchor` for callers that GATE on
+ * the answer rather than count it. The metric helper below matches by raw
+ * substring, so the two-letter alias `ir` fires on "cIRcuit" and "Add a
+ * sockets down circuit" reads as an insulation-resistance dictation. That
+ * looseness is harmless for a warn-only metric and wrong for the
+ * create_circuit duplicate guard (feedback id 139, 2026-09-14), which uses
+ * this strict form. Same label + alias sources; each anchor must sit on
+ * word boundaries.
+ */
+export function hasReadingFieldAnchorStrict(field, transcript) {
+  if (typeof field !== 'string' || field.length === 0) return false;
+  if (typeof transcript !== 'string' || transcript.length === 0) return false;
+  const lowered = transcript.toLowerCase();
+  const anchors = [normaliseLabel(fieldLabel(field)), ...(SPOKEN_ALIASES[field] || [])].filter(
+    (a) => typeof a === 'string' && a.length > 0
+  );
+  for (const a of anchors) {
+    const escaped = a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    if (new RegExp(`(?<![a-z0-9])${escaped}(?![a-z0-9])`, 'i').test(lowered)) return true;
+  }
+  return false;
+}
+
 export function hasReadingFieldAnchor(field, transcript) {
   if (typeof field !== 'string' || field.length === 0) return false;
   if (typeof transcript !== 'string' || transcript.length === 0) return false;
