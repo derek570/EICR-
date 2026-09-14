@@ -97,7 +97,8 @@ import {
   NUMERIC_READING_FIELDS,
 } from './value-enum-validator.js';
 import { isLimRangedWriteKilled } from './voice-latency-config.js';
-import { hasReadingFieldAnchor } from './reading-transcript-anchor.js';
+import { hasReadingFieldAnchor, hasReadingFieldAnchorStrict } from './reading-transcript-anchor.js';
+import { RECORDABLE_READING_FIELDS } from './recordable-reading-fields.js';
 import {
   IMPEDANCE_CLAMP_CORRECTION,
   clampReadingForDispatch,
@@ -1234,6 +1235,31 @@ export function transcriptNamesCircuitRef(transcript, ref) {
   return false;
 }
 
+/**
+ * Feedback id 139 follow-up (Derek, 2026-09-14): "there can legitimately be
+ * two circuits called the same thing — lots of circuits are just named lights
+ * or just named sockets." So the duplicate-designation guard's ONLY job is the
+ * phantom case: a READING dictation that names an existing circuit by its
+ * description and no number ("sockets down IR 200"), where the model would
+ * otherwise invent a new way to hang the reading on. A pure designation
+ * announcement ("add a lights circuit", "next one is sockets") carries no
+ * reading and is the inspector choosing a name — never a phantom.
+ *
+ * Reading dictation = the transcript anchors ANY recordable reading field by
+ * label or spoken alias, OR carries a number that is not the new circuit's
+ * own number (a value with no field name, the Bug-2 shape). Null transcript →
+ * treated as a reading dictation so the guard fails closed.
+ */
+export function transcriptLooksLikeReadingDictation(transcript, circuitRef) {
+  if (typeof transcript !== 'string' || transcript.length === 0) return true;
+  for (const field of RECORDABLE_READING_FIELDS) {
+    if (hasReadingFieldAnchorStrict(field, transcript)) return true;
+  }
+  const own = new Set(spokenFormsOfCircuitRef(circuitRef));
+  const numbers = transcript.match(/\d+(?:\.\d+)?/g) ?? [];
+  return numbers.some((n) => !own.has(n));
+}
+
 export async function dispatchCreateCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchRecordReading.
@@ -1419,14 +1445,29 @@ export async function dispatchCreateCircuit(call, ctx) {
           // new circuit's number explicitly, the inspector chose the
           // designation — accept it. Same-name readings then resolve through
           // the matcher's ambiguity ask, which is the correct behaviour.
-          if (transcriptNamesCircuitRef(session.activeTurnTranscript, input.circuit_ref)) {
+          //
+          // Same day, Derek widened the rule: identical designations are
+          // legitimate ("lots of circuits are just named lights or sockets"),
+          // so a designation announcement with NO reading in it is also the
+          // inspector's choice. Only a reading dictation that names the
+          // circuit by description alone still rejects — that is the phantom.
+          const explicitRef = transcriptNamesCircuitRef(
+            session.activeTurnTranscript,
+            input.circuit_ref
+          );
+          const announcementOnly =
+            !explicitRef &&
+            !transcriptLooksLikeReadingDictation(session.activeTurnTranscript, input.circuit_ref);
+          if (explicitRef || announcementOnly) {
             logger?.info?.('stage6.create_circuit_duplicate_designation_allowed', {
               sessionId: session.sessionId,
               turnId,
               tool_use_id: call.tool_call_id,
               circuit_ref: input.circuit_ref,
               existing_circuit_ref: existingRef,
-              reason: 'explicit_circuit_ref_in_transcript',
+              reason: explicitRef
+                ? 'explicit_circuit_ref_in_transcript'
+                : 'designation_announcement_without_reading',
             });
             break;
           }
