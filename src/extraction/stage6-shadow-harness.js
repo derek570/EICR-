@@ -645,6 +645,27 @@ export const ASK_ANSWERED_ACK_PROMPTS = Object.freeze([
   'Got that, thanks.',
   'Noted — carrying on.',
 ]);
+// Feedback id 139 turn-4 (session 2FFC497B, 2026-09-14) — the DROPPED-VALUE
+// family. The ANSWERED family above was designed for "answer understood,
+// nothing left to say" and Derek's round-1 rule that it must NOT read as a
+// failure. But when the answered ask was VALUE-BEARING (the reply is a circuit
+// number, a designation, a reading — not a yes/no) and the turn then wrote
+// NOTHING, the reply was dropped: the inspector said "Sock it down too" for
+// circuit 3's description, no circuit was created, and the app said "Noted —
+// carrying on." A dropped dictation must never be read back as a success
+// (Audio-First §2), so this family names the loss and asks for the repeat.
+// It bypasses the confirmations toggle like the DECLINE family (a failure
+// disclosure, not a courtesy ack). Same hygiene as the other families: FIVE
+// rotating phrasings, wording disjoint from every existing family, no
+// "Sorry" / "didn't catch" / "couldn't" / "Hmm" / "nothing came" stems,
+// APPEND-ONLY.
+export const ASK_DROPPED_VALUE_PROMPTS = Object.freeze([
+  "That reply didn't get recorded — say the circuit number and the detail again.",
+  "I've lost that reply, I'm afraid — give me the circuit number and the detail once more.",
+  "That reply hasn't landed anywhere — repeat the circuit number and the detail.",
+  "I wasn't able to record that reply — say it again with the circuit number.",
+  'That reply went nowhere — give me the circuit number and the detail one more time.',
+]);
 
 // marker-② (numeric-gate-redesign 2026-07-18) — the FINAL catch-all audibility
 // net's apology family. Fires when a chime was heard but the turn produced
@@ -1827,6 +1848,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         existing.resolutionSeq = null;
         existing.answered = false;
         existing.declineClass = null;
+        existing.valueBearing = false;
         if (existing.source == null) existing.source = source ?? null;
       } else {
         askLifecycleLedger.set(toolCallId, {
@@ -1836,6 +1858,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           resolutionSeq: null,
           answered: false,
           declineClass: null,
+          valueBearing: false,
         });
       }
     };
@@ -1876,7 +1899,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // failing observer can never deadlock or corrupt ask resolution. Only asks
     // that went through pendingAsks reach here, so `srv-*` engine asks are
     // excluded by construction.
-    const onAskAnswered = ({ toolCallId, answered, declineClass, source } = {}) => {
+    const onAskAnswered = ({ toolCallId, answered, declineClass, source, valueBearing } = {}) => {
       if (toolCallId == null) return;
       try {
         askEventSeq += 1;
@@ -1889,6 +1912,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // earlier resolution of the same id, else a re-answered ask speaks the
           // stale decline family.
           existing.declineClass = declineClass ?? null;
+          existing.valueBearing = valueBearing === true;
           if (source != null && existing.source == null) existing.source = source;
         } else {
           // Resolution before a recorded emission is not a real path (asks
@@ -1901,6 +1925,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             resolutionSeq: askEventSeq,
             answered: answered === true,
             declineClass: declineClass ?? null,
+            valueBearing: valueBearing === true,
           });
         }
       } catch {
@@ -1923,6 +1948,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             answered: ev.answered !== false,
             declineClass: ev.declineClass ?? null,
             source: ev.source,
+            valueBearing: ev.valueBearing === true,
           });
       }
     }
@@ -5090,13 +5116,31 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         const survivingAnswer = isAudibleText(result.spoken_response);
         if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
           const isDecline = latestAnswered.declineClass === 'decline';
+          // Feedback id 139 turn-4 (2026-09-14): a VALUE-BEARING answer (a
+          // circuit number / designation / reading, not a yes/no) that the
+          // turn then wrote NOWHERE is a dropped dictation, not an understood
+          // no-op — the plain "Noted" family would be a false success. Judged
+          // on the turn's accepted writes (readings, board readings, circuit
+          // ops), not on audibility, so a silent derived write still counts
+          // as "something landed".
+          const wroteNothing =
+            projectReadingWinners(perTurnWrites).length === 0 &&
+            projectBoardReadingWinners(perTurnWrites).length === 0 &&
+            !(Array.isArray(perTurnWrites?.circuitOps) && perTurnWrites.circuitOps.length > 0) &&
+            !(Array.isArray(perTurnWrites?.observations) && perTurnWrites.observations.length > 0);
+          const isDroppedValue = !isDecline && latestAnswered.valueBearing === true && wroteNothing;
           // 2026-08-14 (Derek decision, PLAN-G, id-114): the DECLINE family
-          // always speaks — bypasses confirmationsEnabled. Every OTHER P4
-          // ack (the plain ANSWERED family) remains toggle-gated, same as
-          // before this change.
-          if (isDecline || options.confirmationsEnabled === true) {
+          // always speaks — bypasses confirmationsEnabled. The DROPPED-VALUE
+          // family bypasses it too — it is a loss disclosure (Audio-First §2),
+          // not a courtesy ack. Only the plain ANSWERED family stays
+          // toggle-gated, same as before.
+          if (isDecline || isDroppedValue || options.confirmationsEnabled === true) {
             if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
-            const family = isDecline ? ASK_DECLINE_ACK_PROMPTS : ASK_ANSWERED_ACK_PROMPTS;
+            const family = isDecline
+              ? ASK_DECLINE_ACK_PROMPTS
+              : isDroppedValue
+                ? ASK_DROPPED_VALUE_PROMPTS
+                : ASK_ANSWERED_ACK_PROMPTS;
             const text = family[turnNum % family.length];
             // PLAN-G2 (2026-08-14, held finding 2) — a replay-stable structural
             // dedupe token for BOTH P4 ack families. Neither family previously
@@ -5118,7 +5162,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               sessionId: session.sessionId,
               turnId,
               generationId,
-              ack_class: isDecline ? 'decline' : 'answered',
+              ack_class: isDecline ? 'decline' : isDroppedValue ? 'dropped_value' : 'answered',
               answered_ask_source: latestAnswered.source ?? null,
             });
           }
