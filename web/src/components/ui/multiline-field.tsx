@@ -95,9 +95,13 @@ export function MultilineField({
   React.useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!autoGrow || !el || typeof ResizeObserver === 'undefined') return;
-    let lastWidth = el.clientWidth;
-    const observer = new ResizeObserver(() => {
-      const width = el.clientWidth;
+    // `contentRect.width` is fractional; `clientWidth` is integer-rounded, and
+    // a sub-pixel change can cross a wrapping boundary while leaving the
+    // rounded value identical — the guard would then skip a re-fit that was
+    // actually needed and leave a newly wrapped line hidden.
+    let lastWidth = -1;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? el.clientWidth;
       if (width === lastWidth) return;
       lastWidth = width;
       fitToContent();
