@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "37bf182f04bb2322f695ee4b04659cd1741f4cc8e86c92b6872811eb57602275",
+  "semantic_oracle_digest": "72ca2e84524781d9fc54cce5886a64432488db64d1fc9e9f1717572139ccc6c4",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -597,11 +597,11 @@
     },
     {
       "path": "src/extraction/stage6-dispatcher-ask.js",
-      "sha256": "08169ec5676a01edf60df7f31acce22d30da36b96dda364ddcb63d830b1b21ec"
+      "sha256": "35471238ed254524460faf35e773d474ce12a15ba9ed697760bd5a31494600b8"
     },
     {
       "path": "src/extraction/address-mirror-controller.js",
-      "sha256": "d66ca9cc04492dcd29e96d22227017f598348daadecbb5385e0e7f243491e17c"
+      "sha256": "ac94c09540b2c6fe7d2b5c62d28037a84b5d9a3a104bc6d41cceee3e4c200d6d"
     },
     {
       "path": "src/extraction/cost-tracker.js",

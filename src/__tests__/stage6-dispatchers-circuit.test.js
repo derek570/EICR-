@@ -304,6 +304,86 @@ describe('dispatchCreateCircuit', () => {
     expect(writes.circuitOps).toHaveLength(0);
   });
 
+  // Feedback id 139 (2026-09-14, session 2FFC497B): the inspector dictated
+  // "Circuit 3 sockets down too" against an existing circuit 2 "sockets down".
+  // The guard rejected it, the model asked twice, the second answer arrived
+  // garbled and circuit 3 was created as "Sock it down too". An explicitly
+  // numbered circuit is the inspector's choice, not a phantom duplicate.
+  describe('duplicate designation with an explicit circuit number in the transcript', () => {
+    const cases = [
+      ['Circuit three sockets down too.', 3],
+      ['Circuit 3 sockets down too.', 3],
+      ['Socket 3 is sockets down.', 3],
+      ['3 is sockets down.', 3],
+      ['Way three, sockets down as well.', 3],
+      ['Add circuit number 3, sockets down.', 3],
+      ['Circuit twenty-one is sockets down.', 21],
+      ['circuit twenty one sockets down', 21],
+    ];
+    test.each(cases)('"%s" creates circuit %i with the same name', async (transcript, ref) => {
+      const session = {
+        ...makeSession({ circuits: { 2: { circuit_designation: 'sockets down' } } }),
+        activeTurnTranscript: transcript,
+      };
+      const logger = mockLogger();
+      const writes = createPerTurnWrites();
+      const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+      const result = await d(
+        {
+          tool_call_id: 'tu_dup_explicit',
+          name: 'create_circuit',
+          input: { circuit_ref: ref, designation: 'Sockets down' },
+        },
+        {}
+      );
+
+      expect(result.is_error).toBe(false);
+      expect(session.stateSnapshot.circuits[ref]).toEqual({ circuit_designation: 'Sockets down' });
+      expect(writes.circuitOps).toHaveLength(1);
+      expect(logger.info).toHaveBeenCalledWith(
+        'stage6.create_circuit_duplicate_designation_allowed',
+        expect.objectContaining({
+          circuit_ref: ref,
+          existing_circuit_ref: 2,
+          reason: 'explicit_circuit_ref_in_transcript',
+        })
+      );
+    });
+
+    const stillRejected = [
+      ['Sockets down IR is 3 megohms.', 3],
+      ['sockets down, Zs 0.3', 3],
+      ['Sockets down.', 3],
+      ['Circuit 4 sockets down too.', 3],
+      [null, 3],
+    ];
+    test.each(stillRejected)(
+      'transcript %p does NOT name circuit %i, so the phantom-duplicate guard still rejects',
+      async (transcript, ref) => {
+        const session = {
+          ...makeSession({ circuits: { 2: { circuit_designation: 'sockets down' } } }),
+          activeTurnTranscript: transcript,
+        };
+        const writes = createPerTurnWrites();
+        const d = createWriteDispatcher(session, mockLogger(), 'turn-1', writes);
+
+        const result = await d(
+          {
+            tool_call_id: 'tu_dup_implicit',
+            name: 'create_circuit',
+            input: { circuit_ref: ref, designation: 'Sockets down' },
+          },
+          {}
+        );
+
+        expect(result.is_error).toBe(true);
+        expect(JSON.parse(result.content).error.code).toBe('duplicate_designation');
+        expect(writes.circuitOps).toHaveLength(0);
+      }
+    );
+  });
+
   test('M1 guard intact: designation merely CONTAINING "spare" ("Spare Room Lights") STILL rejected (no broad-predicate re-admit of 2026-05-24 bug)', async () => {
     const session = makeSession({
       circuits: { 4: { circuit_designation: 'Spare Room Lights' } },

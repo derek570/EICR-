@@ -1156,6 +1156,84 @@ export async function dispatchClearReading(call, ctx) {
  * @param {{tool_call_id: string, name: string, input: {circuit_ref: number, designation?: string|null, phase?: string|null, rating_amps?: number|null, cable_csa_mm2?: number|null}}} call
  * @param {{session: object, logger: object, turnId: string, perTurnWrites: object, round: number}} ctx
  */
+const NUMBER_WORDS = Object.freeze({
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  thirteen: 13,
+  fourteen: 14,
+  fifteen: 15,
+  sixteen: 16,
+  seventeen: 17,
+  eighteen: 18,
+  nineteen: 19,
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+});
+
+/**
+ * Every spoken form of a circuit number the guard below accepts: the digit
+ * string, the number word, and the compound "twenty one" / "twenty-one" forms
+ * up to 49. The iOS normaliser does NOT convert a circuit number to digits in
+ * a designation announcement ("Circuit three sockets down too." reached the
+ * backend with "three" intact, session 2FFC497B), so both forms are needed.
+ */
+function spokenFormsOfCircuitRef(ref) {
+  const n = Number(ref);
+  if (!Number.isInteger(n) || n <= 0) return [];
+  const forms = [String(n)];
+  for (const [word, value] of Object.entries(NUMBER_WORDS)) {
+    if (value === n) forms.push(word);
+  }
+  if (n > 20 && n < 50 && n % 10 !== 0) {
+    const tens = Object.entries(NUMBER_WORDS).find(([, v]) => v === n - (n % 10))?.[0];
+    const units = Object.entries(NUMBER_WORDS).find(([, v]) => v === n % 10)?.[0];
+    if (tens && units) forms.push(`${tens} ${units}`, `${tens}-${units}`);
+  }
+  return forms;
+}
+
+const CIRCUIT_REF_LEAD_WORDS = '(?:circuits?|ways?|number|no\\.?|ckt|cct|mcb|breaker|socket)';
+
+/**
+ * Feedback id 139 (2026-09-14) — does the active turn's transcript name THIS
+ * circuit number explicitly? "Circuit 3 sockets down too", "way three is
+ * sockets", "3 is sockets down", "Socket 3 is sockets down" (a Deepgram
+ * garble of "circuit 3") all count. A reading dictation that merely contains
+ * the digit elsewhere ("sockets down IR is 3") does not: the number must
+ * follow a circuit lead word or sit at the start of a clause and be followed
+ * by "is"/"are"/"also"/"too". Null transcript → false (the harness stashes
+ * `activeTurnTranscript: null` in tests, and a missing transcript is not
+ * evidence of anything).
+ */
+export function transcriptNamesCircuitRef(transcript, ref) {
+  if (typeof transcript !== 'string' || transcript.length === 0) return false;
+  const forms = spokenFormsOfCircuitRef(ref);
+  if (forms.length === 0) return false;
+  const text = transcript.toLowerCase();
+  for (const form of forms) {
+    const num = form.replace(/[-\s]+/g, '[-\\s]+');
+    const afterLead = new RegExp(`\\b${CIRCUIT_REF_LEAD_WORDS}\\s+(?:number\\s+)?${num}\\b`, 'i');
+    if (afterLead.test(text)) return true;
+    const clauseStart = new RegExp(
+      `(?:^|[.,;:!?]\\s*)(?:the\\s+)?${num}\\s+(?:is|are|also|too|as well)\\b`,
+      'i'
+    );
+    if (clauseStart.test(text)) return true;
+  }
+  return false;
+}
+
 export async function dispatchCreateCircuit(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   // A2-multiboard item 6 — see dispatchRecordReading.
@@ -1329,6 +1407,29 @@ export async function dispatchCreateCircuit(call, ctx) {
           .trim()
           .toLowerCase();
         if (existingDesig && existingDesig === wantedDesig) {
+          // Feedback id 139 (2026-09-14) — the guard exists to stop the MODEL
+          // inventing a second circuit for a designation the inspector was
+          // only using to ADDRESS an existing one ("sockets down IR 200" →
+          // phantom circuit). It must not veto the inspector: a board can
+          // legitimately carry two "Sockets down" ways, and session 2FFC497B
+          // dictated "Circuit 3 sockets down too" against an existing circuit
+          // 2 "sockets down". The reject sent the model into two rounds of
+          // clarification, the second answer arrived garbled, and circuit 3
+          // was created as "Sock it down too". When the transcript names the
+          // new circuit's number explicitly, the inspector chose the
+          // designation — accept it. Same-name readings then resolve through
+          // the matcher's ambiguity ask, which is the correct behaviour.
+          if (transcriptNamesCircuitRef(session.activeTurnTranscript, input.circuit_ref)) {
+            logger?.info?.('stage6.create_circuit_duplicate_designation_allowed', {
+              sessionId: session.sessionId,
+              turnId,
+              tool_use_id: call.tool_call_id,
+              circuit_ref: input.circuit_ref,
+              existing_circuit_ref: existingRef,
+              reason: 'explicit_circuit_ref_in_transcript',
+            });
+            break;
+          }
           logToolCall(logger, {
             sessionId: session.sessionId,
             turnId,

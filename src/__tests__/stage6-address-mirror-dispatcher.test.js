@@ -88,6 +88,77 @@ describe('address mirror ask dispatcher boundary', () => {
     });
   });
 
+  // Feedback id 138 (2026-09-14): an answered mirror ask the controller does
+  // not handle used to return the legacy body with no `address_mirror` key,
+  // so neither server nor model copied anything and nothing was spoken.
+  test('an unresolved mirror answer is reported as unclear with a single re-ask allowed', async () => {
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = openWs();
+    const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+    const controller = {
+      claimLiveAsk: jest.fn(async () => ({ ok: true })),
+      resolveLiveAnswer: jest.fn(async () => ({ handled: false, reason: 'unclear' })),
+    };
+    const dispatcher = createAskDispatcher(
+      { sessionId: 'sess-mirror', stateSnapshot: { circuits: { 0: {} } } },
+      logger,
+      'turn-mirror',
+      pendingAsks,
+      ws,
+      { addressMirrorController: controller }
+    );
+    const promise = dispatcher(mirrorCall('toolu-mirror-unclear'), {});
+    await tick();
+    pendingAsks.resolve('toolu-mirror-unclear', {
+      answered: true,
+      user_text: 'yes and change circuit three',
+    });
+    const envelope = await promise;
+    expect(envelope.is_error).toBe(false);
+    expect(JSON.parse(envelope.content)).toEqual({
+      answered: true,
+      address_mirror: 'unclear',
+      reason: 'unclear',
+      changed_fields: [],
+      source_replay_count: 0,
+      untrusted_user_text: 'yes and change circuit three',
+      reask_allowed: true,
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      'stage6.address_mirror_answer_unresolved',
+      expect.objectContaining({ tool_call_id: 'toolu-mirror-unclear', reason: 'unclear' })
+    );
+  });
+
+  test('a mirror answer with no matching pending intent is unclear but not re-askable', async () => {
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = openWs();
+    const controller = {
+      claimLiveAsk: jest.fn(async () => ({ ok: true })),
+      resolveLiveAnswer: jest.fn(async () => ({
+        handled: false,
+        reason: 'no_matching_pending_intent',
+      })),
+    };
+    const dispatcher = createAskDispatcher(
+      { sessionId: 'sess-mirror', stateSnapshot: { circuits: { 0: {} } } },
+      { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+      'turn-mirror',
+      pendingAsks,
+      ws,
+      { addressMirrorController: controller }
+    );
+    const promise = dispatcher(mirrorCall('toolu-mirror-nointent'), {});
+    await tick();
+    pendingAsks.resolve('toolu-mirror-nointent', { answered: true, user_text: 'yes' });
+    const body = JSON.parse((await promise).content);
+    expect(body).toMatchObject({
+      address_mirror: 'unclear',
+      reason: 'no_matching_pending_intent',
+      reask_allowed: false,
+    });
+  });
+
   test('failed durable claim registers and emits nothing', async () => {
     const pendingAsks = createPendingAsksRegistry();
     const ws = openWs();
