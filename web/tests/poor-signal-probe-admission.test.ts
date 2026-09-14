@@ -53,7 +53,12 @@ const fixture = require('../../config/poor-signal-probe-vectors.json') as Fixtur
  *  timestamp before making the call. */
 function makeClock(): { now: () => number; set: (ms: number) => void } {
   let current = 0;
-  return { now: () => current, set: (ms: number) => { current = ms; } };
+  return {
+    now: () => current,
+    set: (ms: number) => {
+      current = ms;
+    },
+  };
 }
 
 /**
@@ -150,7 +155,12 @@ const CONFIG: PoorSignalProbeConfig = {
 
 function makeAdvancingClock(startMs = 0) {
   let now = startMs;
-  return { now: () => now, advance: (ms: number) => { now += ms; } };
+  return {
+    now: () => now,
+    advance: (ms: number) => {
+      now += ms;
+    },
+  };
 }
 
 describe('PLAN-C — sample admission on web', () => {
