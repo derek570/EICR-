@@ -69,7 +69,7 @@ export default function ExtentPage() {
           label="Extent"
           value={data.extent ?? ''}
           onChange={(v) => patch({ extent: v })}
-          rows={4}
+          autoGrow
           showCount
         />
         {isEIC ? (
@@ -87,7 +87,7 @@ export default function ExtentPage() {
           label="Comments"
           value={data.comments ?? ''}
           onChange={(v) => patch({ comments: v })}
-          rows={4}
+          autoGrow
           showCount
         />
       </SectionCard>

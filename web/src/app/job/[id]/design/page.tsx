@@ -98,13 +98,13 @@ export default function DesignPage() {
           label="Departures"
           value={data.departures_from_bs7671 ?? ''}
           onChange={(v) => patch({ departures_from_bs7671: v })}
-          rows={4}
+          autoGrow
         />
         <MultilineField
           label="Departure details"
           value={data.departure_details ?? ''}
           onChange={(v) => patch({ departure_details: v })}
-          rows={4}
+          autoGrow
         />
       </SectionCard>
     </div>
