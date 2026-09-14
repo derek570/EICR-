@@ -51,6 +51,54 @@ describe('address mirror controller', () => {
     expect(parseAddressMirrorAnswer('Yeah.')).toBe('yes');
     expect(parseAddressMirrorAnswer('keep the addresses separate')).toBe('no');
     expect(parseAddressMirrorAnswer('yes and change circuit three')).toBeNull();
+  });
+
+  // Feedback id 138 (2026-09-14, session 70BF153F): "Yes, please." parsed as
+  // unclear, so the server copied nothing and nothing was spoken. A yes/no
+  // head plus a politeness tail is a clear answer; real extra content is not.
+  test('accepts a yes/no head with a politeness tail and rejects extra content', () => {
+    for (const yes of [
+      'Yes, please.',
+      'yes please',
+      'Yes, thank you.',
+      'Yeah, go ahead.',
+      'Yes, do that.',
+      "Yes, it's the same.",
+      'Yes, same address.',
+      'Use the same, please.',
+      'Sure.',
+      'OK',
+      'Correct, thanks.',
+      'Please do.',
+      'Y',
+    ]) {
+      expect(parseAddressMirrorAnswer(yes)).toBe('yes');
+    }
+    for (const no of [
+      'No thanks.',
+      'No, thank you.',
+      "No, it's different.",
+      'No, keep them separate.',
+      'Nope.',
+      'Different address.',
+      'no the address is different',
+    ]) {
+      expect(parseAddressMirrorAnswer(no)).toBe('no');
+    }
+    for (const unclear of [
+      'yes but not the same',
+      'yes, no',
+      'no, the same one',
+      'yes, and the customer is Mr Smith',
+      'please',
+      'the same as what',
+      '',
+      '   ',
+      null,
+      undefined,
+    ]) {
+      expect(parseAddressMirrorAnswer(unclear)).toBeNull();
+    }
     expect(parseDirectAddressMirrorCommand('Same address for the client.')).toEqual({
       sourceFamily: 'site',
       targetFamily: 'client',

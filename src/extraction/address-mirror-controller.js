@@ -68,10 +68,150 @@ const SITE_TO_CLIENT =
   /^(?:same address for (?:the )?(?:client|customer)|use (?:the )?(?:same|site|installation) address for (?:the )?(?:client|customer))$/i;
 const CLIENT_TO_SITE =
   /^(?:same address for (?:the )?(?:site|installation|property)|use (?:the )?(?:same|client|customer) address for (?:the )?(?:site|installation|property))$/i;
-const YES =
-  /^(?:y|yes|yeah|yep|same|use (?:the )?same|same as (?:the )?(?:site|installation|client|customer))(?:[.!])?$/i;
-const NO =
-  /^(?:n|no|nope|different|separate|keep (?:them|the addresses) (?:different|separate))(?:[.!])?$/i;
+// Mirror-answer grammar (feedback id 138, 2026-09-14). The original grammar
+// accepted only a bare yes/no word ("Yeah.") so "Yes, please." parsed as
+// UNCLEAR: the server owns the copy after the ask, the prompt forbids the
+// model from copying, and the unclear branch spoke nothing — a hands-free
+// inspector heard the question, answered it, and nothing happened (session
+// 70BF153F turn-1). The grammar now reads a yes/no HEAD phrase followed by an
+// optional POLITENESS TAIL. Anything with real content after the head
+// ("yes and change circuit three") is still unclear — that reply carries a
+// second instruction and must reach the model unresolved.
+const YES_HEADS = [
+  ['y'],
+  ['yes'],
+  ['yeah'],
+  ['yep'],
+  ['yup'],
+  ['aye'],
+  ['sure'],
+  ['ok'],
+  ['okay'],
+  ['correct'],
+  ['affirmative'],
+  ['please', 'do'],
+  ['go', 'ahead'],
+  ['same'],
+  ['use', 'same'],
+  ['use', 'the', 'same'],
+  ['same', 'as', 'site'],
+  ['same', 'as', 'the', 'site'],
+  ['same', 'as', 'installation'],
+  ['same', 'as', 'the', 'installation'],
+  ['same', 'as', 'client'],
+  ['same', 'as', 'the', 'client'],
+  ['same', 'as', 'customer'],
+  ['same', 'as', 'the', 'customer'],
+];
+const NO_HEADS = [
+  ['n'],
+  ['no'],
+  ['nope'],
+  ['nah'],
+  ['negative'],
+  ['different'],
+  ['separate'],
+  ['keep', 'them', 'different'],
+  ['keep', 'them', 'separate'],
+  ['keep', 'the', 'addresses', 'different'],
+  ['keep', 'the', 'addresses', 'separate'],
+];
+// Words allowed AFTER a head without changing its meaning. Shared politeness
+// plus the per-polarity restatements ("yes, same address" / "no, it's
+// different"). A tail token outside the set makes the whole reply unclear.
+const POLITE_TAIL = new Set([
+  'please',
+  'thanks',
+  'thank',
+  'you',
+  'cheers',
+  'ta',
+  'do',
+  'that',
+  'it',
+  'go',
+  'ahead',
+  'on',
+  'of',
+  'course',
+  'very',
+  'much',
+  'fine',
+  'sure',
+  'ok',
+  'okay',
+]);
+const YES_TAIL = new Set([
+  ...POLITE_TAIL,
+  'yes',
+  'yeah',
+  'correct',
+  'right',
+  'the',
+  'same',
+  'address',
+  'one',
+  'use',
+  'is',
+  "it's",
+  'its',
+  "that's",
+  'thats',
+]);
+const NO_TAIL = new Set([
+  ...POLITE_TAIL,
+  'no',
+  'not',
+  'different',
+  'separate',
+  'them',
+  'they',
+  "they're",
+  'theyre',
+  'are',
+  'is',
+  "it's",
+  'its',
+  'the',
+  'a',
+  'address',
+  'addresses',
+  'keep',
+]);
+// A yes head followed by any of these flips the reply to unclear, never to
+// "no": "yes, but not the same" is a contradiction the model must resolve.
+const YES_CONTRADICTION = new Set(['not', 'no', 'different', 'separate', "don't", 'dont']);
+const NO_CONTRADICTION = new Set(['same', 'yes', 'yeah']);
+
+function tokeniseAnswer(text) {
+  return String(text)
+    .toLowerCase()
+    .replace(/[^a-z'\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function matchHead(tokens, heads) {
+  let best = 0;
+  for (const head of heads) {
+    if (head.length <= best || head.length > tokens.length) continue;
+    if (head.every((word, i) => tokens[i] === word)) best = head.length;
+  }
+  return best;
+}
+
+function classifyAnswer(tokens) {
+  const yesLen = matchHead(tokens, YES_HEADS);
+  const noLen = matchHead(tokens, NO_HEADS);
+  if (yesLen === 0 && noLen === 0) return null;
+  const polarity = yesLen >= noLen ? 'yes' : 'no';
+  const tail = tokens.slice(polarity === 'yes' ? yesLen : noLen);
+  const allowed = polarity === 'yes' ? YES_TAIL : NO_TAIL;
+  const contradiction = polarity === 'yes' ? YES_CONTRADICTION : NO_CONTRADICTION;
+  if (tail.some((word) => contradiction.has(word))) return null;
+  if (tail.some((word) => !allowed.has(word))) return null;
+  return polarity;
+}
 
 function meaningful(value) {
   return value != null && (typeof value !== 'string' || value.trim().length > 0);
@@ -339,10 +479,10 @@ function stageDelivery(perTurnWrites, kind, token, claimToken = null) {
 }
 
 export function parseAddressMirrorAnswer(text) {
-  const clean = typeof text === 'string' ? text.trim() : '';
-  if (YES.test(clean)) return 'yes';
-  if (NO.test(clean)) return 'no';
-  return null;
+  if (typeof text !== 'string') return null;
+  const tokens = tokeniseAnswer(text);
+  if (tokens.length === 0) return null;
+  return classifyAnswer(tokens);
 }
 
 export function parseDirectAddressMirrorCommand(text) {

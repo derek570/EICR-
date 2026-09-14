@@ -1119,6 +1119,38 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         is_error: false,
       };
     }
+    // Feedback id 138 (2026-09-14) — an ANSWERED mirror ask the controller
+    // could not resolve used to fall through to the legacy body below, which
+    // carries no `address_mirror` key. The prompt tells the model the server
+    // owns the copy after a mirror answer, so the model (correctly) emitted
+    // no writes — and the server had copied nothing. Session 70BF153F
+    // turn-1: "Yes, please." → unclear → silence. The grammar fix in the
+    // controller covers that reply; this branch makes every remaining
+    // unresolved case VISIBLE to the model as `address_mirror:"unclear"` so
+    // it re-asks once (the controller's clarification rebind admits exactly
+    // one repeat ask while the intent is still pending).
+    if (input.purpose === 'address_mirror' && outcome?.answered === true) {
+      const unresolvedReason = mirrorResolution?.reason ?? 'unclear';
+      logger?.info?.('stage6.address_mirror_answer_unresolved', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        reason: unresolvedReason,
+      });
+      return {
+        tool_use_id: toolCallId,
+        content: JSON.stringify({
+          answered: true,
+          address_mirror: 'unclear',
+          reason: unresolvedReason,
+          changed_fields: [],
+          source_replay_count: 0,
+          untrusted_user_text: outcome.user_text ?? '',
+          reask_allowed: unresolvedReason === 'unclear',
+        }),
+        is_error: false,
+      };
+    }
 
     const body = await buildResolvedBody({
       outcome,

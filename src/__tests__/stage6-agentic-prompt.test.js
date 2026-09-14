@@ -501,8 +501,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // `ze_unreadable` (Ze recorded but not a usable number — never narrated
       // as missing). Shared region; measured 25097 and cap retains ~100-token
       // headroom (measured + ~100, P8 precedent).
+      // 2026-09-14 (feedback id 138): one additive mirror-rule bullet — an
+      // `address_mirror:"unclear"` tool result means the server copied nothing;
+      // re-ask once with strict yes/no wording. Shared region; measured 25206
+      // and cap retains ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(25197);
+      expect(estimate).toBeLessThanOrEqual(25306);
     });
   });
 
@@ -1268,8 +1272,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 2026-09-08 (A01P): `ze_unreadable` skip reason in Example 8 (see the
       // Group 1 combined-cap comment). Measured 19848; cap 19948 leaves
       // ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-14 (feedback id 138): `address_mirror:"unclear"` re-ask bullet
+      // (see the Group 1 combined-cap comment). Measured 19957; cap 20057
+      // leaves ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(19948);
+      expect(estimate).toBeLessThanOrEqual(20057);
     });
   });
 
