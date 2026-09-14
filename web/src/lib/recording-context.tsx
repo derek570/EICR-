@@ -5070,6 +5070,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           ttsResumeTimerRef.current = null;
         }
         ttsActiveRef.current = true;
+        // PLAN-C — drop any pending poor-signal probe onset BEFORE the
+        // uplink pauses. Web's shared VAD is starved while TTS plays, so
+        // no onset can be armed DURING the pause here — but one armed just
+        // BEFORE it survives: the playback gate turns permissive 2.5s after
+        // onset even while the raw VAD still reads speaking, and nothing
+        // here used to clear the pending onset. It then resolved against an
+        // interim on the far side of the pause and charged the whole pause
+        // duration as network latency, which is what armed a "transcription
+        // is running slowly" advisory on a healthy link.
+        //
+        // Discard, not `onResetWithoutInterim()`: that records a censored
+        // sample, and a censored stand-in carries the same poison into the
+        // window that the discard exists to keep out.
+        poorSignalProbeRef.current?.discardPendingOnset();
         deepgramRef.current?.pause();
         clientDiagnostic('tts_pcm_gate_engaged', {});
       } else {

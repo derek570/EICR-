@@ -569,7 +569,8 @@
     "recording/voice-command-executor-e-g-move",
     "recording/dictated-readback-policy",
     "recording/ze-accepted-alias-consistency",
-    "recording/regex-occurrence-freshness"
+    "recording/regex-occurrence-freshness",
+    "recording/poor-signal-probe"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
@@ -713,5 +714,8 @@
   ],
   "web/src/lib/recording/held-fragment-clarification.ts": [
     "recording/regex-occurrence-freshness"
+  ],
+  "web/src/lib/recording/poor-signal-probe.ts": [
+    "recording/poor-signal-probe"
   ]
 }
