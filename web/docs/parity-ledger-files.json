@@ -130,13 +130,15 @@
     "design/designtab-38",
     "design/designtab-61",
     "design/designtab-64",
-    "design/designtab-82"
+    "design/designtab-82",
+    "forms/long-text-fields"
   ],
   "web/src/app/job/[id]/extent/page.tsx": [
     "extent/extenttab-26",
     "extent/extenttab-36",
     "extent/extenttab-52",
     "extent/extenttab-78",
+    "forms/long-text-fields",
     "installation/eic-comments"
   ],
   "web/src/app/job/[id]/inspection/page.tsx": [
@@ -457,6 +459,9 @@
   ],
   "web/src/components/ui/labelled-select.tsx": [
     "crosscutting/cmfloatingpicker"
+  ],
+  "web/src/components/ui/multiline-field.tsx": [
+    "forms/long-text-fields"
   ],
   "web/src/components/ui/pill.tsx": [
     "crosscutting/statusbadge"
