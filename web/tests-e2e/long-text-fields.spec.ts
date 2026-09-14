@@ -97,6 +97,43 @@ test.describe('long free-text fields grow with their content', () => {
     expect(longer.scrollHeight).toBeLessThanOrEqual(longer.clientHeight + 1);
   });
 
+  test('re-fits when the device is rotated (id 135)', async ({ page }) => {
+    // The reported gesture. Height depends on WIDTH, so a clause that fits
+    // three lines in landscape needs eight in portrait; without a re-fit the
+    // control keeps its landscape height and hides two thirds of the text
+    // behind an internal scrollbar. Measured on the unfixed build:
+    // clientHeight 72 against scrollHeight 192.
+    await page.setViewportSize(LANDSCAPE);
+    await page.goto(`/job/${JOB_ID}/extent`);
+
+    const landscape = await measureExtent(page, THREE_HUNDRED_CHARS);
+    expect(landscape.scrollHeight).toBeLessThanOrEqual(landscape.clientHeight + 1);
+
+    const extent = page.getByLabel('Extent');
+
+    // Rotate to portrait: the same text now needs more lines.
+    await page.setViewportSize(PORTRAIT);
+    await expect
+      .poll(async () => extent.evaluate((el) => el.scrollHeight - el.clientHeight))
+      .toBeLessThanOrEqual(1);
+    const portrait = await extent.evaluate((el) => ({
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    }));
+    expect(portrait.clientHeight).toBeGreaterThan(landscape.clientHeight);
+
+    // …and back, so the box shrinks again rather than staying tall.
+    await page.setViewportSize(LANDSCAPE);
+    await expect
+      .poll(async () => extent.evaluate((el) => el.clientHeight))
+      .toBeLessThan(portrait.clientHeight);
+    const back = await extent.evaluate((el) => ({
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    }));
+    expect(back.scrollHeight).toBeLessThanOrEqual(back.clientHeight + 1);
+  });
+
   test('growth stops at the 12-line cap and the rest scrolls', async ({ page }) => {
     await page.setViewportSize(PORTRAIT);
     await page.goto(`/job/${JOB_ID}/extent`);

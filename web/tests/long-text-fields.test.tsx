@@ -76,6 +76,18 @@ describe('MultilineField autoGrow variant', () => {
     expect(el.style.maxHeight).toBe('288px'); // 12 lines
   });
 
+  it('clears the imperative height when the variant is turned off', () => {
+    // The textarea is reused across a variant flip, so a stale inline height
+    // would outlive the variant that set it.
+    const el = render(<MultilineField label="Extent" value="x" onChange={() => {}} autoGrow />);
+    el.style.height = '192px';
+    act(() =>
+      root.render(<MultilineField label="Extent" value="x" onChange={() => {}} rows={4} />)
+    );
+    const after = host.querySelector('textarea')!;
+    expect(after.style.height).toBe('');
+  });
+
   it('leaves the fixed variant exactly as it was', () => {
     const el = render(
       <MultilineField label="Reason for report" value="x" onChange={() => {}} rows={3} />

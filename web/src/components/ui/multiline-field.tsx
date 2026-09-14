@@ -55,19 +55,56 @@ export function MultilineField({
   const id = React.useId();
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
-  // Grow to fit the content, bounded by the `max-h` class below. Height is
-  // reset to `auto` first so the measurement shrinks as well as grows —
-  // `scrollHeight` on an already-tall box only ever reports the taller value.
-  // `useLayoutEffect` so the resize lands in the same frame as the keystroke;
-  // jsdom reports `scrollHeight === 0` and no layout, which is why the web
-  // acceptance for the grown height is a Playwright case, not a Vitest one.
-  React.useLayoutEffect(() => {
-    if (!autoGrow) return;
+  // Grow to fit the content, bounded by `maxHeight` below. Height is reset to
+  // `auto` first so the measurement shrinks as well as grows — `scrollHeight`
+  // on an already-tall box only ever reports the taller value.
+  const fitToContent = React.useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
-  }, [autoGrow, value]);
+  }, []);
+
+  // `useLayoutEffect` so the resize lands in the same frame as the keystroke;
+  // jsdom reports `scrollHeight === 0` and no layout, which is why the web
+  // acceptance for the grown height is a Playwright case, not a Vitest one.
+  // Clearing the height when the variant is off matters because the textarea
+  // is reused across a variant flip — a stale inline height would outlive it.
+  React.useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    if (!autoGrow) {
+      el.style.height = '';
+      return;
+    }
+    fitToContent();
+  }, [autoGrow, value, fitToContent]);
+
+  // Content height depends on the field's WIDTH, so a rotation or any reflow
+  // that changes the width invalidates the fitted height without changing
+  // `value`. Measured on a real browser before this was added: fill a
+  // ~300-character extent in landscape (3 lines, 72px), rotate to portrait and
+  // the same text needs 8 lines — `scrollHeight` 192 against an unchanged
+  // `clientHeight` of 72, so two thirds of the clause is hidden behind an
+  // internal scrollbar. That is exactly the complaint this variant exists to
+  // fix (feedback id 135 named landscape specifically), so it has to re-fit.
+  //
+  // The observer watches the textarea but reacts only to WIDTH changes: its
+  // own height writes would otherwise re-enter the callback, and ignoring them
+  // keeps this free of the ResizeObserver feedback loop.
+  React.useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!autoGrow || !el || typeof ResizeObserver === 'undefined') return;
+    let lastWidth = el.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const width = el.clientWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      fitToContent();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [autoGrow, fitToContent]);
 
   // WS5 (2026-07-02): field chrome matched to the iOS floating-field /
   // cmTextEditorStyle spec — L2 bg, 1.5px L3 border, green focus + glow,
@@ -102,8 +139,14 @@ export function MultilineField({
           className="w-full resize-y overflow-y-auto bg-transparent text-[17px] text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)]/60 focus:outline-none"
         />
       ) : (
+        // Same `ref` as the grown branch on purpose. React reconciles the two
+        // by element type and REUSES this DOM node across a variant flip, but
+        // drops the ref with the branch that declared it — so without this the
+        // clear-on-flip effect above sees a null ref and the stale inline
+        // height survives on the reused node.
         <textarea
           id={id}
+          ref={textareaRef}
           rows={rows}
           value={value}
           onChange={(e) => onChange(e.target.value)}
