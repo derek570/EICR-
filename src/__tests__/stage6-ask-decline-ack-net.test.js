@@ -67,6 +67,7 @@ const {
   runShadowHarness,
   ASK_DECLINE_ACK_PROMPTS,
   ASK_ANSWERED_ACK_PROMPTS,
+  ASK_DROPPED_VALUE_PROMPTS,
   NOOP_AUDIBILITY_PROMPTS,
   CATCHALL_AUDIBILITY_PROMPTS,
   ORPHAN_PROMPTS,
@@ -79,6 +80,7 @@ const { encodeReadingKey } = await import('../extraction/stage6-per-turn-writes.
 
 const DECLINE_SET = new Set(ASK_DECLINE_ACK_PROMPTS);
 const ANSWERED_SET = new Set(ASK_ANSWERED_ACK_PROMPTS);
+const DROPPED_SET = new Set(ASK_DROPPED_VALUE_PROMPTS);
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -137,7 +139,9 @@ function baseOpts(overrides = {}) {
 /** field-null acks queued by THIS net (either family). */
 function declineAckPrompts(result) {
   return (result.confirmations ?? []).filter(
-    (c) => c.field == null && (DECLINE_SET.has(c.text) || ANSWERED_SET.has(c.text))
+    (c) =>
+      c.field == null &&
+      (DECLINE_SET.has(c.text) || ANSWERED_SET.has(c.text) || DROPPED_SET.has(c.text))
   );
 }
 function ackRows(logger) {
@@ -279,6 +283,123 @@ describe('P4 — the answered-ask silent-continuation net FIRES', () => {
     expect(ANSWERED_SET.has(acks[0].text)).toBe(true);
     expect(acks[0].text).toBe(ASK_ANSWERED_ACK_PROMPTS[1 % ASK_ANSWERED_ACK_PROMPTS.length]);
     expect(ackRows(opts.logger)[0][1].ack_class).toBe('answered');
+  });
+
+  // Feedback id 139 turn-4 (session 2FFC497B, 2026-09-14): the inspector
+  // answered "Sock it down too" for circuit 3's description, the model wrote
+  // nothing, and the net spoke "Noted — carrying on." — a false success.
+  describe('(v) a VALUE-BEARING answered ask whose continuation writes nothing → DROPPED-VALUE family', () => {
+    function valueLifecycle(toolCallId = 'toolu_ask', source = 'initial') {
+      return [
+        { event: 'emitted', toolCallId, source },
+        {
+          event: 'answered',
+          toolCallId,
+          source,
+          answered: true,
+          declineClass: null,
+          valueBearing: true,
+        },
+      ];
+    }
+
+    test('(v1) fires the dropped-value family, logs ack_class dropped_value, carries the p4ack token', async () => {
+      silentAnsweredLoop();
+      const opts = baseOpts({ _seedAskLifecycle: valueLifecycle() });
+      const result = await runShadowHarness(makeSession(), 'sock it down too', [], opts);
+      const acks = declineAckPrompts(result);
+      expect(acks).toHaveLength(1);
+      expect(DROPPED_SET.has(acks[0].text)).toBe(true);
+      expect(ANSWERED_SET.has(acks[0].text)).toBe(false);
+      expect(acks[0].text).toBe(ASK_DROPPED_VALUE_PROMPTS[1 % ASK_DROPPED_VALUE_PROMPTS.length]);
+      expect(acks[0].dedupe_token).toBe(`p4ack_${SESSION_ID}-turn-1`);
+      expect(ackRows(opts.logger)[0][1].ack_class).toBe('dropped_value');
+    });
+
+    test('(v2) confirmationsEnabled:false → the dropped-value family STILL speaks (a loss disclosure, not a courtesy ack)', async () => {
+      silentAnsweredLoop();
+      const opts = baseOpts({
+        _seedAskLifecycle: valueLifecycle(),
+        confirmationsEnabled: false,
+      });
+      const result = await runShadowHarness(makeSession(), 'sock it down too', [], opts);
+      const acks = declineAckPrompts(result);
+      expect(acks).toHaveLength(1);
+      expect(DROPPED_SET.has(acks[0].text)).toBe(true);
+    });
+
+    test('(v3) a value-bearing answer whose continuation DID write, but whose confirmation was debounced away → not dropped; plain ANSWERED family', async () => {
+      // Mirrors test (d): a reading LANDED (perTurnWrites has it) but its
+      // confirmation was debounced, so the net still sees a silent turn. The
+      // write is the evidence that the reply was not dropped, so the honest
+      // family is the plain ANSWERED one, never the dropped-value one.
+      const mkLoop = () =>
+        runToolLoopSpy.mockImplementation(async (o) => {
+          const ptw = o.perTurnWritesRef();
+          ptw.readings.set(encodeReadingKey('measured_zs_ohm', 3, undefined), {
+            value: '0.55',
+            confidence: 0.9,
+            source_turn_id: 'turn-x',
+          });
+          return {
+            stop_reason: 'end_turn',
+            rounds: 2,
+            tool_calls: [
+              {
+                tool_call_id: 'toolu_r',
+                name: 'record_reading',
+                input: { field: 'measured_zs_ohm', circuit: 3, value: '0.55' },
+                result: { tool_use_id: 'toolu_r', is_error: false, content: '{"ok":true}' },
+              },
+            ],
+            aborted: false,
+            messages_final: [],
+            usage: {},
+            terminal_reason: 'end_turn',
+          };
+        });
+      const session = makeSession();
+      mkLoop();
+      await runShadowHarness(session, 'zs for circuit 3 is 0.55', [], baseOpts());
+      mkLoop();
+      const opts = baseOpts({ _seedAskLifecycle: valueLifecycle() });
+      const result = await runShadowHarness(session, 'zs for circuit 3 is 0.55', [], opts);
+      const acks = declineAckPrompts(result);
+      expect(acks).toHaveLength(1);
+      expect(ANSWERED_SET.has(acks[0].text)).toBe(true);
+      expect(DROPPED_SET.has(acks[0].text)).toBe(false);
+      expect(ackRows(opts.logger)[0][1].ack_class).toBe('answered');
+    });
+
+    test('(v4) a decline reply on a value-bearing ask stays in the DECLINE family', async () => {
+      silentAnsweredLoop();
+      const opts = baseOpts({
+        _seedAskLifecycle: [
+          { event: 'emitted', toolCallId: 'toolu_ask', source: 'initial' },
+          {
+            event: 'answered',
+            toolCallId: 'toolu_ask',
+            source: 'initial',
+            answered: true,
+            declineClass: 'decline',
+            valueBearing: true,
+          },
+        ],
+      });
+      const result = await runShadowHarness(makeSession(), 'no, leave it', [], opts);
+      const acks = declineAckPrompts(result);
+      expect(acks).toHaveLength(1);
+      expect(DECLINE_SET.has(acks[0].text)).toBe(true);
+    });
+
+    test('(v5) a yes/no (non-value-bearing) answer with a silent continuation keeps the plain ANSWERED family', async () => {
+      silentAnsweredLoop();
+      const opts = baseOpts({ _seedAskLifecycle: answeredLifecycle() });
+      const result = await runShadowHarness(makeSession(), 'yes', [], opts);
+      const acks = declineAckPrompts(result);
+      expect(acks).toHaveLength(1);
+      expect(ANSWERED_SET.has(acks[0].text)).toBe(true);
+    });
   });
 
   test('(c) a brokered pvr-* answered ask that goes silent → ONE ack (source pvr)', async () => {
@@ -640,18 +761,28 @@ describe('P4 — apology-text distinctness + rotation', () => {
       "Sorry — I didn't record that observation. Could you give it to me again?",
       "Sorry, I couldn't place that reading — could you say the field and value together again?",
     ]);
-    for (const t of [...ASK_DECLINE_ACK_PROMPTS, ...ASK_ANSWERED_ACK_PROMPTS]) {
+    for (const t of [
+      ...ASK_DECLINE_ACK_PROMPTS,
+      ...ASK_ANSWERED_ACK_PROMPTS,
+      ...ASK_DROPPED_VALUE_PROMPTS,
+    ]) {
       expect(others.has(t)).toBe(false);
     }
-    // The two families are mutually disjoint and internally duplicate-free.
-    for (const t of ASK_DECLINE_ACK_PROMPTS) expect(ANSWERED_SET.has(t)).toBe(false);
+    // The three families are mutually disjoint and internally duplicate-free.
+    for (const t of ASK_DECLINE_ACK_PROMPTS) {
+      expect(ANSWERED_SET.has(t)).toBe(false);
+      expect(DROPPED_SET.has(t)).toBe(false);
+    }
+    for (const t of ASK_ANSWERED_ACK_PROMPTS) expect(DROPPED_SET.has(t)).toBe(false);
     expect(new Set(ASK_DECLINE_ACK_PROMPTS).size).toBe(ASK_DECLINE_ACK_PROMPTS.length);
     expect(new Set(ASK_ANSWERED_ACK_PROMPTS).size).toBe(ASK_ANSWERED_ACK_PROMPTS.length);
+    expect(new Set(ASK_DROPPED_VALUE_PROMPTS).size).toBe(ASK_DROPPED_VALUE_PROMPTS.length);
   });
 
   test('Codex r2: each family carries FIVE phrasings (the NOOP/CATCHALL burst margin) so a repeat cannot re-silence a burst before the 6th consecutive turn', () => {
     expect(ASK_DECLINE_ACK_PROMPTS.length).toBe(5);
     expect(ASK_ANSWERED_ACK_PROMPTS.length).toBe(5);
+    expect(ASK_DROPPED_VALUE_PROMPTS.length).toBe(5);
   });
 
   test('the ack wording rotates across a FULL family cycle with no repeat within the window (turnNum % len)', async () => {

@@ -351,10 +351,52 @@ describe('dispatchCreateCircuit', () => {
       );
     });
 
+    // Derek, same day: "there can legitimately be two circuits called the same
+    // thing — lots of circuits are just named lights or just named sockets."
+    // A designation ANNOUNCEMENT with no reading in it is the inspector
+    // choosing a name, even without a circuit number.
+    const announcementOnly = [
+      'Add a sockets down circuit.',
+      'Next one is sockets down.',
+      'sockets down',
+      'Another sockets down, please.',
+    ];
+    test.each(announcementOnly)(
+      '"%s" (no number, no reading) creates the same-named circuit',
+      async (transcript) => {
+        const session = {
+          ...makeSession({ circuits: { 2: { circuit_designation: 'sockets down' } } }),
+          activeTurnTranscript: transcript,
+        };
+        const logger = mockLogger();
+        const writes = createPerTurnWrites();
+        const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+        const result = await d(
+          {
+            tool_call_id: 'tu_dup_announce',
+            name: 'create_circuit',
+            input: { circuit_ref: 3, designation: 'Sockets down' },
+          },
+          {}
+        );
+
+        expect(result.is_error).toBe(false);
+        expect(writes.circuitOps).toHaveLength(1);
+        expect(logger.info).toHaveBeenCalledWith(
+          'stage6.create_circuit_duplicate_designation_allowed',
+          expect.objectContaining({ reason: 'designation_announcement_without_reading' })
+        );
+      }
+    );
+
+    // The phantom shape the guard exists for: a READING dictation that names
+    // the circuit by description alone. Still rejected.
     const stillRejected = [
       ['Sockets down IR is 3 megohms.', 3],
       ['sockets down, Zs 0.3', 3],
-      ['Sockets down.', 3],
+      ['Sockets down, 200.', 3],
+      ['sockets down R1 plus R2 0.45', 3],
       ['Circuit 4 sockets down too.', 3],
       [null, 3],
     ];

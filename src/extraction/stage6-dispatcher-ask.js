@@ -1003,6 +1003,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
           answered: outcome.answered === true,
           declineClass: outcome.answered === true ? classifyDeclineReply(outcome.user_text) : null,
           source: 'initial',
+          // Feedback id 139 turn-4 (2026-09-14): a value-bearing ask (the
+          // reply IS a value/circuit/description, not a yes/no) that is
+          // answered and then written nowhere is a DROPPED answer, and the
+          // P4 net must not read it back as "Noted".
+          valueBearing: isValueBearingAsk(input),
         });
       } catch {
         // best-effort observer — never propagate
@@ -2965,6 +2970,9 @@ async function brokerRegisteredAsk({
         answered: outcome.answered === true,
         declineClass: outcome.answered === true ? classifyDeclineReply(outcome.user_text) : null,
         source: emissionSource,
+        // A brokered pending-value ask is value-bearing by construction: the
+        // inspector already spoke the value and is being asked where it goes.
+        valueBearing: true,
       });
     } catch {
       // best-effort observer — never propagate
@@ -3145,6 +3153,24 @@ const WHOLE_DECLINE_RE = new RegExp(
   `^${POLITE_PREFIX_RE}(?:${BARE_NEGATION_RE}|(?:${BARE_NEGATION_RE}[\\s.,!?—-]+)?${DECLINE_PHRASE_RE})${POLITE_SUFFIX_RE}[\\s.,!?—-]*$`,
   'i'
 );
+/**
+ * Feedback id 139 turn-4 (session 2FFC497B, 2026-09-14) — is this ask one
+ * whose reply carries a VALUE the turn is then expected to write? A yes/no
+ * confirmation is not: "yes" with no further write is an understood no-op and
+ * the P4 net's plain "Noted" ack is honest for it. Any other shape with a real
+ * context field (a circuit number, a designation, a reading) IS: if the turn
+ * then writes nothing, the reply was dropped and "Noted — carrying on." is a
+ * false success (the inspector answered "Sock it down too" for circuit 3's
+ * description, nothing was created, and the app said "Noted").
+ */
+export function isValueBearingAsk(input) {
+  if (!input || typeof input !== 'object') return false;
+  if (input.expected_answer_shape === 'yes_no') return false;
+  if (input.pending_write && typeof input.pending_write === 'object') return true;
+  const field = input.context_field;
+  return typeof field === 'string' && field.length > 0 && field !== 'none';
+}
+
 export function classifyDeclineReply(userText) {
   if (typeof userText !== 'string') return null;
   const trimmed = userText.trim();
