@@ -93,7 +93,7 @@ in `src/` — safe-to-remove candidate, via source commit only).
 |---|---|---|---|
 | `CCU_USE_SINGLE_SHOT` | `true` | `false` (`src/routes/extraction.js:2191`) | PROD — single-shot whole-image VLM call is the live path; `false` = legacy per-slot fallback |
 | `CCU_SLIDING_WINDOW` | `true` | `false` (`extraction.js:2183`) | PROD — but when BOTH are true, **single-shot wins** (`extractFn = useSingleShot ? extractViaSingleShot : extractViaSlidingWindow`) |
-| `CCU_SLIDING_WINDOW_MODEL` | `gpt-5.5` | falls back to `CCU_MODEL` (`extraction.js:2206`) | PROD — routes the single-shot/sliding VLM call; a `gpt-*` name wraps an OpenAI client in an Anthropic-shaped adapter |
+| `CCU_SLIDING_WINDOW_MODEL` | `gpt-6-astra` (since 2026-09-18; `gpt-5.5` before) | falls back to `CCU_MODEL` (`extraction.js:2206`) | PROD — routes the single-shot/sliding VLM call; a `gpt-*` name wraps an OpenAI client in an Anthropic-shaped adapter. gpt-6 rejects `reasoning_effort:none`; the adapter defaults gpt-6 to `low`, gpt-5.x to `none`, override `OPENAI_VISION_REASONING_EFFORT` (`default` = omit the field) |
 
 ### Voice-latency flags (10) — defined in `src/extraction/voice-latency-config.js`
 
@@ -148,7 +148,7 @@ Secrets (`JWT_SECRET`, `ANTHROPIC/OPENAI/GEMINI/DEEPGRAM/ELEVENLABS_API_KEY`,
 ## 4. CCU_* tuning family (all readers, with code defaults)
 
 CCU = consumer unit (the fuse board photographed for circuit extraction). Live
-path as of 2026-07-06: single-shot gpt-5.5 (`src/extraction/ccu-single-shot.js`).
+path as of 2026-09-18: single-shot gpt-6-astra (`src/extraction/ccu-single-shot.js`; gpt-5.5 until then).
 
 | Var | Code default | Location | Purpose |
 |---|---|---|---|

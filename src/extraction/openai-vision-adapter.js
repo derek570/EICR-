@@ -99,24 +99,42 @@ async function callOpenAIChat(openai, payload, options = {}) {
   //     improving output quality. Anthropic's equivalent (extended thinking
   //     budget) doesn't apply to Sonnet by default so the migration is
   //     directly comparable on the visible-output side.
-  const isGpt5x = /^gpt-5/i.test(model || '');
+  // GPT-5.x and GPT-6.x are all reasoning models. Until 2026-09-18 the
+  // test was /^gpt-5/, so a gpt-6 model name got neither the reasoning
+  // headroom nor the effort setting — it ran at the vendor default effort
+  // against a 4096-token cap that reasoning tokens also count against.
+  const isReasoningFamily = /^gpt-(5|6)/i.test(model || '');
   const requestPayload = {
     model,
     messages: translated,
     // For non-reasoning models, max_tokens (=max_completion_tokens) caps the
     // visible output. For reasoning models, it caps reasoning + visible
-    // output combined. We multiply for GPT-5.x to leave headroom for
-    // reasoning while still respecting the caller's intent for visible-
-    // output size.
-    max_completion_tokens: isGpt5x ? Math.max(max_tokens * 4, 8192) : max_tokens,
+    // output combined. We multiply for the reasoning family to leave
+    // headroom for reasoning while still respecting the caller's intent
+    // for visible-output size.
+    max_completion_tokens: isReasoningFamily ? Math.max(max_tokens * 4, 8192) : max_tokens,
   };
-  if (isGpt5x) {
+  if (isReasoningFamily) {
     // GPT-5.5 supports 'none' | 'low' | 'medium' | 'high' | 'xhigh'.
     // Per-window enumeration is a structured listing task with no
-    // multi-step deduction, so we disable reasoning entirely — the
-    // visible output is what we care about and reasoning tokens are
+    // multi-step deduction, so the default disables reasoning entirely —
+    // the visible output is what we care about and reasoning tokens are
     // pure waste here.
-    requestPayload.reasoning_effort = 'none';
+    //
+    // gpt-6 REJECTS 'none' (HTTP 400 "'reasoning_effort' does not support
+    // 'none' with this model", measured 2026-09-18 on gpt-6-astra), so
+    // the gpt-6 default is 'low'. Measured on the two 2026-09-18 field
+    // boards through the real prompt: 'low' halves the wall time
+    // (~15 s vs ~25-30 s at the vendor default) with the same exact
+    // module counts and the same labels. OPENAI_VISION_REASONING_EFFORT
+    // overrides either default; the literal 'default' omits the field so
+    // the vendor's own default applies (for A/B-ing a new family before
+    // pinning).
+    const isGpt6 = /^gpt-6/i.test(model || '');
+    const effort = (process.env.OPENAI_VISION_REASONING_EFFORT || (isGpt6 ? 'low' : 'none')).trim();
+    if (effort.toLowerCase() !== 'default') {
+      requestPayload.reasoning_effort = effort;
+    }
   }
   const resp = await openai.chat.completions.create(requestPayload, { signal });
 

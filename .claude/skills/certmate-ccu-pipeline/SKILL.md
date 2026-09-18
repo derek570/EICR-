@@ -26,10 +26,10 @@ All paths repo-relative to the EICR_Automation repo root. All line numbers and p
 
 ## 1. Which pipeline is live (as of 2026-07-06)
 
-**LIVE = single-shot gpt-5.5 over the whole (cropped, dewarped) rail image.** No per-slot cropping in the live path.
+**LIVE = single-shot gpt-6-astra (since 2026-09-18; gpt-5.5 from 2026-05-08) over the whole (cropped, dewarped) rail image, capped to 2048 px wide on EVERY crop path since 2026-09-18.** No per-slot cropping in the live path.
 
-- Gate: `CCU_USE_SINGLE_SHOT` — read at `src/routes/extraction.js:2191`, **code default `false`**, **prod task-def value `true`** (`ecs/task-def-backend.json`, alongside `CCU_SLIDING_WINDOW=true` and `CCU_SLIDING_WINDOW_MODEL=gpt-5.5`). When both sliding-window and single-shot flags are true, single-shot wins (`extractFn = useSingleShot ? extractViaSingleShot : extractViaSlidingWindow`, extraction.js:2288).
-- The VLM model comes from `CCU_SLIDING_WINDOW_MODEL` (one var covers both pipelines); a `gpt-*` name routes through `src/extraction/openai-vision-adapter.js` (OpenAI client wrapped in an Anthropic-shaped adapter). Prod: `gpt-5.5`.
+- Gate: `CCU_USE_SINGLE_SHOT` — read at `src/routes/extraction.js:2191`, **code default `false`**, **prod task-def value `true`** (`ecs/task-def-backend.json`, alongside `CCU_SLIDING_WINDOW=true` and `CCU_SLIDING_WINDOW_MODEL=gpt-6-astra`). When both sliding-window and single-shot flags are true, single-shot wins (`extractFn = useSingleShot ? extractViaSingleShot : extractViaSlidingWindow`, extraction.js:2288).
+- The VLM model comes from `CCU_SLIDING_WINDOW_MODEL` (one var covers both pipelines); a `gpt-*` name routes through `src/extraction/openai-vision-adapter.js` (OpenAI client wrapped in an Anthropic-shaped adapter). Prod: `gpt-6-astra` at `reasoning_effort:low` (gpt-6 rejects `none`; override `OPENAI_VISION_REASONING_EFFORT`).
 - **The legacy per-slot pipeline activates TWO ways** (this is broader than the hub's summary):
   1. Config: `CCU_USE_SINGLE_SHOT=false` (and `CCU_SLIDING_WINDOW=false`).
   2. **Runtime fallback**: any thrown error inside `extractViaSingleShot` (VLM timeout, JSON parse, network) is caught at extraction.js:2318 — logged as "CCU sliding-window extraction failed (falling back to per-slot)" — and the request re-runs through the legacy per-slot classify+label path for that one request. So a per-slot-shaped result in prod logs does NOT prove the env flag changed; check for that warn line first.
