@@ -201,6 +201,8 @@ A 2-pole device that physically occupies TWO module slots — typically a 2-pole
 
 INCLUDE blanking plates (plain plastic covers in an unused slot) as ordinary entries with device_kind:"blank".
 
+An EMPTY WAY — bare rail with nothing mounted, not even a blanking plate — is ALSO a device_kind:"blank" entry. This includes empty ways at EITHER END of the rail, before the first device or after the last one. Use the numbered circuit-label strip as the guide: if the strip has a numbered position (for example a "5") with nothing mounted above it, that position is one blank entry. The rail runs the full width of the label strip; do not start counting at the first device or stop at the last.
+
 COUNTING — CRITICAL
 Before writing any entries, count the visible toggle handles (or rocker switches, or fuse carriers) along the rail. UK consumer units commonly have runs of 3–8 IDENTICAL-LOOKING MCBs side-by-side (same colour, same amperage, same curve letter — e.g. four B32s in a row or six B6s in a row). It is easy to miscount these as "three" or "five" when there are actually four or six.
 
