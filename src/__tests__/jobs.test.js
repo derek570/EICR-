@@ -458,17 +458,16 @@ describe('Job routes (supertest)', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.hierarchy_repairs).toContainEqual(
+      // The body is EXACTLY { success: true } — iOS decodes it as
+      // [String: Bool] and any extra key wedged the job (2026-09-18).
+      expect(res.body).toEqual({ success: true });
+      expect(JSON.parse(res.headers['x-hierarchy-repairs'])).toContainEqual(
         expect.objectContaining({
           code: 'parent_not_found',
           board_id: 'sub-1',
           action: 'cleared_parent_link',
         })
       );
-      // The repaired hierarchy is echoed so the client can reconcile.
-      const sub = res.body.boards.find((b) => b.id === 'sub-1');
-      expect(sub.parent_board_id).toBeNull();
       // The repaired (not raw) boards were persisted.
       const written = mockUploadText.mock.calls.find(([, key]) =>
         String(key).endsWith('extracted_data.json')
@@ -501,7 +500,8 @@ describe('Job routes (supertest)', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(res.body.hierarchy_repairs).toContainEqual(
+      expect(res.body).toEqual({ success: true });
+      expect(JSON.parse(res.headers['x-hierarchy-repairs'])).toContainEqual(
         expect.objectContaining({
           code: 'feed_circuit_not_found',
           board_id: 'sub-1',
@@ -509,8 +509,13 @@ describe('Job routes (supertest)', () => {
           was: '2',
         })
       );
-      const sub = res.body.boards.find((b) => b.id === 'sub-1');
-      // Parent link survives — only the dangling feed pointer is cleared.
+      // The repaired hierarchy is what was PERSISTED (the body no longer
+      // echoes boards): parent link survives, only the dangling feed
+      // pointer is cleared.
+      const written = mockUploadText.mock.calls.find(([, key]) =>
+        String(key).endsWith('extracted_data.json')
+      );
+      const sub = JSON.parse(written[0]).boards.find((b) => b.id === 'sub-1');
       expect(sub.parent_board_id).toBe('FA6C8923');
       expect(sub.feed_circuit_ref).toBeNull();
     });
@@ -537,8 +542,36 @@ describe('Job routes (supertest)', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.hierarchy_repairs).toBeUndefined();
+      expect(res.body).toEqual({ success: true });
+      expect(res.headers['x-hierarchy-repairs']).toBeUndefined();
+    });
+
+    test('a two-main-board save (the iOS second-CU shape) returns a plain body the iOS client can decode', async () => {
+      // job_1789724466336, 2026-09-18: both consumer-unit photos arrived
+      // main-shaped; the repair demoted the second and the old response
+      // carried hierarchy_repairs + boards, which APIClient.saveJob's
+      // [String: Bool] decode rejected — nine identical PUTs in three
+      // minutes and a job that never pulled from the server again.
+      mockGetJob.mockResolvedValue({ id: 'job-1', user_id: 'user-1' });
+      mockUploadText.mockClear();
+      mockDownloadText.mockResolvedValue(null);
+      const token = makeToken('user-1');
+      const res = await supertest(app)
+        .put('/api/job/user-1/job-1')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          boards: [
+            { id: 'GE', manufacturer: 'GE' },
+            { id: 'WYLEX', manufacturer: 'Wylex', designation: 'DB-2' },
+          ],
+          circuits: [],
+        });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true });
+      expect(Object.keys(res.body)).toEqual(['success']);
+      expect(JSON.parse(res.headers['x-hierarchy-repairs'])).toEqual([
+        { code: 'multiple_main_boards', board_id: 'WYLEX', action: 'demoted_to_sub_distribution' },
+      ]);
     });
 
     // Phase 2a closed the CSV-header round-trip gap (src/export.js
