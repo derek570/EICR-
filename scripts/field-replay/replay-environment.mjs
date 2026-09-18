@@ -103,6 +103,10 @@ export const DELETED_SO_DEFAULTS_APPLY = Object.freeze([
   // 'responses' API mode).
   'OPENAI_EXTRACT_REASONING_EFFORT',
   'OPENAI_EXTRACT_API',
+  // Same family for the CCU single-shot vision call (openai-vision-adapter.js,
+  // added 2026-09-18 with the gpt-6-astra switch): per-model-family default
+  // in code ('none' for gpt-5.x, 'low' for gpt-6 — gpt-6 rejects 'none').
+  'OPENAI_VISION_REASONING_EFFORT',
 ]);
 
 /** The SOLE deliberate override: Loaded Barrel OFF in BOTH lanes (v1
