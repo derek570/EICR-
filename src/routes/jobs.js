@@ -836,13 +836,19 @@ router.put('/job/:userId/:jobId', auth.requireAuth, async (req, res) => {
     }
     await db.updateJob(jobId, dbUpdate);
 
-    // hierarchy_repairs + boards echo: present ONLY when a repair fired.
-    // Lets clients reconcile their local copy with the repaired hierarchy
-    // (otherwise they re-send the dangling pointer on every sync and the
-    // repair re-fires — benign but noisy). Clients that ignore unknown
-    // response fields are unaffected.
+    // The body is ALWAYS exactly { success: true }. Until 2026-09-18 a
+    // repaired save returned { success, hierarchy_repairs, boards } so that
+    // clients could reconcile — but the iOS client decodes this response as
+    // [String: Bool] (APIClient.saveJob), so any extra key made the decode
+    // THROW. The server had persisted the save, the app treated it as a
+    // failure, never cleared the job's dirty flag, never fetched from the
+    // server again, and re-pushed its stale local copy on every save (nine
+    // PUTs in three minutes on job_1789724466336, every one repaired).
+    // Every multi-board job whose hierarchy needs a repair was wedged this
+    // way on iOS. The repairs are still logged above and now travel in a
+    // response header, which no client decodes and any tool can read.
     if (hierarchyRepairs.length > 0) {
-      return res.json({ success: true, hierarchy_repairs: hierarchyRepairs, boards: boardsToSave });
+      res.set('X-Hierarchy-Repairs', JSON.stringify(hierarchyRepairs));
     }
     res.json({ success: true });
   } catch (error) {

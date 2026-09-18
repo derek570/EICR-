@@ -190,7 +190,7 @@ grep -n "<field_name>" CertMateUnified/Sources/Recording/DeepgramRecordingViewMo
 
 ## §10 Job permanently unsyncable (validator reject class)
 
-**Incident (2026-06-12):** a PUT-path board-hierarchy validator REJECTED invalid hierarchies, making `job_1778443465217` unsyncable for a week — the client can never fix a payload the server refuses to accept. Rearchitected to deterministically REPAIR (clear dangling parent pointers, demote duplicate mains) + persist + echo `hierarchy_repairs`. Strict validation remains only on the interactive `add_board` path.
+**Incident (2026-06-12):** a PUT-path board-hierarchy validator REJECTED invalid hierarchies, making `job_1778443465217` unsyncable for a week — the client can never fix a payload the server refuses to accept. Rearchitected to deterministically REPAIR (clear dangling parent pointers, demote duplicate mains) + persist + report `hierarchy_repairs`. **Second incident (2026-09-18, job_1789724466336):** the repairs were echoed in the PUT BODY, and iOS decodes that body as `[String: Bool]`, so every repaired save threw client-side — the job stayed dirty, never fetched, and re-pushed its stale copy on every save (nine PUTs in three minutes). Symptom: "the iPad still shows the old values" on a multi-board job. Fix: body is always exactly `{success:true}`; repairs travel in the `X-Hierarchy-Repairs` header. Strict validation remains only on the interactive `add_board` path.
 
 ```bash
 grep -n "repairBoardHierarchy" src/extraction/board-hierarchy-validator.js
