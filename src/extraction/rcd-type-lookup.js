@@ -469,11 +469,25 @@ export function applyRcdTypeLookup(analysis, opts = {}) {
     const slotConfidence = typeof slot?.confidence === 'number' ? slot.confidence : 0;
 
     let shouldApply;
-    if (lookup.confidence === 'high') {
+    if (lookup.source === 'manufacturer_default') {
+      // A manufacturer-level default is a guess about a FAMILY of boards,
+      // not a datasheet for this one. It fills a null and never overrides
+      // an explicit per-slot waveform read, whatever the confidences say.
+      // Why (2026-09-18, Wylex NHRS10SSLHI, field job): gpt-6-astra read
+      // all four RCD modules as Type AC (the sine glyph on a WRS80/2),
+      // and the Wylex default of A/medium overwrote it — the single-shot
+      // path pins every slot at 0.92 (count agrees) or 0.65 (disagrees),
+      // both below PER_SLOT_OVERRIDE_THRESHOLD, so the "confident
+      // disagreement" escape below was unreachable for it and the
+      // certificate carried Type A for a Type AC board. Derek's rule
+      // (2026-07-08) already forbids keying CCU behaviour off the board
+      // model; a manufacturer default is one level cruder than that.
+      shouldApply = !previousType;
+    } else if (lookup.confidence === 'high') {
       shouldApply = true;
     } else if (lookup.confidence === 'medium') {
-      // Honour confident per-slot reads that disagree (covers older
-      // retrofitted devices in an otherwise-uniform-A board).
+      // Model-level medium: honour confident per-slot reads that disagree
+      // (covers older retrofitted devices in an otherwise-uniform-A board).
       const confidentDisagreement =
         previousType &&
         previousType !== lookup.rcd_type &&
