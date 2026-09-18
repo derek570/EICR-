@@ -187,6 +187,11 @@ SONNET_CACHE_TTL                   # ephemeral-cache TTL override for system + s
 SONNET_EXTRACT_MODEL
 SONNET_SESSION_MAX_ENTRIES
 VOICE_REGEX_PRE_APPLY
+# --- CCU single-shot vision call reasoning effort (2026-09-18) ---
+# Per-model-family default lives in openai-vision-adapter.js ('none' for
+# gpt-5.x, 'low' for gpt-6, which rejects 'none'). Override only for A/B
+# work; production runs the code default on purpose.
+OPENAI_VISION_REASONING_EFFORT
 EOF
 
 # Strip blank lines, comment-only lines, and trailing inline comments
