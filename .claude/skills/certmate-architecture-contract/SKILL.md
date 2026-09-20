@@ -217,7 +217,7 @@ historical context, not current behaviour.
 `src/extraction/board-hierarchy-validator.js` — `repairBoardHierarchy()` (line 144). On the
 PUT/save path, an invalid multi-board hierarchy (dangling parent pointers, duplicate main
 boards) is deterministically REPAIRED (pointers cleared, duplicate mains demoted), persisted,
-and echoed to the client as `hierarchy_repairs`. It is NEVER rejected.
+and reported in the `X-Hierarchy-Repairs` response header (NOT the body — since 2026-09-18 the PUT body is always exactly `{success:true}`, because iOS decodes it as `[String: Bool]` and any extra key wedged the job's sync). It is NEVER rejected.
 
 **Why:** the earlier reject gate made a real job permanently unsyncable for a WEEK
 (2026-06-12, `job_1778443465217`) — the client could never produce a payload the server

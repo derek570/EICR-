@@ -76,6 +76,16 @@ const DEWARP_ENABLED = (process.env.CCU_DEWARP_ENABLED ?? 'true').toLowerCase() 
 //     CV correctly counted 16; main switch + last Lighting dropped).
 //     This commit moves the 2048 default INTO CODE so it cannot be
 //     lost again to env-var drift.
+//   - 2026-09-18: the cap only ever applied to the DEWARP path. The
+//     axis-aligned bbox crop (quad fit failed), the rewireable panel
+//     crop and the two full-image fallbacks all still sent native
+//     pixel density. Field extraction 1789724736752-5boxmu (Wylex
+//     NHRS10SSLHI): quad fit rejected at normCorr 0.24, the bbox path
+//     sent a 3447 px crop, input tokens 12772 vs 5413 for the dewarped
+//     board photographed two minutes earlier, and the run-to-run count
+//     wobbled 14/15 on the same photo. Every path out of
+//     cropToRailRegion is now capped to the same width, so the VLM
+//     never sees a full-size picture whichever geometry stage won.
 //
 // WHY 2048 BEATS NATIVE AT COUNTING (best theory — empirical primary)
 //   gpt-5.5's vision pipeline tiles input into multiple ~512px patches.
@@ -142,6 +152,40 @@ const COLOUR_TO_AMPS = {
 
 const norm2px = (v, dim) => Math.round((v / 1000) * dim);
 
+/**
+ * Width cap shared by every image that leaves cropToRailRegion.
+ * Mirrors the dewarp path's contract: `CCU_DEWARP_OUTPUT_WIDTH` (default
+ * 2048) is the hard width; in `native` mode `CCU_DEWARP_MAX_WIDTH` is the
+ * soft cap; native with no max is the explicit opt-out and returns the
+ * buffer untouched. Never upsamples (a tight close-up of a 4-way garage
+ * CU stays at its native width). Exported for tests.
+ */
+export function resolveOutputWidthCap() {
+  return DEWARP_OUTPUT_WIDTH ?? DEWARP_MAX_WIDTH ?? null;
+}
+
+export async function capToOutputWidth(buffer, { logger, reason } = {}) {
+  const cap = resolveOutputWidthCap();
+  if (!cap) return buffer;
+  const meta = await sharp(buffer).metadata();
+  if (!meta.width || meta.width <= cap) return buffer;
+  const resized = await sharp(buffer)
+    .resize({ width: cap, withoutEnlargement: true })
+    .jpeg({ quality: 92 })
+    .toBuffer();
+  if (logger) {
+    logger.info('CCU single-shot capped image width', {
+      reason,
+      sourceWidth: meta.width,
+      sourceHeight: meta.height,
+      outputWidth: cap,
+      sourceBytes: buffer.length,
+      outputBytes: resized.length,
+    });
+  }
+  return resized;
+}
+
 // ---------------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------------
@@ -156,6 +200,8 @@ List every visible MODULE SLOT in strict left-to-right order. ONE ENTRY = ONE MO
 A 2-pole device that physically occupies TWO module slots — typically a 2-pole main switch or a 2-module RCD — must be returned as TWO ENTRIES with identical device_kind, label, ocpd_rating_a, ocpd_bs_en, rcd_type, rcd_rating_ma. Three-pole isolators: three identical entries.
 
 INCLUDE blanking plates (plain plastic covers in an unused slot) as ordinary entries with device_kind:"blank".
+
+An EMPTY WAY — bare rail with nothing mounted, not even a blanking plate — is ALSO a device_kind:"blank" entry. This includes empty ways at EITHER END of the rail, before the first device or after the last one. Use the numbered circuit-label strip as the guide: if the strip has a numbered position (for example a "5") with nothing mounted above it, that position is one blank entry. The rail runs the full width of the label strip; do not start counting at the first device or stop at the last.
 
 COUNTING — CRITICAL
 Before writing any entries, count the visible toggle handles (or rocker switches, or fuse carriers) along the rail. UK consumer units commonly have runs of 3–8 IDENTICAL-LOOKING MCBs side-by-side (same colour, same amperage, same curve letter — e.g. four B32s in a row or six B6s in a row). It is easy to miscount these as "three" or "five" when there are actually four or six.
@@ -297,7 +343,14 @@ Return JSON only — no prose, no markdown fence.`;
  * Falls back to the full image if the rail bbox is missing or degenerate
  * (CV upstream failure shouldn't take the VLM call down).
  */
-async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireable, logger }) {
+export async function cropToRailRegion({
+  imageBuffer,
+  prepared,
+  imgW,
+  imgH,
+  isRewireable,
+  logger,
+}) {
   // 1. Perspective-dewarp the rail when we have a quad — kill-switch
   //    via CCU_DEWARP_ENABLED. Only the modern DIN-rail path: rewireable
   //    boards use panelBounds (axis-aligned rectangle on the cover, not
@@ -361,7 +414,7 @@ async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireabl
         bbox,
       });
     }
-    return imageBuffer;
+    return capToOutputWidth(imageBuffer, { logger, reason: 'bbox_missing' });
   }
 
   const railLeftPx = norm2px(bbox.left, imgW);
@@ -391,17 +444,29 @@ async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireabl
         cropHeight,
       });
     }
-    return imageBuffer;
+    return capToOutputWidth(imageBuffer, { logger, reason: 'zero_area_crop' });
   }
 
   // Re-encode at quality 92 — the camera-source JPEG is already lossy, so a
   // small further re-encode preserves enough fidelity for the labels while
   // keeping the cropped buffer small. Use mozjpeg=false (default) for
   // speed; per-extraction this runs once per request, not in a hot loop.
-  const cropped = await sharp(imageBuffer)
-    .extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight })
-    .jpeg({ quality: 92 })
-    .toBuffer();
+  //
+  // The crop is resized in the same pipeline to the dewarp path's width
+  // cap (see capToOutputWidth) so the bbox and panel paths send the VLM
+  // the same pixel density the dewarped strip does. One encode, not two.
+  const widthCap = resolveOutputWidthCap();
+  const outputWidth = widthCap && cropWidth > widthCap ? widthCap : cropWidth;
+  let pipeline = sharp(imageBuffer).extract({
+    left: cropLeft,
+    top: cropTop,
+    width: cropWidth,
+    height: cropHeight,
+  });
+  if (outputWidth !== cropWidth) {
+    pipeline = pipeline.resize({ width: outputWidth, withoutEnlargement: true });
+  }
+  const cropped = await pipeline.jpeg({ quality: 92 }).toBuffer();
 
   if (logger) {
     logger.info('CCU single-shot rail-region crop', {
@@ -411,6 +476,8 @@ async function cropToRailRegion({ imageBuffer, prepared, imgW, imgH, isRewireabl
       cropTop,
       cropWidth,
       cropHeight,
+      outputWidth,
+      widthCapped: outputWidth !== cropWidth,
       sourceBytes: imageBuffer.length,
       croppedBytes: cropped.length,
     });

@@ -313,19 +313,26 @@ describe('applyRcdTypeLookup — high confidence', () => {
 });
 
 describe('applyRcdTypeLookup — medium confidence', () => {
-  test('overrides per-slot reads below the threshold', () => {
-    // Wylex/UNKNOWN_MODEL → manufacturer_default medium A
-    const a = makeAnalysis({
-      board_manufacturer: 'Wylex',
-      board_model: 'UNKNOWN_MODEL',
-    });
-    a.slots = [{ slotIndex: 0, classification: 'rcbo', rcdWaveformType: 'AC', confidence: 0.88 }];
-    a.circuits = [{ circuit_number: 1, slot_index: 0, rcd_protected: true, rcd_type: 'AC' }];
-    const r = applyRcdTypeLookup(a, { lookupPath });
-    expect(r.outcome).toBe('default');
-    expect(r.confidence).toBe('medium');
-    expect(r.overridden).toBe(1);
-    expect(a.circuits[0].rcd_type).toBe('A');
+  test('a MANUFACTURER default never overrides an explicit per-slot read, whatever the confidence', () => {
+    // Wylex/UNKNOWN_MODEL → manufacturer_default medium A. 2026-09-18:
+    // the single-shot path pins slot confidence at 0.92 / 0.65, both
+    // below PER_SLOT_OVERRIDE_THRESHOLD, so the old "override below the
+    // threshold" rule turned a correct Type AC read into Type A on a
+    // field certificate. Manufacturer defaults are fill-null only.
+    for (const confidence of [0.65, 0.88, 0.92]) {
+      const a = makeAnalysis({
+        board_manufacturer: 'Wylex',
+        board_model: 'UNKNOWN_MODEL',
+      });
+      a.slots = [{ slotIndex: 0, classification: 'rcbo', rcdWaveformType: 'AC', confidence }];
+      a.circuits = [{ circuit_number: 1, slot_index: 0, rcd_protected: true, rcd_type: 'AC' }];
+      const r = applyRcdTypeLookup(a, { lookupPath });
+      expect(r.outcome).toBe('default');
+      expect(r.confidence).toBe('medium');
+      expect(r.overridden).toBe(0);
+      expect(r.kept).toBe(1);
+      expect(a.circuits[0].rcd_type).toBe('AC');
+    }
   });
 
   test('honours confident per-slot disagreement (>= threshold)', () => {
