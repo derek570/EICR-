@@ -76,6 +76,49 @@ export class CostTracker {
       input: 10.0,
       output: 60.0,
     };
+    // OpenAI GPT-6 Responses-API short-context rates, verified 2026-09-22
+    // against https://developers.openai.com/api/docs/pricing. Same Fast = 2x
+    // Standard rule as the 5.6 family. The GPT-6 family is astra / sol /
+    // luna — there is no gpt-6-terra.
+    //
+    // Luna 6 against Luna 5.6: input, cache read and cache write are exactly
+    // HALF, and output is 2.4x cheaper ($0.50 vs $1.20).
+    this.LUNA6_RATES = {
+      cacheRead: 0.01,
+      cacheWrite: 0.125,
+      input: 0.1,
+      output: 0.5,
+    };
+    this.LUNA6_FAST_RATES = {
+      cacheRead: 0.02,
+      cacheWrite: 0.25,
+      input: 0.2,
+      output: 1.0,
+    };
+    this.SOL6_RATES = {
+      cacheRead: 0.2,
+      cacheWrite: 2.5,
+      input: 2.0,
+      output: 10.0,
+    };
+    this.SOL6_FAST_RATES = {
+      cacheRead: 0.4,
+      cacheWrite: 5.0,
+      input: 4.0,
+      output: 20.0,
+    };
+    this.ASTRA6_RATES = {
+      cacheRead: 1.0,
+      cacheWrite: 12.5,
+      input: 10.0,
+      output: 50.0,
+    };
+    this.ASTRA6_FAST_RATES = {
+      cacheRead: 2.0,
+      cacheWrite: 25.0,
+      input: 20.0,
+      output: 100.0,
+    };
     this.MODEL_RATES = {
       sonnet: this.SONNET_RATES,
       haiku: this.HAIKU_RATES,
@@ -86,6 +129,12 @@ export class CostTracker {
       terra_fast: this.TERRA_FAST_RATES,
       sol: this.SOL_RATES,
       sol_fast: this.SOL_FAST_RATES,
+      luna6: this.LUNA6_RATES,
+      luna6_fast: this.LUNA6_FAST_RATES,
+      sol6: this.SOL6_RATES,
+      sol6_fast: this.SOL6_FAST_RATES,
+      astra6: this.ASTRA6_RATES,
+      astra6_fast: this.ASTRA6_FAST_RATES,
     };
 
     // ElevenLabs pricing is PER MODEL, billed in credits where the USD
@@ -280,6 +329,23 @@ export class CostTracker {
       // Sol is also the unsuffixed gpt-5.6 alias and the conservative
       // highest-cost fallback for any future 5.6 suffix we do not yet know.
       return fast ? 'sol_fast' : 'sol';
+    }
+    if (id === 'gpt-6' || id.startsWith('gpt-6-')) {
+      // Same shape as the 5.6 branch above: Luna is the extraction route and
+      // may rely on the global Fast setting; anything else states its tier or
+      // bills at Standard. An UNKNOWN gpt-6 suffix falls back to Astra — the
+      // most expensive member of the family — so a model we have not priced
+      // yet can only ever OVER-state cost in telemetry, never understate it.
+      const configuredFallback = id.includes('gpt-6-luna')
+        ? process.env.OPENAI_EXTRACT_SERVICE_TIER
+        : 'standard';
+      const tier = String(serviceTier ?? configuredFallback ?? '')
+        .trim()
+        .toLowerCase();
+      const fast = tier === 'fast' || tier === 'priority';
+      if (id.includes('gpt-6-luna')) return fast ? 'luna6_fast' : 'luna6';
+      if (id.includes('gpt-6-sol')) return fast ? 'sol6_fast' : 'sol6';
+      return fast ? 'astra6_fast' : 'astra6';
     }
     if (id.includes('haiku')) return 'haiku';
     if (id.includes('opus')) return 'opus';

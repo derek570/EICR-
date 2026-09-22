@@ -14,6 +14,15 @@ function modelFamily(provider, model) {
     if (id === 'gpt-5.6' || id.startsWith('gpt-5.6-sol')) return 'sol';
     if (id.startsWith('gpt-5.6-luna')) return 'luna';
     if (id.startsWith('gpt-5.6-terra')) return 'terra';
+    // GPT-6 (2026-09-22). A family that resolves to null here is NOT inert:
+    // classifyReturnedModel stamps `response_model_family_mismatch` on every
+    // round whose response model is a dated snapshot of the requested one
+    // (`gpt-6-luna` requested, `gpt-6-luna-2026-09-18` returned), saturating
+    // usageValidationErrors on a self-consistent config. The family is astra
+    // / sol / luna; there is no gpt-6-terra.
+    if (id === 'gpt-6' || id.startsWith('gpt-6-astra')) return 'astra6';
+    if (id.startsWith('gpt-6-sol')) return 'sol6';
+    if (id.startsWith('gpt-6-luna')) return 'luna6';
     return null;
   }
   if (provider === 'anthropic') {

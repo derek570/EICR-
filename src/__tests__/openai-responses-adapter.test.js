@@ -284,6 +284,28 @@ describe('openai-responses-adapter — request/response translation', () => {
     }
   });
 
+  test('explicit prompt caching covers the GPT-6 family, not just GPT-5.6', () => {
+    // Regression guard (2026-09-22): the eligibility test read `/^gpt-5\.6/`,
+    // so `gpt-6-luna` silently fell back to `implicit` even with
+    // OPENAI_EXTRACT_PROMPT_CACHE=explicit — production's value. No error, no
+    // log: just the 10x cached-input discount and the latency it buys, gone.
+    for (const model of ['gpt-6-luna', 'gpt-6-luna-2026-09-18', 'gpt-6-sol', 'gpt-6-astra']) {
+      expect(_internals.supportsExplicitPromptCache(model)).toBe(true);
+      expect(_internals.resolvePromptCacheMode('explicit', model)).toBe('explicit');
+    }
+    for (const model of ['gpt-5.6-luna', 'gpt-5.6']) {
+      expect(_internals.supportsExplicitPromptCache(model)).toBe(true);
+    }
+    // Older families keep implicit caching — the breakpoint contract is
+    // GPT-5.6-and-later only.
+    for (const model of ['gpt-5.5', 'gpt-5.2', 'gpt-4o', '']) {
+      expect(_internals.supportsExplicitPromptCache(model)).toBe(false);
+      expect(_internals.resolvePromptCacheMode('explicit', model)).toBe('implicit');
+    }
+    // `gpt-60-foo` must not match `gpt-6` by prefix.
+    expect(_internals.supportsExplicitPromptCache('gpt-60-foo')).toBe(false);
+  });
+
   test('toResponsesTools is FLAT (no nested function key)', () => {
     const out = _internals.toResponsesTools([
       {
