@@ -29,7 +29,7 @@ describe('drift enforcement against ecs/task-def-backend.json', () => {
     }
   });
   test('the extraction routing values are pinned to the task-def snapshot', () => {
-    expect(taskDef.SONNET_EXTRACT_MODEL).toBe('gpt-5.6-luna');
+    expect(taskDef.SONNET_EXTRACT_MODEL).toBe('gpt-6-luna');
     expect(taskDef.OPENAI_EXTRACT_SERVICE_TIER).toBe('fast');
     expect(taskDef.OPENAI_EXTRACT_PROMPT_CACHE).toBe('explicit');
     expect(taskDef.OBSERVATION_EXTRACT_MODEL).toBe('gpt-5.6-terra');
@@ -74,7 +74,7 @@ describe('load + restore semantics', () => {
     }
     const restore = loadReplayEnvironment({ lane: 'recorded' });
     try {
-      expect(process.env.SONNET_EXTRACT_MODEL).toBe('gpt-5.6-luna');
+      expect(process.env.SONNET_EXTRACT_MODEL).toBe('gpt-6-luna');
       expect(process.env.SNAPSHOT_FORMAT).toBe('split_blocks');
       expect(process.env.VOICE_ORPHAN_PROMPT).toBeUndefined();
       expect(process.env.VOICE_LATENCY_LOADED_BARREL).toBe('false');
@@ -108,7 +108,9 @@ describe('load + restore semantics', () => {
     } finally {
       restore();
     }
-    expect(process.env.OPENAI_EXTRACT_REASONING_EFFORT).toBe(preSeed.OPENAI_EXTRACT_REASONING_EFFORT);
+    expect(process.env.OPENAI_EXTRACT_REASONING_EFFORT).toBe(
+      preSeed.OPENAI_EXTRACT_REASONING_EFFORT
+    );
     expect(process.env.OPENAI_EXTRACT_API).toBe(preSeed.OPENAI_EXTRACT_API);
     for (const [k, v] of Object.entries(before)) {
       if (v === undefined) delete process.env[k];
@@ -154,7 +156,7 @@ describe('load + restore semantics', () => {
       encoding: 'utf8',
       cwd: process.cwd(),
     }).trim();
-    expect(out.split('\n').pop()).toBe('gpt-5.6-luna');
+    expect(out.split('\n').pop()).toBe('gpt-6-luna');
   });
 });
 

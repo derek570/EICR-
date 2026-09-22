@@ -334,6 +334,103 @@ describe('CostTracker', () => {
       });
     });
 
+    test('pins the complete September 22 GPT-6 Standard/Fast price schedule', () => {
+      expect(tracker.LUNA6_RATES).toEqual({
+        cacheRead: 0.01,
+        cacheWrite: 0.125,
+        input: 0.1,
+        output: 0.5,
+      });
+      expect(tracker.LUNA6_FAST_RATES).toEqual({
+        cacheRead: 0.02,
+        cacheWrite: 0.25,
+        input: 0.2,
+        output: 1.0,
+      });
+      expect(tracker.SOL6_RATES).toEqual({
+        cacheRead: 0.2,
+        cacheWrite: 2.5,
+        input: 2.0,
+        output: 10.0,
+      });
+      expect(tracker.SOL6_FAST_RATES).toEqual({
+        cacheRead: 0.4,
+        cacheWrite: 5.0,
+        input: 4.0,
+        output: 20.0,
+      });
+      expect(tracker.ASTRA6_RATES).toEqual({
+        cacheRead: 1.0,
+        cacheWrite: 12.5,
+        input: 10.0,
+        output: 50.0,
+      });
+      expect(tracker.ASTRA6_FAST_RATES).toEqual({
+        cacheRead: 2.0,
+        cacheWrite: 25.0,
+        input: 20.0,
+        output: 100.0,
+      });
+    });
+
+    test('Luna 6 Standard bills all four buckets at published Luna 6 rates', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000,
+          cache_creation_input_tokens: 1_000_000,
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+        },
+        'gpt-6-luna',
+        'default'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.01 + 0.125 + 0.1 + 0.5, 6);
+      expect(tracker.modelUsage.has('luna6')).toBe(true);
+    });
+
+    test('Luna 6 Fast/priority bills at exactly twice Standard', () => {
+      tracker.addSonnetUsage(
+        {
+          cache_read_input_tokens: 1_000_000,
+          cache_creation_input_tokens: 1_000_000,
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+        },
+        'gpt-6-luna',
+        'priority'
+      );
+      expect(tracker.sonnetCost).toBeCloseTo(0.02 + 0.25 + 0.2 + 1.0, 6);
+      expect(tracker.modelUsage.has('luna6_fast')).toBe(true);
+    });
+
+    test('Luna 6 Fast is exactly half the price of Luna 5.6 Fast on input and cache, and 2.4x cheaper on output', () => {
+      expect(tracker.LUNA6_FAST_RATES.input).toBeCloseTo(tracker.LUNA_FAST_RATES.input / 2, 8);
+      expect(tracker.LUNA6_FAST_RATES.cacheRead).toBeCloseTo(
+        tracker.LUNA_FAST_RATES.cacheRead / 2,
+        8
+      );
+      expect(tracker.LUNA6_FAST_RATES.cacheWrite).toBeCloseTo(
+        tracker.LUNA_FAST_RATES.cacheWrite / 2,
+        8
+      );
+      expect(tracker.LUNA6_FAST_RATES.output).toBeCloseTo(tracker.LUNA_FAST_RATES.output / 2.4, 8);
+    });
+
+    test('a dated gpt-6-luna snapshot resolves to the Luna 6 family, not Sonnet', () => {
+      // Regression guard: before 2026-09-22 `_modelFamily` matched only
+      // `gpt-5.6*`, so every gpt-6 id fell through to the 'sonnet' default and
+      // billed extraction at $3/$15 per million — roughly 15x over-stated.
+      expect(tracker._modelFamily('gpt-6-luna-2026-09-18', 'standard')).toBe('luna6');
+      expect(tracker._modelFamily('gpt-6-luna', 'fast')).toBe('luna6_fast');
+      expect(tracker._modelFamily('gpt-6-sol', 'standard')).toBe('sol6');
+      expect(tracker._modelFamily('gpt-6-astra', 'standard')).toBe('astra6');
+    });
+
+    test('an unpriced gpt-6 suffix bills at Astra — over-state, never under-state', () => {
+      expect(tracker._modelFamily('gpt-6-nebula', 'standard')).toBe('astra6');
+      expect(tracker._modelFamily('gpt-6-nebula', 'fast')).toBe('astra6_fast');
+    });
+
     test('cache economics counts a cold Fast write as a temporary loss', () => {
       const economics = tracker.estimateModelUsageEconomics(
         { cache_creation_input_tokens: 1_000_000 },
@@ -775,6 +872,39 @@ describe('CostTracker — Plan 00A billable invocation authority', () => {
     });
     expect(nonEcho.attribution_status).toBe('validation_error');
     expect(nonEcho.validation_error).toBe('response_model_family_mismatch');
+  });
+
+  test('a dated gpt-6-luna snapshot attributes cleanly to its own family', () => {
+    // Regression guard (2026-09-22): `modelFamily` knew only the 5.6 family,
+    // so a gpt-6 request resolved to null and classifyReturnedModel stamped
+    // `response_model_family_mismatch` on EVERY round — the response model is
+    // always a dated snapshot of the requested one, so the fast-path string
+    // equality never fires and the family comparison is what decides. That
+    // saturates usageValidationErrors on a perfectly self-consistent config.
+    const tracker = new CostTracker();
+    const evidence = row({
+      requestedModel: 'gpt-6-luna',
+      responseModel: 'gpt-6-luna-2026-09-18',
+    });
+    tracker.beginBillableInvocation('luna6');
+    tracker.ingestBillableUsage('luna6', [evidence], 'inspector_live');
+    tracker.endBillableInvocation('luna6');
+
+    expect(evidence.attribution_status).toBe('attributed');
+    expect(evidence.validation_error).toBeNull();
+    expect(evidence.billing_model).toBe('gpt-6-luna-2026-09-18');
+    expect(tracker.modelUsage.has('luna6_fast')).toBe(true);
+    expect(tracker.modelUsage.has('sonnet')).toBe(false);
+    expect(() => assertUsageAttributionValid([evidence])).not.toThrow();
+  });
+
+  test('a gpt-6 request answered by a gpt-5.6 model is still a family mismatch', () => {
+    const crossGeneration = row({
+      requestedModel: 'gpt-6-luna',
+      responseModel: 'gpt-5.6-luna-2026-07-30',
+    });
+    expect(crossGeneration.attribution_status).toBe('validation_error');
+    expect(crossGeneration.validation_error).toBe('response_model_family_mismatch');
   });
 
   test.each([

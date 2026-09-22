@@ -105,14 +105,32 @@ import {
 const flattenSystem = renderSystemPrompt;
 const PROMPT_CACHE_KEY_VERSION = 'certmate-s6-v1';
 
-function isGPT56Model(model) {
-  return /^gpt-5\.6(?:-|$)/i.test(String(model ?? '').trim());
+/**
+ * Model families whose Responses payload honours the explicit-breakpoint
+ * cache contract (`prompt_cache_key` + `prompt_cache_options.mode`).
+ *
+ * WHY A FAMILY TEST AND NOT AN ALLOW-LIST OF IDS: OpenAI ships dated
+ * snapshots (`gpt-6-luna-2026-09-18`), so an exact-id list silently degrades
+ * the day a snapshot is pinned.
+ *
+ * WHY GPT-6 WAS ADDED (2026-09-22): the predicate was written for GPT-5.6
+ * and read `/^gpt-5\.6/`. `gpt-6-luna` failed it, so switching
+ * SONNET_EXTRACT_MODEL to the GPT-6 family would have fallen back to
+ * `implicit` WITHOUT ERROR even with OPENAI_EXTRACT_PROMPT_CACHE=explicit
+ * (production's value) — the silent-degradation failure mode, costing the
+ * 10x cached-input discount on every round and the latency the cache buys.
+ * GPT-6's pricing table publishes a distinct cache-write rate per model, so
+ * the explicit contract applies to the family exactly as it does to 5.6.
+ */
+function supportsExplicitPromptCache(model) {
+  return /^gpt-(?:5\.6|6)(?:-|$)/i.test(String(model ?? '').trim());
 }
 
 /**
- * Source-controlled rollback for GPT-5.6 explicit caching. `implicit` keeps
+ * Source-controlled rollback for explicit prompt caching. `implicit` keeps
  * the pre-change Responses payload. Older OpenAI model families also retain
- * implicit caching because the explicit-breakpoint contract is GPT-5.6-only.
+ * implicit caching because the explicit-breakpoint contract is GPT-5.6-and-
+ * later only.
  */
 function resolvePromptCacheMode(raw = process.env.OPENAI_EXTRACT_PROMPT_CACHE, model) {
   const configured = String(raw ?? 'implicit')
@@ -121,7 +139,7 @@ function resolvePromptCacheMode(raw = process.env.OPENAI_EXTRACT_PROMPT_CACHE, m
   if (configured !== 'explicit' && configured !== 'implicit') {
     throw new Error(`Unsupported OPENAI_EXTRACT_PROMPT_CACHE: ${raw}`);
   }
-  return configured === 'explicit' && isGPT56Model(model) ? 'explicit' : 'implicit';
+  return configured === 'explicit' && supportsExplicitPromptCache(model) ? 'explicit' : 'implicit';
 }
 
 function systemTextEntries(system) {
@@ -650,7 +668,7 @@ export function createOpenAIResponsesAdapter({ apiKey, maxRetries }) {
 
 export const _internals = Object.freeze({
   flattenSystem,
-  isGPT56Model,
+  supportsExplicitPromptCache,
   resolvePromptCacheMode,
   systemTextEntries,
   toExplicitSystemInput,

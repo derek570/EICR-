@@ -53,6 +53,11 @@ const RATES = {
   'claude-haiku-4-5-20251001': { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 },
   'claude-haiku-4-5': { in: 1.0, out: 5.0, cacheRead: 0.1, cacheWrite: 1.25 },
   'gpt-5.6-luna': { in: 0.2, out: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+  // gpt-6-luna official pricing (developers.openai.com/api/docs/pricing,
+  // verified 2026-09-22): exactly half of 5.6-luna on input and both cache
+  // buckets, and 2.4x cheaper on output. Kept in sync with CostTracker's
+  // LUNA6_RATES, which its tests pin.
+  'gpt-6-luna': { in: 0.1, out: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
 };
 function rateFor(model) {
   if (RATES[model]) return RATES[model];

@@ -65,7 +65,7 @@ iOS (16kHz PCM audio)
 | `CertMateUnified/.../AudioRingBuffer.swift`            | 3s ring buffer for zero word loss on wake                  |
 | `CertMateUnified/.../TranscriptFieldMatcher.swift`     | Instant regex extraction (30+ patterns)                    |
 
-**Server-side live extraction:** Multi-turn tool loop, currently `gpt-5.6-luna` through the OpenAI Responses API (Fast service-tier trial). Prompt caching and conversation compaction preserve the rolling structured-certificate context.
+**Server-side live extraction:** Multi-turn tool loop, currently `gpt-6-luna` through the OpenAI Responses API (Fast service tier; `gpt-5.6-luna` until 2026-09-22). Prompt caching and conversation compaction preserve the rolling structured-certificate context.
 
 ### Client conversation admission
 

@@ -255,7 +255,12 @@ function createStream(openai, streamArgs, options) {
   const { model, max_tokens, system, messages, tools } = streamArgs;
   const { signal } = options || {};
 
-  const isGpt5x = /^gpt-5/i.test(model || '');
+  // GPT-5.x AND GPT-6 are reasoning families: both spend hidden tokens before
+  // visible output, and both carry the Chat Completions function-tool
+  // constraint documented below. The test was `/^gpt-5/` until 2026-09-22 —
+  // the same too-narrow-prefix shape that had already bitten the vision
+  // adapter when gpt-6-astra arrived (see openai-vision-adapter.js:103).
+  const isReasoningFamily = /^gpt-(?:5|6)/i.test(model || '');
   const requestPayload = {
     model,
     messages: toOpenAIMessages(system, messages),
@@ -265,9 +270,11 @@ function createStream(openai, streamArgs, options) {
     // output here is a handful of tool calls (~small), so cap generously to
     // leave reasoning headroom; too low and the model exhausts the budget
     // mid-reasoning and returns zero tool_calls (the vision adapter hit this).
-    max_completion_tokens: isGpt5x ? Math.max((max_tokens || 4096) * 4, 8192) : max_tokens || 4096,
+    max_completion_tokens: isReasoningFamily
+      ? Math.max((max_tokens || 4096) * 4, 8192)
+      : max_tokens || 4096,
   };
-  if (isGpt5x) {
+  if (isReasoningFamily) {
     // HARD CONSTRAINT (verified live 2026-07-31): on `/v1/chat/completions`,
     // GPT-5.6 Luna REJECTS function tools with any reasoning_effort other than
     // 'none' — 400 `invalid_request_error`: "Function tools with reasoning_effort

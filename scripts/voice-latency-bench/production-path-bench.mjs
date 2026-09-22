@@ -238,7 +238,7 @@ const WRITE_TOOL_NAMES = new Set([
 export const PROD_ENV_DEFAULTS = {
   NODE_ENV: 'production',
   SONNET_TOOL_CALLS: 'live',
-  SONNET_EXTRACT_MODEL: 'gpt-5.6-luna',
+  SONNET_EXTRACT_MODEL: 'gpt-6-luna',
   OPENAI_EXTRACT_SERVICE_TIER: 'fast',
   OPENAI_EXTRACT_PROMPT_CACHE: 'explicit',
   SNAPSHOT_FORMAT: 'split_blocks',
