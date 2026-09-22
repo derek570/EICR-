@@ -206,6 +206,28 @@ jobs:
             fi
           done
 
+      - name: ESLint (blocking on errors)
+        # Runs INSIDE test-backend so it rides the `Test Backend (Node.js)`
+        # required check and blocks the merge.
+        #
+        # WHY THIS STEP EXISTS (2026-09-23): `npm run lint` had been exiting 2
+        # on its own arguments since the flat-config migration — it passed
+        # `packages/` as a target while eslint.config.js ignored it, and
+        # ESLint 9 errors when a passed path matches only ignored files. It
+        # therefore linted NOTHING, for months, and nobody noticed because no
+        # CI job ran it. Fixing the script without adding this step would just
+        # restart the same clock.
+        #
+        # Errors only, deliberately: there are ~181 pre-existing warnings
+        # (no-console, unused `_`-prefixed catch bindings) and failing on
+        # those would make this step un-mergeable on day one, which is how a
+        # check ends up wrapped in `|| true` and becomes decorative. This
+        # ratchets instead — today's state passes, any NEW error fails.
+        #
+        # No `|| true`. The two frontend checks in the test-frontend job are
+        # wrapped that way and consequently cannot fail; do not copy them.
+        run: npm run lint
+
       - name: Hub CLAUDE.md size guard (blocking)
         # Runs INSIDE test-backend so it rides the `Test Backend (Node.js)`
         # required check and blocks the merge. CLAUDE.md is auto-loaded into
