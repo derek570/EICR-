@@ -94,8 +94,9 @@ export const DELETED_SO_DEFAULTS_APPLY = Object.freeze([
   'SONNET_SESSION_TTL_MS',
   'SONNET_SESSION_MAX_ENTRIES',
   // Reclassified from EXCLUDED_NOT_IN_REPLAY_CLOSURE.openai_trial
-  // (2026-08-11): SONNET_EXTRACT_MODEL=gpt-5.6-luna is now the PRODUCTION
-  // route (pinned above), not an experimental trial — neither var is set in
+  // (2026-08-11): an OpenAI SONNET_EXTRACT_MODEL is the PRODUCTION route
+  // (pinned above from the task def — gpt-5.6-luna then, gpt-6-luna since
+  // 2026-09-22), not an experimental trial — neither var is set in
   // ecs/task-def-backend.json, so a stale developer-shell value would
   // silently leak into an unpinned field-replay run undetected by the
   // closure guard. Deleted so the code's own defaults apply ('low' on the
@@ -140,7 +141,7 @@ export const EXCLUDED_NOT_IN_REPLAY_CLOSURE = Object.freeze({
   // OpenAI default extraction-provider trial (openai-tooluse-adapter.js /
   // openai-responses-adapter.js). Formerly held OPENAI_EXTRACT_REASONING_EFFORT
   // and OPENAI_EXTRACT_API under a "trial path" rationale; both moved to
-  // DELETED_SO_DEFAULTS_APPLY (2026-08-11) once SONNET_EXTRACT_MODEL=gpt-5.6-luna
+  // DELETED_SO_DEFAULTS_APPLY (2026-08-11) once an OpenAI SONNET_EXTRACT_MODEL
   // became the production route rather than a trial — see that bucket's
   // comment. No variables remain in this bucket; kept as an empty array (not
   // removed) because classifiedVariables() below spreads it unconditionally.

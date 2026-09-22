@@ -122,10 +122,10 @@ Current models used by the backend processing pipeline:
 | Salvage numbers | `salvage_numbers.js:9` | `gpt-5.2` | `EXTRACTION_MODEL` |
 | OCR certificates | `ocr_certificate.js:218` | `gpt-4o` | (hardcoded) |
 | Legacy transcribe | `gemini_transcribe.js:39` | `gemini-2.5-flash` | `GEMINI_MODEL` |
-| Live extraction (default) | `stage6-shadow-harness.js` | `gpt-5.6-luna` (Responses API, Fast trial) | `SONNET_EXTRACT_MODEL` + `OPENAI_EXTRACT_SERVICE_TIER` |
+| Live extraction (default) | `stage6-shadow-harness.js` | `gpt-6-luna` (Responses API, Fast) — `gpt-5.6-luna` until 2026-09-22 | `SONNET_EXTRACT_MODEL` + `OPENAI_EXTRACT_SERVICE_TIER` |
 | Live extraction (observation tier) | `stage6-shadow-harness.js` runLiveMode | `gpt-5.6-terra` (Responses API, Standard/low field trial) | `OBSERVATION_EXTRACT_MODEL` + observation tier/effort vars (gated by `OBSERVATION_TIER_ROUTING`) |
 
-**Note:** For recording, iOS fetches a short-lived Deepgram key and connects directly to Deepgram. Live structured extraction runs server-side via WebSocket; the current Luna trial uses OpenAI's Responses API. Batch processing and CCU photo analysis also call AI APIs from the backend.
+**Note:** For recording, iOS fetches a short-lived Deepgram key and connects directly to Deepgram. Live structured extraction runs server-side via WebSocket over OpenAI's Responses API. Batch processing and CCU photo analysis also call AI APIs from the backend.
 
 **TTS (spoken read-backs).** ElevenLabs `eleven_flash_v2_5`, pinned `language_code=en` on every production synthesis site (`src/extraction/elevenlabs-stream-client.js`, `src/routes/keys.js`, `src/extraction/loaded-barrel-speculator.js`, `src/routes/voice-latency-fast-tts.js`) since 2026-08-13 (PLAN-D, feedback id 121) — the model auto-detects language from text with no pin, and a short telegraphic confirmation ("Garage, circuit 3, 1 points") is composed entirely of valid French words, so detection could flip and speak a confirmation in French. A shared `synthWithLanguageFailOpen` helper retries once with the pin removed on a zero-audio-bytes vendor rejection, so a genuine `language_code` incompatibility degrades gracefully instead of failing every confirmation. `src/routes/voice-latency-bench.js` (the throwaway Stage-0 bench) is pinned but FAIL-CLOSED — no retry, since a bench failure should be loud.
 
@@ -133,9 +133,9 @@ Current models used by the backend processing pipeline:
 
 | Env Var | Prod value | Meaning |
 |---------|-----------|---------|
-| `SONNET_EXTRACT_MODEL` | `gpt-5.6-luna` | Default live extraction model. The historical name is retained for wire/config compatibility. |
+| `SONNET_EXTRACT_MODEL` | `gpt-6-luna` | Default live extraction model. The historical name is retained for wire/config compatibility. |
 | `OPENAI_EXTRACT_SERVICE_TIER` | `fast` | Sends `service_tier: "fast"` on Luna Responses requests. `standard`, `default`, or empty omits the property; any other value fails closed. |
-| `OPENAI_EXTRACT_PROMPT_CACHE` | `explicit` | GPT-5.6 uses one explicit breakpoint after the stable system prefix. `implicit` restores the pre-change top-level-instructions request; invalid values fail closed. |
+| `OPENAI_EXTRACT_PROMPT_CACHE` | `explicit` | GPT-5.6 and GPT-6 use one explicit breakpoint after the stable system prefix. `implicit` restores the pre-change top-level-instructions request; invalid values fail closed. |
 | `OBSERVATION_TIER_ROUTING` | `true` (sole-tester trial) | An observation-shaped RAW utterance routes the whole loop to Terra for BPG4 severity coding instead of default Luna. **Rollback = flip this flag off in the task-def and redeploy.** |
 | `OPENAI_OBSERVATION_SERVICE_TIER` | `standard` | Prevents Terra from inheriting the ordinary Luna Fast tier; observations deliberately do not use Fast. |
 | `OPENAI_OBSERVATION_REASONING_EFFORT` | `low` | Initial Terra observation reasoning effort. Increase only if field evidence shows an observation-quality miss. |
@@ -144,7 +144,11 @@ Current models used by the backend processing pipeline:
 
 **GPT-5.6 Luna Fast field trial (2026-07-31).** `SONNET_EXTRACT_MODEL=gpt-5.6-luna` remains the model pin; `OPENAI_EXTRACT_SERVICE_TIER=fast` is the independent acceleration lever and is committed in `ecs/task-def-backend.json`. The Responses adapter sends `service_tier:"fast"`, preserves the provider's actual response `model` and `service_tier` (currently reported as `priority`), and the tool loop emits both on `stage6_live_extraction`. Rollback to Luna Standard is a source-only task-def edit to `standard` plus the normal PR/CI deploy; rollback to Haiku changes the model pin separately. Fast is the same Luna model with accelerated serving, not a lower-quality model variant; OpenAI documents up to 2.5× faster, more consistent responses, with the same standard rate-limit pool.
 
+**GPT-6 Luna (2026-09-22).** `SONNET_EXTRACT_MODEL=gpt-6-luna` supersedes the 5.6 pin above. Nothing else in the route changed: Responses API, `reasoning_effort` low, explicit prompt cache, Fast tier. Luna 6 is half the price of Luna 5.6 on input and both cache buckets and 2.4x cheaper on output. The observation route stays on `gpt-5.6-terra`, because GPT-6 has no Terra. Explicit prompt caching, the `CostTracker` rate table, and round usage attribution each gated on a `gpt-5.6` prefix and were widened to the GPT-6 family; each would have degraded silently. **This pin carries no latency or accuracy evidence** — settle that with `scripts/model-ab/run-lane.mjs` and `scripts/model-ab/latency-tail-probe.mjs`. Rollback is one task-def value.
+
 **GPT-5.6 Terra observation trial (2026-08-01).** `OBSERVATION_TIER_ROUTING=true` routes observation-shaped raw utterances and their complete tool loop to `gpt-5.6-terra`; `OPENAI_OBSERVATION_SERVICE_TIER=standard` and `OPENAI_OBSERVATION_REASONING_EFFORT=low` keep observations off Fast and make the initial quality comparison explicit. Ordinary readings remain on Luna Fast. Derek is the sole tester, so the missing web observation-processing cue is accepted for this iOS field trial rather than treated as an activation blocker; it remains a real parity gap before broader/multi-user use. Roll back immediately by source-flipping `OBSERVATION_TIER_ROUTING=false` and redeploying; do not change the model pin as the emergency lever.
+
+GPT-6 short-context prices, verified 2026-09-22, are USD per million tokens for fresh input / cached input / cache write / output, with Fast at 2x Standard: Luna 6 Standard `$0.10/$0.01/$0.125/$0.50` and Fast `$0.20/$0.02/$0.25/$1.00`; Sol 6 Standard `$2.00/$0.20/$2.50/$10.00`; Astra 6 Standard `$10.00/$1.00/$12.50/$50.00`. There is no GPT-6 Terra. The GPT-5.6 schedule below stays live for the Terra observation route.
 
 OpenAI's [current API pricing](https://developers.openai.com/api/docs/pricing), effective 2026-07-30 and verified 2026-08-03, is below for short-context requests. Prices are USD per million tokens; Fast is 2× Standard. Anthropic fallback accounting was also re-verified on 2026-08-03 against its official [Claude pricing reference](https://docs.anthropic.com/en/docs/about-claude/pricing): Haiku 4.5 remains `$1/$0.10/$1.25/$5` and Sonnet 4.6 remains `$3/$0.30/$3.75/$15` for fresh input/cache read/five-minute cache write/output per million tokens.
 
