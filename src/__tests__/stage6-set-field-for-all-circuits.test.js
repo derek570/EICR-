@@ -412,13 +412,26 @@ describe('dispatchSetFieldForAllCircuits — validation rejection', () => {
     expect(writes.readings.get(encodeReadingKey('measured_zs_ohm', 5)).value).toBe('0.47');
   });
 
-  test('select-typed field with empty-string value (canonical "clear") is accepted — "" is a valid option', async () => {
-    // Bulk-clear semantics: an empty value across all circuits is the
-    // intended way to wipe a field. "" is in rcd_button_confirmed's option
-    // list, so the validator must accept it.
-    const { result, body } = await runWith(validInput({ value: '' }));
-    expect(result.is_error).toBe(false);
-    expect(body.applied).toHaveLength(14);
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — INVERTED. An empty bulk value
+  // used to BE the bulk-clear idiom, and it was the widest silent clear in
+  // the product: nothing is read back per circuit, so fourteen certificate
+  // values could empty while an inspector in AirPods heard nothing at all.
+  // The explicit `clear_field_for_all_circuits` tool replaces it, and a blank
+  // broadcast is now rejected whatever the option list says.
+  test('select-typed field with empty-string value is REJECTED and names the bulk clear tool', async () => {
+    const { result, body, writes } = await runWith(validInput({ value: '' }));
+    expect(result.is_error).toBe(true);
+    expect(body.error).toMatchObject({
+      code: 'empty_write_not_allowed',
+      clear_tool: 'clear_field_for_all_circuits',
+    });
+    expect(writes.readings.size).toBe(0);
+  });
+
+  test('whitespace-only bulk value is rejected the same way', async () => {
+    const { result, body } = await runWith(validInput({ value: '   ' }));
+    expect(result.is_error).toBe(true);
+    expect(body.error).toMatchObject({ code: 'empty_write_not_allowed' });
   });
 });
 

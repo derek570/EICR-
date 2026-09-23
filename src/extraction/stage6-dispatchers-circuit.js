@@ -83,7 +83,21 @@ import {
   validateCalculateZs,
   validateCalculateR1PlusR2,
   validateBoardScope,
+  blankWriteAppliesToReadingField,
+  ENUM_REJECTION_CODES,
 } from './stage6-dispatch-validation.js';
+// PLAN-C3 (Decision 5) — the blank predicate itself lives in a leaf with zero
+// imports so the dialogue engine can share ONE definition with the
+// dispatchers (see blank-write-policy.js for why that matters).
+import { isBlankWrite, EMPTY_WRITE_REJECTION_CODE } from './blank-write-policy.js';
+import {
+  mintRejectionRef,
+  recordRejection,
+  stageBlankCircuitWriteNotice,
+  stageBulkRejectionNotice,
+  stageCircuitOpBlockedNotice,
+  stageDirectEnumRejectedNotice,
+} from './stage6-blank-write-notices.js';
 import { logToolCall, logReadingFieldGuessedFromValue } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { coerceRecordReadingValue } from './record-reading-coercion.js';
@@ -228,6 +242,117 @@ function stageStructuralReadingRefusal(
   };
 }
 
+/**
+ * PLAN-C3 (Decision 5) — the `record_reading` half of the rejection channel.
+ *
+ * Two rejection classes reach here and neither may be silent:
+ *
+ *   `empty_write_not_allowed` — the model wrote `""` where a value belongs.
+ *     This is the September-17 defect verbatim: the write was accepted, the
+ *     read-back said nothing worth hearing, and a legally-significant value
+ *     was emptied without a word.
+ *   a DIRECT enum/shape rejection — staged PROVISIONALLY, because the
+ *     intended outcome is the model's own `ask_user` and that reconciles the
+ *     notice away at the drain. It only speaks when the model neither asks
+ *     nor rewrites, which is exactly the mixed turn where the coverage
+ *     arbitration cannot help.
+ *
+ * Every other validator code is a value-shaped rejection the model routinely
+ * re-asks about on its own, and a notice there would double up on its
+ * clarification. Those are deliberately left alone, as they already are for
+ * `stageCircuitPartialFailure`.
+ *
+ * @returns {string|null} the minted `rejection_ref`, or null when nothing was
+ *   staged (an unrenderable board, an unlabelled field) — in which case the
+ *   envelope carries no ref, because a ref the server cannot resolve is worse
+ *   than none.
+ */
+function stageRecordReadingRejectionNotice(call, ctx, input, err) {
+  const isBlank = err.code === EMPTY_WRITE_REJECTION_CODE;
+  if (!isBlank && !ENUM_REJECTION_CODES.has(err.code)) return null;
+  const { session, perTurnWrites, turnId } = ctx;
+  const boardId = resolveEffectiveBoardId(session, input.board_id) ?? null;
+  const bucket = getCircuitBucket(session.stateSnapshot, input.circuit, input.board_id);
+  const heldValue = bucket ? bucket[input.field] : null;
+  const staged = isBlank
+    ? stageBlankCircuitWriteNotice(perTurnWrites, session, {
+        field: input.field,
+        circuit: input.circuit,
+        boardId,
+        turnId,
+        toolCallId: call.tool_call_id,
+        heldValue,
+      })
+    : stageDirectEnumRejectedNotice(perTurnWrites, session, {
+        field: input.field,
+        circuit: input.circuit,
+        boardId,
+        turnId,
+        toolCallId: call.tool_call_id,
+        heldValue,
+      });
+  if (!staged) return null;
+  const ref = mintRejectionRef(turnId, call.tool_call_id);
+  recordRejection(perTurnWrites, {
+    ref,
+    field: input.field,
+    scopeSet: Number.isInteger(input.circuit) ? [input.circuit] : null,
+    boardId,
+    toolCallId: call.tool_call_id,
+    bulkInput: null,
+  });
+  return ref;
+}
+
+/**
+ * PLAN-C3 (Decision 5) — the create/rename half of the rejection channel.
+ *
+ * A blank `designation` or `phase` on either tool is a blank write, and both
+ * are certificate content: a rename to nothing would LOSE a name the
+ * inspector dictated, and a blank phase on a create would file a circuit with
+ * no phase at all.
+ *
+ * The key is `(op, key_ref, board)` where `key_ref` is the created circuit's
+ * ref or the renamed circuit's SOURCE ref. A rename's target ref lives in the
+ * spoken line, never in the key — otherwise a 2-to-3 refusal and a later
+ * 3-to-4 refusal would share a slot and the second would be swallowed.
+ *
+ * @returns {string|null} the minted `rejection_ref`, or null when nothing was staged.
+ */
+function stageCircuitOpRejectionNotice(call, ctx, input, err, op) {
+  if (err.code !== EMPTY_WRITE_REJECTION_CODE) return null;
+  const { session, perTurnWrites, turnId } = ctx;
+  const boardId = resolveEffectiveBoardId(session, input.board_id) ?? null;
+  const keyRef = op === 'rename' ? input.from_ref : input.circuit_ref;
+  const existing =
+    op === 'rename' ? getCircuitBucket(session.stateSnapshot, input.from_ref, input.board_id) : null;
+  const staged = stageCircuitOpBlockedNotice(perTurnWrites, session, {
+    op,
+    reasonField: err.field === 'phase' ? 'phase' : 'designation',
+    circuitRef: keyRef,
+    keyRef,
+    boardId,
+    turnId,
+    toolCallId: call.tool_call_id,
+    // For a rename the spoken line names what the circuit STILL is; for a
+    // create there is nothing yet, so the designation the call did carry is
+    // used to disambiguate the phase flavour ("circuit 4, Cooker, phase").
+    designation: op === 'rename' ? (existing?.circuit_designation ?? null) : input.designation,
+    phase: op === 'rename' ? (existing?.phase ?? null) : input.phase,
+  });
+  if (!staged) return null;
+  const ref = mintRejectionRef(turnId, call.tool_call_id);
+  recordRejection(perTurnWrites, {
+    ref,
+    field: err.field === 'phase' ? 'phase' : 'circuit_designation',
+    scopeSet: Number.isInteger(keyRef) ? [keyRef] : null,
+    boardId,
+    toolCallId: call.tool_call_id,
+    bulkInput: null,
+  });
+  return ref;
+}
+
 // ---- P5 same-turn clear→write slot identity (2026-07-23) --------------------
 
 // PLAN-A (feedback-2026-09-17) — `resolveEffectiveBoardId` MOVED to the
@@ -281,7 +406,7 @@ export { resolveEffectiveBoardId };
  *
  * @returns {boolean} true when a target was staged (test/telemetry convenience).
  */
-function stageCircuitPartialFailure(ctx, { reason, field, circuit, boardId, producer }) {
+export function stageCircuitPartialFailure(ctx, { reason, field, circuit, boardId, producer }) {
   if (!Number.isInteger(circuit)) return false;
   return stagePartialFailureTarget(ctx, {
     reason,
@@ -584,7 +709,20 @@ export async function dispatchRecordReading(call, ctx) {
         producer: `record_reading_${err.code}`,
       });
     }
-    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+    // PLAN-C3 (Decision 5) — a blocked blank and a DIRECT enum rejection are
+    // both certificate values that did not land, so both get a spoken
+    // outcome and a server-minted `rejection_ref` the model can echo.
+    //
+    // The held value is read from the snapshot AFTER the rejection. Nothing
+    // was written, so it IS the value the certificate still carries — which
+    // is the thing the inspector actually needs to hear. The model's
+    // rejected string is never spoken.
+    const c3Ref = stageRecordReadingRejectionNotice(call, ctx, input, err);
+    return envelope(
+      call.tool_call_id,
+      c3Ref ? { ok: false, error: err, rejection_ref: c3Ref } : { ok: false, error: err },
+      true
+    );
   }
 
   const structuralErr = stageStructuralReadingRefusal(call, ctx, input);
@@ -1281,7 +1419,14 @@ export async function dispatchCreateCircuit(call, ctx) {
       // (free-text inspector-authored name that may carry PII).
       input_summary: { circuit_ref: input.circuit_ref },
     });
-    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+    // PLAN-C3 (Decision 5) — a blank designation or phase gets a spoken
+    // refusal naming what the circuit still is, plus a `rejection_ref`.
+    const c3OpRef = stageCircuitOpRejectionNotice(call, ctx, input, err, 'create');
+    return envelope(
+      call.tool_call_id,
+      c3OpRef ? { ok: false, error: err, rejection_ref: c3OpRef } : { ok: false, error: err },
+      true
+    );
   }
 
   // Plan 04-26 Layer 2: scan designation for system-prompt leak content.
@@ -1610,7 +1755,14 @@ export async function dispatchRenameCircuit(call, ctx) {
       validation_error: err,
       input_summary: { from_ref: input.from_ref, circuit_ref: input.circuit_ref },
     });
-    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+    // PLAN-C3 (Decision 5) — a blank designation or phase gets a spoken
+    // refusal naming what the circuit still is, plus a `rejection_ref`.
+    const c3OpRef = stageCircuitOpRejectionNotice(call, ctx, input, err, 'rename');
+    return envelope(
+      call.tool_call_id,
+      c3OpRef ? { ok: false, error: err, rejection_ref: c3OpRef } : { ok: false, error: err },
+      true
+    );
   }
 
   // Plan 04-26 Layer 2: scan designation for system-prompt leak content.
@@ -2595,6 +2747,143 @@ function hasApplicableBulkCandidate(candidates) {
 }
 
 /**
+ * PLAN-C3 (Decision 5) — the side-effect-free TARGET RESOLUTION for a bulk
+ * call, extracted so it can run BEFORE validation on every bulk path.
+ *
+ * WHY IT MOVED. `validateSetFieldForAllCircuits` used to return long before
+ * the selector, spare policy, exclusions, board iteration and
+ * `resolveBulkCandidates` were computed. So a rejecting producer — a blank
+ * write, an off-enum value — had NO resolved scope at its rejection site and
+ * could only describe the request in the model's own words. "All circuits"
+ * when the model asked for the RCD-protected ones is a false statement about
+ * what was not written, and this plan's whole point is that the statement
+ * about an unwritten value must be true.
+ *
+ * Nothing here mutates, stages a notice, coerces or clamps: it is exactly the
+ * existing `resolveSparePolicy` / `requestedExcludes` / `iterationPlan` /
+ * `resolveBulkCandidates` sequence, hoisted. The apply loop below consumes
+ * this result rather than re-deriving it, which is what keeps the spoken
+ * scope and the written scope the same set.
+ *
+ * `scopeByBoard` is the per-board FINAL eligible ref list — a `board_id:'*'`
+ * sweep resolves one entry per board, because one notice per board is what a
+ * board-ordinal-bearing line requires.
+ */
+export function resolveBulkTargets(input, snapshot) {
+  const rawScope = input.scope;
+  const selector = rawScope === 'rcd_protected_only' ? 'rcd_protected_only' : 'all';
+  const isDeviceAttributeField = DEVICE_ATTRIBUTE_FIELDS.has(input.field);
+  const effectiveSparePolicy = resolveSparePolicy({
+    scopeInput: rawScope,
+    sparePolicyInput: input.spare_policy,
+    isDeviceAttributeField,
+  });
+  const requestedExcludes = new Set();
+  if (Array.isArray(input.exclude_circuits)) {
+    for (const v of input.exclude_circuits) {
+      if (Number.isInteger(v) && v > 0) requestedExcludes.add(v);
+    }
+  }
+  const iterationPlan =
+    input.board_id === '*'
+      ? (snapshot?.boards ?? []).map((b) => ({
+          boardId: b?.id,
+          refs: listCircuitRefsInBoard(snapshot, b?.id),
+        }))
+      : [{ boardId: input.board_id, refs: listCircuitRefsInBoard(snapshot, input.board_id) }];
+  const candidates = resolveBulkCandidates(snapshot, iterationPlan, requestedExcludes, {
+    selector,
+    effectiveSparePolicy,
+  });
+  const scopeByBoard = new Map();
+  for (const { boardId } of iterationPlan) {
+    scopeByBoard.set(boardId ?? null, []);
+  }
+  for (const c of candidates) {
+    if (!c.eligible) continue;
+    const key = c.boardId ?? null;
+    if (!scopeByBoard.has(key)) scopeByBoard.set(key, []);
+    scopeByBoard.get(key).push(c.ref);
+  }
+  return {
+    selector,
+    effectiveSparePolicy,
+    requestedExcludes,
+    iterationPlan,
+    candidates,
+    scopeByBoard,
+  };
+}
+
+/**
+ * PLAN-C3 — stage ONE bulk refusal per board in the resolved scope, journal
+ * each one, and return the ref to echo on the tool result.
+ *
+ * A bulk notice is per CALL and is never partially retired: the call is one
+ * statement about a scope, and a later single-circuit write does not make it
+ * true. The only thing that reconciles it away is a covering ask.
+ *
+ * `board_id:'*'` produces one notice and one journal entry PER BOARD, because
+ * each carries its own board ordinal and its own resolved refs; the tool
+ * result echoes the first ref, which is what a single-board sweep — the
+ * overwhelmingly common case — needs.
+ */
+function stageBulkRejection(call, ctx, input, targets, { family, route, boardScopedField }) {
+  const { session, perTurnWrites, turnId } = ctx;
+  // Trusted-discriminator contract: the descriptor is only truthful when the
+  // request's own scope words were valid. A call whose `scope` /
+  // `spare_policy` is off-schema is rejected anyway and marker-2's catch-all
+  // still speaks; inventing a descriptor for it would put a guessed sentence
+  // in front of the inspector, which is the one thing this channel must not
+  // do.
+  if (input.scope !== undefined && !VALID_SCOPES.has(input.scope)) return null;
+  if (input.spare_policy !== undefined && !VALID_SPARE_POLICIES.has(input.spare_policy)) {
+    return null;
+  }
+  const bulkInput = {
+    scope: input.scope ?? null,
+    spare_policy: input.spare_policy ?? null,
+    exclude_circuits: Array.isArray(input.exclude_circuits) ? [...input.exclude_circuits] : null,
+    board_id: input.board_id ?? null,
+  };
+  let firstRef = null;
+  for (const [rawBoardId, refs] of targets.scopeByBoard.entries()) {
+    const boardId = resolveEffectiveBoardId(session, rawBoardId) ?? null;
+    const scope = {
+      selector: targets.selector,
+      sparePolicy: targets.effectiveSparePolicy,
+      excludes: [...targets.requestedExcludes],
+      resolvedRefs: refs,
+    };
+    const staged = stageBulkRejectionNotice(perTurnWrites, session, {
+      family,
+      route,
+      field: boardScopedField,
+      boardId,
+      turnId,
+      toolCallId: call.tool_call_id,
+      scope,
+    });
+    if (!staged) continue;
+    const ref = mintRejectionRef(
+      turnId,
+      targets.scopeByBoard.size > 1 ? `${call.tool_call_id}::${boardId ?? ''}` : call.tool_call_id
+    );
+    recordRejection(perTurnWrites, {
+      ref,
+      field: boardScopedField,
+      scopeSet: refs,
+      boardId,
+      toolCallId: call.tool_call_id,
+      bulkInput,
+      scope,
+    });
+    if (firstRef == null) firstRef = ref;
+  }
+  return firstRef;
+}
+
+/**
  * dispatchSetFieldForAllCircuits — Bug A from session DC946608 (8 Branagh Ct,
  * 2026-05-06). Replaces the model's 14-tool-call burst pattern (which Sonnet
  * silently truncated to 7 in production) with one server-iterated tool call.
@@ -2661,6 +2950,12 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     return envelope(call.tool_call_id, { ok: false, error: fieldErr }, true);
   }
 
+  // PLAN-C3 (Decision 5) — target resolution runs FIRST, before validation,
+  // so a rejecting producer below has the RESOLVED scope to describe rather
+  // than the model's request words. Side-effect-free; the apply loop consumes
+  // this same result instead of re-deriving it.
+  const bulkTargets = resolveBulkTargets(input, session.stateSnapshot);
+
   const err = validateSetFieldForAllCircuits(input);
   if (err) {
     logToolCall(logger, {
@@ -2682,7 +2977,23 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
         spare_policy: input.spare_policy ?? null,
       },
     });
-    return envelope(call.tool_call_id, { ok: false, error: err }, true);
+    // PLAN-C3 — a blank bulk write and an off-enum bulk value are both whole
+    // scopes that did not land. One notice per board, never partially
+    // retired by a later per-circuit write (C3-36).
+    const isBlankBulk = err.code === EMPTY_WRITE_REJECTION_CODE;
+    const bulkRef =
+      isBlankBulk || ENUM_REJECTION_CODES.has(err.code)
+        ? stageBulkRejection(call, ctx, input, bulkTargets, {
+            family: isBlankBulk ? 'empty_bulk_write_blocked' : 'enum_rejected',
+            route: isBlankBulk ? 'empty_bulk_write_blocked' : 'enum_rejected',
+            boardScopedField: input.field,
+          })
+        : null;
+    return envelope(
+      call.tool_call_id,
+      bulkRef ? { ok: false, error: err, rejection_ref: bulkRef } : { ok: false, error: err },
+      true
+    );
   }
 
   // A bulk hierarchy write has no single in-place structural tool equivalent:
@@ -2766,14 +3077,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // below (it used to run after). The gate needs to know whether a real
   // write is even going to be attempted before it decides whether to
   // refuse — see the preflight immediately below.
-  const rawScope = input.scope; // undefined | 'non_spare' | 'all' | 'rcd_protected_only'
-  const selector = rawScope === 'rcd_protected_only' ? 'rcd_protected_only' : 'all';
-  const isDeviceAttributeField = DEVICE_ATTRIBUTE_FIELDS.has(input.field);
-  const effectiveSparePolicy = resolveSparePolicy({
-    scopeInput: rawScope,
-    sparePolicyInput: input.spare_policy,
-    isDeviceAttributeField,
-  });
+  // PLAN-C3 — these are now DESTRUCTURED from the single resolution hoisted
+  // above `validateSetFieldForAllCircuits`, not re-derived. One derivation is
+  // what guarantees the scope a refusal SPEAKS is the scope the apply loop
+  // would have WRITTEN.
+  const { effectiveSparePolicy, requestedExcludes } = bulkTargets;
 
   // PLAN-backend-final.md Phase 8.2 — exclude_circuits dedup + validate.
   // Build a Set of valid integer refs to subtract from the apply list.
@@ -2783,13 +3091,6 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // rejecting the whole tool call. excluded_count below is the count of
   // dedup'd VALIDATED requests — it reflects inspector INTENT, not the
   // subset actually subtracted from the scoped candidates.
-  const requestedExcludes = new Set();
-  if (Array.isArray(input.exclude_circuits)) {
-    for (const v of input.exclude_circuits) {
-      if (Number.isInteger(v) && v > 0) requestedExcludes.add(v);
-    }
-  }
-
   // 2026-05-07 Phase 6.5 — board_id thread-through with `'*'` cross-board sweep.
   //
   // Resolve the iteration plan: a list of {boardId, refs[]} tuples.
@@ -2805,13 +3106,6 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // because listCircuitRefsInBoard ignores the boardId arg. So '*' is a no-op
   // deviation from the unscoped default — same iteration shape, same writes.
   const snapshot = session.stateSnapshot;
-  const iterationPlan =
-    input.board_id === '*'
-      ? (snapshot.boards ?? []).map((b) => ({
-          boardId: b?.id,
-          refs: listCircuitRefsInBoard(snapshot, b?.id),
-        }))
-      : [{ boardId: input.board_id, refs: listCircuitRefsInBoard(snapshot, input.board_id) }];
 
   // P3 Fix 8 — rollout gate (mirror of the direct record_reading path): deny a
   // bulk LIM write on a capability-gated field when the client hasn't advertised
@@ -2829,10 +3123,7 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
   // with an empty `applied[]`. `resolveBulkCandidates` is side-effect-free
   // (no mutation, no notices); the apply loop below iterates its result
   // directly rather than re-resolving.
-  const bulkCandidates = resolveBulkCandidates(snapshot, iterationPlan, requestedExcludes, {
-    selector,
-    effectiveSparePolicy,
-  });
+  const bulkCandidates = bulkTargets.candidates;
   // PLAN-B (id 128, moved here by Codex cycle 2) — reject-empty gate for
   // the bulk designation write. Positioned AFTER the side-effect-free
   // candidate resolution so the rejection stages the CONCRETE intended
@@ -3193,7 +3484,7 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
       // the resolved effective policy as SEPARATE fields (never conflated
       // into one scope string, so a dashboard can distinguish "the model
       // asked for X" from "the dispatcher resolved Y").
-      scope: rawScope ?? null,
+      scope: input.scope ?? null,
       spare_policy: input.spare_policy ?? null,
       resolved_spare_policy: effectiveSparePolicy,
       applied_count: applied.length,
@@ -3227,11 +3518,17 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
 //   - For TEXT-typed fields, accept any string (matches record_reading
 //     behaviour — the schema has no enum to validate against).
 const VALID_SCOPES = new Set(['non_spare', 'all', 'rcd_protected_only']);
+// PLAN-C3 — EXPORTED so `clear_field_for_all_circuits` validates the same
+// scope grammar its sibling does. Two copies of a grammar is how the two
+// tools stop meaning the same thing by "all the RCD-protected circuits".
+export const VALID_BULK_SCOPES = VALID_SCOPES;
 // PLAN-F item 1 (2026-08-12, feedback id 115) — the orthogonal spare_policy
 // filter. 'automatic' is a valid explicit value (behaviourally identical to
 // omission) so a model that always fills every optional field doesn't fail
 // validation.
 const VALID_SPARE_POLICIES = new Set(['automatic', 'include', 'exclude']);
+/** PLAN-C3 — see VALID_BULK_SCOPES. */
+export const VALID_BULK_SPARE_POLICIES = VALID_SPARE_POLICIES;
 function validateSetFieldForAllCircuits(input) {
   if (typeof input.field !== 'string' || input.field.length === 0) {
     return { code: 'invalid_field', field: 'field' };
@@ -3243,10 +3540,32 @@ function validateSetFieldForAllCircuits(input) {
   if (typeof input.value !== 'string') {
     return { code: 'invalid_value', field: 'value' };
   }
-  // Per-field option enforcement for select-typed fields. Empty option ""
-  // is valid (it's the dispatcher's clear-equivalent — write empty across
-  // all circuits to wipe the field). N/A is valid only when present in the
-  // option list, which it is for most select fields by convention.
+  // PLAN-C3 (Decision 5) — the bulk blank predicate, and the removal of the
+  // ""-as-clear path. A blank broadcast to fourteen circuits is the widest
+  // blast radius a silent clear has: nothing is read back per circuit, so an
+  // inspector walking the board hears nothing at all while fourteen
+  // certificate values empty. The explicit `clear_field_for_all_circuits`
+  // tool below does that job audibly, in one grouped line.
+  //
+  // The exemption set is the SAME import the direct path uses. Without it a
+  // bulk `{field:'is_distribution_circuit', value:''}` would be answered with
+  // a clear-all hint for a field no clear tool touches — the bulk ordering
+  // (validate before `stageStructuralReadingRefusal`) is the mirror of the
+  // direct path's, so the mirror exemption is what keeps the existing
+  // structural refusal authoritative on both.
+  if (isBlankWrite(input.value) && blankWriteAppliesToReadingField(input.field)) {
+    return {
+      code: EMPTY_WRITE_REJECTION_CODE,
+      field: 'value',
+      clear_tool: 'clear_field_for_all_circuits',
+      hint: 'A blank is not a value. To empty a field across a scope use clear_field_for_all_circuits; never broadcast an empty string.',
+    };
+  }
+  // Per-field option enforcement for select-typed fields. `""` is NO LONGER
+  // accepted as a clear-equivalent here — the blank predicate above rejects
+  // it before this check is reached, whatever the option list says.
+  // N/A is valid only when present in the option list, which it is for most
+  // select fields by convention.
   if (fieldDef.type === 'select' && Array.isArray(fieldDef.options)) {
     if (!fieldDef.options.includes(input.value)) {
       return {

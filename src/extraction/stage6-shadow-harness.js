@@ -251,7 +251,24 @@ import {
   canonicalPartialFailureFieldIdentity,
   renderPartialFailureNoticeText,
   stagePartialFailureNotice,
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — the NORMATIVE positive
+  // allowlist for the cancelled-turn drain, and the value-bearing set the
+  // telemetry row suppresses its text preview for.
+  C3_NOTICE_FAMILIES,
+  VALUE_BEARING_NOTICE_FAMILIES,
 } from './refusal-notices.js';
+// PLAN-C3 — the ask-lineage and post-ask refusal producers, and the
+// `'unrelated'` sentinel. Closed over this turn's accumulator at the ask
+// composition site below; the ask dispatcher itself never holds it.
+import {
+  recordAskRegistration,
+  stagePostAskRejection,
+  UNRELATED_REJECTION_REF,
+  bulkSlotKey,
+  bulkScopeKey,
+  circuitOpSlotKey,
+  boardNoticeSlot,
+} from './stage6-blank-write-notices.js';
 // Plan 2A channel 3 (2026-07-30) — the ask dispatcher's auto-resolved writes are
 // dispatched through the CIRCUIT write dispatcher, so their partial-failure
 // notices must key their board with the SAME formula those dispatchers use.
@@ -2121,6 +2138,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             boardId: noticeBoardId,
           });
         },
+        // PLAN-C3 (feedback-2026-09-17, Decision 5) — the two rejection hooks,
+        // closed over THIS turn's accumulator for the same reason the Plan-2A
+        // callback above is.
+        recordAskRegistration: (spec) => recordAskRegistration(liveSession, perTurnWrites, spec),
+        stageEnumRejectionAfterAsk: (spec) =>
+          stagePostAskRejection(liveSession, perTurnWrites, turnId, spec),
       });
       if (options.askBudget && options.restrainedMode) {
         askGateForTurn = createAskGateWrapper({
@@ -2671,9 +2694,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         const fence = computeAnswerFence(handoff, perTurnWrites);
         if (fence.fenced) {
           // The journaled answer text is discarded BEFORE C3 looks, so C3 can
-          // never stage a fenced answer.
+          // never stage a fenced answer. Both halves are cleared: `stagedText`
+          // for a directly-staged answer (the address-mirror recovery path),
+          // and the PLAN-C3 journal for an ordinary `answer_user`, which no
+          // longer stages at dispatch time. Clearing only one would let the
+          // other reach the reconciliation below and speak over the surviving
+          // `field_cleared` read-backs this fence exists to protect.
           perTurnWrites.answer.stagedText = null;
           perTurnWrites.answer.stagedMeta = null;
+          if (Array.isArray(perTurnWrites.answers)) perTurnWrites.answers.length = 0;
           perTurnWrites.answer.fencedByClears = true;
           log.info?.('stage6.answer_fenced_by_clears', {
             sessionId: session.sessionId,
@@ -2692,6 +2721,114 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       });
     }
 
+    // ── PLAN-C3 (feedback-2026-09-17, Decision 5) — ANSWER RECONCILIATION ──
+    //
+    // ONE step, immediately before the answer finalizer, on the NORMAL and the
+    // CANCELLED path alike. Seam order is PLAN-A's fence (above) → this → the
+    // `ANSWER_FALLBACK_TEXT` staging (below); the flags are separate and
+    // neither rule sets the other's.
+    //
+    // WHY IT RUNS HERE AND NOT AT NET-0. The answer pipeline finalizes EARLY:
+    // `bundleToolCallsIntoResult` snapshots `perTurnWrites.answer.stagedText`
+    // into `result.spoken_response`, and net-0 runs roughly 1,500 lines later
+    // and cannot alter that result. So the answer decision has to be made
+    // before the finalizer, even though the notice DELIVERY stays at net-0.
+    //
+    // WHY IT RUNS ONCE, OVER THE FINAL SETS. `runToolLoop` dispatches a
+    // response's records in stream order and `createSortRecordsAsksLast` moves
+    // only `ask_user` to the end, so an `answer_user` can be dispatched BEFORE
+    // the write whose rejection stages the notice. Deciding at dispatch time
+    // would therefore make the spoken outcome depend on the order the model
+    // happened to emit its records in. Deciding once, after every record has
+    // dispatched, makes it identical either way.
+    //
+    // THE RULE: a staged refusal is AUTHORITATIVE. A `rejection_ref` on an
+    // answer proves ASSOCIATION with a rejection, never the TRUTH of the
+    // answer's words — `answer_user {rejection_ref, answer_text: "Done,
+    // that's recorded"}` after a blank write was blocked would retire the only
+    // truthful line about an untouched certificate value. So a ref-bearing
+    // answer is DROPPED and the notice speaks; an answer with no ref or an
+    // unresolvable one is dropped for the same reason; and the ONLY way a
+    // model line is heard beside a refusal is the explicit `'unrelated'`
+    // declaration, which is the model saying "this answer is about something
+    // else".
+    try {
+      const answerState = perTurnWrites.answer;
+      const journaledAnswers = Array.isArray(perTurnWrites.answers) ? perTurnWrites.answers : [];
+      if (journaledAnswers.length > 0 && answerState != null) {
+        const stagedNotices = Array.isArray(perTurnWrites.mandatoryNotices)
+          ? perTurnWrites.mandatoryNotices.filter(
+              (n) => n && C3_NOTICE_FAMILIES.has(n.family) && n.drain !== false
+            )
+          : [];
+        // The refs a staged notice actually covers. A notice carries call ids,
+        // not refs, so the journal is the join: an entry whose rejecting call
+        // is covered by a live notice is a ref the model may legitimately
+        // echo. Deliberately NOT "every ref minted this turn" — a rejection
+        // whose notice was reconciled away by a corrected write is no longer
+        // something the server is about to speak about.
+        const coveredCallIds = new Set();
+        for (const n of stagedNotices) {
+          if (Array.isArray(n.coveredToolCallIds)) {
+            for (const id of n.coveredToolCallIds) coveredCallIds.add(id);
+          }
+        }
+        const stagedRefs = new Set(
+          (Array.isArray(perTurnWrites.rejections) ? perTurnWrites.rejections : [])
+            .filter((r) => r && coveredCallIds.has(r.toolCallId))
+            .map((r) => r.ref)
+        );
+        // At most one answer per turn reaches here (the dispatcher's
+        // at-most-once latch), but the loop is written over the journal so a
+        // future second producer cannot silently take the first entry only.
+        for (const journaled of journaledAnswers) {
+          if (stagedNotices.length === 0) {
+            // No refusal this turn: the answer speaks exactly as today.
+            if (answerState.stagedText == null) {
+              answerState.stagedText = journaled.text;
+              answerState.stagedMeta = journaled.meta;
+            }
+            continue;
+          }
+          const ref = journaled.rejectionRef;
+          if (ref === UNRELATED_REJECTION_REF) {
+            // Declared unrelated: both speak. The model has said, as it says
+            // with any answer text, that this is about something else.
+            if (answerState.stagedText == null) {
+              answerState.stagedText = journaled.text;
+              answerState.stagedMeta = journaled.meta;
+            }
+            continue;
+          }
+          const code =
+            typeof ref === 'string' && stagedRefs.has(ref)
+              ? 'notice_authoritative'
+              : 'narration_requires_rejection_ref';
+          // The fixed fallback must not fire for a DELIBERATELY dropped
+          // answer — the notice is the turn's spoken outcome. The flag is
+          // this rule's own; PLAN-A's `fencedByClears` is its own, and the
+          // finalizer treats either as "no ANSWER_FALLBACK_TEXT".
+          answerState.fallbackSuppressedByNotice = true;
+          log.info?.('stage6.answer_narration_dropped', {
+            sessionId: session.sessionId,
+            turnId,
+            generationId,
+            cancelled,
+            code,
+            // Never the answer text (leak rule) — a length only.
+            chars: journaled.meta?.chars ?? null,
+            has_rejection_ref: typeof ref === 'string',
+          });
+        }
+      }
+    } catch (c3Err) {
+      log.warn?.('stage6.answer_notice_reconciliation_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: c3Err?.message ?? String(c3Err),
+      });
+    }
+
     try {
       const answerState = perTurnWrites.answer;
       if (
@@ -2699,7 +2836,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         answerState.stagedText == null &&
         // PLAN-A — a fenced turn's spoken outcome is its surviving
         // `field_cleared` lines, so the fixed fallback must not fire either.
-        answerState.fencedByClears !== true
+        answerState.fencedByClears !== true &&
+        // PLAN-C3 — nor when a valid answer was deliberately dropped for a
+        // staged refusal: the refusal IS the turn's spoken outcome, and the
+        // fallback would speak "Sorry, I couldn't answer that" over it.
+        // Deliberately NOT a `featureTouched` change: that flag is overloaded
+        // (`inspect_session_state` sets it so inspect-then-silence still gets
+        // the fallback, and failed/filtered answers rely on it too), so
+        // clearing it would delete two working behaviours to fix one.
+        answerState.fallbackSuppressedByNotice !== true
       ) {
         const hadSuccessfulWrite =
           (perTurnWrites.readings?.size ?? 0) > 0 ||
@@ -4608,16 +4753,35 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // dispatchers cannot stamp (ctx carries no generationId, and an
     // unstamped pendingVoicePrompts entry counts as current-generation).
     try {
-      if (options.chimeObserved === true && !cancelled) {
+      if (options.chimeObserved === true) {
         // Plan B (round-3) — the drain gains a `notice.drain !== false` term:
         // A3's coverage arbitration (which runs BEFORE net-0) stamps
         // drain:false on the covered subset of a PARTIALLY-covered
         // all-rejected turn, so the turn speaks exactly one generic line and
         // zero refusal lines — never both. The old "net-0 drain unchanged"
         // claim is retired; a drain-level test pins both new terms.
+        //
+        // PLAN-C3 (feedback-2026-09-17, Decision 5) — the `!cancelled` term
+        // MOVED from the outer guard into this filter. A cancelled generation
+        // used to kill the whole accumulator and F7's cancellation branch
+        // owned the apology, which is still right for every family that
+        // answers "the app can't do that": one honest apology, and the
+        // inspector moves on. It is WRONG for this plan's families, which are
+        // the only report the inspector will ever get that a certificate
+        // value they dictated was NOT written — a cancellation must not make
+        // a silent clear silent again.
+        //
+        // The filter is a POSITIVE allowlist (`C3_NOTICE_FAMILIES`), never an
+        // enumerated denylist of the families that must die. A denylist goes
+        // stale the day someone adds a family, and the failure mode is a
+        // stale refusal speaking over a superseding read-back.
         const staged = Array.isArray(perTurnWrites?.mandatoryNotices)
           ? perTurnWrites.mandatoryNotices.filter(
-              (n) => n && typeof n.family === 'string' && n.drain !== false
+              (n) =>
+                n &&
+                typeof n.family === 'string' &&
+                n.drain !== false &&
+                (!cancelled || C3_NOTICE_FAMILIES.has(n.family))
             )
           : [];
         if (staged.length > 0) {
@@ -4680,8 +4844,150 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               }
             }
           }
+          // ── PLAN-C3 (Decision 5) — survivor reconciliation for the six
+          // rejection families. IDENTICAL on a live and a cancelled turn: the
+          // cancelled finalization still builds `result.confirmations` for
+          // writes applied before the abort, so a superseded refusal must
+          // never speak beside that read-back.
+          //
+          // Three identities, because this plan stages on three:
+          //   a CIRCUIT slot  — a surviving same-slot write or clear
+          //   a CIRCUIT OP    — a same-`(op, key_ref, board)` create/rename
+          //                     that succeeded
+          //   a BULK slot     — retired ONLY by a covering ask (a bulk notice
+          //                     is per CALL; a later per-circuit write, or a
+          //                     bulk call of any other scope, does not make
+          //                     the statement about THIS call true)
+          const c3SurvivingCircuitSlots = new Set();
+          for (const winner of projectReadingWinners(perTurnWrites)) {
+            const sym = winner?.value?.[EFFECTIVE_CIRCUIT_SLOT];
+            if (sym)
+              c3SurvivingCircuitSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+          }
+          if (Array.isArray(perTurnWrites?.fieldCorrections)) {
+            for (const c of perTurnWrites.fieldCorrections) {
+              if (c?.reason !== 'clear_reading') continue;
+              const sym = c?.[EFFECTIVE_CIRCUIT_SLOT];
+              if (sym)
+                c3SurvivingCircuitSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+            }
+          }
+          const c3SurvivingOpSlots = new Set();
+          if (Array.isArray(perTurnWrites?.circuitOps)) {
+            for (const op of perTurnWrites.circuitOps) {
+              if (!op) continue;
+              const board = readEffectiveOpBoard(op) ?? null;
+              // `key_ref` is the created circuit's ref, or a rename's SOURCE
+              // ref — the same key the refusal used, so a corrected retry in
+              // either dispatch order reconciles it away.
+              if (op.op === 'create' && op.circuit_ref != null) {
+                c3SurvivingOpSlots.add(circuitOpSlotKey('create', op.circuit_ref, board));
+              } else if (op.op === 'rename' && op.from_ref != null) {
+                c3SurvivingOpSlots.add(circuitOpSlotKey('rename', op.from_ref, board));
+              }
+            }
+          }
+          // The asks that COVER a staged refusal. A question about the slot is
+          // the audible outcome the model was told to produce; speaking the
+          // refusal beside it is the double-confirm bug.
+          const c3CoveringAskSlots = new Set();
+          const c3CoveringAskRefs = new Set();
+          if (Array.isArray(perTurnWrites?.askRegistrations)) {
+            for (const ask of perTurnWrites.askRegistrations) {
+              if (!ask) continue;
+              // Only an ask the inspector actually HEARD covers a refusal. The
+              // registration is journaled before the WebSocket send, so a closed
+              // socket or a throwing send leaves a registered question nobody
+              // heard — and retiring the refusal for it would leave the
+              // rejected value with no specific spoken outcome at all. Emission
+              // evidence is the same set every other ask-gated net reads.
+              if (!emittedAskToolCallIds.has(ask.toolCallId)) continue;
+              if (typeof ask.rejectionRef === 'string') c3CoveringAskRefs.add(ask.rejectionRef);
+              if (typeof ask.field !== 'string' || ask.field.length === 0) continue;
+              const refs = Array.isArray(ask.circuits) ? ask.circuits : [];
+              if (refs.length === 1) {
+                c3CoveringAskSlots.add(rawCircuitSlot(ask.field, refs[0], ask.boardId));
+              } else if (refs.length === 0) {
+                // Same identity the board refusal keys on — canonical field,
+                // scope-conditioned board — or a covering ask about `Ze` never
+                // matches a refusal keyed on the global slot.
+                const slot = boardNoticeSlot(ask.field, ask.boardId);
+                c3CoveringAskSlots.add(boardSlotKey(slot.field, slot.boardId));
+              }
+              const rejection = (perTurnWrites.rejections ?? []).find(
+                (r) =>
+                  r &&
+                  r.field === ask.field &&
+                  (r.boardId ?? null) === (ask.boardId ?? null) &&
+                  Array.isArray(r.scopeSet) &&
+                  r.scopeSet.length === refs.length &&
+                  r.scopeSet.every((x) => refs.includes(x))
+              );
+              if (rejection?.scope) {
+                c3CoveringAskSlots.add(
+                  bulkSlotKey(
+                    rejection.field,
+                    rejection.boardId,
+                    bulkScopeKey({ ...rejection.scope, boardId: rejection.boardId })
+                  )
+                );
+              }
+            }
+            // A ref-echoing ask covers whatever that rejection staged, whether
+            // or not its `context_circuits` happen to match — the echo IS the
+            // deterministic statement of lineage the scope match only
+            // approximates.
+            for (const r of perTurnWrites.rejections ?? []) {
+              if (!r || !c3CoveringAskRefs.has(r.ref)) continue;
+              if (r.scope) {
+                c3CoveringAskSlots.add(
+                  bulkSlotKey(r.field, r.boardId, bulkScopeKey({ ...r.scope, boardId: r.boardId }))
+                );
+              } else if (Array.isArray(r.scopeSet) && r.scopeSet.length === 1) {
+                c3CoveringAskSlots.add(rawCircuitSlot(r.field, r.scopeSet[0], r.boardId));
+              } else if (r.field) {
+                const slot = boardNoticeSlot(r.field, r.boardId);
+                c3CoveringAskSlots.add(boardSlotKey(slot.field, slot.boardId));
+              }
+            }
+          }
+
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
           for (const notice of staged) {
+            // PLAN-C3 — the six families reconcile against the sets above,
+            // in either dispatch order (the accumulator's state at drain time
+            // is identical whichever record the model emitted first).
+            if (C3_NOTICE_FAMILIES.has(notice.family) && typeof notice.slotKey === 'string') {
+              // A covering ask retires a PROVISIONAL refusal — the blank
+              // families and the DIRECT `enum_rejected` — because the question
+              // is the audible outcome the model was told to produce and two
+              // lines about one slot is the double-confirm bug.
+              //
+              // It must NEVER retire `enum_rejected_after_ask`, which is staged
+              // BY that same ask's own resolution. The question already spoke;
+              // the inspector then answered; the answer was rejected too. That
+              // refusal is the second, necessary line, and it is the whole
+              // reason this plan can tell the model to emit nothing further.
+              // Suppressing it here would restore the September-17 dead end
+              // with the server, rather than the model, doing the silencing.
+              // Found by the live lane: the covering ask ALWAYS matches its own
+              // post-ask notice's slot, so this branch swallowed every one.
+              if (
+                notice.family !== 'enum_rejected_after_ask' &&
+                c3CoveringAskSlots.has(notice.slotKey)
+              ) {
+                continue;
+              }
+              // A bulk notice is per CALL: only a covering ask retires it.
+              if (
+                notice.family !== 'empty_bulk_write_blocked' &&
+                !notice.slotKey.startsWith('bulk ')
+              ) {
+                if (c3SurvivingCircuitSlots.has(notice.slotKey)) continue;
+                if (c3SurvivingOpSlots.has(notice.slotKey)) continue;
+                if (survivingSlots.has(notice.slotKey)) continue;
+              }
+            }
             if (
               notice.family === 'board_clear_already_empty' &&
               typeof notice.slotKey === 'string' &&
@@ -4756,7 +5062,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               covered_count: Array.isArray(notice.coveredToolCallIds)
                 ? notice.coveredToolCallIds.length
                 : 0,
-              textPreview: noticeText.slice(0, 80),
+              // PLAN-C3 (Decision 5) — the six rejection families render the
+              // value a slot STILL HOLDS, a circuit designation or a phase, so
+              // their preview would put certificate content in CloudWatch. The
+              // channel's LEAK SAFETY contract allows field names, board ids
+              // and server-owned constants only. Every other family renders
+              // server-owned labels and keeps its bounded preview.
+              ...(VALUE_BEARING_NOTICE_FAMILIES.has(notice.family)
+                ? {}
+                : { textPreview: noticeText.slice(0, 80) }),
             });
           }
         }

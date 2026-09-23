@@ -308,6 +308,73 @@ export const B_STAGED_POOLS = Object.freeze({
     (f) => `I can't place ${f} at board level for a clear — remove it on screen.`,
     (f) => `Voice board-clearing for ${f} isn't wired up — edit it on screen instead.`,
   ]),
+  // ── PLAN-C3 (feedback-2026-09-17, Decision 5) — the blank-write and
+  // enum-rejection routes. SIX families over NINE routes; the extra routes
+  // exist because a create and a rename each have a designation flavour and a
+  // phase flavour whose honest wording differs ("say its name" is WRONG for a
+  // blank phase), and because a post-ask bulk rejection has to offer the
+  // per-circuit and clear-all escapes a single-circuit one does not.
+  //
+  // `f` is the STAGE-TIME discriminated label, composed at the rejecting site
+  // from server-owned parts ONLY — the field_schema label, the circuit ref,
+  // the board ORDINAL, the resolved bulk scope descriptor, and the value the
+  // slot still holds. The held value is server state the inspector has
+  // already heard read back; it is never the model's rejected string. See the
+  // LEAK SAFETY note in the module header: these families are VALUE-BEARING,
+  // so the drain's telemetry row omits `textPreview` for them.
+  //
+  // Wording contract, on top of the module-wide one: every line states what
+  // the slot still holds (or that it is still blank) and names the supported
+  // escape. None invites a retry of the same blank.
+  empty_write_blocked: Object.freeze([
+    (f) => `${capitaliseFirst(f)}. A blank isn't a value — say "clear it" to remove one.`,
+    (f) => `I didn't write an empty value: ${f}. Say "clear it" if you want it removed.`,
+    (f) => `Nothing was written, because blank isn't a value: ${f}. "Clear it" removes a value.`,
+  ]),
+  empty_bulk_write_blocked: Object.freeze([
+    (f) =>
+      `That bulk blank changed nothing: ${f}. Say "clear it for all circuits" to empty them.`,
+    (f) =>
+      `I didn't blank a whole scope at once: ${f}. "Clear it for all circuits" is the way to empty them.`,
+    (f) =>
+      `No circuit was changed by that empty bulk write: ${f}. Say "clear it for all circuits" instead.`,
+  ]),
+  create_blocked_designation: Object.freeze([
+    (f) => `I haven't created ${f} — a circuit needs a name. Say what it feeds.`,
+    (f) => `${capitaliseFirst(f)} wasn't created: the name came through empty. Tell me what it feeds.`,
+    (f) => `No circuit was added for ${f} — I need its name before I can create it.`,
+  ]),
+  create_blocked_phase: Object.freeze([
+    (f) => `I haven't created ${f} — the phase came through empty. Say which phase it's on.`,
+    (f) => `${capitaliseFirst(f)} wasn't created: I need the phase, not a blank.`,
+    (f) => `No circuit was added for ${f} — tell me the phase and I'll create it.`,
+  ]),
+  rename_blocked_designation: Object.freeze([
+    (f) => `I haven't renamed ${f} — a blank name would lose it. Say the new name.`,
+    (f) => `The rename didn't go through for ${f}: an empty name isn't a name.`,
+    (f) => `${capitaliseFirst(f)} keeps its name — I won't rename a circuit to nothing.`,
+  ]),
+  rename_blocked_phase: Object.freeze([
+    (f) => `I haven't changed ${f} — the phase came through empty. Say which phase.`,
+    (f) => `The phase change didn't go through for ${f}: an empty phase isn't a phase.`,
+    (f) => `${capitaliseFirst(f)} is unchanged — I won't set a phase to nothing.`,
+  ]),
+  enum_rejected: Object.freeze([
+    (f) => `${capitaliseFirst(f)} — that value isn't one of the options.`,
+    (f) => `I couldn't use that value, so nothing changed: ${f}.`,
+    (f) => `That one isn't on the list of allowed values: ${f}.`,
+  ]),
+  enum_rejected_after_ask: Object.freeze([
+    (f) => `${capitaliseFirst(f)}. That answer isn't one of the options either, so I've left it.`,
+    (f) => `I still couldn't use that answer: ${f}. Leaving it as it is.`,
+    (f) => `That reply didn't match the options either — ${f}. Nothing was changed.`,
+  ]),
+  enum_rejected_after_ask_bulk: Object.freeze([
+    (f) => `${capitaliseFirst(f)}. Say the value for each, or say "clear it for all circuits".`,
+    (f) => `I still couldn't use that answer: ${f}. Give me each one, or clear them all.`,
+    (f) =>
+      `That reply didn't match the options either — ${f}. Say them one at a time, or clear them all.`,
+  ]),
 });
 
 /**
@@ -348,7 +415,97 @@ export const B_STAGED_TERMINALS = Object.freeze({
     `${capitaliseFirst(f)} doesn't apply on this certificate type — attempt ${n}.`,
   board_clear_scope_unclassified: (f, n) =>
     `I still can't place ${f} at board level — attempt ${n} is logged.`,
+  // PLAN-C3 — ordinal terminals for the nine blank/enum routes, rendered
+  // from attempt 3. Each still names what the slot holds, because the
+  // inspector's question on the third attempt is the same as on the first:
+  // what IS in the certificate right now.
+  empty_write_blocked: (f, n) =>
+    `Still not writing a blank — ${f}; that's attempt ${n}. Say "clear it" to remove the value.`,
+  empty_bulk_write_blocked: (f, n) =>
+    `That bulk blank changed nothing again — ${f}; attempt ${n}. Say "clear it for all circuits".`,
+  create_blocked_designation: (f, n) =>
+    `Still no circuit created for ${f} — attempt ${n} arrived without a name.`,
+  create_blocked_phase: (f, n) =>
+    `Still no circuit created for ${f} — attempt ${n} arrived without a phase.`,
+  rename_blocked_designation: (f, n) =>
+    `Still not renaming to nothing — ${f}; that's attempt ${n}.`,
+  rename_blocked_phase: (f, n) => `Still not setting an empty phase — ${f}; that's attempt ${n}.`,
+  enum_rejected: (f, n) =>
+    `That value still isn't one of the options — ${f}; attempt ${n} changed nothing.`,
+  enum_rejected_after_ask: (f, n) =>
+    `That answer still isn't one of the options — ${f}; attempt ${n}. I've left it alone.`,
+  enum_rejected_after_ask_bulk: (f, n) =>
+    `That answer still isn't one of the options — ${f}; attempt ${n}. Say each value, or clear them all.`,
 });
+
+/**
+ * PLAN-C3 — the NORMATIVE positive allowlist for the cancelled-turn drain.
+ *
+ * A cancelled generation used to kill the whole `mandatoryNotices`
+ * accumulator, and F7's cancellation branch owned the apology. That is still
+ * right for every family that answers "the app can't do that" — the inspector
+ * gets one honest apology and moves on. It is WRONG for this plan's families,
+ * which are the only report the inspector will ever get that a certificate
+ * value they dictated was NOT written. So exactly these six families survive
+ * a cancellation, and every other family on the channel keeps dying with the
+ * turn.
+ *
+ * WHY A POSITIVE ALLOWLIST AND NOT A DENYLIST. An enumerated list of the
+ * families that must NOT survive is a list that goes stale the day someone
+ * adds a family — and the failure mode is a stale refusal speaking over a
+ * superseding read-back on a cancelled turn. Round 11's inventory was in fact
+ * already incomplete when it was written (`unroutable_board_reading` was
+ * missing). An implementation must never build the cancelled-path filter from
+ * an enumerated denylist; it filters on membership of THIS set.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const C3_NOTICE_FAMILIES = Object.freeze(
+  new Set([
+    'empty_write_blocked',
+    'empty_bulk_write_blocked',
+    'create_blocked',
+    'rename_blocked',
+    'enum_rejected',
+    'enum_rejected_after_ask',
+  ])
+);
+
+/**
+ * PLAN-C3 — the ROUTE keys those six families own in `B_STAGED_POOLS`.
+ * `create_blocked` and `rename_blocked` each own a designation route and a
+ * phase route; `enum_rejected_after_ask` owns a single-slot route and a bulk
+ * route. Exported so the cancelled-path parameterized test can subtract this
+ * plan's routes from the registry and walk every OTHER registered route
+ * without re-deriving the membership by hand.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const C3_NOTICE_ROUTES = Object.freeze(
+  new Set([
+    'empty_write_blocked',
+    'empty_bulk_write_blocked',
+    'create_blocked_designation',
+    'create_blocked_phase',
+    'rename_blocked_designation',
+    'rename_blocked_phase',
+    'enum_rejected',
+    'enum_rejected_after_ask',
+    'enum_rejected_after_ask_bulk',
+  ])
+);
+
+/**
+ * PLAN-C3 — families whose rendered text embeds CERTIFICATE VALUES (the value
+ * a slot still holds, a circuit designation, a phase). The drain's
+ * `stage6.mandatory_notice_emitted` row omits `textPreview` for these: the
+ * channel's LEAK SAFETY contract allows field names, board ids and
+ * server-owned constants into telemetry, never values. Every other family
+ * renders server-owned labels only and keeps its bounded preview.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const VALUE_BEARING_NOTICE_FAMILIES = C3_NOTICE_FAMILIES;
 
 // djb2 over the turn id — the F/U-2/3 seeding hash. Used ONLY to seed the
 // first selection of a family's rotation cursor (so different sessions start

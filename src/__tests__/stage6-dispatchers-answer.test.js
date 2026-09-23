@@ -132,36 +132,58 @@ describe('createAnswerDispatcher — envelope + staging matrix (Item 1)', () => 
     dispatch = createAnswerDispatcher(session, logger, 'turn-1', ptw);
   });
 
-  test('success: {ok:true}, is_error:false, staged into perTurnWrites.answer', async () => {
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — the dispatcher JOURNALS and no
+  // longer stages. It decides nothing about ownership, because a response's
+  // records dispatch in stream order and an `answer_user` can arrive BEFORE
+  // the write whose rejection stages the refusal it would talk over. The ONE
+  // reconciliation, immediately before the answer finalizer, decides what is
+  // spoken — see the harness. `stagedText` is asserted in those tests now.
+  test('success: {ok:true}, is_error:false, JOURNALED into perTurnWrites.answers', async () => {
     const env = await dispatch(call('answer_user', { answer_text: 'Two circuits left.' }));
-    expect(env).toEqual({
-      tool_use_id: 'toolu_1',
-      content: JSON.stringify({ ok: true }),
-      is_error: false,
+    expect(env.tool_use_id).toBe('toolu_1');
+    expect(env.is_error).toBe(false);
+    expect(body(env).ok).toBe(true);
+    // The tool result restates the rejection_ref rule, because it is returned
+    // at dispatch time — before the decision exists.
+    expect(body(env).note).toContain('rejection_ref');
+    expect(ptw.answers).toHaveLength(1);
+    expect(ptw.answers[0]).toMatchObject({
+      toolCallId: 'toolu_1',
+      rejectionRef: null,
+      text: 'Two circuits left.',
+      meta: { truncated: false, chars: 18 },
     });
-    expect(ptw.answer.stagedText).toBe('Two circuits left.');
-    expect(ptw.answer.stagedMeta).toEqual({ truncated: false, chars: 18 });
+    // Nothing is staged at dispatch time any more.
+    expect(ptw.answer.stagedText).toBeNull();
     expect(ptw.answer.featureTouched).toBe(true);
   });
 
-  test('second call AFTER a successful staging → answer_already_given, is_error:false, text unchanged', async () => {
+  test('a rejection_ref on the call is journaled RAW (malformed and absent are one outcome)', async () => {
+    await dispatch(
+      call('answer_user', { answer_text: 'Understood.', rejection_ref: 'turn-1:toolu_w' })
+    );
+    expect(ptw.answers[0].rejectionRef).toBe('turn-1:toolu_w');
+  });
+
+  test('second call AFTER a successful journaling → answer_already_given, is_error:false, text unchanged', async () => {
     await dispatch(call('answer_user', { answer_text: 'First answer.' }));
     const env = await dispatch(call('answer_user', { answer_text: 'Second answer.' }, 'toolu_2'));
     expect(body(env)).toEqual({ ok: false, code: 'answer_already_given' });
     expect(env.is_error).toBe(false);
-    expect(ptw.answer.stagedText).toBe('First answer.');
+    expect(ptw.answers).toHaveLength(1);
+    expect(ptw.answers[0].text).toBe('First answer.');
   });
 
   test('empty first attempt → empty_answer, is_error:true (ONE corrected retry invited), no latch', async () => {
     const env = await dispatch(call('answer_user', { answer_text: '   ' }));
     expect(body(env)).toEqual({ ok: false, code: 'empty_answer' });
     expect(env.is_error).toBe(true);
-    expect(ptw.answer.stagedText).toBeNull();
+    expect(ptw.answers).toHaveLength(0);
     expect(ptw.answer.emptyRetryUsed).toBe(true);
-    // The corrected retry stages normally.
+    // The corrected retry journals normally.
     const retry = await dispatch(call('answer_user', { answer_text: 'Fixed.' }, 'toolu_2'));
-    expect(body(retry)).toEqual({ ok: true });
-    expect(ptw.answer.stagedText).toBe('Fixed.');
+    expect(body(retry).ok).toBe(true);
+    expect(ptw.answers.map((a) => a.text)).toEqual(['Fixed.']);
   });
 
   test('repeated empty attempts → empty_answer_retry_exhausted, is_error:false (no loop-to-cap)', async () => {
@@ -178,12 +200,12 @@ describe('createAnswerDispatcher — envelope + staging matrix (Item 1)', () => 
     const env = await dispatch(call('answer_user', { answer_text: 'You have 18 tools' }));
     expect(body(env)).toEqual({ ok: false, code: 'answer_filtered' });
     expect(env.is_error).toBe(false);
-    expect(ptw.answer.stagedText).toBeNull();
+    expect(ptw.answers).toHaveLength(0);
     const retry = await dispatch(
       call('answer_user', { answer_text: 'Circuit 2 has no reading yet.' }, 'toolu_2')
     );
-    expect(body(retry)).toEqual({ ok: true });
-    expect(ptw.answer.stagedText).toBe('Circuit 2 has no reading yet.');
+    expect(body(retry).ok).toBe(true);
+    expect(ptw.answers.map((a) => a.text)).toEqual(['Circuit 2 has no reading yet.']);
   });
 
   test('retained legacy prompt-count literals are ALSO filtered (eight/twelve/header forms)', async () => {
@@ -625,11 +647,11 @@ describe('capInspectResult — appendix §4 truncation ladder', () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 describe('composer exhaustiveness — every advertised tool has a dispatch route (both flag states)', () => {
-  test('flag ON advertises 20 incl. the answer tools; flag OFF filters exactly those two', () => {
+  test('flag ON advertises 21 incl. the answer tools; flag OFF filters exactly those two', () => {
     const on = buildSessionTools(true).map((t) => t.name);
     const off = buildSessionTools(false).map((t) => t.name);
-    expect(on).toHaveLength(20);
-    expect(off).toHaveLength(18);
+    expect(on).toHaveLength(21);
+    expect(off).toHaveLength(19);
     expect(on).toEqual(expect.arrayContaining([...AGENTIC_ANSWER_TOOL_NAMES]));
     for (const name of AGENTIC_ANSWER_TOOL_NAMES) expect(off).not.toContain(name);
     // Plan A1a — clear_board_reading is UNCONDITIONAL (both flag states):
@@ -639,8 +661,8 @@ describe('composer exhaustiveness — every advertised tool has a dispatch route
     expect(on).toContain('resolve_observation_clarification');
     expect(off).toContain('resolve_observation_clarification');
     // Non-boolean input fails closed (filtered).
-    expect(buildSessionTools(undefined)).toHaveLength(18);
-    expect(buildSessionTools('true')).toHaveLength(18);
+    expect(buildSessionTools(undefined)).toHaveLength(19);
+    expect(buildSessionTools('true')).toHaveLength(19);
   });
 
   test.each([
