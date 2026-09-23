@@ -52,6 +52,13 @@
 const BASE_KEYWORD_BOOSTS: Record<string, number> = {
   CertMate: 3.0,
   'cert mate': 3.0,
+  // PLAN-D D1 — the voice-pause brand word ("CertMate pause" / "CertMate
+  // carry on"). The two spellings above were already here; only the two
+  // missing forms are added (adding all four would duplicate two keys).
+  // Kept in step with the Flux list below, because this is the list in use
+  // whenever the DEEPGRAM_STT_MODEL kill-switch falls back to nova-3.
+  'sert mate': 3.0,
+  'cert-mate': 3.0,
   megohms: 3.0,
   Zs: 2.0,
   Ze: 2.0,
@@ -604,6 +611,14 @@ const FLUX_MAX_KEYTERMS = 100;
 const FLUX_URL_LENGTH_BUDGET = 2000;
 
 const FLUX_CURATED_KEYTERMS_PROVISIONAL: readonly string[] = [
+  // PLAN-D D1 — the voice-pause brand word. The command grammar requires it,
+  // so every accepted spelling is admitted first, ahead of any CCU-derived
+  // term, under the existing FLUX_MAX_KEYTERMS / FLUX_URL_LENGTH_BUDGET caps.
+  // `certmate` is covered by `CertMate` (dedupe is case-insensitive).
+  'CertMate',
+  'Cert Mate',
+  'sert mate',
+  'cert-mate',
   // Garble-critical measurement nouns (the sprint's whole reason for existing).
   'insulation resistance',
   'trip time',
