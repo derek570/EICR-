@@ -76,6 +76,7 @@ const { ExtractionCancelledError } = await import('../extraction/stage6-control-
 const { C3_NOTICE_FAMILIES, C3_NOTICE_ROUTES, B_STAGED_POOLS, BOARD_CLEAR_NOTICE_FAMILIES } =
   await import('../extraction/refusal-notices.js');
 const { ANSWER_FALLBACK_TEXT } = await import('../extraction/stage6-dispatchers-answer.js');
+const { rawCircuitSlot } = await import('../extraction/stage6-per-turn-writes.js');
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -1057,6 +1058,93 @@ describe('acceptance 5f/6 — the ask hooks and the CC9E0915 shape', () => {
     });
     const result = await runShadowHarness(session, 'ask other circuit', [], baseOpts());
     expect(spoken(result).some((t) => t.includes('still BS EN 60898'))).toBe(true);
+  });
+
+  test('a POST-ASK refusal is NOT retired by the ask that produced it', async () => {
+    // Found by the live lane, and invisible to every other test here: the
+    // covering ask ALWAYS matches its own post-ask notice's slot, so a blanket
+    // covering-ask rule swallows every `enum_rejected_after_ask` there is.
+    //
+    // The question already spoke. The inspector then answered, and the answer
+    // was rejected too. THAT refusal is the second, necessary line — it is the
+    // whole reason the prompt can tell the model to emit nothing further. A
+    // server that suppressed it would restore the September-17 dead end with
+    // itself doing the silencing instead of the model.
+    const session = makeSession(SINGLE_BOARD, 'main');
+    runToolLoopSpy.mockImplementation(async (o) => {
+      const ptw = o.perTurnWritesRef();
+      // The ask, registered exactly as the ask dispatcher registers it…
+      ptw.askRegistrations.push({
+        toolCallId: 'tu_ask',
+        rejectionRef: null,
+        field: 'ocpd_bs_en',
+        circuits: [1],
+        boardId: 'main',
+      });
+      // …and the refusal its own resolution stages, on the same slot.
+      ptw.mandatoryNotices.push({
+        family: 'enum_rejected_after_ask',
+        slotKey: rawCircuitSlot('ocpd_bs_en', 1, 'main'),
+        turnId: 'turn-1',
+        friendly: 'OCPD BS/EN on circuit 1, still BS EN 60898',
+        field: 'ocpd_bs_en',
+        boardId: 'main',
+        reason: 'enum_rejected_after_ask',
+        coveredToolCallIds: ['tu_ask'],
+        route: 'enum_rejected_after_ask',
+        repeatKey: 'enum_rejected_after_ask::probe',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 1,
+        tool_calls: [],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const result = await runShadowHarness(session, 'post-ask refusal', [], baseOpts());
+    expect(spoken(result).some((t) => t.includes('still BS EN 60898'))).toBe(true);
+  });
+
+  test('…while a PROVISIONAL refusal on the same slot IS retired by that ask', async () => {
+    // The discriminating half: the rule still applies to the family it was
+    // written for, so the fix narrowed the branch rather than deleting it.
+    const session = makeSession(SINGLE_BOARD, 'main');
+    runToolLoopSpy.mockImplementation(async (o) => {
+      const ptw = o.perTurnWritesRef();
+      ptw.askRegistrations.push({
+        toolCallId: 'tu_ask',
+        rejectionRef: null,
+        field: 'ocpd_bs_en',
+        circuits: [1],
+        boardId: 'main',
+      });
+      ptw.mandatoryNotices.push({
+        family: 'enum_rejected',
+        slotKey: rawCircuitSlot('ocpd_bs_en', 1, 'main'),
+        turnId: 'turn-1',
+        friendly: 'OCPD BS/EN on circuit 1, still BS EN 60898',
+        field: 'ocpd_bs_en',
+        boardId: 'main',
+        reason: 'enum_rejected',
+        coveredToolCallIds: ['tu_w'],
+        route: 'enum_rejected',
+        repeatKey: 'enum_rejected::probe',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 1,
+        tool_calls: [],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const result = await runShadowHarness(session, 'provisional refusal', [], baseOpts());
+    expect(spoken(result).some((t) => t.includes('still BS EN 60898'))).toBe(false);
   });
 
   test('acceptance 6 — the CC9E0915 11:28:53 shape replayed: the blank is refused and speaks once', async () => {

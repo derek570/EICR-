@@ -4945,7 +4945,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // in either dispatch order (the accumulator's state at drain time
             // is identical whichever record the model emitted first).
             if (C3_NOTICE_FAMILIES.has(notice.family) && typeof notice.slotKey === 'string') {
-              if (c3CoveringAskSlots.has(notice.slotKey)) continue;
+              // A covering ask retires a PROVISIONAL refusal — the blank
+              // families and the DIRECT `enum_rejected` — because the question
+              // is the audible outcome the model was told to produce and two
+              // lines about one slot is the double-confirm bug.
+              //
+              // It must NEVER retire `enum_rejected_after_ask`, which is staged
+              // BY that same ask's own resolution. The question already spoke;
+              // the inspector then answered; the answer was rejected too. That
+              // refusal is the second, necessary line, and it is the whole
+              // reason this plan can tell the model to emit nothing further.
+              // Suppressing it here would restore the September-17 dead end
+              // with the server, rather than the model, doing the silencing.
+              // Found by the live lane: the covering ask ALWAYS matches its own
+              // post-ask notice's slot, so this branch swallowed every one.
+              if (
+                notice.family !== 'enum_rejected_after_ask' &&
+                c3CoveringAskSlots.has(notice.slotKey)
+              ) {
+                continue;
+              }
               // A bulk notice is per CALL: only a covering ask retires it.
               if (notice.family !== 'empty_bulk_write_blocked' && !notice.slotKey.startsWith('bulk ')) {
                 if (c3SurvivingCircuitSlots.has(notice.slotKey)) continue;
