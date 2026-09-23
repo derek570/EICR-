@@ -145,10 +145,109 @@ implementation choices are recorded because a reviewer will meet them:
   unchanged (the repo is not prettier-clean at rest, and lint-staged formats
   only staged files).
 
-## Codex diff review
-
-(appended below as cycles complete)
-
 ## Live lane (acceptance 8)
 
-(appended below)
+Probe: `PLAN-C3-live-probe.mjs` in the plan's handoff directory; results in
+`PLAN-C3-live-probe-results-2026-09-23.json` beside it. It drives
+`runShadowHarness` on a real `EICRExtractionSession` against the real vendor
+endpoint with the live task-def environment pinned, and a real pending-ask
+registry, so a blocking `ask_user` really blocks and is answered from the
+probe. That is the only way to reach the post-ask rejection site.
+
+**The first run found a real defect no unit test had caught.** On the exact
+September-17 shape, the model did the right thing — one rejected write, one ask
+with the options — but after the inspector's second off-enum answer the turn
+spoke "I've lost that reply, I'm afraid", the P4 dropped-value apology. The
+covering-ask reconciliation had swallowed `enum_rejected_after_ask`, because
+that notice is staged BY the same ask's own resolution, so the ask always
+matches its slot. Every drain test had staged a notice and an ask separately, so
+nothing exercised an ask that produces its own refusal. Fixed in `88133d52`.
+
+After the fix, and again on the final candidate (`bbdd5dd9`, 16:22 UTC),
+`gpt-6-luna` Fast:
+
+| Case | Tool calls | Asks | Post-ask refusal spoken | Field after | `narration_requires_rejection_ref` drops |
+|---|---|---|---|---|---|
+| `ocpd_bs_en` = "BS 3871", answered "BS 3871." | 1 `record_reading`, rejected | 1 | once | unset | 0 |
+| `rcd_type` = "type Z", answered "Type Z." | 1 `record_reading`, rejected | 1 | once | unset | 0 |
+| "set the reference method to nothing" | 1 `clear_reading`, ok | 0 | — | cleared, read back | 0 |
+
+No second ask, no `""` write, no guessed option in any case. The spoken refusal:
+"OCPD BS/EN on circuit 3 on board 1, still blank. That answer isn't one of the
+options either, so I've left it."
+
+## Codex diff review
+
+Reviewer: Codex `gpt-6-sol`, high, read-only, schema-constrained, fresh
+context per lane. Outputs in `PLAN-C3-ep-reviews/` in the handoff directory.
+
+| Cycle | Lane | Result |
+|---|---|---|
+| 1 | c1 comprehensive | **Died on ENOSPC** mid-review (disk-full outage). Provider failure, not a verdict; log kept as `c1-comprehensive.ENOSPC-dead.log`. Re-run as c1b. |
+| 1 | c2 specialist (spoken boundary) | 3 BLOCKER + 1 IMPORTANT. |
+| 2 | c1b comprehensive (re-run on `bf2e28d0`) | 1 BLOCKER + 3 IMPORTANT. |
+| 2 | c3 fix-verify of cycle 1 | **Clean.** All fixes hold; the finding-4 rejection upheld. |
+| 3 | c4 fix-verify of cycle 2 | 1 BLOCKER + 1 IMPORTANT. |
+| 4 | c5 fix-verify of cycle 3 | **Clean.** Fix holds; the rejection upheld. |
+
+Dispositions, all with source evidence, all in commit bodies:
+
+- c2-1 BLOCKER — an answered ask retired its own post-ask refusal. **FIXED**
+  `88133d52` (the live lane had found it first; independent confirmation).
+- c2-2 BLOCKER — an ask registered but never sent retired a refusal. **FIXED**
+  `bf2e28d0`: only asks in `emittedAskToolCallIds` cover.
+- c2-3 BLOCKER — bulk descriptors dropped the ref list above six, so two slots
+  rendered one string. **FIXED** `bf2e28d0`: compressed runs, still exact.
+- c2-4 IMPORTANT — extend answer ownership to non-C3 notices. **REJECTED**: the
+  plan scopes the rule by the `rejection_ref` contract; extending it drops
+  unrelated answers the model had no way to mark. **Upheld by c3.**
+- c1b-1 IMPORTANT — a global field's refusal (`ze`, main) never matched the
+  write's (`ze`, null) slot, and aliases never matched. **FIXED** `bbdd5dd9`:
+  `boardNoticeSlot` derives the identity exactly as the write path stamps it.
+- c1b-2 BLOCKER — a `'*'` sweep spoke two identical grouped lines with one
+  token. **FIXED** `bbdd5dd9`: multi-board calls name the board in text and
+  token; single-board unchanged.
+- c1b-3 IMPORTANT — an unknown `board_id` returned `{ok:true, cleared:[]}`.
+  **FIXED** `bbdd5dd9`: `board_not_found`.
+- c1b-4 IMPORTANT — the cancelled-path sweep could not fail for label-less
+  routes. **FIXED** `bbdd5dd9`: asserts on emission telemetry, routes staged
+  under their real families.
+- c4-1 BLOCKER — two board fields share "main earth". **REJECTED**: the alias is
+  not in `BOARD_FIELD_ENUM`, so no refusal is ever keyed on it; a test now
+  enumerates all 84 reachable board fields for label collisions, with a
+  known-bad case. **Upheld by c5.**
+- c4-2 IMPORTANT — one-circuit-per-board sweep lines lacked the board.
+  **FIXED** `4caee4f8`.
+
+Every code fix is pinned by a regression proven to FAIL against the pre-fix
+source on the same path (stash the fix, run, fail; restore, pass).
+
+Convergence: four cycles against a cap of ten. The findings narrowed each
+cycle — each later one a refinement of the previous fix's edge, not a recurring
+defect — and the final cycle is clean with both rejections independently
+upheld.
+
+## Observed and deliberately matched
+
+On a single-board session every board-sensitive line renders " on board 1",
+because `spokenBoardOrdinal` resolves the default main board. The plan says to
+render the clause "exactly as `stageStructuralReadingRefusal` renders it", and
+that shipped family does the same; diverging would make two families disagree
+about one slot. Recorded rather than changed.
+
+## Final gate at `4caee4f8`
+
+- Backend Jest: **9,837 passed, 0 failed, 19 skipped** (405 suites).
+- `npm run lint`: 0 errors.
+- `scripts/check-hub-size.mjs`: OK, 43,200/45,000.
+- No conflict markers in `HEAD` (`git grep -n -E '^(<<<<<<< |>>>>>>> )' HEAD`).
+- `origin/main` has not moved since the branch point (`7dc4cd94`).
+
+## Successor
+
+Hop 5 is **PLAN-B-v31**, by the wave coordinator's decision
+(`eicr-automation-a7`, cross-session message 2026-09-23, in reply to this
+executor): PLAN-C2's own queue marker says it ships after PLAN-CC and PLAN-CS's
+schema flip, and PLAN-CS has not shipped. PLAN-B's executor launches PLAN-D as
+hop 6; PLAN-D launches nothing. PLAN-CS, PLAN-C2 and PLAN-CD stay queued for
+the coordinator.
