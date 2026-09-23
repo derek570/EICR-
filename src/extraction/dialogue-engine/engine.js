@@ -59,6 +59,7 @@ import {
   resolveEffectiveBoardId,
 } from '../stage6-multi-board-shape.js';
 import { applyReadingToSnapshot, applyReadingFlagAware } from '../stage6-snapshot-mutators.js';
+import { episodeOwnedFields } from './helpers/episode-ownership.js';
 import {
   parseCircuitRange,
   formatBulkApplyConfirm,
@@ -1484,8 +1485,10 @@ const HANDOFF_DIRECTIVE_SLOT_MISS =
   'device does not exist on this circuit, clear what the walk-through recorded for it — the ' +
   'entries under `recorded`, including their `derived` targets — with the ordinary clear tool, ' +
   'one field per call; each clear is read back by the system, so do not narrate the clears ' +
-  'yourself (an `answer_user` on a turn with clears is not spoken). Never clear anything under ' +
-  '`existing_values`; a fresh value the inspector states may correct one. Otherwise ask ONE ' +
+  'yourself (an `answer_user` on a turn with clears is not spoken). A derived target listed ' +
+  'under `derived_replaced` held that value on the certificate before the walk-through ' +
+  'overwrote it: record that value back rather than clearing the field. Never clear anything ' +
+  'under `existing_values`; a fresh value the inspector states may correct one. Otherwise ask ONE ' +
   'question in your own words for the next remaining field, or answer if it was a question. ' +
   'Do not call `start_dialogue_script` for this circuit.';
 
@@ -1594,20 +1597,35 @@ function buildHandoffNote({ session, state, schema, askedField, askedQuestion, k
   // contradictory instructions about the same field on a device-absence turn,
   // and either outcome is wrong: leave a value the walk created on the
   // certificate, or treat a genuinely pre-existing value as clearable.
-  const episodeOwnedFields = new Set(recorded.map((r) => r.field));
-  for (const entry of recorded) {
-    for (const target of entry.derived) episodeOwnedFields.add(target);
-  }
+  const owned = episodeOwnedFields(state);
   const existing_values = {};
   for (const [field, value] of Object.entries(state?.values ?? {})) {
     if (value === undefined || value === null || value === '') continue;
-    if (episodeOwnedFields.has(field)) continue;
+    if (owned.has(field)) continue;
     existing_values[field] = value;
+  }
+  // A derived target that REPLACED a pre-existing value is episode-owned in
+  // current state and pre-existing in history, and the difference decides
+  // whether a device-absence clear destroys certificate data. `existing_values`
+  // cannot carry it — the value there now is the one the walk derived, and
+  // listing that as pre-existing would be false. So the baseline travels in its
+  // own key, and the directive tells the model to RESTORE rather than clear.
+  //
+  // Scoped to targets this note actually presents as clearable: a baseline for
+  // a field no recorded operation derived has nothing to correct.
+  const derivedTargets = new Set();
+  for (const entry of recorded) {
+    for (const target of entry.derived) derivedTargets.add(target);
+  }
+  const derived_replaced = {};
+  for (const [field, previous] of Object.entries(state?.derivedBaselines ?? {})) {
+    if (derivedTargets.has(field)) derived_replaced[field] = previous;
   }
   return {
     kind,
     directive:
       kind === 'all_filled_entry' ? HANDOFF_DIRECTIVE_ALL_FILLED : HANDOFF_DIRECTIVE_SLOT_MISS,
+    derived_replaced,
     schema: schema.name,
     circuit_ref,
     asked_field: askedField ?? null,
@@ -1845,6 +1863,13 @@ function initScriptState(session, schema, circuit_ref, now, effectiveBoardId = u
         ? resolveEffectiveBoardId(session, null)
         : resolveEffectiveBoardId(session, effectiveBoardId),
     values: {},
+    // PLAN-A (feedback-2026-09-17) — field-keyed record of what a derivation
+    // OVERWROTE, when the value it replaced predates this episode. Lives on the
+    // state so it dies with the episode: a baseline is only ever meaningful
+    // against the walk that created it, and a stale one would tell the model to
+    // restore a value from an unrelated circuit. Carried across a pivot with
+    // `operations`, for the same reason — a pivot is the same episode.
+    derivedBaselines: {},
     // Plan D (2026-07-25) — impedance-clamp provenance, field-keyed, exactly
     // parallel to `values`. Lives HERE (not on the session) so lifecycle rule 3
     // is structural: a new/cancelled/abandoned script replaces this whole
@@ -3782,7 +3807,7 @@ function runActivePath({
       state.pending_designation_candidates = null;
       state.designation_disambiguation_retry_attempted = false;
       const slotFields = schema.slots.map((s) => s.field);
-      const existing = readExistingValues(session, ref, slotFields);
+      const existing = readExistingValues(session, ref, slotFields, state.effectiveBoardId);
       for (const [f, v] of Object.entries(existing)) {
         if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
           state.values[f] = v;
@@ -5032,6 +5057,10 @@ function runPivot({
   // pivoted-away field's read-back renders from the op, not the new
   // schema's state.values).
   const priorOperations = Array.isArray(previous?.operations) ? previous.operations : [];
+  const priorDerivedBaselines =
+    previous?.derivedBaselines && typeof previous.derivedBaselines === 'object'
+      ? previous.derivedBaselines
+      : null;
   logger?.info?.(`${fromSchema.logEventPrefix}_pivot`, {
     sessionId,
     from: fromSchema.name,
@@ -5046,6 +5075,7 @@ function runPivot({
   initScriptState(session, target, circuit_ref, now);
   const state = session.dialogueScriptState;
   state.operations = priorOperations;
+  if (priorDerivedBaselines !== null) state.derivedBaselines = priorDerivedBaselines;
   if (priorEffectiveBoardId !== null) state.effectiveBoardId = priorEffectiveBoardId;
   // 2026-04-30 (Codex P2 follow-up): tag the post-pivot state so
   // subsequent enterScriptByName calls hitting the already_active path
@@ -5059,7 +5089,13 @@ function runPivot({
   // cover. Includes anything the source schema wrote during this
   // turn (the derivations' sets+mirrors landed before pivot).
   const slotFields = target.slots.map((s) => s.field);
-  const existing = circuit_ref ? readExistingValues(session, circuit_ref, slotFields) : {};
+  // PLAN-A — hydrate from the EPISODE's board. A pivot is the same episode on
+  // the same circuit, so reading the SELECTED board here would seed another
+  // board's values into a cross-board walk and surface them in the handoff
+  // note as though this walk had captured them.
+  const existing = circuit_ref
+    ? readExistingValues(session, circuit_ref, slotFields, state.effectiveBoardId)
+    : {};
   for (const [f, v] of Object.entries(existing)) {
     if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
       state.values[f] = v;
@@ -5254,7 +5290,15 @@ function handleBulkApplyReply({
         });
       }
       try {
-        applyReadingToSnapshot(session.stateSnapshot, { circuit: ref, field, value });
+        // PLAN-A — bulk propagation carries the EPISODE's values across a
+        // circuit range on the EPISODE's board. Writing bare put every target
+        // circuit in main's bucket even when the walk was on a sub-board.
+        applyReadingFlagAware(session.stateSnapshot, {
+          circuit: ref,
+          field,
+          value,
+          boardId: state?.effectiveBoardId ?? undefined,
+        });
       } finally {
         if (bulkObserver) bulkObserver.clearOriginFrame();
       }
@@ -6393,7 +6437,7 @@ export function tryResumePausedScript({
   state.last_designation_attempt = null;
 
   const slotFields = schema.slots.map((s) => s.field);
-  const existing = readExistingValues(session, matchedRef, slotFields);
+  const existing = readExistingValues(session, matchedRef, slotFields, state.effectiveBoardId);
   for (const [f, v] of Object.entries(existing)) {
     if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
       state.values[f] = v;

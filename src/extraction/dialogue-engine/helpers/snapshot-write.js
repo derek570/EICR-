@@ -11,7 +11,7 @@
 import { MUTATION_OBSERVER } from '../../plan00-semantic-capture.js';
 import { clampReadingForDispatch, resolveBoardAwareEarthing } from '../../impedance-clamp.js';
 import { canonicaliseNumericReadingField } from '../../value-enum-validator.js';
-import { applyReadingToSnapshot } from '../../stage6-snapshot-mutators.js';
+import { applyReadingFlagAware } from '../../stage6-snapshot-mutators.js';
 import { recordValueCorrection } from './value-corrections.js';
 
 // P3 (2026-07-23) NOTE — the DIALOGUE-engine LIM writes (active-slot, named
@@ -53,14 +53,28 @@ export function applyWrite(session, schema, circuit_ref, field, value, now) {
   // alias (rcd_trip_time, r1_r2) must be translated before the lookup or an
   // impedance slot would silently skip the clamp.
   const canonicalField = canonicaliseNumericReadingField(field);
+  // PLAN-A (feedback-2026-09-17) — the EPISODE's board, not the selected one.
+  // An episode entered by a `record_reading` carrying an explicit `board_id`
+  // runs on that board; writing bare would land every slot in main's bucket
+  // while the tombstone and the handoff note name the other board.
+  //
+  // Scoped to the episode's OWN circuit. A write on any other circuit keeps
+  // today's current-board resolution, so this can only ever change the board of
+  // a write the episode itself owns.
+  const episode = session.dialogueScriptState;
+  const episodeBoardId =
+    episode && episode.circuit_ref === circuit_ref ? (episode.effectiveBoardId ?? undefined) : undefined;
   const clamped = clampReadingForDispatch({
     field: canonicalField,
     value,
     // Board-aware: a sub-board on a TT rod has a different band from a TN-C-S
     // origin. Resolved per write, exactly as the Stage-6 dispatchers do, so the
-    // engine and the dispatchers can never disagree about the band. Dialogue
-    // scripts are circuit-scoped on the current board, hence a null board id.
-    earthing: resolveBoardAwareEarthing(session?.stateSnapshot, null),
+    // engine and the dispatchers can never disagree about the band. Resolved on
+    // the EPISODE's board (PLAN-A): a cross-board episode was previously
+    // clamped against the SELECTED board's earthing, which is a different band
+    // on a sub-board fed from a TT rod. Null keeps the current-board fallback
+    // for every write the episode does not own.
+    earthing: resolveBoardAwareEarthing(session?.stateSnapshot, episodeBoardId ?? null),
   });
   const effective = clamped.value;
 
@@ -74,15 +88,16 @@ export function applyWrite(session, schema, circuit_ref, field, value, now) {
     });
   }
   try {
-    applyReadingToSnapshot(session.stateSnapshot, {
+    applyReadingFlagAware(session.stateSnapshot, {
       circuit: circuit_ref,
       field,
       value: effective,
+      boardId: episodeBoardId,
     });
   } finally {
     if (mutationObserver) mutationObserver.clearOriginFrame();
   }
-  const state = session.dialogueScriptState;
+  const state = episode;
   if (state && state.schemaName === schema.name) {
     state.values[field] = effective;
     state.last_turn_at = now;

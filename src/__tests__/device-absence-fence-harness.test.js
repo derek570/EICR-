@@ -11,6 +11,19 @@
  * mocked loop can seed the same per-turn state a real `clear_reading` dispatch
  * would leave behind — and everything after that is production code.
  *
+ * Every case asserts `result.spoken_response`, which IS the delivered speech:
+ * `bundleToolCallsIntoResult` projects the staged answer onto it and
+ * sonnet-stream speaks that field. An earlier version of this file asserted log
+ * rows and the in-memory `stagedText` instead, and the fix-verification lane was
+ * right that this proves too little — a later finalizer or bundler change could
+ * drop an unfenced answer with `stagedText` still intact and every assertion
+ * still green, while the inspector hears nothing.
+ *
+ * What stays mocked, stated because it bounds the claim: the tool loop returns
+ * zero tool calls, so the `field_cleared` read-backs a real `clear_reading`
+ * dispatch would emit are not exercised here. Those lines are pinned in
+ * `device-absence-fence.test.js` against the bundler itself.
+ *
  * Every positive assertion is paired with a NEGATIVE CONTROL. Without one,
  * "no fallback was staged" proves nothing: it would read the same if the
  * fallback never fired on this shape at all.
@@ -201,6 +214,9 @@ describe('the fence changes what the turn speaks', () => {
     // The surviving `field_cleared` line is the turn's spoken outcome; the
     // fixed fallback must not ride on top of it.
     expect(rows.some((r) => r.e === 'stage6.answer_fallback_staged')).toBe(false);
+    // …and the turn DELIVERS no answer. The log row says the fence fired; this
+    // says the fence changed what the inspector hears, which is the point.
+    expect(result.spoken_response).toBeUndefined();
   });
 
   test('NEGATIVE CONTROL — the same turn with NO surviving clear DOES stage the fallback', async () => {
@@ -208,7 +224,7 @@ describe('the fence changes what the turn speaks', () => {
     seedTurn((w) => {
       w.answer.featureTouched = true;
     });
-    await run(
+    const result = await run(
       makeSession(),
       baseOpts({
         handoff: HANDOFF,
@@ -222,6 +238,10 @@ describe('the fence changes what the turn speaks', () => {
     );
     expect(rows.some((r) => r.e === 'stage6.answer_fenced_by_clears')).toBe(false);
     expect(rows.some((r) => r.e === 'stage6.answer_fallback_staged')).toBe(true);
+    // The pairing that makes the fenced case's `undefined` mean something: the
+    // same shape without a surviving clear DOES reach the wire with speech.
+    expect(typeof result.spoken_response).toBe('string');
+    expect(result.spoken_response.length).toBeGreaterThan(0);
   });
 
   test('a clear on ANOTHER circuit does not fence, and does not touch the answer state', async () => {
@@ -231,7 +251,11 @@ describe('the fence changes what the turn speaks', () => {
     // fallback — for a reason that has nothing to do with this plan. Asserting
     // the fallback here would test that other rule and pass or fail for the
     // wrong reason. What must be true is that the FENCE stayed out of it: no
-    // fence row, and the answer state untouched by it.
+    // fence row, the answer state untouched by it, and — the assertion the
+    // fix-verification lane asked for — the answer still DELIVERED. A later
+    // finalizer or bundler change that drops an unfenced answer after a clear
+    // on another circuit leaves `stagedText` intact and silences the inspector;
+    // only `spoken_response` can tell the two apart.
     const rows = [];
     let observed = null;
     seedTurn((w) => {
@@ -240,7 +264,7 @@ describe('the fence changes what the turn speaks', () => {
       w.cleared.push(clearOn('rcd_type', 9, 'main'));
       observed = w.answer;
     });
-    await run(
+    const result = await run(
       makeSession(),
       baseOpts({
         handoff: HANDOFF,
@@ -257,6 +281,34 @@ describe('the fence changes what the turn speaks', () => {
     // the handed-off circuit.
     expect(observed.fencedByClears).not.toBe(true);
     expect(observed.stagedText).toBe('the overcurrent device remains');
+    // …and it reaches the wire.
+    expect(result.spoken_response).toBe('the overcurrent device remains');
+  });
+
+  test('a clear on the same circuit_ref of ANOTHER BOARD does not fence, and the answer is delivered', async () => {
+    // Board identity is half the fence's key and the half a `cleared.length`
+    // implementation would drop. Same shape as the row above, one field
+    // different, and the same delivery assertion.
+    const rows = [];
+    seedTurn((w) => {
+      w.answer.featureTouched = true;
+      w.answer.stagedText = 'the overcurrent device remains';
+      w.cleared.push(clearOn('rcd_type', 3, 'board-b'));
+    });
+    const result = await run(
+      makeSession(),
+      baseOpts({
+        handoff: HANDOFF,
+        logger: {
+          info: (e, p) => rows.push({ e, p }),
+          warn: () => {},
+          error: () => {},
+          debug: () => {},
+        },
+      })
+    );
+    expect(rows.some((r) => r.e === 'stage6.answer_fenced_by_clears')).toBe(false);
+    expect(result.spoken_response).toBe('the overcurrent device remains');
   });
 
   test('…and the SAME turn with the clear on the HANDED-OFF circuit discards it', async () => {
@@ -270,7 +322,7 @@ describe('the fence changes what the turn speaks', () => {
       w.cleared.push(clearOn('rcd_type', 3, 'main'));
       observed = w.answer;
     });
-    await run(
+    const result = await run(
       makeSession(),
       baseOpts({
         handoff: HANDOFF,
@@ -285,6 +337,8 @@ describe('the fence changes what the turn speaks', () => {
     expect(rows.some((r) => r.e === 'stage6.answer_fenced_by_clears')).toBe(true);
     expect(observed.fencedByClears).toBe(true);
     expect(observed.stagedText).toBeNull();
+    // The discard reaches the wire too: the clears speak, the answer does not.
+    expect(result.spoken_response).toBeUndefined();
   });
 
   test('a turn with NO handoff never fences, whatever it cleared', async () => {
