@@ -35,10 +35,12 @@ import {
   isGuardedClosedEnumField,
   reaskForClosedEnumOutcome,
   renderClosedEnumReask,
+  type ClosedEnumReaskReason,
   type ClosedEnumSparePolicy,
   type GuardedClosedEnumField,
   type GuardedTarget,
 } from './closed-enum-guard';
+import { canonicaliseOcpdStandard } from './ocpd-standard';
 import { repairCircuitDesignation } from './designation-canonicaliser';
 import { resolveJobZe, type JobZeLike } from './circuit-derivations';
 
@@ -376,6 +378,12 @@ const SUPPLY_FIELD_ALIASES: Record<string, { section: 'supply' | 'installation';
  *  its canonical name, so it never needed this fallback.) */
 const CANONICAL_CIRCUIT_FIELDS: ReadonlySet<string> = new Set<string>([
   ...GUARDED_CLOSED_ENUM_FIELDS,
+  // PLAN-CC — named explicitly because it LEFT the guarded set. Membership of
+  // this set is about whether the canonical snake_case spelling RESOLVES to a
+  // writable circuit field, which has nothing to do with whether its value is
+  // checked against an option list: dropping it here would make a
+  // server-originated `ocpd_bs_en` action answer "I don't know the field".
+  'ocpd_bs_en',
   'number_of_points',
   'max_disconnect_time_s',
   'rcd_button_confirmed',
@@ -500,8 +508,23 @@ export function parseVoiceCommand(transcript: string): VoiceCommand | null {
  *  guarded fields take the guard's own edge-only cleaner, which
  *  preserves internal `/ - + &` (N/A, A-S, B+, T&E) and never strips a
  *  unit-shaped letter. Unguarded fields are byte-identical to before. */
+/** Circuit fields whose dictated VALUE is checked before it is written —
+ *  the five closed enums, plus `ocpd_bs_en`, which PLAN-CC made free text but
+ *  which still goes through a canonicaliser that can MISS. Both classes take
+ *  the edge-only cleaner, judge the value once per command, and speak the
+ *  stored value rather than what was heard when the two differ. */
+function isValueCheckedCircuitField(field: string | null | undefined): boolean {
+  return isGuardedClosedEnumField(field) || field === 'ocpd_bs_en';
+}
+
 function cleanValue(raw: string, canonicalField?: string): string {
-  if (canonicalField && isGuardedClosedEnumField(canonicalField)) {
+  // PLAN-CC — `ocpd_bs_en` is named explicitly alongside the guarded set
+  // because it LEFT that set and must keep the edge-only cleaner. The
+  // unit-stripping fallback below ends `.replace(/\s*(?:amps?|amperes?|a)$/i,
+  // '')`, which turns a dictated `N/A` into `N/`: a value the certificate
+  // would then print as a mangled fragment. The field's cleaning requirement
+  // never depended on it being membership-validated.
+  if (canonicalField && isValueCheckedCircuitField(canonicalField)) {
     return cleanClosedEnumResidue(raw);
   }
   const noTrailingPunct = raw.replace(/[.,!?]+$/, '').trim();
@@ -986,6 +1009,46 @@ function respondUnknown(reason: string): VoiceCommandOutcome {
  * `isGuardedClosedEnumField` gate has already passed) but is still
  * routed to a rejection rather than a write: fail closed.
  */
+function guardOcpdStandardWrite(rawValue: unknown, target: GuardedTarget): ClosedEnumGuardResult {
+  const raw = typeof rawValue === 'string' ? rawValue : '';
+  const cleaned = cleanClosedEnumResidue(raw);
+  if (typeof rawValue !== 'string' && typeof rawValue !== 'number') {
+    return {
+      kind: 'rejected',
+      outcome: {
+        response: renderClosedEnumReask('ocpd_bs_en', 'missing_value', '', target),
+        invalidClosedEnum: true,
+      },
+    };
+  }
+  const canonical = canonicaliseOcpdStandard(rawValue);
+  if (canonical == null) {
+    const reason: ClosedEnumReaskReason =
+      cleaned === '' && typeof rawValue === 'string' ? 'missing_value' : 'invalid_value';
+    return {
+      kind: 'rejected',
+      outcome: {
+        response: renderClosedEnumReask('ocpd_bs_en', reason, cleaned, target),
+        invalidClosedEnum: true,
+      },
+    };
+  }
+  if (target.kind === 'unknown') {
+    return {
+      kind: 'rejected',
+      outcome: {
+        response: renderClosedEnumReask('ocpd_bs_en', 'missing_target', canonical, target),
+        invalidClosedEnum: true,
+      },
+    };
+  }
+  return {
+    kind: 'accepted',
+    value: canonical,
+    canonicalised: !(typeof rawValue === 'string' && rawValue === canonical),
+  };
+}
+
 type ClosedEnumGuardResult =
   | { kind: 'not_guarded' }
   | { kind: 'accepted'; value: string; canonicalised: boolean }
@@ -996,6 +1059,17 @@ function guardClosedEnumWrite(
   rawValue: unknown,
   target: GuardedTarget
 ): ClosedEnumGuardResult {
+  // PLAN-CC — `ocpd_bs_en` sits BESIDE the closed-enum branch rather than
+  // inside it. The field accepts any grammar-valid standard, so there is no
+  // option set to test membership against; what can still fail is the
+  // canonicaliser, and a MISS is judged exactly like an invalid enum value:
+  // once per command, nothing written, one spoken re-ask through the SAME
+  // renderer so the sentence is byte-identical to the one this field has
+  // always spoken. The missing-target, zero-applied, stored-value-speech and
+  // failure flags below are shared verbatim.
+  if (canonicalField === 'ocpd_bs_en') {
+    return guardOcpdStandardWrite(rawValue, target);
+  }
   if (!isGuardedClosedEnumField(canonicalField)) return { kind: 'not_guarded' };
   const guarded = canonicalField as GuardedClosedEnumField;
   const outcome = canonicaliseClosedEnumValue(guarded, rawValue);
@@ -1103,7 +1177,7 @@ function applyUpdateField(
   // silently route the write into the supply branch.
   let guardedValue: string | null = null;
   let guardedCanonicalised = false;
-  if (resolved.circuitField && isGuardedClosedEnumField(resolved.circuitField)) {
+  if (resolved.circuitField && isValueCheckedCircuitField(resolved.circuitField)) {
     const circuitRef = command.circuit;
     const target: GuardedTarget =
       // `Number.isInteger` (Codex cycle 1) — the comment above always said
@@ -1571,7 +1645,7 @@ function applyApplyField(
   // restate the whole instruction in one breath.
   let guardedValue: string | null = null;
   let guardedCanonicalised = false;
-  if (isGuardedClosedEnumField(resolved.circuitField)) {
+  if (isValueCheckedCircuitField(resolved.circuitField)) {
     const guard = guardClosedEnumWrite(
       resolved.circuitField,
       command.value,

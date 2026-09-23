@@ -59,6 +59,7 @@ export {
 } from './closed-enum-guard';
 export type {
   GuardedClosedEnumField,
+  ClosedEnumReaskField,
   ClosedEnumOutcome,
   ClosedEnumReaskReason,
   ClosedEnumSparePolicy,
@@ -66,8 +67,27 @@ export type {
 } from './closed-enum-guard';
 export { matchCircuits, similarityScore, normaliseLabel } from './circuit-matcher';
 export type { CircuitMatch, MatcherNewCircuit, MatcherExistingCircuit } from './circuit-matcher';
-export { maxZsLookup, maxZsString } from './max-zs-lookup';
-export type { MaxZsLookupArgs } from './max-zs-lookup';
+export {
+  maxZsLookup,
+  maxZsString,
+  maxZsForOcpdTuple,
+  maxZsForOcpdTupleNumber,
+  recomputeMaxZsForOcpdTuple,
+  writeMaxZs,
+  clearMaxZs,
+  readMaxZsSource,
+  ocpdMaxZsStatus,
+  ocpdMaxZsWarningText,
+} from './max-zs-lookup';
+export type {
+  MaxZsLookupArgs,
+  OcpdTupleLookupArgs,
+  MaxZsSource,
+  MaxZsRow,
+  MaxZsChange,
+  MaxZsChangeLogger,
+  OcpdMaxZsStatus,
+} from './max-zs-lookup';
 export {
   canonicaliseOcpdStandard,
   isCanonicalOcpdStandard,

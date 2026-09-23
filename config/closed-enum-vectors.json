@@ -1,11 +1,10 @@
 {
-  "$comment": "PLAN-C (feedback id 129, 2026-08-23) — closed-enum guard golden vectors. CROSS-PLATFORM CONTRACT: this file is the single source of truth for the six guarded closed-list circuit fields on BOTH clients. web/ tests read this file directly; CertMateUnified keeps a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/closed-enum-vectors.json pinned by paired SHA-256 digest constants (each repo test asserts the SAME hex constant) and scripts/check-closed-enum-fixture-sync.sh byte-compares them as a named pre-TestFlight step. `options` is generated FROM config/field_schema.json (the guard vocabulary is the SCHEMA, not either client UI picker list — see PLAN-C C2b) with the empty-string sentinel stripped; a CI drift test re-derives it. Do NOT hand-edit `options`.",
+  "$comment": "PLAN-C (feedback id 129, 2026-08-23) — closed-enum guard golden vectors. CROSS-PLATFORM CONTRACT: this file is the single source of truth for the FIVE guarded closed-list circuit fields on BOTH clients. PLAN-CC (2026-09-23) removed `ocpd_bs_en` from `guarded_fields` and `options` — the field is free text now, canonicalised by config/ocpd-bs-suggestions.json — but KEPT its `labels` / `nouns` / `example_phrases` / `reask_render_vectors` rows, because a canonicalisation miss still speaks the same re-ask through the same renderer and that copy must stay pinned across the two clients. web/ tests read this file directly; CertMateUnified keeps a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/closed-enum-vectors.json pinned by paired SHA-256 digest constants (each repo test asserts the SAME hex constant) and scripts/check-closed-enum-fixture-sync.sh byte-compares them as a named pre-TestFlight step. `options` is generated FROM config/field_schema.json (the guard vocabulary is the SCHEMA, not either client UI picker list — see PLAN-C C2b) with the empty-string sentinel stripped; a CI drift test re-derives it. Do NOT hand-edit `options`.",
   "plan": "PLAN-C-final.md (feedback-2026-08-23 wave)",
   "schema_source": "config/field_schema.json",
   "guarded_fields": [
     "wiring_type",
     "ref_method",
-    "ocpd_bs_en",
     "ocpd_type",
     "rcd_bs_en",
     "rcd_type"
@@ -34,16 +33,6 @@
       "101",
       "102",
       "103"
-    ],
-    "ocpd_bs_en": [
-      "BS EN 60898",
-      "BS EN 61009",
-      "BS EN 60947-2",
-      "BS EN 60947-3",
-      "BS EN 60269-2",
-      "BS 3036",
-      "BS 1361",
-      "N/A"
     ],
     "ocpd_type": [
       "B",
@@ -295,104 +284,9 @@
       "expected": "100"
     },
     {
-      "field": "ocpd_bs_en",
-      "input": "60898",
-      "expected": "BS EN 60898"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "bs en 60898",
-      "expected": "BS EN 60898"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "BS EN 60898-1",
-      "expected": "BS EN 60898"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "BS 60898",
-      "expected": "BS EN 60898"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "61009",
-      "expected": "BS EN 61009"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "BS EN 61009-1",
-      "expected": "BS EN 61009"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "60947-2",
-      "expected": "BS EN 60947-2"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "60947 3",
-      "expected": "BS EN 60947-3"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "6 0 8 9 8",
-      "expected": "BS EN 60898"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "60269-2",
-      "expected": "BS EN 60269-2"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "88-2",
-      "expected": "BS EN 60269-2"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "BS 88-3",
-      "expected": "BS EN 60269-2"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "3036",
-      "expected": "BS 3036"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "1361",
-      "expected": "BS 1361"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "n/a",
-      "expected": "N/A"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "N/A",
-      "expected": "N/A"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "na",
-      "expected": "N/A"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "N.A.",
-      "expected": "N/A"
-    },
-    {
       "field": "wiring_type",
       "input": " A ",
       "expected": "A"
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "not applicable",
-      "expected": "N/A"
     },
     {
       "field": "ocpd_type",
@@ -565,42 +459,6 @@
       "input": "A1",
       "reason": "invalid_value",
       "why": "iOS picker carries A1/A2/B1/B2/D1/D2; the SCHEMA (guard vocabulary, C2b) does not."
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "1362",
-      "reason": "invalid_value",
-      "why": "CRITICAL — the backend Levenshtein-1 fallback would collapse 1362 to BS 1361 (a DIFFERENT device). Not ported; re-ask instead."
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "6898",
-      "reason": "invalid_value",
-      "why": "Deepgram digit-drift; the backend fuzzy fallback recovers it, the client deliberately does not."
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "60898 and 61009",
-      "reason": "invalid_value",
-      "why": "Full-consumption parser — a residue holding two codes never resolves to one."
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "MCB",
-      "reason": "invalid_value",
-      "why": "Device class, not a standard."
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "62423",
-      "reason": "invalid_value",
-      "why": "iOS picker carries BS EN 62423 on OCPD; the schema option set does not (C2b documented divergence)."
-    },
-    {
-      "field": "ocpd_bs_en",
-      "input": "88-2 for circuit",
-      "reason": "invalid_value",
-      "why": "Trailing scope words must not be silently swallowed by an unanchored match."
     },
     {
       "field": "ocpd_type",

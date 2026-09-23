@@ -36,6 +36,12 @@
  * STRICTER than the backend by exactly that one fallback, and more LENIENT
  * on `wiring_type` by exactly the curated description map below.
  *
+ * PLAN-CC (2026-09-23) REMOVED `ocpd_bs_en` from the guarded set: the field
+ * is free text on both clients now, because the printed standard on a real
+ * device is routinely outside the schema's eight options. It keeps its re-ask
+ * row here (`ClosedEnumReaskField`) so a canonicalisation miss still speaks the
+ * same sentence it always did. `rcd_bs_en` is unchanged and still guarded.
+ *
  * `CLOSED_ENUM_OPTIONS` and the mapping tables are pinned against
  * `config/closed-enum-vectors.json` (the cross-platform fixture) by a drift
  * test on each client, and the fixture's `options` are in turn re-derived
@@ -45,10 +51,17 @@
 export type GuardedClosedEnumField =
   | 'wiring_type'
   | 'ref_method'
-  | 'ocpd_bs_en'
   | 'ocpd_type'
   | 'rcd_bs_en'
   | 'rcd_type';
+
+/** Fields the RE-ASK renderer can speak for. A superset of the guarded set by
+ *  exactly one member: PLAN-CC made `ocpd_bs_en` free text, so it is no longer
+ *  membership-validated here — but a canonicalisation MISS still re-asks, and
+ *  it must re-ask in the SAME words it always has. Keeping the field's label,
+ *  noun and example row here means the two paths share one renderer and the
+ *  spoken copy cannot drift apart. */
+export type ClosedEnumReaskField = GuardedClosedEnumField | 'ocpd_bs_en';
 
 /** Guarded set — exactly the six STRING-enum circuit fields. The four
  *  boolean/confirmable selects (`polarity_confirmed`, `rcd_button_confirmed`,
@@ -58,7 +71,6 @@ export type GuardedClosedEnumField =
 export const GUARDED_CLOSED_ENUM_FIELDS: ReadonlySet<string> = new Set<string>([
   'wiring_type',
   'ref_method',
-  'ocpd_bs_en',
   'ocpd_type',
   'rcd_bs_en',
   'rcd_type',
@@ -70,16 +82,6 @@ export const CLOSED_ENUM_OPTIONS: Readonly<Record<GuardedClosedEnumField, readon
   Object.freeze({
     wiring_type: Object.freeze(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'O']),
     ref_method: Object.freeze(['A', 'B', 'C', 'D', 'E', 'F', 'G', '100', '101', '102', '103']),
-    ocpd_bs_en: Object.freeze([
-      'BS EN 60898',
-      'BS EN 61009',
-      'BS EN 60947-2',
-      'BS EN 60947-3',
-      'BS EN 60269-2',
-      'BS 3036',
-      'BS 1361',
-      'N/A',
-    ]),
     ocpd_type: Object.freeze(['B', 'C', 'D', 'gG', 'gM', 'aM', 'HRC', 'Rew', 'N/A']),
     rcd_bs_en: Object.freeze(['BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A']),
     rcd_type: Object.freeze(['AC', 'A', 'F', 'B', 'S', 'A-S', 'B-S', 'B+', 'N/A']),
@@ -88,7 +90,7 @@ export const CLOSED_ENUM_OPTIONS: Readonly<Record<GuardedClosedEnumField, readon
 /** Spoken field labels — byte-identical to `voice-commands.ts` `labelForField`
  *  for these six keys so a re-ask and a success confirmation name the field
  *  the same way. */
-export const CLOSED_ENUM_LABELS: Readonly<Record<GuardedClosedEnumField, string>> = Object.freeze({
+export const CLOSED_ENUM_LABELS: Readonly<Record<ClosedEnumReaskField, string>> = Object.freeze({
   wiring_type: 'wiring type',
   ref_method: 'reference method',
   ocpd_bs_en: 'OCPD BS EN',
@@ -99,7 +101,7 @@ export const CLOSED_ENUM_LABELS: Readonly<Record<GuardedClosedEnumField, string>
 
 /** The noun used in "…which isn't a valid <noun>". Per-field so the sentence
  *  reads naturally over TTS. */
-const CLOSED_ENUM_NOUNS: Readonly<Record<GuardedClosedEnumField, string>> = Object.freeze({
+const CLOSED_ENUM_NOUNS: Readonly<Record<ClosedEnumReaskField, string>> = Object.freeze({
   wiring_type: 'code',
   ref_method: 'reference method',
   ocpd_bs_en: 'standard',
@@ -112,7 +114,7 @@ const CLOSED_ENUM_NOUNS: Readonly<Record<GuardedClosedEnumField, string>> = Obje
  *  spoken ALIASES the parser actually accepts ("OCPD standard" is a real
  *  `CIRCUIT_FIELD_ALIASES` key) so the example the inspector hears is one
  *  the client can genuinely parse back. */
-const CLOSED_ENUM_EXAMPLE_PHRASES: Readonly<Record<GuardedClosedEnumField, string>> = Object.freeze(
+const CLOSED_ENUM_EXAMPLE_PHRASES: Readonly<Record<ClosedEnumReaskField, string>> = Object.freeze(
   {
     wiring_type: 'wiring type A',
     ref_method: 'reference method C',
@@ -259,7 +261,12 @@ const BS_PATTERNS: ReadonlyArray<{
   { re: /^61008(?:[-\s]*1)?$/i, canonical: 'BS EN 61008' },
   { re: /^61009(?:[-\s]*1)?$/i, canonical: 'BS EN 61009' },
   { re: /^62423$/i, canonical: 'BS EN 62423' },
-  { re: /^88[-\s]*(?:dash[-\s]*)?([23])$/i, canonical: 'BS EN 60269-2' },
+  // PLAN-CC RETIRED the `^88[-\s]*(?:dash[-\s]*)?([23])$` → `BS EN 60269-2`
+  // row that used to sit here. It mapped BOTH `88 dash 2` and `88 dash 3` onto
+  // ONE canonical, losing which part the inspector read off the device.
+  // `ocpd_bs_en` — the only field on which it could ever have fired, since
+  // `BS EN 60269-2` is not an `rcd_bs_en` option — now goes through
+  // `canonicaliseOcpdStandard`, which keeps `BS 88-2` and `BS 88-3` distinct.
   { re: /^3036$/i, canonical: 'BS 3036' },
   { re: /^1361$/i, canonical: 'BS 1361' },
 ];
@@ -401,7 +408,7 @@ export function canonicaliseClosedEnumValue(field: string, raw: unknown): Closed
     alias = WIRING_TYPE_DESCRIPTION_TO_CODE[cleaned.toUpperCase()] ?? null;
   } else if (guarded === 'ref_method') {
     alias = parseClosedEnumRefMethod(cleaned);
-  } else if (guarded === 'ocpd_bs_en' || guarded === 'rcd_bs_en') {
+  } else if (guarded === 'rcd_bs_en') {
     alias = parseClosedEnumBsCode(cleaned);
   }
   // Membership is re-checked per field: "BS EN 60898" is a real standard but
@@ -465,7 +472,7 @@ function targetPhrase(target: GuardedTarget): string {
  * the backend's apology / refusal / decline-ack families.
  */
 export function renderClosedEnumReask(
-  field: GuardedClosedEnumField,
+  field: ClosedEnumReaskField,
   reason: ClosedEnumReaskReason,
   heard: string,
   target: GuardedTarget
