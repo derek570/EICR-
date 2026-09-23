@@ -77,6 +77,10 @@ export interface FinalTranscriptMeta {
    * own final.
    */
   readonly providerFinalId?: string | null;
+  /** PLAN-D (WAVE-CONTEXT Decision 34a) — Flux's own `turn_index` for this
+   *  final's turn (the EndOfTurn frame's). Null/absent on nova-3, which has
+   *  no turn identity, or when the frame carried none. */
+  readonly turnIndex?: number | null;
 }
 
 /**

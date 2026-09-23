@@ -814,6 +814,38 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       expect(lateDrops(harness)).toHaveLength(1);
     });
 
+    it('Decision 34a: two turns STARTED before the tap, finals delivered after it in either order, are both dropped; a later turn is admitted', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      // Turns 11 and 12 both start while paused (a client grace buffer can
+      // hold turn 11's final past turn 12's start).
+      await act(async () => {
+        dg.emitSpeechStarted({ turnIndex: 11 });
+        dg.emitInterim('Zs on circuit 1', 0.5, { turnIndex: 11 });
+        dg.emitSpeechStarted({ turnIndex: 12 });
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      // Delivered out of order: 12, then 11.
+      await act(async () => {
+        dg.emitEndOfTurn('Zs on circuit 2 is 0.51', 0.9, 1.0, { turnIndex: 12 });
+        dg.emitEndOfTurn('Zs on circuit 1 is 0.44', 0.9, 1.0, { turnIndex: 11 });
+      });
+      await advance(600);
+      expect(sent(harness)).toEqual([]);
+      expect(lateDrops(harness).map((d) => d.payload.turnIndex)).toEqual([12, 11]);
+      // A turn that STARTS after the tap is admitted.
+      await act(async () => {
+        dg.emitSpeechStarted({ turnIndex: 13 });
+        dg.emitEndOfTurn('Zs on circuit 3 is 0.62', 0.9, 1.0, { turnIndex: 13 });
+      });
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 3 is 0.62']);
+      expect(lateDrops(harness)).toHaveLength(2);
+    });
+
     it('a tap with NO open turn drops nothing', async () => {
       const { harness, api } = await mount();
       await enterPause(harness, api);
@@ -831,7 +863,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       expect(lateDrops(harness)).toHaveLength(0);
     });
 
-    it('a marked turn that ends with no final (empty EndOfTurn) clears the marker', async () => {
+    it('a turn started before the tap that ends with no final (empty EndOfTurn) leaves the NEXT turn admitted', async () => {
       const { harness, api } = await mount();
       const dg = harness.refs.deepgram!;
       await enterPause(harness, api);
@@ -896,6 +928,9 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
           event: 'Update',
           transcript: 'stale words from the old socket',
           audio_window_end: 0.5,
+          // A high index: if a superseded socket could raise the watermark,
+          // every current-socket final would fall under it.
+          turn_index: 99,
         });
       });
       await act(async () => {
@@ -989,7 +1024,11 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
 
       it.each([
         ['an interim was seen: the final is dropped', true, 0],
-        ['only a VAD SpeechStarted, no interim: the final is admitted', false, 1],
+        [
+          'a final-only turn (a VAD SpeechStarted, no interim) is admitted — the documented fallback limit',
+          false,
+          1,
+        ],
       ] as const)('%s', async (_label, withInterim, admitted) => {
         const harness = buildHarnessServices();
         harness.services.resolveSttModel = () => Promise.resolve('nova3');

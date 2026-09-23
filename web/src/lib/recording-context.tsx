@@ -10,6 +10,7 @@ import {
   type DeepgramConnectionState,
   type DeepgramSessionContext,
   type SttModel,
+  type TurnEventMeta,
 } from './recording/deepgram-service';
 import { UplinkScopeAllocator } from './recording/uplink-scope-allocator';
 import {
@@ -1631,27 +1632,58 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     playing: false,
     untilMs: 0,
   });
-  /** WAVE-CONTEXT Decision 34 — whether a Deepgram TURN is open on the
-   *  current service right now, from Deepgram's own turn signal: Flux
-   *  StartOfTurn or any non-empty interim opens it (nova-3: any non-empty
-   *  interim — "interim seen since the last final"); its final, or a turn
-   *  end with no final (Flux empty EndOfTurn / nova-3 UtteranceEnd), closes
-   *  it; so does the socket leaving 'connected' and a service replacement. */
-  const deepgramTurnRef = React.useRef<{
+  /** WAVE-CONTEXT Decision 34a (Flux) — the highest Flux `turn_index` that
+   *  has STARTED on the current socket epoch: a StartOfTurn, or a turn's
+   *  first non-empty Update, from the CURRENT socket only (a superseded
+   *  socket's late frames carry `current: false`). A new epoch or service
+   *  starts a fresh watermark. */
+  const fluxTurnWatermarkRef = React.useRef<{
+    service: DeepgramServiceLike;
+    epoch: ConnectionEpoch | null;
+    highest: number;
+  } | null>(null);
+  /** Decision 34a (nova-3 fail-safe fallback) — a nova-3 turn is "open" once
+   *  a non-empty interim has been seen since the last final (nova-3 has no
+   *  turn identity; its VAD SpeechStarted fires on breath). Closed by a
+   *  final, an UtteranceEnd, the socket leaving 'connected' or a service
+   *  replacement. A final-only nova-3 turn is never caught — the documented
+   *  fallback limit. */
+  const novaTurnOpenRef = React.useRef<{
     service: DeepgramServiceLike;
     epoch: ConnectionEpoch | null;
   } | null>(null);
-  /** Decision 34 — set by a Resume TAP out of `voicePaused` iff a turn was
-   *  open at that instant: that turn is PAUSED speech. Its final (the next
-   *  final on the same service and epoch — Deepgram closes one turn before
-   *  opening the next) is dropped at the boundary. Cleared when that final
-   *  arrives, when the turn ends without one, when the socket leaves
-   *  'connected' or the service is replaced (the final can no longer
-   *  arrive), and at session stop/start. No timeout. */
-  const tapDropTurnRef = React.useRef<{
-    service: DeepgramServiceLike;
-    epoch: ConnectionEpoch | null;
-  } | null>(null);
+  /** Decisions 34 / 34a — recorded by a Resume TAP out of `voicePaused`.
+   *  Flux: `{watermark}` — every final on that service and epoch whose OWN
+   *  `turn_index` ≤ the watermark STARTED before the tap and is paused
+   *  speech, dropped at the boundary whatever order it is delivered in; the
+   *  record is never consumed (indices only grow within an epoch) and is
+   *  cleared only on socket/service replacement and at session stop/start.
+   *  nova-3: a one-shot mark for the interim-opened turn, consumed by the
+   *  next final (or cleared when that turn ends without one). */
+  const tapDropRef = React.useRef<
+    | {
+        kind: 'flux';
+        service: DeepgramServiceLike;
+        epoch: ConnectionEpoch | null;
+        watermark: number;
+      }
+    | { kind: 'nova'; service: DeepgramServiceLike; epoch: ConnectionEpoch | null }
+    | null
+  >(null);
+  /** Decision 34a — advance the Flux started-turn watermark from a
+   *  current-socket turn event that names its turn. */
+  const noteFluxTurnStarted = React.useCallback(
+    (service: DeepgramServiceLike, meta: TurnEventMeta | undefined) => {
+      if (!meta || meta.current === false || meta.turnIndex === null) return;
+      const w = fluxTurnWatermarkRef.current;
+      if (w && w.service === service && w.epoch === meta.epoch) {
+        if (meta.turnIndex > w.highest) w.highest = meta.turnIndex;
+      } else {
+        fluxTurnWatermarkRef.current = { service, epoch: meta.epoch, highest: meta.turnIndex };
+      }
+    },
+    []
+  );
   /** The origin-aware exit is `resume()`; the phrase route reaches it from
    *  inside `openDeepgram`'s closures through this ref. */
   const resumeWithOriginRef = React.useRef<(via: 'phrase' | 'tap') => void>(() => {});
@@ -1673,7 +1705,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     stillPausedCueThrottleRef.current.reset();
     voicePauseDropCountRef.current = 0;
     resumePhraseEchoRef.current = { playing: false, untilMs: 0 };
-    tapDropTurnRef.current = null;
+    tapDropRef.current = null;
     sessionUplinkContextRef.current?.lossLedger?.clearPauseCut();
   }, [cancelVoicePauseReminder]);
 
@@ -1709,15 +1741,26 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     (via: 'phrase' | 'tap'): boolean => {
       if (!voicePausedRef.current) return false;
       if (via === 'tap') {
-        // WAVE-CONTEXT Decision 34 — a Resume TAP races Deepgram: speech the
-        // inspector was still saying (or had just said) while paused has not
-        // come back as a final yet. The turn in flight at this instant is
-        // PAUSED speech: mark it so its final is dropped at the boundary.
-        // The phrase route needs none of this — finals on one socket arrive
-        // in order, so nothing spoken before the phrase can follow it.
-        const turn = deepgramTurnRef.current;
-        if (turn && turn.service === deepgramRef.current) {
-          tapDropTurnRef.current = { service: turn.service, epoch: turn.epoch };
+        // WAVE-CONTEXT Decisions 34 / 34a — a Resume TAP races Deepgram:
+        // speech the inspector said while paused may not have come back as a
+        // final yet. On Flux every turn that STARTED before this instant is
+        // PAUSED speech, identified by its own turn_index, so delivery order
+        // does not matter. On the nova-3 fallback only a turn already showing
+        // interim text is caught. The phrase route needs none of this —
+        // finals on one socket arrive in order, so nothing spoken before the
+        // phrase can follow it.
+        const live = deepgramRef.current;
+        const flux = fluxTurnWatermarkRef.current;
+        const nova = novaTurnOpenRef.current;
+        if (flux && live && flux.service === live) {
+          tapDropRef.current = {
+            kind: 'flux',
+            service: flux.service,
+            epoch: flux.epoch,
+            watermark: flux.highest,
+          };
+        } else if (nova && live && nova.service === live) {
+          tapDropRef.current = { kind: 'nova', service: nova.service, epoch: nova.epoch };
         }
         // And the post-TTS audio held at this instant (D7) was captured
         // while paused: discard it rather than replay it. The hold stays
@@ -3030,8 +3073,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // Decision 34 — off 'connected' the open turn's final can never
           // arrive (a reconnect is a new socket and epoch): nothing to drop.
           if (state !== 'connected' && emittingService === deepgramRef.current) {
-            deepgramTurnRef.current = null;
-            tapDropTurnRef.current = null;
+            fluxTurnWatermarkRef.current = null;
+            novaTurnOpenRef.current = null;
+            tapDropRef.current = null;
           }
           // PLAN-E1 E3 (Codex diff-review r1 IMPORTANT fix) — reset the
           // probe the MOMENT the socket dies (enters 'reconnecting' or
@@ -3096,10 +3140,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             emittingService !== null &&
             emittingService === deepgramRef.current
           ) {
-            deepgramTurnRef.current = {
-              service: emittingService,
-              epoch: turnMeta?.epoch ?? emittingService.liveEpoch ?? null,
-            };
+            if (activeSttModelRef.current === 'flux') {
+              noteFluxTurnStarted(emittingService, turnMeta);
+            } else {
+              novaTurnOpenRef.current = {
+                service: emittingService,
+                epoch: turnMeta?.epoch ?? emittingService.liveEpoch ?? null,
+              };
+            }
           }
           // Mirror iOS `isSpeaking` flag — interim arrival proves the
           // inspector is mid-utterance. The phantom-VAD watchdog
@@ -3125,14 +3173,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // breath); there the first interim does.
           if (
             activeSttModelRef.current === 'flux' &&
-            turnMeta?.current !== false &&
             emittingService !== null &&
             emittingService === deepgramRef.current
           ) {
-            deepgramTurnRef.current = {
-              service: emittingService,
-              epoch: turnMeta?.epoch ?? emittingService.liveEpoch ?? null,
-            };
+            noteFluxTurnStarted(emittingService, turnMeta);
           }
           // Stamp the time so the post-wake monitor (#53) can tell
           // a pre-wake SpeechStarted from a post-wake one.
@@ -3158,19 +3202,24 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }, SPEECH_CONFIRM_TIMEOUT_MS);
         },
         onUtteranceEnd: (turnMeta) => {
-          // Decision 34 — the turn ended. With a transcript Flux fires the
-          // final FIRST (which consumed any tap marker); reaching here with
-          // the marker still set means the marked turn ended with NO final,
-          // so there is nothing left to drop. A superseded socket's late turn
-          // end (turnMeta.current === false) is NOT the current turn's end
-          // and must not clear a live mark.
+          // Decision 34a (nova-3 only) — the turn ended. A final fires first
+          // (and consumed any nova mark); reaching here with the mark still
+          // set means the marked turn ended with NO final. A superseded
+          // socket's late turn end (current === false) is not this turn's.
+          // Flux needs nothing here: its tap record is a turn-index
+          // watermark, not a consumable mark.
           if (
             turnMeta?.current !== false &&
             emittingService !== null &&
             emittingService === deepgramRef.current
           ) {
-            deepgramTurnRef.current = null;
-            if (tapDropTurnRef.current?.service === emittingService) tapDropTurnRef.current = null;
+            novaTurnOpenRef.current = null;
+            if (
+              tapDropRef.current?.kind === 'nova' &&
+              tapDropRef.current.service === emittingService
+            ) {
+              tapDropRef.current = null;
+            }
           }
           // PLAN-E1 E3 — a reset trigger with NO interim received since
           // the last onset records a CENSORED sample (only if the armed
@@ -3272,16 +3321,33 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             }
           }
           freshnessStoreRef.current.recordFinal(finalWindow);
-          // Decision 34 — this final closes the current turn.
-          deepgramTurnRef.current = null;
-          const tapDrop = tapDropTurnRef.current;
+          // Decision 34a — a nova-3 final closes its (interim-opened) turn.
+          novaTurnOpenRef.current = null;
+          const tapDrop = tapDropRef.current;
+          let tapDropsThis = false;
+          if (tapDrop?.kind === 'flux') {
+            // Flux: the final's OWN turn index against the tap watermark.
+            // The record is NOT consumed — several turns that started
+            // before the tap can deliver their finals after it, in any order.
+            const turnIndex = admissionMeta.turnIndex ?? null;
+            tapDropsThis =
+              tapDrop.service === emittingService &&
+              tapDrop.epoch === admissionMeta.epoch &&
+              turnIndex !== null &&
+              turnIndex <= tapDrop.watermark;
+          } else if (tapDrop?.kind === 'nova') {
+            // nova-3: one-shot — the next final is the interim-opened turn's.
+            tapDropRef.current = null;
+            tapDropsThis =
+              tapDrop.service === emittingService && tapDrop.epoch === admissionMeta.epoch;
+          }
           if (tapDrop) {
-            tapDropTurnRef.current = null;
-            if (tapDrop.service === emittingService && tapDrop.epoch === admissionMeta.epoch) {
-              // The turn in flight at a Resume TAP: paused speech. Dropped
-              // here — before the echo gates, so the marker is always
-              // consumed by the turn it names — never written or forwarded,
-              // and with no still-paused cue (the session is not paused).
+            if (tapDropsThis) {
+              // A turn that started before a Resume TAP: paused speech.
+              // Dropped here — before the echo gates, so the decision never
+              // depends on which later branch would handle it — never
+              // written or forwarded, and with no still-paused cue (the
+              // session is not paused).
               voicePauseDropCountRef.current += 1;
               clientDiagnostic('voice_pause_drop_count', {
                 count: voicePauseDropCountRef.current,
@@ -3290,6 +3356,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               clientDiagnostic('voice_pause_late_final_dropped', {
                 textPreview: text.slice(0, 60),
                 epoch: admissionMeta.epoch,
+                turnIndex: admissionMeta.turnIndex ?? null,
               });
               return;
             }
@@ -3619,8 +3686,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       deepgramRef.current = service;
       // Decision 34 — a replaced service carries no open turn, and a turn
       // marked on the old one can never deliver its final here.
-      deepgramTurnRef.current = null;
-      tapDropTurnRef.current = null;
+      fluxTurnWatermarkRef.current = null;
+      novaTurnOpenRef.current = null;
+      tapDropRef.current = null;
       service.connect(async () => {
         // Per-attempt guard: if stop() rotated the session while we were
         // waiting for backoff + key fetch, bail so the service aborts
@@ -3645,6 +3713,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       enterVoicePause,
       isResumeMatcherDisarmed,
       requestStillPausedCue,
+      noteFluxTurnStarted,
     ]
   );
 

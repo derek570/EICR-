@@ -93,6 +93,9 @@ export interface DeepgramWord {
 export interface TurnEventMeta {
   readonly epoch: ConnectionEpoch | null;
   readonly current: boolean;
+  /** Decision 34a — the Flux `turn_index` of the TurnInfo frame being
+   *  delivered; null on nova-3 (no turn identity) or when absent. */
+  readonly turnIndex: number | null;
 }
 
 export interface DeepgramCallbacks {
@@ -570,9 +573,15 @@ export class DeepgramService {
    *  to the current epoch. */
   private turnEventMeta(): TurnEventMeta {
     const ctx = this.dispatchingSocketContext;
-    if (!ctx) return { epoch: this.currentEpoch, current: !this.admissionClosed };
-    return { epoch: ctx.epoch, current: this.admissibleFor(ctx.epoch) };
+    const turnIndex = this.fluxFrameTurnIndex;
+    if (!ctx) return { epoch: this.currentEpoch, current: !this.admissionClosed, turnIndex };
+    return { epoch: ctx.epoch, current: this.admissibleFor(ctx.epoch), turnIndex };
   }
+
+  /** Decision 34a — the `turn_index` of the Flux TurnInfo frame currently
+   *  being handled (set around `handleFluxTurnInfoFrame`), so every turn
+   *  callback it fires can name its turn. Null outside one. */
+  private fluxFrameTurnIndex: number | null = null;
 
   private admissibleFor(socketEpoch: ConnectionEpoch | null | undefined): boolean {
     return (
@@ -2029,6 +2038,22 @@ export class DeepgramService {
     json: Record<string, unknown>,
     socketContext?: { epoch: ConnectionEpoch | null; origin: number }
   ): void {
+    // Decision 34a — expose this frame's turn_index to the turn callbacks
+    // for the duration of the frame (restored after, re-entrancy-safe).
+    const previous = this.fluxFrameTurnIndex;
+    const raw = json.turn_index;
+    this.fluxFrameTurnIndex = typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+    try {
+      this.handleFluxTurnInfoFrame(json, socketContext);
+    } finally {
+      this.fluxFrameTurnIndex = previous;
+    }
+  }
+
+  private handleFluxTurnInfoFrame(
+    json: Record<string, unknown>,
+    socketContext?: { epoch: ConnectionEpoch | null; origin: number }
+  ): void {
     const event = json.event as string | undefined;
     if (!event) return;
     const transcript = (json.transcript as string | undefined) ?? '';
@@ -2105,14 +2130,18 @@ export class DeepgramService {
           // the EndOfTurn `audio_window_end` in this epoch's dispatched
           // domain, and the provider's turn identity (a duplicate delivery
           // of the same EndOfTurn reuses the client's record).
-          this.finalMeta(
-            socketContext,
-            json.audio_window_end,
-            undefined,
-            this.providerFinalId(socketContext?.epoch ?? null, {
-              flux: { turn_index: json.turn_index, audio_window_end: json.audio_window_end },
-            })
-          )
+          {
+            ...this.finalMeta(
+              socketContext,
+              json.audio_window_end,
+              undefined,
+              this.providerFinalId(socketContext?.epoch ?? null, {
+                flux: { turn_index: json.turn_index, audio_window_end: json.audio_window_end },
+              })
+            ),
+            // Decision 34a — the final's OWN turn index.
+            turnIndex: this.fluxFrameTurnIndex,
+          }
         );
         // iOS canon (DeepgramService.swift handleFluxTurnInfo): EndOfTurn with
         // a transcript fires BOTH didReceiveFinalTranscript AND
