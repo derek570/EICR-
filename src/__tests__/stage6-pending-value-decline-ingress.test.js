@@ -112,6 +112,18 @@ async function tick(n = 3) {
   for (let i = 0; i < n; i += 1) await new Promise((r) => setImmediate(r));
 }
 
+// The ask gate's 1500 ms debounce composes unconditionally since PLAN-B
+// (feedback-2026-09-17), so a model ask registers only after that real delay.
+// Resolve it as soon as it registers, bounded on wall-clock time.
+async function resolveWhenRegistered(pendingAsks, toolCallId, payload) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (pendingAsks.resolve(toolCallId, payload)) return;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`ask ${toolCallId} never registered`);
+}
+
 const noneAsk = (overrides = {}) => ({
   question: 'I heard 26 milliseconds — which reading was that for?',
   reason: 'missing_field',
@@ -193,8 +205,10 @@ describe('id 114 ingress — decline at the INITIAL pending-value ask', () => {
         { tool_call_id: 'toolu_i1', name: 'ask_user', input: noneAsk() },
         o.ctx
       );
-      await tick();
-      pendingAsks.resolve('toolu_i1', { answered: true, user_text: "Don't worry." });
+      await resolveWhenRegistered(pendingAsks, 'toolu_i1', {
+        answered: true,
+        user_text: "Don't worry.",
+      });
       const env = await p;
       expect(JSON.parse(env.content).match_status).toBe('user_declined');
       return loopOut([toolCallRecord('toolu_i1', env)]);
@@ -226,8 +240,10 @@ describe('id 114 ingress — decline at the INITIAL pending-value ask', () => {
         { tool_call_id: 'toolu_g1', name: 'ask_user', input: noneAsk() },
         o.ctx
       );
-      await tick();
-      pendingAsks.resolve('toolu_g1', { answered: true, user_text: "Don't worry." });
+      await resolveWhenRegistered(pendingAsks, 'toolu_g1', {
+        answered: true,
+        user_text: "Don't worry.",
+      });
       const env = await p;
       expect(JSON.parse(env.content).match_status).toBe('user_declined');
       return loopOut([toolCallRecord('toolu_g1', env)]);
@@ -261,8 +277,10 @@ describe('id 114 ingress — decline at the INITIAL pending-value ask', () => {
         { tool_call_id: 'toolu_r1', name: 'ask_user', input: noneAsk() },
         o.ctx
       );
-      await tick();
-      pendingAsks.resolve('toolu_r1', { answered: true, user_text: "Don't worry." });
+      await resolveWhenRegistered(pendingAsks, 'toolu_r1', {
+        answered: true,
+        user_text: "Don't worry.",
+      });
       const env1 = await p;
       // The model retries the same pending operation in the SAME generation.
       const env2 = await o.dispatcher(
@@ -309,8 +327,10 @@ describe('id 114 ingress — decline at the INITIAL pending-value ask', () => {
         { tool_call_id: 'toolu_gr1', name: 'ask_user', input: noneAsk() },
         o.ctx
       );
-      await tick();
-      pendingAsks.resolve('toolu_gr1', { answered: true, user_text: "Don't worry." });
+      await resolveWhenRegistered(pendingAsks, 'toolu_gr1', {
+        answered: true,
+        user_text: "Don't worry.",
+      });
       const env1 = await p;
       // The model retries the same pending operation in the SAME generation.
       const env2 = await o.dispatcher(
@@ -388,8 +408,10 @@ describe('id 114 ingress — decline at each brokered outcome', () => {
       runToolLoopSpy.mockImplementation(async (o) => {
         const seen = new Set();
         const p = o.dispatcher({ tool_call_id: 'toolu_b1', name: 'ask_user', input: ask }, o.ctx);
-        await tick();
-        pendingAsks.resolve('toolu_b1', { answered: true, user_text: initialReply });
+        await resolveWhenRegistered(pendingAsks, 'toolu_b1', {
+          answered: true,
+          user_text: initialReply,
+        });
         await resolveNextPvr(ws, pendingAsks, "Don't worry.", seen);
         const env = await p;
         expect(JSON.parse(env.content).match_status).toBe('user_declined');

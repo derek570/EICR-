@@ -22,7 +22,6 @@ import { evaluateGateState } from '../../../scripts/field-replay/lib/replay-asse
 import { EICRExtractionSession } from '../../extraction/eicr-extraction-session.js';
 import { activeSessions } from '../../extraction/active-sessions.js';
 import { createPendingAsksRegistry } from '../../extraction/stage6-pending-asks-registry.js';
-import { createAskBudget } from '../../extraction/stage6-ask-budget.js';
 import {
   snapshotFlagsForSession,
   parseVoiceLatencyCapabilities,
@@ -34,7 +33,6 @@ const modules = {
   EICRExtractionSession,
   activeSessions,
   createPendingAsksRegistry,
-  createAskBudget,
   snapshotFlagsForSession,
   parseVoiceLatencyCapabilities,
   createFilledSlotsShadowLogger,

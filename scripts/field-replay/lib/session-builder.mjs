@@ -2,12 +2,9 @@
  * session-builder.mjs — the PRODUCTION-PARITY replay-runtime builder (plan
  * Item 2). The existing direct bench runner is NOT production-composed: it
  * registers only `voiceLatency.flags` and passes pendingAsks/ws/logger/
- * generationId, while production sonnet-stream.js ALSO supplies askBudget,
- * restrainedMode, filledSlotsShadow, fallbackToLegacy, and parsed client
- * capabilities — without askBudget + restrainedMode the harness never calls
- * wrapAskDispatcherWithGates and never creates the D2 observation-
- * clarification chain broker, and without
- * voiceLatency.capabilities.hasLowConfReadbackV1 sub-0.5-confidence
+ * generationId, while production sonnet-stream.js ALSO supplies
+ * filledSlotsShadow, fallbackToLegacy, and parsed client capabilities —
+ * without voiceLatency.capabilities.hasLowConfReadbackV1 sub-0.5-confidence
  * record_reading calls are SKIPPED even though build-419 clients advertise
  * the capability — the gate would diverge from production, including on
  * keystone ⑤.
@@ -45,8 +42,6 @@ export const ACTIVE_ENTRY_CLASSIFICATION = Object.freeze({
   recentlyRefinedIds: { class: 'irrelevant', why: 'post-harness egress refinement path; initialized to production shape (Map)' },
   rehydrateSessionId: { class: 'irrelevant', why: 'session_resume path is out of replay scope; symbolic value supplied' },
   pendingAsks: { class: 'reproduced', how: 'createPendingAsksRegistry() — the REAL registry (identity preservation is load-bearing)' },
-  restrainedMode: { class: 'reproduced', how: 'the production no-op stub shape {isActive:()=>false, recordAsk, destroy} — a truthy value is REQUIRED for wrapAskDispatcherWithGates composition' },
-  askBudget: { class: 'reproduced', how: 'createAskBudget() (default cap 2), persisted across turns' },
   voiceLatency: { class: 'reproduced', how: 'flags via snapshotFlagsForSession() (env pinned first), capabilities via parseVoiceLatencyCapabilities(fixture.client_capabilities), lastAudioSeqByCorrelation new Map()' },
   pendingFastTtsSlots: { class: 'reproduced', how: 'new Map() (harness finally-block clears per turn)' },
   fastPathCorrelationIdByTurn: { class: 'reproduced', how: 'new Map() — populated by the harness from the SINGULAR regexFastCorrelationId option' },
@@ -73,8 +68,6 @@ export const HARNESS_OPTION_TABLE = Object.freeze({
   chimeObserved: { source: 'fixture turn chime_observed (provenance-backed; the marker-① no-op audibility net fires only for a recorded-chime turn — production sets it true unconditionally at the post-gate call site)' },
   utteranceId: { source: 'deterministic mint (own per-turn domain)' },
   pendingAsks: { source: 'entry.pendingAsks (the REAL registry, same identity)' },
-  restrainedMode: { source: 'entry.restrainedMode (production stub shape)' },
-  askBudget: { source: 'entry.askBudget' },
   filledSlotsShadow: { source: 'entry.filledSlotsShadow' },
   fallbackToLegacy: { source: 'fixture field (=== true semantics preserved)' },
   ws: { source: 'the replay WS stub for the turn' },
@@ -87,7 +80,7 @@ export const HARNESS_OPTION_TABLE = Object.freeze({
  * Build the production-parity active-sessions entry + session. `modules`
  * carries the dynamically imported production factories:
  * { EICRExtractionSession, activeSessions, createPendingAsksRegistry,
- *   createAskBudget, snapshotFlagsForSession, parseVoiceLatencyCapabilities,
+ *   snapshotFlagsForSession, parseVoiceLatencyCapabilities,
  *   createFilledSlotsShadowLogger }.
  */
 export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay-recorded-dummy', logger, toolCallsMode = 'live' }) {
@@ -95,7 +88,6 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
     EICRExtractionSession,
     activeSessions,
     createPendingAsksRegistry,
-    createAskBudget,
     snapshotFlagsForSession,
     parseVoiceLatencyCapabilities,
     createFilledSlotsShadowLogger,
@@ -152,8 +144,6 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
     recentlyRefinedIds: new Map(),
     rehydrateSessionId: 'sym_replay_rehydrate',
     pendingAsks: createPendingAsksRegistry(),
-    restrainedMode: { isActive: () => false, recordAsk: () => {}, destroy: () => {} },
-    askBudget: createAskBudget(),
     voiceLatency: {
       flags: snapshotFlagsForSession(),
       capabilities: parseVoiceLatencyCapabilities(capabilitiesWire),
@@ -202,8 +192,6 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
         chimeObserved: turn.chime_observed === true,
         utteranceId: mintUtteranceId(corpusId, turnIndex),
         pendingAsks: entry.pendingAsks,
-        restrainedMode: entry.restrainedMode,
-        askBudget: entry.askBudget,
         filledSlotsShadow: entry.filledSlotsShadow,
         fallbackToLegacy: entry.fallbackToLegacy === true,
         ws,
@@ -225,8 +213,6 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
       } catch {
         /* second rejectAll on empty registry is documented-safe */
       }
-      entry.askBudget?.destroy?.();
-      entry.restrainedMode?.destroy?.();
       session._clearCacheKeepalive?.();
       if (session.isActive) session.stop?.();
       activeSessions.delete(sessionId);

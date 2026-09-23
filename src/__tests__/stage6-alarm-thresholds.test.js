@@ -24,7 +24,8 @@
  *   - TreatMissingData: missing / breaching / ignore (notBreaching is the
  *     only Stage 6 setting per the alarms JSON)
  *
- * 9 tests = 3 alarms × 3 scenarios (clean / breach / sub-evaluation noise).
+ * 6 tests = 2 alarms × 3 scenarios (clean / breach / sub-evaluation noise);
+ * the third alarm (restrained-mode rate) was retired by PLAN-B.
  *
  * The synthetic data values in each test name are quoted explicitly
  * (e.g. "0.12, 0.15, 0.11") so a reviewer can verify the values are
@@ -51,7 +52,6 @@ const INFRA_DIR = path.join(REPO_ROOT, 'infra');
 // `findAlarm(name)`, the AlarmName-keyed lookup.
 const PER_ALARM_FILES = [
   'cloudwatch-stage6-alarm-divergence-rate.json',
-  'cloudwatch-stage6-alarm-restrained-mode-rate.json',
   'cloudwatch-stage6-alarm-tool-loop-cap-hit-rate.json',
 ];
 
@@ -97,32 +97,8 @@ describe('Plan 08-01 SC #4 — alarm-firing threshold harness', () => {
     });
   });
 
-  describe('stage6-restrained-mode-rate-high (threshold 0.05, EvaluationPeriods 3)', () => {
-    const alarm = findAlarm('stage6-restrained-mode-rate-high');
-
-    test('fires ALARM when 3 consecutive 5-min averages are 0.06, 0.08, 0.07 (all > 0.05)', () => {
-      const dataPoints = [0.06, 0.08, 0.07];
-      const state = evaluateAlarm(alarm, dataPoints);
-      expect(state).toBe('ALARM');
-    });
-
-    test('stays OK when 3 consecutive 5-min averages are 0.01, 0.02, 0.015 (all < 0.05)', () => {
-      const dataPoints = [0.01, 0.02, 0.015];
-      const state = evaluateAlarm(alarm, dataPoints);
-      expect(state).toBe('OK');
-    });
-
-    test('stays OK on sub-evaluation noise: 0.06, 0.02, 0.07 (2 spikes but not consecutive)', () => {
-      // Note: DatapointsToAlarm=3 + EvaluationPeriods=3 means we need 3
-      // CONSECUTIVE breaching periods. Non-consecutive breaches don't
-      // accumulate — each evaluation window is the trailing
-      // EvaluationPeriods. With this data the most recent 3 periods
-      // contain 2 breaches, which is < DatapointsToAlarm=3, so OK.
-      const dataPoints = [0.06, 0.02, 0.07];
-      const state = evaluateAlarm(alarm, dataPoints);
-      expect(state).toBe('OK');
-    });
-  });
+  // stage6-restrained-mode-rate-high was retired with restrained mode by
+  // PLAN-B (feedback-2026-09-17); its three cases went with it.
 
   describe('stage6-tool-loop-cap-hit-rate-high (threshold 0.005, EvaluationPeriods 3)', () => {
     const alarm = findAlarm('stage6-tool-loop-cap-hit-rate-high');

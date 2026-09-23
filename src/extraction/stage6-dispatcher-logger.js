@@ -3,29 +3,27 @@ import { createHash } from 'node:crypto';
 /**
  * Stage 6 dispatcher logger — single-source-of-truth for extraction-path log rows.
  *
- * Observability contract (locked by stage6-dispatcher-logger-restrained.test.js
- * Groups 1-4 — Plan 05-05 / STO-03 / STB-05):
- *   - Each log row name (stage6.ask_user, stage6.restrained_mode, stage6_tool_call,
- *     etc.) has a dedicated helper function with a closed-enum argument where
- *     applicable.
+ * Observability contract (locked by stage6-dispatcher-logger-schema.test.js):
+ *   - Each log row name (stage6.ask_user, stage6_tool_call, etc.) has a
+ *     dedicated helper function with a closed-enum argument where applicable.
  *   - Phase 8 computes CloudWatch metrics at Insights query time from these rows:
  *       stage6.ask_user_per_session_p50/p95 — via `stats percentile(...)` over
  *         stage6.ask_user rows with answer_outcome='answered' grouped by sessionId.
- *       stage6.restrained_mode_rate — via count_distinct(sessionId with
- *         event='activated') / count_distinct(sessionId) over stage6.restrained_mode.
  *   - DO NOT add percentile / count / histogram computation inside this module —
  *     it runs inside every tool-loop turn; the emit path must stay O(ms).
  *     Repo precedent: src/logger.js is Winston-only; metrics are derived at
  *     query time, never at emit. Phase 5 deliberately ships ZERO PutMetricData
  *     and ZERO EMF — log rows ARE the metric surface.
  *   - Adding a new answer_outcome value requires updating ASK_USER_ANSWER_OUTCOMES
- *     AND the schema-gate tests in stage6-dispatcher-logger-restrained.test.js.
+ *     AND the schema-gate tests in stage6-dispatcher-logger-schema.test.js.
  *   - Adding a new log name requires a new exported helper + closed-enum + schema lock.
  *
- * Phase 5 reserved values in ASK_USER_ANSWER_OUTCOMES (locked):
- *   gated, ask_budget_exhausted, restrained_mode
- * Phase 5 RESTRAINED_MODE_EVENTS:
- *   activated, released
+ * PLAN-B (feedback-2026-09-17, Decision 3) retired the per-key ask budget and
+ * restrained mode, and with them the `ask_budget_exhausted` / `restrained_mode`
+ * outcomes and the `stage6.restrained_mode` row. Historical CloudWatch rows
+ * carrying those values are data only; nothing new produces them. The AFDD
+ * clarification-chain guard that used to share the budget's outcome now emits
+ * its own `afdd_flow_violation`.
  *
  * Requirements: STO-01, STO-02, STO-03, STB-05.
  *
@@ -37,7 +35,6 @@ import { createHash } from 'node:crypto';
  * (scripts/analyze-session.js):
  *   - `logToolCall` → `stage6_tool_call`  (Phase 2, STO-01 / STD-11)
  *   - `logAskUser`  → `stage6.ask_user`   (Phase 3, STO-02)
- *   - `logRestrainedMode` → `stage6.restrained_mode` (Phase 5, STO-03)
  *
  * WHAT (logToolCall): `logToolCall(logger, row)` writes exactly one
  * `logger.info` entry tagged `'stage6_tool_call'` with a fixed schema.
@@ -211,21 +208,23 @@ export function logToolCall(logger, row) {
 // Plan 05-05 — Object.freeze applied so runtime .push/.pop cannot silently
 // widen the closed enum. The freeze is a STRUCTURAL guarantee that pairs
 // with the Group 1 schema-gate test in
-// stage6-dispatcher-logger-restrained.test.js — without freeze, a future
+// stage6-dispatcher-logger-schema.test.js — without freeze, a future
 // r-round could mutate the array via `.push(...)` and the closed-enum
 // gate at logAskUser line 195 would still accept the new value, but
 // Phase 8's CloudWatch Insights queries would split on a value that
-// drifted from the dashboard schema. RESTRAINED_MODE_EVENTS (Plan 05-04)
-// already shipped freeze'd; this brings ASK_USER_ANSWER_OUTCOMES +
-// ASK_USER_MODES into parity.
+// drifted from the dashboard schema.
 export const ASK_USER_ANSWER_OUTCOMES = Object.freeze([
-  // STO-02 original 6 (Phase 5 will emit restrained_mode / ask_budget_exhausted / gated — reserved now)
+  // STO-02 original values. PLAN-B (feedback-2026-09-17) removed
+  // `restrained_mode` and `ask_budget_exhausted` with the mechanisms that
+  // produced them.
   'answered',
   'timeout',
   'user_moved_on',
-  'restrained_mode',
-  'ask_budget_exhausted',
   'gated',
+  // PLAN-B (feedback-2026-09-17) — the AFDD clarification-chain guard: an
+  // `observation_clarify` ask while an AFDD decision is active that is not the
+  // flow's canonical next question. Formerly reported as ask_budget_exhausted.
+  'afdd_flow_violation',
   // Phase 3 expansion (6)
   'shadow_mode',
   'validation_error',
@@ -280,8 +279,8 @@ export const ASK_USER_MODES = Object.freeze(['shadow', 'live']);
 // lifecycle would see phantom buckets and undercount the canonical
 // pre_emit / post_emit rows.
 //
-// Same discipline as ASK_USER_ANSWER_OUTCOMES (Plan 03-12 r10),
-// ASK_USER_MODES (Plan 03-12 r19), RESTRAINED_MODE_EVENTS (Plan 05-04):
+// Same discipline as ASK_USER_ANSWER_OUTCOMES (Plan 03-12 r10) and
+// ASK_USER_MODES (Plan 03-12 r19):
 // closed enum + throw at emit site. Object.freeze applied for parity
 // with the other two enums in this module.
 //
@@ -456,61 +455,6 @@ export function logAskUser(logger, payload) {
 }
 
 /**
- * Stage 6 Phase 5 Plan 05-04 — `stage6.restrained_mode` lifecycle log row
- * emitter (STA-05, STO-03).
- *
- * Two events fire per activation cycle:
- *   - `activated` on entering active state (the rolling 5-turn window
- *     accumulated triggerCount asks) — emitted from the activeSessions
- *     entry's onActivate callback in sonnet-stream.js.
- *   - `released`  on the wall-clock 60s expiry — emitted from the
- *     onRelease callback. NOT emitted on destroy() (destroy is silent
- *     per Plan 05-04 §Group 5 lock).
- *
- * WHY a CLOSED enum (not free-form string): Phase 8 dashboards split
- * by `event` value to compute restrained_mode_rate per session. A typo
- * at any caller ('actived', 'unlocked', 'expired') would silently
- * corrupt the split with zero loud surface. Validate at the emit site.
- * Same discipline as ASK_USER_ANSWER_OUTCOMES (Phase 3 r10 STG
- * remediation) and ASK_USER_MODES (Phase 3 r19 MINOR remediation).
- *
- * WHY trigger_ask_count defaults to null (not omitted): the released
- * path doesn't carry an ask count, but consumers query
- * `filter ispresent(trigger_ask_count)` as shorthand for "this row
- * marks an activation". Emitting null keeps the field present with a
- * deterministic missing-value sentinel — same idiom as
- * `validation_error: payload.validation_error ?? null` in logToolCall.
- *
- * WHY this helper does NOT log emittedAt itself outside the row body:
- * logger.info adds its own timestamp via the structured-log adapter
- * (Phase 1 logger.js convention). The in-row emittedAt is a SECOND
- * timestamp recorded at the helper's wall-clock — useful for cross-
- * checking row interleaving when the logger's transport buffers (e.g.
- * Winston's batched flush). Same pattern as logAskUser, kept for
- * Phase 8 query-plan parity.
- */
-export const RESTRAINED_MODE_EVENTS = Object.freeze(['activated', 'released']);
-
-export function logRestrainedMode(
-  logger,
-  { sessionId, turnId, event, triggerAskCount, windowTurns, releaseMs }
-) {
-  if (!RESTRAINED_MODE_EVENTS.includes(event)) {
-    throw new Error(`invalid_restrained_mode_event:${event}`);
-  }
-  logger.info('stage6.restrained_mode', {
-    sessionId,
-    turnId: turnId ?? null,
-    phase: 5,
-    event,
-    trigger_ask_count: triggerAskCount ?? null,
-    window_turns: windowTurns,
-    release_ms: releaseMs,
-    emittedAt: new Date().toISOString(),
-  });
-}
-
-/**
  * Stage 6 Bug 2 (2026-06-03 observation-correctness sprint) —
  * `stage6_reading_field_guessed_from_value` log row.
  *
@@ -531,7 +475,7 @@ export function logRestrainedMode(
  * follow-up commit is needed.
  *
  * ROW SHAPE (locked by the Group 5 schema-lock test in
- * stage6-dispatcher-logger-restrained.test.js):
+ * stage6-dispatcher-logger-schema.test.js):
  *   sessionId          : string
  *   field              : string  — the canonical record_reading field
  *   circuit            : number  — circuit_ref the dispatcher accepted

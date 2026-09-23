@@ -40,9 +40,8 @@ export const OUTCOME = Object.freeze({
 // user. The complement (answered/timeout/user_moved_on/session_*) means the
 // ask WAS posed (an "accept"). Mirrors ASK_USER_ANSWER_OUTCOMES.
 const ASK_DISPATCH_REJECT_OUTCOMES = new Set([
-  'restrained_mode',
-  'ask_budget_exhausted',
   'gated',
+  'afdd_flow_violation',
   'shadow_mode',
   'validation_error',
   'duplicate_tool_call_id',

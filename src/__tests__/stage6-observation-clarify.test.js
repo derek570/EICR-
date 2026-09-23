@@ -2,11 +2,12 @@
  * §D2 (field-feedback-2026-07-14, F3) — C2-vs-C3 severity clarification
  * mechanics:
  *
- *   Group A — per-observation ask-budget chain identity (gate wrapper):
+ *   Group A — per-observation clarification-chain identity (gate wrapper):
  *     two separate ambiguous observations at the SAME scope both receive
- *     initial asks (distinct server-minted chains); a same-turn pair where
- *     both require continuations → each chain allows two asks and blocks
- *     its OWN third. NOT ctx.turnId (shared by same-turn pairs).
+ *     initial asks (distinct server-minted chains, NOT ctx.turnId, which
+ *     same-turn pairs share). No chain is capped since PLAN-B retired the
+ *     ask budget; only an active AFDD flow restricts which question may be
+ *     asked next (`afdd_flow_violation`).
  *
  *   Group B — post-answer write-or-reask net (harness): an ANSWERED
  *     observation_clarify ask followed by no qualifying observation
@@ -22,14 +23,13 @@ import {
   createAskGateWrapper,
   createObsClarifyChainBroker,
 } from '../extraction/stage6-ask-gate-wrapper.js';
-import { createAskBudget } from '../extraction/stage6-ask-budget.js';
 
 const noopLogger = () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() });
 
-function makeGatedDispatcher({ broker, budget }) {
+function makeGatedDispatcher({ broker }) {
   const logger = noopLogger();
   // Inner dispatcher answers instantly (the answer content is irrelevant to
-  // budget mechanics) and records what it saw.
+  // chain mechanics) and records what it saw.
   const seen = [];
   const inner = jest.fn(async (call) => {
     seen.push({ ...call.input });
@@ -47,8 +47,6 @@ function makeGatedDispatcher({ broker, budget }) {
   });
   const gate = createAskGateWrapper({ delayMs: 0, logger, sessionId: 'sess-d2' });
   const dispatcher = wrapAskDispatcherWithGates(inner, {
-    askBudget: budget,
-    restrainedMode: { isActive: () => false, recordAsk: () => {} },
     gate,
     logger,
     sessionId: 'sess-d2',
@@ -85,11 +83,10 @@ const afddAsk = (id, question, chainId = null, declaredKind = null) => ({
 
 const ctx = { sessionId: 'sess-d2', turnId: 'turn-1' };
 
-describe('§D2 Group A — per-observation clarification-chain ask budget', () => {
+describe('§D2 Group A — per-observation clarification-chain identity', () => {
   test('two separate ambiguous observations at the SAME scope both receive initial asks (distinct chains)', async () => {
     const broker = createObsClarifyChainBroker();
-    const budget = createAskBudget({ maxAsksPerKey: 2 });
-    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker });
 
     const r1 = await dispatcher(clarifyAsk('toolu_o1'), ctx);
     const r2 = await dispatcher(clarifyAsk('toolu_o2'), ctx);
@@ -101,10 +98,9 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
     expect(seen[0].clarification_chain_id).not.toBe(seen[1].clarification_chain_id);
   });
 
-  test('SAME-TURN pair with continuations: each chain allows two asks and blocks its OWN third', async () => {
+  test('SAME-TURN pair with continuations: each chain keeps its identity and a THIRD ask on a chain now dispatches (PLAN-B)', async () => {
     const broker = createObsClarifyChainBroker();
-    const budget = createAskBudget({ maxAsksPerKey: 2 });
-    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker });
 
     // obs1 initial + obs2 initial (same extraction turn, same scope).
     const i1 = await dispatcher(clarifyAsk('toolu_o1'), ctx);
@@ -119,30 +115,32 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
     expect(JSON.parse(c1.content).answered).toBe(true);
     expect(JSON.parse(c2.content).answered).toBe(true);
 
-    // A THIRD ask on chain 1 is blocked (its bucket is exhausted)…
+    // A THIRD ask on chain 1 is no longer capped — the model decides — and
+    // it stays on chain 1.
     const third = await dispatcher(clarifyAsk('toolu_o1c', chain1), ctx);
     expect(JSON.parse(third.content)).toMatchObject({
-      answered: false,
-      reason: 'ask_budget_exhausted',
+      answered: true,
+      clarification_chain_id: chain1,
     });
-    // …without collateral damage: a FRESH observation still gets its ask.
+    expect(seen[4].clarification_chain_id).toBe(chain1);
+    // A FRESH observation still gets its own chain.
     const fresh = await dispatcher(clarifyAsk('toolu_o3'), ctx);
     expect(JSON.parse(fresh.content).answered).toBe(true);
+    expect(seen[5].clarification_chain_id).not.toBe(chain1);
+    expect(seen[5].clarification_chain_id).not.toBe(chain2);
   });
 
-  test('an invented/unknown chain id mints a fresh chain (never joins another bucket)', async () => {
+  test('an invented/unknown chain id mints a fresh chain (never joins another chain)', async () => {
     const broker = createObsClarifyChainBroker();
-    const budget = createAskBudget({ maxAsksPerKey: 2 });
-    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker });
     await dispatcher(clarifyAsk('toolu_x', 'obsclr-invented-999'), ctx);
     expect(seen[0].clarification_chain_id).not.toBe('obsclr-invented-999');
     expect(broker.known.has(seen[0].clarification_chain_id)).toBe(true);
   });
 
-  test('PLAN-3 AFDD topic repair + two deciding facts get one exact bounded 3-slot chain', async () => {
+  test('PLAN-3 AFDD topic repair + two deciding facts stay on one chain; a generic severity ask afterwards is afdd_flow_violation', async () => {
     const broker = createObsClarifyChainBroker();
-    const budget = createAskBudget({ maxAsksPerKey: 2 });
-    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker });
 
     const topic = await dispatcher(
       afddAsk('toolu_topic', 'model wording is ignored', null, 'afdd_topic'),
@@ -180,8 +178,8 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
       'What type of premises is it — an HMO, care home, higher-risk residential building, purpose-built student accommodation, or something else?'
     );
 
-    // The exact three-question sequence is the only cap-3 exception. The AFDD
-    // table owns severity, so a fourth generic C2/C3 ask cannot reach the wire.
+    // The AFDD table owns severity, so once the flow is active a generic
+    // C2/C3 ask cannot reach the wire, whatever chain id it carries.
     for (const severity of [
       await dispatcher(clarifyAsk('toolu_severity_same', afddChain), ctx),
       await dispatcher(clarifyAsk('toolu_severity_absent'), ctx),
@@ -189,16 +187,15 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
     ]) {
       expect(JSON.parse(severity.content)).toMatchObject({
         answered: false,
-        reason: 'ask_budget_exhausted',
+        reason: 'afdd_flow_violation',
       });
     }
     expect(seen).toHaveLength(3);
   });
 
-  test('PLAN-3 AFDD third-slot exception fails closed for a paraphrase or wrong order', async () => {
+  test('PLAN-3 active AFDD flow rejects a paraphrased premises question with afdd_flow_violation', async () => {
     const broker = createObsClarifyChainBroker();
-    const budget = createAskBudget({ maxAsksPerKey: 2 });
-    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker });
 
     const topic = await dispatcher(
       afddAsk(
@@ -225,18 +222,17 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
     );
     expect(JSON.parse(paraphrase.content)).toMatchObject({
       answered: false,
-      reason: 'ask_budget_exhausted',
+      reason: 'afdd_flow_violation',
     });
     expect(seen).toHaveLength(2);
   });
 
-  test('PLAN-3 active AFDD flow blocks severity with same, absent, or invented ids before budget exhaustion', async () => {
+  test('PLAN-3 active AFDD flow blocks severity with same, absent, or invented ids (afdd_flow_violation)', async () => {
     const broker = createObsClarifyChainBroker();
-    const budget = createAskBudget({ maxAsksPerKey: 2 });
-    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker });
     const topic = await dispatcher(afddAsk('toolu_topic', 'ignored', null, 'afdd_topic'), ctx);
     const chain = JSON.parse(topic.content).clarification_chain_id;
-    expect(budget.getCount(`observation_clarify#${chain}`)).toBe(1);
+    expect(broker.getActiveAfddFlow()).toEqual({ chainId: chain, kinds: ['topic'] });
 
     for (const attempt of [
       clarifyAsk('toolu_severity_same', chain),
@@ -246,7 +242,7 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
       const result = await dispatcher(attempt, ctx);
       expect(JSON.parse(result.content)).toMatchObject({
         answered: false,
-        reason: 'ask_budget_exhausted',
+        reason: 'afdd_flow_violation',
       });
     }
     expect(seen).toHaveLength(1);
@@ -261,10 +257,9 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
     expect(seen).toHaveLength(2);
   });
 
-  test('PLAN-3 reserved canonical wording without a declared kind cannot start, advance, or take the third slot', async () => {
+  test('PLAN-3 reserved canonical wording without a declared kind cannot start or advance the flow', async () => {
     const broker = createObsClarifyChainBroker();
-    const budget = createAskBudget({ maxAsksPerKey: 2 });
-    const { dispatcher, seen } = makeGatedDispatcher({ broker, budget });
+    const { dispatcher, seen } = makeGatedDispatcher({ broker });
 
     const undeclaredTopic = await dispatcher(
       afddAsk(
@@ -317,7 +312,6 @@ describe('§D2 Group A — per-observation clarification-chain ask budget', () =
       reason: 'validation_error',
     });
     expect(seen).toHaveLength(2);
-    expect(budget.getCount(`observation_clarify#${chain}`)).toBe(2);
     expect(broker.getActiveAfddFlow()).toEqual({
       chainId: chain,
       kinds: ['topic', 'applicability'],
@@ -668,14 +662,14 @@ describe('§D2 Group B — post-answer write-or-reask net', () => {
     expect(net).toBeUndefined();
   });
 
-  test('Codex r1-#3: a PRE-FIRE continuation outcome (ask_budget_exhausted — never spoken) does NOT qualify → net fires', async () => {
+  test('Codex r1-#3: a PRE-FIRE continuation outcome (afdd_flow_violation — never spoken) does NOT qualify → net fires', async () => {
     const preFireContinuation = {
       name: 'ask_user',
       tool_call_id: 'toolu_c2',
       input: { context_field: 'observation_clarify', question: 'follow-up' },
       result: {
         is_error: false,
-        content: JSON.stringify({ answered: false, reason: 'ask_budget_exhausted' }),
+        content: JSON.stringify({ answered: false, reason: 'afdd_flow_violation' }),
       },
     };
     toolLoopResult = loopOut([answeredClarify('toolu_c1'), preFireContinuation]);

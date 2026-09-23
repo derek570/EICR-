@@ -242,13 +242,6 @@ import { normalise as normaliseTranscript } from './transcript-normalise.js';
 // sizes (>8192 chars) so the caller can send an error envelope back to iOS
 // instead of smuggling the abuse downstream.
 import { sanitiseUserText, HARD_REJECT_USER_TEXT_LEN } from './stage6-sanitise-user-text.js';
-// Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter. The
-// activeSessions entry owns one askBudget per session; the wrapper layer
-// (Plan 05-01) calls isExhausted(key) BEFORE invoking the inner ask
-// dispatcher and increment(key) AFTER each non-short-circuited ask.
-// Reconnect deliberately PRESERVES the budget so a hang-up + reconnect
-// cannot reset the 2-ask cap (STA-06 + 05-03 Open Question #2).
-import { createAskBudget } from './stage6-ask-budget.js';
 // Stage 6 Phase 5 Plan 05-02 — filled-slots-shadow adapter. Side-effect-only
 // wrapper around the unmodified Stage 5 filterQuestionsAgainstFilledSlots
 // that the ask-gate-wrapper invokes PRE-WRAPPER on every ask_user. Logs
@@ -3860,20 +3853,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         clearTimeout(entry.addressMirrorOutboxRetryHandle);
         entry.addressMirrorOutboxRetryHandle = null;
       }
-      // Plan 05-04 — cancel the rolling-window release timer + clear
-      // the askTurns array so the activeSessions entry is fully
-      // garbage-collectible after the .delete() below. Optional-
-      // chained because handleSessionStart's reconnect path may
-      // run BEFORE this timer fires (Open Question #2: reconnect
-      // PRESERVES restrained-mode state by not destroying it here).
-      entry.restrainedMode?.destroy();
-      // Plan 05-03 — release per-key ask counter on disconnect-delete.
-      // Idempotent (Map.clear on empty is a no-op); same lifecycle as
-      // restrainedMode above. Reconnect within the 30s grace window
-      // does NOT reach this path (handleSessionStart clears the
-      // disconnectTimer first), so the budget survives the reconnect
-      // and the 2-ask cap is preserved across hang-up + reconnect.
-      entry.askBudget?.destroy();
       entry.questionGate.destroy();
       // Stop the EICRExtractionSession so its cache-keepalive +
       // pause-keepalive timers cancel and `isActive` flips to false.
@@ -4607,39 +4586,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       // (rejectAll). stage6-pending-asks-registry.js enforces Codex STG #3
       // strict ordering inside every resolution path.
       pendingAsks: createPendingAsksRegistry(),
-      // Stage 6 Phase 5 Plan 05-04 — restrained-mode (rolling 3-asks-in-5-turns,
-      // 60s lockout) is stubbed to always-inactive. It was a hangover from the
-      // pre-Stage-6 streaming path where Sonnet could spam clarifying questions
-      // mid-extraction; the current server-driven ask path is well-behaved
-      // enough that the cap caused more harm than benefit. Concrete trigger:
-      // session 2D391936 (47 Ashcroft Road, 2026-04-28) — two consecutive
-      // R1+R2 readings were silently dropped after the cap activated on benign
-      // warm-up disambiguations (out-of-range circuit + missing-context Zs).
-      //
-      // Why a stub rather than removing the wiring: stage6-ask-gate-wrapper.js
-      // composes its gate stack only when BOTH `askBudget` and `restrainedMode`
-      // are truthy (see header comment, ~L478). A stub keeps debounce +
-      // per-key askBudget cap (cap=2 same field/circuit) live; deleting the
-      // key would silently bypass those too.
-      //
-      // To re-enable: restore the createRestrainedMode({ windowTurns,
-      // triggerCount, releaseMs, onActivate, onRelease }) call (see
-      // stage6-restrained-mode.js for the contract) and re-import
-      // createRestrainedMode + logRestrainedMode at the top of this file.
-      restrainedMode: { isActive: () => false, recordAsk: () => {}, destroy: () => {} },
-      // Stage 6 Phase 5 Plan 05-03 — per-(field, circuit) ask counter
-      // (STA-06). The wrapper (Plan 05-01) calls
-      // askBudget.isExhausted(deriveAskKey(call.input)) BEFORE invoking
-      // the inner ask dispatcher and askBudget.increment(key) AFTER each
-      // non-short-circuited ask. With the default cap=2, the 1st and 2nd
-      // asks for a given key fire (counts 0→1, 1→2) and the 3rd
-      // short-circuits with answer_outcome='ask_budget_exhausted'.
-      // Reconnect deliberately PRESERVES the budget (handleSessionStart's
-      // reconnect path at ~L1255 is untouched here, mirroring restrainedMode
-      // above). Destroyed on the same termination paths that destroy
-      // restrainedMode/pendingAsks (the disconnectTimer fire at ~L1263
-      // and the handleSessionStop bottom at ~L2788).
-      askBudget: createAskBudget(),
       // Stage 1a 1a.2 — voice-latency snapshot. Sealed at session_start so a
       // mid-session env flip can't mutate this session's behaviour.
       // Stages 2-5 emitters read entry.voiceLatency.flags.<flag> on every
@@ -4697,7 +4643,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       broadcastIntentByTurn: new Map(),
       // Stage 6 Phase 5 Plan 05-02 — filled-slots shadow logger. Side-effect-
       // only adapter wrapping the Stage 5 filter; the ask-gate-wrapper invokes
-      // it PRE-WRAPPER on every ask_user (before any restrained / budget /
+      // it PRE-WRAPPER on every ask_user (before the AFDD-guard /
       // debounce short-circuit) and emits `stage6.filled_slots_would_suppress`
       // rows when the legacy filter would have suppressed. The wrapper IGNORES
       // the return value — Phase 7 retirement analytics joins on (sessionId,
@@ -7279,27 +7225,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // Identity preservation is load-bearing: the dispatcher registers
         // into the SAME registry this routing layer resolves against.
         pendingAsks: entry.pendingAsks,
-        // Stage 6 Phase 5 Plan 05-04 — pass the restrained-mode state
-        // machine through to the wrapper layer (Plan 05-01) which will
-        // call restrainedMode.recordAsk(turnId) AFTER each non-short-
-        // circuited ask, AND short-circuit asks at the boundary when
-        // restrainedMode.isActive() returns true. Optional-chained read
-        // here so a future activeSessions entry without the field
-        // (e.g. legacy resume path) still constructs valid options
-        // (the wrapper's composition guard is the truth source for
-        // when the state machine fires).
-        restrainedMode: entry.restrainedMode,
-        // Stage 6 Phase 5 Plan 05-03 — pass the per-(field, circuit) ask
-        // counter through to the wrapper layer (Plan 05-01) so the gate's
-        // STA-06 short-circuit fires at the dispatcher boundary. The
-        // wrapper checks askBudget.isExhausted(deriveAskKey(call.input))
-        // BEFORE invoking the inner dispatcher and increment(key) AFTER
-        // each non-short-circuited ask. Optional-chained read here so a
-        // future activeSessions entry without the field still constructs
-        // valid options — the wrapper's `if (options.askBudget &&
-        // options.restrainedMode)` guard in stage6-shadow-harness.js
-        // is the truth source for when the gates fire.
-        askBudget: entry.askBudget,
         // Stage 6 Phase 5 Plan 05-02 — pass the filled-slots shadow logger
         // through to the wrapper. The wrapper invokes it PRE-WRAPPER on
         // every ask_user (before any short-circuit) and emits one
@@ -7947,23 +7872,6 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
     // race this belt-and-suspenders pass exists to close.
     await settleInFlightBeforeFreeze(entry, sessionId);
     entry.pendingAsks.rejectAll('session_stopped');
-    // Plan 05-04 — destroy the restrained-mode state machine BEFORE
-    // activeSessions.delete so the pending 60s release timer can't fire
-    // after the entry is unreachable (which would log a phantom
-    // event:'released' row for a session that no longer exists). Optional-
-    // chained for forward-compat with reconnect/resume paths that may
-    // re-create the entry without a restrainedMode key. NOT placed at the
-    // entry-point rejectAll (L2695) because we want the rolling window to
-    // stay live during the flushUtteranceBuffer + S3 awaits above — if a
-    // straggler ask arrives via a paused transcript handler, the wrapper
-    // should still see isActive() truthfully.
-    entry.restrainedMode?.destroy();
-    // Plan 05-03 — release per-key ask counter on session_stopped.
-    // Same placement as restrainedMode above (deliberately AFTER
-    // flushUtteranceBuffer + S3 awaits) so a final straggler ask through
-    // the wrapper still sees the cap truthfully if the timing aligns.
-    entry.askBudget?.destroy();
-
     // Phase 1.3 — final flush of any client_log_batch entries still in
     // the per-session buffer before activeSessions.delete drops the
     // entry. handleSessionStop is the deterministic terminator (vs the

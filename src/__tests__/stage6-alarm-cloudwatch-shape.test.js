@@ -19,19 +19,20 @@
  *     --region eu-west-2 \
  *     --cli-input-json file://infra/cloudwatch-stage6-alarm-<name>.json
  *
- * This test locks the 3 per-alarm files' AT-REST shape so a future
+ * This test locks the per-alarm files' AT-REST shape so a future
  * contributor can't accidentally re-introduce a wrapper or add
  * underscore-prefixed metadata back into the deployable JSON.
  *
  * 5 tests:
- *   1. All 3 per-alarm files exist on disk.
+ *   1. Both per-alarm files exist on disk, and the restrained-mode alarm
+ *      file retired by PLAN-B (feedback-2026-09-17) does not.
  *   2. Each parses via JSON.parse to a flat object (no wrapper).
  *   3. Each has the AWS put-metric-alarm required keys (AlarmName,
  *      MetricName, Namespace, Statistic, Period, EvaluationPeriods,
  *      DatapointsToAlarm, Threshold, ComparisonOperator,
  *      TreatMissingData).
  *   4. NO underscore-prefixed key appears at top level in any file.
- *   5. AlarmName values match the legacy wrapper's 3 alarm names
+ *   5. AlarmName values match the live alarm names
  *      verbatim (continuity with dashboard threshold annotations +
  *      REVIEW.md narrative).
  */
@@ -46,15 +47,15 @@ const INFRA_DIR = path.join(REPO_ROOT, 'infra');
 
 const PER_ALARM_FILES = [
   'cloudwatch-stage6-alarm-divergence-rate.json',
-  'cloudwatch-stage6-alarm-restrained-mode-rate.json',
   'cloudwatch-stage6-alarm-tool-loop-cap-hit-rate.json',
 ];
 
-const EXPECTED_ALARM_NAMES = [
-  'stage6-divergence-rate-high',
-  'stage6-restrained-mode-rate-high',
-  'stage6-tool-loop-cap-hit-rate-high',
-];
+// PLAN-B (feedback-2026-09-17, Decision 3) deleted restrained mode, so its
+// alarm can never fire; the file was retired (see the Retirement section in
+// infra/cloudwatch-stage6-alarms.README.md).
+const RETIRED_ALARM_FILES = ['cloudwatch-stage6-alarm-restrained-mode-rate.json'];
+
+const EXPECTED_ALARM_NAMES = ['stage6-divergence-rate-high', 'stage6-tool-loop-cap-hit-rate-high'];
 
 const REQUIRED_AWS_KEYS = [
   'AlarmName',
@@ -70,10 +71,13 @@ const REQUIRED_AWS_KEYS = [
 ];
 
 describe('Plan 08-02 r1-#2 — per-alarm CloudWatch JSON shape lock', () => {
-  test('all 3 per-alarm JSON files exist on disk', () => {
+  test('both per-alarm JSON files exist on disk; the retired restrained-mode alarm does not', () => {
     for (const filename of PER_ALARM_FILES) {
       const fullPath = path.join(INFRA_DIR, filename);
       expect(existsSync(fullPath)).toBe(true);
+    }
+    for (const filename of RETIRED_ALARM_FILES) {
+      expect(existsSync(path.join(INFRA_DIR, filename))).toBe(false);
     }
   });
 

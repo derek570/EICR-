@@ -3,9 +3,10 @@
  * into the ask-gate-wrapper composition.
  *
  * WHAT: Mocks `stage6-ask-gate-wrapper.js` with factory spies, then drives
- * runShadowHarness through the Phase 5 composition branch (askBudget +
- * restrainedMode threaded through opts). Asserts BOTH createAskGateWrapper
- * and wrapAskDispatcherWithGates received `mode: 'shadow'`.
+ * runShadowHarness through the ask-gate composition (unconditional since
+ * PLAN-B removed the ask budget and restrained mode). Asserts BOTH
+ * createAskGateWrapper and wrapAskDispatcherWithGates received
+ * `mode: 'shadow'`.
  *
  * WHY: r1-#3 surfaced that synthResultWrapped hard-coded mode='live' inside
  * the wrapper, so runShadowHarness's wrapper-emitted log rows mis-tagged
@@ -112,23 +113,6 @@ function makeWs() {
   return { readyState: 1, OPEN: 1, send: jest.fn() };
 }
 
-function makeAskBudget() {
-  return {
-    isExhausted: jest.fn(() => false),
-    increment: jest.fn(),
-    getCount: jest.fn(() => 0),
-  };
-}
-
-function makeRestrainedMode() {
-  return {
-    isActive: jest.fn(() => false),
-    recordAsk: jest.fn(),
-    activate: jest.fn(),
-    destroy: jest.fn(),
-  };
-}
-
 beforeEach(() => {
   createAskGateWrapperSpy.mockClear();
   wrapAskDispatcherWithGatesSpy.mockClear();
@@ -146,15 +130,11 @@ describe("Plan 05-07 r1-#3 — runShadowHarness threads mode='shadow' into wrapp
     const s = makeSession();
     const pendingAsks = makePendingAsks();
     const ws = makeWs();
-    const askBudget = makeAskBudget();
-    const restrainedMode = makeRestrainedMode();
 
     await runShadowHarness(s, 'text', [], {
       logger,
       pendingAsks,
       ws,
-      askBudget,
-      restrainedMode,
     });
 
     expect(createAskGateWrapperSpy).toHaveBeenCalledTimes(1);
@@ -169,43 +149,35 @@ describe("Plan 05-07 r1-#3 — runShadowHarness threads mode='shadow' into wrapp
     const s = makeSession();
     const pendingAsks = makePendingAsks();
     const ws = makeWs();
-    const askBudget = makeAskBudget();
-    const restrainedMode = makeRestrainedMode();
 
     await runShadowHarness(s, 'text', [], {
       logger,
       pendingAsks,
       ws,
-      askBudget,
-      restrainedMode,
     });
 
     expect(wrapAskDispatcherWithGatesSpy).toHaveBeenCalledTimes(1);
     const opts = wrapAskDispatcherWithGatesSpy.mock.calls[0][1];
     expect(opts.mode).toBe('shadow');
-    // Sanity — wrapper composition still receives every Phase 5 gate handle
-    expect(opts.askBudget).toBe(askBudget);
-    expect(opts.restrainedMode).toBe(restrainedMode);
+    // PLAN-B — the retired budget / restrained-mode handles are never passed.
+    expect(opts).not.toHaveProperty('askBudget');
+    expect(opts).not.toHaveProperty('restrainedMode');
     expect(opts.sessionId).toBe('sess-r1-3');
   });
 
-  test('wrapper composition is skipped when askBudget/restrainedMode are absent (Phase 3/4 back-compat)', async () => {
-    // Existing Phase 3/4 callers thread pendingAsks + ws but NOT askBudget /
-    // restrainedMode. The wrapper composition branch must stay gated on
-    // BOTH gates being present so those callers' behaviour is unchanged.
+  test('PLAN-B: wrapper composition is unconditional — no per-session budget or restrained-mode object is required', async () => {
+    // Until PLAN-B the composition branch was gated on BOTH `askBudget` and
+    // `restrainedMode` being threaded in. Both mechanisms are gone, so every
+    // caller that composes an ask dispatcher now gets the debounce + AFDD
+    // gates (acceptance 4: gate 4 without a budget object at both sites).
     const logger = makeLogger();
     const s = makeSession();
     const pendingAsks = makePendingAsks();
     const ws = makeWs();
 
-    await runShadowHarness(s, 'text', [], {
-      logger,
-      pendingAsks,
-      ws,
-      // No askBudget, no restrainedMode — wrapper must NOT compose.
-    });
+    await runShadowHarness(s, 'text', [], { logger, pendingAsks, ws });
 
-    expect(createAskGateWrapperSpy).not.toHaveBeenCalled();
-    expect(wrapAskDispatcherWithGatesSpy).not.toHaveBeenCalled();
+    expect(createAskGateWrapperSpy).toHaveBeenCalledTimes(1);
+    expect(wrapAskDispatcherWithGatesSpy).toHaveBeenCalledTimes(1);
   });
 });

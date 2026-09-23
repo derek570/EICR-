@@ -38,23 +38,21 @@ export {
 // ───────────────────────────────────────────────────────────────────────────
 // Ask-outcome classification (enum-driven, NOT hand-listed).
 //
-// The two EXPLICIT sets below partition the 15-member closed enum
+// The two EXPLICIT sets below partition the 14-member closed enum
 // `ASK_USER_ANSWER_OUTCOMES` by "is audibility guaranteed pre-emission (the
 // ask never crossed the wire)" vs "audibility is decided by whether an
 // `ask_user_started` was ACTUALLY emitted".
 // ───────────────────────────────────────────────────────────────────────────
 
-/** The three wrapper-LAYER suppressions that are pre-emission but are NOT
- *  members of `isPreEmitNonFireReason` (they originate in the gate wrapper's
- *  own pre-dispatch synth, not the inner dispatcher). Harness-only literal. */
-export const WRAPPER_LAYER_PRE_EMIT_OUTCOMES = Object.freeze([
-  'restrained_mode',
-  'ask_budget_exhausted',
-  'gated',
-]);
+/** The wrapper-LAYER suppressions that are pre-emission but are NOT members
+ *  of `isPreEmitNonFireReason` (they originate in the gate wrapper's own
+ *  pre-dispatch synth, not the inner dispatcher). Harness-only literal.
+ *  PLAN-B (feedback-2026-09-17) removed restrained_mode and
+ *  ask_budget_exhausted; the AFDD chain guard's afdd_flow_violation remains. */
+export const WRAPPER_LAYER_PRE_EMIT_OUTCOMES = Object.freeze(['afdd_flow_violation', 'gated']);
 
 /** GUARANTEED_PRE_EMIT_OUTCOMES = { m ∈ enum : isPreEmitNonFireReason(m) }
- *  ∪ { restrained_mode, ask_budget_exhausted, gated }. Should total 8. */
+ *  ∪ { afdd_flow_violation, gated }. Should total 7. */
 export const GUARANTEED_PRE_EMIT_OUTCOMES = Object.freeze(
   Array.from(
     new Set([

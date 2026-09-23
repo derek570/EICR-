@@ -186,9 +186,8 @@ const ASK_USER_ANSWER_OUTCOMES = [
   "answered",
   "timeout",
   "user_moved_on",
-  "restrained_mode",
-  "ask_budget_exhausted",
   "gated",
+  "afdd_flow_violation",
   "shadow_mode",
   "validation_error",
   "session_terminated",
@@ -258,7 +257,7 @@ test("Plan 08-01 SC #2 — ask_user outcomes histogram covers every frozen enum 
   // Outcomes-not-emitted-in-fixture must default to 0.
   assert.equal(askUser.outcomes.timeout, 0);
   assert.equal(askUser.outcomes.user_moved_on, 0);
-  assert.equal(askUser.outcomes.restrained_mode, 0);
+  assert.equal(askUser.outcomes.afdd_flow_violation, 0);
   assert.equal(askUser.outcomes.dispatcher_error, 0);
   assert.equal(askUser.outcomes.prompt_leak_blocked, 0);
 });

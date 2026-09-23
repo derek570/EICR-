@@ -522,6 +522,10 @@ describe('PLAN-3 — regulation-topic mismatch covered-refusal lifecycle', () =>
         input: {
           question: 'Is this observation about AFDD protection or surge protection?',
           context_field: 'observation_clarify',
+          // The canonical AFDD wording is reserved server output: the gate
+          // wrapper (composed unconditionally since PLAN-B) refuses it as
+          // validation_error unless the declared kind comes with it.
+          observation_clarification_kind: 'afdd_topic',
           circuit: null,
           board_id: null,
           pending_write: null,

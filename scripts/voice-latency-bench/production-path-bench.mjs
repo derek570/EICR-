@@ -758,18 +758,9 @@ async function runRepetition({
   session.start(jobState);
 
   const pendingAsks = createPendingAsksRegistry();
-  // Dual-review finding (Codex sol-high, 2026-08-16): mirror the production
-  // ingress' gate-stack composition. stage6-ask-gate-wrapper composes its
-  // debounce + per-key ask-budget gates ONLY when BOTH askBudget and
-  // restrainedMode are truthy options — the bench previously passed
-  // neither, so it measured a code path with the production ask gates
-  // silently absent. One askBudget per session (production lifetime:
-  // created at session_start, destroyed at teardown); restrainedMode is
-  // the SAME always-inactive stub production wires (sonnet-stream.js
-  // ~:4509 — stubbed by design since Plan 05-04, kept truthy so the
-  // wrapper still composes the other gates).
-  const askBudget = modules.createAskBudget();
-  const restrainedMode = { isActive: () => false, recordAsk: () => {}, destroy: () => {} };
+  // The harness composes the ask gates (debounce + AFDD guard)
+  // unconditionally since PLAN-B (feedback-2026-09-17) removed the ask budget
+  // and restrained mode, so the bench no longer threads either object.
   const wsEvents = [];
   const answeredInTurn = new Set();
   const ws = makeCapturingWs(wsEvents, {
@@ -860,8 +851,6 @@ async function runRepetition({
       //                           site (a forwarded utterance means the
       //                           client chimed); arms the no-op audibility
       //                           net + mandatory-notice drains.
-      //   askBudget/restrainedMode — gate-stack composition (see creation
-      //                           site above).
       //   inResponseTo:false    — bench turns are never answers to a TTS
       //                           question (in-turn ask replies resolve via
       //                           pendingAsks, not this flag).
@@ -879,8 +868,6 @@ async function runRepetition({
       result = await runShadowHarness(session, transcriptText, regexResults, {
         confirmationsEnabled: true,
         pendingAsks,
-        askBudget,
-        restrainedMode,
         chimeObserved: true,
         inResponseTo: false,
         fallbackToLegacy: false,
@@ -1033,13 +1020,6 @@ async function runRepetition({
   } catch (err) {
     process.stderr.write(`    warn: session.stop() failed (${err.message}) — keepalive timer may leak\n`);
   }
-  // Same teardown contract as production's handleSessionStop: the askBudget
-  // is destroyed with the session that owns it.
-  try {
-    askBudget.destroy();
-  } catch {
-    /* a destroy failure must not kill an otherwise-valid rep */
-  }
 
   const totalRounds = turns.reduce((sum, t) => sum + t.round_timings.length, 0);
   const totalStreamMs = turns.reduce(
@@ -1161,13 +1141,11 @@ async function main() {
     import('../../src/logger.js'),
   ]);
   const projectLogger = projectLoggerModule.default;
-  const { createAskBudget } = await import('../../src/extraction/stage6-ask-budget.js');
 
   const modules = {
     EICRExtractionSession,
     runShadowHarness,
     createPendingAsksRegistry,
-    createAskBudget,
     activeSessions,
     snapshotFlagsForSession,
     parseVoiceLatencyCapabilities,

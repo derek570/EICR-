@@ -9,7 +9,7 @@
  * all backend bugs the PWA replay harness (web-composition scope) cannot
  * cover. The keystone class: a transcript-gate chime followed by SILENCE
  * because an ask_user was SUPPRESSED before emitting `ask_user_started`
- * (restrained_mode / ask_budget_exhausted / validation_error / prompt-leak /
+ * (afdd_flow_violation / validation_error / prompt-leak /
  * dispatcher_error / closed-WS / throwing-send / fallback-to-legacy / a
  * swallowed D2 continuation). Audio-First invariant #1 says every
  * chime-producing turn must end with ≥1 audible output.
@@ -252,55 +252,56 @@ describe('F7 integration lane — invariant (a): chime-producing confirmation-mo
       client: mockAskThenEnd(VALID_ASK),
     });
     const ws = makeOpenWs();
-    // Compose the real gate (production always does — sonnet-stream threads
-    // askBudget + restrainedMode). With the gate, the inner dispatcher's
-    // rethrow is caught by gateOrFire's timer-catch and synthesised into a
-    // dispatcher_error ENVELOPE (returned, not thrown), so the ask_user call
-    // lands in toolLoopOut.tool_calls — the net can then see it was attempted
-    // but never emitted. A bare dispatcher rethrow skips allCalls.push.
+    // The real gate is composed (the harness composes it unconditionally
+    // since PLAN-B). With the gate, the inner dispatcher's rethrow is caught
+    // by gateOrFire's timer-catch and synthesised into a dispatcher_error
+    // ENVELOPE (returned, not thrown), so the ask_user call lands in
+    // toolLoopOut.tool_calls — the net can then see it was attempted but
+    // never emitted. A bare dispatcher rethrow skips allCalls.push.
     const result = await driveLiveTurn(
       session,
       'which circuit was that',
-      baseOpts({
-        ws,
-        pendingAsks,
-        restrainedMode: { isActive: () => false, recordAsk: () => {} },
-        askBudget: { isExhausted: () => false, increment: () => {} },
-      })
+      baseOpts({ ws, pendingAsks })
     );
     expect(askStartedFrames(ws)).toHaveLength(0);
     expect(turnIsAudible(result, ws)).toBe(true);
   });
 
-  test('RED#4 restrained_mode: gate short-circuit is suppressed → silence', async () => {
+  // RED#4 / RED#5 were restrained_mode and ask_budget_exhausted. PLAN-B
+  // (feedback-2026-09-17, Decision 3) removed both mechanisms; the one
+  // wrapper-layer short-circuit that remains is the AFDD chain guard.
+  test('RED#4 afdd_flow_violation: gate short-circuit is suppressed → silence', async () => {
+    const afddAsk = {
+      question: 'Is the RCD for this circuit a Type AC?',
+      reason: 'observation_confirmation',
+      context_field: 'observation_clarify',
+      expected_answer_shape: 'free_text',
+    };
     const session = makeLiveSession({
       sessionId: SESSION_ID,
-      client: mockAskThenEnd(VALID_ASK),
+      client: mockAskThenEnd(afddAsk),
     });
+    // An AFDD decision is active and does not accept this (undeclared) ask
+    // as its canonical next question, so the wrapper refuses it pre-dispatch.
+    session.obsClarifyChains = {
+      known: new Set(['obsclr-afdd']),
+      mint: () => 'obsclr-afdd',
+      getActiveAfddFlow: () => ({ chainId: 'obsclr-afdd', kinds: ['topic'] }),
+      canContinueAfddFlow: () => false,
+      noteAnsweredAfddQuestion: () => {},
+    };
     const ws = makeOpenWs();
-    const opts = baseOpts({
-      ws,
-      restrainedMode: { isActive: () => true, recordAsk: () => {} },
-      askBudget: { isExhausted: () => false, increment: () => {} },
-    });
-    const result = await driveLiveTurn(session, 'which circuit was that', opts);
+    const logger = makeLogger();
+    const result = await driveLiveTurn(
+      session,
+      'observation the kitchen has no AFDD',
+      baseOpts({ ws, logger })
+    );
     expect(askStartedFrames(ws)).toHaveLength(0);
-    expect(turnIsAudible(result, ws)).toBe(true);
-  });
-
-  test('RED#5 ask_budget_exhausted: gate short-circuit is suppressed → silence', async () => {
-    const session = makeLiveSession({
-      sessionId: SESSION_ID,
-      client: mockAskThenEnd(VALID_ASK),
-    });
-    const ws = makeOpenWs();
-    const opts = baseOpts({
-      ws,
-      restrainedMode: { isActive: () => false, recordAsk: () => {} },
-      askBudget: { isExhausted: () => true, increment: () => {} },
-    });
-    const result = await driveLiveTurn(session, 'which circuit was that', opts);
-    expect(askStartedFrames(ws)).toHaveLength(0);
+    const outcomes = logger.info.mock.calls
+      .filter(([name]) => name === 'stage6.ask_user')
+      .map(([, row]) => row.answer_outcome);
+    expect(outcomes).toContain('afdd_flow_violation');
     expect(turnIsAudible(result, ws)).toBe(true);
   });
 
@@ -424,12 +425,12 @@ describe('F7 Item 3 — cancellation propagates through the real runToolLoop', (
 // A future enum addition must FAIL these until it is classified.
 // ───────────────────────────────────────────────────────────────────────────
 describe('F7 ask-outcome classification is disjoint + complete over ASK_USER_ANSWER_OUTCOMES', () => {
-  test('the enum has exactly 15 members (partition arithmetic 8 + 7)', () => {
-    expect(ASK_USER_ANSWER_OUTCOMES).toHaveLength(15);
+  test('the enum has exactly 14 members (partition arithmetic 7 + 7)', () => {
+    expect(ASK_USER_ANSWER_OUTCOMES).toHaveLength(14);
   });
 
-  test('GUARANTEED_PRE_EMIT_OUTCOMES = isPreEmitNonFireReason ∪ {restrained_mode, ask_budget_exhausted, gated} = 8', () => {
-    expect(GUARANTEED_PRE_EMIT_OUTCOMES).toHaveLength(8);
+  test('GUARANTEED_PRE_EMIT_OUTCOMES = isPreEmitNonFireReason ∪ {afdd_flow_violation, gated} = 7', () => {
+    expect(GUARANTEED_PRE_EMIT_OUTCOMES).toHaveLength(7);
     // The 5 predicate members are present.
     for (const m of [
       'validation_error',
@@ -455,7 +456,7 @@ describe('F7 ask-outcome classification is disjoint + complete over ASK_USER_ANS
     expect(overlap).toEqual([]);
   });
 
-  test('their UNION equals the closed enum EXACTLY (a 16th member fails until classified)', () => {
+  test('their UNION equals the closed enum EXACTLY (a 15th member fails until classified)', () => {
     const union = new Set([
       ...GUARANTEED_PRE_EMIT_OUTCOMES,
       ...EMISSION_EVIDENCE_REQUIRED_OUTCOMES,

@@ -124,13 +124,12 @@ import {
   createSortRecordsAsksLast,
 } from './stage6-dispatchers.js';
 import { createAskDispatcher } from './stage6-dispatcher-ask.js';
-// Stage 6 Phase 5 Plan 05-01 — higher-order composition of the four
-// Phase 5 gates (filled-slots shadow / restrained-mode / per-key budget /
-// 1500ms debounce) around the unmodified Plan 03-05 createAskDispatcher.
-// The branch below activates ONLY when sonnet-stream.js threads
-// options.askBudget AND options.restrainedMode through (Plans 05-03 +
-// 05-04 wire the activeSessions entry); without both, runShadowHarness
-// reverts to the Phase 3/4 dispatcher shape unchanged.
+// Stage 6 Phase 5 Plan 05-01 — higher-order composition of the ask gates
+// (filled-slots shadow / AFDD chain guard / 1500ms debounce) around the
+// unmodified Plan 03-05 createAskDispatcher. PLAN-B (feedback-2026-09-17,
+// Decision 3) removed the per-key ask budget and restrained mode; the
+// composition no longer needs any per-session object threaded in, so both
+// ask-dispatcher sites below compose it unconditionally.
 import {
   createAskGateWrapper,
   wrapAskDispatcherWithGates,
@@ -2145,30 +2144,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         stageEnumRejectionAfterAsk: (spec) =>
           stagePostAskRejection(liveSession, perTurnWrites, turnId, spec),
       });
-      if (options.askBudget && options.restrainedMode) {
-        askGateForTurn = createAskGateWrapper({
-          logger: log,
-          sessionId: liveSession.sessionId,
-          mode: 'live',
-        });
-        // §D2 (field-feedback-2026-07-14) — per-session observation_clarify
-        // chain broker. Lazy on the session (like confirmationDebounceState)
-        // so chain ids survive across turns; the wrapper mints/stamps chain
-        // ids and keys the ask budget per OBSERVATION instead of per scope.
-        if (!liveSession.obsClarifyChains) {
-          liveSession.obsClarifyChains = createObsClarifyChainBroker();
-        }
-        asks = wrapAskDispatcherWithGates(asks, {
-          askBudget: options.askBudget,
-          restrainedMode: options.restrainedMode,
-          gate: askGateForTurn,
-          filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
-          logger: log,
-          sessionId: liveSession.sessionId,
-          mode: 'live',
-          obsClarifyChains: liveSession.obsClarifyChains,
-        });
+      askGateForTurn = createAskGateWrapper({
+        logger: log,
+        sessionId: liveSession.sessionId,
+        mode: 'live',
+      });
+      // §D2 (field-feedback-2026-07-14) — per-session observation_clarify
+      // chain broker. Lazy on the session (like confirmationDebounceState)
+      // so chain ids survive across turns; the wrapper mints/stamps chain
+      // ids per OBSERVATION and the AFDD flow keys on them.
+      if (!liveSession.obsClarifyChains) {
+        liveSession.obsClarifyChains = createObsClarifyChainBroker();
       }
+      asks = wrapAskDispatcherWithGates(asks, {
+        gate: askGateForTurn,
+        filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
+        logger: log,
+        sessionId: liveSession.sessionId,
+        mode: 'live',
+        obsClarifyChains: liveSession.obsClarifyChains,
+      });
       dispatcher = createToolDispatcher(writes, asks, {
         answers,
         inspects,
@@ -5300,7 +5295,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // ── F7 Item 2 (task #16) — pre-emission ask-audibility net ───────────
     // Codex cycle-6 finding: A3/D2/A4 all MISS the case where Sonnet emitted
     // an ask_user that was SUPPRESSED before ask_user_started crossed the wire
-    // (restrained_mode / ask_budget_exhausted / validation_error / prompt-leak
+    // (afdd_flow_violation / validation_error / prompt-leak
     // / dispatcher_error / closed-WS / throwing-send / fallbackToLegacy). A
     // transcript-gate chime is then followed by SILENCE. Decide audibility
     // from POSITIVELY recorded emission (emittedAskToolCallIds) plus surviving
@@ -6465,38 +6460,31 @@ async function runShadowHarnessDispatch(
       // short-circuits `mode === 'shadow'` before the resolution path, so
       // any hook here would be dead code.
     });
-    // Phase 5 — wrap with gates ONLY when the activeSessions entry threaded
-    // both stateful resources through. Existing Phase 3/4 callers (and the
-    // dispatcher's own unit tests) thread neither, so they keep the
-    // Phase 3 dispatcher shape unchanged.
-    if (options.askBudget && options.restrainedMode) {
-      askGateForTurn = createAskGateWrapper({
-        logger: log,
-        sessionId: shadowSession.sessionId,
-        // Plan 05-07 r1-#3 — pass the session's actual mode through so
-        // wrapper-emitted `gated` / `session_terminated` / `dispatcher_error`
-        // log rows tag with mode='shadow' instead of the hard-coded 'live'.
-        // Phase 8 dashboards split by mode; corrupting that split for shadow
-        // sessions was the r1-#3 finding.
-        mode: 'shadow',
-      });
-      asks = wrapAskDispatcherWithGates(asks, {
-        askBudget: options.askBudget,
-        restrainedMode: options.restrainedMode,
-        gate: askGateForTurn,
-        // Plan 05-02 supplies the real adapter; until then a no-op keeps
-        // the wrapper's pre-wrapper shadow-log step (Open Question #5)
-        // a structural placeholder. The wrapper's own try/catch around
-        // filledSlotsShadow keeps a thrown adapter from tearing down dispatch.
-        filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
-        logger: log,
-        sessionId: shadowSession.sessionId,
-        // Plan 05-07 r1-#3 — restrained_mode + ask_budget_exhausted rows
-        // are emitted from synthResultWrapped on the wrapper-internal
-        // short-circuit paths; thread the same shadow mode so they match.
-        mode: 'shadow',
-      });
-    }
+    // Phase 5 gates, composed unconditionally since PLAN-B removed the
+    // per-session budget and restrained-mode objects they used to require.
+    askGateForTurn = createAskGateWrapper({
+      logger: log,
+      sessionId: shadowSession.sessionId,
+      // Plan 05-07 r1-#3 — pass the session's actual mode through so
+      // wrapper-emitted `gated` / `session_terminated` / `dispatcher_error`
+      // log rows tag with mode='shadow' instead of the hard-coded 'live'.
+      // Phase 8 dashboards split by mode; corrupting that split for shadow
+      // sessions was the r1-#3 finding.
+      mode: 'shadow',
+    });
+    asks = wrapAskDispatcherWithGates(asks, {
+      gate: askGateForTurn,
+      // Plan 05-02 supplies the real adapter; until then a no-op keeps
+      // the wrapper's pre-wrapper shadow-log step (Open Question #5)
+      // a structural placeholder. The wrapper's own try/catch around
+      // filledSlotsShadow keeps a thrown adapter from tearing down dispatch.
+      filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
+      logger: log,
+      sessionId: shadowSession.sessionId,
+      // Plan 05-07 r1-#3 — thread the same shadow mode into the wrapper's
+      // own short-circuit rows.
+      mode: 'shadow',
+    });
     dispatcher = createToolDispatcher(writes, asks, {
       answers: shadowAnswers,
       inspects: shadowInspects,
