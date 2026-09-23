@@ -101,6 +101,18 @@ the durable server intent can recover across reconnects. Mirror-derived target
 writes remain designed-silent; the original dictated source write or a short
 server acknowledgement supplies the answer's audible terminal.
 
+A walk-through that cannot parse an answer now HANDS OFF rather than re-asking
+(PLAN-A, feedback-2026-09-17, ids 140/141/143). From the client's side nothing
+changes on the wire: the server still emits the terminal read-back as today's
+`ask_user_started` info frame with `expected_answer_shape: 'none'`, and the
+turn's remaining speech arrives as ordinary confirmations. What changes is what
+the inspector HEARS — the same question is no longer asked a second and third
+time, and the model picks the conversation up with the question, what was
+captured and what is still missing. An annotated reply on a circuit whose script
+ended reaches the model as an ordinary turn; entry detection runs on the
+UN-annotated reply, so a trigger quoted inside the question text cannot restart
+a walk-through the model now owns.
+
 Annotated transcript replies preserve the exact server `tool_call_id`; the
 backend forwards it to durable recovery and rejects a stale explicit
 generation before model extraction. A deciding address/postcode reply also
