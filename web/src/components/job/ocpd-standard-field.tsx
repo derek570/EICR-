@@ -8,6 +8,7 @@ import {
   OCPD_BS_TIER2,
 } from '@/lib/recording/ocpd-bs-suggestions.generated';
 import { canonicaliseOcpdStandardForImport } from '@certmate/shared-utils';
+import { createPortal } from 'react-dom';
 import { ChevronDown } from 'lucide-react';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { cn } from '@/lib/utils';
@@ -218,8 +219,41 @@ export function OcpdStandardComboCell({
   const field = useOcpdStandardDraft(value, onCommit);
   const suggestions = showTier2 ? [...OCPD_BS_TIER1, ...OCPD_BS_TIER2] : OCPD_BS_TIER1;
 
+  // PLAN-CC — the list is PORTALLED, not absolutely positioned inside the
+  // cell. The sticky table's scroll container is `overflow-x-auto`, which
+  // clips absolutely-positioned descendants on BOTH axes: the tiers were in
+  // the DOM and could not be reached, so one of the three web surfaces
+  // effectively had no suggestions at all. A portal with viewport coordinates
+  // escapes any container, and using it on both grid surfaces keeps them on
+  // one code path rather than leaving the next narrow-column surface to
+  // rediscover this.
+  const anchorRef = React.useRef<HTMLDivElement | null>(null);
+  const [anchor, setAnchor] = React.useState<{ left: number; top: number; width: number } | null>(
+    null
+  );
+
+  React.useEffect(() => {
+    if (!isOpen) {
+      setAnchor(null);
+      return;
+    }
+    const measure = () => {
+      const box = anchorRef.current?.getBoundingClientRect();
+      if (box) setAnchor({ left: box.left, top: box.bottom, width: box.width });
+    };
+    measure();
+    // The anchor moves when either the table or the page scrolls; `true`
+    // catches scrolls on ancestor containers, not just the window.
+    window.addEventListener('scroll', measure, true);
+    window.addEventListener('resize', measure);
+    return () => {
+      window.removeEventListener('scroll', measure, true);
+      window.removeEventListener('resize', measure);
+    };
+  }, [isOpen]);
+
   return (
-    <div className="relative" onClick={(e) => e.stopPropagation()}>
+    <div className="relative" ref={anchorRef} onClick={(e) => e.stopPropagation()}>
       <div
         className={`flex h-10 w-full items-center gap-1 rounded-[var(--radius-sm)] border px-2 transition-all duration-150 ${
           isOpen
@@ -262,58 +296,68 @@ export function OcpdStandardComboCell({
           />
         </button>
       </div>
-      {isOpen ? (
-        <ul
-          role="listbox"
-          aria-label={ariaLabel}
-          className="cm-popover-in absolute left-0 top-full z-30 mt-1 max-h-64 min-w-full overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]"
-        >
-          <li>
-            <button
-              type="button"
-              role="option"
-              aria-selected={!value}
-              onClick={() => {
-                field.commit('');
-                onClose();
+      {isOpen && anchor && typeof document !== 'undefined'
+        ? createPortal(
+            <ul
+              role="listbox"
+              aria-label={ariaLabel}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: 'fixed',
+                left: anchor.left,
+                top: anchor.top + 4,
+                minWidth: Math.max(anchor.width, 160),
               }}
-              className="block w-full px-3 py-2 text-left text-[13px] text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-2)]"
+              className="cm-popover-in z-50 max-h-64 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]"
             >
-              — Clear —
-            </button>
-          </li>
-          {suggestions.map((opt) => (
-            <li key={opt}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={value === opt}
-                onClick={() => {
-                  field.commit(opt);
-                  onClose();
-                }}
-                className={`block w-full px-3 py-2 text-left text-[13px] hover:bg-[var(--color-surface-2)] ${
-                  value === opt
-                    ? 'bg-[var(--color-surface-2)] text-[var(--color-brand-blue)]'
-                    : 'text-[var(--color-text-primary)]'
-                }`}
-              >
-                {opt}
-              </button>
-            </li>
-          ))}
-          <li>
-            <button
-              type="button"
-              onClick={() => setShowTier2((v) => !v)}
-              aria-expanded={showTier2}
-              className="block w-full px-3 py-2 text-left text-[12px] font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
-            >
-              {showTier2 ? 'Fewer standards' : 'More standards'}
-            </button>
-          </li>
-        </ul>
-      ) : null}
+              <li>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={!value}
+                  onClick={() => {
+                    field.commit('');
+                    onClose();
+                  }}
+                  className="block w-full px-3 py-2 text-left text-[13px] text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-2)]"
+                >
+                  — Clear —
+                </button>
+              </li>
+              {suggestions.map((opt) => (
+                <li key={opt}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={value === opt}
+                    onClick={() => {
+                      field.commit(opt);
+                      onClose();
+                    }}
+                    className={`block w-full px-3 py-2 text-left text-[13px] hover:bg-[var(--color-surface-2)] ${
+                      value === opt
+                        ? 'bg-[var(--color-surface-2)] text-[var(--color-brand-blue)]'
+                        : 'text-[var(--color-text-primary)]'
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                </li>
+              ))}
+              <li>
+                <button
+                  type="button"
+                  onClick={() => setShowTier2((v) => !v)}
+                  aria-expanded={showTier2}
+                  className="block w-full px-3 py-2 text-left text-[12px] font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
+                >
+                  {showTier2 ? 'Fewer standards' : 'More standards'}
+                </button>
+              </li>
+            </ul>,
+            document.body
+          )
+        : null}
     </div>
   );
 }

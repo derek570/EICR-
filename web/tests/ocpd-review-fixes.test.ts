@@ -72,6 +72,9 @@ describe('server apply canonicalises the standard (comprehensive lane)', () => {
     expect(applied!.patch.circuits![0].ocpd_bs_en).toBe('BS EN 61009');
   });
 
+  // CONTRACT, not a regression: this passed before the fix too, because the
+  // pre-fix code wrote the raw value. Kept because the property matters and
+  // could regress the other way — but it is not what proves the fix.
   it('preserves an unreadable standard exactly as sent', () => {
     const applied = applyExtractionToJob(
       makeJob({ circuits: [{ id: 'c-1', circuit_ref: '1' } as CircuitRow] }),
@@ -95,6 +98,31 @@ describe('an explicit max-Zs clear is not undone by the H3 pass (two lanes)', ()
     expect(row.ocpd_max_zs_source ?? '').toBe('');
   });
 
+  it('suppresses the derivation on the CLEARED row only, in a same-ref multi-board job', () => {
+    // The suppression set is keyed by row IDENTITY, not by `circuit_ref`.
+    // Keying on the ref alone would suppress BOTH boards' circuit 1 — the
+    // collision H3's prior map already had to avoid for the same reason.
+    const main = derived({ id: 'm-1', board_id: 'main' });
+    const sub = derived({
+      id: 's-1',
+      board_id: 'sub',
+      ocpd_rating_a: '16',
+      ocpd_max_zs_ohm: '2.87',
+    });
+    const applied = applyExtractionToJob(
+      makeJob({ circuits: [main, sub] }),
+      makeResult({ field_clears: [{ circuit: 1, field: 'ocpd_max_zs_ohm' }] })
+    );
+    const rows = applied!.patch.circuits!;
+    // Web's per-circuit clear is ref-only, so it lands on one row; whichever
+    // it lands on, the OTHER must keep its derived value rather than being
+    // suppressed by a shared key.
+    const cleared = rows.filter((r) => (r.ocpd_max_zs_ohm ?? '') === '');
+    const kept = rows.filter((r) => (r.ocpd_max_zs_ohm ?? '') !== '');
+    expect(cleared).toHaveLength(1);
+    expect(kept).toHaveLength(1);
+  });
+
   it('the suppression is scoped to the turn, not to the row forever', () => {
     const cleared = applyExtractionToJob(
       makeJob({ circuits: [derived()] }),
@@ -106,9 +134,7 @@ describe('an explicit max-Zs clear is not undone by the H3 pass (two lanes)', ()
     const next = applyExtractionToJob(
       makeJob({ circuits: [cleared as CircuitRow] }),
       makeResult({
-        readings: [
-          { circuit: 1, field: 'ocpd_type', value: 'C', replaces_cleared: true } as never,
-        ],
+        readings: [{ circuit: 1, field: 'ocpd_type', value: 'C', replaces_cleared: true } as never],
       })
     );
     expect(next!.patch.circuits![0].ocpd_max_zs_ohm).toBe('0.72');
@@ -163,7 +189,12 @@ describe('local voice commands route through the tuple helper (max-Zs lane)', ()
 
   it('a BULK standard change recomputes every targeted row', () => {
     const out = applyVoiceCommand(
-      { type: 'apply_field', field: 'ocpd_bs_en', value: 'BS 3871', scope: { kind: 'all' } } as never,
+      {
+        type: 'apply_field',
+        field: 'ocpd_bs_en',
+        value: 'BS 3871',
+        scope: { kind: 'all' },
+      } as never,
       job
     );
     const rows = out.patch?.circuits as Array<Record<string, unknown>>;
@@ -241,10 +272,14 @@ describe('an unreadable standard is marked even with no max Zs (comprehensive la
   });
 });
 
+// These two are the WEB HALF of a cross-client divergence, and web was already
+// correct on both — JavaScript's `\s` trimmed the non-breaking space and its
+// `\d` already refused fullwidth digits. The discriminating half is the Swift
+// one (`OcpdStandardContractTests`), which failed before the fix. They are kept
+// as the other end of the pinned pair: if a future change made web match ICU
+// instead, these would catch it.
 describe('the twins cannot diverge on whitespace or digits (parity lane)', () => {
   it('a non-breaking space at the edges still resolves N/A', () => {
-    // JavaScript `\s` trims it and ICU `\s` does not, so before the explicit
-    // whitespace class web stored `N/A` and iOS stored the raw string.
     expect(canonicaliseOcpdStandard(' N/A ')).toBe('N/A');
     expect(canonicaliseOcpdStandard('BS EN 60898')).toBe('BS EN 60898');
   });
@@ -255,7 +290,10 @@ describe('the twins cannot diverge on whitespace or digits (parity lane)', () =>
   });
 });
 
-describe('applyOcpdAwarePatch (max-Zs lane verification)', () => {
+// CONTRACT tests for a helper these fixes did not change. They document the
+// two properties the review asked about — one decision per patch, and a
+// same-patch max-Zs edit surviving — rather than proving a fix.
+describe('applyOcpdAwarePatch — contract', () => {
   it('a patch touching TWO tuple members produces ONE decision', () => {
     const log = vi.fn();
     const before = derived();
@@ -277,5 +315,35 @@ describe('applyOcpdAwarePatch (max-Zs lane verification)', () => {
     );
     expect(after.ocpd_max_zs_ohm).toBe('0.99');
     expect(after.ocpd_max_zs_source).toBe('manual');
+  });
+});
+
+describe('the regex instant fill recomputes the tuple (verification lane gap)', () => {
+  it('a regex-admitted STANDARD change invalidates the derived max Zs', async () => {
+    // The per-candidate route had no runtime cover: the existing regex tests
+    // assert canonicalisation only, so a missing recompute survived them. This
+    // fails on the pre-fix spread, which left the previous device's figure.
+    const { applyRegexMatchToJob } = await import('@/lib/recording/apply-regex-match');
+    const { FieldSourceTracker } = await import('@/lib/recording/field-source-tracker');
+    const job = makeJob({ circuits: [derived()] });
+    const out = applyRegexMatchToJob(
+      job,
+      {
+        supply_updates: {},
+        // `60898` is what the detector can emit; the row already holds
+        // BS EN 60898, so use the OCPD TYPE to move the tuple instead — it is
+        // the same computed-key write and the same helper.
+        circuit_updates: { '1': { ocpd_type: 'D' } },
+        board_updates: {},
+        installation_updates: {},
+        new_circuits: [],
+      } as never,
+      new FieldSourceTracker()
+    );
+    const row = out!.patch.circuits![0];
+    expect(row.ocpd_type).toBe('D');
+    // BS EN 60898 / D / 32 @ 0.4 s = 0.36, not the 1.44 the row carried.
+    expect(row.ocpd_max_zs_ohm).toBe('0.36');
+    expect(row.ocpd_max_zs_source).toBe('auto');
   });
 });

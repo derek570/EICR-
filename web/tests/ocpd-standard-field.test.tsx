@@ -18,6 +18,16 @@ beforeAll(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
+// lucide-react resolves through the monorepo root and brings a SECOND React
+// copy with it, so its icons' `useContext` runs against the wrong instance and
+// throws at render. Same stub the sticky-table suite uses.
+vi.mock('lucide-react', async () => {
+  const react = await vi.importActual<typeof import('react')>('react');
+  const stub = (props: Record<string, unknown>) =>
+    react.createElement('svg', { 'data-stub': 'lucide', ...props });
+  return { ChevronDown: stub, default: stub };
+});
+
 const { OcpdStandardField } = await import('@/components/job/ocpd-standard-field');
 const { OCPD_BS_TIER1, OCPD_BS_TIER2, OCPD_BS_INPUT_CAP } =
   await import('@/lib/recording/ocpd-bs-suggestions.generated');
@@ -195,5 +205,39 @@ describe('OcpdStandardField — the commit contract', () => {
     type('');
     blur();
     expect(onCommit).toHaveBeenCalledWith('');
+  });
+});
+
+describe('OcpdStandardComboCell — the grid form', () => {
+  it('renders its suggestion list OUTSIDE the cell, so a scroll container cannot clip it', async () => {
+    // The sticky table's wrapper is `overflow-x-auto`, which clips
+    // absolutely-positioned descendants on BOTH axes: the tiers were in the
+    // DOM and unreachable, so one of the three web surfaces effectively had no
+    // suggestions. A portal escapes any container. This fails on the pre-fix
+    // markup, where the list was an `absolute` child of the cell.
+    const { OcpdStandardComboCell } = await import('@/components/job/ocpd-standard-field');
+    mount(
+      <div style={{ overflowX: 'auto' }}>
+        <OcpdStandardComboCell
+          value=""
+          onCommit={() => {}}
+          ariaLabel="Circuit 1 OCPD BS/EN"
+          isOpen
+          onOpen={() => {}}
+          onClose={() => {}}
+        />
+      </div>
+    );
+    const list = document.querySelector('ul[role="listbox"]') as HTMLElement | null;
+    expect(list).not.toBeNull();
+    expect(container.contains(list)).toBe(false);
+    expect(document.body.contains(list)).toBe(true);
+    expect(list!.style.position).toBe('fixed');
+    // Tier 1 is reachable from it, and Tier 2 is behind the disclosure.
+    const labels = Array.from(list!.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toContain('BS EN 60898');
+    expect(labels).toContain('More standards');
+    // No manual removal: React owns the portal node and the afterEach unmount
+    // takes it with the tree. Removing it here raced that teardown.
   });
 });

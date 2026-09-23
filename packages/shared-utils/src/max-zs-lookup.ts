@@ -475,7 +475,7 @@ export function recomputeMaxZsForOcpdTuple<T extends MaxZsRow>(
  *
  * Never blocks a save and is never spoken.
  */
-export type OcpdMaxZsStatus = 'ok' | 'manual_mismatch' | 'unverified';
+export type OcpdMaxZsStatus = 'ok' | 'manual_mismatch' | 'manual_uncheckable' | 'unverified';
 
 export function ocpdMaxZsStatus(row: MaxZsRow): OcpdMaxZsStatus | null {
   if (!hasMaxZsValue(row)) return null;
@@ -488,7 +488,12 @@ export function ocpdMaxZsStatus(row: MaxZsRow): OcpdMaxZsStatus | null {
     rating: str(row.ocpd_rating_a),
     time: str(row.max_disconnect_time_s),
   });
-  if (computed == null) return 'manual_mismatch';
+  // A tuple with no lookup row establishes NOTHING about the stored value.
+  // Calling that a mismatch was a false claim in two ordinary cases: an
+  // unreadable standard preserved by an import, and a perfectly readable one
+  // with no BS 7671 row (`BS 3871`). The inspector was told their figure
+  // "does not match" a comparison that never happened.
+  if (computed == null) return 'manual_uncheckable';
   return str(row.ocpd_max_zs_ohm).trim() === computed ? 'ok' : 'manual_mismatch';
 }
 
@@ -540,11 +545,19 @@ export function ocpdRowWarnings(circuitRef: string, row: MaxZsRow): string[] {
 export function ocpdMaxZsWarningText(circuitRef: string, row: MaxZsRow): string | null {
   const status = ocpdMaxZsStatus(row);
   const value = str(row.ocpd_max_zs_ohm).trim();
-  if (status === 'manual_mismatch') {
-    const standard = str(row.ocpd_bs_en).trim();
-    const type = str(row.ocpd_type).trim();
+  if (status === 'manual_mismatch' || status === 'manual_uncheckable') {
+    // Only the parts the row actually carries, so an empty standard does not
+    // produce a doubled space in a line the inspector reads on the PDF.
+    const tuple = [str(row.ocpd_bs_en).trim(), str(row.ocpd_type).trim()]
+      .filter((part) => part !== '')
+      .join(' ');
     const rating = str(row.ocpd_rating_a).trim();
-    return `Circuit ${circuitRef}: max Zs ${value} was entered by hand and does not match ${standard} ${type} ${rating} A`;
+    const device = [tuple, rating === '' ? '' : `${rating} A`].filter((p) => p !== '').join(' ');
+    const subject = device === '' ? 'the OCPD on this circuit' : device;
+    if (status === 'manual_uncheckable') {
+      return `Circuit ${circuitRef}: max Zs ${value} was entered by hand and cannot be checked against ${subject}`;
+    }
+    return `Circuit ${circuitRef}: max Zs ${value} was entered by hand and does not match ${subject}`;
   }
   if (status === 'unverified') {
     return `Circuit ${circuitRef}: max Zs ${value} has no recorded source — confirm or recompute`;

@@ -218,15 +218,30 @@ describe('ocpdMaxZsStatus and the pinned marker copy', () => {
     );
   });
 
-  it('manual_mismatch when a manual value differs, or the tuple has no row', () => {
+  it('manual_mismatch ONLY when a comparison actually happened', () => {
     expect(ocpdMaxZsStatus(row({ ocpd_max_zs_ohm: '0.99', ocpd_max_zs_source: 'manual' }))).toBe(
       'manual_mismatch'
     );
+  });
+
+  it('manual_uncheckable when the tuple has no lookup row at all', () => {
+    // Saying "does not match" here was a FALSE claim: nothing was compared.
+    // Two ordinary rows reach it — a perfectly readable standard with no
+    // BS 7671 row, and an unreadable one an import preserved.
     expect(
       ocpdMaxZsStatus(
         row({ ocpd_bs_en: 'BS 3871', ocpd_max_zs_ohm: '1.44', ocpd_max_zs_source: 'manual' })
       )
-    ).toBe('manual_mismatch');
+    ).toBe('manual_uncheckable');
+    expect(
+      ocpdMaxZsStatus(
+        row({
+          ocpd_bs_en: 'There is no RCBO',
+          ocpd_max_zs_ohm: '1.44',
+          ocpd_max_zs_source: 'manual',
+        })
+      )
+    ).toBe('manual_uncheckable');
   });
 
   it('unverified for a value with no key', () => {
@@ -237,6 +252,25 @@ describe('ocpdMaxZsStatus and the pinned marker copy', () => {
     expect(
       ocpdMaxZsWarningText('3', row({ ocpd_max_zs_ohm: '0.99', ocpd_max_zs_source: 'manual' }))
     ).toBe('Circuit 3: max Zs 0.99 was entered by hand and does not match BS EN 60898 B 32 A');
+    // The uncheckable line says what actually happened — nothing was compared.
+    expect(
+      ocpdMaxZsWarningText(
+        '3',
+        row({ ocpd_bs_en: 'BS 3871', ocpd_max_zs_ohm: '1.44', ocpd_max_zs_source: 'manual' })
+      )
+    ).toBe(
+      'Circuit 3: max Zs 1.44 was entered by hand and cannot be checked against BS 3871 B 32 A'
+    );
+    // …and an empty tuple does not leave a doubled space in a printed line.
+    expect(
+      ocpdMaxZsWarningText('3', {
+        circuit_ref: '3',
+        ocpd_max_zs_ohm: '1.44',
+        ocpd_max_zs_source: 'manual',
+      })
+    ).toBe(
+      'Circuit 3: max Zs 1.44 was entered by hand and cannot be checked against the OCPD on this circuit'
+    );
     expect(ocpdMaxZsWarningText('4', row({ ocpd_max_zs_ohm: '1.44' }))).toBe(
       'Circuit 4: max Zs 1.44 has no recorded source — confirm or recompute'
     );
