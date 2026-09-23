@@ -11,10 +11,19 @@
  * anyone to remember: it ENUMERATES the write sites in source and fails when one
  * has no announcement beside it. An empty result is the claim, not a sentence.
  *
- * What it does NOT cover, stated so the green is not over-read: it matches
- * literal assignments to `ocpd_bs_en` in `web/src`. A write routed through a
- * computed key, or one that lands via a spread of an object built elsewhere,
- * would not be seen. The behavioural half is in `ocpd-draft-interruption.test.tsx`.
+ * What it does NOT cover, stated so the green is not over-read — and stated
+ * this bluntly because review found the first wording still implied more than
+ * the scan does. It matches LITERAL dot-assignments plus one bracket form, in
+ * `web/src` only. It therefore misses:
+ *   - a write through a computed key (`row[someVar] = …`);
+ *   - a write that lands via a spread of an object built elsewhere, which is
+ *     the shape several current apply paths use;
+ *   - the shared writer in `packages/shared-utils`, outside the scanned tree.
+ * Every write path in the code today has an explicit announcement, checked by
+ * hand rather than by this scan. What the scan buys is that a NEW literal
+ * assignment cannot be added without one — which is the failure mode this plan
+ * hit three times, not a proof that no unannounced write can exist.
+ * The behavioural half is in `ocpd-draft-interruption.test.tsx`.
  */
 
 import { describe, expect, it } from 'vitest';
