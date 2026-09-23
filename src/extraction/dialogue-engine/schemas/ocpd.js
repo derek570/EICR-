@@ -178,4 +178,40 @@ export const ocpdSchema = {
     const ka = values.ocpd_breaking_capacity_ka ?? '?';
     return `Got it. ${bs}, type ${type}, ${rating} amps, ${ka} kA.`;
   },
+  // PLAN-A / Decision 17 (feedback-2026-09-17, taken by Derek) — the
+  // completion summary omits the part it has ALREADY spoken, per field.
+  //
+  // The defect: a `record_reading` that TRIGGERS this walk-through is stamped
+  // `spoken_owner = 'bundler'` (the bundler reads it back on that same turn),
+  // but `finishMessage` above is ONE template interpolating all four slot
+  // fields unconditionally, so a turn or more later the completion summary
+  // says the value a second time. Audio-First invariant 1 names the
+  // double-confirm as a bug.
+  //
+  // Why not the EXISTING gate, which is the option Derek did NOT take:
+  // opting into `finishCoveredFields` is all-or-nothing — one bundler-owned or
+  // snapshot-seeded field suppresses the whole "Got it …" line. That changes
+  // what the inspector hears on every OCPD completion, not only where a repeat
+  // occurs, and it would DELETE the first read-back of a snapshot-seeded
+  // value. Decision 17 needs the finer thing, so `finishScript` composes these
+  // SEGMENTS instead and drops only the ones already spoken.
+  //
+  // The segments carry today's expressions verbatim, `?? '?'` fallbacks
+  // included: Decision 17 changes WHICH segments render, never HOW one
+  // renders. With nothing omitted they compose byte-identically to
+  // `finishMessage` above, which is pinned as acceptance property (1).
+  finishSummarySegments: {
+    prefix: 'Got it.',
+    joiner: ', ',
+    terminator: '.',
+    segments: [
+      { field: 'ocpd_bs_en', render: (values) => `${values.ocpd_bs_en ?? '?'}` },
+      { field: 'ocpd_type', render: (values) => `type ${values.ocpd_type ?? '?'}` },
+      { field: 'ocpd_rating_a', render: (values) => `${values.ocpd_rating_a ?? '?'} amps` },
+      {
+        field: 'ocpd_breaking_capacity_ka',
+        render: (values) => `${values.ocpd_breaking_capacity_ka ?? '?'} kA`,
+      },
+    ],
+  },
 };

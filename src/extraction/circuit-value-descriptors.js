@@ -136,10 +136,13 @@ export const BOARD_FIELD_VALUE_ENUMS = (() => {
 // added with no registry row makes the suite go RED in the PR that adds the
 // gate, naming the field. A sibling cannot land its gate without the row.
 //
-// Row shape: field → { predicate, grammar_ref, allowed_values?, accepts_lim,
-// accepts_na }. `predicate(value)` is the gate's OWN predicate — the same
-// function `validateRecordReading` calls — so the oracle keeps holding by
-// construction rather than by a second copy of the rule.
+// Row shape: field → { predicate, module, grammar_ref, allowed_values?,
+// accepts_lim, accepts_na }. `predicate(value)` is the gate's OWN predicate —
+// the same function `validateRecordReading` calls — so the oracle keeps
+// holding by construction rather than by a second copy of the rule. `module`
+// is the predicate's repo-relative source path, and it is REQUIRED: it is the
+// input the import-closure assertion walks, and a row without it cannot be
+// checked at all.
 //
 // IMPORT SAFETY — the DURABLE property, not a snapshot (A-216/A-221/A-227).
 // A registered predicate's module must have NO import path, direct OR

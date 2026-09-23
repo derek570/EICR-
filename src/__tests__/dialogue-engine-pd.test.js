@@ -18,6 +18,7 @@ import {
   ocpdSchema,
   rcdSchema,
   rcboSchema,
+  ALL_DIALOGUE_SCHEMAS,
 } from '../extraction/dialogue-engine/index.js';
 
 const SESSION_ID = 'sess_pd_test';
@@ -847,12 +848,22 @@ describe('topic switch from OCPD', () => {
   });
 });
 
-describe('OCPD breaking-capacity allowed-value gate (2026-05-04, field test 07635782)', () => {
-  // Field test 07635782 (08:24 BST 2026-05-04): inspector said "six" for
-  // breaking capacity, the engine had moved on, Deepgram heard the next
-  // utterance as "66" → 66 kA landed on the cert. The slot now declares
-  // allowedValues: ['1.5','3','4.5','6','10','16','20','25','36','50','80'];
-  // anything else falls through to a re-ask.
+describe('OCPD breaking capacity is RECORDED, not gated (Decision 9, feedback-2026-09-17)', () => {
+  // HISTORY, kept because this block used to assert the opposite. Field test
+  // 07635782 (08:24 BST 2026-05-04): the inspector said "six" for breaking
+  // capacity, the engine had already moved on, Deepgram heard the next
+  // utterance as "66", and 66 kA landed on the certificate. The fix was a
+  // per-slot `allowedValues` ladder that DROPPED an off-ladder value and
+  // re-asked the same slot.
+  //
+  // PLAN-A / Decision 9 (taken by Derek) removes that ladder. A silent drop
+  // followed by a re-ask is exactly the deterministic dead end Decision 7
+  // forbids — the inspector says a figure, hears nothing about it, and is asked
+  // the same question again. An EICR records what the inspector sees, so the
+  // value is WRITTEN at whatever it was heard as and read back; an off-list
+  // figure earns one spoken advisory (see the advisory suite) and never a
+  // second ask. The range gate (1..200) is unchanged and still refuses a
+  // structurally impossible value.
 
   function reachBreakingCapacitySlot(session, ws) {
     processProtectiveDeviceTurn({
@@ -886,89 +897,79 @@ describe('OCPD breaking-capacity allowed-value gate (2026-05-04, field test 0763
     expect(ws.sent.at(-1).context_field).toBe('ocpd_breaking_capacity_ka');
   }
 
-  test('rejects 66 (not on the BS-EN ratings ladder) and re-asks', () => {
+  function answerBreakingCapacity(transcriptText) {
     const ws = new FakeWS();
     const session = buildSession({ 5: {} });
+    const rows = [];
+    const logger = { info: (event, payload) => rows.push({ event, payload }), warn: () => {} };
     reachBreakingCapacitySlot(session, ws);
-
     processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: '66',
+      transcriptText,
+      logger,
       now: 5000,
     });
+    return { ws, session, rows };
+  }
 
-    // No write happened; engine re-asks the same slot.
-    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBeUndefined();
-    expect(ws.sent.at(-1).context_field).toBe('ocpd_breaking_capacity_ka');
-    expect(ws.sent.at(-1).question).toBe("What's the breaking capacity in kA?");
-    // Script still active — inspector can answer with a valid value.
-    expect(session.dialogueScriptState).not.toBeNull();
+  test('the whole dialogue engine declares no `allowedValues` at all any more', () => {
+    // `schemas/ocpd.js` carried the ONLY declaration, so removing it leaves no
+    // gated slot anywhere — which is also why a `rejected` operation can no
+    // longer arise from a live ingress.
+    for (const schema of ALL_DIALOGUE_SCHEMAS) {
+      for (const slot of schema.slots) {
+        expect({ schema: schema.name, field: slot.field, allowedValues: slot.allowedValues })
+          .toEqual({ schema: schema.name, field: slot.field, allowedValues: undefined });
+      }
+    }
   });
 
-  test("rejects 66 in named form (e.g. '66 kA')", () => {
-    const ws = new FakeWS();
-    const session = buildSession({ 5: {} });
-    reachBreakingCapacitySlot(session, ws);
-
-    processProtectiveDeviceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: '66 kA',
-      now: 5000,
-    });
-    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBeUndefined();
-    expect(ws.sent.at(-1).context_field).toBe('ocpd_breaking_capacity_ka');
-  });
-
-  test('accepts 6 (on the ladder) and finishes the script', () => {
-    const ws = new FakeWS();
-    const session = buildSession({ 5: {} });
-    reachBreakingCapacitySlot(session, ws);
-
-    processProtectiveDeviceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: '6',
-      now: 5000,
-    });
-    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBe('6');
-    // Script completed — finish message emitted.
+  test('66 in bare form is WRITTEN, with no out-of-set log line and no second ask', () => {
+    const { session, rows } = answerBreakingCapacity('66');
+    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBe('66');
+    expect(rows.filter((r) => /_slot_value_out_of_set$/.test(r.event))).toEqual([]);
+    // The script COMPLETED on that answer — no re-ask, no dead end.
     expect(session.dialogueScriptState).toBeNull();
   });
 
-  test('accepts 1.5 (half-step on the ladder)', () => {
-    const ws = new FakeWS();
-    const session = buildSession({ 5: {} });
-    reachBreakingCapacitySlot(session, ws);
-
-    processProtectiveDeviceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: '1.5',
-      now: 5000,
-    });
-    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBe('1.5');
-    expect(session.dialogueScriptState).toBeNull();
+  test("66 in named form ('66 kA') is written the same way", () => {
+    const { session, rows } = answerBreakingCapacity('66 kA');
+    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBe('66');
+    expect(rows.filter((r) => /_slot_value_out_of_set$/.test(r.event))).toEqual([]);
   });
 
-  test('rejects 100 (off-ladder, even though parser would accept)', () => {
-    const ws = new FakeWS();
-    const session = buildSession({ 5: {} });
-    reachBreakingCapacitySlot(session, ws);
+  test('the Decision 16 vectors — values the old ladder omitted are ordinary writes now', () => {
+    // 15 and 35 are on the researched list AND offered by the iOS picker; the
+    // old ladder omitted both, which is the inconsistency ODI-A-2 was opened
+    // about. 16 and 16.5 are DISTINCT (16.5 is the BS 1361 Type I / BS 88-3
+    // figure at 240 V) and must never collapse into one another.
+    for (const [spoken, stored] of [
+      ['15', '15'],
+      ['35', '35'],
+      ['16', '16'],
+      ['16.5', '16.5'],
+      ['100', '100'],
+      ['6', '6'],
+      ['1.5', '1.5'],
+    ]) {
+      const { session, rows } = answerBreakingCapacity(spoken);
+      expect({ spoken, stored: session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka })
+        .toEqual({ spoken, stored });
+      expect(rows.filter((r) => /_slot_value_out_of_set$/.test(r.event))).toEqual([]);
+    }
+  });
 
-    processProtectiveDeviceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: '100',
-      now: 5000,
-    });
+  test('LIM still applies, through the ranged validator rather than an allow-set', () => {
+    const { session } = answerBreakingCapacity('breaking capacity is a limitation');
+    expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBe('LIM');
+  });
+
+  test('500 is still REFUSED — by the unchanged range gate, which is a structural refusal', () => {
+    // Decision 5: a structurally impossible value is a true outcome, not a
+    // second attempt at understanding. parseKa itself bounds 1..200.
+    const { session } = answerBreakingCapacity('500');
     expect(session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka).toBeUndefined();
-    expect(ws.sent.at(-1).context_field).toBe('ocpd_breaking_capacity_ka');
   });
 });

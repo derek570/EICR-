@@ -4731,6 +4731,45 @@ function handleBulkApplyReply({
  * Emit the schema's completion TTS, log, and clear state. The schema
  * supplies its own `finishMessage(values)` for byte-identical output.
  */
+/**
+ * PLAN-A / Decision 17 — compose a schema's `finishSummarySegments` into the
+ * completion line, dropping the fields the bundler has ALREADY spoken.
+ *
+ * Exported so the byte-identity property can be asserted DIRECTLY against each
+ * schema's pre-change `finishMessage` template over a fixture of value
+ * combinations. There is exactly ONE composition and both `finishScript` and
+ * that test use it — a second copy in the test would assert nothing.
+ *
+ * @param {{prefix: string, joiner: string, terminator: string, segments: Array<{field: string, render: (values: object) => string|null}>}} spec
+ * @param {object} values — the script's accumulated slot values
+ * @param {Set<string>} omittedFields — fields already spoken by the bundler
+ * @returns {{text: string|null, fields: string[]}} `text` is null when NO
+ *   segment survives: every part was already spoken, so the line has nothing
+ *   left to say. `fields` are the fields whose segment actually rendered — the
+ *   audibility descriptor is built from these, never from the covered set.
+ */
+export function composeFinishSummary(spec, values, omittedFields = new Set()) {
+  const rendered = [];
+  const fields = [];
+  for (const seg of spec.segments) {
+    if (omittedFields.has(seg.field)) continue;
+    // A segment whose `render` returns null is dropped — which is how IR's
+    // conditional voltage clause already behaves, and reproducing that exactly
+    // is what keeps the byte-identity property true.
+    const text = seg.render(values ?? {});
+    if (text === null || text === undefined || text === '') continue;
+    rendered.push(text);
+    fields.push(seg.field);
+  }
+  return {
+    text:
+      rendered.length > 0
+        ? `${spec.prefix} ${rendered.join(spec.joiner)}${spec.terminator}`
+        : null,
+    fields,
+  };
+}
+
 function finishScript({
   ws,
   session,
@@ -4840,22 +4879,67 @@ function finishScript({
     finishCoveredFields.every(
       (f) => scriptOwnedDictatedFields.has(f) || mirrorCoveredFields.has(f)
     );
+  // PLAN-A / Decision 17 — per-field suppression of what the bundler already
+  // spoke. Computed BEFORE the marking loop, because the marking loop is what
+  // it changes.
+  //
+  // The omit predicate is `spoken_owner === 'bundler'` ALONE, and the reason is
+  // the failure direction. It is the exact predicate the engine already uses at
+  // the two sites that decide NOT to speak something (computeUncoveredReadback
+  // and transitionToConfirmation), so this rule adds no new trust assumption.
+  // `covered_by` was considered as an additional term and rejected: for the two
+  // schemas in scope it is always null at this point, so today the two
+  // predicates coincide — but if a confirmation stage is added later, the
+  // narrow predicate UNDER-suppresses (a repeat) while the wider one could
+  // OVER-suppress (a value never spoken at all). Audio-First #1 makes a dropped
+  // read-back the worse failure, so the rule fails toward saying it twice.
+  const summarySpec = schema.finishSummarySegments;
+  const omittedFields = new Set(
+    summarySpec
+      ? coveredOps.filter((op) => op.spoken_owner === 'bundler').map((op) => op.field)
+      : []
+  );
+  const { text: segmentText, fields: renderedSegmentFields } =
+    summarySpec && allCoveredScriptOwned
+      ? composeFinishSummary(summarySpec, values, omittedFields)
+      : { text: null, fields: [] };
   // Mark BEFORE computing the uncovered set below, so the device-summary
   // fields (when spoken) are excluded from it — else they'd double.
+  //
+  // PLAN-A / Decision 17, consequential edit (3 of 3 is the log row below):
+  // `covered_by` means "this site spoke it", and both PLAN-AD and the advisory
+  // rule read it, so an OMITTED operation must NOT be stamped. Observably this
+  // changes nothing today — every omitted operation is bundler-owned and
+  // `computeUncoveredReadback` already filters those out — but the field has to
+  // stay truthful.
   if (allCoveredScriptOwned) {
-    for (const op of coveredOps) op.covered_by = 'finish';
+    for (const op of coveredOps) {
+      if (summarySpec && omittedFields.has(op.field)) continue;
+      op.covered_by = 'finish';
+    }
   }
   // else: every finish-covered field is either bundler-owned or never
   // dictated this run — the legacy "Got it, …" line is suppressed entirely
   // (id 117's exact scenario). Any INDIVIDUALLY script-owned field among a
   // mixed set still surfaces below via the generic uncovered-operations text.
   const finishReadback = computeUncoveredReadback(state, schema, 'finish');
-  if (allCoveredScriptOwned || finishReadback) {
+  // PLAN-A / Decision 17, consequential edit (1 of 3): the emit guard was
+  // `allCoveredScriptOwned || finishReadback`, which was safe only because
+  // `baseText` was non-null WHENEVER `allCoveredScriptOwned` was true — making
+  // the `finishReadback.text` fallback below unreachable. Once every segment
+  // can be omitted, `baseText` can be null with `finishReadback` null too, and
+  // the fallback dereferences null. Guard on what is actually about to be
+  // rendered instead.
+  const baseText = allCoveredScriptOwned
+    ? summarySpec
+      ? segmentText
+      : schema.finishMessage({ values })
+    : null;
+  if (baseText || finishReadback) {
     // PLAN A2 §A2.5 point 3 — ONE combined frame: the legacy verbatim text
     // (when spoken) with the uncovered read-back appended, or — when the
     // legacy text is suppressed entirely — the read-back text stands alone
     // (test (a): "exactly ONE value-scoped finish frame").
-    const baseText = allCoveredScriptOwned ? schema.finishMessage({ values }) : null;
     const text = baseText
       ? finishReadback
         ? `${baseText} ${finishReadback.text}`
@@ -4875,11 +4959,20 @@ function finishScript({
     // field, including snapshot-seeded ones nobody dictated) plus whatever
     // the uncovered-readback computation named.
     if (ws && ws[PLAN00_DELIVERY_EMIT_OBSERVER]) {
-      const audibilityOps = allCoveredScriptOwned
-        ? finishCoveredFields
-            .filter((f) => values?.[f] !== undefined)
-            .map((field) => ({ field, circuit: circuit_ref, value: values[field] }))
-        : [];
+      // PLAN-A / Decision 17, consequential edit (2 of 3): built from the
+      // fields whose segment actually RENDERED. The old derivation
+      // (`finishCoveredFields` filtered on a defined value) would claim the
+      // delivery observer made an OMITTED value audible — a descriptor that
+      // lies. Schemas without segments keep the previous derivation exactly.
+      const audibilityOps = !allCoveredScriptOwned
+        ? []
+        : summarySpec
+          ? renderedSegmentFields
+              .filter((f) => values?.[f] !== undefined)
+              .map((field) => ({ field, circuit: circuit_ref, value: values[field] }))
+          : finishCoveredFields
+              .filter((f) => values?.[f] !== undefined)
+              .map((field) => ({ field, circuit: circuit_ref, value: values[field] }));
       if (finishReadback) {
         for (const op of finishReadback.uncovered) {
           audibilityOps.push({
@@ -4897,7 +4990,15 @@ function finishScript({
     sessionId,
     circuit_ref,
     values: { ...values },
-    finish_summary_spoken: allCoveredScriptOwned,
+    // PLAN-A / Decision 17, consequential edit (3 of 3): `allCoveredScriptOwned`
+    // is no longer the whole truth, because every segment can now be omitted
+    // with the gate still open. This reports whether `baseText` was actually
+    // emitted.
+    finish_summary_spoken: baseText != null,
+    // The field-evidence side of the exactly-once claim: a session where the
+    // summary re-speaks a value shows an omission list that does not contain
+    // it. Empty on schemas that declare no segments.
+    finish_summary_omitted_fields: [...omittedFields],
   });
   // Post-completion correction breadcrumb (#1 belt-and-braces, field report
   // 2026-06-24). Leave a short-lived crumb naming the last reading leg written
