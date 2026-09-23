@@ -20,7 +20,7 @@
     "sources": {
       "scripts/check-regex-freshness-fixture-sync.sh": "c93e0afb3182cf5d000b5fa617a0f60ac5e8b4d903429e472905116be9d80e9e",
       "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "87d4cf063f185de7fc648030904d8704626e327e84988032d2581f0cdd3dff42",
-      "src/extraction/sonnet-stream.js": "9ba823494443397e0cb4ae80b66b0ffce3bacaa2ee6e2d3f427e6c121e20f85d",
+      "src/extraction/sonnet-stream.js": "36a54fa7b11c1eb7450660f6e20bc7c2341f74c0afd3cc949a3fd6fa20bb2cce",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
       "web/src/lib/recording-context.tsx": "eda1d15866136567f81ad4af18deeb99df20e689b590398e099c5450469f5580",
       "web/src/lib/recording/apply-extraction.ts": "c5c3bbd7c0b4b40f93d647555c3549dc4d35b16fa1fadd173570b0b3690be97b",
