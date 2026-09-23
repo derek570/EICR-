@@ -25,6 +25,9 @@
  */
 
 import * as React from 'react';
+import { MaxZsMarker } from '@/components/job/max-zs-marker';
+import { OcpdStandardComboCell } from '@/components/job/ocpd-standard-field';
+import { OCPD_BS_TIER1, OCPD_BS_TIER2 } from '@/lib/recording/ocpd-bs-suggestions.generated';
 import { ChevronDown, Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
 import {
@@ -643,16 +646,32 @@ function Row({
             className={`relative border-b border-[var(--color-border-subtle)] px-1 py-1 ${flashClass(col.key)}`}
             style={{ width: col.width, minWidth: col.width }}
           >
-            <CellField
-              id={circuit.id}
-              column={col}
-              value={v(col.key)}
-              onPatch={onPatch}
-              circuitRef={ref}
-              isOpen={activeCell === cellKey}
-              onOpen={() => setActiveCell(cellKey)}
-              onClose={() => setActiveCell(null)}
-            />
+            {col.key === 'ocpd_max_zs_ohm' ? (
+              <div className="flex items-center gap-1">
+                <MaxZsMarker circuitRef={ref} row={circuit as unknown as Record<string, unknown>} />
+                <CellField
+                  id={circuit.id}
+                  column={col}
+                  value={v(col.key)}
+                  onPatch={onPatch}
+                  circuitRef={ref}
+                  isOpen={activeCell === cellKey}
+                  onOpen={() => setActiveCell(cellKey)}
+                  onClose={() => setActiveCell(null)}
+                />
+              </div>
+            ) : (
+              <CellField
+                id={circuit.id}
+                column={col}
+                value={v(col.key)}
+                onPatch={onPatch}
+                circuitRef={ref}
+                isOpen={activeCell === cellKey}
+                onOpen={() => setActiveCell(cellKey)}
+                onClose={() => setActiveCell(null)}
+              />
+            )}
           </td>
         );
       })}
@@ -692,6 +711,22 @@ function CellField({
   onClose: () => void;
 }) {
   const ariaLabel = `Circuit ${circuitRef} ${column.label}`;
+  // PLAN-CC — the OCPD standard is a free-text COMBO, not a closed dropdown:
+  // an inspector must be able to record a standard printed on the device that
+  // no list carries. Tier 1 stays one click; Tier 2 sits behind a disclosure.
+  if (column.key === 'ocpd_bs_en') {
+    return (
+      <OcpdStandardComboCell
+        value={value ?? ''}
+        onCommit={(next) => onPatch(id, { ocpd_bs_en: next })}
+        circuitId={id}
+        ariaLabel={ariaLabel}
+        isOpen={isOpen}
+        onOpen={onOpen}
+        onClose={onClose}
+      />
+    );
+  }
   if (column.kind === 'options' && column.key in CIRCUIT_FIELD_OPTIONS) {
     const options = CIRCUIT_FIELD_OPTIONS[column.key as CircuitFieldKey];
     return (

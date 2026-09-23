@@ -50,6 +50,7 @@ export {
   CLOSED_ENUM_LABELS,
   WIRING_TYPE_DESCRIPTION_TO_CODE,
   isGuardedClosedEnumField,
+  isValueCheckedCircuitField,
   canonicaliseClosedEnumValue,
   cleanClosedEnumResidue,
   parseClosedEnumBsCode,
@@ -59,6 +60,7 @@ export {
 } from './closed-enum-guard';
 export type {
   GuardedClosedEnumField,
+  ClosedEnumReaskField,
   ClosedEnumOutcome,
   ClosedEnumReaskReason,
   ClosedEnumSparePolicy,
@@ -66,8 +68,38 @@ export type {
 } from './closed-enum-guard';
 export { matchCircuits, similarityScore, normaliseLabel } from './circuit-matcher';
 export type { CircuitMatch, MatcherNewCircuit, MatcherExistingCircuit } from './circuit-matcher';
-export { maxZsLookup, maxZsString } from './max-zs-lookup';
-export type { MaxZsLookupArgs } from './max-zs-lookup';
+export {
+  maxZsLookup,
+  maxZsString,
+  maxZsForOcpdTuple,
+  maxZsForOcpdTupleNumber,
+  recomputeMaxZsForOcpdTuple,
+  writeMaxZs,
+  clearMaxZs,
+  readMaxZsSource,
+  ocpdMaxZsStatus,
+  ocpdMaxZsWarningText,
+  ocpdStandardStatus,
+  ocpdStandardWarningText,
+  ocpdRowWarnings,
+  applyOcpdAwarePatch,
+} from './max-zs-lookup';
+export type {
+  MaxZsLookupArgs,
+  OcpdTupleLookupArgs,
+  MaxZsSource,
+  MaxZsRow,
+  MaxZsChange,
+  MaxZsChangeLogger,
+  OcpdMaxZsStatus,
+} from './max-zs-lookup';
+export {
+  canonicaliseOcpdStandard,
+  canonicaliseOcpdStandardForImport,
+  isCanonicalOcpdStandard,
+  OCPD_STANDARD_INPUT_CAP,
+  OCPD_STANDARD_MAX_GRAMMAR_OUTPUT,
+} from './ocpd-standard';
 export {
   recompute,
   recomputeAll,

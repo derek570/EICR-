@@ -267,3 +267,41 @@ describe('WS9 · wire-decoder leniencies (documented divergence from strict Swif
     expect(inst?.estimatedAgeOfInstallation).toBeUndefined();
   });
 });
+
+describe('PLAN-CC · a free-text OCPD standard prints whole', () => {
+  // Acceptance 4: a job holding `BS 88-2` or `BS 3871` "renders unclipped".
+  // The wrap rule targets column 9 BY POSITION (`td:nth-child(9)`), so it is
+  // only correct while the ninth cell of a circuit row IS the standard. Both
+  // halves are pinned here: move the column, or drop the rule, and this fails.
+  // Structural only — no browser, so it proves the rule applies to the right
+  // cell, not the rendered geometry.
+  it.each(['BS 3871', 'BS 88-2', 'BS EN 60947-4-1'])(
+    '%s lands in the wrapped ninth cell of its circuit row',
+    (standard) => {
+      const job = baseJob({
+        circuits: [
+          {
+            id: 'c1',
+            boardId: 'b1',
+            circuitRef: '1',
+            circuitDesignation: 'Cooker',
+            ocpdBsEn: standard,
+          },
+        ],
+      });
+      const { landscape } = buildCertificateHtml(job, company, inspector);
+      expect(landscape).not.toBeNull();
+
+      const row = /<tr><td>1<\/td><td style="text-align:left;">Cooker<\/td>.*?<\/tr>/s.exec(
+        landscape!
+      );
+      expect(row).not.toBeNull();
+      const cells = Array.from(row![0].matchAll(/<td[^>]*>(.*?)<\/td>/gs), (m) => m[1]);
+      expect(cells[8]).toBe(standard);
+
+      expect(landscape).toMatch(
+        /\.circuit-table td:nth-child\(9\)\s*\{\s*white-space:\s*normal;[^}]*overflow-wrap:\s*break-word;/
+      );
+    }
+  );
+});

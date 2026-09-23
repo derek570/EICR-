@@ -33,12 +33,16 @@ import {
   cleanClosedEnumResidue,
   GUARDED_CLOSED_ENUM_FIELDS,
   isGuardedClosedEnumField,
+  isValueCheckedCircuitField,
   reaskForClosedEnumOutcome,
   renderClosedEnumReask,
+  type ClosedEnumReaskReason,
   type ClosedEnumSparePolicy,
   type GuardedClosedEnumField,
   type GuardedTarget,
 } from './closed-enum-guard';
+import { canonicaliseOcpdStandard, canonicaliseOcpdStandardForImport } from './ocpd-standard';
+import { applyOcpdAwarePatch } from './max-zs-lookup';
 import { repairCircuitDesignation } from './designation-canonicaliser';
 import { resolveJobZe, type JobZeLike } from './circuit-derivations';
 
@@ -376,6 +380,12 @@ const SUPPLY_FIELD_ALIASES: Record<string, { section: 'supply' | 'installation';
  *  its canonical name, so it never needed this fallback.) */
 const CANONICAL_CIRCUIT_FIELDS: ReadonlySet<string> = new Set<string>([
   ...GUARDED_CLOSED_ENUM_FIELDS,
+  // PLAN-CC — named explicitly because it LEFT the guarded set. Membership of
+  // this set is about whether the canonical snake_case spelling RESOLVES to a
+  // writable circuit field, which has nothing to do with whether its value is
+  // checked against an option list: dropping it here would make a
+  // server-originated `ocpd_bs_en` action answer "I don't know the field".
+  'ocpd_bs_en',
   'number_of_points',
   'max_disconnect_time_s',
   'rcd_button_confirmed',
@@ -501,7 +511,13 @@ export function parseVoiceCommand(transcript: string): VoiceCommand | null {
  *  preserves internal `/ - + &` (N/A, A-S, B+, T&E) and never strips a
  *  unit-shaped letter. Unguarded fields are byte-identical to before. */
 function cleanValue(raw: string, canonicalField?: string): string {
-  if (canonicalField && isGuardedClosedEnumField(canonicalField)) {
+  // PLAN-CC — `ocpd_bs_en` is named explicitly alongside the guarded set
+  // because it LEFT that set and must keep the edge-only cleaner. The
+  // unit-stripping fallback below ends `.replace(/\s*(?:amps?|amperes?|a)$/i,
+  // '')`, which turns a dictated `N/A` into `N/`: a value the certificate
+  // would then print as a mangled fragment. The field's cleaning requirement
+  // never depended on it being membership-validated.
+  if (canonicalField && isValueCheckedCircuitField(canonicalField)) {
     return cleanClosedEnumResidue(raw);
   }
   const noTrailingPunct = raw.replace(/[.,!?]+$/, '').trim();
@@ -986,6 +1002,46 @@ function respondUnknown(reason: string): VoiceCommandOutcome {
  * `isGuardedClosedEnumField` gate has already passed) but is still
  * routed to a rejection rather than a write: fail closed.
  */
+function guardOcpdStandardWrite(rawValue: unknown, target: GuardedTarget): ClosedEnumGuardResult {
+  const raw = typeof rawValue === 'string' ? rawValue : '';
+  const cleaned = cleanClosedEnumResidue(raw);
+  if (typeof rawValue !== 'string' && typeof rawValue !== 'number') {
+    return {
+      kind: 'rejected',
+      outcome: {
+        response: renderClosedEnumReask('ocpd_bs_en', 'missing_value', '', target),
+        invalidClosedEnum: true,
+      },
+    };
+  }
+  const canonical = canonicaliseOcpdStandard(rawValue);
+  if (canonical == null) {
+    const reason: ClosedEnumReaskReason =
+      cleaned === '' && typeof rawValue === 'string' ? 'missing_value' : 'invalid_value';
+    return {
+      kind: 'rejected',
+      outcome: {
+        response: renderClosedEnumReask('ocpd_bs_en', reason, cleaned, target),
+        invalidClosedEnum: true,
+      },
+    };
+  }
+  if (target.kind === 'unknown') {
+    return {
+      kind: 'rejected',
+      outcome: {
+        response: renderClosedEnumReask('ocpd_bs_en', 'missing_target', canonical, target),
+        invalidClosedEnum: true,
+      },
+    };
+  }
+  return {
+    kind: 'accepted',
+    value: canonical,
+    canonicalised: !(typeof rawValue === 'string' && rawValue === canonical),
+  };
+}
+
 type ClosedEnumGuardResult =
   | { kind: 'not_guarded' }
   | { kind: 'accepted'; value: string; canonicalised: boolean }
@@ -996,6 +1052,17 @@ function guardClosedEnumWrite(
   rawValue: unknown,
   target: GuardedTarget
 ): ClosedEnumGuardResult {
+  // PLAN-CC — `ocpd_bs_en` sits BESIDE the closed-enum branch rather than
+  // inside it. The field accepts any grammar-valid standard, so there is no
+  // option set to test membership against; what can still fail is the
+  // canonicaliser, and a MISS is judged exactly like an invalid enum value:
+  // once per command, nothing written, one spoken re-ask through the SAME
+  // renderer so the sentence is byte-identical to the one this field has
+  // always spoken. The missing-target, zero-applied, stored-value-speech and
+  // failure flags below are shared verbatim.
+  if (canonicalField === 'ocpd_bs_en') {
+    return guardOcpdStandardWrite(rawValue, target);
+  }
   if (!isGuardedClosedEnumField(canonicalField)) return { kind: 'not_guarded' };
   const guarded = canonicalField as GuardedClosedEnumField;
   const outcome = canonicaliseClosedEnumValue(guarded, rawValue);
@@ -1103,7 +1170,7 @@ function applyUpdateField(
   // silently route the write into the supply branch.
   let guardedValue: string | null = null;
   let guardedCanonicalised = false;
-  if (resolved.circuitField && isGuardedClosedEnumField(resolved.circuitField)) {
+  if (resolved.circuitField && isValueCheckedCircuitField(resolved.circuitField)) {
     const circuitRef = command.circuit;
     const target: GuardedTarget =
       // `Number.isInteger` (Codex cycle 1) — the comment above always said
@@ -1160,8 +1227,20 @@ function applyUpdateField(
     if (guardedValue != null) {
       value = guardedValue;
     }
+    // PLAN-CC (write path 7 / M3) — the ONE manual-boundary commit route. The
+    // bare `{ ...row, [field]: value }` spread this replaces recomputed
+    // nothing, so a dictated standard, type, rating or disconnect-time change
+    // left the PREVIOUS device's max Zs on the certificate; and a dictated max
+    // Zs kept whatever source the row already had, so the next tuple change
+    // could recompute the inspector's own correction away.
     const next: VoiceCommandCircuit[] = circuits.map((row, i) =>
-      i === idx ? { ...row, [resolved.circuitField as string]: value } : row
+      i === idx
+        ? (applyOcpdAwarePatch(
+            row as Record<string, unknown>,
+            { [resolved.circuitField as string]: value },
+            canonicaliseOcpdStandardForImport
+          ) as VoiceCommandCircuit)
+        : row
     );
     const label = labelForField(resolved.circuitField);
     return {
@@ -1571,7 +1650,7 @@ function applyApplyField(
   // restate the whole instruction in one breath.
   let guardedValue: string | null = null;
   let guardedCanonicalised = false;
-  if (isGuardedClosedEnumField(resolved.circuitField)) {
+  if (isValueCheckedCircuitField(resolved.circuitField)) {
     const guard = guardClosedEnumWrite(
       resolved.circuitField,
       command.value,
@@ -1645,7 +1724,15 @@ function applyApplyField(
       field: resolved.circuitField as string,
       value: appliedValue,
     });
-    return { ...row, [resolved.circuitField as string]: appliedValue };
+    // PLAN-CC (write path 7 / M3) — per row, the same commit route as the
+    // single-circuit branch above. A bulk standard change has to recompute the
+    // derived rows and leave the manual ones exactly as the inspector entered
+    // them, which a plain spread cannot do.
+    return applyOcpdAwarePatch(
+      row as Record<string, unknown>,
+      { [resolved.circuitField as string]: appliedValue },
+      canonicaliseOcpdStandardForImport
+    ) as VoiceCommandCircuit;
   });
   const label = labelForField(resolved.circuitField);
   if (updated === 0) {

@@ -52,16 +52,48 @@ describe('closed-enum guard — single-circuit update_field', () => {
     expect(out.response).toContain("I heard OCPD BS EN 'MCB', which isn't a valid standard");
   });
 
-  it('a near-miss standard is re-asked, never snapped onto its neighbour (Lev-1 NOT ported)', () => {
-    // The backend parser's fuzzy fallback maps 1362 → BS 1361. On a client
-    // that writes straight into the certificate, a silently-substituted
-    // device standard is worse than an audible re-ask.
+  it('a dictated standard outside the old closed list is now WRITTEN and read back', () => {
+    // PLAN-CC. BS 1362 is the 13 A plug-top fuse — a real device standard the
+    // eight-option schema list simply never carried, so dictating it used to
+    // draw a re-ask and the certificate recorded nothing. The backend parser's
+    // Levenshtein-1 fallback made it worse by snapping 1362 onto BS 1361, a
+    // DIFFERENT device. The field takes it as dictated now, and the read-back
+    // is what lets the inspector catch a mishear by ear.
     const out = applyVoiceCommand(
       { type: 'update_field', field: 'ocpd_bs_en', value: '1362', circuit: 1 },
       JOB
     );
+    const circuits = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(circuits[0].ocpd_bs_en).toBe('BS 1362');
+    expect(circuits[0].ocpd_bs_en).not.toBe('BS 1361');
+    expect(out.response).toBe('Set OCPD BS EN to BS 1362 on circuit 1.');
+    expect(out.invalidClosedEnum).toBeUndefined();
+  });
+
+  it('prose still misses, and the re-ask is the SAME sentence it always was', () => {
+    // The miss path is unchanged by PLAN-CC — same renderer, same words. What
+    // changed is WHICH values reach it.
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: 'ocpd_bs_en', value: 'There is no RCBO', circuit: 1 },
+      JOB
+    );
     expect(out.patch).toBeUndefined();
     expect(out.invalidClosedEnum).toBe(true);
+    expect(out.response).toBe(
+      "I heard OCPD BS EN 'There is no RCBO', which isn't a valid standard — say, for example, 'OCPD standard BS EN 60898 for circuit 1'."
+    );
+  });
+
+  it('a dictated N/A survives the cleaner and is never mangled to N/', () => {
+    // `ocpd_bs_en` left the guarded set, so it had to be named explicitly in
+    // `cleanValue` — the unit-stripping fallback ends with an `a$` strip.
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: 'ocpd_bs_en', value: 'N/A', circuit: 1 },
+      JOB
+    );
+    const circuits = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(circuits[0].ocpd_bs_en).toBe('N/A');
+    expect(out.response).toContain('N/A');
   });
 
   it('a valid alias is CANONICALISED, stored, and read back as stored', () => {

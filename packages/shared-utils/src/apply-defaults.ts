@@ -25,6 +25,7 @@
  * read from.
  */
 
+import { recomputeMaxZsForOcpdTuple } from './max-zs-lookup';
 import type { Circuit } from '@certmate/shared-types';
 import { DEFAULTS_BY_CIRCUIT, GLOBAL_DEFAULTS, inferCircuitType } from './circuit-defaults-schema';
 
@@ -98,8 +99,16 @@ export function applyDefaultsToCircuit<T extends Partial<Circuit>>(
     }
   }
 
+  // PLAN-CC (write path 20) — a defaults fill that completes the OCPD tuple
+  // must derive the max Zs, and a fill that makes an `auto` value wrong must
+  // clear it. Defaults are curated Tier 1 values, so a canonicalisation miss
+  // is not reachable here; what IS reachable is a row whose standard arrives
+  // from a default while type and rating were already set. Runs once after all
+  // three layers, so one defaults pass produces one decision.
+  const derived = filled === 0 ? circuit : (recomputeMaxZsForOcpdTuple(circuit, next) as T);
+
   return {
-    circuit: filled === 0 ? circuit : next,
+    circuit: derived,
     filledFields: filled,
     ambiguous: inferred === null && filled === 0,
   };

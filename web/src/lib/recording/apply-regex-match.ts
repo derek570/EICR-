@@ -20,7 +20,10 @@
  */
 
 import {
+  applyOcpdAwarePatch,
   canonicaliseClosedEnumValue,
+  canonicaliseOcpdStandard,
+  canonicaliseOcpdStandardForImport,
   isGuardedClosedEnumField,
   type GuardedClosedEnumField,
 } from '@certmate/shared-utils';
@@ -35,6 +38,7 @@ import {
   readEffectiveSectionValue,
   routeSectionField,
 } from './regex-destination-routing';
+import { noteExternalOcpdWrite } from '@/lib/ocpd-external-writes';
 
 // MARK: — Field-name → JobDetail-section routing
 //
@@ -143,6 +147,29 @@ export function shadowBaselineReader(shadow: ReadonlyMap<string, unknown>): Base
  * (Audio-First §1 — exactly once, not twice).
  */
 function guardClosedEnumCandidate(candidate: RegexWriteCandidate): RegexWriteCandidate | null {
+  // PLAN-CC — `ocpd_bs_en` left the closed-enum guard but keeps the FIRST of
+  // the two behaviours above: a valid form is canonicalised so the ~40ms
+  // instant fill and Sonnet's later write agree on one string.
+  //
+  // It cannot take the second. The detectors at this ingress capture exactly
+  // three literals — `BS_EN_STANDARD_PATTERN` and `OCPD_COMPOSITE_PATTERN` are
+  // `/\b(60898|61009|60909)\b/gi` — and the canonicaliser consumes all three,
+  // so a MISS is unreachable here. Suppression is left unwritten rather than
+  // written speculatively: a rule for a case no code path can produce is a
+  // rule nothing can test, and whoever widens the detector owns raising it.
+  if (candidate.fieldKey === 'ocpd_bs_en') {
+    const canonical = canonicaliseOcpdStandard(candidate.value);
+    if (canonical == null) {
+      pipelineLog('apply_regex_ocpd_standard_suppressed', { field: candidate.fieldKey });
+      return null;
+    }
+    if (canonical === candidate.value) return candidate;
+    pipelineLog('apply_regex_closed_enum_canonicalised', {
+      field: candidate.fieldKey,
+      canonical,
+    });
+    return { ...candidate, value: canonical };
+  }
   if (!isGuardedClosedEnumField(candidate.fieldKey)) return candidate;
   const outcome = canonicaliseClosedEnumValue(
     candidate.fieldKey as GuardedClosedEnumField,
@@ -308,7 +335,22 @@ export function applyRegexMatchToJob(
       const idx = c.circuitIdx ?? -1;
       const row = circuits[idx];
       if (!row) continue;
-      circuits[idx] = { ...row, [c.fieldKey]: c.value };
+      // PLAN-CC (write path 18) — the instant fill writes into the same four
+      // tuple columns the rest of the app recomputes from, and a plain spread
+      // recomputed nothing: a regex-admitted `ocpd_bs_en` or `ocpd_type` left
+      // the PREVIOUS device's max Zs on the row until some later server apply
+      // happened to touch it. `applyOcpdAwarePatch` is per-candidate rather
+      // than per-row because each candidate is committed on its own here, and
+      // the helper is idempotent, so two candidates on one row produce the
+      // same end state as one patch carrying both.
+      if (c.fieldKey === 'ocpd_bs_en') {
+        noteExternalOcpdWrite(row.id == null ? null : String(row.id));
+      }
+      circuits[idx] = applyOcpdAwarePatch(
+        row as Record<string, unknown>,
+        { [c.fieldKey]: c.value },
+        canonicaliseOcpdStandardForImport
+      ) as CircuitRow;
     } else {
       // Every stored alias of the destination receives the value (wire key
       // + PWA-column key), so the page the inspector edits and the wire

@@ -147,9 +147,15 @@ describe('ccuAnalysisToCircuitRows — ground-truth review projection', () => {
         board_id: 'ccu-ground-truth',
         circuit_ref: '1',
         circuit_designation: 'Kitchen sockets',
-        ocpd_bs_en: '60898-1',
+        // PLAN-CC — the photo pipeline emits the printed sub-clause form and
+        // the import boundary canonicalises it, so a photo and a dictation of
+        // the same device now store ONE string instead of two spellings.
+        ocpd_bs_en: 'BS EN 60898',
         ocpd_type: 'B',
         ocpd_rating_a: '32',
+        // …and a row born with a complete tuple derives its max Zs as `auto`.
+        ocpd_max_zs_ohm: '1.44',
+        ocpd_max_zs_source: 'auto',
         ocpd_breaking_capacity_ka: '6',
         is_rcbo: true,
         rcd_protected: true,
