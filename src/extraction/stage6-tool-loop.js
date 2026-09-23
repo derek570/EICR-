@@ -387,6 +387,19 @@ export async function runToolLoop({
    * ignored. Omitted = byte-identical to before.
    */
   augmentToolResult,
+  /**
+   * PLAN-B (feedback-2026-09-17, B3) — dispatch the cap round instead of
+   * aborting it. Default false: the cap-hit branch below answers every
+   * pending tool_use with a synthetic `loop_cap` abort and dispatches
+   * nothing. With `dispatchAtCap: true` the cap round goes through the
+   * NORMAL dispatch branch — every pending tool-use record of the response,
+   * in index order — and the loop then ends because the round budget is
+   * spent. The net-site helper (stage6-model-authored-line.js) runs exactly
+   * one round (`maxRounds: 1`), so without this its only round could never
+   * dispatch its `net_response`. No `tool_loop_cap_hit` row is logged for a
+   * dispatched cap round (it is not a runaway loop).
+   */
+  dispatchAtCap = false,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -821,7 +834,7 @@ export async function runToolLoop({
     //   is_error = true
     // and exit cleanly. No further model invocation. Log tool_loop_cap_hit
     // for the Phase 8 stage6.tool_loop_cap_hit_rate CloudWatch metric.
-    if (rounds >= maxRounds) {
+    if (rounds >= maxRounds && !dispatchAtCap) {
       const abortResults = [];
       const answeredCap = new Set();
       for (const rec of records) {
@@ -892,7 +905,8 @@ export async function runToolLoop({
       break;
     }
 
-    // NORMAL DISPATCH BRANCH: rounds < maxRounds. Dispatch each tool call in
+    // NORMAL DISPATCH BRANCH: rounds < maxRounds (or the cap round under
+    // `dispatchAtCap`, after which the loop ends). Dispatch each tool call in
     // the assembler's index-ascending order (finalize() already sorts), then
     // append one user-role message whose content is the array of tool_result
     // content blocks (one per dispatched call). Anthropic expects all of a
