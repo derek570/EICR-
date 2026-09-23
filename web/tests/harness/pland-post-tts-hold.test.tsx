@@ -146,7 +146,7 @@ describe.each([
 
   const feed = async (samples: Float32Array) => {
     await act(async () => {
-      onSamples!(samples, 16000);
+      onSamples!(samples);
     });
   };
   const advance = async (ms: number) => {

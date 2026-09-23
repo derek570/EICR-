@@ -199,7 +199,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
     for (let i = 0; i < block.length; i++)
       block[i] = 0.5 * Math.sin((2 * Math.PI * 440 * i) / 16000);
     await act(async () => {
-      onSamples?.(block, 16000);
+      onSamples?.(block);
     });
   };
 
