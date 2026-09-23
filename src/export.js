@@ -46,6 +46,15 @@ const CIRCUIT_HEADERS = {
   board_id: 'Board ID',
   is_distribution_circuit: 'Distribution Circuit',
   feeds_board_id: 'Feeds Board ID',
+  // PLAN-CC (feedback-2026-09-17) — provenance for the column above it.
+  // `auto` = derived by the OCPD-tuple helper and safe to recompute;
+  // `manual` = entered by a human or carried by an import, never touched by
+  // the helper; ABSENT = pre-plan data of unknown origin, preserved and
+  // marked. The key rides the job JSON PUT/GET and this CSV; no WebSocket
+  // frame carries it. Both clients drop the whole distinction on every
+  // save->load cycle without these two entries, which is how `board_id` /
+  // `feeds_board_id` were lost before May 2026.
+  ocpd_max_zs_source: 'OCPD Max Zs Source',
 };
 
 // Ordered list of circuit fields (matches the PDF column order)
@@ -86,6 +95,11 @@ const CIRCUIT_FIELD_ORDER = [
   'board_id',
   'is_distribution_circuit',
   'feeds_board_id',
+  // PLAN-CC. Appended at the END for the same reason the Phase 2a columns
+  // were: parseCSV maps by header NAME, so an older file simply lacks the
+  // column and legacy rows read as undefined — which is exactly the
+  // "absent = unknown origin, preserve and mark" state the key defines.
+  'ocpd_max_zs_source',
 ];
 
 const OBSERVATION_HEADERS = {

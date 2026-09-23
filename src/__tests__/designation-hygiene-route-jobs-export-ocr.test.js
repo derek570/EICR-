@@ -42,7 +42,8 @@ const EXPECTED_HEADER =
   'rcd_operating_current_ma,ring_r1_ohm,ring_rn_ohm,ring_r2_ohm,r1_r2_ohm,' +
   'r2_ohm,ir_test_voltage_v,ir_live_live_mohm,ir_live_earth_mohm,' +
   'polarity_confirmed,measured_zs_ohm,rcd_time_ms,rcd_button_confirmed,' +
-  'afdd_button_confirmed,board_id,is_distribution_circuit,feeds_board_id';
+  'afdd_button_confirmed,board_id,is_distribution_circuit,feeds_board_id,' +
+  'ocpd_max_zs_source';
 
 // ---- Mock DB layer (same surface as jobs.test.js) ----
 const mockGetUserById = jest.fn();
