@@ -237,6 +237,19 @@ describe('acceptance 5 — pending-value terminals and the dropped_value helper'
     expect(logRows(logger, 'stage6.pending_value_apology_disclosed_by_model')).toHaveLength(1);
   });
 
+  test('three pending terminals and an EMPTY helper response → exactly ONE helper attempt, three canned lines (Codex cycle 2 #2)', async () => {
+    const P3 = pending('ze', null, '0.35', 'Sorry, I lost the Ze.');
+    const { result, client, logger } = await runTurn({
+      transcript,
+      rounds: [endTurnRound(''), endTurnRound('')],
+      options: quietOptions,
+      sessionOverrides: { pendingVoicePrompts: [P1, P2, P3] },
+    });
+    expect(spoken(result).map((c) => c.text)).toEqual([P1.text, P2.text, P3.text]);
+    expect(client.requests.filter(isHelperRequest)).toHaveLength(1);
+    expect(logRows(logger, 'stage6.noop_retry_round')).toHaveLength(1);
+  });
+
   test('a recovered write → one read-back, the apology superseded, no helper call', async () => {
     const { result, logger, client } = await runTurn({
       transcript: 'Zs on circuit three is nought point four',

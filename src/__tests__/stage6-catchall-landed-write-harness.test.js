@@ -94,3 +94,63 @@ test('a landed write whose confirmation was lost is read back by marker-②, nev
   expect(rows.some(([n]) => n === 'stage6.catchall_landed_mutation_recovered')).toBe(true);
   expect(rows.some(([n]) => n === 'stage6.noop_retry_round')).toBe(false);
 });
+
+test('Codex cycle 2 BLOCKER: a pending-value terminal the write recovers is not "surviving speech" — marker-② still recovers the lost read-back', async () => {
+  const client = mockClient([
+    toolUseRound([
+      {
+        id: 'w1',
+        name: 'record_reading',
+        input: {
+          field: 'measured_zs_ohm',
+          circuit: 3,
+          value: '0.4',
+          confidence: 0.9,
+          source_turn_id: 't1',
+        },
+      },
+    ]),
+    endTurnRound(''),
+    toolUseRound([{ id: 'n1', name: 'net_response', input: { outcome_code: 'nothing_recorded' } }]),
+  ]);
+  const provisional = {
+    text: 'Sorry, I lost the Zs for circuit 3.',
+    generationId: 'gen-b79',
+    promptKind: 'pending_value_terminal',
+    pendingField: 'measured_zs_ohm',
+    pendingCircuit: 3,
+    pendingBoardId: null,
+    pendingValue: '0.4',
+  };
+  const session = makeLiveSession({
+    sessionId: SID,
+    client,
+    pendingVoicePrompts: [provisional],
+    stateSnapshot: {
+      circuits: { 3: { circuit_designation: 'Sockets' } },
+      pending_readings: [],
+      observations: [],
+      validation_alerts: [],
+    },
+  });
+  const logger = makeLogger();
+  dropNextProjection = true;
+  const result = await runShadowHarness(session, 'Zs on circuit 3 is 0.4', [], {
+    logger,
+    chimeObserved: true,
+    confirmationsEnabled: true,
+    rawInspectorTranscript: 'Zs on circuit 3 is 0.4',
+    canonicalInspectorTranscript: 'Zs on circuit 3 is 0.4',
+    generationId: 'gen-b79',
+  });
+  const texts = (result.confirmations ?? []).map((c) => c.text).filter(Boolean);
+  // Never silent: the recovered read-back speaks; the provisional apology is
+  // retracted (its value WAS written), exactly once each way.
+  expect(texts).toHaveLength(1);
+  expect(texts[0]).not.toBe(provisional.text);
+  expect(texts[0]).toMatch(/0\.4|nought point four/i);
+  expect(client._callCount).toBe(2);
+  const rows = logger.info.mock.calls.map(([n]) => n);
+  expect(rows).toContain('stage6.catchall_landed_mutation_recovered');
+  expect(rows).toContain('stage6.pending_value_apology_superseded');
+});

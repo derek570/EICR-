@@ -77,7 +77,7 @@ async function buildToolInputValidator() {
 function roundToEvents(round) {
   if (round.stop_reason === 'tool_use') {
     return toolUseRound(
-      (round.tool_calls ?? []).map((tc) => ({ id: tc.id, name: tc.name, input: tc.input })),
+      (round.tool_calls ?? []).map((tc) => ({ id: tc.id, name: tc.name, input: tc.input }))
     );
   }
   return endTurnRound(round.text ?? '');
@@ -160,7 +160,9 @@ export function makeTurnClient({
     const interceptorObserved = turnState.backendAsksObserved.length > 0;
     const interceptorAnswered = turnState.backendAsksAnswered.length > 0;
     const branch = branches.find((b) =>
-      b.when === 'interceptor_ask_answered' ? interceptorObserved && interceptorAnswered : !interceptorObserved,
+      b.when === 'interceptor_ask_answered'
+        ? interceptorObserved && interceptorAnswered
+        : !interceptorObserved
     );
     if (!branch) return;
     branchTaken = branch.branch_id;
@@ -171,8 +173,10 @@ export function makeTurnClient({
       for (const sub of branch.substitutions ?? []) {
         let value;
         if (sub.from === 'ask_tool_call_id') value = turnState.backendAsksObserved[0] ?? null;
-        else if (sub.from === 'ask_answer_text') value = turnState.backendAsksAnswered[0]?.user_text ?? null;
-        else if (sub.from === 'tool_result_field') value = turnState.toolResultBindings.get(sub.from_field) ?? null;
+        else if (sub.from === 'ask_answer_text')
+          value = turnState.backendAsksAnswered[0]?.user_text ?? null;
+        else if (sub.from === 'tool_result_field')
+          value = turnState.toolResultBindings.get(sub.from_field) ?? null;
         if (value == null) {
           violations.push(`branch ${branch.branch_id}: substitution ${sub.bind} resolved to null`);
         }
@@ -190,7 +194,7 @@ export function makeTurnClient({
           netHelperRequests += 1;
           if (netHelperRequests > MAX_NET_HELPER_REQUESTS_PER_TURN) {
             const err = new Error(
-              `net helper over-request: turn ${turnIndex} of ${corpusId} made ${netHelperRequests} net_response requests (max ${MAX_NET_HELPER_REQUESTS_PER_TURN})`,
+              `net helper over-request: turn ${turnIndex} of ${corpusId} made ${netHelperRequests} net_response requests (max ${MAX_NET_HELPER_REQUESTS_PER_TURN})`
             );
             violations.push(err.message);
             throw err;
@@ -200,7 +204,7 @@ export function makeTurnClient({
         maybeExtendWithBranch();
         if (cursor >= rounds.length) {
           const err = new Error(
-            `strict round consumption: turn ${turnIndex} of ${corpusId} requested stream #${cursor + 1} but only ${rounds.length} round(s) are declared`,
+            `strict round consumption: turn ${turnIndex} of ${corpusId} requested stream #${cursor + 1} but only ${rounds.length} round(s) are declared`
           );
           violations.push(err.message);
           throw err;
@@ -225,7 +229,7 @@ export function makeTurnClient({
     assertFullyConsumed() {
       if (cursor !== rounds.length) {
         violations.push(
-          `strict round consumption: turn ${turnIndex} of ${corpusId} consumed ${cursor}/${rounds.length} declared round(s) (under-consumption)`,
+          `strict round consumption: turn ${turnIndex} of ${corpusId} consumed ${cursor}/${rounds.length} declared round(s) (under-consumption)`
         );
       }
     },
@@ -252,7 +256,11 @@ function makeTurnWs(mode, onFrame) {
   return base;
 }
 
-function matchDeclaration(declarations, { toolCallId, contextField, contextCircuit, question, reason }, { emitted }) {
+function matchDeclaration(
+  declarations,
+  { toolCallId, contextField, contextCircuit, question, reason },
+  { emitted }
+) {
   // tool_call_id FIRST; backend-generated asks match the REDUCED tuple only
   // (the registry entry carries no reason/question text).
   for (const d of declarations) {
@@ -262,10 +270,17 @@ function matchDeclaration(declarations, { toolCallId, contextField, contextCircu
     const m = d.match ?? {};
     if (m.tool_call_id) continue;
     if (m.context_field !== undefined && m.context_field !== contextField) continue;
-    if (m.context_circuit !== undefined && String(m.context_circuit) !== String(contextCircuit)) continue;
+    if (m.context_circuit !== undefined && String(m.context_circuit) !== String(contextCircuit))
+      continue;
     if (emitted) {
       if (m.reason !== undefined && m.reason !== reason) continue;
-      if (m.question_contains !== undefined && !String(question ?? '').toLowerCase().includes(String(m.question_contains).toLowerCase())) continue;
+      if (
+        m.question_contains !== undefined &&
+        !String(question ?? '')
+          .toLowerCase()
+          .includes(String(m.question_contains).toLowerCase())
+      )
+        continue;
     }
     return d;
   }
@@ -278,11 +293,32 @@ function matchDeclaration(declarations, { toolCallId, contextField, contextCircu
  * replay-clock controller (null in-process). Returns
  * { corpusId, verdict, detail, turnResults, branchLog }.
  */
+/**
+ * PLAN-B — the recorded client's free helper rounds must equal the harness's
+ * own `stage6.noop_retry_round` rows for the turn. Returns the violation
+ * string, or null when the two agree.
+ */
+export function netHelperAccountingViolation({ served, turnRows, turnIndex, corpusId }) {
+  const logged = turnRows.filter((r) => r.name === 'stage6.noop_retry_round').length;
+  const count = served ?? 0;
+  if (count === logged) return null;
+  return `net helper accounting: turn ${turnIndex} of ${corpusId} served ${count} helper round(s) but logged ${logged} stage6.noop_retry_round row(s)`;
+}
+
 export async function runFixture({ fixture, modules, clockCtl = null, wallClockNowMs, apiKey }) {
   const rows = [];
   const sink = (level) => (msg, meta) =>
-    rows.push({ level, name: typeof msg === 'string' ? msg : msg?.message, meta: meta ?? (typeof msg === 'object' ? msg : undefined) });
-  const logger = { info: sink('info'), warn: sink('warn'), error: sink('error'), debug: sink('debug') };
+    rows.push({
+      level,
+      name: typeof msg === 'string' ? msg : msg?.message,
+      meta: meta ?? (typeof msg === 'object' ? msg : undefined),
+    });
+  const logger = {
+    info: sink('info'),
+    warn: sink('warn'),
+    error: sink('error'),
+    debug: sink('debug'),
+  };
 
   const built = buildReplaySession({ modules, fixture, logger, apiKey });
   const validateToolInput = await buildToolInputValidator();
@@ -336,7 +372,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
       const declaredTimeoutAskIds = new Set();
       const pendingAnswerQueue = [];
       const injectedToolIds = new Set(
-        (turn.model_rounds ?? []).flatMap((r) => (r.tool_calls ?? []).map((tc) => tc.id)),
+        (turn.model_rounds ?? []).flatMap((r) => (r.tool_calls ?? []).map((tc) => tc.id))
       );
       const askOrigins = new Map();
       const rowStart = rows.length;
@@ -355,7 +391,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         turnState.emittedAskIds.add(frame.tool_call_id);
         askOrigins.set(
           frame.tool_call_id,
-          injectedToolIds.has(frame.tool_call_id) ? 'model_emitted' : 'backend_interceptor',
+          injectedToolIds.has(frame.tool_call_id) ? 'model_emitted' : 'backend_interceptor'
         );
         if (!injectedToolIds.has(frame.tool_call_id)) {
           turnState.backendAsksObserved.push(frame.tool_call_id);
@@ -369,7 +405,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
             question: frame.question,
             reason: frame.reason,
           },
-          { emitted: true },
+          { emitted: true }
         );
         if (!decl) return; // may still be an EXPECTED-but-unanswered ask (assertion (d))
         if (decl.answer_channel === 'terminal' && decl.terminal_outcome === 'timeout') {
@@ -418,15 +454,22 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           if (!stillPending) return; // production fast-fail already resolved it
           const decl = matchDeclaration(
             declarations,
-            { toolCallId, contextField: regEntry?.contextField, contextCircuit: regEntry?.contextCircuit },
-            { emitted: false },
+            {
+              toolCallId,
+              contextField: regEntry?.contextField,
+              contextCircuit: regEntry?.contextCircuit,
+            },
+            { emitted: false }
           );
           if (!decl) {
             violations.push(
-              `non-emitted ask ${toolCallId} is genuinely pending with NO declaration — fixture must declare an answer or terminal outcome`,
+              `non-emitted ask ${toolCallId} is genuinely pending with NO declaration — fixture must declare an answer or terminal outcome`
             );
             // Unblock rather than deadlock to the 45s production timeout.
-            built.entry.pendingAsks.resolve(toolCallId, { answered: false, reason: 'user_moved_on' });
+            built.entry.pendingAsks.resolve(toolCallId, {
+              answered: false,
+              reason: 'user_moved_on',
+            });
             return;
           }
           if (decl.answer_channel === 'pending_registry' && decl.answer?.answered) {
@@ -438,8 +481,13 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           } else if (decl.answer_channel === 'terminal' && decl.terminal_outcome === 'timeout') {
             declaredTimeoutAskIds.add(toolCallId);
           } else if (decl.answer_channel === 'terminal') {
-            violations.push(`terminal outcome ${decl.terminal_outcome} is not supported in v1 (unsupported_pending)`);
-            built.entry.pendingAsks.resolve(toolCallId, { answered: false, reason: 'user_moved_on' });
+            violations.push(
+              `terminal outcome ${decl.terminal_outcome} is not supported in v1 (unsupported_pending)`
+            );
+            built.entry.pendingAsks.resolve(toolCallId, {
+              answered: false,
+              reason: 'user_moved_on',
+            });
           }
         });
         return true;
@@ -469,7 +517,9 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         const family = turn.dialogue_ingress.family;
         const runIngress = modules?.dialogueScriptIngress?.[family];
         if (typeof runIngress !== 'function') {
-          violations.push(`dialogue-script ingress runner for family '${family}' unavailable (modules.dialogueScriptIngress not injected)`);
+          violations.push(
+            `dialogue-script ingress runner for family '${family}' unavailable (modules.dialogueScriptIngress not injected)`
+          );
         } else {
           let outcome = null;
           let ingressThrew = false;
@@ -495,8 +545,13 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           // handled-and-consumed envelope — an invalid ingress premise must
           // never fall through to the semantic oracle's ordinary FAILs, where
           // it could masquerade as the expected RED.
-          if (!ingressThrew && (outcome == null || outcome.handled !== true || outcome.fallthrough === true)) {
-            violations.push(`dialogue-script ingress did not consume the turn (outcome=${outcome == null ? 'null' : `handled=${outcome?.handled ?? null}, fallthrough=${outcome?.fallthrough ?? null}`}) — the fixture's ingress premise did not hold`);
+          if (
+            !ingressThrew &&
+            (outcome == null || outcome.handled !== true || outcome.fallthrough === true)
+          ) {
+            violations.push(
+              `dialogue-script ingress did not consume the turn (outcome=${outcome == null ? 'null' : `handled=${outcome?.handled ?? null}, fallthrough=${outcome?.fallthrough ?? null}`}) — the fixture's ingress premise did not hold`
+            );
           }
         }
         const captured = {
@@ -510,11 +565,13 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           toReadingWireField: modules?.toReadingWireField ?? null,
           readCircuitDesignation:
             typeof modules?.readCircuitDesignation === 'function'
-              ? (circuitRef, boardId) => modules.readCircuitDesignation(built.session, circuitRef, boardId)
+              ? (circuitRef, boardId) =>
+                  modules.readCircuitDesignation(built.session, circuitRef, boardId)
               : null,
           readCircuitField:
             typeof modules?.readCircuitField === 'function'
-              ? (circuitRef, boardId, field) => modules.readCircuitField(built.session, circuitRef, boardId, field)
+              ? (circuitRef, boardId, field) =>
+                  modules.readCircuitField(built.session, circuitRef, boardId, field)
               : null,
         };
         const failures = evaluateTurn(turn, captured);
@@ -562,7 +619,9 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
       while (!settled) {
         pumpIterations += 1;
         if (pumpIterations > PUMP_CAP) {
-          violations.push('clock pump exceeded iteration cap — genuinely stuck turn (infrastructure)');
+          violations.push(
+            'clock pump exceeded iteration cap — genuinely stuck turn (infrastructure)'
+          );
           break;
         }
         if (clockCtl) await clockCtl.drainMicrotasks();
@@ -575,7 +634,10 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
             user_text: ans.user_text,
           });
           if (resolved) {
-            turnState.backendAsksAnswered.push({ toolCallId: ans.toolCallId, user_text: ans.user_text });
+            turnState.backendAsksAnswered.push({
+              toolCallId: ans.toolCallId,
+              user_text: ans.user_text,
+            });
           }
         }
         if (settled) break;
@@ -619,7 +681,9 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           await new Promise((res) => setImmediate(res));
         }
         if (!settled) {
-          violations.push('harness promise never settled even after recovery — abandoning the turn (infrastructure)');
+          violations.push(
+            'harness promise never settled even after recovery — abandoning the turn (infrastructure)'
+          );
         }
       }
       if (settled) await harnessPromise;
@@ -635,6 +699,19 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
       // turn resolves as infrastructure_error, never a crash.
       if (settled) {
         client.assertFullyConsumed();
+        // PLAN-B — every free empty round the client handed out must be a
+        // net-site helper call that the harness itself logged
+        // (`stage6.noop_retry_round`). An empty helper response always leaves
+        // the net's canned line, which the fixture's audibility oracle must
+        // declare, so a spurious helper call surfaces as an undeclared line;
+        // this check pins the count as well.
+        const accounting = netHelperAccountingViolation({
+          served: client._netHelperRequests,
+          turnRows: rows.slice(rowStart),
+          turnIndex: turn.turn_index,
+          corpusId: fixture.corpus_id,
+        });
+        if (accounting) violations.push(accounting);
         if (client._branchTaken) {
           branchLog.push({ turn: turn.turn_index, branch: client._branchTaken });
         }
@@ -664,7 +741,8 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         // oracle latches INFRASTRUCTURE rather than passing un-checked.
         readCircuitDesignation:
           typeof modules?.readCircuitDesignation === 'function'
-            ? (circuitRef, boardId) => modules.readCircuitDesignation(built.session, circuitRef, boardId)
+            ? (circuitRef, boardId) =>
+                modules.readCircuitDesignation(built.session, circuitRef, boardId)
             : null,
         // PLAN-B (id 131) — symmetric injection on the harness path too (the
         // script_entry_resolution oracle is schema-bound to dialogue_ingress
@@ -672,7 +750,8 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         toReadingWireField: modules?.toReadingWireField ?? null,
         readCircuitField:
           typeof modules?.readCircuitField === 'function'
-            ? (circuitRef, boardId, field) => modules.readCircuitField(built.session, circuitRef, boardId, field)
+            ? (circuitRef, boardId, field) =>
+                modules.readCircuitField(built.session, circuitRef, boardId, field)
             : null,
       };
       const failures = evaluateTurn(turn, captured);
@@ -701,9 +780,24 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
  * blocking step with ZERO fixtures — exit-2-on-empty would deadlock the
  * Foundation PR's own gate).
  */
-export async function runCorpus({ corpusRoot, modules, clockCtl, loadFixture, proofState = null, fixtureFilter = null, wallClockNowMs }) {
+export async function runCorpus({
+  corpusRoot,
+  modules,
+  clockCtl,
+  loadFixture,
+  proofState = null,
+  fixtureFilter = null,
+  wallClockNowMs,
+}) {
   const found = discoverFixtures(corpusRoot);
-  const summary = { discovered: found.length, executed: 0, passed: 0, failed: 0, unsupported: 0, results: [] };
+  const summary = {
+    discovered: found.length,
+    executed: 0,
+    passed: 0,
+    failed: 0,
+    unsupported: 0,
+    results: [],
+  };
   if (found.length === 0) {
     summary.message = `0 fixtures discovered under ${corpusRoot} (${FIXTURE_BASENAME}) — field-corpus lane PASS`;
     summary.exitCode = 0;
@@ -746,7 +840,11 @@ export async function runCorpus({ corpusRoot, modules, clockCtl, loadFixture, pr
     if (['unsupported_pending', 'superseded', 'privacy_quarantined'].includes(f.doc.gate_state)) {
       // Validate-but-never-execute states: REPORTED every run.
       summary.unsupported += 1;
-      summary.results.push({ corpusId: f.doc.corpus_id, verdict: 'reported', detail: f.doc.gate_state });
+      summary.results.push({
+        corpusId: f.doc.corpus_id,
+        verdict: 'reported',
+        detail: f.doc.gate_state,
+      });
       continue;
     }
     summary.executed += 1;
@@ -757,7 +855,13 @@ export async function runCorpus({ corpusRoot, modules, clockCtl, loadFixture, pr
     const pass = gate.verdict === 'pass';
     if (pass) summary.passed += 1;
     else summary.failed += 1;
-    summary.results.push({ corpusId: f.doc.corpus_id, verdict: gate.verdict, detail: gate.detail, turns: run.turnResults, branches: run.branchLog });
+    summary.results.push({
+      corpusId: f.doc.corpus_id,
+      verdict: gate.verdict,
+      detail: gate.detail,
+      turns: run.turnResults,
+      branches: run.branchLog,
+    });
   }
   summary.exitCode = summary.failed === 0 ? 0 : 1;
   return summary;

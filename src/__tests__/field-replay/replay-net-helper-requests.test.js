@@ -4,7 +4,10 @@
  * round ("helper frozen empty") outside strict round consumption, but ONLY for
  * a request that is unmistakably the helper's, and at most twice per turn.
  */
-import { makeTurnClient } from '../../../scripts/field-replay/lib/replay-runner-core.mjs';
+import {
+  makeTurnClient,
+  netHelperAccountingViolation,
+} from '../../../scripts/field-replay/lib/replay-runner-core.mjs';
 
 const NET_TOOL = { name: 'net_response', input_schema: { type: 'object' } };
 const helperArgs = () => ({
@@ -63,5 +66,38 @@ describe('recorded client — net-site helper requests', () => {
     c.messages.stream(helperArgs());
     expect(() => c.messages.stream(helperArgs())).toThrow(/net helper over-request/);
     expect(violations).toHaveLength(1);
+  });
+});
+
+describe('net helper accounting (Codex cycle 2 #3)', () => {
+  const row = { name: 'stage6.noop_retry_round' };
+  const other = { name: 'stage6.turn_summary' };
+  test('served rounds equal to logged helper rows → no violation', () => {
+    expect(
+      netHelperAccountingViolation({
+        served: 1,
+        turnRows: [other, row],
+        turnIndex: 2,
+        corpusId: 'frc_x',
+      })
+    ).toBeNull();
+    expect(
+      netHelperAccountingViolation({
+        served: undefined,
+        turnRows: [other],
+        turnIndex: 2,
+        corpusId: 'frc_x',
+      })
+    ).toBeNull();
+  });
+  test('a free round the harness never logged is a violation', () => {
+    expect(
+      netHelperAccountingViolation({ served: 2, turnRows: [row], turnIndex: 2, corpusId: 'frc_x' })
+    ).toMatch(/net helper accounting: turn 2 of frc_x served 2 helper round\(s\) but logged 1/);
+  });
+  test('a logged helper row with no served round is a violation', () => {
+    expect(
+      netHelperAccountingViolation({ served: 0, turnRows: [row], turnIndex: 0, corpusId: 'frc_x' })
+    ).toMatch(/served 0 helper round\(s\) but logged 1/);
   });
 });

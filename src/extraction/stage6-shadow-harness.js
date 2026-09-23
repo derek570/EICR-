@@ -1848,6 +1848,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const isAudibleText = (t) => typeof t === 'string' && t.trim().length > 0;
     const isCurrentGenPrompt = (p) =>
       generationId == null || p?.generationId == null || p.generationId === generationId;
+    // PLAN-B (Codex cycle 2, BLOCKER) — a queued prompt that will reach the
+    // wire. A pending-value terminal whose value a later write in this
+    // generation recovered is RETRACTED by the §A4 drain, so it is not speech:
+    // counting it as surviving would suppress the nets (marker-② recovery in
+    // particular) and the drain would then drop it, leaving a chimed turn
+    // silent. The drain's own retraction predicate decides; this only reads it.
+    const isSurvivingSpokenPrompt = (p) =>
+      isCurrentGenPrompt(p) &&
+      isAudibleText(p?.text) &&
+      !pendingValuePromptWasRecovered(p, perTurnWrites);
     // Plan 2A (2026-07-30) §3.1 — HOISTED out of the A3 orphan block (where it
     // was `const allRejected = …`, block-scoped) so the partial-failure drain
     // that runs LATER in this function can read it. The classification itself
@@ -2797,8 +2807,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // on two turns both play while a replay of the same turn collapses (the
     // `p4ack_` family every client already recognises).
     const netLineToken = (netKind) => `p4ack_${turnId}_net_${netKind}`;
-    // B4 — one DROPPED-VALUE helper line per turn, and the identities of the
-    // pending-value prompts it disclosed (telemetry + the retraction record).
+    // B4 — ONE dropped-value helper ATTEMPT per turn (P4 or the drain, first
+    // come), and the identities of the pending-value prompts it disclosed.
     let droppedValueHelperUsed = false;
     const disclosedPendingPrompts = new Set();
     // The script terminal read-back (PLAN-A carrier). A net is EXCLUDED only
@@ -5546,8 +5556,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
         : 0;
       const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-        ? session.pendingVoicePrompts.filter((p) => isCurrentGenPrompt(p) && isAudibleText(p?.text))
-            .length
+        ? session.pendingVoicePrompts.filter((p) => isSurvivingSpokenPrompt(p)).length
         : 0;
       // F7 Item 3 — the cancellation branch uses ONLY a "nothing audible
       // survived" predicate (a ceiling-cancelled generation may have no
@@ -5654,9 +5663,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;
         const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-          ? session.pendingVoicePrompts.filter(
-              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
-            ).length
+          ? session.pendingVoicePrompts.filter((p) => isSurvivingSpokenPrompt(p)).length
           : 0;
         const noSpeechIntent =
           survivingConfCount === 0 &&
@@ -5897,9 +5904,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;
         const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-          ? session.pendingVoicePrompts.filter(
-              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
-            ).length
+          ? session.pendingVoicePrompts.filter((p) => isSurvivingSpokenPrompt(p)).length
           : 0;
         const survivingAnswer = isAudibleText(result.spoken_response);
         if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
@@ -5933,10 +5938,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // Its only valid code, `not_recorded`, renders "I couldn't record
             // that…", so the disclosure is a property of the template, never
             // of the model's words. The canned loss line is last.
-            const droppedValueModelLine = isDroppedValue
-              ? await askModelForNetLine('dropped_value')
-              : null;
-            if (droppedValueModelLine) droppedValueHelperUsed = true;
+            let droppedValueModelLine = null;
+            if (isDroppedValue && !droppedValueHelperUsed) {
+              droppedValueHelperUsed = true;
+              droppedValueModelLine = await askModelForNetLine('dropped_value');
+            }
             const text = droppedValueModelLine ?? family[turnNum % family.length];
             // PLAN-G2 (2026-08-14, held finding 2) — a replay-stable structural
             // dedupe token for BOTH P4 ack families. Neither family previously
@@ -6045,9 +6051,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         }
         let pendingModelLine = null;
         if (pendingIdentity != null && !droppedValueHelperUsed && !cancelled) {
+          // One attempt per turn, whatever it returns: the line's token is
+          // turn-scoped, and a second call for the same net only adds a
+          // provider round.
+          droppedValueHelperUsed = true;
           pendingModelLine = await askModelForNetLine('dropped_value');
           if (pendingModelLine) {
-            droppedValueHelperUsed = true;
             disclosedPendingPrompts.add(pendingIdentity);
             log.info?.('stage6.pending_value_apology_disclosed_by_model', {
               sessionId: session.sessionId,
