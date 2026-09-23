@@ -961,10 +961,14 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       });
       for (let i = 0; i < 3; i++) await feedVoice(); // captured while paused, held
       const sentAtTap = dg.sentTaggedSegments.length;
+      const dropsBefore = diags(harness, 'voice_pause_drop_count').length;
       await act(async () => {
         await api().resume();
       });
       expect(api().voicePaused).toBe(false);
+      // One drop-count increment for the non-empty discard; the block total
+      // lives on voice_pause_held_audio_discarded.
+      expect(diags(harness, 'voice_pause_drop_count').length - dropsBefore).toBe(1);
       for (let i = 0; i < 2; i++) await feedVoice(); // captured after the tap, held
       await advance(500); // the drain
       // Only the two post-tap blocks reach Deepgram.

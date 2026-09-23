@@ -1726,6 +1726,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // ledger — if a new prompt starts first).
         const hold = postTtsHoldRef.current;
         if (hold && hold.blocks.length > 0) {
+          // Decision 34: dropped paused speech is counted. One increment per
+          // non-empty discard; the diagnostic keeps the block total.
+          voicePauseDropCountRef.current += 1;
+          clientDiagnostic('voice_pause_drop_count', {
+            count: voicePauseDropCountRef.current,
+            textPreview: '',
+          });
           clientDiagnostic('voice_pause_held_audio_discarded', { blocks: hold.blocks.length });
           hold.blocks = [];
         }
