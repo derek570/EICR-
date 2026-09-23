@@ -2260,8 +2260,20 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       teardownSleep();
       cancelSpeech();
       setTtsLifecycleObserver(null);
+      // PLAN-D D4 — a route change during a voice pause must not leave the
+      // 15-minute reminder interval firing into a dead provider. Refs only:
+      // no state is set during unmount.
+      cancelVoicePauseReminder();
+      voicePausedRef.current = false;
     };
-  }, [clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep]);
+  }, [
+    clearTick,
+    teardownMic,
+    teardownDeepgram,
+    teardownSonnet,
+    teardownSleep,
+    cancelVoicePauseReminder,
+  ]);
 
   /** Open the Deepgram WS using a freshly-minted scoped token. Shared
    *  between `start()` and `resume()` so the reconnect path after doze

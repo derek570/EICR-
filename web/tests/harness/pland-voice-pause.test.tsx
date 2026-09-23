@@ -730,6 +730,21 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       }
     );
 
+    it('unmounting the provider during a pause cancels the reminder (nothing is spoken afterwards)', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      const spokenBefore = harness.tts.played.length;
+      const cueCallsBefore = diags(harness, 'tts_speak_mode_status_called').length;
+      await act(async () => {
+        root.unmount();
+      });
+      root = createRoot(container);
+      await advance(REMINDER_MS * 2 + 1000);
+      expect(harness.tts.played.length).toBe(spokenBefore);
+      expect(diags(harness, 'tts_speak_mode_status_called').length).toBe(cueCallsBefore);
+      expect(count(played(harness), S('reminder'))).toBe(0);
+    });
+
     it('server speech after an ask times out plays while paused; the state stays paused', async () => {
       const { harness, api } = await mount();
       await enterPause(harness, api);
