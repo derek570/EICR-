@@ -26,8 +26,9 @@
  *
  * So the assertions below pin exactly what Decision 28a says: web never
  * commits at an interruption. They do NOT claim that losing the typing is
- * ideal — iOS restores it, from a local-only table, and the divergence is
- * dated on parity-ledger row `circuits/ocpd-bs-en-free-text-client`.
+ * ideal. Decision 28b later put iOS on the same rule — its local-only drafts
+ * table was deleted — so the two clients are identical here, as recorded on
+ * parity-ledger row `circuits/ocpd-bs-en-free-text-client`.
  *
  * Mount strategy mirrors `ocpd-standard-field.test.tsx` — inline `createRoot`.
  * `@testing-library/react` resolves through the monorepo root and brings a
@@ -161,6 +162,47 @@ describe('PLAN-CC Decision 28 — web never commits an interrupted draft', () =>
     });
 
     expect(input.value).toBe('3036');
+  });
+
+  it('clicking a suggestion after typing a prefix commits ONLY the suggestion', () => {
+    // Round 9's IMPORTANT, and the only finding left that could put a wrong
+    // value on a certificate. A pointer press moves focus before the click
+    // handler runs, so the input's blur used to commit the half-typed text
+    // first: type `60947`, click `BS EN 60947-4-1`, and `BS EN 60947` — a real
+    // but DIFFERENT standard, canonical so it wears no marker — reached the job
+    // on the way past.
+    const onCommit = vi.fn();
+    const input = mount('', onCommit, 'circuit-1');
+    typeInto(input, '60947');
+
+    const chip = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'BS EN 60947-2'
+    );
+    if (!chip) throw new Error('no suggestion chip rendered');
+
+    // The real sequence, modelled as the browser does it: pointer down is what
+    // moves focus, and a handler calling `preventDefault` on it is what stops
+    // the move. So the blur only happens when the mousedown was NOT prevented
+    // — firing it unconditionally would test nothing, since the fix works by
+    // preventing it.
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    act(() => {
+      chip.dispatchEvent(down);
+    });
+    if (!down.defaultPrevented) {
+      act(() => {
+        input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      });
+    }
+    act(() => {
+      chip.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(down.defaultPrevented).toBe(true);
+
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith('BS EN 60947-2');
+    expect(onCommit).not.toHaveBeenCalledWith('BS EN 60947');
   });
 
   it('an external write mid-typing replaces the draft — the correction wins', () => {

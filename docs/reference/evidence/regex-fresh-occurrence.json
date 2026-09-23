@@ -22,7 +22,7 @@
       "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "22f51b6061beb7d3d75edc41d1798c304f514d572cb16d29cf449b2d5a6ebe6e",
       "src/extraction/sonnet-stream.js": "36a54fa7b11c1eb7450660f6e20bc7c2341f74c0afd3cc949a3fd6fa20bb2cce",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
-      "web/src/lib/recording-context.tsx": "6dfe8d684b2fa76e051b1267d8d3fd5d7e243abace3469155a53008411c5d59c",
+      "web/src/lib/recording-context.tsx": "d020096d8f089d2c074f35eca9b470c2e1a750bb06a88b982705b18c2a9cabe0",
       "web/src/lib/recording/apply-extraction.ts": "61b017779e2956a4f95d287e35654933aa3ab7ee7b6dc6d00dedcce4dab9af44",
       "web/src/lib/recording/apply-regex-match.ts": "de20c80b2d332b502f97ea92b3b36a8d7429874809fafc0c5e729d09bc83e4b4",
       "web/src/lib/recording/deepgram-service.ts": "2f76ccfc46a430acc1f559896ab90a4e2e7ba5a700711e4797cc1ebc73d056a8",
@@ -3960,6 +3960,14 @@
       "date": "2026-09-23",
       "files": [
         "sources: scripts/evidence/build-regex-fresh-occurrence-evidence.mjs"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-CC",
+      "date": "2026-09-23",
+      "files": [
+        "sources: web/src/lib/recording-context.tsx"
       ],
       "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
     }

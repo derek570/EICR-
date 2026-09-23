@@ -27,6 +27,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { applyVoiceCommand, type VoiceCommandJob } from '@certmate/shared-utils';
 import { readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -144,5 +145,54 @@ describe('the epoch registry', () => {
     noteExternalOcpdWrite('c1');
     purgeOcpdWriteEpochs();
     expect(_ocpdWriteEpochCount()).toBe(0);
+  });
+});
+
+describe('a voice command announces an OCPD write only when it WROTE one', () => {
+  // Decision 32 (Derek, 2026-09-23): "the dictation should win" — and a
+  // dictation that wrote nothing has nothing to win with, so the typing stays.
+  // `recording-context.tsx` gates the announcement on `outcome.patch`; these
+  // pin both what that gate reads and where it sits.
+  const JOB: VoiceCommandJob = {
+    circuits: [{ id: 'c1', circuit_ref: '1', ocpd_bs_en: 'BS EN 60898' }],
+  };
+
+  it('a rejected standard produces no patch, so nothing is announced', () => {
+    // Bare `88` cannot be told from BS 88-1/-2/-3/-6; the grammar refuses it.
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: 'ocpd_bs_en', value: '88', circuit: 1 },
+      JOB
+    );
+    expect(out.patch).toBeUndefined();
+  });
+
+  it('a correction re-applying the STORED value still produces a patch', () => {
+    // Round 7: a same-value correction must still discard an open draft. If
+    // the writer ever skipped the patch for an unchanged value, gating on
+    // `outcome.patch` would silently undo that fix — this is the guard on it.
+    const out = applyVoiceCommand(
+      { type: 'update_field', field: 'ocpd_bs_en', value: '60898', circuit: 1 },
+      JOB
+    );
+    expect(out.patch).toBeDefined();
+  });
+
+  it('both dispatch sites announce AFTER applying, and only on a patch', () => {
+    const src = readFileSync(path.join(SRC, 'lib', 'recording-context.tsx'), 'utf8');
+    const calls = [...src.matchAll(/noteOcpdWriteForCommandCircuit\(command, jobRef\.current\)/g)];
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const before = src.slice(0, call.index);
+      const applyAt = before.lastIndexOf('applyVoiceCommand(');
+      const gateAt = before.lastIndexOf(
+        'if (outcome.patch && voiceCommandTargetsOcpdStandard(command))'
+      );
+      // The nearest preceding gate is the one guarding this call, and the
+      // command was applied before it.
+      expect(gateAt).toBeGreaterThan(-1);
+      expect(call.index! - gateAt).toBeLessThan(200);
+      expect(applyAt).toBeGreaterThan(-1);
+      expect(applyAt).toBeLessThan(gateAt);
+    }
   });
 });

@@ -124,6 +124,23 @@ export function useOcpdStandardDraft(
   return { draft, commit, onChange, onBlur, onKeyDown, cap: OCPD_BS_INPUT_CAP };
 }
 
+/**
+ * PLAN-CC round 9 — keep focus in the input while a suggestion is pressed.
+ *
+ * A pointer press moves focus BEFORE the click handler runs, so the input's
+ * blur fired first and committed whatever was half-typed. Type `60947`, click
+ * `BS EN 60947-4-1`, and the field committed `BS EN 60947` — a real but
+ * DIFFERENT standard, canonical so it wears no marker — and only then the one
+ * actually chosen. The wrong value reached the job and the pending save on the
+ * way past.
+ *
+ * `preventDefault` on mousedown stops the focus move, so no blur commit
+ * happens and the click commits the selection alone. It is applied to every
+ * control inside the picker, including the tier toggle, because the toggle
+ * blurs exactly the same way and committing a prefix there would be no better.
+ */
+const keepFocusOnPress = (e: React.MouseEvent) => e.preventDefault();
+
 export function OcpdStandardField({
   label = 'BS EN',
   value,
@@ -190,6 +207,7 @@ export function OcpdStandardField({
           : null}
         <button
           type="button"
+          onMouseDown={keepFocusOnPress}
           onClick={() => setShowTier2((s) => !s)}
           aria-expanded={showTier2}
           className="rounded-full border border-dashed border-[var(--color-border-subtle)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--color-text-secondary)] transition hover:text-[var(--color-text-primary)]"
@@ -386,6 +404,7 @@ export function OcpdStandardComboCell({
                   type="button"
                   role="option"
                   aria-selected={!value}
+                  onMouseDown={keepFocusOnPress}
                   onClick={() => {
                     field.commit('');
                     onClose();
@@ -401,6 +420,7 @@ export function OcpdStandardComboCell({
                     type="button"
                     role="option"
                     aria-selected={value === opt}
+                    onMouseDown={keepFocusOnPress}
                     onClick={() => {
                       field.commit(opt);
                       onClose();
@@ -418,6 +438,7 @@ export function OcpdStandardComboCell({
               <li>
                 <button
                   type="button"
+                  onMouseDown={keepFocusOnPress}
                   onClick={() => setShowTier2((v) => !v)}
                   aria-expanded={showTier2}
                   className="block w-full px-3 py-2 text-left text-[12px] font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
@@ -445,6 +466,7 @@ function SuggestionChip({
   return (
     <button
       type="button"
+      onMouseDown={keepFocusOnPress}
       onClick={onPick}
       aria-pressed={selected}
       className={cn(

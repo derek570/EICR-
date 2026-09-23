@@ -467,8 +467,11 @@ const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
 
 /** PLAN-CC (Decision 28 rule 2) — announce an OCPD-standard write for whatever
  *  circuit a voice command targets, so the editing control drops an open draft
- *  for it. Matches by circuit REF because that is what a command carries; a
- *  command with no circuit is a board-scope write and targets nothing here. */
+ *  for it. Matches by circuit REF because that is what a command carries, and
+ *  a ref identifies exactly one circuit: `stage6-dispatchers-circuit.js`
+ *  rejects a duplicate `circuit_ref` with `circuit_already_exists`, so numbers
+ *  are unique even though NAMES may repeat. A command with no circuit is a
+ *  board-scope write and targets nothing here. */
 function noteOcpdWriteForCommandCircuit(command: unknown, job: unknown): void {
   const ref = (command as { circuit?: number | null } | null)?.circuit;
   if (ref == null) return;
@@ -2312,14 +2315,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             recordDesignationAliasRef.current(command.value);
           }
           const localDispatchedAt = nowMs();
+          const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
           // Decision 28 rule 2 — a spoken write to the standard outranks an
           // open draft on that circuit, announced by OPERATION because a
           // command re-applying the stored value changes nothing a value
           // comparison could notice.
-          if (voiceCommandTargetsOcpdStandard(command)) {
+          //
+          // AFTER the command, and only when it produced a patch. Derek,
+          // 2026-09-23: "the dictation should win" — and a dictation that
+          // wrote nothing has nothing to win with. The canonicaliser refuses a
+          // bare `88` (indistinguishable from BS 88-1/-2/-3/-6), so the
+          // command names the field, applies nothing, and used to take the
+          // inspector's typing with it.
+          if (outcome.patch && voiceCommandTargetsOcpdStandard(command)) {
             noteOcpdWriteForCommandCircuit(command, jobRef.current);
           }
-          const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
           if (outcome.patch) {
             updateJobRef.current(outcome.patch);
             jobRef.current = {
@@ -4312,13 +4322,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             ) {
               recordDesignationAliasRef.current(command.value);
             }
-            if (voiceCommandTargetsOcpdStandard(command)) {
-              noteOcpdWriteForCommandCircuit(command, jobRef.current);
-            }
             const outcome = applyVoiceCommand(
               command,
               jobRef.current as unknown as VoiceCommandJob
             );
+            // Announced AFTER, and only on a real write — see the sibling site.
+            if (outcome.patch && voiceCommandTargetsOcpdStandard(command)) {
+              noteOcpdWriteForCommandCircuit(command, jobRef.current);
+            }
             if (outcome.patch) {
               updateJobRef.current(outcome.patch);
               jobRef.current = {
