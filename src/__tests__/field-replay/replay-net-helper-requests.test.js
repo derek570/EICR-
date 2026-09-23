@@ -7,6 +7,8 @@
 import {
   makeTurnClient,
   netHelperAccountingViolation,
+  netHelperExpectationMismatch,
+  loadNetHelperExpectations,
 } from '../../../scripts/field-replay/lib/replay-runner-core.mjs';
 
 const NET_TOOL = { name: 'net_response', input_schema: { type: 'object' } };
@@ -99,5 +101,51 @@ describe('net helper accounting (Codex cycle 2 #3)', () => {
     expect(
       netHelperAccountingViolation({ served: 0, turnRows: [row], turnIndex: 0, corpusId: 'frc_x' })
     ).toMatch(/served 0 helper round\(s\) but logged 1/);
+  });
+});
+
+describe('declared net helper expectations (Codex cycle 3)', () => {
+  const expectations = { frc_a: { 1: ['noop'] } };
+  test('observed calls equal to the declaration → no mismatch', () => {
+    expect(
+      netHelperExpectationMismatch({
+        corpusId: 'frc_a',
+        helperLog: [{ turn: 1, nets: ['noop'] }],
+        expectations,
+      })
+    ).toBeNull();
+    expect(
+      netHelperExpectationMismatch({ corpusId: 'frc_other', helperLog: [], expectations })
+    ).toBeNull();
+  });
+  test('a spurious call on an undeclared turn fails even though served == logged', () => {
+    expect(
+      netHelperExpectationMismatch({
+        corpusId: 'frc_a',
+        helperLog: [
+          { turn: 1, nets: ['noop'] },
+          { turn: 2, nets: ['catchall'] },
+        ],
+        expectations,
+      })
+    ).toMatch(/turn 2: expected \[\], observed \["catchall"\]/);
+  });
+  test('a declared call that no longer happens fails', () => {
+    expect(
+      netHelperExpectationMismatch({ corpusId: 'frc_a', helperLog: [], expectations })
+    ).toMatch(/turn 1: expected \["noop"\], observed \[\]/);
+  });
+  test('the wrong net on the right turn fails', () => {
+    expect(
+      netHelperExpectationMismatch({
+        corpusId: 'frc_a',
+        helperLog: [{ turn: 1, nets: ['catchall'] }],
+        expectations,
+      })
+    ).toMatch(/turn 1/);
+  });
+  test('the checked-in declaration loads and names only corpus ids', () => {
+    const doc = loadNetHelperExpectations();
+    for (const id of Object.keys(doc)) expect(id).toMatch(/^frc_[0-9a-f]{32}$/);
   });
 });

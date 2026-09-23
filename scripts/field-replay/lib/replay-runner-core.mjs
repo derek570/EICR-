@@ -305,6 +305,37 @@ export function netHelperAccountingViolation({ served, turnRows, turnIndex, corp
   return `net helper accounting: turn ${turnIndex} of ${corpusId} served ${count} helper round(s) but logged ${logged} stage6.noop_retry_round row(s)`;
 }
 
+/**
+ * PLAN-B — the net-site helper calls each fixture turn is EXPECTED to make,
+ * declared in `net-helper-expectations.json` beside the corpus runner:
+ * `{ [corpus_id]: { [turn_index]: [netKind, …] } }`. A fixture or turn with
+ * no entry expects none. The recorded client answers helper calls empty and
+ * the net then speaks its canned line, so a SPURIOUS call whose line is
+ * dropped changes nothing audible — only this declaration catches the extra
+ * provider round. Returns the mismatch description, or null.
+ */
+export function netHelperExpectationMismatch({ corpusId, helperLog, expectations }) {
+  const expected = expectations?.[corpusId] ?? {};
+  const observed = {};
+  for (const { turn, nets } of helperLog ?? []) observed[String(turn)] = nets;
+  const turns = new Set([...Object.keys(expected), ...Object.keys(observed)]);
+  const diffs = [];
+  for (const t of [...turns].sort((a, b) => Number(a) - Number(b))) {
+    const want = JSON.stringify(expected[t] ?? []);
+    const got = JSON.stringify(observed[t] ?? []);
+    if (want !== got) diffs.push(`turn ${t}: expected ${want}, observed ${got}`);
+  }
+  return diffs.length
+    ? `net helper calls differ from net-helper-expectations.json — ${diffs.join('; ')}`
+    : null;
+}
+
+export function loadNetHelperExpectations() {
+  const file = new URL('../net-helper-expectations.json', import.meta.url);
+  const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  return doc.expectations ?? {};
+}
+
 export async function runFixture({ fixture, modules, clockCtl = null, wallClockNowMs, apiKey }) {
   const rows = [];
   const sink = (level) => (msg, meta) =>
@@ -325,6 +356,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
   const allFailures = [];
   const turnResults = [];
   const branchLog = [];
+  const helperLog = [];
 
   // Expiry against the REAL wall clock, never replay time.
   if (fixture.gate_state === 'expected_red' && fixture.expires_at && wallClockNowMs != null) {
@@ -347,6 +379,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         allFailures: [],
         turnResults: [],
         branchLog: [],
+        helperLog: [],
         logRows: [],
       };
     }
@@ -701,10 +734,9 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         client.assertFullyConsumed();
         // PLAN-B — every free empty round the client handed out must be a
         // net-site helper call that the harness itself logged
-        // (`stage6.noop_retry_round`). An empty helper response always leaves
-        // the net's canned line, which the fixture's audibility oracle must
-        // declare, so a spurious helper call surfaces as an undeclared line;
-        // this check pins the count as well.
+        // (`stage6.noop_retry_round`). Which calls a turn SHOULD make is
+        // declared separately (net-helper-expectations.json, checked in
+        // runCorpus); this only proves the two observations agree.
         const accounting = netHelperAccountingViolation({
           served: client._netHelperRequests,
           turnRows: rows.slice(rowStart),
@@ -712,6 +744,11 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           corpusId: fixture.corpus_id,
         });
         if (accounting) violations.push(accounting);
+        const helperNets = rows
+          .slice(rowStart)
+          .filter((r) => r.name === 'stage6.noop_retry_round')
+          .map((r) => r.meta?.netKind ?? null);
+        if (helperNets.length > 0) helperLog.push({ turn: turn.turn_index, nets: helperNets });
         if (client._branchTaken) {
           branchLog.push({ turn: turn.turn_index, branch: client._branchTaken });
         }
@@ -771,7 +808,14 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
     }
   }
 
-  return { corpusId: fixture.corpus_id, allFailures, turnResults, branchLog, logRows: rows };
+  return {
+    corpusId: fixture.corpus_id,
+    allFailures,
+    turnResults,
+    branchLog,
+    helperLog,
+    logRows: rows,
+  };
 }
 
 /**
@@ -788,6 +832,7 @@ export async function runCorpus({
   proofState = null,
   fixtureFilter = null,
   wallClockNowMs,
+  netHelperExpectations = loadNetHelperExpectations(),
 }) {
   const found = discoverFixtures(corpusRoot);
   const summary = {
@@ -851,7 +896,18 @@ export async function runCorpus({
     const run = await runFixture({ fixture: f.doc, modules, clockCtl, wallClockNowMs });
     // A terminal verdict (e.g. an expired expected_red freeze) short-circuits
     // gate evaluation — it never produced an allFailures set to evaluate.
-    const gate = run.terminal ?? evaluateGateState(f.doc, run.allFailures, { proofState });
+    let gate = run.terminal ?? evaluateGateState(f.doc, run.allFailures, { proofState });
+    // PLAN-B — a helper-call mismatch fails the fixture whatever its gate
+    // state: it is a statement about the harness under test, not about the
+    // captured session's expected-red findings.
+    const helperMismatch = run.terminal
+      ? null
+      : netHelperExpectationMismatch({
+          corpusId: f.doc.corpus_id,
+          helperLog: run.helperLog,
+          expectations: netHelperExpectations,
+        });
+    if (helperMismatch) gate = { verdict: 'fail', detail: helperMismatch };
     const pass = gate.verdict === 'pass';
     if (pass) summary.passed += 1;
     else summary.failed += 1;
@@ -861,6 +917,7 @@ export async function runCorpus({
       detail: gate.detail,
       turns: run.turnResults,
       branches: run.branchLog,
+      netHelperCalls: run.helperLog,
     });
   }
   summary.exitCode = summary.failed === 0 ? 0 : 1;

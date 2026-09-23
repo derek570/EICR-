@@ -1,0 +1,7 @@
+{
+  "_comment": "PLAN-B: the net-site helper calls each recorded fixture turn is expected to make, as { corpus_id: { turn_index: [netKind, ...] } }. A fixture or turn not listed expects none. runCorpus fails a fixture whose observed calls differ. Keystone ① (orphan/no-op net) and keystone ② (marker-② catch-all) each give the model one retry before their canned line.",
+  "expectations": {
+    "frc_b6ec5356f67d8655db214b4f16ae8d83": { "1": ["catchall"] },
+    "frc_c55c996fa1014e088455af77216220d1": { "1": ["noop"] }
+  }
+}

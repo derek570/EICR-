@@ -62,6 +62,17 @@ The §A4-drained ack was originally **tokenless** (`field:null` is outside `DEDU
 
 **Caution before adding a token assertion — verify it is harness-stable first.** The token derives from `mintSessionId(corpusId)` (a deterministic hash) plus the turn number in the field-replay recorded lane, computable via `node -e "import('./scripts/field-replay/lib/canonical-crypto.mjs').then(m=>console.log(m.mintSessionId('<corpus_id>')))"`. **A fixture in `VENDOR_LIVE_FIXTURE_IDS` is ALSO consumed by the Plan-00 lane driver (`lane-driver.mjs`'s `runVendorLaneMock`), which mints a DIFFERENT session id (`lane-<corpusId>`) for the SAME corpus id** — so a literal token value computed against one harness will not match the other, and `runVendorLaneMock`'s 9/9-PASS acceptance test will catch the mismatch as a false RED. Regression fixture (`is_keystone: false`): `frc_85ace7677…` (feedback id 85) RED-proves `audibility.output.out_decline_ack` on the net-reverted tree via `text_exact` alone — it deliberately does NOT assert `dedupe_token` for exactly this dual-harness reason (Codex diff-review cycle 1 caught the attempt). Only add a token assertion to a fixture that is single-harness-only, or once a harness-agnostic matcher (e.g. a prefix check) exists.
 
+### Net-site helper calls in the recorded lane (feedback-2026-09-17 PLAN-B, 2026-09-23)
+
+Every canned audibility net first gives the model one retry through the retry-only `net_response` tool. No fixture records helper output, so the recorded client answers a helper request with an empty round, outside strict round consumption. A request counts as the helper's only when `net_response` is its sole tool and its last user message carries `[Server note: retry.`. More than two in one turn is a violation.
+
+Two checks keep that free round honest:
+
+- **Accounting.** The rounds the client served must equal the turn's `stage6.noop_retry_round` rows (`netHelperAccountingViolation`).
+- **Declared expectations.** `scripts/field-replay/net-helper-expectations.json` lists the helper calls each fixture turn should make, as `{ corpus_id: { turn_index: [netKind, …] } }`. A turn not listed expects none. `runCorpus` fails any fixture whose observed calls differ, whatever its gate state. An empty helper leaves the canned line, so a spurious call whose line is dropped changes nothing audible, and only this declaration catches the extra provider round.
+
+When a harness change legitimately adds or removes a helper call, update the declaration in the same commit and say why.
+
 ### The `designation_hygiene` atomic assertion (PLAN-B, ids 128+131)
 
 An `expected_operations[]` entry may use `kind: designation_hygiene` to lock the designation-hygiene contract ("the word 'circuit' is never stored/spoken as a designation edge token") with **ONE stable failure id** — `designation_hygiene.<operation_id>` — jointly asserting, for the circuit the turn CREATES:
