@@ -5,8 +5,8 @@
 - **Convergence:** `PLAN-C3-ledger.json` — `status: CONVERGED`, `converged_round: 13`, `open_design_issues: []`
 - **Worktree:** `/Users/derekbeckley/Developer/EICR_Automation-c3-ep-20260923`
 - **Branch:** `ep/plan-c3-no-silent-clear-20260923` off `origin/main` @ `7dc4cd94`
-- **Chain:** `--chain`, hop 4 (Decision 27). Successor: PLAN-C2.
-- **Executor runtime:** Claude Opus 5, high effort (`claude-opus-5`). Reviewer lane: Codex `gpt-6-sol`, high.
+- **Chain:** `--chain`, hop 4 (Decision 27). Successor: PLAN-B-v31 (corrected from PLAN-C2, which the hop-4 dispatch note named — see [Successor](#successor)).
+- **Executor runtime:** Claude Opus 5, high effort (`claude-opus-5`), then Claude Opus 5.5 (`claude-opus-5-5`) after the session was resumed following the 2026-09-23 disk-full outage. Reviewer lane: Codex `gpt-6-sol`, high.
 
 ## Prerequisite
 
