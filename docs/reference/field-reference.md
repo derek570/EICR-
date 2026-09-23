@@ -118,13 +118,18 @@ CLIENT-LOCAL apply paths never validated against the closed option list — only
 server-extraction lane did — and iOS's transport had already truncated the residue to
 a plausible-looking first word, destroying the evidence a guard would need.
 
-- **Guarded fields (6):** `wiring_type`, `ref_method`, `ocpd_bs_en`, `ocpd_type`,
+- **Guarded fields (5):** `wiring_type`, `ref_method`, `ocpd_type`,
   `rcd_bs_en`, `rcd_type`. Derived from `config/field_schema.json` `circuit_fields`
   where `type === 'select'`, MINUS the four boolean/confirmable selects
   (`polarity_confirmed`, `rcd_button_confirmed`, `afdd_button_confirmed`,
   `is_distribution_circuit` — spoken yes/no vocabulary, not closed code lists) and
   MINUS the `''` blank option (blank is a `missing_value` re-ask, never a blanking
   write).
+- **`ocpd_bs_en` LEFT this set on 2026-09-23 (PLAN-CC)** — see the section below. It is
+  free text now, so there is no option list to test membership against. It keeps its
+  re-ask label, noun and example rows in `config/closed-enum-vectors.json` and speaks
+  through the SAME renderer, because a canonicalisation miss still re-asks and that copy
+  must not drift between the clients.
 - **Contract:** a value outside the closed list is REFUSED — nothing written — and ONE
   complete-restatement re-ask is spoken, naming the field, echoing what was heard, and
   giving a concrete example. An accepted value is stored AND spoken from the SAME
@@ -167,6 +172,41 @@ a plausible-looking first word, destroying the evidence a guard would need.
   backend validator already does. Widening the schema is a separate backend + web
   dropdown + PDF change; the divergence is pinned by named tests on BOTH clients so it
   cannot be "fixed" one-sidedly.
+
+## Free-text OCPD standard + standard-aware max Zs (PLAN-CC, 2026-09-23)
+
+EVIDENCE.md item 140. `ocpd_bs_en` was a closed list of eight schema options, and an
+inspector reads whatever standard is printed on the device. `BS 3871`, `BS 88-6`,
+`BS EN 60947-4-1` and `BS 1362` are all real device standards that were not on the
+list, so dictating one drew a re-ask and the certificate recorded nothing.
+
+- **The field is free text on both clients.** One shared ten-step canonicaliser
+  (`packages/shared-utils/src/ocpd-standard.ts` and its Swift twin
+  `Sources/Utilities/OcpdStandard.swift`) turns the forms Deepgram Flux produces into a
+  canonical string and returns a MISS for anything the grammar cannot read. No edit
+  distance anywhere — the project's hard rule against fuzzy garble correction is intact.
+- **The normative source is `config/ocpd-bs-suggestions.json`, not this document and not
+  the plan.** Its `accepted_value_vectors` / `rejected_value_vectors` ARE the alias
+  table; both clients are driven through every vector and compared byte for byte. It is
+  byte-copied into the iOS repo with paired SHA-256 pins, and
+  `scripts/check-ocpd-bs-fixture-sync.sh` runs as a named hard-fail pre-TestFlight step.
+- **A miss behaves differently by boundary.** At an interactive one (a dictated
+  apply-field command) it re-asks, because there is someone to ask. At an automatic one
+  (server apply, CCU photo, document import) or a manual one (a picker) the value is
+  stored exactly as it arrived and the row wears a compatibility marker — never dropped.
+- **Max Zs keys on the (standard, type) pair.** Keying on the type alone was safe only
+  while the standard was a closed list the type implied: a `BS 3871` breaker dictated
+  with the legacy type `2` read the BS 1361 cartridge-fuse row. The tuple lookup returns
+  null far more often, so every write to `ocpd_bs_en`, `ocpd_type`, `ocpd_rating_a` or
+  `max_disconnect_time_s` routes through one helper per client.
+- **`ocpd_max_zs_source` is an additive optional circuit key with THREE states.** `auto`
+  is recomputed and cleared as the tuple changes; `manual` (a human edit, or an import
+  that carried an explicit max Zs) is never touched; ABSENT means pre-plan data of
+  unknown origin and is preserved and marked "unverified" rather than cleared on a
+  guess. It rides the job JSON PUT/GET and `test_results.csv` (`src/export.js`
+  `CIRCUIT_FIELD_ORDER` + `CIRCUIT_HEADERS`); no WebSocket frame carries it, and it is
+  deliberately absent from `config/field_schema.json` so ADR-008 derives no model tool
+  enum for it — the model must never set its own provenance.
 
 ## Installation Details Tab (`/job/[id]/installation`)
 

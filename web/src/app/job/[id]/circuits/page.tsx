@@ -20,14 +20,36 @@ import {
 } from 'lucide-react';
 import {
   applyDefaultsToCircuits,
+  applyOcpdAwarePatch,
   applyR1R2Calculation,
   applyZsCalculation,
+  canonicaliseOcpdStandardForImport,
   matchCircuits,
   repairCircuitDesignation,
   type BulkCalcOutcome,
   type CalcSkipReason,
   type CircuitMatch,
+  type MaxZsChangeLogger,
 } from '@certmate/shared-utils';
+
+/** PLAN-CC — local-only breadcrumb for a max Zs a manual edit invalidated.
+ *  Never shipped, never spoken. */
+const logGridMaxZsChange: MaxZsChangeLogger = (change) => {
+  console.debug('[circuits] max_zs_invalidated', change);
+};
+
+/** PLAN-CC — the manual-boundary commit for a circuit patch: a max-Zs edit is
+ *  recorded `manual`, an `ocpd_bs_en` canonicalises on commit (and an
+ *  unreadable value is stored exactly as typed — a human typed it
+ *  deliberately), and the tuple is recomputed once afterwards. */
+function applyCircuitPatch(row: Circuit, patch: Partial<Circuit>): Circuit {
+  return applyOcpdAwarePatch(
+    row as unknown as Record<string, unknown>,
+    patch as Record<string, unknown>,
+    canonicaliseOcpdStandardForImport,
+    logGridMaxZsChange
+  ) as unknown as Circuit;
+}
 import { useDesignationDraft } from '@/lib/use-designation-draft';
 import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
@@ -46,6 +68,8 @@ import {
   type CcuSubmitResult,
 } from '@/lib/ccu/pending-extraction-queue';
 import { writeMatchHandoff } from '@/lib/recording/ccu-match-handoff';
+import { MaxZsMarker } from '@/components/job/max-zs-marker';
+import { OcpdStandardField } from '@/components/job/ocpd-standard-field';
 import { PendingCcuBanner } from '@/components/job/pending-ccu-banner';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
@@ -182,6 +206,35 @@ function CircuitFieldInput({
       value={value}
       ref={(el) => accessory?.registerRef(circuitId, field, el)}
       onChange={(e) => onPatch({ [field]: e.target.value } as Partial<Circuit>)}
+      onFocus={handlers?.onFocus}
+      onBlur={handlers?.onBlur}
+    />
+  );
+}
+
+/**
+ * PLAN-CC — the card's OCPD-standard surface. A thin adapter so the shared
+ * control keeps the card's keyboard-accessory registration (the accessory bar
+ * walks fields by `(circuitId, field)`, so dropping the registration would
+ * make this the one field the next/previous buttons skip).
+ */
+function OcpdStandardCardField({
+  circuitId,
+  value,
+  onPatch,
+}: {
+  circuitId: string;
+  value: string;
+  onPatch: (patch: Partial<Circuit>) => void;
+}) {
+  const accessory = React.useContext(CardAccessoryContext);
+  const handlers = accessory?.inputHandlers(circuitId, 'ocpd_bs_en');
+  return (
+    <OcpdStandardField
+      value={value}
+      onCommit={(next) => onPatch({ ocpd_bs_en: next } as Partial<Circuit>)}
+      circuitId={circuitId}
+      inputRef={(el) => accessory?.registerRef(circuitId, 'ocpd_bs_en', el)}
       onFocus={handlers?.onFocus}
       onBlur={handlers?.onBlur}
     />
@@ -387,7 +440,7 @@ export default function CircuitsPage() {
   const patchCircuit = (id: string, patch: Partial<Circuit>) => {
     updateJob((prev) => ({
       circuits: ((prev.circuits ?? []) as unknown as Circuit[]).map((c) =>
-        c.id === id ? { ...c, ...patch } : c
+        c.id === id ? applyCircuitPatch(c, patch) : c
       ) as unknown as typeof prev.circuits,
     }));
   };
@@ -502,7 +555,16 @@ export default function CircuitsPage() {
       boardScoped.filter((c) => (options.skipSpare ? !isSpareCircuit(c) : true)).map((c) => c.id)
     );
     if (targetIds.size === 0) return;
-    persist(circuits.map((c) => (targetIds.has(c.id) ? ({ ...c, [field]: value } as Circuit) : c)));
+    // PLAN-CC (write path 22 / M5) — the header bulk fill writes ANY column,
+    // all four tuple members included, and persists directly without going
+    // through `patchCircuit`. It takes the same OCPD-aware route per row, so a
+    // bulk standard change recomputes the derived rows and leaves the manual
+    // ones exactly as the inspector entered them.
+    persist(
+      circuits.map((c) =>
+        targetIds.has(c.id) ? applyCircuitPatch(c, { [field]: value } as Partial<Circuit>) : c
+      )
+    );
   };
 
   const addCircuit = () => {
@@ -1703,10 +1765,8 @@ function CircuitCard({
 
           <SectionCard accent="amber" title="OCPD">
             <div className="grid gap-3 md:grid-cols-2">
-              <CircuitFieldInput
+              <OcpdStandardCardField
                 circuitId={circuitId}
-                field="ocpd_bs_en"
-                label="BS EN"
                 value={text('ocpd_bs_en')}
                 onPatch={onPatch}
               />
@@ -1732,14 +1792,22 @@ function CircuitCard({
                 value={text('ocpd_breaking_capacity_ka')}
                 onPatch={onPatch}
               />
-              <CircuitFieldInput
-                circuitId={circuitId}
-                field="ocpd_max_zs_ohm"
-                label="Max Zs (Ω)"
-                inputMode="decimal"
-                value={text('ocpd_max_zs_ohm')}
-                onPatch={onPatch}
-              />
+              <div className="flex items-start gap-1">
+                <MaxZsMarker
+                  circuitRef={String(circuit.circuit_ref ?? '')}
+                  row={circuit as unknown as Record<string, unknown>}
+                />
+                <div className="min-w-0 flex-1">
+                  <CircuitFieldInput
+                    circuitId={circuitId}
+                    field="ocpd_max_zs_ohm"
+                    label="Max Zs (Ω)"
+                    inputMode="decimal"
+                    value={text('ocpd_max_zs_ohm')}
+                    onPatch={onPatch}
+                  />
+                </div>
+              </div>
             </div>
           </SectionCard>
 

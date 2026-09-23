@@ -33,6 +33,9 @@ vi.mock('lucide-react', async () => {
     Trash2: stub,
     LayoutGrid: stub,
     Table2: stub,
+    // PLAN-CC — the OCPD standard cell is a combo now, and its suggestion
+    // chevron comes from here.
+    ChevronDown: stub,
     default: stub,
   };
 });

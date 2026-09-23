@@ -234,6 +234,7 @@ import {
   persistRecordingState,
   type PersistedRecordingState,
 } from './recording/session-resume';
+import { noteOcpdWritesFromVoiceOutcome } from '@/lib/ocpd-external-writes';
 
 /**
  * Recording context.
@@ -2294,6 +2295,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
           const localDispatchedAt = nowMs();
           const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
+          // Decision 28 rule 2 — a spoken write to the standard outranks an
+          // open draft on the circuits it WROTE. After the command, from the
+          // writer's own record; see `noteOcpdWritesFromVoiceOutcome`.
+          noteOcpdWritesFromVoiceOutcome(outcome, jobRef.current);
           if (outcome.patch) {
             updateJobRef.current(outcome.patch);
             jobRef.current = {
@@ -4290,6 +4295,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               command,
               jobRef.current as unknown as VoiceCommandJob
             );
+            // Announced AFTER, for the rows written — see the sibling site.
+            noteOcpdWritesFromVoiceOutcome(outcome, jobRef.current);
             if (outcome.patch) {
               updateJobRef.current(outcome.patch);
               jobRef.current = {

@@ -1,0 +1,8 @@
+
+
+# PLAN-CC — generated from config/ocpd-bs-suggestions.json by
+# scripts/generate-ocpd-bs-suggestions.mjs, and byte-compared against a fresh
+# regeneration by scripts/check-ocpd-bs-fixture-sync.sh. Formatting it here
+# would make that gate fail on every run: the committed file would no longer
+# equal the generator's output, which is the whole point of the check.
+web/src/lib/recording/*.generated.ts

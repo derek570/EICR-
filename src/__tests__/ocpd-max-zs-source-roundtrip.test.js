@@ -236,5 +236,8 @@ describe('ocpd_max_zs_source — PUT then GET through the job routes', () => {
     expect(circuits[1].ocpd_max_zs_source).toBe('manual');
     expect(circuits[2].ocpd_max_zs_source).toBe('');
     expect(circuits.map((c) => c.ocpd_max_zs_ohm)).toEqual(['1.44', '1.44', '1.44']);
+    // Acceptance 4: a free-text standard outside the old closed list survives
+    // the same PUT → GET, byte for byte.
+    expect(circuits[1].ocpd_bs_en).toBe('BS 3871');
   });
 });

@@ -19,12 +19,12 @@
   "digests": {
     "sources": {
       "scripts/check-regex-freshness-fixture-sync.sh": "c93e0afb3182cf5d000b5fa617a0f60ac5e8b4d903429e472905116be9d80e9e",
-      "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "87d4cf063f185de7fc648030904d8704626e327e84988032d2581f0cdd3dff42",
+      "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "22f51b6061beb7d3d75edc41d1798c304f514d572cb16d29cf449b2d5a6ebe6e",
       "src/extraction/sonnet-stream.js": "36a54fa7b11c1eb7450660f6e20bc7c2341f74c0afd3cc949a3fd6fa20bb2cce",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
-      "web/src/lib/recording-context.tsx": "eda1d15866136567f81ad4af18deeb99df20e689b590398e099c5450469f5580",
-      "web/src/lib/recording/apply-extraction.ts": "c5c3bbd7c0b4b40f93d647555c3549dc4d35b16fa1fadd173570b0b3690be97b",
-      "web/src/lib/recording/apply-regex-match.ts": "802dd8a57c229a585937392ebb36d1be7575ee9011b327fd7ab4a9d5af1b9917",
+      "web/src/lib/recording-context.tsx": "67f07a5fdb9163d251a223014eaf14d3d838822b604ec814975e8fcd8692bc8b",
+      "web/src/lib/recording/apply-extraction.ts": "61b017779e2956a4f95d287e35654933aa3ab7ee7b6dc6d00dedcce4dab9af44",
+      "web/src/lib/recording/apply-regex-match.ts": "de20c80b2d332b502f97ea92b3b36a8d7429874809fafc0c5e729d09bc83e4b4",
       "web/src/lib/recording/deepgram-service.ts": "2f76ccfc46a430acc1f559896ab90a4e2e7ba5a700711e4797cc1ebc73d056a8",
       "web/src/lib/recording/field-source-tracker.ts": "5b23afdcf6f19a872db359ffa2e62ff9e72c6ab6d51c60d817c406ad5f60cdd0",
       "web/src/lib/recording/final-window.ts": "1cde3fb651251a6f3c874e8c5c653d96677a2c225b5c5edfabe460468c543a27",
@@ -40,7 +40,7 @@
       "web/src/lib/recording/voiced-activity.ts": "58e5261ea695a2be8df415ac5741bab018a42f257add0cd2ec7cd7b20ec2fdad"
     },
     "fixtures": {
-      "config/closed-enum-vectors.json": "6486b80f8f9de75be1edc17b1c2da7b30f9cdee1f04f2a6a31fa484153170922",
+      "config/closed-enum-vectors.json": "49999c52c994071e02a0db752a2bbe1322ed14e04fb2461b4c29d67526395f42",
       "config/regex-freshness-vectors.json": "d0f71c86b9f0b1838ac5be387ca3fce96e64f5783052224bc06ed0b6d8c2661b"
     },
     "tests": {
@@ -48,7 +48,7 @@
       "src/__tests__/stage6-clear-board-reading-session-seam.test.js": "41c30587894d38ac008c34e9d25d097643e87e29adb451a4496d05502305fd17",
       "src/__tests__/stage6-honest-refusal.test.js": "b74fd1cf6f0e8a80cbd15ec8c887e41d21289a5190182533eec32f8e5498e27d",
       "web/tests/apply-regex-match.test.ts": "0eceb9fbc27d3f15b39fad394a5900a71ce2fffe48045fe59b5a12c22e630bd6",
-      "web/tests/closed-enum-guard.test.ts": "c8bd1085b2137307822f42c5780696a79ecafb343d137331931ffbef8c9fbcdc",
+      "web/tests/closed-enum-guard.test.ts": "1988e6213644c03819f6e1578ca6dbec34a405c616bf4cd3cac2c8aaff26b8e9",
       "web/tests/deepgram-service-final-window.test.ts": "6f957d15010b7b2f787623f6f883e6928eabe38969fa812fd8189177ea7a11e6",
       "web/tests/deepgram-service-frozen-surface.test.ts": "fb00ff995821251287bea7760391768b5b2cd4b5fb65303103b1b8fe20eec1b2",
       "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx": "1e0c2c4f8925528aa1e47459c9271138e822a0af54f2713150fc0ab4d46fdb61",
@@ -3921,6 +3921,63 @@
       "file": "web/tests/voiced-activity.test.ts",
       "name": "VoicedActivityDetector reset() clears speaking state (session-boundary only)",
       "status": "passed"
+    }
+  ],
+  "digest_refreshes": [
+    {
+      "plan": "PLAN-CC",
+      "date": "2026-09-23",
+      "files": [
+        "fixtures: config/closed-enum-vectors.json",
+        "sources: scripts/evidence/build-regex-fresh-occurrence-evidence.mjs",
+        "sources: web/src/lib/recording/apply-extraction.ts",
+        "sources: web/src/lib/recording/apply-regex-match.ts",
+        "tests: web/tests/closed-enum-guard.test.ts"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-CC",
+      "date": "2026-09-23",
+      "files": [
+        "sources: web/src/lib/recording/apply-extraction.ts",
+        "sources: web/src/lib/recording/apply-regex-match.ts"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-CC-v29",
+      "date": "2026-09-23",
+      "files": [
+        "sources: web/src/lib/recording-context.tsx",
+        "sources: web/src/lib/recording/apply-extraction.ts",
+        "sources: web/src/lib/recording/apply-regex-match.ts"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-CC-v29",
+      "date": "2026-09-23",
+      "files": [
+        "sources: scripts/evidence/build-regex-fresh-occurrence-evidence.mjs"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-CC",
+      "date": "2026-09-23",
+      "files": [
+        "sources: web/src/lib/recording-context.tsx"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-CC",
+      "date": "2026-09-23",
+      "files": [
+        "sources: web/src/lib/recording-context.tsx"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
     }
   ]
 }

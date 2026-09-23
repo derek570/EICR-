@@ -52,6 +52,11 @@ describe('apply-extraction H3 — ocpd_max_zs_ohm auto-compute', () => {
     const job = makeJob({ circuits: [row] });
     const result = makeResult({
       readings: [
+        // PLAN-CC — the standard is part of the lookup key now. A type and a
+        // rating alone no longer derive anything: `BS 3871 + 2` and
+        // `BS 1361 + 2` are different devices that the type-only key could not
+        // tell apart.
+        { circuit: 1, field: 'ocpd_bs_en', value: 'BS EN 60898' },
         { circuit: 1, field: 'ocpd_type', value: 'B' },
         { circuit: 1, field: 'ocpd_rating_a', value: '32' },
         // Default max_disconnect_time_s ('0.4') will be applied by H7
@@ -70,6 +75,7 @@ describe('apply-extraction H3 — ocpd_max_zs_ohm auto-compute', () => {
     const job = makeJob({ circuits: [row] });
     const result = makeResult({
       readings: [
+        { circuit: 1, field: 'ocpd_bs_en', value: 'BS EN 60898' },
         { circuit: 1, field: 'ocpd_type', value: 'B' },
         { circuit: 1, field: 'ocpd_rating_a', value: '32' },
         { circuit: 1, field: 'max_disconnect_time_s', value: '5' },
@@ -109,17 +115,20 @@ describe('apply-extraction H3 — ocpd_max_zs_ohm auto-compute', () => {
     });
     const applied = applyExtractionToJob(job, result);
     // Row sees no change because the only reading was already-set,
-    // OR if changed, the max-Zs MUST be preserved.
+    // OR if changed, the max-Zs MUST be preserved. PLAN-CC: the row carries no
+    // `ocpd_max_zs_source`, which is the PRE-PLAN state — preserved and marked
+    // "unverified", never recomputed or cleared on a guess.
     const after = applied?.patch.circuits?.[0] ?? row;
     expect((after as CircuitRow).ocpd_max_zs_ohm).toBe('9.99');
   });
 
-  it('handles fuse types (BS3036, BS1361, BS88)', () => {
+  it('handles fuse types (BS 88-2 + gG)', () => {
     const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Cooker' };
     const job = makeJob({ circuits: [row] });
     const result = makeResult({
       readings: [
-        { circuit: 1, field: 'ocpd_type', value: 'BS88' },
+        { circuit: 1, field: 'ocpd_bs_en', value: 'BS 88-2' },
+        { circuit: 1, field: 'ocpd_type', value: 'gG' },
         { circuit: 1, field: 'ocpd_rating_a', value: '32' },
         { circuit: 1, field: 'max_disconnect_time_s', value: '0.4' },
       ],
@@ -127,6 +136,24 @@ describe('apply-extraction H3 — ocpd_max_zs_ohm auto-compute', () => {
     const applied = applyExtractionToJob(job, result);
     // Table 41.4: BS88_32 @ 0.4s = 0.93
     expect(applied!.patch.circuits![0].ocpd_max_zs_ohm).toBe('0.93');
+  });
+
+  it('PLAN-CC — a tuple with no standard derives NOTHING, however complete', () => {
+    // The plan's "empty standard → null for any new computation" row. Before
+    // this change a type and a rating were enough, which is how a BS 3871
+    // breaker dictated with the legacy type `2` printed a BS 1361 figure.
+    const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Cooker' };
+    const applied = applyExtractionToJob(
+      makeJob({ circuits: [row] }),
+      makeResult({
+        readings: [
+          { circuit: 1, field: 'ocpd_type', value: 'B' },
+          { circuit: 1, field: 'ocpd_rating_a', value: '32' },
+          { circuit: 1, field: 'max_disconnect_time_s', value: '0.4' },
+        ],
+      })
+    );
+    expect(applied?.patch.circuits?.[0]?.ocpd_max_zs_ohm ?? '').toBe('');
   });
 });
 

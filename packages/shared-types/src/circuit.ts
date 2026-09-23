@@ -8,6 +8,12 @@
 
 export type BoardType = 'main' | 'sub_distribution' | 'sub_main' | 'off_peak';
 
+/** PLAN-CC — how a circuit's `ocpd_max_zs_ohm` got there. Absent means
+ *  "unknown origin", which is a THIRD state and not a synonym for either
+ *  value: pre-plan rows carry no key and must be preserved rather than
+ *  recomputed or overwritten. */
+export type OcpdMaxZsSource = 'auto' | 'manual';
+
 export interface Circuit {
   circuit_ref: string;
   circuit_designation: string;
@@ -22,6 +28,15 @@ export interface Circuit {
   ocpd_rating_a?: string;
   ocpd_breaking_capacity_ka?: string;
   ocpd_max_zs_ohm?: string;
+  /** PLAN-CC — provenance for `ocpd_max_zs_ohm`. iOS is canon for the shape:
+   *  `'auto'` = written by the tuple helper or the decode-time derivation and
+   *  safe to recompute; `'manual'` = a human edit or an import that carried an
+   *  explicit max Zs, NEVER touched by a helper; OMITTED = pre-plan data of
+   *  unknown origin, preserved and marked "unverified" until the inspector
+   *  confirms or recomputes. Never spoken, never in a confirmation, and
+   *  deliberately absent from `config/field_schema.json` so ADR-008 derives no
+   *  tool enum for it. */
+  ocpd_max_zs_source?: OcpdMaxZsSource;
   rcd_bs_en?: string;
   rcd_type?: string;
   rcd_operating_current_ma?: string;

@@ -1,4 +1,4 @@
-import { isGuardedClosedEnumField } from '@certmate/shared-utils';
+import { isValueCheckedCircuitField } from '@certmate/shared-utils';
 import type { VoiceCommand, VoiceCommandScope } from '@certmate/shared-utils';
 
 /** Server-side `voice_command_response.action` shape (iOS canon).
@@ -83,11 +83,16 @@ export function mapServerActionToVoiceCommand(
       const field = asString(params.field);
       if (!field) return null;
       const circuit = asNumber(params.circuit);
-      // PLAN-C — on a GUARDED field forward whatever arrived; the applier
-      // re-asks. On every other field keep the historical `!value → null`:
+      // PLAN-C — on a VALUE-CHECKED field forward whatever arrived; the
+      // applier re-asks. PLAN-CC widened the class to include `ocpd_bs_en`,
+      // which left the guarded set but still has a canonicaliser that can
+      // miss: without this the decoder would drop a server `ocpd_bs_en`
+      // action with an empty value, or fail to stringify a numeric `60898`,
+      // while the caller speaks the server's success line.
+      // On every other field keep the historical `!value → null`:
       // forwarding '' there would be a BLANKING write, which is a
       // behaviour change well outside this plan's scope.
-      if (isGuardedClosedEnumField(field)) {
+      if (isValueCheckedCircuitField(field)) {
         return { type: 'update_field', field, value: asGuardedValue(params.value), circuit };
       }
       const value = asString(params.value);
@@ -122,7 +127,7 @@ export function mapServerActionToVoiceCommand(
       if (!field) return null;
       const scope = scopeFromParams();
       const sparePolicy = asSparePolicy(params.spare_policy);
-      if (isGuardedClosedEnumField(field)) {
+      if (isValueCheckedCircuitField(field)) {
         const value = asGuardedValue(params.value);
         // PLAN-C — a guarded action is never dropped. With no resolvable
         // scope, route it through `update_field` with no circuit so the

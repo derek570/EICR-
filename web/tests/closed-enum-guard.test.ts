@@ -22,6 +22,7 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  canonicaliseOcpdStandard,
   CLOSED_ENUM_LABELS,
   CLOSED_ENUM_OPTIONS,
   GUARDED_CLOSED_ENUM_FIELDS,
@@ -73,7 +74,7 @@ describe('closed-enum fixture — cross-platform pins', () => {
    *  BOTH constants in the same coordinated change. */
   it('fixture bytes match the pinned cross-platform digest', () => {
     const digest = createHash('sha256').update(readFileSync(FIXTURE_PATH)).digest('hex');
-    expect(digest).toBe('6486b80f8f9de75be1edc17b1c2da7b30f9cdee1f04f2a6a31fa484153170922');
+    expect(digest).toBe('49999c52c994071e02a0db752a2bbe1322ed14e04fb2461b4c29d67526395f42');
   });
 
   it('fixture options are exactly field_schema.json minus the empty sentinel', () => {
@@ -150,9 +151,38 @@ describe('canonicaliseClosedEnumValue — rejected vectors', () => {
     // 60898. On a client that writes straight into the certificate, a
     // silently-substituted DEVICE STANDARD is the failure this plan exists
     // to prevent.
-    for (const near of ['1362', '6898', '6100', '60899', '3037']) {
-      expect(canonicaliseClosedEnumValue('ocpd_bs_en', near).kind).toBe('invalid_value');
+    //
+    // PLAN-CC moved `ocpd_bs_en` out of this guard — see the sibling
+    // assertion below for how the same property is held there — so the
+    // remaining guarded BS field carries the pin.
+    for (const near of ['61010', '61007', '62424', '6100']) {
+      expect(canonicaliseClosedEnumValue('rcd_bs_en', near).kind).toBe('invalid_value');
     }
+  });
+
+  it('ocpd_bs_en left this guard and holds the same property by ECHOING, not snapping', () => {
+    // PLAN-CC. The field accepts any grammar-valid standard now, so a
+    // near-miss is no longer refused — it is written and read back aloud, and
+    // the inspector corrects by speaking. What must still never happen is the
+    // thing the Lev-1 fallback does: silently substituting a DIFFERENT real
+    // device standard. Each near-miss below canonicalises to itself, never to
+    // its neighbour.
+    expect(isGuardedClosedEnumField('ocpd_bs_en')).toBe(false);
+    for (const [near, neighbour] of [
+      ['6898', 'BS EN 60898'],
+      ['60899', 'BS EN 60898'],
+      ['3037', 'BS 3036'],
+      ['1362', 'BS 1361'],
+    ] as const) {
+      const out = canonicaliseOcpdStandard(near);
+      expect(out).not.toBe(neighbour);
+      expect(out).toBe(near.length === 5 && near.startsWith('6') ? `BS EN ${near}` : `BS ${near}`);
+    }
+    // `1362` is not even a near-miss: BS 1362 is the 13 A plug-top fuse, a
+    // real standard the closed list simply never carried. Accepting it is the
+    // point of the change, and it is why the backend's 1362 → BS 1361 snap
+    // was always wrong.
+    expect(canonicaliseOcpdStandard('1362')).toBe('BS 1362');
   });
 
   it('non-string values: finite numbers are echoed, structural non-values are missing', () => {
