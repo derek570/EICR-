@@ -32,6 +32,8 @@ import { stageMandatoryNotice, spokenBoardOrdinal } from './refusal-notices.js';
 import { rawCircuitSlot, boardSlotKey } from './stage6-per-turn-writes.js';
 import { getCircuitBucket, resolveEffectiveBoardId } from './stage6-multi-board-shape.js';
 import { CONFIRMATION_FRIENDLY_NAMES, deriveFriendlyName } from './confirmation-text.js';
+import { FIELD_CORRECTIONS } from './field-name-corrections.js';
+import { BOARD_READING_SCOPE_MAP } from './client-routable-reading-fields.js';
 
 const fieldSchemaRequire = createRequire(import.meta.url);
 const FIELD_SCHEMA = fieldSchemaRequire('../../config/field_schema.json');
@@ -92,6 +94,27 @@ export function recordRejection(
   });
   perTurnWrites.rejections.push(entry);
   return entry;
+}
+
+/**
+ * The BOARD slot a refusal about a board/supply/installation field must key
+ * on, derived exactly the way `dispatchRecordBoardReading` stamps a successful
+ * write: the CANONICAL field (alias spellings such as
+ * `earth_loop_impedance_ze` fold to `ze`), and the scope-conditioned board —
+ * `null` for a GLOBAL field, the effective board for a board-scoped one.
+ *
+ * Keying on the raw field and the effective board instead meant a blank `ze`
+ * refusal on main (`ze`, main) could never be retired by the corrected write
+ * that followed it (`ze`, null), and the inspector heard "still 0.3" beside
+ * the 0.4 read-back. A field with no write-scope entry keeps the effective
+ * board, which is what the write path does when it attaches no stamp.
+ *
+ * @returns {{field: string, boardId: string|null}}
+ */
+export function boardNoticeSlot(field, effectiveBoardId) {
+  const canonical = FIELD_CORRECTIONS[field] ?? field;
+  const scope = BOARD_READING_SCOPE_MAP[canonical];
+  return { field: canonical, boardId: scope === 'global' ? null : (effectiveBoardId ?? null) };
 }
 
 /** Look one up by ref. Null for the sentinel, an unknown ref, or a malformed one. */
@@ -356,12 +379,15 @@ export function stageBlankBoardWriteNotice(
 ) {
   const label = boardFieldLabel(field);
   const snapshot = session?.stateSnapshot;
-  if (label == null || !boardRenderable(snapshot, boardId)) return false;
-  const friendly = `${label}${boardClause(snapshot, boardId)}${heldValueTail(heldValue)}`;
+  const slot = boardNoticeSlot(field, boardId);
+  if (label == null || !boardRenderable(snapshot, slot.boardId)) return false;
+  // A GLOBAL field renders no board clause: it has one value for the whole
+  // installation, and "Ze on board 2" would imply a second one exists.
+  const friendly = `${label}${boardClause(snapshot, slot.boardId)}${heldValueTail(heldValue)}`;
   return stageRejectionNotice(perTurnWrites, session, {
     family: 'empty_write_blocked',
     route: 'empty_write_blocked',
-    slotKey: boardSlotKey(field, boardId),
+    slotKey: boardSlotKey(slot.field, slot.boardId),
     turnId,
     friendly,
     field,
@@ -468,7 +494,12 @@ export function stageDirectEnumRejectedNotice(
   return stageRejectionNotice(perTurnWrites, session, {
     family: 'enum_rejected',
     route: 'enum_rejected',
-    slotKey: isCircuit ? rawCircuitSlot(field, circuit, boardId) : boardSlotKey(field, boardId),
+    slotKey: isCircuit
+      ? rawCircuitSlot(field, circuit, boardId)
+      : boardSlotKey(
+          boardNoticeSlot(field, boardId).field,
+          boardNoticeSlot(field, boardId).boardId
+        ),
     turnId,
     friendly,
     field,
@@ -526,7 +557,8 @@ export function stageEnumRejectedAfterAskNotice(
       slotKey = rawCircuitSlot(field, ref, boardId);
     } else {
       target = '';
-      slotKey = boardSlotKey(field, boardId);
+      const slot = boardNoticeSlot(field, boardId);
+      slotKey = boardSlotKey(slot.field, slot.boardId);
     }
   }
   return stageRejectionNotice(perTurnWrites, session, {

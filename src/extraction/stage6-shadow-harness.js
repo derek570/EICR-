@@ -267,6 +267,7 @@ import {
   bulkSlotKey,
   bulkScopeKey,
   circuitOpSlotKey,
+  boardNoticeSlot,
 } from './stage6-blank-write-notices.js';
 // Plan 2A channel 3 (2026-07-30) — the ask dispatcher's auto-resolved writes are
 // dispatched through the CIRCUIT write dispatcher, so their partial-failure
@@ -4907,7 +4908,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               if (refs.length === 1) {
                 c3CoveringAskSlots.add(rawCircuitSlot(ask.field, refs[0], ask.boardId));
               } else if (refs.length === 0) {
-                c3CoveringAskSlots.add(boardSlotKey(ask.field, ask.boardId));
+                // Same identity the board refusal keys on — canonical field,
+                // scope-conditioned board — or a covering ask about `Ze` never
+                // matches a refusal keyed on the global slot.
+                const slot = boardNoticeSlot(ask.field, ask.boardId);
+                c3CoveringAskSlots.add(boardSlotKey(slot.field, slot.boardId));
               }
               const rejection = (perTurnWrites.rejections ?? []).find(
                 (r) =>
@@ -4941,7 +4946,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               } else if (Array.isArray(r.scopeSet) && r.scopeSet.length === 1) {
                 c3CoveringAskSlots.add(rawCircuitSlot(r.field, r.scopeSet[0], r.boardId));
               } else if (r.field) {
-                c3CoveringAskSlots.add(boardSlotKey(r.field, r.boardId));
+                const slot = boardNoticeSlot(r.field, r.boardId);
+                c3CoveringAskSlots.add(boardSlotKey(slot.field, slot.boardId));
               }
             }
           }

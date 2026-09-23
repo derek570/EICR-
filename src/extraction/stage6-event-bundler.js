@@ -77,6 +77,8 @@ import { expandForTTS } from './tts-text-expander.js';
 // module (its sole import is stage6-multi-board-shape.js) so there is no cycle.
 import { IMPEDANCE_CLAMP_CORRECTION } from './impedance-clamp.js';
 import { resolveEffectiveLocalityTail } from './postcode-snapshot-applier.js';
+// PLAN-C3 — board ordinal for a multi-board grouped bulk-clear line.
+import { spokenBoardOrdinal } from './refusal-notices.js';
 
 export const BUNDLER_PHASE = 2;
 
@@ -420,7 +422,10 @@ function synthesiseObservationAndClearedConfirmations(
   fieldCorrections,
   designations = null,
   writtenSlots = null,
-  turnId = null
+  turnId = null,
+  // PLAN-C3 — the snapshot, used ONLY to render a board ordinal on a grouped
+  // bulk-clear line when one call swept more than one board.
+  snapshot = null
 ) {
   const out = [];
   const lookupDesignation = (circuit, boardId = null) =>
@@ -529,12 +534,30 @@ function synthesiseObservationAndClearedConfirmations(
         });
       }
     }
+    // A `board_id:'*'` sweep produces one group PER BOARD from one call. Those
+    // lines must differ in bytes and in token, or the client's dedupe drops
+    // one board's only spoken confirmation: two boards each holding circuits 1
+    // and 2 both render "Circuits 1, 2, reference method cleared". So a call
+    // spanning several boards names the board in its text and its token. A
+    // single-board call is unchanged, keeping the plan's `p4ack_<turn>_<call>`.
+    const boardsPerCall = new Map();
+    for (const bucket of c3BulkClearGroups.values()) {
+      const key = String(bucket.callId);
+      if (!boardsPerCall.has(key)) boardsPerCall.set(key, new Set());
+      boardsPerCall.get(key).add(bucket.boardId ?? '');
+    }
     for (const bucket of c3BulkClearGroups.values()) {
       // A single-member sweep is NOT grouped: "Circuits 4, reference method
       // cleared" is worse English than the per-circuit line, and the
       // per-circuit line already carries the designation.
       if (bucket.circuits.length < 2) continue;
-      const text = buildGroupedClearText(bucket.field, bucket.circuits);
+      const multiBoard = (boardsPerCall.get(String(bucket.callId))?.size ?? 0) > 1;
+      const baseText = buildGroupedClearText(bucket.field, bucket.circuits);
+      const ordinal = multiBoard ? spokenBoardOrdinal(snapshot, bucket.boardId) : null;
+      const text =
+        baseText && multiBoard
+          ? `${baseText} on board ${ordinal ?? String(bucket.boardId ?? '')}`
+          : baseText;
       // Null means the roll-up would have been malformed (a suppressed field,
       // an `_id`, fewer than two usable refs). Fall through to the
       // per-circuit lines rather than speak a broken one — the members stay
@@ -553,7 +576,9 @@ function synthesiseObservationAndClearedConfirmations(
         // Replay-stable: derived from the turn and the CALL, never from an
         // array index, so a reconnect replay of this one operation carries
         // the identical token and the client dedupe recognises it.
-        dedupe_token: `p4ack_${turnId ?? 'legacy'}_${String(bucket.callId)}`,
+        dedupe_token: multiBoard
+          ? `p4ack_${turnId ?? 'legacy'}_${String(bucket.callId)}_${String(bucket.boardId ?? '')}`
+          : `p4ack_${turnId ?? 'legacy'}_${String(bucket.callId)}`,
         expects_ios_ack: false,
       };
       if (bucket.board_id != null) entry.board_id = bucket.board_id;
@@ -2561,7 +2586,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
       keptFieldCorrections,
       options.circuitDesignations,
       writtenSlots,
-      _turnId
+      _turnId,
+      options.stateSnapshot ?? null
     );
     const merged = confirmations.concat(stateChanges).concat(obsAndClears);
     if (merged.length > 0) {

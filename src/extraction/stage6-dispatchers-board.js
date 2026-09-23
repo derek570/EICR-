@@ -104,6 +104,7 @@ import {
   mintRejectionRef,
   recordRejection,
   stageBlankBoardWriteNotice,
+  boardNoticeSlot,
 } from './stage6-blank-write-notices.js';
 import { coerceRecordBoardReadingValue } from './record-reading-coercion.js';
 import { isWithinRange, BOARD_FIELD_NUMERIC_RANGES } from './value-enum-validator.js';
@@ -348,11 +349,14 @@ export async function dispatchRecordBoardReading(call, ctx) {
     let rejectionRef = null;
     if (staged) {
       rejectionRef = mintRejectionRef(turnId, call.tool_call_id);
+      // Journal under the SAME identity the notice keys on, so a covering
+      // ask resolves against it: canonical field, scope-conditioned board.
+      const slot = boardNoticeSlot(input.field, boardId);
       recordRejection(perTurnWrites, {
         ref: rejectionRef,
-        field: input.field,
+        field: slot.field,
         scopeSet: null,
-        boardId,
+        boardId: slot.boardId,
         toolCallId: call.tool_call_id,
         bulkInput: null,
       });

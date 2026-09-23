@@ -402,6 +402,61 @@ describe('acceptance 4 (drain half) — a corrected circuit op retires its refus
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+describe('Codex review cycle 1 — board slot identity for a GLOBAL field', () => {
+  const blankZe = (id, field = 'ze') => ({
+    id,
+    name: 'record_board_reading',
+    input: { field, value: '', confidence: 0.9, source_turn_id: 't1' },
+  });
+  const goodZe = (id, field = 'ze') => ({
+    id,
+    name: 'record_board_reading',
+    input: { field, value: '0.4', confidence: 0.9, source_turn_id: 't1' },
+  });
+
+  test.each([
+    ['blank then corrected write', [blankZe('tu_b'), goodZe('tu_w')]],
+    ['corrected write then blank', [goodZe('tu_w'), blankZe('tu_b')]],
+    [
+      'blank via the ALIAS, then canonical write',
+      [blankZe('tu_b', 'earth_loop_impedance_ze'), goodZe('tu_w')],
+    ],
+  ])('%s: the stale refusal is retired and only the read-back speaks', async (_label, calls) => {
+    // Ze is installation-global, so a successful write is stamped with a NULL
+    // board. A refusal keyed on (ze, main) — or on the alias spelling — never
+    // matched it, and the inspector heard "still 0.3" beside "Ze 0.4".
+    const session = makeSession(SINGLE_BOARD, 'main', {
+      0: { earth_loop_impedance_ze: '0.3', ze: '0.3' },
+      1: { circuit_designation: 'Lights' },
+    });
+    loopDispatching(calls);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'ze', [], opts);
+    expect(spoken(result).some((t) => t.includes('still 0.3'))).toBe(false);
+    expect(
+      logRows(opts, 'stage6.mandatory_notice_emitted').filter(
+        (r) => r.family === 'empty_write_blocked'
+      )
+    ).toHaveLength(0);
+  });
+
+  test('a blank Ze ALONE still speaks — the fix retires, it does not silence', async () => {
+    const session = makeSession(SINGLE_BOARD, 'main', {
+      0: { earth_loop_impedance_ze: '0.3', ze: '0.3' },
+      1: { circuit_designation: 'Lights' },
+    });
+    loopDispatching([blankZe('tu_b')]);
+    const opts = baseOpts();
+    await runShadowHarness(session, 'ze alone', [], opts);
+    expect(
+      logRows(opts, 'stage6.mandatory_notice_emitted').filter(
+        (r) => r.family === 'empty_write_blocked'
+      )
+    ).toHaveLength(1);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 describe('acceptance 5b — a bulk refusal is per CALL', () => {
   test('a blank bulk followed by a successful single write still speaks', async () => {
     // A bulk request is one statement about a scope, and a later per-circuit
@@ -901,8 +956,14 @@ describe('acceptance 5d — cancelled turns', () => {
     // provoke through the real barrel.
     const session = makeSession(SINGLE_BOARD, 'main');
     loopDispatching([{ id: 'tu_x', name: 'no_such_tool', input: {} }], { cancelAfter: 0 });
-    const result = await runShadowHarness(session, 'cancelled unknown tool', [], baseOpts());
-    expect(spoken(result).some((t) => t.includes('internal snag'))).toBe(false);
+    const opts = baseOpts();
+    await runShadowHarness(session, 'cancelled unknown tool', [], opts);
+    // Asserted on the drain's own emission telemetry, not on wording: the
+    // `model_contract` pools have several phrasings, and a text match on one
+    // of them would pass while another one spoke (Codex review cycle 1).
+    expect(
+      logRows(opts, 'stage6.mandatory_notice_emitted').filter((r) => r.family === 'model_contract')
+    ).toHaveLength(0);
   });
 
   test('PARAMETERIZED: every registered non-C3 family/route is silent on a cancelled turn', async () => {
@@ -922,9 +983,19 @@ describe('acceptance 5d — cancelled turns', () => {
     // distinct non-C3 family strings.
     expect(nonC3.length).toBe(14);
 
+    // The REAL family each route is staged under — three routes belong to
+    // `model_contract` and one to `observation_integrity`, and the cancelled
+    // filter tests the family, so staging a route under its own name would
+    // test a family that production never produces.
+    const familyOf = (route) =>
+      ['unknown_tool', 'offschema_record', 'offschema_clear'].includes(route)
+        ? 'model_contract'
+        : route === 'regulation_topic_mismatch'
+          ? 'observation_integrity'
+          : route;
     for (const route of nonC3) {
       const session = makeSession(SINGLE_BOARD, 'main');
-      const staged = { family: route === 'unknown_tool' ? 'model_contract' : route };
+      const staged = { family: familyOf(route) };
       // Stage the family DIRECTLY onto the accumulator through the loop hook,
       // which is the only way to reach families whose real producers need
       // bespoke session state (capability gates, cert type, observations).
@@ -944,9 +1015,14 @@ describe('acceptance 5d — cancelled turns', () => {
         });
         throw new ExtractionCancelledError('extraction_watchdog_absolute_ceiling');
       });
-      const result = await runShadowHarness(session, `cancelled ${route}`, [], baseOpts());
-      const texts = spoken(result);
-      expect(texts.some((t) => t.toLowerCase().includes('probe label'))).toBe(false);
+      const opts = baseOpts();
+      await runShadowHarness(session, `cancelled ${route}`, [], opts);
+      // SILENCE, asserted independently of wording: the drain emits one
+      // `stage6.mandatory_notice_emitted` row per notice it actually speaks,
+      // whatever its text. Several of these routes render no label at all, so
+      // a text match on the probe label could never fail for them — which is
+      // exactly how a leaked family would slip through (Codex review cycle 1).
+      expect(logRows(opts, 'stage6.mandatory_notice_emitted')).toEqual([]);
     }
   });
 
@@ -970,8 +1046,14 @@ describe('acceptance 5d — cancelled turns', () => {
       });
       throw new ExtractionCancelledError('extraction_watchdog_absolute_ceiling');
     });
-    const result = await runShadowHarness(session, 'cancelled c3 probe', [], baseOpts());
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'cancelled c3 probe', [], opts);
     expect(spoken(result).some((t) => t.toLowerCase().includes('probe label'))).toBe(true);
+    // Same instrument as the sweep above, so the pair proves the instrument
+    // can see a drained notice at all.
+    const rows = logRows(opts, 'stage6.mandatory_notice_emitted');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].family).toBe('empty_write_blocked');
   });
 
   test('a cancellation with NO notice staged is unchanged from F7 today', async () => {

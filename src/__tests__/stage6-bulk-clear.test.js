@@ -236,6 +236,73 @@ describe('acceptance 3b — clear_field_for_all_circuits', () => {
     expect(JSON.parse(res.content).error.code).toBe('field_not_clearable');
   });
 
+  test("a board_id:'*' sweep over two boards speaks two DISTINCT lines with distinct tokens", async () => {
+    // Codex review cycle 1: two boards each holding circuits 1 and 2 rendered
+    // the same text AND the same `p4ack_<turn>_<call>` token, so the client's
+    // dedupe could drop one board's only spoken confirmation.
+    const session = {
+      sessionId: 's-bulk-2b',
+      stateSnapshot: {
+        circuits: {
+          0: {},
+          1: { circuit_designation: 'A', ref_method: 'C' },
+          2: { circuit_designation: 'B', ref_method: 'C' },
+          'garage::1': {
+            circuit: 1,
+            board_id: 'garage',
+            circuit_designation: 'G1',
+            ref_method: 'C',
+          },
+          'garage::2': {
+            circuit: 2,
+            board_id: 'garage',
+            circuit_designation: 'G2',
+            ref_method: 'C',
+          },
+        },
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'garage', board_type: 'sub_distribution' },
+        ],
+        currentBoardId: 'main',
+      },
+      extractedObservations: [],
+    };
+    const writes = createPerTurnWrites();
+    const res = await dispatch(session, writes, bulkClear({ board_id: '*' }));
+    expect(JSON.parse(res.content).cleared).toHaveLength(4);
+    // The wire is still one correction per cleared circuit.
+    expect(writes.fieldCorrections.filter((c) => c.reason === 'clear_reading')).toHaveLength(4);
+    const result = bundleToolCallsIntoResult(writes, null, {
+      turnId: 'turn-1',
+      session,
+      snapshot: session.stateSnapshot,
+      stateSnapshot: session.stateSnapshot,
+      confirmationsEnabled: true,
+    });
+    const spoken = (result.confirmations ?? []).filter((c) => c.field === 'field_cleared');
+    expect(spoken).toHaveLength(2);
+    expect(new Set(spoken.map((c) => c.text)).size).toBe(2);
+    expect(new Set(spoken.map((c) => c.dedupe_token)).size).toBe(2);
+    expect(spoken.map((c) => c.text).sort()).toEqual([
+      'Circuits 1, 2, reference method cleared on board 1',
+      'Circuits 1, 2, reference method cleared on board 2',
+    ]);
+  });
+
+  test('an UNKNOWN board_id is rejected, never reported as a successful empty sweep', async () => {
+    // Codex review cycle 1: it used to return {ok:true, cleared:[]} while the
+    // value the inspector asked to remove stayed put.
+    const session = build14();
+    session.stateSnapshot.boards = [{ id: 'main', board_type: 'main' }];
+    session.stateSnapshot.currentBoardId = 'main';
+    const writes = createPerTurnWrites();
+    const res = await dispatch(session, writes, bulkClear({ board_id: 'does-not-exist' }));
+    expect(res.is_error).toBe(true);
+    expect(JSON.parse(res.content).error.code).toBe('board_not_found');
+    expect(session.stateSnapshot.circuits[1].ref_method).toBe('C');
+  });
+
   test('two bulk clears in one turn stay TWO spoken lines', async () => {
     // They are two statements about two scopes; collapsing them would let one
     // sweep stand in for another.

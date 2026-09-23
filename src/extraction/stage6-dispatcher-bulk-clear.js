@@ -83,6 +83,24 @@ function validateClearFieldForAllCircuits(input) {
 }
 
 /**
+ * An explicit `board_id` must name a board that exists (`'*'` is the sweep
+ * sentinel). Without this an unknown id resolves to zero targets and the tool
+ * reports `{ok:true, cleared:[]}` — a successful-looking result for a clear
+ * that never ran, while the value the inspector asked to remove stays put.
+ */
+function validateBulkBoardId(input, snapshot) {
+  const id = input.board_id;
+  if (id == null || id === '*') return null;
+  if (!Array.isArray(snapshot?.boards)) return null;
+  if (snapshot.boards.some((b) => b && b.id === id)) return null;
+  return {
+    code: 'board_not_found',
+    field: 'board_id',
+    hint: 'Use an exact board id from the BOARDS section, omit board_id for the current board, or pass "*" for every board.',
+  };
+}
+
+/**
  * Clear ONE circuit's field through the same snapshot mutation and the same
  * same-turn-write reconciliation `dispatchClearReading` uses, then stamp the
  * bulk-call identity onto the resulting entries.
@@ -160,7 +178,8 @@ export async function dispatchClearFieldForAllCircuits(call, ctx) {
   const { session, logger, turnId, perTurnWrites, round } = ctx;
   const input = normaliseBoardScopeInput(call.input ?? {}, session.stateSnapshot);
 
-  const err = validateClearFieldForAllCircuits(input);
+  const err =
+    validateClearFieldForAllCircuits(input) ?? validateBulkBoardId(input, session.stateSnapshot);
   if (err) {
     logToolCall(logger, {
       sessionId: session.sessionId,
