@@ -252,3 +252,50 @@ Red-proved: with the fence disabled the two write cases fail and the two control
 
 This fix changes PLAN-A's shipped code. It is within A2's intent because acceptance 3 states the tombstone
 "fences both re-entry paths", and A2 cannot pass that item while one path is open.
+
+## Review cycle 4 (Codex gpt-5.6-sol/high) — the resolution-time fence was the wrong design
+
+Cycle 4 confirmed the cycle-3 reproduction closed and the note reaching the model, then returned two BLOCKERs and
+three IMPORTANTs, all against the fence above:
+
+1. **Ownership (BLOCKER, valid).** At resolution the model's turn is over. Certificate presence cannot tell a
+   same-turn ordinary write (already read back) from a value that was there before, so a re-dictated reading
+   equal to a historical value got no read-back at all. The earlier claim that an equal value "was written by a
+   same-turn ordinary write" was false.
+2. **Pivot (BLOCKER, valid).** An OCPD or RCD circuit-less start carrying `BS EN 61009` passed the source-schema
+   check, drained, and pivoted into a tombstoned RCBO walk.
+3. **The inspector two-turn trigger (IMPORTANT).** The earlier test and docs called it a PLAN-A rule; it is not,
+   and its tombstone is never cleared.
+4. **Tests and docs (IMPORTANT).** The "same-turn" test mutated the snapshot directly, which is also exactly the
+   historical-equal state, so it blessed defect 1.
+
+**Root cause, not a patch.** Both blockers come from deciding at resolution time, on a later turn. The fix moves the
+decision to the call, in the same turn:
+
+- The resolution fence, its flag, the `deferred_entry` note kind and `unapplied` are REVERTED (`engine.js` back to
+  `5dff9dd5`, then one addition).
+- `enterScriptByName` refuses a circuit-less start while this schema, or any schema its slots can pivot into (read
+  statically from declared derivations), has a handoff anywhere on the current board. It returns
+  `ok: true, status: 'circuit_required'` with a `hint`; nothing is queued, seeded or asked. The model still holds
+  its values in the same turn, so no ownership inference is needed: nothing is dropped and nothing is spoken twice.
+- New leaf helper `hasAnyHandoffForSchema` in `dialogue-handoff-tombstone.js`; the dispatcher forwards `hint`
+  (null on every other outcome, so the envelope shape is stable).
+- Deliberate over-fence: a circuit-less start meant for a DIFFERENT circuit on the same board is also refused. The
+  cost is one question the model asks itself; the alternative is a guess.
+
+**Tests** (replacing the four resolution-time tests): refusal state (nothing queued, asked or written; tombstone
+intact; the inspector naming the circuit afterwards reaches no script); the REAL `dispatchStartDialogueScript` path
+(status and hint forwarded, nothing backfilled into `perTurnWrites`); OCPD and RCD fenced by an RCBO handoff; and
+three controls (no handoff, unrelated schema, another board). Red-proved: fence disabled → the three refusal tests
+fail and the controls pass; pivot targets removed → the pivot test fails.
+
+**Pre-existing, verified on `7dc4cd94`, recorded as PLAN-A follow-ups, not fixed here:**
+
+- An inspector's "Ring continuity." then "circuit 1" re-walks a handed-off circuit and leaves the tombstone set.
+  The inspector asked for it, and no model write is involved, so it is outside acceptance 3. A lingering tombstone
+  fails safe: a later model write on that circuit is fenced from starting a walk.
+- A KNOWN-circuit OCPD start carrying `61009` on an RCBO-tombstoned circuit pivots into the RCBO walk ("What MCB
+  curve?"). This is PLAN-A's known-circuit branch checking only the source schema. No `∞` is involved.
+
+Full Jest 9,775 passed, 0 failed.
+
