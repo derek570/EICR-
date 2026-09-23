@@ -57,7 +57,7 @@
       "web/tests/regex-destination-routing.test.ts": "5111f13f3a174e1dbf716fcd18a50ef0ce9da8e0a7e670bae2801dfdd05dc95e",
       "web/tests/regex-fresh-occurrence.test.ts": "f45cbaff330eea3d04f02d75a0f4418cebfc4df428925bb78bcb76800375d1c5",
       "web/tests/regex-freshness-fixture.test.ts": "9167ba32705947c721d72e72a039e4705f5a02f6c2ec870aee8dafd0dc054f72",
-      "web/tests/uplink-loss-recording-context-wiring.test.ts": "a53a038ac8b01b3cb3dc7b426b5cc3a9a2b51ea19e87ed88660d02cebc8869ad",
+      "web/tests/uplink-loss-recording-context-wiring.test.ts": "19faed01856b82cd9447c1a13277d014b50739e7a5c60491b5284be9ba6bdec9",
       "web/tests/voiced-activity.test.ts": "c9bb9c51e09b48debb9623e9f7f2277130cbff2c8384f07bd7c8223ed76e6c8d"
     }
   },
@@ -4020,6 +4020,14 @@
       "files": [
         "sources: web/src/lib/recording-context.tsx",
         "sources: web/src/lib/recording/deepgram-service.ts"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-D",
+      "date": "2026-09-23",
+      "files": [
+        "tests: web/tests/uplink-loss-recording-context-wiring.test.ts"
       ],
       "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
     }
