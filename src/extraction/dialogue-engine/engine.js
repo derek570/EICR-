@@ -6401,6 +6401,56 @@ export function tryResumePausedScript({
     return { resumed: false, reason: 'paused_timeout' };
   }
 
+  // PLAN-A — the board moved while we were paused, so do NOT resume.
+  //
+  // This is the ONE path on which an episode's board can differ from the
+  // selected board. `record_reading` has no `board_id` parameter (Plan 08B
+  // deleted it from every circuit mutator), so the dispatcher can only ever
+  // stamp the current board, and an episode starts on the board the inspector
+  // is working on. A PAUSE is the exception: the model runs during it, and
+  // `select_board` mutates `currentBoardId` without touching
+  // `dialogueScriptState`.
+  //
+  // Resuming here would walk circuit N of the board we STARTED on while the
+  // inspector is standing at another board — asking about the wrong circuit and
+  // writing values the client routes to a different row. The walk belongs to
+  // the board you are on, so the episode ends instead, with the same terminal
+  // read-back the stale-pause sweep gives: whatever it captured is spoken, and
+  // nothing is silently carried onto a board the inspector has left.
+  //
+  // Closing it HERE rather than carrying the episode board through the wire
+  // frames and the bulk enumerator is deliberate. Those carry no `board_id` and
+  // enumerate main's numeric keys respectively, and both are correct for every
+  // episode that starts and ends on the selected board — which, with this fence
+  // in place, is every episode there is.
+  const boardNow = resolveEffectiveBoardId(session, null);
+  if (state.effectiveBoardId != null && boardNow !== state.effectiveBoardId) {
+    logger?.info?.(`${schema.logEventPrefix}_paused_board_changed_at_resume`, {
+      sessionId: session.sessionId,
+      episode_board_id: state.effectiveBoardId,
+      current_board_id: boardNow,
+      circuit_ref: state.circuit_ref,
+    });
+    if (Array.isArray(state.pending_writes)) {
+      for (const w of state.pending_writes) {
+        const op = w[OPERATION_REF];
+        if (op) markAbandoned(op);
+      }
+    }
+    renderTerminalReadback({
+      ws,
+      session,
+      sessionId: session.sessionId,
+      schema,
+      logger,
+      now,
+      responseEpoch,
+      siteLabel: 'paused_board_changed_at_resume',
+    });
+    clearScriptState(session);
+    return { resumed: false, reason: 'paused_board_changed' };
+  }
+
   const designationHint = state.paused_designation_hint;
   if (typeof designationHint !== 'string' || designationHint.length === 0) {
     return { resumed: false, reason: 'no_designation_hint' };

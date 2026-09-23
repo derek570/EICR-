@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "a85e0add0dfaaed026d5f099de447f4ad1c9b7a732e424e7b99c66baa476540e",
+  "semantic_oracle_digest": "591f7ebdf43cb7cdfde7fa36ef5b4c1c27d1c8dd7881af97277093c5f677aa96",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -537,7 +537,7 @@
     },
     {
       "path": "src/extraction/dialogue-engine/engine.js",
-      "sha256": "621d3f04297dbba85cbdc13e1b3fd0336abea0d2feea54f04b0cd86790fd336e"
+      "sha256": "dafbc305cd2df1b80b379fac46c0a6d472934cc60fb247a2baa2f387c68f5542"
     },
     {
       "path": "src/extraction/dialogue-engine/helpers/snapshot-write.js",
@@ -545,7 +545,7 @@
     },
     {
       "path": "src/extraction/dialogue-engine/helpers/derivations.js",
-      "sha256": "94141021017650248b62b74bc0a08cd82088bf8e7e559486c0c87d6153070f49"
+      "sha256": "4e0e9066f0399bcabbe80fa1de9dd9ee24c7c22dfa8d6ec8f5725110b5b56fc6"
     },
     {
       "path": "src/routes/voice-latency-fast-tts.js",

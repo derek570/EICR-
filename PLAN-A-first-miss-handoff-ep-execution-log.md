@@ -252,3 +252,48 @@ The fault was the instrument, not the code under test; both were fixed and the r
 corrected one. Recording it because a probe that under-reports success is the same hazard as one that
 over-reports it.
 
+
+### Round 3 — the circuit-breaker, recorded BEFORE the fixes
+
+Three rounds, three sets of BLOCKERs, all in the multi-board area. That is the churn circuit-breaker
+in `~/.claude/rules/planning.md`: stop patching and question the PREMISE. The condition below was
+written before the fixes were made, so it binds whichever way the check came out.
+
+**The premise check:** can a dialogue episode's board ever differ from the selected board?
+
+- `record_reading` HAS NO `board_id` PARAMETER. `stage6-tool-schemas.js` says so in the
+  `record_reading` block, and the calculators' own `board_id` comments give the history: "The circuit
+  mutators' board_id was deleted by Plan 08B (2026-08-11); the calculators keep theirs because a
+  cross-board calc is a legitimate read-mostly operation." The dispatcher stamps
+  `EFFECTIVE_CIRCUIT_SLOT.boardId` from the resolved CURRENT board, so
+  `effectiveBoardIdForReading` cannot return anything else.
+- Therefore the scenario every board finding is built on — "an explicit `record_reading` for board B
+  circuit 3 while main is selected" — **the wire cannot produce**. This is the A1b pattern from the
+  rules file: rounds spent defending an unreachable scenario.
+- **One path does remain**, and it is not the one the findings name: a script PAUSED for circuit
+  creation lets the model run, `select_board` does not touch `dialogueScriptState`
+  (`stage6-dispatchers-board.js` mutates `currentBoardId` and nothing else), and the resume then
+  walks a stale board.
+
+**The condition, committed in advance:** if the only reachable divergence is the paused-resume path,
+close it with ONE fence rather than carrying the board through the wire frames and the bulk
+enumerator. A further board finding after that fence is an escalation, not another patch.
+
+**Dispositions.**
+
+| # | Severity | Finding | Disposition |
+|---|---|---|---|
+| 14 | BLOCKER | Script extraction frames omit `board_id`, so a cross-board episode's readings route to the wrong client row. | UNREACHABLE — fenced at the one reachable ingress |
+| 15 | BLOCKER | An RCD→RCBO mirror overwrites a pre-existing `ocpd_bs_en` with no baseline, because the target is not an RCD slot and so is absent from `state.values`. | FIXED |
+| 16 | BLOCKER | `handleBulkApplyReply` enumerates targets by parsing `snapshot.circuits` keys as integers, which excludes composite sub-board keys, then applies that main-derived set to the episode's board. | UNREACHABLE for a cross-board episode once fenced; the main-board enumeration is PRE-EXISTING and out of this plan's intent |
+| 17 | IMPORTANT | The fence-harness additions assert delivered speech but still seed per-turn state through a zero-tool-call loop, so they do not red-proof a real clear-plus-answer dispatch. | ACCEPTED as accurate; recorded, not fixed |
+
+Finding 14 and finding 16 are real descriptions of the code. They are not real descriptions of
+anything an inspector can cause, once the resume path is fenced — and finding 16's main-board half
+predates this plan by months and belongs to whoever next touches bulk propagation.
+
+Finding 17 is correct and I am not going to overstate the fix. The `spoken_response` assertions are
+genuine new coverage — they pin the projection a log row cannot — but the reviewer is right that they
+would also pass against the prior code, so they are coverage, not a red proof. A real
+clear_reading-plus-answer_user dispatch needs the tool loop unmocked with a stubbed vendor, which is
+a new harness and not something to build inside a delivery round. It is in the repo todo queue.

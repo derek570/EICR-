@@ -12,6 +12,7 @@ import {
   processRingContinuityTurn,
   enterScriptByName,
   tryEnterScriptFromWrites,
+  tryResumePausedScript,
   ALL_DIALOGUE_SCHEMAS,
 } from '../extraction/dialogue-engine/index.js';
 import {
@@ -1251,5 +1252,134 @@ describe('a derivation that OVERWROTE a pre-existing value says so', () => {
       now: 3000,
     });
     expect(out.serverNote.derived_replaced).toEqual({});
+  });
+});
+
+// ── Fix round 3 — the premise, fenced at its one reachable ingress ──────────
+
+describe('a paused episode does not resume onto a board the inspector has left', () => {
+  // `record_reading` has no `board_id` parameter — Plan 08B deleted it from
+  // every circuit mutator — so the dispatcher can only stamp the current board
+  // and an episode always starts on the board the inspector is working on. A
+  // PAUSE is the one exception: the model runs during it and `select_board`
+  // moves `currentBoardId` without touching `dialogueScriptState`. Resuming
+  // then walks circuit N of the board we started on while the inspector stands
+  // at another one.
+  test('the episode ENDS, with its terminal read-back, and nothing resumes', () => {
+    const rows = [];
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    session.stateSnapshot.boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'board-b', board_type: 'sub' },
+    ];
+    // An ordinary insulation-resistance walk, paused for circuit creation.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the immersion.',
+      logger: capturingLog(rows),
+      now: 1000,
+    });
+    const state = session.dialogueScriptState;
+    if (!state || !state.paused) {
+      // The pause is the schema's own opt-in path; if this utterance did not
+      // pause, force the shape the fence guards rather than assert nothing.
+      session.dialogueScriptState = {
+        ...(state ?? {}),
+        active: false,
+        paused: true,
+        paused_at: 1000,
+        paused_designation_hint: 'immersion',
+        schemaName: 'insulation_resistance',
+        circuit_ref: null,
+        values: {},
+        operations: [],
+        pending_writes: [],
+        effectiveBoardId: 'main',
+      };
+    }
+    session.dialogueScriptState.effectiveBoardId = 'main';
+
+    // The inspector walks to the other board between the pause and the create.
+    session.stateSnapshot.currentBoardId = 'board-b';
+
+    const out = tryResumePausedScript({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 9 }],
+      logger: capturingLog(rows),
+      now: 2000,
+    });
+
+    expect(out).toMatchObject({ resumed: false, reason: 'paused_board_changed' });
+    // The episode is ENDED, not left paused on a stale board.
+    expect(session.dialogueScriptState).toBeNull();
+    expect(
+      rows.some((r) => r.event.endsWith('_paused_board_changed_at_resume'))
+    ).toBe(true);
+  });
+
+  test('NEGATIVE CONTROL — the same resume on the SAME board is not fenced', () => {
+    const rows = [];
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    session.dialogueScriptState = {
+      active: false,
+      paused: true,
+      paused_at: 1000,
+      paused_designation_hint: 'immersion',
+      schemaName: 'insulation_resistance',
+      circuit_ref: null,
+      values: {},
+      operations: [],
+      pending_writes: [],
+      skipped_slots: new Set(),
+      effectiveBoardId: 'main',
+    };
+    const out = tryResumePausedScript({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 9 }],
+      logger: capturingLog(rows),
+      now: 2000,
+    });
+    // It may decline for an ordinary reason, but NEVER for the board.
+    expect(out.reason).not.toBe('paused_board_changed');
+  });
+});
+
+describe('a derivation reads its baseline from the snapshot when the schema does not seed it', () => {
+  // The gap the fix round found: an RCD episode seeds only RCD slots, so a
+  // `61009` mirror into `ocpd_bs_en` sees `state.values.ocpd_bs_en` undefined
+  // while the circuit's bucket carries a value from the CCU photo. Recording no
+  // baseline there lets a later device-absence handoff clear it.
+  test('a mirror over a snapshot-only value records the baseline it replaced', () => {
+    const rows = [];
+    const ws = new FakeWS();
+    const session = buildSession({ 6: { ocpd_bs_en: 'BS EN 60898' } });
+    enterScriptByName({
+      session,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'rcd',
+      circuit_ref: 6,
+      ws,
+      logger: capturingLog(rows),
+      now: 1000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61009',
+      logger: capturingLog(rows),
+      now: 2000,
+    });
+    const baselines = session.dialogueScriptState?.derivedBaselines ?? {};
+    expect(baselines.ocpd_bs_en).toBe('BS EN 60898');
   });
 });

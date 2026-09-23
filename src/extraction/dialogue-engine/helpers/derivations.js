@@ -32,6 +32,7 @@ import { MUTATION_OBSERVER } from '../../plan00-semantic-capture.js';
 // handoff note and the tombstone both name board B.
 import { applyReadingFlagAware } from '../../stage6-snapshot-mutators.js';
 import { recordDerivedBaseline } from './episode-ownership.js';
+import { getCircuitBucket } from '../../stage6-multi-board-shape.js';
 import { bsCodeDigits } from '../parsers/bs-code.js';
 
 /**
@@ -93,6 +94,32 @@ export function applyDerivations({ session, schema, slot, value }) {
   const result = { pivotTo: null, mirrorWrites: [], setWrites: [] };
   if (!Array.isArray(slot.derivations)) return result;
 
+  /**
+   * What a derivation target holds RIGHT NOW, for the baseline record.
+   *
+   * `state.values` alone is not enough, and the gap is not hypothetical: an RCD
+   * episode seeds only the RCD schema's own slots, so a `61009` mirror into
+   * `ocpd_bs_en` sees `state.values.ocpd_bs_en` undefined while the circuit's
+   * snapshot bucket carries a value from the CCU photo. Recording no baseline
+   * there lets a later device-absence handoff clear a certificate value the
+   * mirror merely replaced — the failure `derived_replaced` exists to stop.
+   *
+   * The snapshot read is scoped to the EPISODE's board, the same one the write
+   * below uses, so the baseline and the value it describes can never come from
+   * different buckets.
+   */
+  const priorValueOf = (field) => {
+    const state = session.dialogueScriptState;
+    const inState = state?.values?.[field];
+    if (inState !== undefined && inState !== null && inState !== '') return inState;
+    const bucket = getCircuitBucket(
+      session.stateSnapshot,
+      state?.circuit_ref,
+      state?.effectiveBoardId ?? undefined
+    );
+    return bucket?.[field];
+  };
+
   for (const derivation of slot.derivations) {
     if (!derivationMatches(derivation, value, slot.kind)) continue;
 
@@ -118,7 +145,7 @@ export function applyDerivations({ session, schema, slot, value }) {
         // handoff note's directive lets the model clear a derived target on a
         // device-absence turn, and clearing this one would blank pre-existing
         // certificate data the walk merely replaced.
-        recordDerivedBaseline(state, extraField, state?.values?.[extraField]);
+        recordDerivedBaseline(state, extraField, priorValueOf(extraField));
         try {
           applyReadingFlagAware(session.stateSnapshot, {
             circuit: state?.circuit_ref ?? null,
@@ -153,7 +180,7 @@ export function applyDerivations({ session, schema, slot, value }) {
             meta: { schema: schema?.name ?? null, derived_field: mirrorField },
           });
         }
-        recordDerivedBaseline(state, mirrorField, state?.values?.[mirrorField]);
+        recordDerivedBaseline(state, mirrorField, priorValueOf(mirrorField));
         try {
           applyReadingFlagAware(session.stateSnapshot, {
             circuit: state?.circuit_ref ?? null,
