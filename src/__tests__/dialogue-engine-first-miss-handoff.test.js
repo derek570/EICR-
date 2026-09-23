@@ -1472,9 +1472,18 @@ describe('per-reading board attribution on a two-board turn', () => {
       { field: 'rcd_type', circuit: 3, value: 'A', board_id: 'main' },
       { field: 'rcd_type', circuit: 3, value: 'A', board_id: 'board-b' },
     ];
-    // The resolver stands in for the harness's: it can only disambiguate if it
-    // is GIVEN the reading. Without it, it does what the field+ref scan did —
-    // returns whichever board it met first, for both readings alike.
+    // WHAT THIS TEST DOES NOT COVER, stated because the coverage claim matters:
+    // the resolver below STANDS IN for the harness's. It proves the engine
+    // passes the reading through, which is the engine-side change, and it would
+    // fail if the engine stopped. It does NOT exercise the production callback
+    // in `stage6-shadow-harness.js`, so a regression there could restore the
+    // two-board misattribution with this test still green. The
+    // dispatcher-to-bundler case that would close that is in the repo todo
+    // queue; it needs the harness driven end to end, not a unit seam.
+    //
+    // The stand-in can only disambiguate if it is GIVEN the reading. Without
+    // it, it does what the field+ref scan did — returns whichever board it met
+    // first, for both readings alike.
     const seenArgs = [];
     const resolver = (field, circuitRef, reading) => {
       seenArgs.push({ field, circuitRef, reading });
@@ -1540,12 +1549,15 @@ describe('a board-drift exit purges a dangling confirmation prompt', () => {
         now: at,
       });
     }
-    const state = session.dialogueScriptState;
-    if (!state?.awaiting_confirmation) {
-      // The walk did not reach the confirmation on this phrasing; force the
-      // flag rather than assert nothing, and keep the schema real.
-      session.dialogueScriptState.awaiting_confirmation = true;
-    }
+    // The prompt is genuinely queued — asserted, not forced. An earlier version
+    // of this test set `awaiting_confirmation` itself when the phrasing missed,
+    // which made it a test of the fixture: it would have passed even if the
+    // walk never reached a confirmation at all.
+    expect(session.dialogueScriptState.awaiting_confirmation).toBe(true);
+    const confirmPrompt = ws.sent.filter(
+      (f) => typeof f.question === 'string' && /All correct\?/.test(f.question)
+    );
+    expect(confirmPrompt).toHaveLength(1);
 
     const before = ws.sent.length;
     session.stateSnapshot.currentBoardId = 'board-b';
@@ -1560,8 +1572,15 @@ describe('a board-drift exit purges a dangling confirmation prompt', () => {
 
     const after = ws.sent.slice(before);
     const purgeAt = after.findIndex((f) => f.type === 'cancel_pending_tts');
+    // The load-bearing assertion: the purge happened at all. Without it the
+    // queued "All correct?" plays after the switch, about a circuit on the
+    // board the inspector has left.
     expect(purgeAt).toBeGreaterThanOrEqual(0);
-    // Nothing spoken before the purge.
+    // …and nothing spoke before it. Stated as a bound, not a claim: this walk
+    // captured every value and each was read back at capture, so the exit emits
+    // no terminal read-back and the ordering is trivially satisfied here. It
+    // only bites on an exit that DOES speak, which is why the assertion is kept
+    // rather than dropped.
     const spokenBeforePurge = after
       .slice(0, purgeAt)
       .filter((f) => typeof f.text === 'string' || typeof f.question === 'string');

@@ -439,3 +439,28 @@ churn shape, so round 6 is a verification of those two fixes and is intended to 
   judgement about this area stops being the cheapest thing to trust. A sixth round's BLOCKER would
   mean the design needs an owner who is not the person who has now been wrong about it twice.
 - Round 7 is not authorised by this condition under any outcome.
+
+### Round 6 — CONVERGED. Both fixes sound, NIT-only
+
+> "Both fixes are sound. Cross-board projected readings carry a validated or dispatcher-enriched
+> `board_id`; the resolver normalises it consistently with the tombstone. The purge uses the same
+> scope and pre-speech order as the existing exits. Paused-episode replacement also occurs without
+> board drift and predates PLAN-A, so its separate disposition is honest."
+
+The stop condition written before the round said CLEAN or NIT-only merges, and this is NIT-only. Both
+NITs were about the strength of tests I wrote in round 5, and both were fair.
+
+- **The purge test forced `awaiting_confirmation` when the phrasing missed**, which made it a test of
+  the fixture. Checked: the walk DOES reach the confirmation naturally, emitting
+  *"R1 0.52, Rn 0.48, R2 0.50. All correct?"*. The forcing is gone and the test now asserts the real
+  prompt was queued. Its speech-ordering assertion is kept but stated as a bound: this walk covers
+  every value at capture, so the exit emits no terminal read-back and the ordering holds trivially
+  here — it only bites on an exit that does speak.
+- **The attribution test supplies a stand-in resolver**, so it proves the engine passes the reading
+  but not the production callback. That limit is now written into the test itself rather than left to
+  be discovered, and the dispatcher-to-bundler case is queued.
+
+Neither NIT was fixed by changing production at round 6. Both are test-coverage bounds, and the
+honest response to a coverage bound is to state it and queue the work, not to widen the claim.
+
+**Review total: 6 rounds, 23 findings.** BLOCKERs by round: 3, 3, 3, 0, 0, 0.
