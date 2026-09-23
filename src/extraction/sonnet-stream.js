@@ -242,6 +242,7 @@ import { normalise as normaliseTranscript } from './transcript-normalise.js';
 // sizes (>8192 chars) so the caller can send an error envelope back to iOS
 // instead of smuggling the abuse downstream.
 import { sanitiseUserText, HARD_REJECT_USER_TEXT_LEN } from './stage6-sanitise-user-text.js';
+import { attachCarriedRepeatAskNote } from './stage6-repeat-ask.js';
 // Stage 6 Phase 5 Plan 05-02 — filled-slots-shadow adapter. Side-effect-only
 // wrapper around the unmodified Stage 5 filterQuestionsAgainstFilledSlots
 // that the ask-gate-wrapper invokes PRE-WRAPPER on every ask_user. Logs
@@ -6765,6 +6766,21 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
             missing_field: voltageExpired.missing_field,
             board_id: voltageExpired.board_id,
           });
+        }
+      }
+
+      // PLAN-B (feedback-2026-09-17, B2) — a `repeat_ask` server note the
+      // model never read. The harness normally appends it to the ask's tool
+      // result and the model reads it in the same loop; only a cancelled or
+      // failed generation leaves it on `session.pendingRepeatAskNote`. It is
+      // the lowest-precedence prepended note (PLAN-A's handoff note, then the
+      // ring / IR / voltage expiry notes, come first): when any server note is
+      // already attached to this turn it waits for the next one.
+      {
+        const carried = attachCarriedRepeatAskNote(entry.session, transcriptText);
+        transcriptText = carried.transcriptText;
+        if (carried.outcome !== 'none') {
+          logger.info(`stage6.repeat_ask_note_${carried.outcome}`, { sessionId });
         }
       }
 

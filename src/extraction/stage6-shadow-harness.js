@@ -136,6 +136,7 @@ import {
   createObsClarifyChainBroker,
   normaliseObsClarifyChainId,
 } from './stage6-ask-gate-wrapper.js';
+import { createRepeatAskTracker, REPEAT_ASK_NOTE_THRESHOLD } from './stage6-repeat-ask.js';
 import {
   createPerTurnWrites,
   EFFECTIVE_BOARD_SLOT,
@@ -2506,6 +2507,36 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     let cancelled = false;
     let toolLoopOut;
     const loopInvocationId = `${session.sessionId}:${options.extractionTurnId}:${generationId ?? randomUUID()}`;
+    // PLAN-B (feedback-2026-09-17, B2) — repeat visibility for the model's own
+    // asks. The ask budget is gone (Decision 3), so nothing blocks a third
+    // ask; instead, on the SECOND unusable reply to the same (field, circuit,
+    // board) key, the ask's tool result gains a `[Server note: repeat_ask. …]`
+    // the model reads in its next round of THIS loop. Informational only: a
+    // third ask still dispatches and logs `stage6.repeat_ask {count}`. The
+    // counter is per SESSION (a repeat spans turns). See stage6-repeat-ask.js.
+    if (!session.repeatAskTracker) session.repeatAskTracker = createRepeatAskTracker();
+    const repeatAskTracker = session.repeatAskTracker;
+    let repeatAskNoteThisTurn = null;
+    const augmentToolResult = (call, res) => {
+      if (call?.name !== 'ask_user') return null;
+      const observed = repeatAskTracker.observe({
+        input: call.input,
+        result: res,
+        perTurnWrites,
+      });
+      if (observed.count >= REPEAT_ASK_NOTE_THRESHOLD) {
+        log.info?.('stage6.repeat_ask', {
+          sessionId: session.sessionId,
+          turnId,
+          tool_call_id: call.tool_call_id ?? null,
+          ask_key: observed.key,
+          count: observed.count,
+          note_appended: observed.note != null,
+        });
+      }
+      if (observed.note) repeatAskNoteThisTurn = observed.note;
+      return observed.note;
+    };
     let accountingStarted = false;
     let failedBillableUsage = null;
     let billableRoundUsage = [];
@@ -2572,6 +2603,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // tool. Dedup via cachePeek inside _speculate ensures the
         // onSnapshotPatch fire that arrives later doesn't double-synth.
         onToolUseStreamed: speculator?.onToolUseStreamed,
+        // PLAN-B (B2) — the repeat_ask note rides the model-facing tool result.
+        augmentToolResult,
       });
     } catch (err) {
       failedBillableUsage = err?.billableUsage ?? null;
@@ -2635,6 +2668,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     }
 
     askGateForTurn?.destroy();
+
+    // PLAN-B (B2) — a repeat_ask note is normally read by the model's next
+    // round in this same loop (the normal dispatch branch always runs another
+    // round). Only a cancelled or failed generation ends the loop before that
+    // round, so only then is the note carried to the NEXT turn's transcript,
+    // where sonnet-stream prepends it when no other server note is attached.
+    if (cancelled && repeatAskNoteThisTurn) {
+      session.pendingRepeatAskNote = repeatAskNoteThisTurn;
+    }
 
     // ── A1 agentic-voice — turnAnswerState FINALIZATION (PLAN Item 4) ─────
     // Runs at the post-loop seam: AFTER the runToolLoop try/catch (BOTH the
