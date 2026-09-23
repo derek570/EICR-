@@ -128,6 +128,7 @@ function RecordingActionBar() {
     pause,
     resume,
     captureObservationPhoto,
+    voicePaused,
   } = useRecording();
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -263,7 +264,7 @@ function RecordingActionBar() {
               just status indicator + timer. Cost readout is iPad+ only
               so it doesn't crowd the small screen. */}
           <div className="flex items-center gap-1.5 md:gap-2.5">
-            <StatePill state={state} />
+            <StatePill state={state} voicePaused={voicePaused} />
             <VadIndicator state={state} />
             <span className="font-mono text-[13px] font-semibold tabular-nums text-[var(--color-text-primary)] md:text-[15px]">
               {formatElapsed(elapsedSec)}
@@ -360,8 +361,12 @@ function RecordingActionBar() {
             />
             {/* Pause / Resume — pause is greyed during requesting-mic so
                 double-tapping mid-permission doesn't race the state
-                machine; resume only enables from dozing/sleeping. */}
-            {isPaused ? (
+                machine; resume only enables from dozing/sleeping.
+                PLAN-D — during a hands-free VOICE pause the Pause
+                affordance is replaced by Resume, which calls the same
+                origin-aware resume() the spoken "CertMate, carry on"
+                reaches. */}
+            {isPaused || voicePaused ? (
               <CircleButton
                 label="Resume"
                 icon={Play}
@@ -379,6 +384,26 @@ function RecordingActionBar() {
             )}
           </div>
 
+          {/* PLAN-D (Acceptance 12) — say which resume routes work. A voice
+              pause keeps the mic live, so the phrase works; the button pause
+              tears the mic down, so only the tap can resume. */}
+          {voicePaused ? (
+            <p
+              role="status"
+              data-testid="voice-pause-hint"
+              className="basis-full text-[12px] font-medium text-[var(--color-status-limitation)]"
+            >
+              Voice paused. Say &ldquo;CertMate, carry on&rdquo; or tap Resume.
+            </p>
+          ) : isPaused ? (
+            <p
+              role="status"
+              data-testid="button-pause-hint"
+              className="basis-full text-[12px] font-medium text-[var(--color-text-secondary)]"
+            >
+              Paused. Voice resume is unavailable &mdash; tap Resume to carry on.
+            </p>
+          ) : null}
           {errorMessage ? (
             <p
               role="alert"
@@ -494,8 +519,17 @@ function RecordingActionBar() {
 
 /* ----------------------------------------------------------------------- */
 
-function StatePill({ state }: { state: ReturnType<typeof useRecording>['state'] }) {
+function StatePill({
+  state,
+  voicePaused,
+}: {
+  state: ReturnType<typeof useRecording>['state'];
+  voicePaused: boolean;
+}) {
   const { label, colour, Icon } = React.useMemo(() => {
+    if (voicePaused && state === 'active') {
+      return { label: 'Voice paused', colour: 'var(--color-status-limitation)', Icon: MicOff };
+    }
     switch (state) {
       case 'requesting-mic':
         return { label: 'Requesting mic', colour: 'var(--color-status-processing)', Icon: Mic };
@@ -508,7 +542,7 @@ function StatePill({ state }: { state: ReturnType<typeof useRecording>['state'] 
       default:
         return { label: 'Idle', colour: 'var(--color-text-tertiary)', Icon: Mic };
     }
-  }, [state]);
+  }, [state, voicePaused]);
   return (
     <span
       className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.09em] text-white"

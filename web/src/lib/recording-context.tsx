@@ -123,9 +123,19 @@ import {
   handleLocalCommandOutcomePlaybackStarted,
   LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX,
   speakPoorSignalAdvisory,
+  POOR_SIGNAL_ADVISORY_TEXT,
   type SpeakOptions,
 } from './recording/tts';
 import { UplinkLossLedger } from './recording/uplink-loss-ledger';
+import {
+  StillPausedCueThrottle,
+  VOICE_PAUSE_PRODUCED_TEXTS,
+  VOICE_PAUSE_REMINDER_INTERVAL_MS,
+  VOICE_PAUSE_STRINGS,
+  containsResumePhrase,
+  isBrandedCommandWithTrailingContent,
+  matchVoicePauseCommand,
+} from './recording/voice-pause';
 // PLAN-E-TERM — the durable post-session unresolved-audio record: a
 // per-session binder (identity + piecewise capture→wall-clock map) writes
 // through the IDB port on the SAME loss-event paths E2 already runs.
@@ -143,6 +153,7 @@ import {
   setOnDiscarded as ttsQueueSetOnDiscarded,
   setOnPlaybackStarted as ttsQueueSetOnPlaybackStarted,
   setOnStartedHeadTornDown as ttsQueueSetOnStartedHeadTornDown,
+  setHeadPlaybackObserver as ttsQueueSetHeadPlaybackObserver,
   setShouldDeferPlayback as ttsQueueSetShouldDeferPlayback,
   type DiscardReason,
 } from './recording/tts-queue';
@@ -193,6 +204,7 @@ import {
   playAttentionTone,
   playConfirmationChime,
   playSentForProcessingChime,
+  playVoiceResumeTone,
 } from './recording/tones';
 import { api } from './api-client';
 import { useJobContext } from './job-context';
@@ -326,6 +338,12 @@ export type RecordingSnapshot = {
    *  Circuits tab, board-banner) filter their UI down to this id.
    *  Null when no session is active OR the job is single-board. */
   currentBoardId: string | null;
+  /** PLAN-D — a hands-free VOICE pause is holding ("CertMate pause"). The
+   *  microphone and Deepgram stay live so "CertMate carry on" can be
+   *  heard; only transcript finals stop being acted on. Independent of
+   *  `state` (which stays `'active'`); the button pause is `'sleeping'`.
+   *  The chrome shows a Resume-only presentation while this is true. */
+  voicePaused: boolean;
 };
 
 export type RecordingActions = {
@@ -443,6 +461,12 @@ const HEARTBEAT_INTERVAL_MS = 5000;
  * inspector's immediate verbal answer to a question doesn't get clipped.
  */
 const TTS_PCM_GATE_RESUME_DELAY_MS = 500;
+/** PLAN-D D1 self-echo — how long after a phrase-bearing cue ENDS the resume
+ *  matcher stays disarmed. The web post-TTS echo window is the wall-clock
+ *  echo gate's cooldown (`isWithinTtsWindow`'s default). A reply beginning
+ *  at audio-end is held and replayed by D7, and its final arrives after
+ *  Deepgram's own latency, well beyond this window. */
+const VOICE_PAUSE_SELF_ECHO_WINDOW_MS = 300;
 
 function isTrailingCircuitNamingPattern(text: string): boolean {
   return TRAILING_CIRCUIT_NAMING_PATTERN.test(text);
@@ -1563,6 +1587,135 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const addressMirrorQueueReservationsRef = React.useRef(
     new Map<string, { token: string; confirmationKey: string | null }>()
   );
+  // ── PLAN-D — hands-free voice pause ("CertMate pause" / "CertMate carry
+  // on"). THE CONTRACT: pausing stops INPUT and does nothing to the spoken
+  // channel (WAVE-CONTEXT Decision 8). While `voicePausedRef` is set the mic,
+  // the Deepgram socket and interim handling all keep running — that is what
+  // makes the resume phrase hearable — and every admitted final stops at the
+  // pause boundary in `onFinalTranscript`, below both echo gates and above
+  // the naming buffer. Nothing here holds, mutes, defers or drops speech.
+  const [voicePaused, setVoicePausedState] = React.useState(false);
+  const voicePausedRef = React.useRef(false);
+  /** Still-paused cue throttle (30 s, stamped at admission). */
+  const stillPausedCueThrottleRef = React.useRef(new StillPausedCueThrottle());
+  /** The periodic "Still paused…" reminder, every 15 minutes while paused. */
+  const voicePauseReminderTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const voicePauseDropCountRef = React.useRef(0);
+  /** D1 self-echo: a queued cue whose text contains a resume phrase disarms
+   *  the resume matcher from its playback START through the post-TTS echo
+   *  window after its END — by playback lifecycle, never by string match on
+   *  the heard final. */
+  const resumePhraseEchoRef = React.useRef<{ playing: boolean; untilMs: number }>({
+    playing: false,
+    untilMs: 0,
+  });
+  /** Voice-command response texts enqueued on the FIFO, so their playback
+   *  start is reported with `kind: 'response'` (D5). Bounded. */
+  const pendingResponseTextsRef = React.useRef<string[]>([]);
+  /** The origin-aware exit is `resume()`; the phrase route reaches it from
+   *  inside `openDeepgram`'s closures through this ref. */
+  const resumeWithOriginRef = React.useRef<(via: 'phrase' | 'tap') => void>(() => {});
+
+  const cancelVoicePauseReminder = React.useCallback(() => {
+    if (voicePauseReminderTimerRef.current) {
+      clearInterval(voicePauseReminderTimerRef.current);
+      voicePauseReminderTimerRef.current = null;
+    }
+  }, []);
+
+  /** Session-boundary reset (stop, start) and the button pause's takeover:
+   *  clears the flag, the reminder, the throttle stamp and the ledger cut
+   *  WITHOUT speaking anything. */
+  const resetVoicePauseState = React.useCallback(() => {
+    voicePausedRef.current = false;
+    setVoicePausedState(false);
+    cancelVoicePauseReminder();
+    stillPausedCueThrottleRef.current.reset();
+    voicePauseDropCountRef.current = 0;
+    resumePhraseEchoRef.current = { playing: false, untilMs: 0 };
+    pendingResponseTextsRef.current = [];
+    sessionUplinkContextRef.current?.lossLedger?.clearPauseCut();
+  }, [cancelVoicePauseReminder]);
+
+  /** D2 entry, steps 2–6 (step 1, the pre-pause buffer flush, runs inline
+   *  in `onFinalTranscript` because it needs `dispatchFinal`). */
+  const enterVoicePause = React.useCallback(() => {
+    voicePausedRef.current = true;
+    setVoicePausedState(true);
+    stillPausedCueThrottleRef.current.reset();
+    // Protected mode-status cue route — never the pre-empting direct path,
+    // so an owed read-back queued or playing finishes first.
+    speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.pause_ack.text);
+    // Existing `session_pause` frame (bookkeeping only on the backend).
+    sonnetRef.current?.pause();
+    // D4 — the loss ledger's cut at the capture clock's current position.
+    // `advance(0)` reads the position without reserving any samples.
+    const ctx = sessionUplinkContextRef.current;
+    if (ctx?.lossLedger) ctx.lossLedger.setPauseCut(ctx.captureClock.advance(0).start);
+    setInterim('');
+    cancelVoicePauseReminder();
+    voicePauseReminderTimerRef.current = setInterval(() => {
+      if (!voicePausedRef.current) return;
+      speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.reminder.text);
+    }, VOICE_PAUSE_REMINDER_INTERVAL_MS);
+    clientDiagnostic('voice_pause_entered', {});
+  }, [cancelVoicePauseReminder]);
+
+  /** D3 — the voice-pause half of the ONE origin-aware exit. Returns false
+   *  (and does nothing) when no voice pause holds, which is what makes a
+   *  phrase and a tap landing in the same tick produce ONE tone and ONE
+   *  line: the first caller clears the flag synchronously. */
+  const exitVoicePause = React.useCallback(
+    (via: 'phrase' | 'tap'): boolean => {
+      if (!voicePausedRef.current) return false;
+      // The tone FIRST: a local Web Audio call, not on the FIFO, so nothing
+      // can pre-empt it. Call order is not an audible-order guarantee
+      // (Decision 24(a)) — the tone and the line are both enqueued and
+      // nothing waits for the tone's end.
+      const { contextState } = playVoiceResumeTone();
+      clientDiagnostic('voice_pause_resume_tone', { via, contextState });
+      voicePausedRef.current = false;
+      setVoicePausedState(false);
+      // Existing no-sessionId `session_resume` frame.
+      sonnetRef.current?.resume();
+      // The interim display restores itself: `onInterimTranscript` only
+      // suppresses `setInterim` while the flag is set.
+      sessionUplinkContextRef.current?.lossLedger?.clearPauseCut();
+      cancelVoicePauseReminder();
+      // The mic is NOT reacquired and Deepgram is NOT reconnected — neither
+      // was released. Decision 24(c): ONE line per resume, on the protected
+      // cue route; "Carrying on." is retired for this route.
+      speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.resume_line.text);
+      clientDiagnostic('voice_pause_resumed', { via });
+      return true;
+    },
+    [cancelVoicePauseReminder]
+  );
+
+  /** D3 — a non-command final admitted at the pause boundary. Not acted on;
+   *  requests the throttled still-paused cue so the inspector learns the
+   *  microphone is not acting on them. */
+  const requestStillPausedCue = React.useCallback((text: string) => {
+    voicePauseDropCountRef.current += 1;
+    clientDiagnostic('voice_pause_drop_count', {
+      count: voicePauseDropCountRef.current,
+      textPreview: text.slice(0, 60),
+    });
+    if (isBrandedCommandWithTrailingContent(text)) {
+      clientDiagnostic('voice_pause_trailing_content_cue', { textPreview: text.slice(0, 60) });
+    }
+    if (stillPausedCueThrottleRef.current.admit(Date.now())) {
+      speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.still_paused_cue.text);
+    }
+  }, []);
+
+  /** D1 self-echo — the resume matcher is disarmed while a phrase-bearing
+   *  cue plays and for the echo gate's cooldown after it ends. */
+  const isResumeMatcherDisarmed = React.useCallback(
+    () => resumePhraseEchoRef.current.playing || Date.now() < resumePhraseEchoRef.current.untilMs,
+    []
+  );
+
   // Stamps the most-recent text passed to `speak()`. The TTS lifecycle
   // observer (event: 'start' | 'end') doesn't carry the spoken text,
   // but the in-flight tracker matches FIFO entries by exact question
@@ -1607,6 +1760,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
       };
       speak(text, {
+        // PLAN-D D5 — an ask spoken during a voice pause is reported at
+        // PLAYBACK START, never at enqueue.
+        onStart: () => {
+          if (voicePausedRef.current) {
+            clientDiagnostic('voice_pause_speech_spoken', { kind: 'ask', text });
+          }
+        },
         onEnd: () => {
           clearRefIfMine();
           ttsQueueResumeIfDeferred();
@@ -2832,7 +2992,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           ) {
             speakPoorSignalAdvisory();
           }
-          setInterim(text);
+          // PLAN-D D2 — while voice-paused only the on-screen interim line is
+          // suppressed; the speaking flag, the phantom-VAD watchdog cancel and
+          // the poor-signal probe resolution all keep running.
+          if (!voicePausedRef.current) setInterim(text);
           // Mirror iOS `isSpeaking` flag — interim arrival proves the
           // inspector is mid-utterance. The phantom-VAD watchdog
           // armed by `onSpeechStarted` would otherwise un-flip the
@@ -3088,6 +3251,50 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
             return;
           }
+          // PLAN-D D2 — THE VOICE-PAUSE BOUNDARY. Below session/epoch
+          // admission, the duplicate drop, the FinalWindowV1 record and both
+          // TTS echo gates; above the naming buffer, the burst buffer and
+          // everything `dispatchFinal` does (voice commands, regex fill,
+          // chime, ask consumption, forward). While paused, a final either
+          // resumes or requests the still-paused cue — nothing else happens
+          // below this line.
+          const voicePauseCommand = matchVoicePauseCommand(text);
+          if (voicePausedRef.current) {
+            if (voicePauseCommand === 'resume' && !isResumeMatcherDisarmed()) {
+              resumeWithOriginRef.current('phrase');
+              return;
+            }
+            requestStillPausedCue(text);
+            return;
+          }
+          if (voicePauseCommand === 'pause') {
+            // D2 entry step 1 — flush the pre-pause input buffers. DETACH
+            // FIRST (clear both timers, null both refs) so a dispatch that
+            // re-enters the final path cannot read a slot again; then
+            // dispatch in CAPTURE order — burst, then naming — as SEPARATE
+            // turns, through `dispatchFinal` directly. The burst wrapper
+            // would arm a fresh 500 ms timer on the emptied slot, which is a
+            // dispatch firing during the pause.
+            const burstSlot = burstBufferRef.current;
+            const namingSlot = pendingNamingBufferRef.current;
+            if (burstSlot) clearTimeout(burstSlot.timer);
+            if (namingSlot) clearTimeout(namingSlot.timer);
+            burstBufferRef.current = null;
+            pendingNamingBufferRef.current = null;
+            if (burstSlot) dispatchFinal(burstSlot.text, burstSlot.confidence, burstSlot.finals);
+            if (namingSlot) {
+              dispatchFinal(namingSlot.text, namingSlot.confidence, namingSlot.finals);
+            }
+            enterVoicePause();
+            return;
+          }
+          if (voicePauseCommand === 'resume') {
+            // Not paused: the exit's not-set branch, which no-ops while
+            // recording (the phrase-and-tap-in-one-tick case). Consumed as
+            // a command, never forwarded.
+            resumeWithOriginRef.current('phrase');
+            return;
+          }
           // Bug K (2026-05-11) — pending-naming utterance buffer.
           // If a previous final was a bare "Circuit N is" without
           // completion, it's currently held in pendingNamingBufferRef
@@ -3272,7 +3479,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         return await api.deepgramKey(sessionIdRef.current);
       }, sourceSampleRate);
     },
-    [liveFill, onInspectorStoppedSpeaking, uploadFeedbackIssue]
+    [
+      liveFill,
+      onInspectorStoppedSpeaking,
+      uploadFeedbackIssue,
+      enterVoicePause,
+      isResumeMatcherDisarmed,
+      requestStillPausedCue,
+    ]
   );
 
   /** Apply a structured Sonnet extraction to the active JobDetail.
@@ -3693,6 +3907,38 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // A02D — a PLAYING clarification head torn down (direct-prompt
       // preemption, purge) re-parks and speaks once afterwards.
       handleHeldFragmentClarificationTornDown(dedupeKey, reason);
+    });
+    // PLAN-D D5 + D1 — per-head playback observation (every head, keyed or
+    // not). Reports `voice_pause_speech_spoken` at PLAYBACK START for every
+    // item heard during a voice pause and for the pause's own strings, and
+    // disarms the resume matcher while a cue containing the resume phrase
+    // plays. Observational only: it cannot hold, defer or drop anything.
+    ttsQueueSetHeadPlaybackObserver((event, item) => {
+      const phraseBearing = containsResumePhrase(item.text);
+      if (event === 'end') {
+        if (phraseBearing) {
+          resumePhraseEchoRef.current = {
+            playing: false,
+            untilMs: Date.now() + VOICE_PAUSE_SELF_ECHO_WINDOW_MS,
+          };
+        }
+        return;
+      }
+      if (phraseBearing) resumePhraseEchoRef.current = { playing: true, untilMs: 0 };
+      // Retire a tagged response text at its playback start, paused or not.
+      const responseIndex = pendingResponseTextsRef.current.indexOf(item.text);
+      if (responseIndex !== -1) pendingResponseTextsRef.current.splice(responseIndex, 1);
+      if (!voicePausedRef.current && !VOICE_PAUSE_PRODUCED_TEXTS.has(item.text)) return;
+      const key = item.dedupeKey ?? '';
+      let kind: 'read_back' | 'response' | 'cue' | 'advisory' = 'read_back';
+      if (key.startsWith('mode-status:') || VOICE_PAUSE_PRODUCED_TEXTS.has(item.text)) {
+        kind = 'cue';
+      } else if (item.text === POOR_SIGNAL_ADVISORY_TEXT || key.startsWith('uplink-loss:')) {
+        kind = 'advisory';
+      } else if (responseIndex !== -1 || key.startsWith(LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX)) {
+        kind = 'response';
+      }
+      clientDiagnostic('voice_pause_speech_spoken', { kind, text: item.text });
     });
     // §A1b — audible playback started: the reservation converts (field-nil
     // keys start their 30 s TTL; field keys are already permanent).
@@ -4404,6 +4650,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         const spokenText = localSpokenOverride ?? response.spoken_response;
         if (spokenText) {
+          // PLAN-D D5 — tag the text so its playback start reports
+          // `kind: 'response'`. Bounded so an unplayed text cannot grow it.
+          pendingResponseTextsRef.current.push(spokenText);
+          if (pendingResponseTextsRef.current.length > 20) pendingResponseTextsRef.current.shift();
           // Voice-command responses are always audible on both clients. They
           // remain on the existing FIFO behind any earlier read-backs.
           if (deliveryToken) {
@@ -5121,6 +5371,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setSonnetCostUsd(0);
     setTranscript([]);
     setInterim('');
+    // PLAN-D D4 — every session starts unpaused, with no reminder armed.
+    resetVoicePauseState();
     questionsRef.current = [];
     setQuestions([]);
     setProcessingCount(0);
@@ -5410,6 +5662,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       teardownSleep();
     }
   }, [
+    resetVoicePauseState,
     setState,
     beginMicPipeline,
     beginTick,
@@ -5485,6 +5738,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // Cancel any in-flight TTS so the last confirmation doesn't keep
     // speaking after the inspector has ended the session.
     cancelSpeech();
+    // PLAN-D D4 teardown — `voicePaused`, the reminder timer and the
+    // still-paused throttle stamp die with the session.
+    resetVoicePauseState();
     // Drop the TTS lifecycle observer so any post-stop speak() (e.g.
     // the tour controller used outside a recording session) doesn't
     // attempt to mutate a torn-down sleep manager. Mirrors the symmetric
@@ -5539,7 +5795,16 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // can never clear a fresher session's claim, and a fresh session's
     // OWN resume() is never blocked by a stale claim belonging to a
     // different (superseded) sessionId in the first place.
-  }, [setState, clearTick, teardownMic, teardownDeepgram, teardownSonnet, teardownSleep, liveFill]);
+  }, [
+    setState,
+    clearTick,
+    teardownMic,
+    teardownDeepgram,
+    teardownSonnet,
+    teardownSleep,
+    liveFill,
+    resetVoicePauseState,
+  ]);
 
   /** Manual pause — the inspector tapped the Pause button (also reached
    *  via BFCache pagehide/freeze auto-pause and the visibility-recovery
@@ -5561,6 +5826,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // from a pre-stop session can't flip sleeping → active on a freshly
     // restarted session).
     if (statusRef.current !== 'active') return;
+    // PLAN-D — the Pause button is hidden during a voice pause, but the
+    // lifecycle auto-pause (BFCache pagehide / freeze) still reaches here.
+    // The button pause tears the mic down, so the voice pause cannot
+    // survive it: fold it into the button pause silently (its reminder,
+    // throttle and ledger cut go), and the Resume tap takes the button
+    // path's reconnect exit.
+    if (voicePausedRef.current) resetVoicePauseState();
     pausedLightweightRef.current = true;
     // Suspend (don't destroy) the automatic sleep timer BEFORE anything
     // else so a flag-ON 60s no-transcript timeout can't fire
@@ -5604,134 +5876,155 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // needed for that UI contract and would touch every 'active' |
     // 'sleeping' branch elsewhere in this file for no behavioural gain.
     setState('sleeping');
-  }, [setState, clearTick, teardownMic, disconnectDeepgramForPause]);
+  }, [setState, clearTick, teardownMic, disconnectDeepgramForPause, resetVoicePauseState]);
 
   /** Manual resume — mirrors the wake path. If Deepgram was torn down
    *  (sleeping), reopen it; otherwise just unpause and replay the ring
    *  buffer so any audio captured while paused reaches the ASR. The mic
    *  + ring buffer keep running through both doze and sleep, so the
    *  replay is always valid. */
-  const resume = React.useCallback(async () => {
-    // PLAN-E-TERM — pause→resume is a declared capture discontinuity.
-    captureWallClockRef.current?.markDiscontinuity();
-    // Synchronous guard. resume() is legal only from the paused/sleeping
-    // states — anything else (including a late retry from the overlay
-    // while we've already rotated to a fresh session) must no-op.
-    if (statusRef.current !== 'sleeping') return;
-    // C2a (PLAN-C, id 120) — Codex diff-review r1: resume() is async and
-    // `statusRef.current` doesn't flip away from 'sleeping' until the
-    // very end, so the guard above alone does not stop a SECOND resume()
-    // call from racing a first one still in flight (double-tap Resume).
-    // Snapshot sessionId so the late-resolving openDeepgram / beginMic
-    // paths below can detect if a stop() raced them, AND so the
-    // in-flight claim just below is scoped to THIS session (r4 fix —
-    // see resumeInFlightRef's docblock).
-    const sessionId = sessionIdRef.current;
-    // Claim this synchronously, before any await, so a racing second
-    // call FOR THIS SAME SESSION is a clean no-op instead of building a
-    // duplicate mic/Deepgram/Sonnet pipeline. A DIFFERENT session's
-    // resume() (the claim holds a stale sessionId) is NOT blocked —
-    // it overwrites the claim and proceeds; the stale call's own
-    // `finally` below will find its claim no longer matches and
-    // correctly leave the new one alone.
-    if (resumeInFlightRef.current === sessionId) return;
-    resumeInFlightRef.current = sessionId;
-    // Re-prime TTS inside the Resume-button user gesture stack frame
-    // BEFORE any await. iPad Safari can drop the audio gesture grant
-    // during a long pause (autoplay policy expires it), so a Resume
-    // tap is the next user gesture and is our chance to refresh both
-    // the SpeechSynthesis voices cache and the shared audio element's
-    // play() grant. Without this, the first ask_user after a Resume
-    // is silent in exactly the same way the very-first ask_user
-    // would be without start()'s primeTts.
-    primeTts();
-    setErrorMessage(null);
-    try {
-      if (pausedLightweightRef.current) {
-        // C2a — mirror of the lighter-weight pause: mic-only reopen
-        // (deliberately `beginMicOnly`, NOT `beginMicPipeline` — the
-        // latter's trailing `openSonnet()` would silently rebuild the
-        // Sonnet session this path exists to keep alive) + Deepgram
-        // reconnect + the EXISTING SonnetSession (never torn down, so
-        // `resume()` un-pauses it rather than rebuilding it). NO
-        // ring-buffer drain / replay — the buffer was reset (not
-        // filled) during the pause because the mic was stopped, so
-        // there is nothing captured to send.
-        pausedLightweightRef.current = false;
-        // Codex diff-review r3 — beginMicOnly() reports whether the
-        // session was still current when its mic-permission await
-        // resolved. r2's fix stopped the orphaned mic handle in that
-        // case, but this call still fell through into openDeepgram() /
-        // sonnetRef.resume() / resumeTimer() against whatever session
-        // is CURRENTLY live (a stale resume interfering with a fresh
-        // one). Bail immediately instead — nothing has been opened for
-        // this stale attempt yet, so there is nothing to unwind.
-        const micOk = await beginMicOnly();
-        if (!micOk) return;
-        await openDeepgram(16000);
-        sonnetRef.current?.resume();
-        // Re-arm the automatic timer per the session-latched flag.
-        // SleepManager no-ops internally when autoSleepEnabled is
-        // false, so this call is safe unconditionally (test 4b).
-        sleepManagerRef.current?.resumeTimer();
-      } else {
-        // Automatic-timer-triggered full sleep (flag ON) — Deepgram +
-        // Sonnet were fully torn down by SleepManager's onEnterSleeping;
-        // reopen both and replay whatever the still-running ring buffer
-        // captured during sleep.
-        const mic = micRef.current;
-        if (!mic) {
-          await beginMicPipeline();
-        } else {
-          // Ingress resample in `beginMicPipeline` keeps the ring buffer
-          // + DeepgramService in 16kHz for this session — no need to
-          // forward the raw device rate here.
-          // A02D — replay retired: charge the ring as staged loss, re-send
-          // nothing.
-          chargeRingAsStagedLoss('resume_from_full_sleep');
-          await openDeepgram(16000);
-          openSonnet();
-        }
-      }
-      // stop() ran while we awaited openDeepgram / beginMicPipeline —
-      // drop the work on the floor. Otherwise we'd flip `idle → active`
-      // on a dead session.
-      if (sessionIdRef.current !== sessionId) {
-        teardownDeepgram();
-        teardownSonnet();
+  const resume = React.useCallback(
+    async (via?: unknown) => {
+      // PLAN-D D3 — ONE origin-aware exit. The Resume tap (an onClick hands
+      // this its event, so anything but 'phrase' is the tap) and the resume
+      // phrase both land here. A voice pause released neither the mic nor
+      // Deepgram, so its exit reconnects nothing and marks no capture
+      // discontinuity. When no voice pause holds, the button-pause path
+      // below runs unchanged — and no-ops from 'active'.
+      const origin: 'phrase' | 'tap' = via === 'phrase' ? 'phrase' : 'tap';
+      if (voicePausedRef.current) {
+        // The tap is a user gesture: refresh the audio grant exactly as the
+        // button-pause resume does, before anything else runs.
+        if (origin === 'tap') primeTts();
+        exitVoicePause(origin);
         return;
       }
-      setState('active');
-      beginTick();
-    } catch (err) {
-      if (sessionIdRef.current !== sessionId) return;
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMessage(msg);
-      setState('error');
-      teardownMic();
-      teardownDeepgram();
-      teardownSonnet();
-      teardownSleep();
-    } finally {
-      // Only release if this invocation's claim is still the CURRENT
-      // one — a stale (superseded) session's resume() must never clear
-      // a fresher session's in-flight claim out from under it (r4 fix).
-      if (resumeInFlightRef.current === sessionId) {
-        resumeInFlightRef.current = null;
+      // PLAN-E-TERM — pause→resume is a declared capture discontinuity.
+      captureWallClockRef.current?.markDiscontinuity();
+      // Synchronous guard. resume() is legal only from the paused/sleeping
+      // states — anything else (including a late retry from the overlay
+      // while we've already rotated to a fresh session) must no-op.
+      if (statusRef.current !== 'sleeping') return;
+      // C2a (PLAN-C, id 120) — Codex diff-review r1: resume() is async and
+      // `statusRef.current` doesn't flip away from 'sleeping' until the
+      // very end, so the guard above alone does not stop a SECOND resume()
+      // call from racing a first one still in flight (double-tap Resume).
+      // Snapshot sessionId so the late-resolving openDeepgram / beginMic
+      // paths below can detect if a stop() raced them, AND so the
+      // in-flight claim just below is scoped to THIS session (r4 fix —
+      // see resumeInFlightRef's docblock).
+      const sessionId = sessionIdRef.current;
+      // Claim this synchronously, before any await, so a racing second
+      // call FOR THIS SAME SESSION is a clean no-op instead of building a
+      // duplicate mic/Deepgram/Sonnet pipeline. A DIFFERENT session's
+      // resume() (the claim holds a stale sessionId) is NOT blocked —
+      // it overwrites the claim and proceeds; the stale call's own
+      // `finally` below will find its claim no longer matches and
+      // correctly leave the new one alone.
+      if (resumeInFlightRef.current === sessionId) return;
+      resumeInFlightRef.current = sessionId;
+      // Re-prime TTS inside the Resume-button user gesture stack frame
+      // BEFORE any await. iPad Safari can drop the audio gesture grant
+      // during a long pause (autoplay policy expires it), so a Resume
+      // tap is the next user gesture and is our chance to refresh both
+      // the SpeechSynthesis voices cache and the shared audio element's
+      // play() grant. Without this, the first ask_user after a Resume
+      // is silent in exactly the same way the very-first ask_user
+      // would be without start()'s primeTts.
+      primeTts();
+      setErrorMessage(null);
+      try {
+        if (pausedLightweightRef.current) {
+          // C2a — mirror of the lighter-weight pause: mic-only reopen
+          // (deliberately `beginMicOnly`, NOT `beginMicPipeline` — the
+          // latter's trailing `openSonnet()` would silently rebuild the
+          // Sonnet session this path exists to keep alive) + Deepgram
+          // reconnect + the EXISTING SonnetSession (never torn down, so
+          // `resume()` un-pauses it rather than rebuilding it). NO
+          // ring-buffer drain / replay — the buffer was reset (not
+          // filled) during the pause because the mic was stopped, so
+          // there is nothing captured to send.
+          pausedLightweightRef.current = false;
+          // Codex diff-review r3 — beginMicOnly() reports whether the
+          // session was still current when its mic-permission await
+          // resolved. r2's fix stopped the orphaned mic handle in that
+          // case, but this call still fell through into openDeepgram() /
+          // sonnetRef.resume() / resumeTimer() against whatever session
+          // is CURRENTLY live (a stale resume interfering with a fresh
+          // one). Bail immediately instead — nothing has been opened for
+          // this stale attempt yet, so there is nothing to unwind.
+          const micOk = await beginMicOnly();
+          if (!micOk) return;
+          await openDeepgram(16000);
+          sonnetRef.current?.resume();
+          // Re-arm the automatic timer per the session-latched flag.
+          // SleepManager no-ops internally when autoSleepEnabled is
+          // false, so this call is safe unconditionally (test 4b).
+          sleepManagerRef.current?.resumeTimer();
+        } else {
+          // Automatic-timer-triggered full sleep (flag ON) — Deepgram +
+          // Sonnet were fully torn down by SleepManager's onEnterSleeping;
+          // reopen both and replay whatever the still-running ring buffer
+          // captured during sleep.
+          const mic = micRef.current;
+          if (!mic) {
+            await beginMicPipeline();
+          } else {
+            // Ingress resample in `beginMicPipeline` keeps the ring buffer
+            // + DeepgramService in 16kHz for this session — no need to
+            // forward the raw device rate here.
+            // A02D — replay retired: charge the ring as staged loss, re-send
+            // nothing.
+            chargeRingAsStagedLoss('resume_from_full_sleep');
+            await openDeepgram(16000);
+            openSonnet();
+          }
+        }
+        // stop() ran while we awaited openDeepgram / beginMicPipeline —
+        // drop the work on the floor. Otherwise we'd flip `idle → active`
+        // on a dead session.
+        if (sessionIdRef.current !== sessionId) {
+          teardownDeepgram();
+          teardownSonnet();
+          return;
+        }
+        setState('active');
+        beginTick();
+      } catch (err) {
+        if (sessionIdRef.current !== sessionId) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setErrorMessage(msg);
+        setState('error');
+        teardownMic();
+        teardownDeepgram();
+        teardownSonnet();
+        teardownSleep();
+      } finally {
+        // Only release if this invocation's claim is still the CURRENT
+        // one — a stale (superseded) session's resume() must never clear
+        // a fresher session's in-flight claim out from under it (r4 fix).
+        if (resumeInFlightRef.current === sessionId) {
+          resumeInFlightRef.current = null;
+        }
       }
-    }
-  }, [
-    setState,
-    beginMicOnly,
-    beginMicPipeline,
-    beginTick,
-    openDeepgram,
-    openSonnet,
-    teardownMic,
-    teardownDeepgram,
-    teardownSonnet,
-    teardownSleep,
-  ]);
+    },
+    [
+      setState,
+      beginMicOnly,
+      beginMicPipeline,
+      beginTick,
+      openDeepgram,
+      openSonnet,
+      teardownMic,
+      teardownDeepgram,
+      teardownSonnet,
+      teardownSleep,
+      exitVoicePause,
+    ]
+  );
+  resumeWithOriginRef.current = (via) => {
+    void resume(via);
+  };
 
   // Auto-dismiss timer registry — keyed by question text (the same key
   // the dedup logic in onQuestion uses). Mirrors iOS's per-alert
@@ -6064,6 +6357,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       errorMessage,
       backendSessionId,
       currentBoardId,
+      voicePaused,
       start,
       stop,
       getClientSessionId,
@@ -6090,6 +6384,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       errorMessage,
       backendSessionId,
       currentBoardId,
+      voicePaused,
       start,
       stop,
       getClientSessionId,

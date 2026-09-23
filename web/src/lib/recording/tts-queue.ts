@@ -181,6 +181,36 @@ let onPlaybackStarted: ((dedupeKey: string) => void) | null = null;
  * `reset()`. */
 let onStartedHeadTornDown: ((dedupeKey: string, reason: DiscardReason) => void) | null = null;
 
+/**
+ * PLAN-D D5 — per-head playback observer. Fired with `'start'` at the moment
+ * real audio begins for EVERY head (keyed or not), and with `'end'` when a
+ * STARTED head reaches any terminal: natural end, a post-start error, or a
+ * manual teardown. Carries the head's text so the recording session can emit
+ * `voice_pause_speech_spoken` at playback start (never at enqueue) and can
+ * disarm the resume matcher while a cue containing the resume phrase plays.
+ * Purely observational — it cannot defer, drop or reorder anything. Same
+ * lifecycle as the other hooks: null until registered, cleared by `reset()`.
+ */
+export type HeadPlaybackEvent = 'start' | 'end';
+let headPlaybackObserver:
+  | ((event: HeadPlaybackEvent, item: { text: string; dedupeKey?: string }) => void)
+  | null = null;
+
+export function setHeadPlaybackObserver(
+  fn: ((event: HeadPlaybackEvent, item: { text: string; dedupeKey?: string }) => void) | null
+): void {
+  headPlaybackObserver = fn;
+}
+
+function notifyHeadPlayback(event: HeadPlaybackEvent, item: QueueHead | null): void {
+  if (!item || !headPlaybackObserver) return;
+  try {
+    headPlaybackObserver(event, { text: item.text, dedupeKey: item.dedupeKey });
+  } catch {
+    /* swallow — an observer must never wedge the queue */
+  }
+}
+
 export function setShouldDeferPlayback(fn: () => boolean): void {
   shouldDeferPlayback = fn;
 }
@@ -279,6 +309,7 @@ function pumpIfIdle(): void {
           /* swallow — a bad consumer must not wedge the queue */
         }
       }
+      notifyHeadPlayback('start', next);
     },
     onEnd: () => completeHead(myId),
     // Synthesis/native playback can fail before `onStart`. In that case the
@@ -333,6 +364,7 @@ function completeHead(id: number, failed = false): void {
   currentCanceller = null;
   deferredHead = null;
   clientDiagnostic('tts_queue_complete', { id, failed, hadStarted });
+  if (hadStarted) notifyHeadPlayback('end', finished);
   try {
     // PLAN-E2 — a STARTED head that failed is NOT a natural completion:
     // route it to `onPlaybackFailed` only, never `onEnd`. A never-started
@@ -396,6 +428,7 @@ function tearDownCurrentHeadManually(reason: DiscardReason): { discarded: boolea
   }
   const canceller = currentCanceller;
   const prepared = deferredHead?.prepared ?? null;
+  const tornDownHead = head;
   head = null;
   busy = false;
   currentHeadId = null;
@@ -415,6 +448,7 @@ function tearDownCurrentHeadManually(reason: DiscardReason): { discarded: boolea
       /* swallow */
     }
   }
+  if (wasStarted) notifyHeadPlayback('end', tornDownHead);
   return { discarded };
 }
 
@@ -505,6 +539,7 @@ export function reset(): void {
   onDiscarded = null;
   onPlaybackStarted = null;
   onStartedHeadTornDown = null;
+  headPlaybackObserver = null;
 }
 
 /** Test-only — wipe ALL module state including the id counter + wiring. */
@@ -521,6 +556,7 @@ export function __resetForTests(): void {
   onDiscarded = null;
   onPlaybackStarted = null;
   onStartedHeadTornDown = null;
+  headPlaybackObserver = null;
 }
 
 /** Read-only introspection for diagnostics / tests. */
