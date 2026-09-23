@@ -5,7 +5,8 @@
   "packages/shared-utils/src/voice-commands.ts": [
     "recording/voice-command-executor-e-g-move",
     "recording/dictated-readback-policy",
-    "recording/ze-accepted-alias-consistency"
+    "recording/ze-accepted-alias-consistency",
+    "circuits/ocpd-bs-en-free-text-client"
   ],
   "web/src/app/alerts/page.tsx": [
     "dashboard/alertsview",
@@ -344,13 +345,15 @@
     "crosscutting/keyboard-accessory-bar"
   ],
   "web/src/components/job/circuits-schedule-desktop.tsx": [
-    "crosscutting/keyboard-accessory-bar"
+    "crosscutting/keyboard-accessory-bar",
+    "circuits/ocpd-bs-en-free-text-client"
   ],
   "web/src/components/job/circuits-sticky-table.tsx": [
     "circuits-col/constants-209",
     "circuits-col/constants-210",
     "circuits-misc/circuitstab-565",
-    "crosscutting/keyboard-accessory-bar"
+    "crosscutting/keyboard-accessory-bar",
+    "circuits/ocpd-bs-en-free-text-client"
   ],
   "web/src/components/job/floating-action-bar.tsx": [
     "crosscutting/floating-mic-fab-when-idle"
@@ -580,10 +583,12 @@
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
     "ccu/main-switch-target",
-    "supply/surge-namespace"
+    "supply/surge-namespace",
+    "circuits/ocpd-bs-en-free-text-client"
   ],
   "web/src/lib/recording/apply-document-extraction.ts": [
-    "supply/surge-namespace"
+    "supply/surge-namespace",
+    "circuits/ocpd-bs-en-free-text-client"
   ],
   "web/src/lib/recording/apply-extraction.ts": [
     "installation/eic-comments",
@@ -593,7 +598,8 @@
     "recording/impedance-out-of-range-divergence",
     "recording/observation-id-dedupe",
     "recording/replaces-cleared-multiboard",
-    "recording/ze-accepted-alias-consistency"
+    "recording/ze-accepted-alias-consistency",
+    "circuits/ocpd-bs-en-free-text-client"
   ],
   "web/src/lib/recording/board-clear.ts": [
     "recording/ze-accepted-alias-consistency"
@@ -723,5 +729,29 @@
   ],
   "web/src/lib/recording/poor-signal-probe.ts": [
     "recording/poor-signal-probe"
+  ],
+  "packages/shared-utils/src/ocpd-standard.ts": [
+    "circuits/ocpd-bs-en-free-text-client"
+  ],
+  "packages/shared-utils/src/max-zs-lookup.ts": [
+    "circuits/ocpd-bs-en-free-text-client"
+  ],
+  "packages/shared-utils/src/closed-enum-guard.ts": [
+    "circuits/ocpd-bs-en-free-text-client"
+  ],
+  "packages/shared-utils/src/apply-defaults.ts": [
+    "circuits/ocpd-bs-en-free-text-client"
+  ],
+  "web/src/components/job/ocpd-standard-field.tsx": [
+    "circuits/ocpd-bs-en-free-text-client"
+  ],
+  "web/src/components/job/max-zs-marker.tsx": [
+    "circuits/ocpd-bs-en-free-text-client"
+  ],
+  "web/src/lib/recording/apply-regex-match.ts": [
+    "circuits/ocpd-bs-en-free-text-client"
+  ],
+  "web/src/lib/constants/circuit-field-options.ts": [
+    "circuits/ocpd-bs-en-free-text-client"
   ]
 }

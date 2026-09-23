@@ -20,6 +20,27 @@
  *                 `src/__tests__/evidence-regex-fresh-occurrence-verify.test.js`
  *                 runs this in CI, so editing an inventoried file means
  *                 regenerating the document with fresh run inputs.
+ *   --refresh-digests=<plan>  re-pin ONLY the digest block of the committed
+ *                 document, leaving every recorded RUN RESULT untouched, and
+ *                 append a dated row to `digest_refreshes` naming the plan and
+ *                 the files re-pinned.
+ *
+ *                 Added 2026-09-23 (PLAN-CC), for the case the original design
+ *                 had no answer to: a LATER plan edits an inventoried file for
+ *                 an unrelated reason. Both alternatives were wrong. Hand-
+ *                 editing the digests is what this header forbids, and re-
+ *                 running with no inputs would record A02D's baselines as
+ *                 `not_run` — destroying the evidence the document exists to
+ *                 hold. Re-running with THIS plan's test output would be worse
+ *                 still: it would claim A02D's red proof was measured against
+ *                 code A02D never saw.
+ *
+ *                 So the refresh is deliberately narrow and self-declaring.
+ *                 The digests go on attesting the CHECKOUT, which is what the
+ *                 CI gate is for; `generated_from_commit` and every result
+ *                 stay as A02D recorded them; and `digest_refreshes` is the
+ *                 audit trail that says which files stopped being the bytes
+ *                 A02D ran against, when, and under which plan.
  *
  * The document pins sha256 digests of the checked-out SOURCE, TEST and
  * FIXTURE bytes (never of the output file), the two baselines, the baseline
@@ -130,6 +151,51 @@ const HARNESS_INCOMPATIBLE = /is not a function|Cannot read properties of undefi
 function classifyBaselineFailure(message) {
   if (!message) return null;
   return HARNESS_INCOMPATIBLE.test(message) ? 'harness_incompatible' : 'behavioural';
+}
+
+if (args['refresh-digests']) {
+  const plan = args['refresh-digests'];
+  if (plan === true) {
+    console.error('refresh-digests: pass the plan that is re-pinning, e.g. --refresh-digests=PLAN-CC');
+    process.exit(1);
+  }
+  const committed = loadJson(OUT);
+  if (!committed) {
+    console.error(`refresh-digests: ${OUT} missing`);
+    process.exit(1);
+  }
+  const fresh = {
+    sources: digests(SOURCES),
+    fixtures: digests(FIXTURES),
+    tests: digests([...BACKEND_TESTS, ...WEB_TESTS]),
+  };
+  const changed = [];
+  for (const group of Object.keys(fresh)) {
+    for (const [file, digest] of Object.entries(fresh[group])) {
+      if ((committed.digests?.[group] ?? {})[file] !== digest) changed.push(`${group}: ${file}`);
+    }
+  }
+  if (!changed.length) {
+    console.log(`refresh-digests: ${OUT} already matches the checkout — nothing to do`);
+    process.exit(0);
+  }
+  committed.digests = fresh;
+  committed.digest_refreshes = [
+    ...(committed.digest_refreshes ?? []),
+    {
+      plan,
+      date: new Date().toISOString().slice(0, 10),
+      files: changed.slice().sort(),
+      note:
+        'Digests re-pinned to the checkout. Every recorded run result above is still ' +
+        "A02D's and was measured against the bytes this plan changed, not against these.",
+    },
+  ];
+  fs.writeFileSync(path.join(repoRoot, OUT), JSON.stringify(committed, null, 2) + '\n');
+  console.log(
+    `refresh-digests: re-pinned ${changed.length} digest(s) for ${plan}:\n  ${changed.join('\n  ')}`
+  );
+  process.exit(0);
 }
 
 if (args.verify) {

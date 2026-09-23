@@ -270,8 +270,8 @@ export function maxZsString(args: MaxZsLookupArgs): string | null {
  *  is NOT an oversight: `gM` and `aM` fuses have no 0.4 s / 5 s row in
  *  BS 7671 Table 41.4, so the honest answer for a gM BS 88-2 is null rather
  *  than the gG figure. */
-const STANDARD_TYPE_KEYS: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze(
-  {
+const STANDARD_TYPE_KEYS: Readonly<Record<string, Readonly<Record<string, string>>>> =
+  Object.freeze({
     'BS EN 60898': Object.freeze({ B: 'B', C: 'C', D: 'D' }),
     'BS EN 61009': Object.freeze({ B: 'B', C: 'C', D: 'D' }),
     'BS EN 62423': Object.freeze({ B: 'B', C: 'C', D: 'D' }),
@@ -281,8 +281,7 @@ const STANDARD_TYPE_KEYS: Readonly<Record<string, Readonly<Record<string, string
     'BS 88-3': Object.freeze({ GG: 'BS88' }),
     'BS EN 60269-2': Object.freeze({ GG: 'BS88' }),
     'BS EN 60269-3': Object.freeze({ GG: 'BS88' }),
-  }
-);
+  });
 
 export interface OcpdTupleLookupArgs {
   /** Canonical `ocpd_bs_en`. An empty or unknown standard yields null for any

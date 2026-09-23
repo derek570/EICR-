@@ -114,16 +114,14 @@ const CLOSED_ENUM_NOUNS: Readonly<Record<ClosedEnumReaskField, string>> = Object
  *  spoken ALIASES the parser actually accepts ("OCPD standard" is a real
  *  `CIRCUIT_FIELD_ALIASES` key) so the example the inspector hears is one
  *  the client can genuinely parse back. */
-const CLOSED_ENUM_EXAMPLE_PHRASES: Readonly<Record<ClosedEnumReaskField, string>> = Object.freeze(
-  {
-    wiring_type: 'wiring type A',
-    ref_method: 'reference method C',
-    ocpd_bs_en: 'OCPD standard BS EN 60898',
-    ocpd_type: 'OCPD type B',
-    rcd_bs_en: 'RCD standard BS EN 61008',
-    rcd_type: 'RCD type AC',
-  }
-);
+const CLOSED_ENUM_EXAMPLE_PHRASES: Readonly<Record<ClosedEnumReaskField, string>> = Object.freeze({
+  wiring_type: 'wiring type A',
+  ref_method: 'reference method C',
+  ocpd_bs_en: 'OCPD standard BS EN 60898',
+  ocpd_type: 'OCPD type B',
+  rcd_bs_en: 'RCD standard BS EN 61008',
+  rcd_type: 'RCD type AC',
+});
 
 /** Curated spoken-description → wiring-code map, ported VERBATIM from iOS
  *  `Constants.wiringTypeDescriptionToCode`. Exact-match only (uppercased
