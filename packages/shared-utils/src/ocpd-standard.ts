@@ -178,3 +178,17 @@ export function canonicaliseOcpdStandard(raw: unknown): string | null {
 export function isCanonicalOcpdStandard(value: string): boolean {
   return canonicaliseOcpdStandard(value) === value;
 }
+
+/**
+ * The AUTOMATIC-boundary rule, in one place: canonicalise what the algorithm
+ * can read, and store everything else exactly as it arrived.
+ *
+ * Imports and server applies have nobody to re-ask, so a miss must never drop
+ * the value — the row wears the compatibility marker instead and the inspector
+ * decides. This is the standard-write boundary table's "preserved as-is, row
+ * marker" column, and it is deliberately NOT what an interactive boundary
+ * does: a dictated miss re-asks, because there IS someone to ask.
+ */
+export function canonicaliseOcpdStandardForImport(value: string): string {
+  return canonicaliseOcpdStandard(value) ?? value;
+}

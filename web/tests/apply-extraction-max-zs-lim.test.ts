@@ -1,86 +1,29 @@
 /**
- * P3 Fix 6 (2026-07-23, feedback id 86) — OCPD-rating → max-Zs invalidation.
+ * Max-Zs invalidation through `applyExtractionToJob` — originally P3 Fix 6
+ * (2026-07-23, feedback id 86), rewritten for PLAN-CC (feedback-2026-09-17).
  *
- * When ocpd_rating_a transitions numeric → non-lookup-able sentinel (LIM), an
- * AUTO-DERIVED numeric ocpd_max_zs_ohm would persist stale on web (iOS nils it →
- * divergence, and a stale max-Zs feeds a false circuit result). The before/after
- * transition helper `shouldClearAutoDerivedMaxZs` clears it ONLY when it equals
- * the pre-LIM tuple's lookup (auto-derived), preserving a manual override.
- * ocpd_breaking_capacity_ka is NOT a lookup input → must never trigger.
+ * WHAT CHANGED AND WHY THIS FILE WAS REWRITTEN RATHER THAN PATCHED
+ * ----------------------------------------------------------------
+ * P3 Fix 6 answered "was this max Zs auto-derived?" by comparing the stored
+ * value against the PRE-transition lookup. That inference is wrong in exactly
+ * the case that matters: a hand-entered value which happens to equal the
+ * lookup was indistinguishable from a derived one, and got deleted. PLAN-CC
+ * records provenance durably in `ocpd_max_zs_source`, so
+ * `recomputeMaxZsForOcpdTuple` READS it instead of guessing, and the
+ * `shouldClearAutoDerivedMaxZs` helper this file used to unit-test is gone.
  *
- * NOTE (reachability): web's 3-tier value guard (apply-extraction.ts) blocks a
- * readings-based numeric→LIM OVERWRITE of a populated ocpd_rating_a, so the
- * transition primarily reaches this helper via the UI/manual-edit + projected
- * row path. The helper is therefore unit-tested directly with before/after row
- * state — exactly the "transition helper that receives BEFORE and AFTER circuit
- * state" the plan specifies — and the apply-extraction wiring is covered for the
- * reachable no-op cases.
+ * The RULE it enforced survives and is strictly wider — an `auto` row whose
+ * tuple stops resolving is cleared, whether the rating became LIM (P3's only
+ * case) or the standard or the type changed. The cases below drive that rule
+ * through the real apply path, plus the two states that now behave
+ * differently on purpose: `manual` is never cleared, and a PRE-PLAN row with
+ * no key at all is preserved rather than cleared on a guess.
  */
 import { describe, expect, it } from 'vitest';
-import { shouldClearAutoDerivedMaxZs, applyExtractionToJob } from '@/lib/recording/apply-extraction';
+import { applyExtractionToJob } from '@/lib/recording/apply-extraction';
 import type { ExtractionResult } from '@/lib/recording/sonnet-session';
 import type { CircuitRow, JobDetail } from '@/lib/types';
 
-// B 32A @ 0.4s auto-derives 1.44 Ω (Table 41.3).
-const priorNumeric: CircuitRow = {
-  id: 'c1',
-  circuit_ref: '1',
-  ocpd_type: 'B',
-  ocpd_rating_a: '32',
-  max_disconnect_time_s: '0.4',
-  ocpd_max_zs_ohm: '1.44',
-};
-
-describe('shouldClearAutoDerivedMaxZs — before/after transition helper (P3 Fix 6)', () => {
-  it('clears an AUTO-DERIVED max-Zs when the rating becomes LIM', () => {
-    const next: CircuitRow = { ...priorNumeric, ocpd_rating_a: 'LIM' };
-    expect(shouldClearAutoDerivedMaxZs(priorNumeric, next)).toBe(true);
-  });
-
-  it('PRESERVES a differing manual max-Zs override', () => {
-    const priorOverride: CircuitRow = { ...priorNumeric, ocpd_max_zs_ohm: '9.99' };
-    const next: CircuitRow = { ...priorOverride, ocpd_rating_a: 'LIM' };
-    expect(shouldClearAutoDerivedMaxZs(priorOverride, next)).toBe(false);
-  });
-
-  it('other non-numeric values (N/A, arbitrary text) also clear an auto-derived value', () => {
-    for (const v of ['N/A', 'limitation', 'xyz']) {
-      const next: CircuitRow = { ...priorNumeric, ocpd_rating_a: v };
-      expect(shouldClearAutoDerivedMaxZs(priorNumeric, next)).toBe(true);
-    }
-  });
-
-  it('no-ops when the max-Zs field is blank (nothing to clear)', () => {
-    const priorBlank: CircuitRow = { ...priorNumeric, ocpd_max_zs_ohm: '' };
-    const next: CircuitRow = { ...priorBlank, ocpd_rating_a: 'LIM' };
-    expect(shouldClearAutoDerivedMaxZs(priorBlank, next)).toBe(false);
-  });
-
-  it('no-ops when the rating is still numeric (normal recompute owns it)', () => {
-    const next: CircuitRow = { ...priorNumeric, ocpd_rating_a: '40' };
-    expect(shouldClearAutoDerivedMaxZs(priorNumeric, next)).toBe(false);
-  });
-
-  it('no-ops when there is no prior (new circuit — no auto-derived history)', () => {
-    const next: CircuitRow = { ...priorNumeric, ocpd_rating_a: 'LIM' };
-    expect(shouldClearAutoDerivedMaxZs(undefined, next)).toBe(false);
-  });
-
-  it('no-ops when the prior rating was already non-numeric (cannot prove auto-derivation)', () => {
-    const priorLim: CircuitRow = { ...priorNumeric, ocpd_rating_a: 'LIM' };
-    const next: CircuitRow = { ...priorLim };
-    expect(shouldClearAutoDerivedMaxZs(priorLim, next)).toBe(false);
-  });
-
-  it('a LIM ocpd_breaking_capacity_ka does NOT clear max-Zs (rating still numeric)', () => {
-    // breaking_capacity is not a lookup input; the rating is unchanged numeric,
-    // so the current-rating lookup still succeeds → helper returns false.
-    const next: CircuitRow = { ...priorNumeric, ocpd_breaking_capacity_ka: 'LIM' };
-    expect(shouldClearAutoDerivedMaxZs(priorNumeric, next)).toBe(false);
-  });
-});
-
-// ── apply-extraction wiring: reachable no-op cases ──────────────────────
 function makeJob(over: Partial<JobDetail> = {}): JobDetail {
   return {
     id: 'job_1',
@@ -106,105 +49,144 @@ function makeResult(over: Partial<ExtractionResult> = {}): ExtractionResult {
   };
 }
 
-describe('apply-extraction H3 wiring — Fix 6 does not spuriously clear', () => {
-  it('a valid numeric rating still auto-derives max-Zs (no regression)', () => {
+/** BS EN 60898 / B / 32 A @ 0.4 s derives 1.44 Ω (Table 41.2). */
+const derivedRow = (over: Partial<CircuitRow> = {}): CircuitRow => ({
+  id: 'c-1',
+  circuit_ref: '1',
+  circuit_designation: 'Cooker',
+  ocpd_bs_en: 'BS EN 60898',
+  ocpd_type: 'B',
+  ocpd_rating_a: '32',
+  max_disconnect_time_s: '0.4',
+  ocpd_max_zs_ohm: '1.44',
+  ...over,
+});
+
+describe('H3 wiring — a row this code derived is recomputed and cleared', () => {
+  it('a complete tuple auto-derives, and records that it did', () => {
     const row: CircuitRow = { id: 'c-1', circuit_ref: '1', circuit_designation: 'Cooker' };
     const applied = applyExtractionToJob(
       makeJob({ circuits: [row] }),
       makeResult({
         readings: [
+          { circuit: 1, field: 'ocpd_bs_en', value: 'BS EN 60898' },
           { circuit: 1, field: 'ocpd_type', value: 'B' },
           { circuit: 1, field: 'ocpd_rating_a', value: '32' },
           { circuit: 1, field: 'max_disconnect_time_s', value: '0.4' },
         ],
       })
     );
-    expect(applied!.patch.circuits![0].ocpd_max_zs_ohm).toBe('1.44');
+    const out = applied!.patch.circuits![0];
+    expect(out.ocpd_max_zs_ohm).toBe('1.44');
+    // Without this the very next tuple change would read the row as pre-plan
+    // data and refuse to recompute it for the rest of the job's life.
+    expect(out.ocpd_max_zs_source).toBe('auto');
   });
 
-  it('a LIM rating on a blank-max-Zs row does not fabricate or clear anything', () => {
-    const row: CircuitRow = {
-      id: 'c-1',
-      circuit_ref: '1',
-      ocpd_type: 'B',
-      max_disconnect_time_s: '0.4',
-    };
+  it('model path: a LIM reading overwrites the rating AND clears the auto value', () => {
     const applied = applyExtractionToJob(
-      makeJob({ circuits: [row] }),
+      makeJob({ circuits: [derivedRow({ ocpd_max_zs_source: 'auto' })] }),
+      makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' }] })
+    );
+    const out = applied!.patch.circuits![0];
+    expect(out.ocpd_rating_a).toBe('LIM');
+    expect(out.ocpd_max_zs_ohm ?? '').toBe('');
+    // The key goes with the value: a cleared cell that kept a stale source
+    // would never derive again.
+    expect(out.ocpd_max_zs_source ?? '').toBe('');
+  });
+
+  it('a STANDARD change alone invalidates an auto value — wider than P3 Fix 6', () => {
+    // The rating and type are untouched and still perfectly numeric, so the
+    // old rating→sentinel rule would not have fired at all. BS 3871 has no
+    // lookup row, so the 1.44 that was derived for a BS EN 60898 breaker is
+    // now a figure for a different device.
+    // Driven as a spoken CORRECTION (`replaces_cleared`), because the 3-tier
+    // value guard otherwise refuses to overwrite a populated column — which is
+    // itself correct and unrelated to this rule.
+    const applied = applyExtractionToJob(
+      makeJob({ circuits: [derivedRow({ ocpd_max_zs_source: 'auto' })] }),
+      makeResult({
+        readings: [
+          { circuit: 1, field: 'ocpd_bs_en', value: 'BS 3871', replaces_cleared: true } as never,
+        ],
+      })
+    );
+    const out = applied!.patch.circuits![0];
+    expect(out.ocpd_bs_en).toBe('BS 3871');
+    expect(out.ocpd_max_zs_ohm ?? '').toBe('');
+  });
+
+  it('a LIM rating on a blank-max-Zs row fabricates nothing', () => {
+    const applied = applyExtractionToJob(
+      makeJob({
+        circuits: [
+          { id: 'c-1', circuit_ref: '1', ocpd_bs_en: 'BS EN 60898', ocpd_type: 'B' } as CircuitRow,
+        ],
+      }),
       makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' }] })
     );
     expect(applied?.patch.circuits?.[0]?.ocpd_max_zs_ohm ?? '').toBe('');
   });
 
-  // Codex-r1 F5 — the MODEL path: a LIM reading now OVERWRITES a populated
-  // rating (the LIM-overwrite exception), so the rating becomes LIM AND the
-  // auto-derived max-Zs is cleared in the same apply.
-  it('model path: a LIM reading overwrites a populated rating AND clears the auto-derived max-Zs', () => {
-    const row: CircuitRow = {
-      id: 'c-1',
-      circuit_ref: '1',
-      circuit_designation: 'Cooker',
-      ocpd_type: 'B',
-      ocpd_rating_a: '32',
-      max_disconnect_time_s: '0.4',
-      ocpd_max_zs_ohm: '1.44',
-    };
+  it('a LIM ocpd_breaking_capacity_ka does NOT touch the max Zs', () => {
+    // Breaking capacity is not a lookup input, and never was.
     const applied = applyExtractionToJob(
-      makeJob({ circuits: [row] }),
-      makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' }] })
+      makeJob({ circuits: [derivedRow({ ocpd_max_zs_source: 'auto' })] }),
+      makeResult({ readings: [{ circuit: 1, field: 'ocpd_breaking_capacity_ka', value: 'LIM' }] })
     );
-    expect(applied!.patch.circuits![0].ocpd_rating_a).toBe('LIM'); // overwrote
-    expect(applied!.patch.circuits![0].ocpd_max_zs_ohm).toBe(''); // auto-derived cleared
+    const out = applied?.patch.circuits?.[0] ?? derivedRow();
+    expect(out.ocpd_max_zs_ohm).toBe('1.44');
+  });
+});
+
+describe('H3 wiring — the two states the helper must NOT touch', () => {
+  it('a MANUAL value survives a LIM rating, even when it equals the lookup', () => {
+    // The case P3 Fix 6 got wrong. `1.44` is exactly what the pre-LIM tuple
+    // computes, so the old equality inference deleted it.
+    for (const value of ['1.44', '9.99']) {
+      const applied = applyExtractionToJob(
+        makeJob({
+          circuits: [derivedRow({ ocpd_max_zs_ohm: value, ocpd_max_zs_source: 'manual' })],
+        }),
+        makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' }] })
+      );
+      const out = applied?.patch.circuits?.[0];
+      expect(out?.ocpd_max_zs_ohm).toBe(value);
+      expect(out?.ocpd_max_zs_source).toBe('manual');
+    }
   });
 
-  it('model path: a LIM reading preserves a differing manual max-Zs override', () => {
-    const row: CircuitRow = {
-      id: 'c-1',
-      circuit_ref: '1',
-      ocpd_type: 'B',
-      ocpd_rating_a: '32',
-      max_disconnect_time_s: '0.4',
-      ocpd_max_zs_ohm: '9.99',
-    };
+  it('a PRE-PLAN row with a value and NO key is preserved, not cleared', () => {
+    // Deliberate change of behaviour. The row's origin is unknown, so the
+    // honest answer is to keep it and mark it "unverified" on the grid and the
+    // PDF preflight rather than delete a reading that may have been measured.
     const applied = applyExtractionToJob(
-      makeJob({ circuits: [row] }),
+      makeJob({ circuits: [derivedRow()] }),
       makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' }] })
     );
-    expect(applied!.patch.circuits![0].ocpd_rating_a).toBe('LIM');
-    expect(applied?.patch.circuits?.[0]?.ocpd_max_zs_ohm ?? '9.99').toBe('9.99'); // preserved
+    const out = applied?.patch.circuits?.[0] ?? derivedRow();
+    expect(out.ocpd_max_zs_ohm).toBe('1.44');
+    expect(out.ocpd_max_zs_source ?? '').toBe('');
   });
+});
 
-  // Codex-r1 F6 — multi-board: main + sub-board both have circuit_ref "1", both
-  // with an auto-derived 1.44. The prior map is keyed by (board_id, ref)/id, so
-  // the row that receives the LIM has its provenance evaluated against ITS OWN
-  // prior (not a collided one) and only that row's max-Zs clears; the other
-  // board's max-Zs is never spuriously touched. (Web's per-circuit reading apply
-  // is ref-only/last-wins — a pre-existing single-board limitation — so the LIM
-  // lands on the sub row; the point of this test is that main is untouched.)
-  it('multi-board same-ref: an AMBIGUOUS LIM rating does NOT overwrite either board (no corruption)', () => {
-    // Web's per-circuit reading apply is ref-only; when two boards share
-    // circuit 1 the target is ambiguous, so the LIM-overwrite exception is
-    // SUPPRESSED (F6) — neither rating becomes LIM and neither max-Zs is
-    // touched. This is the pre-existing multi-board reading limitation, NOT a
-    // wrong-board corruption.
-    const main: CircuitRow = {
-      id: 'm-1',
-      circuit_ref: '1',
-      board_id: 'main',
-      ocpd_type: 'B',
-      ocpd_rating_a: '32',
-      max_disconnect_time_s: '0.4',
-      ocpd_max_zs_ohm: '1.44',
-    };
-    const sub: CircuitRow = {
+describe('H3 wiring — multi-board and free-text safety', () => {
+  // Codex-r1 F6 — main + sub-board both have circuit_ref "1". Web's
+  // per-circuit reading apply is ref-only, so an ambiguous target suppresses
+  // the LIM-overwrite exception entirely: neither rating becomes LIM and
+  // neither max Zs is touched. This is the pre-existing multi-board reading
+  // limitation, NOT a wrong-board corruption — which is what the assertion
+  // below is actually guarding.
+  it('an AMBIGUOUS same-ref LIM rating corrupts neither board', () => {
+    const main = derivedRow({ id: 'm-1', board_id: 'main', ocpd_max_zs_source: 'auto' });
+    const sub = derivedRow({
       id: 's-1',
-      circuit_ref: '1',
       board_id: 'sub',
-      ocpd_type: 'B',
       ocpd_rating_a: '16',
-      max_disconnect_time_s: '0.4',
       ocpd_max_zs_ohm: '2.87',
-    };
+      ocpd_max_zs_source: 'auto',
+    });
     const applied = applyExtractionToJob(
       makeJob({ circuits: [main, sub] }),
       makeResult({ readings: [{ circuit: 1, field: 'ocpd_rating_a', value: 'LIM' } as never] })
@@ -212,7 +194,6 @@ describe('apply-extraction H3 wiring — Fix 6 does not spuriously clear', () =>
     const out = applied?.patch.circuits ?? [main, sub];
     const mainOut = out.find((c) => c.id === 'm-1')!;
     const subOut = out.find((c) => c.id === 's-1')!;
-    // Neither board corrupted: ratings and max-Zs unchanged.
     expect(mainOut.ocpd_rating_a).toBe('32');
     expect(subOut.ocpd_rating_a).toBe('16');
     expect(mainOut.ocpd_max_zs_ohm).toBe('1.44');
@@ -231,7 +212,6 @@ describe('apply-extraction H3 wiring — Fix 6 does not spuriously clear', () =>
         readings: [{ circuit: 1, field: 'circuit_designation', value: 'LIM' } as never],
       })
     );
-    // The designation must be preserved — LIM is not a reading here.
     expect(applied?.patch.circuits?.[0]?.circuit_designation ?? 'Cooker').toBe('Cooker');
   });
 });

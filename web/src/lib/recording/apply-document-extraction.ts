@@ -36,7 +36,19 @@ import type {
   ObservationRow,
 } from '../types';
 import { hasValue, parseObservationCode } from './apply-extraction';
-import { repairCircuitDesignation } from '@certmate/shared-utils';
+import {
+  canonicaliseOcpdStandardForImport,
+  recomputeMaxZsForOcpdTuple,
+  repairCircuitDesignation,
+  writeMaxZs,
+  type MaxZsChangeLogger,
+} from '@certmate/shared-utils';
+
+/** PLAN-CC — local-only breadcrumb for a max Zs a document import
+ *  invalidated. Never shipped, never spoken. */
+const logDocMaxZsChange: MaxZsChangeLogger = (change) => {
+  console.debug('[document-import] max_zs_invalidated', change);
+};
 
 /** Whitelist of installation keys we let the extractor populate.
  *  Aligned with `InstallationShape` in
@@ -356,17 +368,32 @@ function mergeCircuits(
 
     if (idx != null) {
       // Matched — fill empty fields only.
-      const row = { ...existing[idx] };
+      const prior = existing[idx];
+      let row = { ...prior };
       let rowChanged = false;
       for (const [field, value] of Object.entries(analysed)) {
         if (field === 'circuit_ref') continue; // keep existing casing
         if (hasValue(row[field])) continue;
         if (!hasValue(value)) continue;
-        row[field] = value;
+        // PLAN-CC (write path 5 / M7) — an extracted max Zs that ACTUALLY
+        // commits is a document's recorded value, not a derivation, so it is
+        // written `manual` and the helper never recomputes over it. The
+        // occupied-cell `continue` above is the no-op case: value AND source
+        // are both left exactly as they were.
+        if (field === 'ocpd_max_zs_ohm') {
+          row = writeMaxZs(row, String(value), 'manual');
+        } else if (field === 'ocpd_bs_en') {
+          row[field] = canonicaliseOcpdStandardForImport(String(value));
+        } else {
+          row[field] = value;
+        }
         rowChanged = true;
       }
       if (rowChanged) {
-        existing[idx] = row;
+        // A filled tuple member can make the max Zs derivable, or make a
+        // derived one wrong. Runs after the whole row is assembled so one
+        // import turn produces one decision, not one per field.
+        existing[idx] = recomputeMaxZsForOcpdTuple(prior, row, logDocMaxZsChange);
         affected += 1;
       }
     } else {
@@ -381,12 +408,19 @@ function mergeCircuits(
         circuit_designation: '',
       };
       if (boardId) row.board_id = boardId;
+      let built = row;
       for (const [field, value] of Object.entries(analysed)) {
         if (field === 'id') continue;
         if (!hasValue(value)) continue;
-        row[field] = value;
+        if (field === 'ocpd_max_zs_ohm') {
+          built = writeMaxZs(built, String(value), 'manual');
+        } else if (field === 'ocpd_bs_en') {
+          built[field] = canonicaliseOcpdStandardForImport(String(value));
+        } else {
+          built[field] = value;
+        }
       }
-      existing.push(row);
+      existing.push(recomputeMaxZsForOcpdTuple(undefined, built, logDocMaxZsChange));
       byRef.set(key, existing.length - 1);
       affected += 1;
     }

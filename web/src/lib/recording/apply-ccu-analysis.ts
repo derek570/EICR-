@@ -36,7 +36,19 @@
 import type { CCUAnalysis, CCUAnalysisCircuit, CircuitRow, JobDetail } from '../types';
 import { findCanonicalMainBoard } from '../boards/canonical-main';
 import { hasValue } from './apply-extraction';
-import { repairCircuitDesignation, type CircuitMatch } from '@certmate/shared-utils';
+import {
+  canonicaliseOcpdStandardForImport,
+  recomputeMaxZsForOcpdTuple,
+  repairCircuitDesignation,
+  type CircuitMatch,
+  type MaxZsChangeLogger,
+} from '@certmate/shared-utils';
+
+/** PLAN-CC — local-only breadcrumb for a max Zs the CCU merge invalidated.
+ *  `console.debug` under the recording logger; never shipped, never spoken. */
+const logCcuMaxZsChange: MaxZsChangeLogger = (change) => {
+  console.debug('[ccu] max_zs_invalidated', change);
+};
 
 /**
  * PLAN-B2 (feedback id 128) — canonicalise every circuit label on an
@@ -587,7 +599,15 @@ function mergeMatchedCircuit(
   }
 
   // OCPD — merge-if-non-empty.
-  next.ocpd_bs_en = mergeField(next.ocpd_bs_en as string | undefined, analysed.ocpd_bs_en);
+  // PLAN-CC — canonicalise what the algorithm can read; store anything else
+  // exactly as the photo pipeline produced it. An import has nobody to
+  // re-ask, so a miss is preserved with the row marker, never dropped.
+  next.ocpd_bs_en = mergeField(
+    next.ocpd_bs_en as string | undefined,
+    hasValue(analysed.ocpd_bs_en)
+      ? canonicaliseOcpdStandardForImport(String(analysed.ocpd_bs_en))
+      : analysed.ocpd_bs_en
+  );
   next.ocpd_type = mergeField(
     next.ocpd_type as string | undefined,
     analysed.ocpd_type ?? undefined
@@ -608,7 +628,14 @@ function mergeMatchedCircuit(
     analysed.rcd_rating_ma
   );
 
-  return next;
+  // PLAN-CC (write paths 3 / M7) — a CCU photo can change any of the four
+  // tuple members on an EXISTING row, so a derived max Zs on that row may now
+  // be for the wrong device. The helper recomputes an `auto` value, clears it
+  // when the merged tuple has no row, and leaves a `manual` value and a
+  // pre-plan value with no key alone. An import boundary carries no explicit
+  // max Zs of its own today (`CCUAnalysisCircuit` has no such field), so there
+  // is no `manual` write here — only the derived consequence of the merge.
+  return recomputeMaxZsForOcpdTuple(existing, next, logCcuMaxZsChange);
 }
 
 function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): CircuitRow {
@@ -625,7 +652,9 @@ function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): Circuit
     circuit_designation: designation,
   };
 
-  if (hasValue(analysed.ocpd_bs_en)) row.ocpd_bs_en = analysed.ocpd_bs_en;
+  if (hasValue(analysed.ocpd_bs_en)) {
+    row.ocpd_bs_en = canonicaliseOcpdStandardForImport(String(analysed.ocpd_bs_en));
+  }
   if (hasValue(analysed.ocpd_type)) row.ocpd_type = analysed.ocpd_type;
   if (hasValue(analysed.ocpd_rating_a)) row.ocpd_rating_a = analysed.ocpd_rating_a;
   if (hasValue(analysed.ocpd_breaking_capacity_ka)) {
@@ -643,7 +672,11 @@ function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): Circuit
   }
   if (hasValue(analysed.rcd_rating_ma)) row.rcd_operating_current_ma = analysed.rcd_rating_ma;
 
-  return row;
+  // PLAN-CC (write path 4) — a row born with a full tuple derives its max Zs
+  // here as `auto`, exactly as a merged row does. Without this a CCU-created
+  // circuit would carry a standard, type and rating and an empty max Zs until
+  // something else happened to touch it.
+  return recomputeMaxZsForOcpdTuple(undefined, row, logCcuMaxZsChange);
 }
 
 /**

@@ -38,9 +38,12 @@ import {
 import {
   applyDefaultsToCircuit,
   clampImpedance,
-  maxZsString,
+  clearMaxZs,
+  recomputeMaxZsForOcpdTuple,
   repairCircuitDesignation,
+  writeMaxZs,
   type ImpedanceField,
+  type MaxZsChangeLogger,
 } from '@certmate/shared-utils';
 import {
   mergePendingPhotoIntoObservations,
@@ -570,56 +573,22 @@ export function hasValue(v: unknown): boolean {
 }
 
 /**
- * P3 Fix 6 (2026-07-23, feedback id 86) — before/after transition helper for
- * the OCPD-rating → max-Zs invalidation. iOS canon: the pre-write capture in
- * `Circuit.recalculateMaxZs` / the `CircuitsTab` inline lookup.
+ * PLAN-CC (feedback-2026-09-17) RETIRED `shouldClearAutoDerivedMaxZs`, the P3
+ * Fix 6 before/after transition helper that used to live here.
  *
- * Returns true when a row's AUTO-DERIVED numeric `ocpd_max_zs_ohm` should be
- * CLEARED because `ocpd_rating_a` transitioned from a numeric value (that
- * produced the current max-Zs) to a value the lookup can't use (e.g. the LIM
- * sentinel). A differing MANUAL override is PRESERVED (current max-Zs ≠ the
- * pre-LIM lookup). `ocpd_breaking_capacity_ka` is deliberately irrelevant here
- * — it is not a max-Zs lookup input (max-zs-lookup keys on `type_rating` only),
- * so a LIM breaking-capacity must NOT clear a valid max-Zs.
+ * It inferred "this max Zs was auto-derived" by comparing the stored value
+ * against the PRE-transition lookup — which silently deleted a hand-entered
+ * value that happened to equal that number. `ocpd_max_zs_source` now records
+ * provenance durably, and `recomputeMaxZsForOcpdTuple` reads it instead of
+ * guessing. The RULE the helper enforced survives and is strictly wider: an
+ * `auto` row whose tuple no longer resolves is cleared, whether the rating
+ * became a LIM sentinel (P3's only case) or the standard or type changed.
  *
- * The zero-argument recompute (H3 pass) runs AFTER the write and can't
- * reconstruct the pre-change tuple, so the caller passes BEFORE (`prior`, the
- * unpatched job circuit) and AFTER (`next`, the projected row) state.
- *
- * @param prior — the circuit row BEFORE this turn's writes (or undefined for a
- *   newly-created row, which has no auto-derived history)
- * @param next — the projected circuit row AFTER this turn's writes
+ * The two cases that behave differently on purpose, because provenance is now
+ * known rather than inferred: a `manual` row is never cleared even when it
+ * equals the lookup, and a PRE-PLAN row carrying a value and no key at all is
+ * preserved and marked "unverified" rather than cleared on a guess.
  */
-export function shouldClearAutoDerivedMaxZs(
-  prior: CircuitRow | undefined,
-  next: CircuitRow
-): boolean {
-  // Nothing to clear.
-  if (!hasValue(next.ocpd_max_zs_ohm)) return false;
-  const nextRating = (typeof next.ocpd_rating_a === 'string' ? next.ocpd_rating_a : '').trim();
-  // The RATING is the governing input (not the type). Only clear when the
-  // rating itself has transitioned to a NON-NUMERIC value (e.g. the "LIM"
-  // sentinel). A blank rating, a still-numeric rating (an OCPD-TYPE change, or
-  // a disconnect-time change), or an unchanged rating is NOT a rating→sentinel
-  // transition — don't clear on any of those.
-  if (nextRating === '' || Number.isFinite(Number(nextRating))) return false;
-  // Need the PRE-transition NUMERIC rating to prove the max-Zs was auto-derived
-  // (vs a manual override). Absent it, leave the value untouched.
-  if (!prior) return false;
-  const priorType = typeof prior.ocpd_type === 'string' ? prior.ocpd_type : '';
-  const priorRating = typeof prior.ocpd_rating_a === 'string' ? prior.ocpd_rating_a : '';
-  // The rating must actually have CHANGED (numeric prior → non-numeric next).
-  if (priorRating.trim() === nextRating) return false;
-  const priorDisc =
-    typeof prior.max_disconnect_time_s === 'string' ? prior.max_disconnect_time_s : undefined;
-  if (!priorType || !priorRating) return false;
-  const preLimMaxZs = maxZsString({
-    deviceType: priorType,
-    rating: priorRating,
-    disconnectTime: priorDisc,
-  });
-  return preLimMaxZs != null && next.ocpd_max_zs_ohm === preLimMaxZs;
-}
 
 /**
  * Narrative installation-details fields. Long multi-sentence dictations
@@ -1983,10 +1952,21 @@ function applyCircuitReadings(
     if (column === 'circuit_designation' && typeof writeValue === 'string') {
       writeValue = repairCircuitDesignation(writeValue);
     }
-    circuits[idx] = {
-      ...row,
-      [column]: writeValue,
-    };
+    // PLAN-CC (M15) — a max Zs that arrives on an `extraction` frame is a
+    // DICTATED value, not a derivation, so it is recorded `manual` and the
+    // helper must never later recompute over it. The `replaces_cleared` bypass
+    // above reaches the same writer, so an `auto` value overwritten by a
+    // spoken correction becomes `manual` rather than staying recomputable.
+    // Only an ACTUALLY applied write gets here: the
+    // `apply_circuit_reading_user_value_kept` skip leaves value AND source
+    // untouched.
+    circuits[idx] =
+      column === 'ocpd_max_zs_ohm'
+        ? writeMaxZs(row, String(writeValue), 'manual')
+        : {
+            ...row,
+            [column]: writeValue,
+          };
   }
 
   for (const clear of fieldClears) {
@@ -1997,6 +1977,13 @@ function applyCircuitReadings(
     // Same legacy → PWA translation as readings above so a Sonnet
     // `clear_reading` lands on the column the UI actually renders.
     const column = translateCircuitField(clear.field);
+    // PLAN-CC (path 19 / M6) — clearing the max-Zs cell must remove the
+    // PROVENANCE key with it, or the next tuple change reads a stale `manual`
+    // on an empty cell and refuses to derive anything ever again.
+    if (column === 'ocpd_max_zs_ohm') {
+      circuits[idx] = clearMaxZs(row);
+      continue;
+    }
     delete row[column];
     circuits[idx] = row;
   }
@@ -3031,6 +3018,13 @@ export function applyExtractionToJob(
   // `ocpd_type` / `ocpd_rating_a` / `max_disconnect_time_s` (defaults
   // applied an instant ago) immediately produces the BS 7671 max Zs
   // ceiling without waiting for the next turn.
+  // PLAN-CC — one LOCAL-ONLY line per helper-driven max-Zs change, so a field
+  // report of a disappeared reading is diagnosable from the device. Never
+  // spoken, never in a confirmation, and `pipelineLog` is the recording
+  // logger's console channel, which is not shipped.
+  const logMaxZsChange: MaxZsChangeLogger = (change) => {
+    pipelineLog('apply_circuit_max_zs_invalidated', { ...change });
+  };
   const targetCircuits = newCircuits ?? (job.circuits as CircuitRow[] | undefined);
   if (Array.isArray(targetCircuits) && targetCircuits.length > 0) {
     // P3 Fix 6 — before/after view for the OCPD-rating → max-Zs invalidation.
@@ -3054,36 +3048,16 @@ export function applyExtractionToJob(
     }
     let mzsChanged = false;
     const nextCircuits = targetCircuits.map((row) => {
-      const type = typeof row.ocpd_type === 'string' ? row.ocpd_type : '';
-      const rating = typeof row.ocpd_rating_a === 'string' ? row.ocpd_rating_a : '';
-      const disc =
-        typeof row.max_disconnect_time_s === 'string'
-          ? (row.max_disconnect_time_s as string)
-          : undefined;
-      const computed =
-        type && rating ? maxZsString({ deviceType: type, rating, disconnectTime: disc }) : null;
-
-      if (computed == null) {
-        // P3 Fix 6 — the rating is no longer usable for a max-Zs lookup (it
-        // just became a non-numeric sentinel like LIM). An AUTO-DERIVED numeric
-        // ocpd_max_zs_ohm would otherwise persist STALE (iOS nils it →
-        // cross-platform divergence, and a stale max-Zs feeds a false circuit
-        // result). The before/after transition helper clears it ONLY when it
-        // was auto-derived (preserving a manual override).
-        const rowKey = priorRowKey(row);
-        const prior = rowKey != null ? priorByRef.get(rowKey) : undefined;
-        if (shouldClearAutoDerivedMaxZs(prior, row)) {
-          mzsChanged = true;
-          return { ...row, ocpd_max_zs_ohm: '' };
-        }
-        return row;
-      }
-
-      // 3-tier priority — never overwrite a user-typed override.
-      if (hasValue(row.ocpd_max_zs_ohm)) return row;
-      if (row.ocpd_max_zs_ohm === computed) return row;
-      mzsChanged = true;
-      return { ...row, ocpd_max_zs_ohm: computed };
+      // PLAN-CC — ONE helper decides, for every path that can touch any of the
+      // four tuple members. It reads `ocpd_max_zs_source` rather than inferring
+      // provenance from value equality: `manual` is never touched, a pre-plan
+      // row with no key is preserved and marked, and only an `auto` row (or an
+      // empty cell) is recomputed or cleared.
+      const rowKey = priorRowKey(row);
+      const prior = rowKey != null ? priorByRef.get(rowKey) : undefined;
+      const next = recomputeMaxZsForOcpdTuple(prior, row, logMaxZsChange);
+      if (next !== row) mzsChanged = true;
+      return next;
     });
     if (mzsChanged) {
       newCircuits = nextCircuits;

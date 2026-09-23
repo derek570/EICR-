@@ -20,14 +20,36 @@ import {
 } from 'lucide-react';
 import {
   applyDefaultsToCircuits,
+  applyOcpdAwarePatch,
   applyR1R2Calculation,
   applyZsCalculation,
+  canonicaliseOcpdStandardForImport,
   matchCircuits,
   repairCircuitDesignation,
   type BulkCalcOutcome,
   type CalcSkipReason,
   type CircuitMatch,
+  type MaxZsChangeLogger,
 } from '@certmate/shared-utils';
+
+/** PLAN-CC — local-only breadcrumb for a max Zs a manual edit invalidated.
+ *  Never shipped, never spoken. */
+const logGridMaxZsChange: MaxZsChangeLogger = (change) => {
+  console.debug('[circuits] max_zs_invalidated', change);
+};
+
+/** PLAN-CC — the manual-boundary commit for a circuit patch: a max-Zs edit is
+ *  recorded `manual`, an `ocpd_bs_en` canonicalises on commit (and an
+ *  unreadable value is stored exactly as typed — a human typed it
+ *  deliberately), and the tuple is recomputed once afterwards. */
+function applyCircuitPatch(row: Circuit, patch: Partial<Circuit>): Circuit {
+  return applyOcpdAwarePatch(
+    row as unknown as Record<string, unknown>,
+    patch as Record<string, unknown>,
+    canonicaliseOcpdStandardForImport,
+    logGridMaxZsChange
+  ) as unknown as Circuit;
+}
 import { useDesignationDraft } from '@/lib/use-designation-draft';
 import { api } from '@/lib/api-client';
 import { useJobContext } from '@/lib/job-context';
@@ -387,7 +409,7 @@ export default function CircuitsPage() {
   const patchCircuit = (id: string, patch: Partial<Circuit>) => {
     updateJob((prev) => ({
       circuits: ((prev.circuits ?? []) as unknown as Circuit[]).map((c) =>
-        c.id === id ? { ...c, ...patch } : c
+        c.id === id ? (applyCircuitPatch(c, patch)) : c
       ) as unknown as typeof prev.circuits,
     }));
   };
@@ -502,7 +524,16 @@ export default function CircuitsPage() {
       boardScoped.filter((c) => (options.skipSpare ? !isSpareCircuit(c) : true)).map((c) => c.id)
     );
     if (targetIds.size === 0) return;
-    persist(circuits.map((c) => (targetIds.has(c.id) ? ({ ...c, [field]: value } as Circuit) : c)));
+    // PLAN-CC (write path 22 / M5) — the header bulk fill writes ANY column,
+    // all four tuple members included, and persists directly without going
+    // through `patchCircuit`. It takes the same OCPD-aware route per row, so a
+    // bulk standard change recomputes the derived rows and leaves the manual
+    // ones exactly as the inspector entered them.
+    persist(
+      circuits.map((c) =>
+        targetIds.has(c.id) ? (applyCircuitPatch(c, { [field]: value } as Partial<Circuit>)) : c
+      )
+    );
   };
 
   const addCircuit = () => {

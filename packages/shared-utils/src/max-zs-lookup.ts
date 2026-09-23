@@ -507,3 +507,56 @@ export function ocpdMaxZsWarningText(circuitRef: string, row: MaxZsRow): string 
   }
   return null;
 }
+
+/**
+ * The ONE manual-edit commit route: grid cell, keyboard accessory, picker and
+ * the desktop column bulk fill all go through here.
+ *
+ * Three things happen in a fixed order, and the order is the contract:
+ *   1. A max-Zs cell in the patch is a HUMAN edit, so it is written `manual`
+ *      (or cleared outright, key and all, when the edit empties the cell).
+ *      Nothing else in this file can produce `manual` from a keystroke.
+ *   2. An `ocpd_bs_en` in the patch canonicalises on commit, so what the
+ *      inspector typed and what a dictated equivalent stores are one string.
+ *      A value the grammar cannot read is stored exactly as typed — a picker
+ *      is a manual boundary and a human typed it deliberately.
+ *   3. The tuple is recomputed once, after the whole patch lands, so a patch
+ *      that changes two members produces one decision rather than two.
+ *
+ * Callers that would otherwise spread `{ ...row, [field]: value }` for an
+ * arbitrary column must use this instead: that generic form is exactly how a
+ * bulk fill or an accessory write used to leave a stale derived value behind.
+ */
+export function applyOcpdAwarePatch<T extends MaxZsRow>(
+  row: T,
+  patch: Record<string, unknown>,
+  canonicaliseStandard?: (value: string) => string,
+  log?: MaxZsChangeLogger
+): T {
+  let next = { ...row } as T;
+  let touchedTuple = false;
+
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === 'ocpd_max_zs_ohm') {
+      const text = typeof value === 'string' ? value.trim() : '';
+      next = text === '' ? clearMaxZs(next) : writeMaxZs(next, text, 'manual');
+      continue;
+    }
+    if (key === 'ocpd_bs_en' && typeof value === 'string' && canonicaliseStandard) {
+      (next as MaxZsRow)[key] = value.trim() === '' ? value : canonicaliseStandard(value);
+      touchedTuple = true;
+      continue;
+    }
+    (next as MaxZsRow)[key] = value;
+    if (
+      key === 'ocpd_bs_en' ||
+      key === 'ocpd_type' ||
+      key === 'ocpd_rating_a' ||
+      key === 'max_disconnect_time_s'
+    ) {
+      touchedTuple = true;
+    }
+  }
+
+  return touchedTuple ? recomputeMaxZsForOcpdTuple(row, next, log) : next;
+}

@@ -78,6 +78,7 @@ export {
   readMaxZsSource,
   ocpdMaxZsStatus,
   ocpdMaxZsWarningText,
+  applyOcpdAwarePatch,
 } from './max-zs-lookup';
 export type {
   MaxZsLookupArgs,
@@ -90,6 +91,7 @@ export type {
 } from './max-zs-lookup';
 export {
   canonicaliseOcpdStandard,
+  canonicaliseOcpdStandardForImport,
   isCanonicalOcpdStandard,
   OCPD_STANDARD_INPUT_CAP,
   OCPD_STANDARD_MAX_GRAMMAR_OUTPUT,
