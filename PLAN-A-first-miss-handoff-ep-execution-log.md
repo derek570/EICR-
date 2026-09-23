@@ -423,3 +423,19 @@ purges under `schema.confirmation?.buildMessage` and I wrote a new terminal exit
 Both fixes red-proofed. The first attempt at finding 19's test passed with the fix reverted — it
 supplied its own resolver, so it proved nothing about the engine. It now asserts the engine PASSES
 the reading and fails without it.
+
+### Round 6 — the stop condition, written before the result
+
+BLOCKERs by round: 3, 3, 3, 0. Round 5's remainder was two small local fixes (a resolver argument
+and a purge call) plus one finding correctly outside this plan. That is a convergence shape, not a
+churn shape, so round 6 is a verification of those two fixes and is intended to be the last.
+
+**Committed in advance, so it binds whichever way it lands:**
+
+- CLEAN or NIT-only → merge.
+- An IMPORTANT in the two fixed areas → fix it and merge; those areas are four lines between them.
+- **A BLOCKER anywhere, or any finding that reopens the board question → HOLD and hand to Derek.**
+  Five rounds in one subsystem with two of my own premises disproved is the point at which my
+  judgement about this area stops being the cheapest thing to trust. A sixth round's BLOCKER would
+  mean the design needs an owner who is not the person who has now been wrong about it twice.
+- Round 7 is not authorised by this condition under any outcome.
