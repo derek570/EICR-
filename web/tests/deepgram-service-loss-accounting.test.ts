@@ -97,7 +97,16 @@ function harness(opts: { model?: 'flux' | 'nova3'; fetcher?: boolean } = {}) {
   } else {
     service.connect('k', 16000);
   }
-  return { service, ledger, ctx, sockets, disclosed, events, states, ws: () => sockets[sockets.length - 1] };
+  return {
+    service,
+    ledger,
+    ctx,
+    sockets,
+    disclosed,
+    events,
+    states,
+    ws: () => sockets[sockets.length - 1],
+  };
 }
 
 describe('DeepgramService — ownership + captureActive (2b)', () => {
@@ -140,7 +149,7 @@ describe('DeepgramService — ownership + captureActive (2b)', () => {
     expect(h.sockets).toHaveLength(1);
   });
 
-  it('an unsolicited close on a code today\'s gates DO retry (1006) → episode + reconnect exactly as today; disclosure fires on the reopen', async () => {
+  it("an unsolicited close on a code today's gates DO retry (1006) → episode + reconnect exactly as today; disclosure fires on the reopen", async () => {
     vi.useFakeTimers();
     try {
       const h = harness({ fetcher: true });
@@ -180,6 +189,24 @@ describe('DeepgramService — ownership + captureActive (2b)', () => {
   });
 });
 
+describe('DeepgramService — PLAN-D: a Flux frame straddling the voice-pause cut', () => {
+  it('hands the ledger the frame PCM, so post-cut speech cannot make the pre-cut part voiced', () => {
+    const h = harness();
+    h.ws().open();
+    const spy = vi.spyOn(h.ledger, 'recordDispatched');
+    // 640 silent samples, then the cut, then 640 of speech: one 1280-sample
+    // Flux frame whose whole-frame verdict is voiced.
+    h.ledger.setPauseCut(640);
+    const block = new Float32Array(1280);
+    block.set(voiced(640), 640);
+    h.service.sendSamples(block);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0].voiced).toBe(true);
+    expect(spy.mock.calls[0][0].samples).toHaveLength(1280);
+    expect(h.ledger.unresolvedEntryCount).toBe(0);
+  });
+});
+
 describe('DeepgramService — entry paths + watermark', () => {
   it('pre-open voiced frames (state connecting) are charged as a pre-open window; the FIRST open discloses exactly once', () => {
     const h = harness();
@@ -201,7 +228,12 @@ describe('DeepgramService — entry paths + watermark', () => {
     const h = harness();
     h.ws().open();
     h.service.sendSamples(voiced()); // 3840 samples dispatched (3 frames)
-    h.ws().emit({ type: 'TurnInfo', event: 'Update', transcript: 'zs point five', audio_window_end: 0.24 });
+    h.ws().emit({
+      type: 'TurnInfo',
+      event: 'Update',
+      transcript: 'zs point five',
+      audio_window_end: 0.24,
+    });
     h.ws().close(1006);
     expect(h.ledger.isEpisodeOpen).toBe(true);
     expect(h.ledger.unresolvedEntryCount).toBe(0);
@@ -243,7 +275,7 @@ describe('DeepgramService — entry paths + watermark', () => {
     expect(h.ledger.unresolvedEntryCount).toBe(3);
   });
 
-  it('PLAN-E1\'s onUndispatchedLoss seam is bound to the ledger by default (variant d)', () => {
+  it("PLAN-E1's onUndispatchedLoss seam is bound to the ledger by default (variant d)", () => {
     const h = harness();
     // The Flux batcher's sub-frame tail at an unexpected close is charged via the seam.
     h.ws().open();

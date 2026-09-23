@@ -273,11 +273,26 @@ export class UplinkLossLedger {
     readonly captureSampleRange: CaptureSampleRange;
     readonly dispatchedSampleRange: CaptureSampleRange;
     readonly voiced: boolean;
+    /** The frame's PCM, one sample per capture-range sample. Lets a frame
+     *  that straddles the voice-pause cut be classified on its ELIGIBLE
+     *  (pre-cut) part alone, so that part cannot inherit post-cut speech's
+     *  verdict (PLAN-D D4). */
+    readonly samples?: Int16Array;
   }): void {
-    if (!input.voiced) return;
     if (this.closedEpochs.has(input.dispatchEpoch)) return;
     const clipped = this.clipToPauseCut(input.captureSampleRange);
     if (!clipped) return;
+    let voiced = input.voiced;
+    if (clipped.end !== input.captureSampleRange.end) {
+      // Straddles the cut: re-classify only the pre-cut prefix. Without the
+      // PCM there is no per-part evidence, so the straddling frame is not
+      // charged (the post-cut part is ineligible and the whole-frame verdict
+      // cannot be attributed to the pre-cut part alone).
+      voiced = input.samples
+        ? classifyPcmEnergy(input.samples.subarray(0, clipped.end - clipped.start))
+        : false;
+    }
+    if (!voiced) return;
     // A block straddling the cut keeps only its pre-cut part; its dispatched
     // range shrinks by the same number of samples.
     const trimmed = input.captureSampleRange.end - clipped.end;

@@ -1644,6 +1644,8 @@ export class DeepgramService {
         end: dispatchedStart + segment.samples.length,
       },
       voiced: classifyPcmEnergy(segment.samples),
+      // PLAN-D D4 — lets the ledger re-classify a frame's pre-cut part.
+      samples: segment.samples,
     });
   }
 
