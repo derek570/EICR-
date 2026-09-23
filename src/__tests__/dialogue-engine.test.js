@@ -2353,11 +2353,18 @@ describe('engine — Deepgram garble tolerance (2026-04-30)', () => {
       transcriptText: 'R1 plus R2 is 47',
       now: 4000,
     });
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       handled: true,
       fallthrough: true,
       transcriptText: 'R1 plus R2 is 47',
     });
+    // PLAN-A (feedback-2026-09-17) — a fallthrough exit that DID read something
+    // back now carries the tri-state, so the turn can recover the rendered line
+    // if its send failed. R1 and Rn were captured above, so this exit built a
+    // read-back; the socket is open, so it was emitted and nothing is lost.
+    expect(out.terminalReadbackBuilt).toBe(true);
+    expect(out.terminalReadbackEmitted).toBe(true);
+    expect(out.terminalReadbackLostText).toBeUndefined();
     // The CPC slot must NOT have been written.
     expect(session.stateSnapshot.circuits[2].ring_r2_ohm).toBeUndefined();
     expect(session.dialogueScriptState).toBeNull();

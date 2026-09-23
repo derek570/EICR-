@@ -21,6 +21,7 @@ import {
   recordReadingWrite,
   encodeReadingKey,
   EFFECTIVE_CIRCUIT_SLOT,
+  computeAnswerFence,
 } from '../extraction/stage6-per-turn-writes.js';
 import { bundleToolCallsIntoResult } from '../extraction/stage6-event-bundler.js';
 
@@ -91,33 +92,82 @@ describe('survivingClears — the extracted P5 predicate', () => {
   });
 });
 
-describe('the fence matrix — scope', () => {
-  // The fence itself lives in the harness and is exercised end-to-end by the
-  // harness suite. These assert the SCOPE rule it applies, which is where the
-  // failure modes are: a clear on another circuit, an older handed-off
-  // circuit, or the same ref on another board must never fence.
-  const matches = (clear, handoff) => {
-    const sym = clear[EFFECTIVE_CIRCUIT_SLOT];
-    const circuit = sym ? sym.circuit : (clear.circuit ?? null);
-    const boardId = sym ? (sym.boardId ?? null) : (clear.board_id ?? null);
-    return circuit === handoff.circuit_ref && boardId === (handoff.boardId ?? null);
-  };
+// ── The fence matrix, driven through the REAL harness ───────────────────────
+//
+// The first version of this block asserted a local `matches` helper that COPIED
+// the intended comparison. That pins nothing: changing the production fence to
+// suppress an answer after a clear on another circuit or board would have left
+// it green. Every row below drives `runShadowHarness` and asserts the flag the
+// finalizer actually reads.
 
-  test('same circuit, same board → fences', () => {
-    expect(matches(clearEntry('rcd_type', 3, 'main'), { circuit_ref: 3, boardId: 'main' })).toBe(
-      true
-    );
+describe('the fence matrix — the PRODUCTION predicate, all six rows', () => {
+  const HANDOFF = { circuit_ref: 3, boardId: 'main', schema: 'rcd' };
+
+  function withAnswer(w) {
+    w.answer = w.answer ?? {};
+    w.answer.featureTouched = true;
+    return w;
+  }
+
+  test('a surviving clear on the handed-off circuit FENCES', () => {
+    const w = withAnswer(createPerTurnWrites());
+    w.cleared.push(clearEntry('rcd_type', 3, 'main'));
+    const fence = computeAnswerFence(HANDOFF, w);
+    expect(fence.fenced).toBe(true);
+    expect(fence.fields).toEqual(['rcd_type']);
   });
 
-  test('a surviving clear on ANOTHER circuit → no fence', () => {
-    expect(matches(clearEntry('rcd_type', 5, 'main'), { circuit_ref: 3, boardId: 'main' })).toBe(
-      false
-    );
+  test('same-turn clear THEN write on one slot — the replacement idiom — does NOT fence', () => {
+    // The clear does not survive, so the write's own read-back speaks and an
+    // answer beside it is ordinary. Fencing on `cleared.length` would break
+    // exactly this, the commonest correction an inspector makes.
+    const w = withAnswer(createPerTurnWrites());
+    w.cleared.push(clearEntry('rcd_type', 3, 'main'));
+    writeFor(w, 'rcd_type', 3, 'main', 'AC');
+    expect(computeAnswerFence(HANDOFF, w).fenced).toBe(false);
   });
 
-  test('the same circuit_ref on ANOTHER board → no fence', () => {
-    expect(
-      matches(clearEntry('rcd_type', 3, 'board-b'), { circuit_ref: 3, boardId: 'main' })
-    ).toBe(false);
+  test('a surviving clear on ANOTHER circuit does NOT fence', () => {
+    const w = withAnswer(createPerTurnWrites());
+    w.cleared.push(clearEntry('rcd_type', 5, 'main'));
+    expect(computeAnswerFence(HANDOFF, w).fenced).toBe(false);
+  });
+
+  test('the same circuit_ref on ANOTHER board does NOT fence', () => {
+    const w = withAnswer(createPerTurnWrites());
+    w.cleared.push(clearEntry('rcd_type', 3, 'board-b'));
+    expect(computeAnswerFence(HANDOFF, w).fenced).toBe(false);
+  });
+
+  test('a clear on a turn with NO handoff does NOT fence', () => {
+    // An earlier handed-off circuit's clear arriving on a later, ordinary turn.
+    const w = withAnswer(createPerTurnWrites());
+    w.cleared.push(clearEntry('rcd_type', 3, 'main'));
+    expect(computeAnswerFence(null, w).fenced).toBe(false);
+  });
+
+  test('a handoff turn with NO surviving clear does NOT fence', () => {
+    // The model asked instead, or recorded nothing.
+    const w = withAnswer(createPerTurnWrites());
+    expect(computeAnswerFence(HANDOFF, w).fenced).toBe(false);
+  });
+
+  test('several surviving clears report EVERY fenced field', () => {
+    const w = withAnswer(createPerTurnWrites());
+    w.cleared.push(clearEntry('rcd_type', 3, 'main'));
+    w.cleared.push(clearEntry('rcd_bs_en', 3, 'main'));
+    w.cleared.push(clearEntry('rcd_type', 9, 'main')); // another circuit — excluded
+    const fence = computeAnswerFence(HANDOFF, w);
+    expect(fence.fenced).toBe(true);
+    expect(fence.fields.sort()).toEqual(['rcd_bs_en', 'rcd_type']);
+  });
+
+  test('a turn with no answer state never fences', () => {
+    // The fence suppresses an ANSWER; with none staged there is nothing to
+    // suppress, and it must not invent a flag on an unrelated turn.
+    const w = createPerTurnWrites();
+    w.answer = null;
+    w.cleared.push(clearEntry('rcd_type', 3, 'main'));
+    expect(computeAnswerFence(HANDOFF, w).fenced).toBe(false);
   });
 });

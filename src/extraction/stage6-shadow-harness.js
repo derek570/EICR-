@@ -149,6 +149,7 @@ import {
   projectBoardReadingWinners,
   projectReadingWinners,
   survivingClears,
+  computeAnswerFence,
   readEffectiveOpBoard,
   readingSlotPartsOf,
 } from './stage6-per-turn-writes.js';
@@ -2663,17 +2664,12 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // sets only its own.
     try {
       const handoff = options.handoff ?? null;
-      if (handoff && perTurnWrites.answer) {
-        const fencingClears = survivingClears(perTurnWrites).filter((c) => {
-          const sym = c?.[EFFECTIVE_CIRCUIT_SLOT];
-          const circuit = sym ? sym.circuit : (c?.circuit ?? null);
-          const boardId = sym ? (sym.boardId ?? null) : (c?.board_id ?? null);
-          return (
-            circuit === handoff.circuit_ref &&
-            (boardId ?? null) === (handoff.boardId ?? null)
-          );
-        });
-        if (fencingClears.length > 0) {
+      {
+        // The predicate itself lives in `stage6-per-turn-writes.js` beside
+        // `survivingClears`, so the rule has exactly ONE definition and its
+        // tests exercise this code rather than a replica of it.
+        const fence = computeAnswerFence(handoff, perTurnWrites);
+        if (fence.fenced) {
           // The journaled answer text is discarded BEFORE C3 looks, so C3 can
           // never stage a fenced answer.
           perTurnWrites.answer.stagedText = null;
@@ -2684,7 +2680,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             turnId,
             circuit: handoff.circuit_ref,
             boardId: handoff.boardId ?? null,
-            fields: fencingClears.map((c) => c?.field ?? null),
+            fields: fence.fields,
           });
         }
       }

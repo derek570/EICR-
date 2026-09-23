@@ -133,6 +133,52 @@ describe('acceptance 1 — session CC9E0915: “There is no RCBI” ends the wal
     expect(note.directive).toContain('Do not call `start_dialogue_script` for this circuit');
   });
 
+  test('the note REACHES THE MODEL — prepended to the transcript, with the utterance after it', () => {
+    // The gap this closes: the orchestrator consumes `transcriptText` and
+    // NOTHING ELSE from a fallthrough outcome (`sonnet-stream.js`, all three
+    // wrapper call sites). A note returned only as a sibling property is
+    // silently DROPPED, and the model gets the bare utterance with no record of
+    // the question — which is precisely the defect ids 140 and 141 reported.
+    // Returning a well-formed `serverNote` object would look correct and change
+    // nothing the model sees, so the assertion has to be on the TRANSCRIPT.
+    const rows = [];
+    const { out, askedField } = enterRcboAndMiss(rows);
+
+    const text = out.transcriptText;
+    expect(typeof text).toBe('string');
+
+    // The established shape in this engine: directive INSIDE the bracket, JSON
+    // context OUTSIDE, the reply last.
+    expect(text.startsWith('[Server note: ')).toBe(true);
+    expect(text).toContain('The walk-through for this circuit has ended');
+    expect(text.endsWith('There is no RCBI')).toBe(true);
+
+    // The JSON context is parseable and carries what the model needs to
+    // continue: the question it must pick up, and what is still missing.
+    const json = text.slice(text.indexOf('] ') + 2, text.lastIndexOf('} ') + 1);
+    const parsed = JSON.parse(json);
+    expect(parsed.asked_field).toBe(askedField);
+    expect(parsed.schema).toBe('rcbo');
+    expect(parsed.circuit_ref).toBe(3);
+    expect(typeof parsed.asked_question).toBe('string');
+    expect(Array.isArray(parsed.remaining)).toBe(true);
+    expect(parsed.remaining[0].field).toBe(askedField);
+    expect(parsed.remaining[0].validation).toEqual(describeSlotValidation(askedField));
+    expect(parsed.existing_values).toBeDefined();
+    expect(Array.isArray(parsed.recorded)).toBe(true);
+    // `kind` is an internal discriminator, not model context.
+    expect(parsed.kind).toBeUndefined();
+
+    // THE CARRIER PAIR (acceptance 3). The dictated value that went
+    // unattributed is PRESENT in the transcript and ABSENT from the note.
+    // Asserting only that the model saw the value would pass under either
+    // carrier and is therefore not the regression: the defect being guarded is
+    // naming the NOTE as the carrier of the failed utterance.
+    expect(text).toContain('There is no RCBI');
+    expect(JSON.stringify(out.serverNote)).not.toContain('There is no RCBI');
+    expect(JSON.stringify(parsed.existing_values)).not.toContain('There is no RCBI');
+  });
+
   test('the next turn is an ordinary model turn: write-only, write+ask and a later answer are all fenced', () => {
     const rows = [];
     const { ws, session } = enterRcboAndMiss(rows);
@@ -346,6 +392,132 @@ describe('acceptance 5 — tombstone matrix', () => {
       effectiveBoardIdForReading: onBoardB,
     });
     expect(reentry).toEqual({ entered: false, reason: 'handed_off' });
+  });
+
+  test.each([
+    ['tombstoned reading FIRST', ['main', 'board-b']],
+    ['tombstoned reading SECOND', ['board-b', 'main']],
+  ])(
+    'a fenced reading never masks an eligible one in the same turn (%s)',
+    (_label, order) => {
+      // One model turn can write the same circuit on two boards. The board-A
+      // tombstone must fence ONLY the board-A write; the board-B write is
+      // eligible and may start a walk-through. A `return` on the fenced reading
+      // would make entry depend on READING ORDER, which is why both orders run.
+      // Snapshot shape matters: the MAIN board's circuits are keyed by the bare
+      // number, a sub-board's by `${boardId}::${circuit}`.
+      const session = {
+        sessionId: SESSION_ID,
+        stateSnapshot: {
+          circuits: {
+            3: { rcd_type: 'A' },
+            'board-b::3': { rcd_type: 'A' },
+          },
+          boards: [
+            { id: 'main', board_type: 'main' },
+            { id: 'board-b', board_type: 'sub' },
+          ],
+          currentBoardId: 'main',
+        },
+      };
+      const ws = new FakeWS();
+
+      // Hand off board-a circuit 3 for the schema an rcd_type write enters.
+      const seed = tryEnterScriptFromWrites({
+        session,
+        ws,
+        schemas: ALL_DIALOGUE_SCHEMAS,
+        readings: [{ field: 'rcd_type', circuit: 3, value: 'A' }],
+        logger: silentLog,
+        now: 1000,
+        effectiveBoardIdForReading: () => 'main',
+      });
+      expect(seed.entered).toBe(true);
+      const schemaName = session.dialogueScriptState.schemaName;
+      processProtectiveDeviceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: 'nothing that parses',
+        logger: silentLog,
+        now: 2000,
+      });
+      expect(isHandedOff(session, 'main', schemaName, 3)).toBe(true);
+      expect(isHandedOff(session, 'board-b', schemaName, 3)).toBe(false);
+
+      // Now ONE turn carrying both boards' writes, in the order under test.
+      const readings = order.map((b) => ({
+        field: 'rcd_type',
+        circuit: 3,
+        value: 'A',
+        _board: b,
+      }));
+      const out = tryEnterScriptFromWrites({
+        session,
+        ws,
+        schemas: ALL_DIALOGUE_SCHEMAS,
+        readings,
+        logger: silentLog,
+        now: 3000,
+        // Both readings name circuit 3, so the board is what distinguishes
+        // them; resolve it positionally from the order under test.
+        effectiveBoardIdForReading: (() => {
+          let i = 0;
+          return () => order[i++] ?? order[order.length - 1];
+        })(),
+      });
+
+      // The ELIGIBLE board-b write entered, whichever position it held.
+      expect(out.entered).toBe(true);
+      expect(session.dialogueScriptState).not.toBeNull();
+      expect(session.dialogueScriptState.effectiveBoardId).toBe('board-b');
+      // …and the main board stays fenced.
+      expect(isHandedOff(session, 'main', schemaName, 3)).toBe(true);
+    }
+  );
+
+  test('a fenced reading with no eligible sibling still reports handed_off', () => {
+    // The complement: skipping the reading must not turn a fenced turn into a
+    // silent "no match", or the re-entry counter stops counting.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    const rows = [];
+    handoffOn(session, ws, 3, rows);
+    session.stateSnapshot.circuits[3].rcd_type = 'A';
+
+    const out = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: [{ field: 'rcd_type', circuit: 3, value: 'A' }],
+      logger: capturingLog(rows),
+      now: 5000,
+    });
+    expect(out).toEqual({ entered: false, reason: 'handed_off' });
+  });
+
+  test('a tombstone does NOT let a SIBLING schema enter on the same circuit', () => {
+    // An `rcd_type` write matches both RCBO and RCD. Skipping only the
+    // tombstoned SCHEMA would step past the fence into the sibling's walk on
+    // the circuit the model already owns — the loop this plan closes, reopened
+    // one schema to the left.
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    handoffOn(session, ws, 3);
+    const fenced = [...session.dialogueScriptHandoffs.keys()];
+    expect(fenced).toHaveLength(1);
+
+    session.stateSnapshot.circuits[3].rcd_type = 'A';
+    const out = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: [{ field: 'rcd_type', circuit: 3, value: 'A' }],
+      logger: silentLog,
+      now: 4000,
+    });
+    expect(out).toEqual({ entered: false, reason: 'handed_off' });
+    expect(session.dialogueScriptState).toBeFalsy();
   });
 
   test('BOARD NORMALISATION — it fails on the raw-currentBoardId asymmetry', () => {
@@ -588,6 +760,131 @@ describe('acceptance 2 — recorded, existing_values and derived provenance', ()
     const bsEntry = out.serverNote.recorded.find((r) => r.field === 'ocpd_bs_en');
     expect(bsEntry).toBeDefined();
     expect(bsEntry.derived).toContain('ocpd_type');
+  });
+
+  test('a derived target is NOT also listed as non-clearable existing_values', () => {
+    // The directive says to clear "the entries under `recorded`, including their
+    // `derived` targets" AND to "never clear anything under `existing_values`".
+    // A `sets` target has no operation of its own, so a filter on applied
+    // fields alone puts `ocpd_type` in BOTH — two contradictory instructions
+    // about one field on a device-absence turn.
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'MCB on circuit 5.',
+      logger: silentLog,
+      now: 1000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS 3036',
+      logger: silentLog,
+      now: 2000,
+    });
+    const out = processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'nothing that parses',
+      logger: silentLog,
+      now: 3000,
+    });
+
+    const note = out.serverNote;
+    const derivedTargets = note.recorded.flatMap((r) => r.derived);
+    expect(derivedTargets).toContain('ocpd_type');
+    // The whole assertion: no field is in both lists.
+    for (const target of derivedTargets) {
+      expect({ target, inExisting: target in note.existing_values }).toEqual({
+        target,
+        inExisting: false,
+      });
+    }
+  });
+
+  test('a same-turn DERIVATION that fills the asked slot counts as answering it', () => {
+    // The script asks for the curve; the inspector corrects the BS number to
+    // 3036; the `sets` derivation fills `ocpd_type = Rew` on that same turn. An
+    // operation-only predicate sees no operation whose own field is
+    // `ocpd_type`, declares the ask unanswered and ends the walk on a slot that
+    // is no longer missing — and the note would then name `ocpd_type` as the
+    // asked field while omitting it from `remaining`.
+    const ws = new FakeWS();
+    const session = buildSession({ 5: {} });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'MCB on circuit 5.',
+      logger: silentLog,
+      now: 1000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 60898',
+      logger: silentLog,
+      now: 2000,
+    });
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
+
+    const out = processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'actually BS 3036',
+      logger: silentLog,
+      now: 3000,
+    });
+
+    // No handoff: the walk continues to the NEXT missing slot.
+    expect(out).toEqual({ handled: true, fallthrough: false });
+    expect(session.dialogueScriptState).not.toBeNull();
+    expect(session.stateSnapshot.circuits[5].ocpd_type).toBe('Rew');
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_rating_a');
+  });
+
+  test('…but a derivation that fills some OTHER slot does NOT answer the ask', () => {
+    // The guard against widening the predicate back into "any write counts".
+    // Here the BS write derives `ocpd_type`, but the engine asked for the
+    // RATING, which nothing filled — so it is still a first miss.
+    const ws = new FakeWS();
+    const session = buildSession({ 5: { ocpd_type: 'B' } });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'MCB on circuit 5.',
+      logger: silentLog,
+      now: 1000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 60898',
+      logger: silentLog,
+      now: 2000,
+    });
+    // Curve is seeded, so the walk has moved to the rating.
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_rating_a');
+
+    const out = processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'actually BS 3036',
+      logger: silentLog,
+      now: 3000,
+    });
+    expect(out).toMatchObject({ handled: true, fallthrough: true });
+    expect(out.serverNote.asked_field).toBe('ocpd_rating_a');
   });
 
   test('a PIVOT derives nothing — an `ocpd_bs_en = BS EN 61009` write has an EMPTY derived', () => {

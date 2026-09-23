@@ -12,7 +12,10 @@
  */
 
 import { safeSend } from '../extraction/dialogue-engine/helpers/wire-emit.js';
-import { processProtectiveDeviceTurn } from '../extraction/dialogue-engine/index.js';
+import {
+  processProtectiveDeviceTurn,
+  processRingContinuityTurn,
+} from '../extraction/dialogue-engine/index.js';
 import { foldTerminalReadbackOutcomes } from '../extraction/terminal-readback-carrier.js';
 
 const SESSION_ID = 'sess_carrier';
@@ -192,6 +195,90 @@ describe('renderTerminalReadback tri-state, through a real handoff', () => {
     const { out } = handoffWithCapture(closedWs, []);
 
     expect(out.terminalReadbackLostText).toBe(spokenLine);
+  });
+});
+
+describe('EVERY fallthrough exit carries its lost read-back, not just the handoff', () => {
+  // The defect this closes: only `terminateWithHandoff` returned the tri-state.
+  // Other terminal exits called `renderTerminalReadback` and DISCARDED it, so a
+  // DEFINITE non-delivery there lost the rendered line with no recovery —
+  // `computeUncoveredReadback` had already stamped `covered_by`, so nothing
+  // would ever speak those operations again.
+  //
+  // The plan names exactly one uncovered gap: a script-HANDLED turn that
+  // returns before the harness runs. A fallthrough turn is not that gap.
+
+  function ringWithCapture(ws) {
+    const session = buildSession({ 2: {} });
+    const run = (text, now) =>
+      processRingContinuityTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: text,
+        logger: silentLog,
+        now,
+      });
+    run('Ring continuity for circuit 2.', 1000);
+    run('Lives are 0.43.', 2000);
+    run('0.06', 3000);
+    return { session, run };
+  }
+
+  test('TOPIC SWITCH with a failed send carries the rendered line out', () => {
+    // The concrete sequence from the review: the ring script captured R1 and
+    // Rn; the next utterance is a topic switch; the terminal frame's send
+    // fails. Without the carrier the turn falls through, the model confirms the
+    // NEW topic, every outcome-gated net stays quiet because something WAS
+    // audible — and the captured readings are never heard.
+    const ws = new FakeWS(1);
+    const { run } = ringWithCapture(ws);
+    ws.readyState = 3; // socket closes before the terminal frame
+
+    const out = run('Zs is 0.62', 4000);
+
+    expect(out).toMatchObject({ handled: true, fallthrough: true });
+    expect(out.terminalReadbackBuilt).toBe(true);
+    expect(out.terminalReadbackEmitted).toBe(false);
+    expect(typeof out.terminalReadbackLostText).toBe('string');
+    // The captured readings are IN the carried line — that is the whole point.
+    expect(out.terminalReadbackLostText).toContain('0.43');
+  });
+
+  test('…and the same exit on an OPEN socket carries no lost text', () => {
+    const ws = new FakeWS(1);
+    const { run } = ringWithCapture(ws);
+    const out = run('Zs is 0.62', 4000);
+    expect(out.terminalReadbackBuilt).toBe(true);
+    expect(out.terminalReadbackEmitted).toBe(true);
+    expect(out.terminalReadbackLostText).toBeUndefined();
+  });
+
+  test('an exit that built NOTHING adds no carrier keys at all', () => {
+    // Keeps the outcome object byte-identical on the overwhelmingly common
+    // path, which is what every existing caller and test sees.
+    const ws = new FakeWS(1);
+    const session = buildSession({ 2: {} });
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity for circuit 2.',
+      logger: silentLog,
+      now: 1000,
+    });
+    const out = processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Zs is 0.62',
+      logger: silentLog,
+      now: 2000,
+    });
+    expect(out).toMatchObject({ handled: true, fallthrough: true });
+    expect('terminalReadbackBuilt' in out).toBe(false);
+    expect('terminalReadbackEmitted' in out).toBe(false);
+    expect('terminalReadbackLostText' in out).toBe(false);
   });
 });
 

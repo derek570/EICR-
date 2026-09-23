@@ -1384,6 +1384,41 @@ function renderTerminalReadback({
   return { built: true, emitted, readback };
 }
 
+/**
+ * PLAN-A — the carrier fields a FALLTHROUGH exit owes the harness.
+ *
+ * Every terminal exit that falls through to the model has already rendered any
+ * uncovered read-back and, on a DEFINITE non-delivery, holds the only copy of
+ * that rendered line: `computeUncoveredReadback` stamped `covered_by` before
+ * the send and ignores its result, so a second call returns null and nothing
+ * else will ever speak those operations.
+ *
+ * Discarding the tri-state at these sites loses a certificate value silently.
+ * The concrete sequence: the ring script writes R1 and asks for Rn; the next
+ * utterance is a topic switch; the terminal frame's send fails; R1 is stamped
+ * and the state cleared. The turn still falls through, the model confirms the
+ * new topic, every outcome-gated net stays quiet because something WAS audible
+ * — and R1 is never heard.
+ *
+ * The plan names exactly one uncovered gap, a script-HANDLED turn that returns
+ * before the harness runs. A fallthrough turn is not that gap.
+ */
+function terminalCarrierFields(terminal) {
+  // Nothing was built: emit NOTHING, so the outcome object of the overwhelmingly
+  // common exit stays byte-identical to what every existing caller and test
+  // sees. The harness fold reads a missing field as false and its zero-built
+  // floor gives `emitted: false`, which is the same answer an explicit
+  // `{built:false, emitted:false}` gives.
+  if (!terminal || terminal.built !== true) return {};
+  return {
+    terminalReadbackBuilt: true,
+    terminalReadbackEmitted: terminal.emitted === true,
+    ...(terminal.emitted !== true && terminal.readback?.text
+      ? { terminalReadbackLostText: terminal.readback.text }
+      : {}),
+  };
+}
+
 // PLAN-backend-final.md Phase 6.2 — per-session deferred-slot memory.
 // session.dialogueScriptState is cleared on defer / cancel / finish, so
 // any deferred-slot tracking attached to it does NOT survive re-entry —
@@ -1546,11 +1581,27 @@ function buildHandoffNote({ session, state, schema, askedField, askedQuestion, k
       // `ocpd_bs_en = BS EN 61009` write, which PIVOTS and derives nothing.
       derived: Array.isArray(op.derived) ? [...op.derived] : [],
     }));
-  const recordedFields = new Set(recorded.map((r) => r.field));
+  // A field is excluded from `existing_values` when THIS episode is responsible
+  // for it — either directly, as an applied operation, or as a target one of
+  // those operations DERIVED.
+  //
+  // The derived half is not defensive tidying. The directive tells the model to
+  // clear "the entries under `recorded`, including their `derived` targets" and
+  // to "never clear anything under `existing_values`". A `sets` target has no
+  // operation of its own — `applyDerivations` writes it straight into
+  // `state.values` — so a filter on applied fields ALONE puts, say,
+  // `ocpd_type: 'Rew'` in both lists at once. The model then receives two
+  // contradictory instructions about the same field on a device-absence turn,
+  // and either outcome is wrong: leave a value the walk created on the
+  // certificate, or treat a genuinely pre-existing value as clearable.
+  const episodeOwnedFields = new Set(recorded.map((r) => r.field));
+  for (const entry of recorded) {
+    for (const target of entry.derived) episodeOwnedFields.add(target);
+  }
   const existing_values = {};
   for (const [field, value] of Object.entries(state?.values ?? {})) {
     if (value === undefined || value === null || value === '') continue;
-    if (recordedFields.has(field)) continue;
+    if (episodeOwnedFields.has(field)) continue;
     existing_values[field] = value;
   }
   return {
@@ -1565,6 +1616,27 @@ function buildHandoffNote({ session, state, schema, askedField, askedQuestion, k
     existing_values,
     remaining: remainingSlotsForNote(state, schema, session, askedField),
   };
+}
+
+/**
+ * Serialise a handoff note into the `[Server note: …]` form the model reads.
+ *
+ * Directive INSIDE the bracket, JSON context OUTSIDE — the shape the engine's
+ * other server notes already use, so the model meets one convention rather than
+ * two. The JSON is the structured note minus the directive (which is already in
+ * the bracket) and minus `kind` (an internal discriminator, not model context).
+ *
+ * The bracket content is entirely SERVER-CONTROLLED: the directive is a
+ * constant and every JSON value is a field name, a question text from a schema,
+ * or a value the server itself wrote. No raw inspector utterance is
+ * interpolated — that travels in the transcript after this prefix, which is
+ * what keeps the two separable.
+ */
+function renderHandoffNoteText(note) {
+  const { directive, ...rest } = note;
+  delete rest.kind;
+  const context = rest;
+  return `[Server note: ${directive}] ${JSON.stringify(context)} `;
 }
 
 /**
@@ -1646,11 +1718,24 @@ function terminateWithHandoff({
     ...(textPreview ? { textPreview } : {}),
   });
 
-  // Step 3 — fall through.
+  // Step 3 — fall through, with the note PREPENDED to the transcript.
+  //
+  // THIS is how a server note reaches the model, and it is the established
+  // shape in this engine: the confirmation-delete exit and the ring/IR/voltage
+  // expiry notes all return `transcriptText: `${serverNote}${reply}``. The
+  // orchestrator consumes `transcriptText` and nothing else from a fallthrough
+  // outcome, so a note returned only as a sibling property would be silently
+  // DROPPED — the model would get the bare utterance with no record of the
+  // question, which is exactly the defect ids 140 and 141 reported.
+  //
+  // Directive inside the bracket, JSON context outside. The structured object
+  // is returned alongside for telemetry and tests; the model reads the text.
+  const noteText = renderHandoffNoteText(serverNote);
+
   return {
     handled: true,
     fallthrough: true,
-    transcriptText,
+    transcriptText: `${noteText}${transcriptText ?? ''}`,
     serverNote,
     handoff: { boardId: effectiveBoardId, schema: schema.name, circuit_ref },
     terminalReadbackBuilt: terminal?.built === true,
@@ -2266,7 +2351,7 @@ function runEntry({
       // canonical-DIFFERENT → overwrite below.
     }
     if (circuitRef !== null) {
-      const r = applyWriteWithDerivations(session, schema, slot, circuitRef, w.value, now);
+      const r = applyWriteWithDerivations(session, schema, slot, circuitRef, w.value, now, op);
       markWritten(op, r.effectiveValue, circuitRef);
       // Plan D Seam B — the WIRE entry carries the value that was STORED, not
       // the raw dictated one, or the client writes 16 into a cell the server
@@ -2401,41 +2486,27 @@ function runEntry({
  * raw 16 (e.g. an OCPD-rating → max-Zs comparison) would be reasoning about a
  * magnitude that was never stored.
  */
-function applyWriteWithDerivations(session, schema, slot, circuit_ref, value, now) {
+function applyWriteWithDerivations(session, schema, slot, circuit_ref, value, now, op = null) {
   const written = applyWrite(session, schema, circuit_ref, slot.field, value, now);
   const derived = applyDerivations({ session, schema, slot, value: written.value });
   // PLAN-A (feedback-2026-09-17) — annotate THIS write's operation with the
   // targets IT produced, so the handoff note's `recorded[].derived` is real
-  // provenance rather than a guess. Annotated at the PRODUCING operation and
-  // never inferred as "the latest entry"; see `annotateDerivedTargets` for why
-  // that distinction is load-bearing.
+  // provenance rather than a guess.
+  //
+  // The operation is PASSED IN by every caller, never looked up. A lookup was
+  // tried and was wrong: at both pending-write DRAIN sites this runs BEFORE
+  // `markWritten` binds the circuit, so the operation still carries a null
+  // `effective_circuit_ref` and a circuit-scoped search cannot find it — or,
+  // worse, finds an OLDER operation on the same field and circuit and credits
+  // the derivation to that. Every call site already holds the operation it just
+  // created.
   //
   // `derived` lists `sets` targets only in practice: `applyDerivations` has
   // three mechanisms — `sets`, `mirrors`, `pivot` — and every `bs_code` mirror
   // is deleted upstream, so an `ocpd_bs_en = BS EN 61009` write PIVOTS and
   // derives nothing while a `BS 3036` write still lists `ocpd_type`.
-  const op = findLatestOperationForWrite(session, slot.field, circuit_ref);
   annotateDerivedTargets(op, derived);
   return { ...derived, effectiveValue: written.value, correction: written.correction };
-}
-
-/**
- * The most recent operation this turn could have created for (field, circuit).
- *
- * `applyWriteWithDerivations` is called immediately after the write's operation
- * is marked, so the latest matching entry IS that operation at every one of its
- * call sites. The lookup is still scoped by circuit: a REPLACEMENT carries the
- * operation list across a circuit change, and crediting a derivation to an
- * older circuit's operation would put it in the wrong `recorded` entry.
- */
-function findLatestOperationForWrite(session, field, circuit_ref) {
-  const ops = session?.dialogueScriptState?.operations;
-  if (!Array.isArray(ops)) return null;
-  for (let i = ops.length - 1; i >= 0; i -= 1) {
-    const op = ops[i];
-    if (op.field === field && op.effective_circuit_ref === circuit_ref) return op;
-  }
-  return null;
 }
 
 /**
@@ -2720,7 +2791,7 @@ function runActivePath({
     // PLAN A2 §A2.5 site table (L1833-class) — TERMINAL: the model owns this
     // turn's audibility from here, but any uncovered dictation from EARLIER
     // in this episode still needs its read-back before the state vanishes.
-    renderTerminalReadback({
+    const terminal = renderTerminalReadback({
       ws,
       session,
       sessionId,
@@ -2731,7 +2802,12 @@ function runActivePath({
       siteLabel: 'confirmation_delete_exit',
     });
     clearScriptState(session);
-    return { handled: true, fallthrough: true, transcriptText: `${serverNote}${reply}` };
+    return {
+      handled: true,
+      fallthrough: true,
+      transcriptText: `${serverNote}${reply}`,
+      ...terminalCarrierFields(terminal),
+    };
   }
 
   // 1. Cancel — preserve writes, clear state, announce.
@@ -2995,7 +3071,7 @@ function runActivePath({
     // PLAN A2 §A2.5 site table (L2048-class) — TERMINAL: the model owns this
     // turn's audibility, but any uncovered EARLIER dictation still needs its
     // read-back before the silent clear.
-    renderTerminalReadback({
+    const terminal = renderTerminalReadback({
       ws,
       session,
       sessionId,
@@ -3006,7 +3082,7 @@ function runActivePath({
       siteLabel: 'topic_switch',
     });
     clearScriptState(session);
-    return { handled: true, fallthrough: true, transcriptText };
+    return { handled: true, fallthrough: true, transcriptText, ...terminalCarrierFields(terminal) };
   }
 
   // 3.5. Confirmation reply (2026-05-26). When the engine emitted the
@@ -3061,7 +3137,7 @@ function runActivePath({
       sendScriptPurge(ws, schema, sessionId);
       // PLAN A2 §A2.5 site table (L2102-class) — TERMINAL, shared helper so
       // every caller is covered.
-      renderTerminalReadback({
+      const terminal = renderTerminalReadback({
         ws,
         session,
         sessionId,
@@ -3072,7 +3148,12 @@ function runActivePath({
         siteLabel: 'confirmation_clear_and_fallthrough',
       });
       clearScriptState(session);
-      return { handled: true, fallthrough: true, transcriptText };
+      return {
+        handled: true,
+        fallthrough: true,
+        transcriptText,
+        ...terminalCarrierFields(terminal),
+      };
     };
 
     // Audible cap exit — purge FIRST (the replacement line shares the
@@ -3313,7 +3394,7 @@ function runActivePath({
           source: 'confirmation_5b_named_amend',
           circuit_ref: state.circuit_ref,
         });
-        const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
+        const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now, op);
         markWritten(op, r.effectiveValue, state.circuit_ref);
         // Plan D Seam B — the raw `state.values[w.field] = w.value` that used to
         // sit here is DELETED. applyWrite has already written the CLAMPED value;
@@ -3373,7 +3454,8 @@ function runActivePath({
             slot,
             state.circuit_ref,
             parsed,
-            now
+            now,
+            op
           );
           markWritten(op, r.effectiveValue, state.circuit_ref);
           // Plan D Seam B — raw re-assignment DELETED (applyWrite already stored
@@ -3450,7 +3532,8 @@ function runActivePath({
             retainedSlot,
             state.circuit_ref,
             retainedParsed,
-            now
+            now,
+            op
           );
           markWritten(op, r.effectiveValue, state.circuit_ref);
           const retainedWrites = [{ field: retainedSlot.field, value: r.effectiveValue }];
@@ -3807,7 +3890,7 @@ function runActivePath({
           // named extraction has no `correction` and gets its provenance from
           // this turn's clamp instead.
           const drainCorrection = w.correction ?? norm.correction;
-          const r = applyWriteWithDerivations(session, schema, slot, ref, drainValue, now);
+          const r = applyWriteWithDerivations(session, schema, slot, ref, drainValue, now, op);
           markWritten(op, r.effectiveValue, ref);
           if (drainCorrection) {
             recordValueCorrection(session.dialogueScriptState, w.field, drainCorrection);
@@ -4121,7 +4204,7 @@ function runActivePath({
           if (op) markAbandoned(op);
         }
       }
-      renderTerminalReadback({
+      const terminal = renderTerminalReadback({
         ws,
         session,
         sessionId,
@@ -4132,7 +4215,12 @@ function runActivePath({
         siteLabel: 'unresolvable_circuit',
       });
       clearScriptState(session);
-      return { handled: true, fallthrough: true, transcriptText };
+      return {
+        handled: true,
+        fallthrough: true,
+        transcriptText,
+        ...terminalCarrierFields(terminal),
+      };
     }
   }
 
@@ -4288,7 +4376,8 @@ function runActivePath({
           currentSlot,
           state.circuit_ref,
           v,
-          now
+          now,
+          op
         );
         markWritten(op, r.effectiveValue, state.circuit_ref);
         // Plan D — emit the EFFECTIVE (clamped) value, not the local `v`, so the
@@ -4645,7 +4734,7 @@ function runActivePath({
       }
       // canonical-DIFFERENT → fall through and overwrite.
     }
-    const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
+    const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now, op);
     markWritten(op, r.effectiveValue, state.circuit_ref);
     // Plan D — the wire entry carries the EFFECTIVE (clamped) value; `w.value`
     // is the raw parsed magnitude and would put 16 in the cell while the
@@ -4738,7 +4827,8 @@ function runActivePath({
         currentSlot,
         state.circuit_ref,
         bareValue,
-        now
+        now,
+        op
       );
       markWritten(op, r.effectiveValue, state.circuit_ref);
       // Plan D — EFFECTIVE (clamped) value on the wire, not the raw bareValue.
@@ -4815,17 +4905,40 @@ function runActivePath({
   //     `queued`, `abandoned` and `rejected` are NOT outcomes. A queued
   //     operation never landed and an abandoned one was discarded. `rejected`
   //     needs its own argument and gets one below.
+  const turnOperations = (Array.isArray(state.operations) ? state.operations : []).slice(
+    opsAtTurnStart
+  );
   const askedSlotAnswered =
     currentSlot != null &&
     state.circuit_ref !== null &&
-    (Array.isArray(state.operations) ? state.operations : [])
-      .slice(opsAtTurnStart)
-      .some(
+    (turnOperations.some(
+      (op) =>
+        op.field === currentSlot.field &&
+        op.effective_circuit_ref === state.circuit_ref &&
+        (op.disposition === 'applied' || op.disposition === 'satisfied_existing')
+    ) ||
+      // …OR a DERIVATION from one of this turn's own writes filled the asked
+      // slot. A derived target has no operation of its own — `applyDerivations`
+      // writes it straight into `state.values` — so an operation-only test
+      // declares the slot unanswered when it has in fact just been answered.
+      //
+      // Reachable and ordinary: the script asks for the OCPD curve, the
+      // inspector corrects the BS number to 3036, and the `sets` derivation
+      // fills `ocpd_type = 'Rew'` in the same turn. Without this term the walk
+      // ends on a slot that is no longer missing, and the note then names
+      // `ocpd_type` as the asked field while omitting it from `remaining` —
+      // which is also self-contradictory.
+      //
+      // This does NOT widen the predicate back into "any write counts": only a
+      // derivation whose PRODUCING operation is one of this turn's, and only
+      // when the target is the asked slot itself.
+      turnOperations.some(
         (op) =>
-          op.field === currentSlot.field &&
           op.effective_circuit_ref === state.circuit_ref &&
-          (op.disposition === 'applied' || op.disposition === 'satisfied_existing')
-      );
+          (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
+          Array.isArray(op.derived) &&
+          op.derived.includes(currentSlot.field)
+      ));
   // WHY `rejected` IS EXCLUDED, and the reason is GENERAL rather than
   // site-specific. There are TWO `markRejected` sites inside this turn's span:
   // the step-8 bare gate and the active-path pending-write drain. ONE property
@@ -6013,7 +6126,7 @@ export function enterScriptByName({
       // canonical-DIFFERENT → fall through and overwrite.
     }
     if (resolvedCircuitRef !== null) {
-      const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now);
+      const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now, op);
       // Plan D — PROPAGATE Seam A's provenance (applyWrite's own re-clamp of the
       // already-corrected value reports null and would retire it), and strip the
       // `correction` key from the outgoing entries so it can never appear on the
@@ -6334,7 +6447,7 @@ export function tryResumePausedScript({
       // enterScriptByName was already clamped there, so only its own
       // `correction` still carries the 16 → 1.6 provenance.
       const drainCorrection = w.correction ?? norm.correction;
-      const r = applyWriteWithDerivations(session, schema, slot, matchedRef, drainValue, now);
+      const r = applyWriteWithDerivations(session, schema, slot, matchedRef, drainValue, now, op);
       markWritten(op, r.effectiveValue, matchedRef);
       if (drainCorrection) {
         recordValueCorrection(state, w.field, drainCorrection);
@@ -6691,7 +6804,12 @@ export function tryEnterScriptFromWrites({
     .sort((a, b) => b.score - a.score || a.i - b.i)
     .map((entry) => entry.s);
 
-  for (const reading of readings) {
+  // PLAN-A — set when at least one (board, schema, circuit) in this turn's
+  // readings was fenced by a tombstone. Reported ONLY if no OTHER reading went
+  // on to enter a script, so a fenced write never masks an eligible one.
+  let sawHandedOff = false;
+
+  readingsLoop: for (const reading of readings) {
     const field = reading?.field;
     const circuitRef = Number(reading?.circuit);
     if (!field || !Number.isInteger(circuitRef) || circuitRef <= 0) continue;
@@ -6722,7 +6840,22 @@ export function tryEnterScriptFromWrites({
           board_id: effectiveBoardId,
           path: 'entry_hook',
         });
-        return { entered: false, reason: 'handed_off' };
+        // Skip THIS READING entirely, and never `return`.
+        //
+        // Not `return`, because the tombstone fences one (board, schema,
+        // circuit) and nothing else: one model turn can write board A circuit 3
+        // AND board B circuit 3, and returning here would make entry depend on
+        // READING ORDER — the eligible board-B write would never be considered
+        // because the board-A write happened to be tombstoned first.
+        //
+        // Not a bare `continue` either, which would only skip this SCHEMA and
+        // let a sibling schema enter on the SAME handed-off circuit — an
+        // `rcd_type` write matches both RCBO and RCD, so RCBO's tombstone would
+        // be stepped over into an RCD walk on the circuit the model already
+        // owns. That is the loop this plan exists to close, reopened one schema
+        // to the left.
+        sawHandedOff = true;
+        continue readingsLoop;
       }
 
       // Circuit must exist on the snapshot before we can read existing
@@ -6732,7 +6865,13 @@ export function tryEnterScriptFromWrites({
       // two can never disagree about which circuit this is.
       if (!circuitExistsInSnapshot(session.stateSnapshot, circuitRef, effectiveBoardId)) continue;
 
-      const existing = readExistingValues(session, circuitRef, slotFields);
+      // PLAN-A — seed from the WRITE's effective board, the same one the
+      // tombstone lookup and the existence check above used. Reading the
+      // SELECTED board here would seed another board's pre-existing values into
+      // the episode, and they would then surface in the handoff note's
+      // `recorded` as though this walk had captured them — presenting
+      // pre-existing certificate data to the model as clearable.
+      const existing = readExistingValues(session, circuitRef, slotFields, effectiveBoardId);
       const next = nextMissingSlot(
         existing,
         schema.slots,
@@ -6908,6 +7047,9 @@ export function tryEnterScriptFromWrites({
   // (`entryResult?.mirrorWrites`) so undefined is safe, and keeping the
   // legacy `{entered:false, reason}` shape matches the existing test
   // expectations + the four sibling falsy-return shapes upstream.
+  // A fenced reading is reported only when nothing else entered — otherwise the
+  // eligible write that DID start a walk-through is the outcome.
+  if (sawHandedOff) return { entered: false, reason: 'handed_off' };
   return { entered: false, reason: 'no_matching_schema' };
 }
 

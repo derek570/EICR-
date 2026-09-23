@@ -1109,3 +1109,37 @@ export function survivingClears(perTurnWrites) {
   const hasSurvivingWrite = buildSurvivingWritePredicate(perTurnWrites);
   return cleared.filter((c) => !hasSurvivingWrite(c));
 }
+
+/**
+ * PLAN-A — the DEVICE-ABSENCE FENCE predicate.
+ *
+ * After a first-miss handoff the model owns the circuit, and "there is no RCD"
+ * makes it clear what the walk recorded — one `clear_reading` per field, each
+ * with its own `field_cleared` read-back. Those lines ARE the turn's spoken
+ * outcome, so the model's `answer_user` is suppressed rather than allowed to
+ * narrate the same clears on top of them. Audio-First exactly-once holds per
+ * VALUE, and suppression is deterministic rather than text-inspecting: no
+ * fuzziness, no word lists.
+ *
+ * Exported so the harness and its tests exercise ONE definition of the rule. A
+ * replica in a test pins nothing — it can agree with a wrong implementation.
+ *
+ * SCOPE is the load-bearing half. A surviving clear counts only when its
+ * EFFECTIVE slot identity matches the handoff's circuit AND board. Another
+ * circuit, an older handed-off circuit, or the same `circuit_ref` on another
+ * board must never fence, or the fence silences an answer the inspector needed.
+ *
+ * @param {{circuit_ref: number, boardId: string|null}|null} handoff
+ * @param {object} perTurnWrites
+ * @returns {{fenced: boolean, fields: Array<string|null>}}
+ */
+export function computeAnswerFence(handoff, perTurnWrites) {
+  if (!handoff || !perTurnWrites?.answer) return { fenced: false, fields: [] };
+  const fencing = survivingClears(perTurnWrites).filter((c) => {
+    const sym = c?.[EFFECTIVE_CIRCUIT_SLOT];
+    const circuit = sym ? sym.circuit : (c?.circuit ?? null);
+    const boardId = sym ? (sym.boardId ?? null) : (c?.board_id ?? null);
+    return circuit === handoff.circuit_ref && boardId === (handoff.boardId ?? null);
+  });
+  return { fenced: fencing.length > 0, fields: fencing.map((c) => c?.field ?? null) };
+}

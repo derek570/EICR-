@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "5cf2d827f24027b008ccd48da3423211019abcc78b391ae8fb11b8d372e9ffe9",
+  "semantic_oracle_digest": "602c692e0831864e61cabb19fd194a0266bd76120ad8ed61c141a532a0bd2986",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "007e1a2cda32371e54cf46e9b7822b07d8e2f13e7d8df4e2e3ccfc46bf420d3c"
+      "sha256": "935c13c329f623ff920b64d757013f86cb2442fccd7b3b89953f7809952dac4c"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -537,7 +537,7 @@
     },
     {
       "path": "src/extraction/dialogue-engine/engine.js",
-      "sha256": "09f05323c8e3024a0c3525157ae7e427d4f9ed12e9239c40d3bb008907838471"
+      "sha256": "98d6572a91afcf28a3dfd24bd4b57471399a7585bc8ef6864327069011fb1c2d"
     },
     {
       "path": "src/extraction/dialogue-engine/helpers/snapshot-write.js",
