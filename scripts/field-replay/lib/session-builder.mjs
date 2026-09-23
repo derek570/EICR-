@@ -74,6 +74,7 @@ export const HARNESS_OPTION_TABLE = Object.freeze({
   regexFastCorrelationId: { source: 'SINGULAR production option (sonnet-stream.js:4343; a plural property would be silently ignored) — fixture may store array-valued regex_fast_correlation_ids; the builder passes per-turn through the singular option; absence passed only when evidence-backed', capability_exclusion: 'fast_path_finalizer' },
   logger: { source: 'the replay capturing logger (harness-supported option; production omits it and uses the module logger — the replay supplies it to capture rows per turn)' },
   rawInspectorTranscript: { source: 'fixture turn.transcript (the untouched inspector text; production threads msg.text at sonnet-stream.js:4316). Observation-tier routing (C1) classifies OBSERVATION_PATTERN on THIS, so the recorded lane must route identically to prod — omitting it would leave replay observation turns on the default model after the OBSERVATION_TIER_ROUTING flip' },
+  canonicalInspectorTranscript: { source: "fixture turn.transcript — PLAN-B's net-site helper validates a `heard` quotation against this value only. Production passes the normalised, un-annotated canonical text; the replay's harness transcript IS turn.transcript (no server enrichment), so the words the model saw and the quotable words agree. Omitting it would make every live-lane quotation fail as heard_no_canonical_transcript" },
 });
 
 /**
@@ -203,6 +204,8 @@ export function buildReplaySession({ modules, fixture, apiKey = 'sk-field-replay
         // Threaded so a recorded observation fixture routes to
         // OBSERVATION_EXTRACT_MODEL identically to prod after the flip.
         rawInspectorTranscript: turn.transcript,
+        // PLAN-B (B3) — the quotable transcript for the net-site helper.
+        canonicalInspectorTranscript: turn.transcript,
         logger,
       };
     },

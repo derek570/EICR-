@@ -542,6 +542,13 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
     // F8 (array shape) — a lone 'suppress' entry yields ZERO confirmations,
     // logged via confirmationCount rather than a single top-level `kind`.
     expect(row[1].confirmationCount).toBe(0);
+    // PLAN-B acceptance 5 — `fastLedgerSuppressesCatchallThisTurn` is
+    // deliberate silence, not "nothing happened": no net-site helper call,
+    // no noop_retry_round row, only the primary loop ran.
+    expect(runToolLoopSpy).toHaveBeenCalledTimes(1);
+    expect(opts.logger.info.mock.calls.some(([ev]) => ev === 'stage6.noop_retry_round')).toBe(
+      false
+    );
   });
 
   test('pending WITH a committed identity → correlation + dedupe-token stamped "Already got" fallback', async () => {

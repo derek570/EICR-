@@ -265,14 +265,19 @@ describe('observation-tier routing — model selection matrix', () => {
     });
 
     expect(defaultClient._calls).toHaveLength(0);
-    expect(terraClient._calls).toHaveLength(1);
-    expect(terraClient._calls[0]).toEqual(
-      expect.objectContaining({
-        model: terraModel,
-        service_tier: 'standard',
-        reasoning_effort: 'low',
-      })
-    );
+    // The primary round produced nothing audible, so PLAN-B's net-site helper
+    // made its one retry call — on the SAME Terra target, tier and effort.
+    expect(terraClient._calls).toHaveLength(2);
+    for (const call of terraClient._calls) {
+      expect(call).toEqual(
+        expect.objectContaining({
+          model: terraModel,
+          service_tier: 'standard',
+          reasoning_effort: 'low',
+        })
+      );
+    }
+    expect(terraClient._calls[1].tools.map((t) => t.name)).toEqual(['net_response']);
     expect(routingEvent(logger)).toEqual(
       expect.objectContaining({ selected_model: terraModel, selected_provider: 'openai' })
     );
@@ -424,14 +429,23 @@ describe('observation-tier routing — multi-round + override lock + cost', () =
       rawInspectorTranscript: OBS_TRANSCRIPT,
     });
 
-    expect(session.costTracker.roundUsageEvidence).toHaveLength(1);
-    expect(session.costTracker.roundUsageEvidence[0]).toEqual(
-      expect.objectContaining({
-        provider: 'anthropic',
-        requested_model: OBS_MODEL,
-        billing_model: OBS_MODEL,
-      })
-    );
+    // Primary round + PLAN-B's net-site helper round, ingested together
+    // under one invocation; the helper row is tagged terminal_retry and bills
+    // the same selected model.
+    expect(session.costTracker.roundUsageEvidence).toHaveLength(2);
+    for (const row of session.costTracker.roundUsageEvidence) {
+      expect(row).toEqual(
+        expect.objectContaining({
+          provider: 'anthropic',
+          requested_model: OBS_MODEL,
+          billing_model: OBS_MODEL,
+        })
+      );
+    }
+    expect(session.costTracker.roundUsageEvidence[1].usage_role).toBe('terminal_retry');
+    expect(
+      new Set(session.costTracker.roundUsageEvidence.map((r) => r.loop_invocation_id)).size
+    ).toBe(1);
   });
 });
 
@@ -555,8 +569,13 @@ describe('observation-tier routing — blocking ask_user continuation (real disp
     expect([...pendingAsks.entries()].length).toBe(0);
     // …and the answered suspend/resume kept BOTH Anthropic calls on the
     // observation tier (the model is selected once and locked).
-    expect(client._callCount).toBe(2);
+    // A third call is PLAN-B's net-site helper (the answered, value-bearing
+    // reply wrote nothing — a DROPPED-VALUE disclosure asks the model first),
+    // and it stays on the observation tier too.
+    expect(client._callCount).toBe(3);
     expect(client._calls[0].model).toBe(OBS_MODEL); // pre-ask round
     expect(client._calls[1].model).toBe(OBS_MODEL); // post-answer resume round
+    expect(client._calls[2].model).toBe(OBS_MODEL); // net-site helper round
+    expect(client._calls[2].tools.map((t) => t.name)).toEqual(['net_response']);
   });
 });

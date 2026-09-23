@@ -52,8 +52,25 @@ const runToolLoopSpy = jest.fn(async () => ({
   terminal_reason: 'end_turn',
 }));
 
+// PLAN-B — the net-site helper (stage6-model-authored-line.js) imports this
+// same module. Its one-call retry is recognisable by its sole tool,
+// `net_response`; route it to an empty response so a test's primary-loop
+// mock (which dispatches that test's own calls) never runs twice.
+const helperLoopSpy = jest.fn(async () => ({
+  stop_reason: 'end_turn',
+  rounds: 1,
+  tool_calls: [],
+  aborted: false,
+  messages_final: [],
+  usage: {},
+  round_usage: [],
+  terminal_reason: 'end_turn',
+}));
 jest.unstable_mockModule('../extraction/stage6-tool-loop.js', () => ({
-  runToolLoop: runToolLoopSpy,
+  runToolLoop: (opts) =>
+    (opts?.tools ?? []).some((t) => t?.name === 'net_response')
+      ? helperLoopSpy(opts)
+      : runToolLoopSpy(opts),
   LOOP_CAP: 8,
   NOOP_DISPATCHER: async () => ({}),
 }));

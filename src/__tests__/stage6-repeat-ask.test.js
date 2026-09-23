@@ -464,6 +464,63 @@ describe('harness: the note reaches the model in round two, and a third ask stil
   });
 });
 
+describe('acceptance 4 — the live composition site debounces with no budget object threaded', () => {
+  const SESSION_ID = 'sess-plan-b-gate4-live';
+  beforeEach(() => {
+    jest.useFakeTimers();
+    activeSessions.set(SESSION_ID, {
+      session: { sessionId: SESSION_ID },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+      broadcastIntentByTurn: new Map(),
+      voiceLatency: { flags: { loadedBarrel: false } },
+    });
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    activeSessions.delete(SESSION_ID);
+  });
+
+  test('an ask reaches the inspector only after QUESTION_GATE_DELAY_MS (gate 4), and nothing else was needed', async () => {
+    const client = snapshottingClient([
+      toolUseRound([{ id: 'toolu_g4', name: 'ask_user', input: zsAsk() }]),
+      endTurnRound('done'),
+    ]);
+    const session = makeLiveSession({
+      sessionId: SESSION_ID,
+      client,
+      stateSnapshot: {
+        circuits: { 3: { designation: 'Sockets' } },
+        pending_readings: [],
+        observations: [],
+        validation_alerts: [],
+      },
+    });
+    const ws = makeOpenWs();
+    const pendingAsks = createPendingAsksRegistry();
+    let settled = false;
+    const p = runShadowHarness(session, 'Zs on circuit 3', [], {
+      logger: makeLogger(),
+      pendingAsks,
+      ws,
+      confirmationsEnabled: true,
+    }).then(() => {
+      settled = true;
+    });
+    await jest.advanceTimersByTimeAsync(QUESTION_GATE_DELAY_MS - 100);
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started')).toHaveLength(0);
+    await jest.advanceTimersByTimeAsync(200);
+    expect(ws.sent.filter((f) => f.type === 'ask_user_started')).toHaveLength(1);
+    pendingAsks.resolve('toolu_g4', { answered: true, user_text: '0.4' });
+    let elapsed = 0;
+    while (!settled && elapsed < ASK_USER_TIMEOUT_MS) {
+      await jest.advanceTimersByTimeAsync(250);
+      elapsed += 250;
+    }
+    await p;
+  });
+});
+
 describe('attachCarriedRepeatAskNote — ingress precedence', () => {
   const note = '[Server note: repeat_ask. x] {}';
 

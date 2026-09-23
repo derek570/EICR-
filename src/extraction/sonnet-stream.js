@@ -7280,6 +7280,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // observation-question turn cannot wrongly escalate to the Sonnet
         // observation tier. Server-context isolation.
         rawInspectorTranscript: msg.text,
+        // PLAN-B (feedback-2026-09-17, B3) — the canonical (normalised,
+        // un-annotated) inspector transcript: the words the model saw, with
+        // no `[In response to …]` annotation and no prepended server note.
+        // The net-site helper validates and renders a `heard` quotation
+        // against THIS value only — never `transcriptText` (which may carry
+        // server text) and never raw `msg.text` (not what the model saw).
+        canonicalInspectorTranscript: canonicalTranscriptText,
         postcodeHintState: msg[POSTCODE_HINT_STATE] ?? postcodeHintState,
         // PLAN-A — the terminal read-back carrier, combined across the three
         // wrapper calls above. The combination rules live in the fold; see it

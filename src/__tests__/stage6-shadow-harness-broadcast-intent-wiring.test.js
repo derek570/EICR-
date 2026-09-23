@@ -161,7 +161,13 @@ describe('Fix A: runLiveMode wires broadcastIntentByTurn before runToolLoop', ()
     );
 
     // The mocked runToolLoop captured the entry state at invocation time.
-    expect(runToolLoopSpy).toHaveBeenCalledTimes(1);
+    // Exactly ONE primary loop ran. (The empty mocked turn then reaches the
+    // orphan net, whose PLAN-B helper makes its own net_response-only call
+    // through the same runToolLoop; it is not a primary loop.)
+    const primaryCalls = runToolLoopSpy.mock.calls.filter(
+      ([o]) => !(o?.tools ?? []).some((t) => t?.name === 'net_response')
+    );
+    expect(primaryCalls).toHaveLength(1);
     expect(observedDuringRunToolLoop).not.toBeNull();
     expect(observedDuringRunToolLoop.size).toBe(1);
     // turnId shape: `${sessionId}-turn-${turnNum}` (stage6-shadow-harness.js:215).

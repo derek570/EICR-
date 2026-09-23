@@ -122,6 +122,20 @@ export function makeTurnClient({
   const roundMeta = baseRounds.map((r) => ({ source: 'base', round: r }));
   let cursor = 0;
   let branchTaken = null;
+  // PLAN-B (feedback-2026-09-17, B3) — the net-site helper's one retry call.
+  // A net about to speak a canned "I didn't understand" line first asks the
+  // model through a call whose ONLY tool is `net_response`. Recorded rounds
+  // were captured from the primary loop; no fixture carries a helper response,
+  // and model wording is live-lane evidence in any case. So the recorded lane
+  // answers every helper call with an EMPTY end_turn round — "helper frozen
+  // empty": the helper resolves `outcome: 'empty'` and the net speaks its
+  // canned line, exactly as the fixture recorded. Helper calls never count
+  // against strict round consumption; they are tallied separately.
+  let netHelperRequests = 0;
+  const isNetHelperRequest = (args) =>
+    Array.isArray(args?.tools) &&
+    args.tools.length > 0 &&
+    args.tools.every((t) => t?.name === 'net_response');
 
   const maybeExtendWithBranch = () => {
     if (cursor < rounds.length || !branches || branches.length === 0 || branchTaken) return;
@@ -153,7 +167,11 @@ export function makeTurnClient({
 
   return {
     messages: {
-      stream() {
+      stream(args) {
+        if (isNetHelperRequest(args)) {
+          netHelperRequests += 1;
+          return mockStream(endTurnRound(''));
+        }
         maybeExtendWithBranch();
         if (cursor >= rounds.length) {
           const err = new Error(
@@ -175,6 +193,9 @@ export function makeTurnClient({
     },
     get _branchTaken() {
       return branchTaken;
+    },
+    get _netHelperRequests() {
+      return netHelperRequests;
     },
     assertFullyConsumed() {
       if (cursor !== rounds.length) {
