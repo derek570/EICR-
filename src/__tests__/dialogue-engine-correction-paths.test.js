@@ -179,13 +179,28 @@ describe('group A — ring awaiting_confirmation accepts value-first amends (ids
     }
   });
 
-  test('sentinel words AMEND through the value-first path (PLAN-A2, feedback id 141)', () => {
+  test('"infinite on the lives" AMENDs through the value-first path (PLAN-A2, feedback id 141)', () => {
     // This test used to pin the opposite — "sentinel words parse to null and
     // remain MODEL-bound (documented pre-existing limitation)". PLAN-A2 closed
     // that limitation: the value-first grammar always CAPTURED "infinite", and
     // parseOhms now WRITES it as "∞" instead of returning null, so a
     // during-confirmation amend lands like any other corrected reading rather
     // than being consumed silently. Field session CC9E0915, 11:39:34.
+    //
+    // SCOPE OF THIS TEST, stated because its first title over-claimed (Codex EP
+    // review, finding 4): it proves ONE form on ONE path. Two neighbouring gaps
+    // are real, pre-existing and NOT closed by PLAN-A2, which scopes this file
+    // to the confirmation text only:
+    //   - `pendingValuePattern` in the ring schema is still numeric-only and
+    //     says so ("Sentinel spellings deliberately NOT added"), so after
+    //     selecting a slot — "R2" → "What should R2 be?" — the answer "open
+    //     circuit" is still rejected and re-asked.
+    //   - `RING_VALUE_GROUP` captures only the head word "open", so the
+    //     value-first form "open circuit on the lives" cannot reach its
+    //     connector and takes no amend path.
+    // Both are recorded as follow-ups rather than widened here; widening the
+    // grammars without re-checking them against the whole-utterance false
+    // positives closed in ohms.js would reopen that class.
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
     enterRingConfirmation(ws, session);

@@ -508,7 +508,9 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 2026-09-23 (PLAN-A2, feedback ids 141/142): the discontinuous-continuity
       // rule moves out of VALUE NORMALISATION into the RING CONTINUITY CARRYOVER
       // block and gains the ring-vs-radial field routing plus the ask-ONCE
-      // branches — one line deleted, one longer line added, net +45 tokens.
+      // branches — one line deleted, one longer line added, net +145 estimated
+      // tokens (25206 → 25351; the first draft of this comment said +45,
+      // corrected against the measurement — Codex EP review, NIT 11).
       // Shared region; measured 25351 and cap retains ~100-token headroom
       // (measured + ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
@@ -922,6 +924,44 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       'once the leg is answered, write the value and record the observation together';
     const WRITE_CASE_CLAUSE =
       'Otherwise call `record_observation` (usually C2) in the same response.';
+
+    test('discontinuous-continuity rule: the COMPLETE ring/radial field mapping survives (PLAN-A2 acceptance 4(ii), mutation lock)', () => {
+      // The enum test above only proves that whatever fields the line names are
+      // REAL. That is not enough: swapping one mapping for another valid field
+      // name — `"R1 plus R2" writes ring_r2_ohm` — passes every other assertion
+      // in this file, and IS the id-142 defect (a ring CPC result recorded to
+      // the radial `r2_ohm` column). Verified by running that exact mutation
+      // against the suite before this test existed: 87/87 green.
+      //
+      // So assert each routing clause as an exact substring. A reader changing
+      // the routing has to change this list too, which is the point.
+      const lines = prompt.split(/\r?\n/);
+      const line = lines.find((l) => l.includes(DISCONT_ANCHOR));
+      expect(line).toBeDefined();
+
+      for (const clause of [
+        // Ring branch: which circuits count as a ring final circuit …
+        'On a RING final circuit',
+        'the designation contains "ring"',
+        'the circuit already holds any `ring_r1_ohm` / `ring_rn_ohm` / `ring_r2_ohm` value',
+        'or the utterance names the ring',
+        // … and where each leg lands.
+        'a CPC result writes `ring_r2_ohm`',
+        'a live or neutral leg writes `ring_r1_ohm` / `ring_rn_ohm`',
+        // Radial branch — the half id 142 got wrong.
+        'On a radial circuit, "CPC" or "R2" alone writes `r2_ohm`',
+        '"R1 plus R2" writes `r1_r2_ohm`',
+      ]) {
+        expect(line).toEqual(expect.stringContaining(clause));
+      }
+
+      // Both columns must be named, and neither may be dropped in favour of the
+      // other: a rule that only ever writes ring fields, or only ever radial
+      // ones, is not a routing rule.
+      expect(line).toEqual(expect.stringContaining('`r2_ohm`'));
+      expect(line).toEqual(expect.stringContaining('`r1_r2_ohm`'));
+      expect(line).toEqual(expect.stringContaining('`ring_r2_ohm`'));
+    });
 
     test('discontinuous-continuity rule: the write-case record_observation clause is NOT gated on utterance shape (PLAN-A2 acceptance 4(i))', () => {
       const lines = prompt.split(/\r?\n/);

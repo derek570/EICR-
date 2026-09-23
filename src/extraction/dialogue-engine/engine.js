@@ -97,7 +97,7 @@ import {
   deleteHandoff,
   isHandedOff,
 } from '../dialogue-handoff-tombstone.js';
-import { formatCorrectionClause } from '../confirmation-text.js';
+import { formatCorrectionClause, speakSentinelValue } from '../confirmation-text.js';
 // NOTE: `clearValueCorrection` (lifecycle rule 2 — the slot itself was cleared)
 // is deliberately NOT imported here: the dialogue engine has no per-slot clear
 // path. Within an episode a slot is only ever OVERWRITTEN, which routes through
@@ -531,10 +531,16 @@ export function processDialogueTurn(ctx) {
               toolCallIdPrefix: crumbSchema.toolCallIdPrefix,
               sessionId,
               kind: 'correction',
+              // PLAN-A2 — same sentinel rendering as the terminal read-back and
+              // the ring triple. Continuity fields do not opt into this
+              // breadcrumb today, so this is defence in depth rather than a
+              // reachable fix: a future schema that did opt in would otherwise
+              // speak the bare character. Non-sentinel values pass through
+              // untouched, so every existing breadcrumb is byte-identical.
               text:
                 correctionClause === null
-                  ? `Got it, ${label} ${effective}.`
-                  : `Got it, ${label} ${effective}. ${correctionClause}.`,
+                  ? `Got it, ${label} ${speakSentinelValue(effective)}.`
+                  : `Got it, ${label} ${speakSentinelValue(effective)}. ${correctionClause}.`,
               now,
               responseEpoch,
             });
@@ -1277,7 +1283,16 @@ function computeUncoveredReadback(state, schema, siteLabel) {
     // operations that predate the label capture, then the raw field name.
     const slot = schema?.slots?.find((s) => s.field === op.field);
     const label = op.label ?? slot?.label ?? op.field;
-    const value = op.written_value ?? op.dictated_value;
+    // PLAN-A2 (2026-09-23) — the stored value can now be the "∞" sentinel on a
+    // continuity slot, and this sentence is SPOKEN. A bare "∞" is silence in
+    // every TTS voice, so "Also got lives ∞." would read as "Also got lives."
+    // — an applied reading with no audible read-back, which Audio-First
+    // invariant #1 forbids. Reached when a ring walk is cancelled, deferred or
+    // otherwise terminated before the triple is confirmed; the confirmed-triple
+    // path renders through the same helper in
+    // buildRingContinuityConfirmation. Every non-sentinel value is returned
+    // unchanged, so existing read-backs stay byte-identical.
+    const value = speakSentinelValue(op.written_value ?? op.dictated_value);
     const opCircuit = op.effective_circuit_ref ?? null;
     const circuitPrefix =
       opCircuit !== null && opCircuit !== currentCircuitRef ? `circuit ${opCircuit} ` : '';

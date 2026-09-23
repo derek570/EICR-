@@ -48,9 +48,17 @@ describe('PLAN-A2 acceptance 1 — parseOhms writes the discontinuity sentinel',
     expect(parseOhms(form)).toBe(INFINITY_SENTINEL);
   });
 
-  test.each(SIX_FORMS)('"%s" inside a dictated sentence → ∞', (form) => {
-    expect(parseOhms(`The CPC is ${form}.`)).toBe(INFINITY_SENTINEL);
-  });
+  test.each(SIX_FORMS)(
+    '"%s" inside a dictated sentence is NOT a bare reply — the named extractor owns it',
+    (form) => {
+      // Anchoring is what makes the whole-utterance bare-value fallback safe,
+      // and the cost is that a field-qualified sentence no longer parses HERE.
+      // It is not lost: the namedExtractor matches the field word and hands
+      // this parser the bare captured token. Proven end to end below in
+      // "the recorded CC9E0915 walk" and in the named-extractor test.
+      expect(parseOhms(`The CPC is ${form}.`)).toBeNull();
+    }
+  );
 
   test('the sentinel character is U+221E, not a lookalike', () => {
     expect(INFINITY_SENTINEL).toBe('∞');
@@ -75,28 +83,67 @@ describe('PLAN-A2 acceptance 1 — parseOhms writes the discontinuity sentinel',
     expect(parseOhms("it's a limitation.")).toBe('LIM');
   });
 
-  test('a NON-bare LIM phrase falls through, exactly as it did before', () => {
-    // `parseLimSlot` deliberately fires only on a bare/near-bare reply (P3
-    // Codex-r1): a field-qualified LIM is routed by the named extractor, which
-    // hands this parser the bare captured token. So a long sentence merely
-    // CONTAINING "limitation" was never a LIM here, and PLAN-A2 does not change
-    // that — it changes only what such a sentence falls through TO.
+  test('a contradictory mixed reply matches NEITHER matcher and re-asks', () => {
+    // Both matchers are whole-reply anchored, so the LIM-before-∞ ordering is a
+    // contract rather than a tie-break — they cannot both fire on one reply.
+    // "limitation" and "open" are contradictory facts on a certificate ("not
+    // tested" against "tested and open"), and the earlier permissive form
+    // resolved that contradiction silently, in the OPPOSITE direction to
+    // stage6-answer-resolver.js. Null re-asks, which is the honest answer.
     expect(parseOhms('the breaking capacity is a limitation')).toBeNull();
-    expect(parseOhms('limitation — the circuit is open')).toBe(INFINITY_SENTINEL);
+    expect(parseOhms('limitation — the circuit is open')).toBeNull();
   });
 
-  test('the discontinuity branch is word-anchored at both ends', () => {
-    // Without anchors, ordinary speech during a ring loop ("opening the
-    // board", "reopened") would certify a conductor as open.
+  test('near-bare filler is accepted, exactly as the LIM matcher accepts it', () => {
+    // The same light filler parseLimSlot allows, for the same reason: an
+    // inspector says "it's open circuit", not a bare token.
+    for (const v of [
+      'Open circuit.',
+      "it's open circuit",
+      'it is discontinuous',
+      'an open ring',
+      'the reading is infinite',
+      'value is infinity',
+      'discontinuous!',
+    ]) {
+      expect(parseOhms(v)).toBe(INFINITY_SENTINEL);
+    }
+  });
+
+  test('ordinary speech containing "open" does NOT write the sentinel', () => {
+    // THE REGRESSION THIS EXISTS FOR (Codex EP review, finding 2). The engine's
+    // bare-value fallback runs this parser over the WHOLE utterance whenever no
+    // named extractor matched, so during an active ring loop any of these would
+    // otherwise certify a conductor as broken on a live certificate. No
+    // topic-switch pattern intercepts them, and the 60 s / 180 s ring timers
+    // bound the exposure window without undoing the write.
+    for (const v of [
+      "I'll open the board",
+      'leave the door open',
+      "I can't get it open",
+      'the window is open',
+      'can you keep that open',
+      'open the cupboard for me',
+      'it was open when I got here',
+    ]) {
+      expect(parseOhms(v)).toBeNull();
+    }
+  });
+
+  test('word-anchored: "opening" / "reopened" / "infinitely" never match', () => {
     for (const near of ['opening', 'reopened', 'infinitely', 'openness']) {
       expect(parseOhms(near)).not.toBe(INFINITY_SENTINEL);
     }
   });
 
-  test('a sentinel beats a stray number in the same utterance', () => {
-    // "open circuit on the 2.5" must not be reduced to the cable size — the
-    // sentinel branch runs before the numeric one.
-    expect(parseOhms('open circuit on the 2.5')).toBe(INFINITY_SENTINEL);
+  test('a sentinel mixed with a stray number keeps its pre-PLAN-A2 numeric result', () => {
+    // Deliberately UNCHANGED, and pinned so the choice is visible. "open
+    // circuit on the 2.5" is not a bare reply, so the sentinel branch declines
+    // and the numeric branch returns "2.5" — exactly what it returned before
+    // PLAN-A2. Suppressing the number whenever a sentinel word appears
+    // anywhere would silently drop real readings like "0.43, the board was
+    // open", trading a known non-issue for an Audio-First #2 violation.
+    expect(parseOhms('open circuit on the 2.5')).toBe('2.5');
   });
 
   test('non-strings and empty input still return null', () => {
@@ -126,6 +173,44 @@ describe('PLAN-A2 acceptance 1 — three-grammar parity on the six forms', () =>
   test('engine and twin agree on numerics and on plain non-values too', () => {
     for (const v of ['0.43', '.43', '43', 'no reading here', '']) {
       expect(parseOhms(v)).toBe(ringLegacy.parseValue(v));
+    }
+  });
+
+  test('the engine is deliberately NARROWER than the twin on non-bare text', () => {
+    // Recorded, not hidden. The twin scans for the sentinel words ANYWHERE;
+    // the engine requires a bare/near-bare reply, because only the engine has
+    // the whole-utterance bare-value fallback that made an anywhere-scan
+    // dangerous. Parity holds where the plan requires it (the six forms,
+    // numerics, plain non-values) and breaks only in the SAFE direction: a
+    // missed sentinel re-asks, a false one corrupts a certificate.
+    //
+    // The twin is not in the live path — sonnet-stream.js imports the dialogue
+    // engine — so this divergence changes no shipped behavior. If the twin is
+    // ever revived, it needs this same anchoring first.
+    for (const v of ["I'll open the board", 'leave the door open', 'it was open when I got here']) {
+      expect(ringLegacy.parseValue(v)).toBe(INFINITY_SENTINEL);
+      expect(parseOhms(v)).toBeNull();
+    }
+    // And where a digit is present the engine keeps the pre-existing numeric
+    // answer while the twin returns the sentinel — still narrower on the
+    // sentinel, never wider.
+    expect(ringLegacy.parseValue('open circuit on the 2.5')).toBe(INFINITY_SENTINEL);
+    expect(parseOhms('open circuit on the 2.5')).toBe('2.5');
+  });
+
+  test('a FIELD-QUALIFIED sentinel still writes, via the named extractor', () => {
+    // The anchoring does not cost the field-qualified form. The namedExtractor
+    // matches the field word and hands this parser the BARE captured token —
+    // the same route parseLimSlot documents for "the rating is a limitation".
+    const captureRe = new RegExp(`(${RING_VALUE_GROUP})`, 'i');
+    for (const utterance of [
+      'The CPC is open circuit.',
+      'CPC is discontinuous.',
+      'earths are infinite',
+    ]) {
+      const captured = utterance.match(captureRe)?.[1];
+      expect(captured).toBeDefined();
+      expect(parseOhms(captured)).toBe(INFINITY_SENTINEL);
     }
   });
 
@@ -343,5 +428,91 @@ describe('PLAN-A2 acceptance 2 — the recorded CC9E0915 11:39:34 walk, end to e
     const confirms = ws.sent.filter((f) => f.reason === 'confirm_ring_continuity');
     expect(confirms).toHaveLength(1);
     expect(confirms[0].question).toBe('R1 0.43, Rn 0.43, R2 0.78. All correct?');
+  });
+});
+
+describe('PLAN-A2 — the TERMINAL read-back speaks the sentinel too (Codex EP review, blocker 1)', () => {
+  // The confirmed-triple path was the obvious one and it was covered. This is
+  // the path that was NOT: a ring walk that ends before the triple is
+  // confirmed — cancelled, deferred, or otherwise terminated — reads back what
+  // it collected through computeUncoveredReadback, which interpolated the raw
+  // stored value. Making parseOhms write "∞" made that route newly reachable
+  // for the five continuity fields, so the fix and this test arrived together.
+  //
+  // Red-proof, run before the test was written: with the one-line engine fix
+  // reverted, this exact walk emits "Ring continuity cancelled. 1 of 3 saved.
+  // Also got lives ∞." — an applied reading whose read-back is silence in
+  // every TTS voice, which is Audio-First invariant #1 violated on the nose.
+  const SESSION_ID = 'sess_a2_terminal';
+
+  class FakeWS {
+    constructor() {
+      this.OPEN = 1;
+      this.readyState = this.OPEN;
+      this.sent = [];
+    }
+    send(data) {
+      this.sent.push(JSON.parse(data));
+    }
+  }
+
+  function walkThenExit(exitPhrase) {
+    const ws = new FakeWS();
+    const session = { sessionId: SESSION_ID, stateSnapshot: { circuits: { 1: {} } } };
+    const turn = (transcriptText, now) =>
+      processRingContinuityTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText,
+        rawReplyText: transcriptText,
+        logger: null,
+        now,
+      });
+    turn('Ring continuity on circuit 1. Lives are open circuit.', 1000);
+    ws.sent.length = 0; // isolate the frames the EXIT produces
+    turn(exitPhrase, 2000);
+    return { ws, session };
+  }
+
+  test.each(['cancel that', 'forget it'])(
+    'an open leg collected then "%s" reads back "infinity", never the character',
+    (exitPhrase) => {
+      const { ws, session } = walkThenExit(exitPhrase);
+
+      // The reading is applied and keeps the character in storage.
+      expect(session.stateSnapshot.circuits[1].ring_r1_ohm).toBe(INFINITY_SENTINEL);
+
+      const spoken = ws.sent.map((f) => f.question ?? f.text).filter((t) => typeof t === 'string');
+      const readback = spoken.find((t) => t.includes('Also got'));
+      expect(readback).toBe('Ring continuity cancelled. 1 of 3 saved. Also got lives infinity.');
+
+      // Exactly once, and the raw glyph reaches no spoken line at all.
+      const infinityMentions = spoken.join(' ').match(/infinity/g) ?? [];
+      expect(infinityMentions).toHaveLength(1);
+      for (const line of spoken) expect(line).not.toContain(INFINITY_SENTINEL);
+    }
+  );
+
+  test('a numeric leg collected then cancelled is byte-identical to before', () => {
+    const ws = new FakeWS();
+    const session = { sessionId: SESSION_ID, stateSnapshot: { circuits: { 1: {} } } };
+    const turn = (transcriptText, now) =>
+      processRingContinuityTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText,
+        rawReplyText: transcriptText,
+        logger: null,
+        now,
+      });
+    turn('Ring continuity on circuit 1. Lives are 0.43.', 1000);
+    ws.sent.length = 0;
+    turn('cancel that', 2000);
+    const readback = ws.sent
+      .map((f) => f.question ?? f.text)
+      .find((t) => typeof t === 'string' && t.includes('Also got'));
+    expect(readback).toBe('Ring continuity cancelled. 1 of 3 saved. Also got lives 0.43.');
   });
 });

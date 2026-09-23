@@ -299,6 +299,34 @@ a plausible-looking first word, destroying the evidence a guard would need.
 > classification. Voice acceptance of LIM on the ranged fields is gated behind
 > the `lim_ranged_write_v1` client capability (sentinel-safe derivation guards).
 
+> **The discontinuity sentinel `∞` on continuity fields (PLAN-A2, 2026-09-23,
+> feedback ids 141 and 142):** an open conductor is stored as the literal
+> character `∞` (U+221E) on the five continuity fields — `r1_r2_ohm`, `r2_ohm`,
+> `ring_r1_ohm`, `ring_rn_ohm`, and `ring_r2_ohm`. Six spoken forms map to it:
+> `infinite`, `infinity`, `open`, `open circuit`, `open ring`, and
+> `discontinuous`. A bare LIM reply still wins over all six, because a
+> limitation means the test wasn't performed while `∞` means it was performed
+> and the conductor is open.
+>
+> The value is stored as the character and spoken as the word "infinity". Every
+> TTS voice reads a bare `∞` as silence, so the ring triple reads back as
+> "R1 0.43, Rn 0.43, R2 infinity. All correct?" and a dispatcher read-back as
+> "ring R2 infinity". One helper, `speakSentinelValue` in
+> `src/extraction/confirmation-text.js`, serves both paths.
+>
+> Which field a result lands on depends on the circuit, not on the words alone.
+> On a ring final circuit — the designation contains "ring", the circuit already
+> holds a ring leg value, or the utterance names the ring — a CPC result writes
+> `ring_r2_ohm`, and a live or neutral leg writes `ring_r1_ohm` or
+> `ring_rn_ohm`. On a radial circuit, "CPC" or "R2" alone writes `r2_ohm`, and
+> "R1 plus R2" writes `r1_r2_ohm`. If the utterance names no leg, the model asks
+> once and defers the observation until the answer arrives.
+>
+> Insulation resistance is deliberately different. "Infinite" on an IR reading
+> means the meter saturated, a good result recorded as `>999`; `open circuit`
+> isn't an IR sentinel at all. For more information, see the parity tests in
+> `src/__tests__/dialogue-ohms-discontinuity.test.js`.
+
 ## Observations Tab (`/job/[id]/observations`)
 
 | Field | Type | Options | AI Extraction Guidance |
