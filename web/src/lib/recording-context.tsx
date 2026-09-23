@@ -1529,8 +1529,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // `DeepgramService.pauseAudioStream()` (DeepgramService.swift:566).
   // Skips resample + ringBuffer.write + Deepgram.sendSamples + Silero
   // dispatch — three main-thread workloads that otherwise compete with
-  // iPad Safari's audio decode during foreground playback. The
-  // resume timer mirrors iOS's 500ms post-TTS drain window.
+  // iPad Safari's audio decode during foreground playback. The 500ms
+  // post-playback window is HELD and replayed when the resume timer fires
+  // (PLAN-D D7, `postTtsHoldRef`), mirroring iOS's post-TTS holding buffer;
+  // before D7 those 500ms were discarded.
   const ttsActiveRef = React.useRef(false);
   const ttsResumeTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // Amplitude-based barge-in was attempted in commits cc4082e (initial)
@@ -1715,6 +1717,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     () => resumePhraseEchoRef.current.playing || Date.now() < resumePhraseEchoRef.current.untilMs,
     []
   );
+
+  // D7 — web's post-TTS holding buffer (iOS parity; iOS is canon). From the
+  // lifecycle `'end'` (actual audio-end) until the existing post-playback
+  // timer releases the PCM gate, `onSamples` HOLDS each raw pre-resample
+  // block with its capture-ingress `capturedAt` instead of discarding it;
+  // the timer drains them synchronously, in capture order, through the SAME
+  // per-block ingest the live path runs. Null when no hold is armed. Not
+  // pause machinery: it behaves identically with or without a voice pause.
+  const postTtsHoldRef = React.useRef<{
+    blocks: Array<{ samples: Float32Array; capturedAt: number; sampleRate: number }>;
+  } | null>(null);
+  /** The live per-block ingest (resample → tag → ring → wall-clock observe →
+   *  send), published by `beginMicOnly` so the drain runs the identical
+   *  body. */
+  const ingestCapturedBlockRef = React.useRef<
+    ((samples: Float32Array, sampleRate: number, capturedAt: number) => void) | null
+  >(null);
 
   // Stamps the most-recent text passed to `speak()`. The TTS lifecycle
   // observer (event: 'start' | 'end') doesn't carry the spoken text,
@@ -2079,6 +2098,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const teardownMic = React.useCallback(() => {
     micRef.current?.stop();
     micRef.current = null;
+    // D7 (PLAN-D) — the tap is gone, so a pending post-TTS hold has no
+    // live stream to rejoin. Every caller is a deliberate stop or button
+    // pause, whose owned disconnect discards unresolved loss anyway.
+    postTtsHoldRef.current = null;
     // PLAN-E2 (sanctioned family 2) — the tap is torn down: push FALSE.
     // One of exactly TWO writers (the other is `beginMicOnly`'s
     // `micRef.current = handle`); the flag mirrors `micRef.current !==
@@ -4834,6 +4857,100 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     // B1 seam — the harness injects a silent fake mic (no getUserMedia /
     // AudioWorklet in jsdom); production always takes startMicCapture.
     const micFactory = getRecordingTestServices()?.micCaptureFactory ?? startMicCapture;
+    // D7 (PLAN-D) — the per-block ingest, factored out of `onSamples` so
+    // the post-TTS hold's drain runs EXACTLY this body once per held block
+    // (resample → zero-sample skip → tag with the block's OWN `capturedAt` →
+    // ring write → capture→wall-clock observe → send, or the no-sender
+    // loss charge), rather than a second copy that could drift.
+    const ingestCapturedBlock = (
+      samples: Float32Array,
+      sampleRate: number,
+      capturedAt: number
+    ): void => {
+      // Single resample point. `handle.sampleRate` is the AudioContext's
+      // ACTUAL rate (browsers honour the 16000 hint only on some builds).
+      // Post-resample data is 16kHz Float32 regardless of the hardware
+      // rate, so both downstream sinks can trust the sample count.
+      const samples16k = resampleTo16k(samples, sampleRate);
+      // A sub-ratio block (fewer input samples than the resample ratio)
+      // yields ZERO 16 kHz samples — nothing to tag, feed to VAD, or
+      // retain; `DeepgramService.sendSamples` applies the same contract.
+      if (samples16k.length === 0) return;
+      // Always write to the ring buffer, even while paused (and even
+      // when no DeepgramService instance currently exists — full
+      // sleep tears it down but leaves the mic running). That's what
+      // lets wake-from-doze/sleep and post-reconnect replay the audio
+      // leading up to the VAD fire.
+      //
+      // PLAN-E1 (Codex diff-review r1 BLOCKER fix): tag ONCE here, at
+      // the session-owned capture-tagging boundary, and hand the SAME
+      // tagged segment to both the ring buffer and the live sender —
+      // never let each independently mint its own tag for the same
+      // physical audio (that duplicates the capture clock's position
+      // and lets a later replay mislabel gap-period audio under the
+      // wrong epoch). `sessionUplinkContextRef` outlives any one
+      // DeepgramService instance, so this runs whether or not
+      // `deepgramRef.current` is currently alive.
+      const ctx = sessionUplinkContextRef.current;
+      if (ctx) {
+        const segment = tagCapturedFloat32(
+          samples16k,
+          ctx,
+          deepgramRef.current?.liveEpoch ?? null,
+          capturedAt
+        );
+        ringBufferRef.current?.writeTagged(segment);
+        // PLAN-E-TERM — feed the piecewise capture→wall-clock map at
+        // the tagging boundary: a new anchor lands automatically after
+        // every capture discontinuity (pause, interruption, the
+        // TTS-excluded interval above), so a lost range's window is
+        // CAPTURE time, never write time.
+        captureWallClockRef.current?.observe(
+          segment.captureSampleRange.start,
+          performance.timeOrigin + capturedAt
+        );
+        const sender = deepgramRef.current;
+        if (sender) {
+          sender.sendTaggedAudio(segment);
+        } else if (statusRef.current !== 'sleeping') {
+          // PLAN-E2 (Codex cycle-1 BLOCKER fix) — capture accepted from
+          // the tap while NO sender exists yet (initial start and manual
+          // resume both start the mic before the service is
+          // constructed) is the capture-before-open window: recorded
+          // as undispatched loss here, since no `sendTaggedAudio`
+          // not-connected return can ever see it. Auto-sleep's ring
+          // ownership (replayed on wake) is the explicit negative.
+          ctx.lossLedger?.recordDropped({
+            epochScope: segment.epochScope,
+            captureSampleRange: segment.captureSampleRange,
+            samples: segment.samples,
+          });
+        }
+      } else {
+        // Should not happen post-start() — sessionUplinkContextRef is
+        // populated before beginMicPipeline/beginMicOnly ever run.
+        // Fall back to the pre-E1 self-tagging path rather than
+        // silently dropping this block. On THIS path `sendSamples` is
+        // entered only after the guard AND the resample above have
+        // already run, so pass the SAME `capturedAt` captured before
+        // either — computing a fresh one inside `sendSamples` would
+        // record a strictly later time (PLAN-E1B2 item 3, round-7
+        // finding).
+        deepgramRef.current?.sendSamples(samples16k, capturedAt);
+      }
+      // T20 — feed the VAD chunk accumulator. Only run while sleeping;
+      // the SleepManager ignores VAD frames in `active` (the timer is
+      // what drives sleep entry there) so doing inference on every
+      // active-state frame would be ~2ms of WASM compute per 32ms
+      // burned for nothing. While sleeping we DO want every chunk so
+      // the wake gate fires as soon as the inspector starts speaking.
+      const silero = sileroRef.current;
+      const sleep = sleepManagerRef.current;
+      if (silero && sleep && sleep.currentState === 'sleeping') {
+        dispatchSamplesToVad(samples16k, silero, sleep, vadAccumulatorRef.current);
+      }
+    };
+    ingestCapturedBlockRef.current = ingestCapturedBlock;
     const handle = await micFactory({
       onSamples: (samples) => {
         // iOS-parity PCM gate during ElevenLabs playback. Mirrors
@@ -4849,7 +4966,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // so we also save those CPU cycles, not just the WS send.
         // Mic capture itself + the VU meter (onLevel below) keep
         // running so the inspector still sees they're being heard.
-        if (ttsActiveRef.current) return;
+        if (ttsActiveRef.current) {
+          // D7 (PLAN-D) — between the lifecycle 'end' (actual audio-end) and
+          // the post-playback timer, HOLD the raw pre-resample block with
+          // its capture-ingress stamp instead of discarding it: that window
+          // is the inspector's immediate reply, not TTS bleed. One array
+          // push, no copy (both mic paths hand over a caller-owned array)
+          // and no resample while TTS decodes. During playback itself (no
+          // hold armed) the block is still dropped: web has no hardware
+          // echo cancellation, so that audio is the client's own TTS.
+          const hold = postTtsHoldRef.current;
+          if (hold) {
+            hold.blocks.push({
+              samples,
+              capturedAt: performance.now(),
+              sampleRate: handle.sampleRate,
+            });
+          }
+          return;
+        }
         // PLAN-E1B2 item 3 — the true capture-ingress instant, stamped
         // HERE (immediately after the TTS-discard guard, before the
         // resample below) so a queue hop between capture and processing
@@ -4858,89 +4993,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // timestamp, so callback-entry is the best available proxy — an
         // accepted, documented trade-off (this plan's own round-6
         // correction).
-        const capturedAt = performance.now();
-        // Single resample point. `handle.sampleRate` is the AudioContext's
-        // ACTUAL rate (browsers honour the 16000 hint only on some builds).
-        // Post-resample data is 16kHz Float32 regardless of the hardware
-        // rate, so both downstream sinks can trust the sample count.
-        const samples16k = resampleTo16k(samples, handle.sampleRate);
-        // A sub-ratio block (fewer input samples than the resample ratio)
-        // yields ZERO 16 kHz samples — nothing to tag, feed to VAD, or
-        // retain; `DeepgramService.sendSamples` applies the same contract.
-        if (samples16k.length === 0) return;
-        // Always write to the ring buffer, even while paused (and even
-        // when no DeepgramService instance currently exists — full
-        // sleep tears it down but leaves the mic running). That's what
-        // lets wake-from-doze/sleep and post-reconnect replay the audio
-        // leading up to the VAD fire.
-        //
-        // PLAN-E1 (Codex diff-review r1 BLOCKER fix): tag ONCE here, at
-        // the session-owned capture-tagging boundary, and hand the SAME
-        // tagged segment to both the ring buffer and the live sender —
-        // never let each independently mint its own tag for the same
-        // physical audio (that duplicates the capture clock's position
-        // and lets a later replay mislabel gap-period audio under the
-        // wrong epoch). `sessionUplinkContextRef` outlives any one
-        // DeepgramService instance, so this runs whether or not
-        // `deepgramRef.current` is currently alive.
-        const ctx = sessionUplinkContextRef.current;
-        if (ctx) {
-          const segment = tagCapturedFloat32(
-            samples16k,
-            ctx,
-            deepgramRef.current?.liveEpoch ?? null,
-            capturedAt
-          );
-          ringBufferRef.current?.writeTagged(segment);
-          // PLAN-E-TERM — feed the piecewise capture→wall-clock map at
-          // the tagging boundary: a new anchor lands automatically after
-          // every capture discontinuity (pause, interruption, the
-          // TTS-excluded interval above), so a lost range's window is
-          // CAPTURE time, never write time.
-          captureWallClockRef.current?.observe(
-            segment.captureSampleRange.start,
-            performance.timeOrigin + capturedAt
-          );
-          const sender = deepgramRef.current;
-          if (sender) {
-            sender.sendTaggedAudio(segment);
-          } else if (statusRef.current !== 'sleeping') {
-            // PLAN-E2 (Codex cycle-1 BLOCKER fix) — capture accepted from
-            // the tap while NO sender exists yet (initial start and manual
-            // resume both start the mic before the service is
-            // constructed) is the capture-before-open window: recorded
-            // as undispatched loss here, since no `sendTaggedAudio`
-            // not-connected return can ever see it. Auto-sleep's ring
-            // ownership (replayed on wake) is the explicit negative.
-            ctx.lossLedger?.recordDropped({
-              epochScope: segment.epochScope,
-              captureSampleRange: segment.captureSampleRange,
-              samples: segment.samples,
-            });
-          }
-        } else {
-          // Should not happen post-start() — sessionUplinkContextRef is
-          // populated before beginMicPipeline/beginMicOnly ever run.
-          // Fall back to the pre-E1 self-tagging path rather than
-          // silently dropping this block. On THIS path `sendSamples` is
-          // entered only after the guard AND the resample above have
-          // already run, so pass the SAME `capturedAt` captured before
-          // either — computing a fresh one inside `sendSamples` would
-          // record a strictly later time (PLAN-E1B2 item 3, round-7
-          // finding).
-          deepgramRef.current?.sendSamples(samples16k, capturedAt);
-        }
-        // T20 — feed the VAD chunk accumulator. Only run while sleeping;
-        // the SleepManager ignores VAD frames in `active` (the timer is
-        // what drives sleep entry there) so doing inference on every
-        // active-state frame would be ~2ms of WASM compute per 32ms
-        // burned for nothing. While sleeping we DO want every chunk so
-        // the wake gate fires as soon as the inspector starts speaking.
-        const silero = sileroRef.current;
-        const sleep = sleepManagerRef.current;
-        if (silero && sleep && sleep.currentState === 'sleeping') {
-          dispatchSamplesToVad(samples16k, silero, sleep, vadAccumulatorRef.current);
-        }
+        ingestCapturedBlock(samples, handle.sampleRate, performance.now());
       },
       onLevel: (level) => {
         const now = performance.now();
@@ -5330,6 +5383,36 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           clearTimeout(ttsResumeTimerRef.current);
           ttsResumeTimerRef.current = null;
         }
+        // D7 (PLAN-D) — a new prompt starting before the drain CANCELS the
+        // post-TTS hold (its frames would interleave with this prompt's
+        // echo). iOS's discipline: the frames are never silently cleared —
+        // each is resampled, tagged with its OWN capture stamp and charged
+        // to the loss ledger's dropped-capture seam, so the loss is
+        // attributed and disclosable.
+        const cancelledHold = postTtsHoldRef.current;
+        postTtsHoldRef.current = null;
+        if (cancelledHold) {
+          const holdCtx = sessionUplinkContextRef.current;
+          for (const block of cancelledHold.blocks) {
+            if (!holdCtx) break;
+            const block16k = resampleTo16k(block.samples, block.sampleRate);
+            if (block16k.length === 0) continue;
+            const segment = tagCapturedFloat32(
+              block16k,
+              holdCtx,
+              deepgramRef.current?.liveEpoch ?? null,
+              block.capturedAt
+            );
+            holdCtx.lossLedger?.recordDropped({
+              epochScope: segment.epochScope,
+              captureSampleRange: segment.captureSampleRange,
+              samples: segment.samples,
+            });
+          }
+          clientDiagnostic('voice_pause_hold_cancelled', {
+            blocks: cancelledHold.blocks.length,
+          });
+        }
         ttsActiveRef.current = true;
         // PLAN-C — drop any pending poor-signal probe onset BEFORE the
         // uplink pauses. Web's shared VAD is starved while TTS plays, so
@@ -5351,12 +5434,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (ttsResumeTimerRef.current) {
           clearTimeout(ttsResumeTimerRef.current);
         }
+        // D7 (PLAN-D) — ARM the post-TTS hold at actual audio-end (web's
+        // analogue of iOS `onTTSAudioEnded`), alongside the resume timer.
+        // A second 'end' before the drain keeps the blocks already held.
+        if (!postTtsHoldRef.current) postTtsHoldRef.current = { blocks: [] };
         ttsResumeTimerRef.current = setTimeout(() => {
           ttsResumeTimerRef.current = null;
-          ttsActiveRef.current = false;
-          // PLAN-E-TERM — the TTS-excluded interval ends: the next captured
-          // block starts a new wall-clock piece even if the gap was short.
+          // D7 — the timer is the ONLY drain, and it runs synchronously
+          // (no await anywhere below): `tagCapturedFloat32` mints capture
+          // ranges in TAG order, so a synchronous drain is what guarantees
+          // every held block is tagged in capture order and before any
+          // later live block.
+          // (1) PLAN-E-TERM — the TTS-excluded interval ends at audio-end,
+          // which is where the held run starts: mark the discontinuity
+          // BEFORE the held blocks are observed into the wall-clock map.
           captureWallClockRef.current?.markDiscontinuity();
+          // (2) Replay each held block through the live ingest, with its
+          // OWN capture stamp — never one recomputed here.
+          const hold = postTtsHoldRef.current;
+          postTtsHoldRef.current = null;
+          const ingest = ingestCapturedBlockRef.current;
+          if (hold && ingest) {
+            for (const block of hold.blocks)
+              ingest(block.samples, block.sampleRate, block.capturedAt);
+          }
+          // (3) The existing release, unchanged.
+          ttsActiveRef.current = false;
           deepgramRef.current?.resume();
           clientDiagnostic('tts_pcm_gate_released', {
             delayMs: TTS_PCM_GATE_RESUME_DELAY_MS,

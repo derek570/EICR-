@@ -85,10 +85,20 @@ describe('start() wiring — injected identity, ledger seams, wall-clock', () =>
   });
 
   it('the wall-clock map is fed at the tagging boundary in onSamples, AFTER the TTS-discard guard', () => {
-    const guard = SRC.indexOf('if (ttsActiveRef.current) return;');
+    // PLAN-D D7 — the tagging boundary is `ingestCapturedBlock`, which the
+    // live path calls only after the TTS guard and the post-TTS drain calls
+    // once per held block. The observe call lives inside it.
+    const ingestStart = SRC.indexOf('const ingestCapturedBlock = (');
+    const ingestEnd = SRC.indexOf('ingestCapturedBlockRef.current = ingestCapturedBlock;');
+    const guard = SRC.indexOf('if (ttsActiveRef.current) {');
+    const liveCall = SRC.indexOf(
+      'ingestCapturedBlock(samples, handle.sampleRate, performance.now());'
+    );
     const observe = SRC.indexOf('captureWallClockRef.current?.observe(');
     expect(guard).toBeGreaterThan(-1);
-    expect(observe).toBeGreaterThan(guard);
+    expect(liveCall).toBeGreaterThan(guard);
+    expect(observe).toBeGreaterThan(ingestStart);
+    expect(observe).toBeLessThan(ingestEnd);
     expect(SRC.match(/captureWallClockRef\.current\?\.observe\(/g)?.length).toBe(1);
     // The anchor is the INGRESS instant (`capturedAt`, stamped before the
     // resample), never a post-processing `Date.now()`.
@@ -97,10 +107,20 @@ describe('start() wiring — injected identity, ledger seams, wall-clock', () =>
   });
 
   it('declared discontinuities force an anchor: TTS-gate release and resume()', () => {
+    // PLAN-D D7 — the discontinuity is marked at the START of the release
+    // timer, before the held post-TTS blocks are observed and before the
+    // gate flag clears (the held run starts at audio-end).
     const release = SRC.lastIndexOf('ttsActiveRef.current = false;');
-    expect(SRC.slice(release, release + 400)).toContain(
-      'captureWallClockRef.current?.markDiscontinuity();'
+    const timerOpen = SRC.lastIndexOf('ttsResumeTimerRef.current = setTimeout(() => {', release);
+    const mark = SRC.indexOf('captureWallClockRef.current?.markDiscontinuity();', timerOpen);
+    const drain = SRC.indexOf(
+      'ingest(block.samples, block.sampleRate, block.capturedAt)',
+      timerOpen
     );
+    expect(timerOpen).toBeGreaterThan(-1);
+    expect(mark).toBeGreaterThan(timerOpen);
+    expect(drain).toBeGreaterThan(mark);
+    expect(release).toBeGreaterThan(drain);
     expect(fnBody(SRC, 'resume')).toContain('captureWallClockRef.current?.markDiscontinuity();');
   });
 

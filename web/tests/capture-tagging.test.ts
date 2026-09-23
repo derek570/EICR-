@@ -94,8 +94,18 @@ describe('recording-context.tsx onSamples wiring (source-adjacency — see file 
     // The TTS-discard guard, THEN the capturedAt stamp, THEN the resample
     // call — in that exact order. A stamp taken after resampling would
     // record a later time than the frame's true ingress instant.
+    //
+    // PLAN-D D7 factored the per-block body into `ingestCapturedBlock` so
+    // the post-TTS hold's drain runs the identical body: the live path now
+    // stamps `performance.now()` as the ingest call's argument right after
+    // the guard block, and the ingest's FIRST statement is the resample of
+    // the block it was handed with that stamp. A held block is stamped at
+    // hold time inside the guard and carries that stamp to the drain.
     expect(src).toMatch(
-      /if \(ttsActiveRef\.current\) return;\s*\n(?:\s*\/\/[^\n]*\n)*\s*const capturedAt = performance\.now\(\);\s*\n(?:\s*\/\/[^\n]*\n)*\s*const samples16k = resampleTo16k\(samples, handle\.sampleRate\);/
+      /if \(ttsActiveRef\.current\) \{[\s\S]*?capturedAt: performance\.now\(\),[\s\S]*?return;\s*\n\s*\}\s*\n(?:\s*\/\/[^\n]*\n)*\s*ingestCapturedBlock\(samples, handle\.sampleRate, performance\.now\(\)\);/
+    );
+    expect(src).toMatch(
+      /const ingestCapturedBlock = \(\s*\n\s*samples: Float32Array,\s*\n\s*sampleRate: number,\s*\n\s*capturedAt: number\s*\n\s*\): void => \{\s*\n(?:\s*\/\/[^\n]*\n)*\s*const samples16k = resampleTo16k\(samples, sampleRate\);/
     );
   });
 
