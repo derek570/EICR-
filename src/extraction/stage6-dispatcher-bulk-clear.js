@@ -33,6 +33,7 @@ import { logToolCall } from './stage6-dispatcher-logger.js';
 import { CLEAR_READING_FIELD_ENUM } from './stage6-tool-schemas.js';
 import { clearReadingFlagAware } from './stage6-snapshot-mutators.js';
 import { normaliseBoardScopeInput, resolveEffectiveBoardId } from './stage6-multi-board-shape.js';
+import { isBlankWrite } from './blank-write-policy.js';
 import {
   attachEffectiveSlot,
   attachBulkOutcomeCallId,
@@ -93,7 +94,18 @@ function validateClearFieldForAllCircuits(input) {
  *
  * @returns {'cleared'|'already_empty'}
  */
-function clearOneCircuit(session, perTurnWrites, { field, circuit, boardId, callId, reason }) {
+function clearOneCircuit(
+  session,
+  perTurnWrites,
+  { field, circuit, boardId, callId, reason, bucket }
+) {
+  // ALREADY-EMPTY is decided on the VALUE, not on whether a key exists. A
+  // bucket carrying `ref_method: ''` is empty as far as the certificate is
+  // concerned, and `clearReadingFlagAware` would report it as cleared because
+  // the property was there to delete. Counting that as a clear would put a
+  // `field_corrected` on the wire for a cell that did not change and name the
+  // circuit in a spoken line that says something happened to it.
+  if (bucket != null && isBlankWrite(String(bucket[field] ?? ''))) return 'already_empty';
   const { cleared, previousValue } = clearReadingFlagAware(session.stateSnapshot, {
     circuit,
     field,
@@ -204,6 +216,7 @@ export async function dispatchClearFieldForAllCircuits(call, ctx) {
         boardId: candidate.boardId,
         callId: call.tool_call_id,
         reason: 'user_correction',
+        bucket: candidate.bucket,
       });
     } catch (clearErr) {
       logger?.warn?.('stage6.bulk_clear_circuit_failed', {
