@@ -297,3 +297,33 @@ genuine new coverage — they pin the projection a log row cannot — but the re
 would also pass against the prior code, so they are coverage, not a red proof. A real
 clear_reading-plus-answer_user dispatch needs the tool loop unmocked with a stubbed vendor, which is
 a new harness and not something to build inside a delivery round. It is in the repo todo queue.
+
+### Acceptance re-audit — enumerated, not sampled
+
+The plan has ELEVEN acceptance items, not nine. Before writing the outcome record I walked each one
+against actual test evidence rather than recalling it, because an audit's completeness claim is
+itself a claim and this one was about to be written into a lifecycle record.
+
+| # | Evidence | Verdict |
+|---|---|---|
+| 1 | `dialogue-engine-first-miss-handoff.test.js` acceptance-1 block + live case 1 | PASS |
+| 2 | fence matrix in `device-absence-fence.test.js` and `-harness.test.js`; live case 2 cleared `rcd_type` only and left `rcd_bs_en` | PASS — see the gap below |
+| 3 | `breaking-capacity-advisory.test.js`; live case 3 wrote `ocpd_type = N/A` then asked | PASS |
+| 4 | terminal-read-back suites | PASS |
+| 5 | tombstone matrix in the handoff suite | PASS |
+| 6 | "a DIFFERENT family enters through the ordinary entry loop" | PASS |
+| 7 | the annotated-transcript case in the handoff suite | PASS |
+| 8 | `all_filled_entry` case + live case 8 (nothing cleared, nothing read back) | PASS |
+| 9 | `PLAN-A-acceptance-9-live-lane.md` | PASS |
+| 10 | A3 case in the handoff suite; arbiter / verbatim-repeat / JSON-boundary carried from v3 | PASS |
+| 11 | `terminal-readback-carrier.test.js` + `terminal-readback-recovery.test.js` | PASS |
+
+**The audit found one genuine gap, in item 2.** Its fence matrix includes a CANCELLED-turn row —
+"cancelled turn with a surviving clear → fenced, `ANSWER_FALLBACK_TEXT` NOT staged" — and nothing
+covered it. The fence's own comment says it runs "on the NORMAL and the CANCELLED path alike", and
+the cancelled path is exactly where the fixed apology would otherwise speak on top of the clears. Two
+cases now cover it, with a negative control, and the positive one is red-proofed: neutering
+`computeAnswerFence` fails it.
+
+Had I written the outcome record from memory, item 2 would have been recorded PASS on the strength of
+the rows that were covered. That is the failure mode the enumerate-don't-sample rule exists for.

@@ -341,6 +341,67 @@ describe('the fence changes what the turn speaks', () => {
     expect(result.spoken_response).toBeUndefined();
   });
 
+  test('a CANCELLED turn with a surviving clear is fenced, and stages no fallback', async () => {
+    // Acceptance 2's cancelled-turn row. The fence sits one step before the
+    // answer finalizer on the NORMAL and the CANCELLED path alike, and the
+    // cancelled path is the one where the fixed apology would otherwise speak
+    // on top of the clears. Any throw out of the tool loop latches `cancelled`,
+    // so the mock seeds the per-turn state the clears left and then throws.
+    const rows = [];
+    let observed = null;
+    runToolLoopSpy.mockImplementationOnce(async (args) => {
+      const w = args.perTurnWritesRef();
+      w.answer = w.answer ?? {};
+      w.answer.featureTouched = true;
+      w.cleared.push(clearOn('rcd_type', 3, 'main'));
+      observed = w.answer;
+      throw new Error('transport died mid-turn');
+    });
+    const result = await run(
+      makeSession(),
+      baseOpts({
+        handoff: HANDOFF,
+        logger: {
+          info: (e, p) => rows.push({ e, p }),
+          warn: () => {},
+          error: () => {},
+          debug: () => {},
+        },
+      })
+    );
+    expect(rows.some((r) => r.e === 'stage6.answer_fenced_by_clears')).toBe(true);
+    expect(observed.fencedByClears).toBe(true);
+    // ANSWER_FALLBACK_TEXT must NOT be staged — the clears are the outcome.
+    expect(rows.some((r) => r.e === 'stage6.answer_fallback_staged')).toBe(false);
+    expect(result.spoken_response).toBeUndefined();
+  });
+
+  test('NEGATIVE CONTROL — a cancelled turn with NO surviving clear DOES get the fallback', async () => {
+    // Without this, the row above would read the same if the cancelled path
+    // simply never staged anything.
+    const rows = [];
+    runToolLoopSpy.mockImplementationOnce(async (args) => {
+      const w = args.perTurnWritesRef();
+      w.answer = w.answer ?? {};
+      w.answer.featureTouched = true;
+      throw new Error('transport died mid-turn');
+    });
+    const result = await run(
+      makeSession(),
+      baseOpts({
+        handoff: HANDOFF,
+        logger: {
+          info: (e, p) => rows.push({ e, p }),
+          warn: () => {},
+          error: () => {},
+          debug: () => {},
+        },
+      })
+    );
+    expect(rows.some((r) => r.e === 'stage6.answer_fenced_by_clears')).toBe(false);
+    expect(typeof result.spoken_response).toBe('string');
+  });
+
   test('a turn with NO handoff never fences, whatever it cleared', async () => {
     const rows = [];
     seedTurn((w) => {
