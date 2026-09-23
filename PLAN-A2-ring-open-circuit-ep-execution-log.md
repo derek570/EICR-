@@ -295,7 +295,7 @@ fail and the controls pass; pivot targets removed → the pivot test fails.
   The inspector asked for it, and no model write is involved, so it is outside acceptance 3. A lingering tombstone
   fails safe: a later model write on that circuit is fenced from starting a walk.
 - A KNOWN-circuit OCPD start carrying `61009` on an RCBO-tombstoned circuit pivots into the RCBO walk ("What MCB
-  curve?"). This is PLAN-A's known-circuit branch checking only the source schema. No `∞` is involved.
+  curve?"). This is PLAN-A's known-circuit branch checking only the source schema. It IS a model-driven
+  re-entry — the model wrote the `BS EN 61009` — but no ring `∞` is involved, so it cannot read one back twice.
 
 Full Jest 9,775 passed, 0 failed.
-
