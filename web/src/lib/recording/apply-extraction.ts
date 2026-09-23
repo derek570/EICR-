@@ -54,6 +54,7 @@ import {
   CLIENT_ROUTABLE_READING_ROUTES,
   type ClientReadingRoute,
 } from './client-routable-reading-fields';
+import { noteExternalOcpdWrite } from '@/lib/ocpd-external-writes';
 
 /**
  * Options threaded into the apply path. Currently carries the user's
@@ -1980,6 +1981,10 @@ function applyCircuitReadings(
     // raw `60909` where iOS stores `BS EN 61009` from the same frame.
     if (column === 'ocpd_bs_en' && typeof writeValue === 'string') {
       writeValue = canonicaliseOcpdStandardForImport(writeValue);
+      // Decision 28 rule 2 — announce the WRITE, not the change. A correction
+      // re-applying the standard already stored still outranks an open draft,
+      // and a value comparison cannot see it.
+      noteExternalOcpdWrite(row.id == null ? null : String(row.id));
     }
     // PLAN-CC (M15) — a max Zs that arrives on an `extraction` frame is a
     // DICTATED value, not a derivation, so it is recorded `manual` and the

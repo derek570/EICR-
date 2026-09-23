@@ -38,6 +38,7 @@ import {
   readEffectiveSectionValue,
   routeSectionField,
 } from './regex-destination-routing';
+import { noteExternalOcpdWrite } from '@/lib/ocpd-external-writes';
 
 // MARK: — Field-name → JobDetail-section routing
 //
@@ -342,6 +343,9 @@ export function applyRegexMatchToJob(
       // than per-row because each candidate is committed on its own here, and
       // the helper is idempotent, so two candidates on one row produce the
       // same end state as one patch carrying both.
+      if (c.fieldKey === 'ocpd_bs_en') {
+        noteExternalOcpdWrite(row.id == null ? null : String(row.id));
+      }
       circuits[idx] = applyOcpdAwarePatch(
         row as Record<string, unknown>,
         { [c.fieldKey]: c.value },

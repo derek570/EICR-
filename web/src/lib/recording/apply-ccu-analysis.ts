@@ -43,6 +43,7 @@ import {
   type CircuitMatch,
   type MaxZsChangeLogger,
 } from '@certmate/shared-utils';
+import { noteExternalOcpdWrite } from '@/lib/ocpd-external-writes';
 
 /** PLAN-CC — local-only breadcrumb for a max Zs the CCU merge invalidated.
  *  `console.debug` under the recording logger; never shipped, never spoken. */
@@ -602,6 +603,7 @@ function mergeMatchedCircuit(
   // PLAN-CC — canonicalise what the algorithm can read; store anything else
   // exactly as the photo pipeline produced it. An import has nobody to
   // re-ask, so a miss is preserved with the row marker, never dropped.
+  noteExternalOcpdWrite(next.id == null ? null : String(next.id));
   next.ocpd_bs_en = mergeField(
     next.ocpd_bs_en as string | undefined,
     hasValue(analysed.ocpd_bs_en)
@@ -653,6 +655,7 @@ function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): Circuit
   };
 
   if (hasValue(analysed.ocpd_bs_en)) {
+    noteExternalOcpdWrite(row.id == null ? null : String(row.id));
     row.ocpd_bs_en = canonicaliseOcpdStandardForImport(String(analysed.ocpd_bs_en));
   }
   if (hasValue(analysed.ocpd_type)) row.ocpd_type = analysed.ocpd_type;

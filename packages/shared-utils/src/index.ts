@@ -32,6 +32,7 @@ export {
   clientCommandForCalculate,
   applyVoiceCommand,
   voiceCommandTargetsDesignation,
+  voiceCommandTargetsOcpdStandard,
   DEVICE_ATTRIBUTE_FIELDS,
   NO_ZE_RESPONSE,
 } from './voice-commands';

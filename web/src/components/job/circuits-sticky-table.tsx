@@ -454,6 +454,7 @@ function OcpdStandardCell({
     <OcpdStandardComboCell
       value={String(value ?? '')}
       onCommit={(next) => onPatch(id, { ocpd_bs_en: next })}
+      circuitId={id}
       ariaLabel={ariaLabel}
       isOpen={open}
       onOpen={() => setOpen(true)}

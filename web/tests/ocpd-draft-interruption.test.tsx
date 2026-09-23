@@ -51,11 +51,13 @@ vi.mock('lucide-react', async () => {
 });
 
 const { OcpdStandardField } = await import('@/components/job/ocpd-standard-field');
+const { noteExternalOcpdWrite, purgeOcpdWriteEpochs } = await import('@/lib/ocpd-external-writes');
 
 let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  purgeOcpdWriteEpochs();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -66,9 +68,9 @@ afterEach(() => {
   container.remove();
 });
 
-function mount(value: string, onCommit: (next: string) => void) {
+function mount(value: string, onCommit: (next: string) => void, circuitId?: string) {
   act(() => {
-    root.render(React.createElement(OcpdStandardField, { value, onCommit }));
+    root.render(React.createElement(OcpdStandardField, { value, onCommit, circuitId }));
   });
   const input = container.querySelector('input');
   if (!input) throw new Error('the control rendered no input');
@@ -126,6 +128,39 @@ describe('PLAN-CC Decision 28 — web never commits an interrupted draft', () =>
     // carrying no marker. Losing the prefix is the correct outcome; storing it
     // is the defect Decision 28 exists to prevent.
     expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it('a SAME-VALUE external write still replaces the draft', () => {
+    // Round 8's BLOCKER. `BS EN 60898` is committed, `3036` is typed but not
+    // confirmed, and a correction re-applies `BS EN 60898`. The `value` prop
+    // never changes, so watching it sees nothing — and the older typing would
+    // commit over the standard the inspector was told had been applied.
+    const onCommit = vi.fn();
+    const input = mount('BS EN 60898', onCommit, 'circuit-1');
+    typeInto(input, '3036');
+    expect(input.value).toBe('3036');
+
+    act(() => {
+      noteExternalOcpdWrite('circuit-1');
+    });
+
+    expect(input.value).toBe('BS EN 60898');
+    act(() => {
+      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    });
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it('an announcement for a DIFFERENT circuit leaves this draft alone', () => {
+    const onCommit = vi.fn();
+    const input = mount('BS EN 60898', onCommit, 'circuit-1');
+    typeInto(input, '3036');
+
+    act(() => {
+      noteExternalOcpdWrite('circuit-2');
+    });
+
+    expect(input.value).toBe('3036');
   });
 
   it('an external write mid-typing replaces the draft — the correction wins', () => {

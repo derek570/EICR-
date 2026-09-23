@@ -43,6 +43,7 @@ import {
   writeMaxZs,
   type MaxZsChangeLogger,
 } from '@certmate/shared-utils';
+import { noteExternalOcpdWrite } from '@/lib/ocpd-external-writes';
 
 /** PLAN-CC — local-only breadcrumb for a max Zs a document import
  *  invalidated. Never shipped, never spoken. */
@@ -383,6 +384,7 @@ function mergeCircuits(
         if (field === 'ocpd_max_zs_ohm') {
           row = writeMaxZs(row, String(value), 'manual');
         } else if (field === 'ocpd_bs_en') {
+          noteExternalOcpdWrite(row.id == null ? null : String(row.id));
           row[field] = canonicaliseOcpdStandardForImport(String(value));
         } else {
           row[field] = value;
@@ -415,6 +417,7 @@ function mergeCircuits(
         if (field === 'ocpd_max_zs_ohm') {
           built = writeMaxZs(built, String(value), 'manual');
         } else if (field === 'ocpd_bs_en') {
+          noteExternalOcpdWrite(built.id == null ? null : String(built.id));
           built[field] = canonicaliseOcpdStandardForImport(String(value));
         } else {
           built[field] = value;

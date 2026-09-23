@@ -12,6 +12,7 @@ import { createPortal } from 'react-dom';
 import { ChevronDown } from 'lucide-react';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { cn } from '@/lib/utils';
+import { ocpdWriteEpoch, subscribeToOcpdWrites } from '@/lib/ocpd-external-writes';
 
 /**
  * PLAN-CC (feedback-2026-09-17 wave) — the ONE OCPD-standard editing control.
@@ -48,7 +49,13 @@ import { cn } from '@/lib/utils';
  * MUST obey the same cap, the same refuse-don't-truncate rule and the same
  * canonicalise-on-commit timing.
  */
-export function useOcpdStandardDraft(value: string, onCommit: (next: string) => void) {
+export function useOcpdStandardDraft(
+  value: string,
+  onCommit: (next: string) => void,
+  /** The circuit this control edits. Optional only so the hook stays usable
+   *  from a harness; every real surface passes it. */
+  circuitId?: string
+) {
   const [draft, setDraft] = React.useState(value);
 
   // Re-seed when the row's stored value changes from outside this control (a
@@ -57,6 +64,25 @@ export function useOcpdStandardDraft(value: string, onCommit: (next: string) => 
   React.useEffect(() => {
     setDraft(value);
   }, [value]);
+
+  // …and re-seed when an external writer APPLIED this field even though the
+  // resulting value is identical to what was already stored. Decision 28
+  // rule 2 makes a confirmed correction or an import win over an open draft,
+  // and its condition does not depend on the value changing — round 8's case
+  // was a correction re-applying `BS EN 60898` while `3036` sat unconfirmed,
+  // where the effect above sees nothing and the older typing would commit
+  // over the confirmed standard at the next blur.
+  const epoch = React.useSyncExternalStore(
+    subscribeToOcpdWrites,
+    () => ocpdWriteEpoch(circuitId),
+    () => 0
+  );
+  const seenEpoch = React.useRef(epoch);
+  React.useEffect(() => {
+    if (epoch === seenEpoch.current) return;
+    seenEpoch.current = epoch;
+    setDraft(value);
+  }, [epoch, value]);
 
   const commit = React.useCallback(
     (raw: string) => {
@@ -102,6 +128,7 @@ export function OcpdStandardField({
   label = 'BS EN',
   value,
   onCommit,
+  circuitId,
   inputRef,
   onFocus,
   onBlur,
@@ -110,6 +137,8 @@ export function OcpdStandardField({
   label?: string;
   value: string;
   onCommit: (next: string) => void;
+  /** Circuit this control edits — the key an external write announces under. */
+  circuitId?: string;
   inputRef?: (el: HTMLInputElement | null) => void;
   onFocus?: React.FocusEventHandler<HTMLInputElement>;
   onBlur?: React.FocusEventHandler<HTMLInputElement>;
@@ -118,7 +147,7 @@ export function OcpdStandardField({
   compact?: boolean;
 }) {
   const [showTier2, setShowTier2] = React.useState(false);
-  const field = useOcpdStandardDraft(value, onCommit);
+  const field = useOcpdStandardDraft(value, onCommit, circuitId);
 
   const input = (
     <FloatingLabelInput
@@ -198,6 +227,7 @@ const MIN_LIST_HEIGHT = 120;
 export function OcpdStandardComboCell({
   value,
   onCommit,
+  circuitId,
   ariaLabel,
   isOpen,
   onOpen,
@@ -209,6 +239,8 @@ export function OcpdStandardComboCell({
 }: {
   value: string;
   onCommit: (next: string) => void;
+  /** Circuit this control edits — the key an external write announces under. */
+  circuitId?: string;
   ariaLabel: string;
   isOpen: boolean;
   onOpen: () => void;
@@ -223,7 +255,7 @@ export function OcpdStandardComboCell({
   onAccessoryBlur?: () => void;
 }) {
   const [showTier2, setShowTier2] = React.useState(false);
-  const field = useOcpdStandardDraft(value, onCommit);
+  const field = useOcpdStandardDraft(value, onCommit, circuitId);
   const suggestions = showTier2 ? [...OCPD_BS_TIER1, ...OCPD_BS_TIER2] : OCPD_BS_TIER1;
 
   // PLAN-CC — the list is PORTALLED, not absolutely positioned inside the

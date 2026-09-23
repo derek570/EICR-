@@ -202,6 +202,7 @@ import {
   jobBoardCount,
   parseVoiceCommand,
   voiceCommandTargetsDesignation,
+  voiceCommandTargetsOcpdStandard,
   type ClientCommandMarker,
   type JobZeLike,
   type VoiceCommandJob,
@@ -234,6 +235,7 @@ import {
   persistRecordingState,
   type PersistedRecordingState,
 } from './recording/session-resume';
+import { noteExternalOcpdWrite } from '@/lib/ocpd-external-writes';
 
 /**
  * Recording context.
@@ -462,6 +464,23 @@ function isTrailingCircuitNamingPattern(text: string): boolean {
  *  supported (and shouldn't be — recording context wires up state
  *  refs at session start that wouldn't reconfigure cleanly). */
 const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
+
+/** PLAN-CC (Decision 28 rule 2) — announce an OCPD-standard write for whatever
+ *  circuit a voice command targets, so the editing control drops an open draft
+ *  for it. Matches by circuit REF because that is what a command carries; a
+ *  command with no circuit is a board-scope write and targets nothing here. */
+function noteOcpdWriteForCommandCircuit(command: unknown, job: unknown): void {
+  const ref = (command as { circuit?: number | null } | null)?.circuit;
+  if (ref == null) return;
+  const circuits = (job as { circuits?: Array<Record<string, unknown>> } | null)?.circuits;
+  if (!Array.isArray(circuits)) return;
+  for (const row of circuits) {
+    const rowRef = row.circuit_ref ?? row.number;
+    if (rowRef != null && String(rowRef) === String(ref)) {
+      noteExternalOcpdWrite(row.id == null ? null : String(row.id));
+    }
+  }
+}
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJobFromRecording, subscribeJobMutations, flushDraftsAndGetSnapshot } =
@@ -2293,6 +2312,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             recordDesignationAliasRef.current(command.value);
           }
           const localDispatchedAt = nowMs();
+          // Decision 28 rule 2 — a spoken write to the standard outranks an
+          // open draft on that circuit, announced by OPERATION because a
+          // command re-applying the stored value changes nothing a value
+          // comparison could notice.
+          if (voiceCommandTargetsOcpdStandard(command)) {
+            noteOcpdWriteForCommandCircuit(command, jobRef.current);
+          }
           const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
           if (outcome.patch) {
             updateJobRef.current(outcome.patch);
@@ -4285,6 +4311,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               voiceCommandTargetsDesignation(command)
             ) {
               recordDesignationAliasRef.current(command.value);
+            }
+            if (voiceCommandTargetsOcpdStandard(command)) {
+              noteOcpdWriteForCommandCircuit(command, jobRef.current);
             }
             const outcome = applyVoiceCommand(
               command,

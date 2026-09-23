@@ -233,6 +233,7 @@ function OcpdStandardCardField({
     <OcpdStandardField
       value={value}
       onCommit={(next) => onPatch({ ocpd_bs_en: next } as Partial<Circuit>)}
+      circuitId={circuitId}
       inputRef={(el) => accessory?.registerRef(circuitId, 'ocpd_bs_en', el)}
       onFocus={handlers?.onFocus}
       onBlur={handlers?.onBlur}

@@ -719,6 +719,7 @@ function CellField({
       <OcpdStandardComboCell
         value={value ?? ''}
         onCommit={(next) => onPatch(id, { ocpd_bs_en: next })}
+        circuitId={id}
         ariaLabel={ariaLabel}
         isOpen={isOpen}
         onOpen={onOpen}
