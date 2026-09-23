@@ -69,6 +69,7 @@ import {
   listCircuitRefsInBoard,
   getMainBoardId,
   isUnscopedBoardId,
+  resolveEffectiveBoardId,
   normaliseBoardScopeInput,
 } from './stage6-multi-board-shape.js';
 import { RING_FIELDS, recordRingContinuityWrite } from './ring-continuity-timeout.js';
@@ -128,6 +129,12 @@ import {
   CLEAR_READING_FIELD_ENUM,
 } from './stage6-tool-schemas.js';
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
+// PLAN-A (feedback-2026-09-17) — a rename MIGRATES the handoff tombstone; it is
+// not a fresh trigger. Zero-import leaf, so no cycle.
+import {
+  migrateHandoffsForRename,
+  clearHandoffsForCircuit,
+} from './dialogue-handoff-tombstone.js';
 import {
   classifyStructuralReading,
   STRUCTURAL_READING_FIELDS,
@@ -223,28 +230,20 @@ function stageStructuralReadingRefusal(
 
 // ---- P5 same-turn clear→write slot identity (2026-07-23) --------------------
 
-/**
- * Resolve the EFFECTIVE board id for a record_reading / clear_reading slot:
- * an omitted / '' board_id denotes the current board (or the main board when
- * none is selected), so a valid clear/write pair that mixes spellings (one
- * omits board_id, one passes the current id explicitly) names the SAME real
- * slot. Producer-specific per the plan — this universal formula is for
- * record_reading + clear_reading ONLY; calculators pass their computed
- * targetBoardId, set_field_for_all_circuits uses each iteration tuple's local
- * boardId, and start_dialogue_script resolves its own once.
- *
- * EXPORTED for plan 2A channel 3 (2026-07-30): the ask dispatcher's
- * auto-resolved writes go through THIS dispatcher, so their partial-failure
- * notices must key their board the same way — otherwise the drain's
- * surviving-write subtraction compares an unresolved raw id against a resolved
- * one, misses, and speaks a FALSE "didn't save" over a value that did land.
- * Exported rather than re-derived in the harness so there stays ONE formula.
- */
-export function resolveEffectiveBoardId(session, rawBoardId) {
-  const snapshot = session?.stateSnapshot;
-  if (!isUnscopedBoardId(rawBoardId)) return rawBoardId;
-  return snapshot?.currentBoardId ?? getMainBoardId(snapshot);
-}
+// PLAN-A (feedback-2026-09-17) — `resolveEffectiveBoardId` MOVED to the
+// dependency leaf `stage6-multi-board-shape.js` and RE-EXPORTED here so its
+// existing importers are untouched. The move is required, not cosmetic: the
+// dialogue engine's handoff tombstone is keyed on the EFFECTIVE board, and
+// every writer and every reader of that key must resolve through the SAME
+// formula — a writer using the resolver and a reader doing a raw
+// `currentBoardId` read can key the tombstone differently, and the re-entry
+// guard would then MISS it and restart a script the model already owns. That is
+// the first-miss handoff failing silently, which is PLAN-A's headline
+// guarantee. `engine.js` cannot import THIS module (23 imports, traversing the
+// dependency cycle the descriptor leaf also exists to avoid), but it already
+// imports the leaf, which has ZERO imports and already exports both helpers the
+// formula needs.
+export { resolveEffectiveBoardId };
 
 // ---- Plan 2A partial-failure staging (2026-07-30) ---------------------------
 
@@ -1754,6 +1753,19 @@ export async function dispatchRenameCircuit(call, ctx) {
     throw new Error(`rename invariant violated: ${renameResult.error?.code}`);
   }
 
+  // PLAN-A (feedback-2026-09-17) — MIGRATE the handoff tombstone with the
+  // rename. A rename is not a fresh trigger: the model still owns the circuit
+  // it was handed, whatever it is now called. Done here at DISPATCH time,
+  // before the post-dispatch entry hook runs — dispatch mutates the snapshot
+  // first and circuit-op projection runs after the hook — so a same-turn
+  // `rename_circuit 3→7` plus a write on 7 is still fenced.
+  migrateHandoffsForRename(
+    session,
+    resolveEffectiveBoardId(session, input.board_id),
+    input.from_ref,
+    input.circuit_ref
+  );
+
   if (metaSupplied) {
     upsertCircuitMetaFlagAware(session.stateSnapshot, {
       circuit_ref: input.circuit_ref,
@@ -1863,6 +1875,16 @@ export async function dispatchDeleteCircuit(call, ctx) {
     circuit_ref: input.circuit_ref,
     boardId: input.board_id,
   });
+
+  // PLAN-A (feedback-2026-09-17) — the handoff tombstone goes WITH the circuit.
+  // Deleting a circuit and later creating a new one on the same ref must not
+  // leave the new circuit fenced by the old one's handoff. Unlike a rename,
+  // which migrates the key, a deletion drops it — every schema's, on this board.
+  clearHandoffsForCircuit(
+    session,
+    resolveEffectiveBoardId(session, input.board_id),
+    input.circuit_ref
+  );
 
   perTurnWrites.circuitOps.push(
     attachEffectiveOpBoard(

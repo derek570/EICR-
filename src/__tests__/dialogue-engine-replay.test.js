@@ -159,11 +159,13 @@ function expectIdentical(engineRun, legacyRun) {
 // ---------------------------------------------------------------------------
 
 describe('replay — ring continuity', () => {
-  test('B107472D: fast-fragmenting "Lives are 0.43" / "Neutrals are." / "0.43" / "earths 0.78"', () => {
+  // B107472D's fast-fragmenting scenario, WITHOUT the miss. The parity that is
+  // still meaningful — label-bridged and bare-value answers landing on the
+  // right slots — is asserted against legacy here.
+  test('B107472D: fast-fragmenting "Lives are 0.43" / "0.43" / "earths 0.78"', () => {
     const transcripts = [
       { text: 'Ring continuity for circuit 13.', now: 1000 },
       { text: 'Lives are 0.43.', now: 2000 },
-      { text: 'Neutrals are.', now: 3000 }, // no value — re-asks neutrals
       { text: '0.43.', now: 4000 }, // bare value lands on neutrals
       { text: 'Earths are 0.78.', now: 5000 },
     ];
@@ -171,6 +173,44 @@ describe('replay — ring continuity', () => {
     const engineRun = runScenario(engineRing, transcripts, initialCircuits);
     const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
     expectIdentical(engineRun, legacyRun);
+  });
+
+  // The MISS half of B107472D — "Neutrals are." with no value — is now an
+  // ENGINE-ONLY assertion, and that is the point rather than an omission.
+  //
+  // PLAN-A (feedback-2026-09-17, ids 140/141): an unanswered outstanding ask is
+  // a FIRST MISS. The frozen legacy script re-asks the same question; the
+  // engine ends the walk-through for the circuit and hands the model the
+  // question, what was captured and what is still missing. That is a
+  // DELIBERATE divergence from legacy — the same class as `cancel_pending_tts`
+  // and the terminal read-back already documented in `normaliseEmits` — but it
+  // is NOT filtered there, because a filter would leave this scenario asserting
+  // nothing about the behaviour it exists to cover. Legacy parity on a miss
+  // turn is definitionally gone; the engine behaviour is pinned directly
+  // instead.
+  test('B107472D miss half: "Neutrals are." (no value) ends the walk and hands off — engine only', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 13: {} });
+    const run = (text, now) =>
+      engineRing({ ws, session, sessionId: SESSION_ID, transcriptText: text, logger: null, now });
+
+    run('Ring continuity for circuit 13.', 1000);
+    run('Lives are 0.43.', 2000);
+    expect(ws.sent.at(-1).context_field).toBe('ring_rn_ohm');
+
+    const out = run('Neutrals are.', 3000);
+
+    expect(out).toMatchObject({ handled: true, fallthrough: true });
+    expect(out.serverNote.asked_field).toBe('ring_rn_ohm');
+    expect(out.serverNote.asked_question).toBe('What are the neutrals?');
+    // R1 was captured this run and is read back once at the terminal exit.
+    expect(out.serverNote.recorded).toEqual([
+      { field: 'ring_r1_ohm', value: '0.43', circuit: 13, derived: [] },
+    ]);
+    // The neutrals question is asked ONCE and never re-asked — the re-ask into
+    // silence is the whole of the reported defect.
+    expect(ws.sent.filter((m) => m.context_field === 'ring_rn_ohm')).toHaveLength(1);
+    expect(session.dialogueScriptState).toBeNull();
   });
 
   test('74201B27: entry without circuit → designation answer drains pending writes', () => {

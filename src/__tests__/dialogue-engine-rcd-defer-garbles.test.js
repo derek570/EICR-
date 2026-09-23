@@ -152,16 +152,27 @@ describe('RCD defer — negative cases (must NOT defer)', () => {
     const ws = new FakeWS();
     const session = buildSession({ 5: {} });
     enterRcdAt(ws, session);
-    processProtectiveDeviceTurn({
+    const out = processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
       transcriptText,
       now: 2000,
     });
-    // No defer info TTS, script stays alive.
+    // The assertion these cases exist for, unchanged: no defer, no defer TTS.
     expect(ws.sent.some((m) => m.question === "Okay, I'll come back to that later.")).toBe(false);
-    expect(session.dialogueScriptState).toBeTruthy();
-    expect(session.dialogueScriptState.active).toBe(true);
+    expect(session.dialogueScriptDeferredSlots?.size ?? 0).toBe(0);
+
+    // WHAT NOT-DEFERRING NOW MEANS (PLAN-A, feedback-2026-09-17, ids 140/141).
+    // These replies parse as neither a defer nor a value, so they are an
+    // unanswered outstanding ask — a FIRST MISS. Until this plan the script
+    // stayed alive and re-asked the same question, which is precisely the dead
+    // end ids 140 and 141 reported. It now ends the walk-through for this
+    // circuit and hands the model the question, what was captured and what is
+    // still missing.
+    expect(out).toMatchObject({ handled: true, fallthrough: true });
+    expect(out.serverNote.kind).toBe('slot_miss');
+    expect(out.serverNote.asked_field).toBe('rcd_bs_en');
+    expect(session.dialogueScriptState).toBeNull();
   });
 });

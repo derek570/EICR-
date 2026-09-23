@@ -1,4 +1,7 @@
 {
+  "config/field_schema.json": [
+    "ocpd/breaking-capacity-suggestions"
+  ],
   "packages/shared-utils/src/circuit-derivations.ts": [
     "recording/ze-accepted-alias-consistency"
   ],

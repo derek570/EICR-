@@ -449,3 +449,63 @@ describe('RCD bulk-apply integration', () => {
     expect(ws.sent.at(-1).question).toBe('Got it. BS EN 61008, type AC, 30 mA.');
   });
 });
+
+// ── PLAN-A (feedback-2026-09-17) — "all circuits" means all on THIS board ───
+
+describe('bulk apply on a sub-board targets that board, not main', () => {
+  // `Object.keys(snapshot.circuits).map(parseInt)` only ever sees MAIN's bare
+  // numeric keys — a sub-board's live at `${board}::${ref}`. So an RCD walk
+  // conducted at a sub-board propagated onto MAIN's ref set: it missed every
+  // sub-board-only circuit, and could create a circuit on this board purely
+  // because main happened to carry that ref — while confirming "all circuits"
+  // to the inspector.
+  function subBoardSession() {
+    return {
+      sessionId: SESSION_ID,
+      stateSnapshot: {
+        // Deliberately DISJOINT ref sets, so a main-derived answer is
+        // unmistakable: main has 1, 2, 7; board-b has 1, 4.
+        circuits: {
+          1: {},
+          2: {},
+          7: {},
+          'board-b::1': { circuit: 1, board_id: 'board-b' },
+          'board-b::4': { circuit: 4, board_id: 'board-b' },
+        },
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'board-b', board_type: 'sub' },
+        ],
+        currentBoardId: 'board-b',
+      },
+    };
+  }
+
+  test('"all" copies to board B’s OTHER circuit and never touches main', () => {
+    const ws = new FakeWS();
+    const session = subBoardSession();
+    runRcdToBulkPrompt(session, ws);
+    expect(session.dialogueScriptState.bulkApplyPending).toBe(true);
+    expect(session.dialogueScriptState.effectiveBoardId).toBe('board-b');
+
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'all',
+      now: 5000,
+    });
+
+    const c = session.stateSnapshot.circuits;
+    // Board B's circuit 4 — the only other circuit ON THIS BOARD — got it.
+    expect(c['board-b::4'].rcd_type).toBe('AC');
+    expect(c['board-b::4'].rcd_operating_current_ma).toBe('30');
+    // Main's circuits are a different board's rows. Untouched, and circuit 7
+    // — which exists ONLY on main — was never a candidate.
+    expect(c[2].rcd_type).toBeUndefined();
+    expect(c[7].rcd_type).toBeUndefined();
+    // …and no main-only ref was invented on board B.
+    expect(c['board-b::2']).toBeUndefined();
+    expect(c['board-b::7']).toBeUndefined();
+  });
+});

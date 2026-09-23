@@ -350,6 +350,14 @@ export async function dispatchStartDialogueScript(call, ctx) {
       status: result.status,
       schema: result.schema,
       circuit_ref: result.circuit_ref,
+      // PLAN-A (feedback-2026-09-17) — forwarded so the new `handed_off` status
+      // is ACTIONABLE rather than just informative: the model is told it owns
+      // this circuit AND what is still missing on it, so it can carry on in its
+      // own words instead of guessing or calling the tool again. Explicitly
+      // defaulted, so an ordinary entry (which supplies no `remaining`) keeps
+      // reporting `[]` rather than dropping the key and changing the envelope
+      // shape per outcome.
+      remaining: result.remaining ?? [],
       seeded_writes: result.seeded_writes ?? [],
       queued_writes: result.queued_writes ?? [],
       dropped_fields: result.dropped_fields ?? [],

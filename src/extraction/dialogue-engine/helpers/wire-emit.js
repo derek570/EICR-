@@ -300,9 +300,24 @@ export const ASK_STARTED_OBSERVER = Symbol('f7.askStartedObserver');
 /**
  * Send a JSON payload over the WS, swallowing send errors. The script's
  * persistent state is the source of truth, not the wire.
+ *
+ * PLAN-A (feedback-2026-09-17) — now returns an explicit BOOLEAN, where before
+ * it returned `undefined` on every path. The semantics, stated in full here so
+ * no caller restates any part of them:
+ *
+ *   FALSE = a DEFINITE non-delivery, on exactly three causes — absent or
+ *     non-function `ws.send`, `readyState !== ws.OPEN`, or `ws.send` throwing.
+ *     Nothing crossed the wire.
+ *   TRUE  = QUEUED into the socket, NOT delivered. Residual loss past that
+ *     point is out of scope here and no caller may read `true` as proof the
+ *     inspector heard anything.
+ *
+ * The first caller that needs it is the script's terminal read-back: a
+ * certificate value rendered into a frame that never left is otherwise lost
+ * silently, and the tri-state is what lets the turn recover the rendered line.
  */
 export function safeSend(ws, payload) {
-  if (!ws || typeof ws.send !== 'function') return;
+  if (!ws || typeof ws.send !== 'function') return false;
   try {
     // Plan 00B-2 C2 — evaluation seams (all dormant Symbol lookups):
     //   - the ASK admission rule is ASK-LEDGER-ONLY: an `ask_user_started`
@@ -332,12 +347,20 @@ export function safeSend(ws, payload) {
     if (ws.readyState !== undefined && ws.readyState !== ws.OPEN) {
       if (plan00DeliveryObserver && plan00Descriptor) {
         try {
+          // NOTE for implementers: this abort CALLBACK is not unconditional —
+          // it fires only when the observer is attached AND an audibility
+          // descriptor is present — and on that path NO ledger row is recorded
+          // in any case, because the observer's `abort(payload, _reason)`
+          // discards `_reason` and only deletes the prepared descriptor. The
+          // observer itself IS live in production; what never reaches the
+          // ledger is the abort REASON. So a failed send leaves no usable
+          // delivery evidence, but not because the observer is dormant.
           plan00DeliveryObserver.abort?.(payload, 'socket_not_open');
         } catch {
           // isolated
         }
       }
-      return;
+      return false;
     }
     if (plan00DeliveryObserver && plan00Descriptor) {
       try {
@@ -406,7 +429,12 @@ export function safeSend(ws, payload) {
         // best-effort observer — never propagate
       }
     }
+    // Reached only when `ws.send` returned without throwing: QUEUED, not
+    // delivered.
+    return true;
   } catch {
-    // Intentional: WS send failures must not tear down the script.
+    // Intentional: WS send failures must not tear down the script. A throw
+    // from `ws.send` is a DEFINITE non-delivery and is reported as such.
+    return false;
   }
 }

@@ -325,17 +325,35 @@ describe('canonical position 1 — confirmation delete/clear-intent exit', () =>
     expect(ws.sent[1].type).toBe('cancel_pending_tts');
   });
 
-  test('mid-collection "clear the readings" (only R1 filled) does NOT take the delete exit and emits NO server note', () => {
+  test('mid-collection "clear the readings" (only R1 filled) does NOT take the delete exit', () => {
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
     turn(ws, session, 'Ring continuity for circuit 13.', 1000);
     turn(ws, session, 'Lives are 0.43.', 2000);
     ws.sent.length = 0;
     const out = turn(ws, session, 'clear the readings', 3000);
+
+    // The DELETE EXIT is what this case guards against, and its note is
+    // distinctive: it tells the model the assistant just read back the complete
+    // R1/Rn/R2 set and asked "All correct?". That is false mid-collection.
+    expect(out.transcriptText ?? '').not.toContain('read back the complete ring-continuity set');
+    // The delete exit also purges the srv-rcs TTS namespace; this path must not.
+    expect(ws.sent.some((m) => m?.type === 'cancel_pending_tts')).toBe(false);
+
+    // PLAN-A (feedback-2026-09-17): the ORIGINAL assertion here was "emits NO
+    // server note", which was a valid proxy only while the delete exit was the
+    // only note producer. It no longer is. "clear the readings" does not parse
+    // as an answer to "What are the neutrals?", so it is an unanswered
+    // outstanding ask — a FIRST MISS — and the handoff emits its OWN note. The
+    // test now asserts the real intent (not the delete exit) and pins which
+    // note this is, so the two can never again be confused for one another.
     if (out.fallthrough) {
-      expect(out.transcriptText).not.toContain('[Server note:');
+      expect(out.transcriptText).toContain('The walk-through for this circuit has ended');
+      expect(out.serverNote.kind).toBe('slot_miss');
+      expect(out.serverNote.asked_field).toBe('ring_rn_ohm');
     }
-    // R1 not deleted by the engine either way.
+
+    // R1 not deleted by the engine either way — a handoff never discards a write.
     expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('0.43');
   });
 

@@ -52,7 +52,6 @@
  *   invalid_expected_answer_shape — not in ASK_USER_ANSWER_SHAPES
  */
 
-import { createRequire } from 'node:module';
 import {
   CONTEXT_FIELD_ENUM,
   BOARD_FIELD_ENUM,
@@ -68,73 +67,23 @@ import {
   validateNumericReadingValue,
   canonicaliseNumericReadingField,
 } from './value-enum-validator.js';
+import {
+  CIRCUIT_FIELD_VALUE_ENUMS,
+  BOARD_FIELD_VALUE_ENUMS,
+} from './circuit-value-descriptors.js';
 
-// Fix B 2026-06-02 (handoff-2026-06-02-fixes.md §B) — per-field VALUE
-// enum lookup, loaded from config/field_schema.json. The schema is the
-// single source of truth (already consumed by stage6-tool-schemas.js's
-// CIRCUIT_FIELD_ENUM builder for the name namespace); building the
-// VALUE map here means a schema edit to `options[]` propagates to the
-// dispatcher with no code change.
+// PLAN-A (feedback-2026-09-17) — the two value-enum maps MOVED to the
+// dependency leaf `circuit-value-descriptors.js` and RE-EXPORTED here, so the
+// speculator, the bulk dispatcher and every existing test import path are
+// unchanged. The move is required, not cosmetic: the dialogue engine's handoff
+// note needs these maps, and this module imports `stage6-tool-schemas.js`,
+// which imports `ALL_DIALOGUE_SCHEMA_NAMES` from `dialogue-engine/index.js`
+// and uses it at module top level — so an engine import of THIS file would
+// evaluate the tool schemas while that binding is still uninitialised.
 //
-// Why createRequire vs an ESM `import ... with { type: 'json' }`: the
-// codebase consistently uses createRequire for JSON loads (see
-// stage6-tool-schemas.js:38-42). Keeping the pattern uniform avoids
-// bundler-vs-node-loader behaviour drift.
-//
-// What gets a value enum: every field with `type: "select"` AND a
-// non-empty `options` array. Fields with `type: "text"` are not
-// constrained here (numeric ranges, BS-EN format checks, etc. are
-// separate concerns and not in this validator's scope today).
-//
-// CRITICAL — the empty string "" is NOT auto-allowed. Some select
-// fields list "" as an explicit option (rcd_type, polarity_confirmed)
-// to mean "no reading yet"; others (ocpd_type, wiring_type, ref_method)
-// do NOT — they don't have an "unwritten" representation. Treating ""
-// as a universal escape would leak garbage writes through on every
-// field that doesn't enumerate it. The validator checks membership
-// strictly: input.value must appear in options[] verbatim.
-const require = createRequire(import.meta.url);
-const fieldSchema = require('../../config/field_schema.json');
-
-export const CIRCUIT_FIELD_VALUE_ENUMS = (() => {
-  const out = new Map();
-  const fields = fieldSchema.circuit_fields ?? {};
-  for (const [name, spec] of Object.entries(fields)) {
-    if (name.startsWith('_ui_')) continue;
-    if (spec?.type === 'select' && Array.isArray(spec.options)) {
-      out.set(name, new Set(spec.options.map(String)));
-    }
-  }
-  return out;
-})();
-
-/**
- * BOARD-side value enum map. Same construction as CIRCUIT_FIELD_VALUE_ENUMS
- * but spans THREE schema sections — supply_characteristics_fields,
- * board_fields, installation_details_fields — matching the union
- * `BOARD_FIELD_ENUM` builder uses in stage6-tool-schemas.js:130-136.
- *
- * Exported so the board dispatcher can apply the same enum guard pattern
- * inline (the dispatcher's existing field-NAME check is left intact;
- * this map adds the value-side check).
- */
-export const BOARD_FIELD_VALUE_ENUMS = (() => {
-  const out = new Map();
-  for (const section of [
-    'supply_characteristics_fields',
-    'board_fields',
-    'installation_details_fields',
-  ]) {
-    const fields = fieldSchema[section] ?? {};
-    for (const [name, spec] of Object.entries(fields)) {
-      if (name.startsWith('_ui_')) continue;
-      if (spec?.type === 'select' && Array.isArray(spec.options)) {
-        out.set(name, new Set(spec.options.map(String)));
-      }
-    }
-  }
-  return out;
-})();
+// The builders themselves, their `type === 'select'` rule and their rationale
+// moved verbatim; read them there.
+export { CIRCUIT_FIELD_VALUE_ENUMS, BOARD_FIELD_VALUE_ENUMS };
 
 // Sets for O(1) membership tests in validateAskUser's pending_write
 // cross-check. Pre-computing them here keeps the validator pure (no

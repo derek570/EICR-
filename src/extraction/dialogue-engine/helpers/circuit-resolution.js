@@ -514,7 +514,7 @@ export function findCircuitByDesignation(session, text) {
  * Tolerant of `circuits` being either Object or Array — the snapshot
  * shape can vary across mutators.
  */
-export function readExistingValues(session, circuit_ref, fields) {
+export function readExistingValues(session, circuit_ref, fields, boardId = undefined) {
   const out = {};
   const snapshot = session?.stateSnapshot;
   if (!snapshot) return out;
@@ -526,7 +526,19 @@ export function readExistingValues(session, circuit_ref, fields) {
     // Hotfix slice 4 — use the dual-shape lookup so the read scopes to the
     // active board's bucket rather than the bare numeric key (which would
     // hit main's circuit even when currentBoardId is sub-1).
-    bucket = getCircuitBucket(snapshot, circuit_ref, snapshot.currentBoardId) ?? null;
+    //
+    // PLAN-A (feedback-2026-09-17) — an explicit `boardId` overrides the
+    // CURRENT board. The post-dispatch entry hook needs it: a `record_reading`
+    // can carry an explicit `board_id` that is not the selected board, and
+    // seeding the episode from the SELECTED board would put another board's
+    // pre-existing values into `state.values`. They would then surface in the
+    // handoff note as though this walk had recorded them — presenting
+    // pre-existing certificate data as clearable, the worst failure class in
+    // this wave. `undefined` keeps the current-board behaviour for every other
+    // caller.
+    bucket =
+      getCircuitBucket(snapshot, circuit_ref, boardId === undefined ? snapshot.currentBoardId : boardId) ??
+      null;
   }
   if (!bucket) return out;
   for (const f of fields) {

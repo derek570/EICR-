@@ -54,8 +54,13 @@ import {
   attachAudibilityDescriptor,
   PLAN00_DELIVERY_EMIT_OBSERVER,
 } from '../plan00-audibility-ledgers.js';
-import { circuitExistsInSnapshot } from '../stage6-multi-board-shape.js';
+import {
+  circuitExistsInSnapshot,
+  listCircuitRefsInBoard,
+  resolveEffectiveBoardId,
+} from '../stage6-multi-board-shape.js';
 import { applyReadingToSnapshot, applyReadingFlagAware } from '../stage6-snapshot-mutators.js';
+import { episodeOwnedFields } from './helpers/episode-ownership.js';
 import {
   parseCircuitRange,
   formatBulkApplyConfirm,
@@ -73,6 +78,25 @@ import {
   resolveBoardAwareEarthing,
 } from '../impedance-clamp.js';
 import { canonicaliseNumericReadingField } from '../value-enum-validator.js';
+// PLAN-A (feedback-2026-09-17) — the dependency leaf that owns the per-slot
+// validation descriptor the handoff note carries and the advisory carrier's
+// per-field derivation. Imported from HERE and never from
+// `stage6-dispatch-validation.js`, which would evaluate `stage6-tool-schemas.js`
+// while `ALL_DIALOGUE_SCHEMA_NAMES` is still uninitialised — see the leaf's own
+// header, and the executable import-closure assertion that enforces it.
+import {
+  advisoryForFieldValue,
+  describeSlotValidation,
+} from '../circuit-value-descriptors.js';
+// PLAN-A (feedback-2026-09-17) — the handoff tombstone. A ZERO-IMPORT leaf, so
+// the two re-entry readers that live outside this module (the rename dispatcher
+// and the harness entry hook) can reach the same key builder without importing
+// the engine, which would close a cycle through the tool schemas.
+import {
+  setHandoff,
+  deleteHandoff,
+  isHandedOff,
+} from '../dialogue-handoff-tombstone.js';
 import { formatCorrectionClause } from '../confirmation-text.js';
 // NOTE: `clearValueCorrection` (lifecycle rule 2 — the slot itself was cleared)
 // is deliberately NOT imported here: the dialogue engine has no per-slot clear
@@ -149,6 +173,25 @@ export function processDialogueTurn(ctx) {
   if (!Array.isArray(schemas) || schemas.length === 0) return { handled: false };
   const text = typeof transcriptText === 'string' ? transcriptText : '';
   const replyText = typeof rawReplyText === 'string' ? rawReplyText : text;
+
+  // PLAN-A — before ANYTHING acts on the episode, check it still belongs to the
+  // selected board. The iOS `select_board` frame moves `currentBoardId` on any
+  // turn, active script or not, so this cannot live only on the resume path.
+  if (
+    endEpisodeOnBoardDrift({
+      session,
+      ws,
+      schemas,
+      logger,
+      sessionId,
+      now,
+      responseEpoch,
+    })
+  ) {
+    // The episode is over and its read-back has spoken. The utterance itself is
+    // an ordinary one now — let it reach the model.
+    return { handled: false };
+  }
 
   const state = session.dialogueScriptState;
 
@@ -1240,9 +1283,34 @@ function computeUncoveredReadback(state, schema, siteLabel) {
       opCircuit !== null && opCircuit !== currentCircuitRef ? `circuit ${opCircuit} ` : '';
     return `${circuitPrefix}${label} ${value}`;
   });
-  const text = parts.length === 1 ? `Also got ${parts[0]}.` : `Also got: ${parts.join(', ')}.`;
+  const base = parts.length === 1 ? `Also got ${parts[0]}.` : `Also got: ${parts.join(', ')}.`;
+  // PLAN-A / Decision 9 — PRODUCER 2 of 3 for the advisory carrier: the
+  // script's TERMINAL read-back (the handoff and cancel paths). Composed over
+  // exactly the operations THIS frame covers, so the three producers' sets are
+  // disjoint and no value is advised twice.
+  const text = appendAdvisories(base, uncovered);
   for (const op of uncovered) op.covered_by = siteLabel;
   return { text, uncovered };
+}
+
+/**
+ * PLAN-A / Decision 9 — the shared advisory renderer, applied to the
+ * operations a spoken frame actually covers.
+ *
+ * The per-field derivation is a pure function of an applied operation: compare
+ * `op.written_value` for `op.field` against that field's `suggestions`. `LIM`
+ * and any listed value yield null. Composition lives at the PRODUCER, never in
+ * a `schema.finishMessage` — which receives only `values` and would have to be
+ * edited per schema — so no schema file gains an advisory hook.
+ */
+function appendAdvisories(text, ops) {
+  const advisories = [];
+  for (const op of ops ?? []) {
+    const a = advisoryForFieldValue(op.field, op.written_value ?? op.dictated_value);
+    if (a) advisories.push(a);
+  }
+  if (advisories.length === 0) return text;
+  return `${text} ${advisories.join(' ')}`;
 }
 
 /**
@@ -1250,6 +1318,32 @@ function computeUncoveredReadback(state, schema, siteLabel) {
  * model owns the turn's audibility, or the clear is otherwise silent):
  * emit the uncovered read-back as one distinct info frame before the clear.
  * No-op when there's nothing uncovered.
+ *
+ * PLAN-A (feedback-2026-09-17) — now returns a TRI-STATE:
+ *
+ *   `built`    — a non-empty read-back was constructed on THIS call, i.e.
+ *                `computeUncoveredReadback` found an applied, unspoken
+ *                operation.
+ *   `emitted`  — `safeSend`'s boolean for THIS call. False only on a DEFINITE
+ *                non-delivery; true means QUEUED into the socket, never
+ *                "the inspector heard it".
+ *   `readback` — the ALREADY-RENDERED `{ text, uncovered }` object, present
+ *                whenever `built` is true.
+ *
+ * WHY `readback` AND NOT THE WIRE FRAME. This function already has a local
+ * called `payload`, and it is a DIFFERENT object: `buildScriptInfo` puts the
+ * spoken string in the frame's `question` property, not `text`. Returning the
+ * frame would make a consumer's `.text` `undefined`, and a recorded certificate
+ * value would be silently lost AFTER `covered_by` had already been stamped. The
+ * returned field takes the source's own name for the object it actually is, and
+ * the wire frame stays a separate local that is never returned.
+ *
+ * WHY THE TEXT MUST TRAVEL OUT OF THIS CALL rather than be recomputed.
+ * `computeUncoveredReadback` MUTATES: as its last act before returning it
+ * executes `op.covered_by = siteLabel` over every uncovered operation. The send
+ * happens afterwards and its result is not consulted there, so the stamp lands
+ * whether or not the send succeeded. A second call therefore returns null, and
+ * after a failed send nothing else will ever speak those operations.
  */
 function renderTerminalReadback({
   ws,
@@ -1262,9 +1356,12 @@ function renderTerminalReadback({
   siteLabel,
 }) {
   const state = session?.dialogueScriptState;
-  if (!state) return;
+  if (!state) return { built: false, emitted: false };
   const readback = computeUncoveredReadback(state, schema, siteLabel);
-  if (!readback) return;
+  // No applied, unspoken operation: a first-slot miss with nothing captured, or
+  // every capture already spoken. Nothing is emitted, and `emitted` is FALSE —
+  // never vacuously true.
+  if (!readback) return { built: false, emitted: false };
   const payload = buildScriptInfo({
     toolCallIdPrefix: schema.toolCallIdPrefix,
     sessionId,
@@ -1283,12 +1380,64 @@ function renderTerminalReadback({
       }))
     );
   }
-  safeSend(ws, payload);
+  const emitted = safeSend(ws, payload) === true;
   logger?.info?.(`${schema.logEventPrefix}_terminal_readback`, {
     sessionId,
     site: siteLabel,
     fields: readback.uncovered.map((op) => op.field),
   });
+  if (!emitted) {
+    // PLAN-A — a DEFINITE non-delivery of a frame that already stamped
+    // `covered_by`. One structured loss row, and nothing else: redelivery
+    // across a socket failure is out of this plan's scope. What matters is that
+    // the RENDERED line travels out of this call — `computeUncoveredReadback`
+    // mutates, so a second call returns null and nothing else will ever speak
+    // those operations.
+    logger?.info?.(`${schema.logEventPrefix}_terminal_readback_send_failed`, {
+      sessionId,
+      site: siteLabel,
+      circuit_ref: state.circuit_ref ?? null,
+      board_id: state.effectiveBoardId ?? null,
+      responseEpoch: typeof responseEpoch === 'string' ? responseEpoch : null,
+      fields: readback.uncovered.map((op) => op.field),
+    });
+  }
+  return { built: true, emitted, readback };
+}
+
+/**
+ * PLAN-A — the carrier fields a FALLTHROUGH exit owes the harness.
+ *
+ * Every terminal exit that falls through to the model has already rendered any
+ * uncovered read-back and, on a DEFINITE non-delivery, holds the only copy of
+ * that rendered line: `computeUncoveredReadback` stamped `covered_by` before
+ * the send and ignores its result, so a second call returns null and nothing
+ * else will ever speak those operations.
+ *
+ * Discarding the tri-state at these sites loses a certificate value silently.
+ * The concrete sequence: the ring script writes R1 and asks for Rn; the next
+ * utterance is a topic switch; the terminal frame's send fails; R1 is stamped
+ * and the state cleared. The turn still falls through, the model confirms the
+ * new topic, every outcome-gated net stays quiet because something WAS audible
+ * — and R1 is never heard.
+ *
+ * The plan names exactly one uncovered gap, a script-HANDLED turn that returns
+ * before the harness runs. A fallthrough turn is not that gap.
+ */
+function terminalCarrierFields(terminal) {
+  // Nothing was built: emit NOTHING, so the outcome object of the overwhelmingly
+  // common exit stays byte-identical to what every existing caller and test
+  // sees. The harness fold reads a missing field as false and its zero-built
+  // floor gives `emitted: false`, which is the same answer an explicit
+  // `{built:false, emitted:false}` gives.
+  if (!terminal || terminal.built !== true) return {};
+  return {
+    terminalReadbackBuilt: true,
+    terminalReadbackEmitted: terminal.emitted === true,
+    ...(terminal.emitted !== true && terminal.readback?.text
+      ? { terminalReadbackLostText: terminal.readback.text }
+      : {}),
+  };
 }
 
 // PLAN-backend-final.md Phase 6.2 — per-session deferred-slot memory.
@@ -1332,6 +1481,307 @@ function addDeferredSlot(session, schemaName, circuit_ref, field) {
     map.set(key, set);
   }
   set.add(field);
+}
+
+/**
+ * The DIRECTIVE the model receives with a first-miss handoff note.
+ *
+ * The boundary is the DEVICE, never a field. "There is no RCBO" means clear the
+ * RCD half the walk recorded; "there is no curve" during an OCPD handoff means
+ * `ocpd_type = N/A` and carry on with `remaining`.
+ *
+ * Two rules in it are load-bearing rather than polite. The model is told not to
+ * narrate its clears, because each clear is read back by the system and an
+ * `answer_user` on a turn with surviving clears is FENCED server-side — the
+ * directive and the fence say the same thing, and the fence is what makes it
+ * true. And nothing under `existing_values` may ever be cleared on a
+ * device-absence utterance: those are pre-existing certificate values the walk
+ * did not record, and deleting one is the worst failure class in this wave.
+ */
+const HANDOFF_DIRECTIVE_SLOT_MISS =
+  'The walk-through for this circuit has ended; you now own these fields. ' +
+  'Record the value the inspector expresses for the asked field (if they say one detail ' +
+  'is unknown or absent and the field accepts `N/A`, record `N/A`). If they say the whole ' +
+  'device does not exist on this circuit, clear what the walk-through recorded for it — the ' +
+  'entries under `recorded`, including their `derived` targets — with the ordinary clear tool, ' +
+  'one field per call; each clear is read back by the system, so do not narrate the clears ' +
+  'yourself (an `answer_user` on a turn with clears is not spoken). A derived target listed ' +
+  'under `derived_replaced` held that value on the certificate before the walk-through ' +
+  'overwrote it: record that value back rather than clearing the field. Never clear anything ' +
+  'under `existing_values`; a fresh value the inspector states may correct one. Otherwise ask ONE ' +
+  'question in your own words for the next remaining field, or answer if it was a question. ' +
+  'Do not call `start_dialogue_script` for this circuit.';
+
+const HANDOFF_DIRECTIVE_ALL_FILLED =
+  'The walk-through for this circuit did not start: every field it covers is already recorded, ' +
+  'and nothing in the utterance parsed as a reading. The values under `existing_values` are ' +
+  'already on the certificate — do not read them back and never clear them on a ' +
+  'device-absence utterance. Treat the utterance as a correction, a question or a new ' +
+  'instruction: a correction is an ordinary write, read back by the system. ' +
+  'Do not call `start_dialogue_script` for this circuit.';
+
+// ── PLAN-A — the HANDOFF NOTE ───────────────────────────────────────────────
+//
+// Shape (canonical): `schema`, `circuit_ref`, `asked_field`, the question text
+// that was asked, `recorded`, `existing_values` and `remaining`.
+//
+// The note is what turns a dead end into a handoff: the model receives the
+// question the script asked, what the script captured, what was already on the
+// certificate, and what is still missing — with each remaining slot's
+// acceptance rules — so it can carry on in its own words instead of the script
+// re-asking into silence.
+
+/**
+ * The still-missing slots, in schema order, with `asked_field` first.
+ *
+ * Uses the walk's OWN blankness test and the same skipped / deferred sets
+ * `nextMissingSlot` consults, so the note can never disagree with what the
+ * script would have asked next. Four inputs, no forced-slot set: the forced-ask
+ * apparatus was deleted upstream.
+ */
+function remainingSlotsForNote(state, schema, session, askedField) {
+  const values = state?.values ?? {};
+  const skipped = state?.skipped_slots;
+  const deferred = getDeferredSlots(session, schema.name, state?.circuit_ref ?? null);
+  const missing = [];
+  for (const slot of schema.slots ?? []) {
+    if (skipped?.has?.(slot.field)) continue;
+    if (deferred?.has?.(slot.field)) continue;
+    const v = values[slot.field];
+    if (v === undefined || v === null || v === '') missing.push(slot);
+  }
+  // `asked_field` first — it is the question the inspector just failed to
+  // answer, so it is the one the model should pick up.
+  const asked = missing.findIndex((s) => s.field === askedField);
+  if (asked > 0) missing.unshift(missing.splice(asked, 1)[0]);
+  return missing.map((slot) => ({
+    field: slot.field,
+    question: slot.question ?? null,
+    // The Decision 1 amendment's requirement, made EXECUTABLE: exactly the
+    // return value of ONE exported function, derived from the live
+    // `validateRecordReading` chain rather than duplicated from it. A model
+    // that cannot see `N/A` is accepted avoids writing it, which is the silent
+    // drop this wave exists to remove.
+    validation: describeSlotValidation(slot.field),
+  }));
+}
+
+/**
+ * Build the handoff note.
+ *
+ * `recorded` is the script's OWN applied operations in this episode, under BOTH
+ * filters: `disposition === 'applied'` AND
+ * `effective_circuit_ref === state.circuit_ref`. The second filter is not
+ * defensive padding — a scope-conflict replacement carries the prior operations
+ * list across a circuit change, so a filter on `applied` alone would present an
+ * old circuit's field as the new circuit's. `value` is `written_value` (what
+ * the write landed, post-coercion), never `dictated_value`.
+ *
+ * `existing_values` is the seeded snapshot values with no applied operation
+ * behind them, marked NON-CLEARABLE. Seeding assigns `state.values[f] = v`
+ * directly and calls no `markDictated`/`markWritten`/`markSatisfiedExisting`,
+ * so those values are simply absent from `state.operations`. This is the ONLY
+ * place the IR all-filled handoff (A4) has anything to say, because that
+ * episode captured nothing.
+ *
+ * WHAT THE NOTE DOES NOT CARRY, stated because it was once wrongly claimed to:
+ * neither the failed utterance nor a value dictated this turn. On an active-path
+ * miss the utterance reaches the model in the SIBLING `transcriptText` the
+ * fallthrough returns beside `serverNote`.
+ */
+function buildHandoffNote({ session, state, schema, askedField, askedQuestion, kind }) {
+  const operations = Array.isArray(state?.operations) ? state.operations : [];
+  const circuit_ref = state?.circuit_ref ?? null;
+  const recorded = operations
+    .filter((op) => op.disposition === 'applied' && op.effective_circuit_ref === circuit_ref)
+    .map((op) => ({
+      field: op.field,
+      value: op.written_value,
+      circuit: op.effective_circuit_ref,
+      // The mirror / `sets` targets THIS write produced in this episode,
+      // annotated at the producing operation — never inferred as "the latest
+      // entry". Empty is the common case, including every
+      // `ocpd_bs_en = BS EN 61009` write, which PIVOTS and derives nothing.
+      derived: Array.isArray(op.derived) ? [...op.derived] : [],
+    }));
+  // A field is excluded from `existing_values` when THIS episode is responsible
+  // for it — either directly, as an applied operation, or as a target one of
+  // those operations DERIVED.
+  //
+  // The derived half is not defensive tidying. The directive tells the model to
+  // clear "the entries under `recorded`, including their `derived` targets" and
+  // to "never clear anything under `existing_values`". A `sets` target has no
+  // operation of its own — `applyDerivations` writes it straight into
+  // `state.values` — so a filter on applied fields ALONE puts, say,
+  // `ocpd_type: 'Rew'` in both lists at once. The model then receives two
+  // contradictory instructions about the same field on a device-absence turn,
+  // and either outcome is wrong: leave a value the walk created on the
+  // certificate, or treat a genuinely pre-existing value as clearable.
+  const owned = episodeOwnedFields(state);
+  const existing_values = {};
+  for (const [field, value] of Object.entries(state?.values ?? {})) {
+    if (value === undefined || value === null || value === '') continue;
+    if (owned.has(field)) continue;
+    existing_values[field] = value;
+  }
+  // A derived target that REPLACED a pre-existing value is episode-owned in
+  // current state and pre-existing in history, and the difference decides
+  // whether a device-absence clear destroys certificate data. `existing_values`
+  // cannot carry it — the value there now is the one the walk derived, and
+  // listing that as pre-existing would be false. So the baseline travels in its
+  // own key, and the directive tells the model to RESTORE rather than clear.
+  //
+  // Scoped to targets this note actually presents as clearable: a baseline for
+  // a field no recorded operation derived has nothing to correct.
+  const derivedTargets = new Set();
+  for (const entry of recorded) {
+    for (const target of entry.derived) derivedTargets.add(target);
+  }
+  const derived_replaced = {};
+  for (const [field, previous] of Object.entries(state?.derivedBaselines ?? {})) {
+    if (derivedTargets.has(field)) derived_replaced[field] = previous;
+  }
+  return {
+    kind,
+    directive:
+      kind === 'all_filled_entry' ? HANDOFF_DIRECTIVE_ALL_FILLED : HANDOFF_DIRECTIVE_SLOT_MISS,
+    derived_replaced,
+    schema: schema.name,
+    circuit_ref,
+    asked_field: askedField ?? null,
+    asked_question: askedQuestion ?? null,
+    recorded,
+    existing_values,
+    remaining: remainingSlotsForNote(state, schema, session, askedField),
+  };
+}
+
+/**
+ * Serialise a handoff note into the `[Server note: …]` form the model reads.
+ *
+ * Directive INSIDE the bracket, JSON context OUTSIDE — the shape the engine's
+ * other server notes already use, so the model meets one convention rather than
+ * two. The JSON is the structured note minus the directive (which is already in
+ * the bracket) and minus `kind` (an internal discriminator, not model context).
+ *
+ * The bracket content is entirely SERVER-CONTROLLED: the directive is a
+ * constant and every JSON value is a field name, a question text from a schema,
+ * or a value the server itself wrote. No raw inspector utterance is
+ * interpolated — that travels in the transcript after this prefix, which is
+ * what keeps the two separable.
+ */
+function renderHandoffNoteText(note) {
+  const { directive, ...rest } = note;
+  delete rest.kind;
+  const context = rest;
+  return `[Server note: ${directive}] ${JSON.stringify(context)} `;
+}
+
+/**
+ * End the walk-through for this circuit and hand the rest of the device to the
+ * model, with the context the script had and the model did not.
+ *
+ * Three steps, in this order:
+ *
+ *   1. READ BACK ONCE whatever this run captured that has not yet been spoken,
+ *      through the existing terminal exit. `renderTerminalReadback` emits
+ *      nothing when there is nothing uncovered — a first-slot miss with no
+ *      capture, or captures already spoken — which is correct: the turn falls
+ *      through to the model, whose write, ask or answer is the audible outcome.
+ *   2. CLEAR the script and STAMP the tombstone. `dialogueScriptState` is null
+ *      afterwards — no `paused`, no `active`. The tombstone survives
+ *      `clearScriptState` exactly as the deferred-slot map does, because it
+ *      lives on the session rather than inside the transient script state.
+ *   3. FALL THROUGH to the model with `{ handled, fallthrough, transcriptText,
+ *      serverNote }` — the same shape today's third-miss fallthrough returns,
+ *      now carrying a note. The failed utterance reaches the model in
+ *      `transcriptText`; the note never carries it.
+ */
+function terminateWithHandoff({
+  ws,
+  session,
+  sessionId,
+  schema,
+  state,
+  logger,
+  now,
+  responseEpoch,
+  transcriptText,
+  kind,
+  askedField,
+  askedQuestion,
+  textPreview = null,
+}) {
+  const effectiveBoardId =
+    state?.effectiveBoardId ?? resolveEffectiveBoardId(session, null) ?? null;
+  const circuit_ref = state?.circuit_ref ?? null;
+
+  const serverNote = buildHandoffNote({
+    session,
+    state,
+    schema,
+    askedField,
+    askedQuestion,
+    kind,
+  });
+
+  // Step 1 — read back once, before the state is cleared.
+  const terminal = renderTerminalReadback({
+    ws,
+    session,
+    sessionId,
+    schema,
+    logger,
+    now,
+    responseEpoch,
+    siteLabel: 'slot_miss_handoff',
+  });
+
+  // Step 2 — clear, then stamp.
+  clearScriptState(session);
+  setHandoff(session, effectiveBoardId, schema.name, circuit_ref, {
+    at: now,
+    asked_field: askedField ?? null,
+  });
+
+  logger?.info?.('stage6.script_handoff', {
+    sessionId,
+    schema: schema.name,
+    circuit_ref,
+    board_id: effectiveBoardId,
+    field: askedField ?? null,
+    kind,
+    recorded_count: serverNote.recorded.length,
+    remaining_count: serverNote.remaining.length,
+    ...(textPreview ? { textPreview } : {}),
+  });
+
+  // Step 3 — fall through, with the note PREPENDED to the transcript.
+  //
+  // THIS is how a server note reaches the model, and it is the established
+  // shape in this engine: the confirmation-delete exit and the ring/IR/voltage
+  // expiry notes all return `transcriptText: `${serverNote}${reply}``. The
+  // orchestrator consumes `transcriptText` and nothing else from a fallthrough
+  // outcome, so a note returned only as a sibling property would be silently
+  // DROPPED — the model would get the bare utterance with no record of the
+  // question, which is exactly the defect ids 140 and 141 reported.
+  //
+  // Directive inside the bracket, JSON context outside. The structured object
+  // is returned alongside for telemetry and tests; the model reads the text.
+  const noteText = renderHandoffNoteText(serverNote);
+
+  return {
+    handled: true,
+    fallthrough: true,
+    transcriptText: `${noteText}${transcriptText ?? ''}`,
+    serverNote,
+    handoff: { boardId: effectiveBoardId, schema: schema.name, circuit_ref },
+    terminalReadbackBuilt: terminal?.built === true,
+    terminalReadbackEmitted: terminal?.emitted === true,
+    ...(terminal?.built === true && terminal?.emitted !== true && terminal?.readback?.text
+      ? { terminalReadbackLostText: terminal.readback.text }
+      : {}),
+  };
 }
 
 function clearDeferredSlot(session, schemaName, circuit_ref, field) {
@@ -1403,7 +1853,86 @@ function buildCircuitRetryQuestion(schema, designationAttempt) {
  * active-path handler below. See the comment on the unresolvable-circuit
  * branch for the failure mode they fix.
  */
-function initScriptState(session, schema, circuit_ref, now) {
+/**
+ * PLAN-A — END an episode whose board is no longer the selected one.
+ *
+ * A walk-through belongs to the board the inspector is standing at. It is bound
+ * to that board at entry, and there are two ways the selection can move out from
+ * under it, both outside the engine's control:
+ *
+ *  - the iOS `select_board` frame, handled in `sonnet-stream.js`, which assigns
+ *    `stateSnapshot.currentBoardId` directly and can arrive on ANY turn,
+ *    including one where a script is active — the script owning the floor keeps
+ *    the MODEL out, not the client;
+ *  - `select_board` / `add_board` during a PAUSE, where the model does run.
+ *
+ * Neither touches `dialogueScriptState`. Left alone, the next reply would ask
+ * about, and write to, circuit N of the board the inspector has left — and the
+ * extraction frames carry no `board_id`, so the client would route the answer to
+ * whichever board is selected now. The two sides would disagree about which
+ * certificate row the value belongs to.
+ *
+ * Ending it is the honest outcome: whatever the walk captured is spoken through
+ * the ordinary terminal exit, queued values are abandoned, and the utterance
+ * falls through to the model as an ordinary turn. Resuming on the old board, or
+ * silently adopting the new one, would each be a guess about what the inspector
+ * meant by walking away.
+ *
+ * Cross-wrapper isolation applies: production calls all three domain wrappers
+ * every turn with their own narrow `schemas` lists, so a wrapper that does not
+ * own the active schema must not clear its state — the same rule the
+ * broadcast pre-filter and the active-path handler already follow.
+ *
+ * @returns {boolean} true when an episode was ended (the caller stops).
+ */
+function endEpisodeOnBoardDrift({ session, ws, schemas, logger, sessionId, now, responseEpoch }) {
+  const state = session?.dialogueScriptState;
+  if (!state || (!state.active && !state.paused)) return false;
+  if (state.effectiveBoardId == null) return false;
+  const boardNow = resolveEffectiveBoardId(session, null);
+  if (boardNow === state.effectiveBoardId) return false;
+  const schema = Array.isArray(schemas) ? schemas.find((s) => s.name === state.schemaName) : null;
+  // Not this wrapper's episode — leave it to the one that owns it.
+  if (!schema) return false;
+
+  logger?.info?.(`${schema.logEventPrefix}_board_changed_mid_episode`, {
+    sessionId,
+    episode_board_id: state.effectiveBoardId,
+    current_board_id: boardNow,
+    circuit_ref: state.circuit_ref,
+    was_paused: state.paused === true,
+  });
+  // Audio-First purge contract (P1), same as the hard-timeout and
+  // broadcast-abort exits beside this one: an episode ending with a
+  // confirmation prompt outstanding leaves that prompt QUEUED, and it would
+  // otherwise play after the board switch — asking about a circuit on the board
+  // the inspector has just left, possibly over the terminal read-back. Scoped
+  // to schemas with a confirmation block (ring only today), exactly as the
+  // timeout path scopes it.
+  if (schema.confirmation?.buildMessage) {
+    sendScriptPurge(ws, schema, sessionId);
+  }
+  if (Array.isArray(state.pending_writes)) {
+    for (const w of state.pending_writes) {
+      const op = w[OPERATION_REF];
+      if (op) markAbandoned(op);
+    }
+  }
+  renderTerminalReadback({
+    ws,
+    session,
+    sessionId,
+    schema,
+    logger,
+    now,
+    responseEpoch,
+    siteLabel: 'board_changed_mid_episode',
+  });
+  clearScriptState(session);
+  return true;
+}
+
+function initScriptState(session, schema, circuit_ref, now, effectiveBoardId = undefined) {
   // A new script invalidates any pending post-completion correction crumb —
   // closes the stale-fire window where a started-then-aborted script would
   // otherwise leave an OLD breadcrumb pointing at the wrong leg (#1).
@@ -1412,7 +1941,34 @@ function initScriptState(session, schema, circuit_ref, now) {
     active: true,
     schemaName: schema.name,
     circuit_ref,
+    // PLAN-A (feedback-2026-09-17) — the episode's canonical board, captured
+    // ONCE at episode start and retained through pivots. The handoff tombstone
+    // is keyed on it, and every writer and reader of that key resolves through
+    // this ONE call. Neither `dialogueScriptState` nor the projected
+    // `extracted_readings` could supply it before: the state held no board, and
+    // enrichment omits `board_id` on ordinary single-effective-board turns.
+    //
+    // A raw `session.stateSnapshot?.currentBoardId` read is NOT an acceptable
+    // substitute anywhere, here or at any reader. It can yield null;
+    // `resolveEffectiveBoardId` never can, because `getMainBoardId` falls back
+    // to the main-marked board, else `boards[0].id`, else `'main'`. A writer
+    // using the resolver and a reader using the raw read would key the tombstone
+    // differently, `tryEnterScriptFromWrites` would MISS it, and a fresh script
+    // would ask the next missing slot on the circuit the model already owns —
+    // the first-miss handoff failing silently, which is this plan's headline
+    // guarantee.
+    effectiveBoardId:
+      effectiveBoardId === undefined
+        ? resolveEffectiveBoardId(session, null)
+        : resolveEffectiveBoardId(session, effectiveBoardId),
     values: {},
+    // PLAN-A (feedback-2026-09-17) — field-keyed record of what a derivation
+    // OVERWROTE, when the value it replaced predates this episode. Lives on the
+    // state so it dies with the episode: a baseline is only ever meaningful
+    // against the walk that created it, and a stale one would tell the model to
+    // restore a value from an unrelated circuit. Carried across a pivot with
+    // `operations`, for the same reason — a pivot is the same episode.
+    derivedBaselines: {},
     // Plan D (2026-07-25) — impedance-clamp provenance, field-keyed, exactly
     // parallel to `values`. Lives HERE (not on the session) so lifecycle rule 3
     // is structural: a new/cancelled/abandoned script replaces this whole
@@ -1431,12 +1987,6 @@ function initScriptState(session, schema, circuit_ref, now) {
     last_turn_at: now,
     circuit_retry_attempted: false,
     last_designation_attempt: null,
-    // Per-slot no-progress tracking (F1AC26FB #4.3). `{ field, misses }` —
-    // counts CONSECUTIVE unparseable answers to the same expected slot so a
-    // garble (Deepgram noise, off-enum reply) can't loop the same slot ask
-    // forever. 2nd miss → format hint; 3rd miss → skip the slot + fall
-    // through to Sonnet. Reset on any successful write / slot change.
-    slot_no_progress: null,
     // entered_via_pivot is set true only by runPivot; default false on
     // every direct entry path (regex / runEntry / enterScriptByName).
     entered_via_pivot: false,
@@ -1830,11 +2380,64 @@ function runEntry({
     state.pending_designation_candidates = designationCandidates;
   }
 
+  // PLAN-A (feedback-2026-09-17) — a FRESH NAMED TRIGGER clears the handoff
+  // tombstone. Reaching `runEntry` means the inspector said the device and the
+  // circuit out loud ("RCBO on circuit 3 again"), which is an explicit request
+  // to re-run the walk and the one thing that should override a handoff. A
+  // rename is NOT a fresh trigger and migrates the key instead.
+  if (deleteHandoff(session, state.effectiveBoardId, schema.name, circuitRef)) {
+    logger?.info?.('stage6.script_handoff_cleared', {
+      sessionId,
+      schema: schema.name,
+      circuit_ref: circuitRef,
+      board_id: state.effectiveBoardId,
+      by: 'fresh_trigger',
+    });
+  }
+
   // Seed values from existing snapshot — skip-already-filled relies on this.
   for (const [f, v] of Object.entries(existing)) {
     if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
       state.values[f] = v;
     }
+  }
+
+  // PLAN-A A4 (id 143) — IR ALL-FILLED ENTRY IS A HANDOFF, NOT "Got it".
+  //
+  // The defect: entering on a circuit whose slots are ALL already filled and
+  // whose utterance parsed nothing, the script finished at once and read back
+  // STALE values as "Got it" — values the inspector never said this run,
+  // presented as though they had just been confirmed.
+  //
+  // `recorded` is EMPTY by construction here: nothing was captured, and seeding
+  // writes only `state.values` and creates no operation. The three seeded
+  // values go to `existing_values` marked non-clearable — the ONLY thing this
+  // note has to say — and nothing is read back. The model treats the utterance
+  // as a correction, a question or a new instruction.
+  //
+  // IR only: the flag is opt-in per schema, and IR is the schema the field
+  // session surfaced it on.
+  if (
+    schema.handoffOnAllFilledNoParse === true &&
+    circuitRef !== null &&
+    volunteered.length === 0 &&
+    nextMissingSlot(state.values, schema.slots, state.skipped_slots, null) === null
+  ) {
+    return terminateWithHandoff({
+      ws,
+      session,
+      sessionId,
+      schema,
+      state,
+      logger,
+      now,
+      responseEpoch,
+      transcriptText: text,
+      kind: 'all_filled_entry',
+      askedField: null,
+      askedQuestion: null,
+      textPreview: text.slice(0, 80),
+    });
   }
 
   // Apply or queue volunteered values from the entry utterance.
@@ -1872,7 +2475,7 @@ function runEntry({
       // canonical-DIFFERENT → overwrite below.
     }
     if (circuitRef !== null) {
-      const r = applyWriteWithDerivations(session, schema, slot, circuitRef, w.value, now);
+      const r = applyWriteWithDerivations(session, schema, slot, circuitRef, w.value, now, op);
       markWritten(op, r.effectiveValue, circuitRef);
       // Plan D Seam B — the WIRE entry carries the value that was STORED, not
       // the raw dictated one, or the client writes 16 into a cell the server
@@ -2007,10 +2610,52 @@ function runEntry({
  * raw 16 (e.g. an OCPD-rating → max-Zs comparison) would be reasoning about a
  * magnitude that was never stored.
  */
-function applyWriteWithDerivations(session, schema, slot, circuit_ref, value, now) {
+function applyWriteWithDerivations(session, schema, slot, circuit_ref, value, now, op = null) {
   const written = applyWrite(session, schema, circuit_ref, slot.field, value, now);
   const derived = applyDerivations({ session, schema, slot, value: written.value });
+  // PLAN-A (feedback-2026-09-17) — annotate THIS write's operation with the
+  // targets IT produced, so the handoff note's `recorded[].derived` is real
+  // provenance rather than a guess.
+  //
+  // The operation is PASSED IN by every caller, never looked up. A lookup was
+  // tried and was wrong: at both pending-write DRAIN sites this runs BEFORE
+  // `markWritten` binds the circuit, so the operation still carries a null
+  // `effective_circuit_ref` and a circuit-scoped search cannot find it — or,
+  // worse, finds an OLDER operation on the same field and circuit and credits
+  // the derivation to that. Every call site already holds the operation it just
+  // created.
+  //
+  // `derived` lists `sets` targets only in practice: `applyDerivations` has
+  // three mechanisms — `sets`, `mirrors`, `pivot` — and every `bs_code` mirror
+  // is deleted upstream, so an `ocpd_bs_en = BS EN 61009` write PIVOTS and
+  // derives nothing while a `BS 3036` write still lists `ocpd_type`.
+  annotateDerivedTargets(op, derived);
   return { ...derived, effectiveValue: written.value, correction: written.correction };
+}
+
+/**
+ * Record the mirror / `sets` targets one write produced, ON that write.
+ *
+ * WHY THE OPERATION IS PASSED IN rather than looked up as "the latest entry":
+ * at the Sonnet-write entry path the seeding loop calls `applyDerivations` for
+ * EVERY populated slot and accumulates all of their writes into one array.
+ * Annotating the trigger operation from that array unguarded would FABRICATE
+ * provenance — a rating-triggered OCPD entry with a pre-existing
+ * `ocpd_bs_en = BS 3036` derives `ocpd_type = 'Rew'` from the SEEDED value, and
+ * that target would land in the rating write's `derived`. It would then be both
+ * `recorded` provenance AND non-clearable `existing_values`, so a
+ * device-absence directive could clear a value derived from pre-existing
+ * certificate data — the worst failure class in this wave.
+ */
+function annotateDerivedTargets(op, derivedResult) {
+  if (!op) return;
+  const targets = [
+    ...(derivedResult?.mirrorWrites ?? []).map((w) => w.field),
+    ...(derivedResult?.setWrites ?? []).map((w) => w.field),
+  ].filter(Boolean);
+  if (targets.length === 0) return;
+  const existing = Array.isArray(op.derived) ? op.derived : [];
+  op.derived = [...new Set([...existing, ...targets])];
 }
 
 /**
@@ -2270,7 +2915,7 @@ function runActivePath({
     // PLAN A2 §A2.5 site table (L1833-class) — TERMINAL: the model owns this
     // turn's audibility from here, but any uncovered dictation from EARLIER
     // in this episode still needs its read-back before the state vanishes.
-    renderTerminalReadback({
+    const terminal = renderTerminalReadback({
       ws,
       session,
       sessionId,
@@ -2281,7 +2926,12 @@ function runActivePath({
       siteLabel: 'confirmation_delete_exit',
     });
     clearScriptState(session);
-    return { handled: true, fallthrough: true, transcriptText: `${serverNote}${reply}` };
+    return {
+      handled: true,
+      fallthrough: true,
+      transcriptText: `${serverNote}${reply}`,
+      ...terminalCarrierFields(terminal),
+    };
   }
 
   // 1. Cancel — preserve writes, clear state, announce.
@@ -2545,7 +3195,7 @@ function runActivePath({
     // PLAN A2 §A2.5 site table (L2048-class) — TERMINAL: the model owns this
     // turn's audibility, but any uncovered EARLIER dictation still needs its
     // read-back before the silent clear.
-    renderTerminalReadback({
+    const terminal = renderTerminalReadback({
       ws,
       session,
       sessionId,
@@ -2556,7 +3206,7 @@ function runActivePath({
       siteLabel: 'topic_switch',
     });
     clearScriptState(session);
-    return { handled: true, fallthrough: true, transcriptText };
+    return { handled: true, fallthrough: true, transcriptText, ...terminalCarrierFields(terminal) };
   }
 
   // 3.5. Confirmation reply (2026-05-26). When the engine emitted the
@@ -2611,7 +3261,7 @@ function runActivePath({
       sendScriptPurge(ws, schema, sessionId);
       // PLAN A2 §A2.5 site table (L2102-class) — TERMINAL, shared helper so
       // every caller is covered.
-      renderTerminalReadback({
+      const terminal = renderTerminalReadback({
         ws,
         session,
         sessionId,
@@ -2622,7 +3272,12 @@ function runActivePath({
         siteLabel: 'confirmation_clear_and_fallthrough',
       });
       clearScriptState(session);
-      return { handled: true, fallthrough: true, transcriptText };
+      return {
+        handled: true,
+        fallthrough: true,
+        transcriptText,
+        ...terminalCarrierFields(terminal),
+      };
     };
 
     // Audible cap exit — purge FIRST (the replacement line shares the
@@ -2863,7 +3518,7 @@ function runActivePath({
           source: 'confirmation_5b_named_amend',
           circuit_ref: state.circuit_ref,
         });
-        const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
+        const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now, op);
         markWritten(op, r.effectiveValue, state.circuit_ref);
         // Plan D Seam B — the raw `state.values[w.field] = w.value` that used to
         // sit here is DELETED. applyWrite has already written the CLAMPED value;
@@ -2923,7 +3578,8 @@ function runActivePath({
             slot,
             state.circuit_ref,
             parsed,
-            now
+            now,
+            op
           );
           markWritten(op, r.effectiveValue, state.circuit_ref);
           // Plan D Seam B — raw re-assignment DELETED (applyWrite already stored
@@ -3000,7 +3656,8 @@ function runActivePath({
             retainedSlot,
             state.circuit_ref,
             retainedParsed,
-            now
+            now,
+            op
           );
           markWritten(op, r.effectiveValue, state.circuit_ref);
           const retainedWrites = [{ field: retainedSlot.field, value: r.effectiveValue }];
@@ -3160,6 +3817,14 @@ function runActivePath({
       ? state.pending_designation_candidates
       : null;
   const writes = [];
+  // PLAN-A — the TURN BOUNDARY for the first-miss predicate at step 9b.
+  // `state.operations` is EPISODE-scoped, so the miss test slices from here to
+  // see only THIS turn's outcomes. Captured beside the write accumulator, the
+  // first statement of the turn's write accumulation. Verified turn-local:
+  // nothing between here and step 9b reassigns `state.operations` — every
+  // reassignment site precedes it, and the step-9 pivot returns before 9b is
+  // reached.
+  const opsAtTurnStart = Array.isArray(state.operations) ? state.operations.length : 0;
   let drainedFromPending = false;
   let circuitResolvedThisTurn = false;
   // Group C fix 1 (feedback id 105, 2026-07-29) — resolution METADATA: the
@@ -3241,7 +3906,7 @@ function runActivePath({
       state.pending_designation_candidates = null;
       state.designation_disambiguation_retry_attempted = false;
       const slotFields = schema.slots.map((s) => s.field);
-      const existing = readExistingValues(session, ref, slotFields);
+      const existing = readExistingValues(session, ref, slotFields, state.effectiveBoardId);
       for (const [f, v] of Object.entries(existing)) {
         if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
           state.values[f] = v;
@@ -3349,7 +4014,7 @@ function runActivePath({
           // named extraction has no `correction` and gets its provenance from
           // this turn's clamp instead.
           const drainCorrection = w.correction ?? norm.correction;
-          const r = applyWriteWithDerivations(session, schema, slot, ref, drainValue, now);
+          const r = applyWriteWithDerivations(session, schema, slot, ref, drainValue, now, op);
           markWritten(op, r.effectiveValue, ref);
           if (drainCorrection) {
             recordValueCorrection(session.dialogueScriptState, w.field, drainCorrection);
@@ -3663,7 +4328,7 @@ function runActivePath({
           if (op) markAbandoned(op);
         }
       }
-      renderTerminalReadback({
+      const terminal = renderTerminalReadback({
         ws,
         session,
         sessionId,
@@ -3674,7 +4339,12 @@ function runActivePath({
         siteLabel: 'unresolvable_circuit',
       });
       clearScriptState(session);
-      return { handled: true, fallthrough: true, transcriptText };
+      return {
+        handled: true,
+        fallthrough: true,
+        transcriptText,
+        ...terminalCarrierFields(terminal),
+      };
     }
   }
 
@@ -3830,7 +4500,8 @@ function runActivePath({
           currentSlot,
           state.circuit_ref,
           v,
-          now
+          now,
+          op
         );
         markWritten(op, r.effectiveValue, state.circuit_ref);
         // Plan D — emit the EFFECTIVE (clamped) value, not the local `v`, so the
@@ -4187,7 +4858,7 @@ function runActivePath({
       }
       // canonical-DIFFERENT → fall through and overwrite.
     }
-    const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now);
+    const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now, op);
     markWritten(op, r.effectiveValue, state.circuit_ref);
     // Plan D — the wire entry carries the EFFECTIVE (clamped) value; `w.value`
     // is the raw parsed magnitude and would put 16 in the cell while the
@@ -4280,7 +4951,8 @@ function runActivePath({
         currentSlot,
         state.circuit_ref,
         bareValue,
-        now
+        now,
+        op
       );
       markWritten(op, r.effectiveValue, state.circuit_ref);
       // Plan D — EFFECTIVE (clamped) value on the wire, not the raw bareValue.
@@ -4318,60 +4990,122 @@ function runActivePath({
     });
   }
 
-  // 9b. Per-slot no-progress cap (F1AC26FB #4.3). When we're actively
-  //     expecting a slot and this turn produced NO write for it (the
-  //     answer didn't parse — any garble, not just LIM), count consecutive
-  //     misses on that slot. 2nd consecutive miss → emit a one-line format
-  //     hint and re-ask. 3rd → mark the slot skipped and fall through to
-  //     Sonnet so the loop can't run forever (the IR-LIM loop in F1AC26FB
-  //     re-asked the same slot ~indefinitely until a cancel word). Reset
-  //     whenever progress is made or the expected slot changes. Counting
-  //     is gated on a resolved circuit_ref so it never collides with the
-  //     circuit-resolution retry (#3.3 / circuit_retry_attempted). NOTE:
-  //     no replay-corpus scenario hits 2 consecutive misses on one slot,
-  //     so this adds no emit there and the legacy-vs-engine parity holds.
+  // 9b. FIRST MISS IS A HANDOFF (PLAN-A, feedback-2026-09-17, ids 140/141/143).
+  //
+  //     WHAT WAS HERE, and why it is gone. A per-slot no-progress CAP: count
+  //     consecutive misses on the expected slot, emit a canned format hint on
+  //     the 2nd, mark the slot skipped and fall through on the 3rd. It existed
+  //     because the IR-LIM loop in F1AC26FB re-asked one slot indefinitely, and
+  //     it bounded that loop — but the inspector still had to miss three times,
+  //     heard a canned hint in between, and the model finally received the bare
+  //     utterance with NO note of the question it was answering. Ids 140 and 141
+  //     are exactly that experience.
+  //
+  //     Decision 1, as amended 2026-09-19: keep the scripts, hand off on the
+  //     FIRST miss, and the handoff ENDS the script for that circuit — the rest
+  //     of the device goes to the model, which has the context the script does
+  //     not. The counter, the hint and the `skipped_slots` bookkeeping for
+  //     misses are all deleted; what remains here is the handoff decision alone.
+  //
+  //     THE TRIGGER IS THE ASKED SLOT'S OWN OUTCOME, NOT `madeProgress`.
+  //     `writes.length > 0` disappears as a term. A compound reply falsifies it:
+  //     a named match on a slot the script did NOT ask for makes
+  //     `writes.length > 0` true while the question it DID ask stays unanswered,
+  //     and the miss is then suppressed — the defect the old term hid.
+  //
+  //     Deleting the term alone is NOT safe, which is why this is a real
+  //     discriminator rather than a deletion. With `currentSlot` set and the
+  //     circuit resolved on an earlier turn, an ORDINARY answer leaves every
+  //     remaining suppressor false — `circuitResolvedThisTurn` is set only by
+  //     THIS turn's resolution and `drainedFromPending` only by the pending-write
+  //     drain — so a bare deletion would hand off on every successful answer.
+  //
+  //     An unqualified scan of `state.operations` is not safe either: that list
+  //     is EPISODE-scoped, created once at `initScriptState` and carried across
+  //     pivots and replacements, so an earlier turn's operation on the
+  //     still-missing slot would count as this turn's outcome. Hence the turn
+  //     boundary captured at the top of the write accumulation.
+  //
+  //     `queued`, `abandoned` and `rejected` are NOT outcomes. A queued
+  //     operation never landed and an abandoned one was discarded. `rejected`
+  //     needs its own argument and gets one below.
+  const turnOperations = (Array.isArray(state.operations) ? state.operations : []).slice(
+    opsAtTurnStart
+  );
+  const askedSlotAnswered =
+    currentSlot != null &&
+    state.circuit_ref !== null &&
+    (turnOperations.some(
+      (op) =>
+        op.field === currentSlot.field &&
+        op.effective_circuit_ref === state.circuit_ref &&
+        (op.disposition === 'applied' || op.disposition === 'satisfied_existing')
+    ) ||
+      // …OR a DERIVATION from one of this turn's own writes filled the asked
+      // slot. A derived target has no operation of its own — `applyDerivations`
+      // writes it straight into `state.values` — so an operation-only test
+      // declares the slot unanswered when it has in fact just been answered.
+      //
+      // Reachable and ordinary: the script asks for the OCPD curve, the
+      // inspector corrects the BS number to 3036, and the `sets` derivation
+      // fills `ocpd_type = 'Rew'` in the same turn. Without this term the walk
+      // ends on a slot that is no longer missing, and the note then names
+      // `ocpd_type` as the asked field while omitting it from `remaining` —
+      // which is also self-contradictory.
+      //
+      // This does NOT widen the predicate back into "any write counts": only a
+      // derivation whose PRODUCING operation is one of this turn's, and only
+      // when the target is the asked slot itself.
+      turnOperations.some(
+        (op) =>
+          op.effective_circuit_ref === state.circuit_ref &&
+          (op.disposition === 'applied' || op.disposition === 'satisfied_existing') &&
+          Array.isArray(op.derived) &&
+          op.derived.includes(currentSlot.field)
+      ));
+  // WHY `rejected` IS EXCLUDED, and the reason is GENERAL rather than
+  // site-specific. There are TWO `markRejected` sites inside this turn's span:
+  // the step-8 bare gate and the active-path pending-write drain. ONE property
+  // covers both — every operation either site can reject carries
+  // `effective_circuit_ref === null`. The step-8 gate's `markDictated` call
+  // passes no `circuit_ref`, so the parameter defaults to null; the drain does
+  // not create its operation at all but retrieves the one attached at QUEUE
+  // time, and every queueing site in this span passes `circuit_ref: null`
+  // explicitly. `markRejected` sets only the disposition and never touches
+  // `effective_circuit_ref`. The branch below requires `state.circuit_ref !==
+  // null`, so the equality is false for EVERY within-turn rejected operation
+  // whichever site created it — including the all-rejected-batch edge case a
+  // per-site argument does not reach.
+  //
+  // Nor would counting one be right. That path logs `*_slot_value_out_of_set`,
+  // drops the value and re-asks the same slot — a silent drop followed by a
+  // re-ask, which is the dead end Decision 7 removes by name, not a spoken
+  // refusal. Counting it would SUPPRESS the handoff and license the re-ask.
+  //
+  // And after Decision 9 no such ingress exists at all: `allowedValues` was
+  // declared in exactly one schema in the whole dialogue engine and is gone, so
+  // no slot anywhere is gated. FORWARD RULE, so this is not re-litigated: a
+  // future gated slot may be added to this predicate only if its rejection both
+  // ATTRIBUTES the circuit on the operation AND speaks a refusal in the same
+  // turn.
   const madeProgress =
-    writes.length > 0 || pivotTo || circuitResolvedThisTurn || drainedFromPending;
-  if (madeProgress) {
-    state.slot_no_progress = null;
-  } else if (currentSlot && state.circuit_ref !== null) {
-    if (!state.slot_no_progress || state.slot_no_progress.field !== currentSlot.field) {
-      state.slot_no_progress = { field: currentSlot.field, misses: 0 };
-    }
-    state.slot_no_progress.misses += 1;
-    const misses = state.slot_no_progress.misses;
-    if (misses >= 3) {
-      state.skipped_slots.add(currentSlot.field);
-      state.slot_no_progress = null;
-      logger?.info?.(`${schema.logEventPrefix}_slot_no_progress_skip`, {
-        sessionId,
-        circuit_ref: state.circuit_ref,
-        field: currentSlot.field,
-        textPreview: text.slice(0, 80),
-      });
-      return { handled: true, fallthrough: true, transcriptText };
-    }
-    if (misses === 2) {
-      logger?.info?.(`${schema.logEventPrefix}_slot_no_progress_hint`, {
-        sessionId,
-        circuit_ref: state.circuit_ref,
-        field: currentSlot.field,
-        textPreview: text.slice(0, 80),
-      });
-      safeSend(
-        ws,
-        buildScriptInfo({
-          toolCallIdPrefix: schema.toolCallIdPrefix,
-          sessionId,
-          kind: 'no_progress_hint',
-          text:
-            schema.noProgressHint ??
-            "Sorry, I didn't catch that. Say a number, 'greater than X', or 'LIM' — or say 'skip' to move on.",
-          now,
-          responseEpoch,
-        })
-      );
-    }
+    askedSlotAnswered || pivotTo || circuitResolvedThisTurn || drainedFromPending;
+  if (!madeProgress && currentSlot && state.circuit_ref !== null) {
+    return terminateWithHandoff({
+      ws,
+      session,
+      sessionId,
+      schema,
+      state,
+      logger,
+      now,
+      responseEpoch,
+      transcriptText,
+      kind: 'slot_miss',
+      askedField: currentSlot.field,
+      askedQuestion: currentSlot.question ?? null,
+      textPreview: text.slice(0, 80),
+    });
   }
 
   return askNextOrFinish({ ws, session, sessionId, schema, logger, now, responseEpoch });
@@ -4422,15 +5156,26 @@ function runPivot({
   // pivoted-away field's read-back renders from the op, not the new
   // schema's state.values).
   const priorOperations = Array.isArray(previous?.operations) ? previous.operations : [];
+  const priorDerivedBaselines =
+    previous?.derivedBaselines && typeof previous.derivedBaselines === 'object'
+      ? previous.derivedBaselines
+      : null;
   logger?.info?.(`${fromSchema.logEventPrefix}_pivot`, {
     sessionId,
     from: fromSchema.name,
     to: toSchemaName,
     circuit_ref,
   });
+  // PLAN-A — the episode's canonical board is captured ONCE at episode start
+  // and RETAINED through a pivot: the handoff tombstone is keyed on it, and a
+  // pivot is the same episode on the same circuit. Re-resolving here would
+  // re-read `currentBoardId`, which a mid-episode `select_board` can have moved.
+  const priorEffectiveBoardId = previous?.effectiveBoardId ?? null;
   initScriptState(session, target, circuit_ref, now);
   const state = session.dialogueScriptState;
   state.operations = priorOperations;
+  if (priorDerivedBaselines !== null) state.derivedBaselines = priorDerivedBaselines;
+  if (priorEffectiveBoardId !== null) state.effectiveBoardId = priorEffectiveBoardId;
   // 2026-04-30 (Codex P2 follow-up): tag the post-pivot state so
   // subsequent enterScriptByName calls hitting the already_active path
   // can report the provenance accurately. Without this, a defensive
@@ -4443,7 +5188,13 @@ function runPivot({
   // cover. Includes anything the source schema wrote during this
   // turn (the derivations' sets+mirrors landed before pivot).
   const slotFields = target.slots.map((s) => s.field);
-  const existing = circuit_ref ? readExistingValues(session, circuit_ref, slotFields) : {};
+  // PLAN-A — hydrate from the EPISODE's board. A pivot is the same episode on
+  // the same circuit, so reading the SELECTED board here would seed another
+  // board's values into a cross-board walk and surface them in the handoff
+  // note as though this walk had captured them.
+  const existing = circuit_ref
+    ? readExistingValues(session, circuit_ref, slotFields, state.effectiveBoardId)
+    : {};
   for (const [f, v] of Object.entries(existing)) {
     if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
       state.values[f] = v;
@@ -4606,11 +5357,17 @@ function handleBulkApplyReply({
   // Resolve the target circuit set.
   let targetCircuits = [];
   if (parse.scope === 'all') {
-    const snapshotRefs = Object.keys(session.stateSnapshot?.circuits ?? {})
-      .map((k) => parseInt(k, 10))
-      .filter((n) => Number.isInteger(n) && n > 0 && n !== state.circuit_ref)
+    // "All circuits" means all circuits ON THIS BOARD. Parsing
+    // `snapshot.circuits` keys as integers only ever sees MAIN's bare numeric
+    // keys — a sub-board's live at `${board}::${ref}` — so an RCD walk on a
+    // sub-board used to propagate onto main's ref set: it missed every
+    // sub-board-only circuit and could create a circuit on this board purely
+    // because main happened to have that ref, while confirming "all circuits"
+    // to the inspector. `listCircuitRefsInBoard` is the dual-shape enumerator
+    // the rest of the multi-board code already uses.
+    targetCircuits = listCircuitRefsInBoard(session.stateSnapshot, state?.effectiveBoardId)
+      .filter((n) => n !== state.circuit_ref)
       .sort((a, b) => a - b);
-    targetCircuits = snapshotRefs;
   } else if (parse.scope === 'range' || parse.scope === 'list') {
     targetCircuits = parse.circuits.filter((n) => n !== state.circuit_ref);
   }
@@ -4638,7 +5395,15 @@ function handleBulkApplyReply({
         });
       }
       try {
-        applyReadingToSnapshot(session.stateSnapshot, { circuit: ref, field, value });
+        // PLAN-A — bulk propagation carries the EPISODE's values across a
+        // circuit range on the EPISODE's board. Writing bare put every target
+        // circuit in main's bucket even when the walk was on a sub-board.
+        applyReadingFlagAware(session.stateSnapshot, {
+          circuit: ref,
+          field,
+          value,
+          boardId: state?.effectiveBoardId ?? undefined,
+        });
       } finally {
         if (bulkObserver) bulkObserver.clearOriginFrame();
       }
@@ -4731,6 +5496,45 @@ function handleBulkApplyReply({
  * Emit the schema's completion TTS, log, and clear state. The schema
  * supplies its own `finishMessage(values)` for byte-identical output.
  */
+/**
+ * PLAN-A / Decision 17 — compose a schema's `finishSummarySegments` into the
+ * completion line, dropping the fields the bundler has ALREADY spoken.
+ *
+ * Exported so the byte-identity property can be asserted DIRECTLY against each
+ * schema's pre-change `finishMessage` template over a fixture of value
+ * combinations. There is exactly ONE composition and both `finishScript` and
+ * that test use it — a second copy in the test would assert nothing.
+ *
+ * @param {{prefix: string, joiner: string, terminator: string, segments: Array<{field: string, render: (values: object) => string|null}>}} spec
+ * @param {object} values — the script's accumulated slot values
+ * @param {Set<string>} omittedFields — fields already spoken by the bundler
+ * @returns {{text: string|null, fields: string[]}} `text` is null when NO
+ *   segment survives: every part was already spoken, so the line has nothing
+ *   left to say. `fields` are the fields whose segment actually rendered — the
+ *   audibility descriptor is built from these, never from the covered set.
+ */
+export function composeFinishSummary(spec, values, omittedFields = new Set()) {
+  const rendered = [];
+  const fields = [];
+  for (const seg of spec.segments) {
+    if (omittedFields.has(seg.field)) continue;
+    // A segment whose `render` returns null is dropped — which is how IR's
+    // conditional voltage clause already behaves, and reproducing that exactly
+    // is what keeps the byte-identity property true.
+    const text = seg.render(values ?? {});
+    if (text === null || text === undefined || text === '') continue;
+    rendered.push(text);
+    fields.push(seg.field);
+  }
+  return {
+    text:
+      rendered.length > 0
+        ? `${spec.prefix} ${rendered.join(spec.joiner)}${spec.terminator}`
+        : null,
+    fields,
+  };
+}
+
 function finishScript({
   ws,
   session,
@@ -4840,22 +5644,97 @@ function finishScript({
     finishCoveredFields.every(
       (f) => scriptOwnedDictatedFields.has(f) || mirrorCoveredFields.has(f)
     );
+  // PLAN-A / Decision 17 — per-field suppression of what the bundler already
+  // spoke. Computed BEFORE the marking loop, because the marking loop is what
+  // it changes.
+  //
+  // The omit predicate is `spoken_owner === 'bundler'` ALONE, and the reason is
+  // the failure direction. It is the exact predicate the engine already uses at
+  // the two sites that decide NOT to speak something (computeUncoveredReadback
+  // and transitionToConfirmation), so this rule adds no new trust assumption.
+  // `covered_by` was considered as an additional term and rejected: for the two
+  // schemas in scope it is always null at this point, so today the two
+  // predicates coincide — but if a confirmation stage is added later, the
+  // narrow predicate UNDER-suppresses (a repeat) while the wider one could
+  // OVER-suppress (a value never spoken at all). Audio-First #1 makes a dropped
+  // read-back the worse failure, so the rule fails toward saying it twice.
+  const summarySpec = schema.finishSummarySegments;
+  const omittedFields = new Set(
+    summarySpec
+      ? coveredOps.filter((op) => op.spoken_owner === 'bundler').map((op) => op.field)
+      : []
+  );
+  const { text: segmentText, fields: renderedSegmentFields } =
+    summarySpec && allCoveredScriptOwned
+      ? composeFinishSummary(summarySpec, values, omittedFields)
+      : { text: null, fields: [] };
   // Mark BEFORE computing the uncovered set below, so the device-summary
   // fields (when spoken) are excluded from it — else they'd double.
+  //
+  // PLAN-A / Decision 17, consequential edit (3 of 3 is the log row below):
+  // `covered_by` means "this site spoke it", and both PLAN-AD and the advisory
+  // rule read it, so an OMITTED operation must NOT be stamped. Observably this
+  // changes nothing today — every omitted operation is bundler-owned and
+  // `computeUncoveredReadback` already filters those out — but the field has to
+  // stay truthful.
   if (allCoveredScriptOwned) {
-    for (const op of coveredOps) op.covered_by = 'finish';
+    for (const op of coveredOps) {
+      if (summarySpec && omittedFields.has(op.field)) continue;
+      op.covered_by = 'finish';
+    }
   }
   // else: every finish-covered field is either bundler-owned or never
   // dictated this run — the legacy "Got it, …" line is suppressed entirely
   // (id 117's exact scenario). Any INDIVIDUALLY script-owned field among a
   // mixed set still surfaces below via the generic uncovered-operations text.
   const finishReadback = computeUncoveredReadback(state, schema, 'finish');
-  if (allCoveredScriptOwned || finishReadback) {
+  // PLAN-A / Decision 17, consequential edit (1 of 3): the emit guard was
+  // `allCoveredScriptOwned || finishReadback`, which was safe only because
+  // `baseText` was non-null WHENEVER `allCoveredScriptOwned` was true — making
+  // the `finishReadback.text` fallback below unreachable. Once every segment
+  // can be omitted, `baseText` can be null with `finishReadback` null too, and
+  // the fallback dereferences null. Guard on what is actually about to be
+  // rendered instead.
+  const summaryText = allCoveredScriptOwned
+    ? summarySpec
+      ? segmentText
+      : schema.finishMessage({ values })
+    : null;
+  // PLAN-A / Decision 9 — PRODUCER 3 of 3: the script's normal COMPLETION
+  // summary. v41 named the other two and missed this, the most ordinary one —
+  // with the breaking-capacity ladder gone, "sixty six" answering the last OCPD
+  // question is written, the turn reaches `finishScript`, and the value is
+  // marked `covered_by = 'finish'` BEFORE `computeUncoveredReadback` runs, so it
+  // is not in the uncovered set and the spoken text comes from the schema's
+  // finish summary. Without a hook here the inspector hears "66 kA" with no
+  // warning at all.
+  //
+  // THE FINISH SET IS NOT `coveredOps`. v43's exclusivity proof rested on
+  // `computeUncoveredReadback`'s `covered_by`/`spoken_owner` filter, which
+  // protects the (bundler, terminal) and (finish, terminal) pairs but never
+  // runs against `coveredOps`. Two source facts break it: `findCoveringOp`
+  // filters on field, disposition and circuit only — there is NO `spoken_owner`
+  // test — and the ownership check that does exist (`allCoveredScriptOwned`) is
+  // opt-in via `schema.finishCoveredFields`, which `ocpd.js` does not declare,
+  // so on OCPD it short-circuits to true and never runs. Both entry paths stamp
+  // `spoken_owner = 'bundler'`, so a compound utterance that STARTS the walk
+  // with an off-list value, and a `record_reading` that TRIGGERS it, would each
+  // have the advisory appended a second time here. And when
+  // `allCoveredScriptOwned` is false, `coveredOps` is still populated but
+  // nothing is marked and the legacy summary is suppressed entirely — those
+  // operations flow on into `finishReadback.uncovered`, where producer 2 advises
+  // them. Hence the filter, which is the same `spoken_owner` test
+  // `computeUncoveredReadback` already applies, applied at the site that lacked
+  // it. With it, the three sets ARE disjoint.
+  const finishAdvisoryOps = allCoveredScriptOwned
+    ? coveredOps.filter((op) => op.spoken_owner !== 'bundler')
+    : [];
+  const baseText = summaryText == null ? null : appendAdvisories(summaryText, finishAdvisoryOps);
+  if (baseText || finishReadback) {
     // PLAN A2 §A2.5 point 3 — ONE combined frame: the legacy verbatim text
     // (when spoken) with the uncovered read-back appended, or — when the
     // legacy text is suppressed entirely — the read-back text stands alone
     // (test (a): "exactly ONE value-scoped finish frame").
-    const baseText = allCoveredScriptOwned ? schema.finishMessage({ values }) : null;
     const text = baseText
       ? finishReadback
         ? `${baseText} ${finishReadback.text}`
@@ -4875,11 +5754,20 @@ function finishScript({
     // field, including snapshot-seeded ones nobody dictated) plus whatever
     // the uncovered-readback computation named.
     if (ws && ws[PLAN00_DELIVERY_EMIT_OBSERVER]) {
-      const audibilityOps = allCoveredScriptOwned
-        ? finishCoveredFields
-            .filter((f) => values?.[f] !== undefined)
-            .map((field) => ({ field, circuit: circuit_ref, value: values[field] }))
-        : [];
+      // PLAN-A / Decision 17, consequential edit (2 of 3): built from the
+      // fields whose segment actually RENDERED. The old derivation
+      // (`finishCoveredFields` filtered on a defined value) would claim the
+      // delivery observer made an OMITTED value audible — a descriptor that
+      // lies. Schemas without segments keep the previous derivation exactly.
+      const audibilityOps = !allCoveredScriptOwned
+        ? []
+        : summarySpec
+          ? renderedSegmentFields
+              .filter((f) => values?.[f] !== undefined)
+              .map((field) => ({ field, circuit: circuit_ref, value: values[field] }))
+          : finishCoveredFields
+              .filter((f) => values?.[f] !== undefined)
+              .map((field) => ({ field, circuit: circuit_ref, value: values[field] }));
       if (finishReadback) {
         for (const op of finishReadback.uncovered) {
           audibilityOps.push({
@@ -4897,7 +5785,15 @@ function finishScript({
     sessionId,
     circuit_ref,
     values: { ...values },
-    finish_summary_spoken: allCoveredScriptOwned,
+    // PLAN-A / Decision 17, consequential edit (3 of 3): `allCoveredScriptOwned`
+    // is no longer the whole truth, because every segment can now be omitted
+    // with the gate still open. This reports whether `baseText` was actually
+    // emitted.
+    finish_summary_spoken: baseText != null,
+    // The field-evidence side of the exactly-once claim: a session where the
+    // summary re-speaks a value shows an omission list that does not contain
+    // it. Empty on schemas that declare no segments.
+    finish_summary_omitted_fields: [...omittedFields],
   });
   // Post-completion correction breadcrumb (#1 belt-and-braces, field report
   // 2026-06-24). Leave a short-lived crumb naming the last reading leg written
@@ -5158,6 +6054,47 @@ export function enterScriptByName({
     resolvedCircuitRef = circuit_ref;
   }
 
+  // PLAN-A (feedback-2026-09-17) — the HANDOFF TOMBSTONE, on the SECOND
+  // re-entry path. `already_active` above cannot cover this one: after a
+  // handoff the script state is null, so that guard is inert and the model's
+  // `start_dialogue_script` would seed a fresh walk on a circuit it already
+  // owns. The tool result tells the model plainly that it owns the circuit,
+  // and carries `remaining` so it can carry on rather than guess.
+  //
+  // `ok: true` + a `status`, following the `already_active` convention — the
+  // dispatcher's `if (!result.ok)` branch rebuilds `{ok, error}` only, so a
+  // status has to travel the `ok: true` path to reach the model at all.
+  const entryEffectiveBoardId = resolveEffectiveBoardId(session, null);
+  if (isHandedOff(session, entryEffectiveBoardId, schema.name, resolvedCircuitRef)) {
+    logger?.info?.('stage6.script_reentered_after_handoff', {
+      sessionId,
+      schema: schema.name,
+      circuit_ref: resolvedCircuitRef,
+      board_id: entryEffectiveBoardId,
+      path: 'start_dialogue_script',
+    });
+    const existingValues =
+      resolvedCircuitRef === null
+        ? {}
+        : readExistingValues(
+            session,
+            resolvedCircuitRef,
+            schema.slots.map((sl) => sl.field)
+          );
+    return {
+      ok: true,
+      status: 'handed_off',
+      schema: schema.name,
+      circuit_ref: resolvedCircuitRef,
+      remaining: remainingSlotsForNote(
+        { values: existingValues, circuit_ref: resolvedCircuitRef },
+        schema,
+        session,
+        null
+      ),
+    };
+  }
+
   // Validate Sonnet-supplied volunteered values against the schema's
   // slot fields. Drop any entry with an unknown field — Sonnet should
   // not be hallucinating field names (the agentic prompt enumerates
@@ -5338,7 +6275,7 @@ export function enterScriptByName({
       // canonical-DIFFERENT → fall through and overwrite.
     }
     if (resolvedCircuitRef !== null) {
-      const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now);
+      const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now, op);
       // Plan D — PROPAGATE Seam A's provenance (applyWrite's own re-clamp of the
       // already-corrected value reports null and would retire it), and strip the
       // `correction` key from the outgoing entries so it can never appear on the
@@ -5569,6 +6506,23 @@ export function tryResumePausedScript({
     return { resumed: false, reason: 'paused_timeout' };
   }
 
+  // PLAN-A — the board moved while we were paused, so do NOT resume. The shared
+  // ender speaks the terminal read-back, abandons queued values and clears the
+  // state; see its comment for why ending beats resuming or re-adopting.
+  if (
+    endEpisodeOnBoardDrift({
+      session,
+      ws,
+      schemas,
+      logger,
+      sessionId: session.sessionId,
+      now,
+      responseEpoch,
+    })
+  ) {
+    return { resumed: false, reason: 'paused_board_changed' };
+  }
+
   const designationHint = state.paused_designation_hint;
   if (typeof designationHint !== 'string' || designationHint.length === 0) {
     return { resumed: false, reason: 'no_designation_hint' };
@@ -5605,7 +6559,7 @@ export function tryResumePausedScript({
   state.last_designation_attempt = null;
 
   const slotFields = schema.slots.map((s) => s.field);
-  const existing = readExistingValues(session, matchedRef, slotFields);
+  const existing = readExistingValues(session, matchedRef, slotFields, state.effectiveBoardId);
   for (const [f, v] of Object.entries(existing)) {
     if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
       state.values[f] = v;
@@ -5659,7 +6613,7 @@ export function tryResumePausedScript({
       // enterScriptByName was already clamped there, so only its own
       // `correction` still carries the 16 → 1.6 provenance.
       const drainCorrection = w.correction ?? norm.correction;
-      const r = applyWriteWithDerivations(session, schema, slot, matchedRef, drainValue, now);
+      const r = applyWriteWithDerivations(session, schema, slot, matchedRef, drainValue, now, op);
       markWritten(op, r.effectiveValue, matchedRef);
       if (drainCorrection) {
         recordValueCorrection(state, w.field, drainCorrection);
@@ -5869,8 +6823,23 @@ export function tryEnterScriptFromWrites({
   // Sonnet-write-triggered entry emits. Threaded from responseEpochRef.current
   // at the shadow-harness entry hook.
   responseEpoch = null,
+  // PLAN-A (feedback-2026-09-17) — the per-reading EFFECTIVE board, supplied by
+  // the harness call site from the matching per-turn write's
+  // `EFFECTIVE_CIRCUIT_SLOT` marker, which is stamped at DISPATCH time and
+  // BEFORE projection. Never taken from the projected reading's optional
+  // `board_id`: enrichment omits it on ordinary single-effective-board turns.
+  //
+  // `(field, circuit) => boardId | null`. When the marker is absent the
+  // fallback is `resolveEffectiveBoardId(session, null)` — NEVER a raw
+  // `currentBoardId` read, which can be null where the resolver cannot, and
+  // which would make this reader key the tombstone differently from the writer.
+  effectiveBoardIdForReading = null,
+  // A model write in a turn where the model ALSO asked or answered must never
+  // start a script on top of the model's own question (A3).
+  modelHoldsFloor = false,
 }) {
   if (!session) return { entered: false, reason: 'no_session' };
+  if (modelHoldsFloor === true) return { entered: false, reason: 'model_holds_floor' };
   if (!Array.isArray(schemas) || schemas.length === 0) {
     return { entered: false, reason: 'no_schemas' };
   }
@@ -6001,7 +6970,12 @@ export function tryEnterScriptFromWrites({
     .sort((a, b) => b.score - a.score || a.i - b.i)
     .map((entry) => entry.s);
 
-  for (const reading of readings) {
+  // PLAN-A — set when at least one (board, schema, circuit) in this turn's
+  // readings was fenced by a tombstone. Reported ONLY if no OTHER reading went
+  // on to enter a script, so a fenced write never masks an eligible one.
+  let sawHandedOff = false;
+
+  readingsLoop: for (const reading of readings) {
     const field = reading?.field;
     const circuitRef = Number(reading?.circuit);
     if (!field || !Number.isInteger(circuitRef) || circuitRef <= 0) continue;
@@ -6013,12 +6987,88 @@ export function tryEnterScriptFromWrites({
       const matchedField = candidates.find((c) => slotFields.includes(c));
       if (!matchedField) continue;
 
+      // PLAN-A — the HANDOFF TOMBSTONE, checked before anything else this
+      // schema would do. Clearing the script was never enough: this hook runs
+      // on EVERY turn carrying `extracted_readings`, and a write-only handoff
+      // outcome would otherwise call `initScriptState` and `askNextOrFinish` —
+      // a fresh script asking the next missing slot on the very circuit just
+      // handed off, which is the loop this plan exists to end. The write itself
+      // is untouched and stays an ordinary bundler read-back.
+      // The READING is passed too, not just its field and ref. On a turn that
+      // writes the same field and ref on TWO boards — the only turn where the
+      // board is ambiguous — the projected readings carry their own `board_id`,
+      // and a resolver matching on field+ref alone returns whichever marker it
+      // meets first for BOTH of them. That mis-attributes one of the two, and
+      // with the selected-board check below it would skip an eligible reading
+      // as though it belonged to another board.
+      const effectiveBoardId =
+        (typeof effectiveBoardIdForReading === 'function'
+          ? effectiveBoardIdForReading(field, circuitRef, reading)
+          : null) ?? resolveEffectiveBoardId(session, null);
+      if (isHandedOff(session, effectiveBoardId, schema.name, circuitRef)) {
+        logger?.info?.('stage6.script_reentered_after_handoff', {
+          sessionId: session.sessionId,
+          schema: schema.name,
+          circuit_ref: circuitRef,
+          board_id: effectiveBoardId,
+          path: 'entry_hook',
+        });
+        // Skip THIS READING entirely, and never `return`.
+        //
+        // Not `return`, because the tombstone fences one (board, schema,
+        // circuit) and nothing else: one model turn can write board A circuit 3
+        // AND board B circuit 3, and returning here would make entry depend on
+        // READING ORDER — the eligible board-B write would never be considered
+        // because the board-A write happened to be tombstoned first.
+        //
+        // Not a bare `continue` either, which would only skip this SCHEMA and
+        // let a sibling schema enter on the SAME handed-off circuit — an
+        // `rcd_type` write matches both RCBO and RCD, so RCBO's tombstone would
+        // be stepped over into an RCD walk on the circuit the model already
+        // owns. That is the loop this plan exists to close, reopened one schema
+        // to the left.
+        sawHandedOff = true;
+        continue readingsLoop;
+      }
+
+      // PLAN-A — never START a walk-through on a board that is not selected.
+      //
+      // `record_reading` has no `board_id` (Plan 08B deleted it from the circuit
+      // mutators), but `set_field_for_all_circuits` DOES take one and stamps the
+      // named board on its per-ref `EFFECTIVE_CIRCUIT_SLOT`. Without this, a
+      // tool-only bulk write at board B while main is selected would open a
+      // walk-through on B and start asking the inspector — who is standing at
+      // main — about B's circuits, with every answer emitted board-less and
+      // routed by the client to main.
+      //
+      // A cross-board bulk write is a legitimate write; it is just not a reason
+      // to start a CONVERSATION about another board. The write already happened
+      // upstream and is read back by the bundler either way.
+      if (effectiveBoardId !== resolveEffectiveBoardId(session, null)) {
+        logger?.info?.(`${schema.logEventPrefix}_entry_from_write_skipped_other_board`, {
+          sessionId: session.sessionId,
+          circuit_ref: circuitRef,
+          trigger_field: field,
+          write_board_id: effectiveBoardId,
+          current_board_id: resolveEffectiveBoardId(session, null),
+        });
+        continue readingsLoop;
+      }
+
       // Circuit must exist on the snapshot before we can read existing
       // slot values; the paused-script resume path covers the
       // value-before-circuit-create case (see tryResumePausedScript).
-      if (!circuitExistsInSnapshot(session.stateSnapshot, circuitRef)) continue;
+      // Boarded with the SAME effective id the tombstone lookup used, so the
+      // two can never disagree about which circuit this is.
+      if (!circuitExistsInSnapshot(session.stateSnapshot, circuitRef, effectiveBoardId)) continue;
 
-      const existing = readExistingValues(session, circuitRef, slotFields);
+      // PLAN-A — seed from the WRITE's effective board, the same one the
+      // tombstone lookup and the existence check above used. Reading the
+      // SELECTED board here would seed another board's pre-existing values into
+      // the episode, and they would then surface in the handoff note's
+      // `recorded` as though this walk had captured them — presenting
+      // pre-existing certificate data to the model as clearable.
+      const existing = readExistingValues(session, circuitRef, slotFields, effectiveBoardId);
       const next = nextMissingSlot(
         existing,
         schema.slots,
@@ -6035,7 +7085,14 @@ export function tryEnterScriptFromWrites({
         continue;
       }
 
-      initScriptState(session, schema, circuitRef, now);
+      // PLAN-A — the episode is stamped with the SAME board the tombstone lookup
+      // above used, not a fresh `currentBoardId` read. A `record_reading` can
+      // carry an explicit `board_id` that differs from the current board, and
+      // re-resolving here would write a later handoff's tombstone under one
+      // board while every subsequent write on that circuit looks it up under
+      // the other — the lookup MISSES and a fresh script asks the next missing
+      // slot on a circuit the model already owns, silently.
+      initScriptState(session, schema, circuitRef, now, effectiveBoardId);
       const state = session.dialogueScriptState;
       // PLAN A2 §A2.2 (feedback id 117) — Sonnet incoming readings: mark
       // ONLY the triggering field. No applyWriteWithDerivations call exists
@@ -6093,6 +7150,15 @@ export function tryEnterScriptFromWrites({
           const slot = schema.slots.find((s) => s.field === f);
           if (slot && Array.isArray(slot.derivations)) {
             const r = applyDerivations({ session, schema, slot, value: v });
+            // PLAN-A — annotate `triggerOp` ONLY for the matched trigger field.
+            // This loop runs for EVERY populated slot, and a derivation
+            // produced by any OTHER seeded field is not `recorded` provenance
+            // at all: it stays exclusively non-clearable `existing_values`.
+            // Without this guard a rating-triggered entry with a pre-existing
+            // `ocpd_bs_en = BS 3036` would credit the seeded value's
+            // `ocpd_type = 'Rew'` to the rating write, and a device-absence
+            // directive could then clear pre-existing certificate data.
+            if (f === matchedField) annotateDerivedTargets(triggerOp, r);
             mirroredKeys.push(f);
             for (const mw of r.mirrorWrites) {
               seedMirrorWrites.push({ field: mw.field, circuit: circuitRef, value: mw.value });
@@ -6178,6 +7244,9 @@ export function tryEnterScriptFromWrites({
   // (`entryResult?.mirrorWrites`) so undefined is safe, and keeping the
   // legacy `{entered:false, reason}` shape matches the existing test
   // expectations + the four sibling falsy-return shapes upstream.
+  // A fenced reading is reported only when nothing else entered — otherwise the
+  // eligible write that DID start a walk-through is the outcome.
+  if (sawHandedOff) return { entered: false, reason: 'handed_off' };
   return { entered: false, reason: 'no_matching_schema' };
 }
 
