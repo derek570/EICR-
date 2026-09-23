@@ -93,6 +93,23 @@ shared raw-final vectors, SHA-256-pinned in Vitest and XCTest) with the XCTest c
 under `Tests/CertMateUnifiedTests/Fixtures/`. A missing file on either side or a
 differing byte fails closed. `deploy-testflight.sh` runs this as a named preflight.
 
+PLAN-CC (2026-09-23) adds the OCPD BS(EN) manifest check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-ocpd-bs-fixture-sync.sh
+```
+
+It byte-compares `config/ocpd-bs-suggestions.json` — the normative alias table and
+picker tiers for the now free-text `ocpd_bs_en` field, SHA-256-pinned in Vitest and
+XCTest — with the XCTest copy under `Tests/CertMateUnifiedTests/Fixtures/`, and
+additionally regenerates `web/src/lib/recording/ocpd-bs-suggestions.generated.ts`
+to a temp path and byte-compares the committed module. That second check matters
+because the generated module, not the JSON, is what the production web bundle
+compiles against: `docker/nextjs.Dockerfile`'s builder never copies root `config/`.
+A missing file on either side, a differing byte, or a generator failure fails
+closed. `deploy-testflight.sh` runs this as a named preflight — the sixth.
+
 ## App Store Connect credentials
 
 | Field | Value |

@@ -69,6 +69,12 @@ export type { CircuitMatch, MatcherNewCircuit, MatcherExistingCircuit } from './
 export { maxZsLookup, maxZsString } from './max-zs-lookup';
 export type { MaxZsLookupArgs } from './max-zs-lookup';
 export {
+  canonicaliseOcpdStandard,
+  isCanonicalOcpdStandard,
+  OCPD_STANDARD_INPUT_CAP,
+  OCPD_STANDARD_MAX_GRAMMAR_OUTPUT,
+} from './ocpd-standard';
+export {
   recompute,
   recomputeAll,
   resolveZe,
