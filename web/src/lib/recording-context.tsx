@@ -1592,6 +1592,23 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const addressMirrorQueueReservationsRef = React.useRef(
     new Map<string, { token: string; confirmationKey: string | null }>()
   );
+  // D7 — web's post-TTS holding buffer (iOS parity; iOS is canon). From the
+  // lifecycle `'end'` (actual audio-end) until the existing post-playback
+  // timer releases the PCM gate, `onSamples` HOLDS each raw pre-resample
+  // block with its capture-ingress `capturedAt` instead of discarding it;
+  // the timer drains them synchronously, in capture order, through the SAME
+  // per-block ingest the live path runs. Null when no hold is armed. Not
+  // pause machinery: it behaves identically with or without a voice pause.
+  const postTtsHoldRef = React.useRef<{
+    blocks: Array<{ samples: Float32Array; capturedAt: number; sampleRate: number }>;
+  } | null>(null);
+  /** The live per-block ingest (resample → tag → ring → wall-clock observe →
+   *  send), published by `beginMicOnly` so the drain runs the identical
+   *  body. */
+  const ingestCapturedBlockRef = React.useRef<
+    ((samples: Float32Array, sampleRate: number, capturedAt: number) => void) | null
+  >(null);
+
   // ── PLAN-D — hands-free voice pause ("CertMate pause" / "CertMate carry
   // on"). THE CONTRACT: pausing stops INPUT and does nothing to the spoken
   // channel (WAVE-CONTEXT Decision 8). While `voicePausedRef` is set the mic,
@@ -1614,9 +1631,25 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     playing: false,
     untilMs: 0,
   });
+  /** PLAN-D D3 fix-cycle 1 (F1) — the voice-pause intervals, in the
+   *  emitting service's DISPATCHED-STREAM domain (A02D FinalWindowV1's
+   *  domain). `start` is the pause phrase final's `window_end`; `end` is
+   *  the resume cut (the resume phrase final's `window_end`, or the
+   *  service's `dispatchedStreamOffset` sampled on the Resume tap's tick —
+   *  A02D's manual-cutoff technique). After a resume, a final whose
+   *  confirmed onset lies in [start, end) was spoken while paused and is
+   *  dropped at the boundary: a delayed final must not be written or
+   *  forwarded once the flag has cleared. Offsets are per service instance,
+   *  so each interval is keyed by the service it was sampled from. Bounded;
+   *  cleared at every session boundary. */
+  const voicePauseWindowsRef = React.useRef<
+    Array<{ service: DeepgramServiceLike; start: number; end: number | null }>
+  >([]);
   /** The origin-aware exit is `resume()`; the phrase route reaches it from
    *  inside `openDeepgram`'s closures through this ref. */
-  const resumeWithOriginRef = React.useRef<(via: 'phrase' | 'tap') => void>(() => {});
+  const resumeWithOriginRef = React.useRef<
+    (via: 'phrase' | 'tap', resumeCut?: number | null) => void
+  >(() => {});
 
   const cancelVoicePauseReminder = React.useCallback(() => {
     if (voicePauseReminderTimerRef.current) {
@@ -1635,40 +1668,75 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     stillPausedCueThrottleRef.current.reset();
     voicePauseDropCountRef.current = 0;
     resumePhraseEchoRef.current = { playing: false, untilMs: 0 };
+    voicePauseWindowsRef.current = [];
     sessionUplinkContextRef.current?.lossLedger?.clearPauseCut();
   }, [cancelVoicePauseReminder]);
 
   /** D2 entry, steps 2–6 (step 1, the pre-pause buffer flush, runs inline
    *  in `onFinalTranscript` because it needs `dispatchFinal`). */
-  const enterVoicePause = React.useCallback(() => {
-    voicePausedRef.current = true;
-    setVoicePausedState(true);
-    stillPausedCueThrottleRef.current.reset();
-    // Protected mode-status cue route — never the pre-empting direct path,
-    // so an owed read-back queued or playing finishes first.
-    speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.pause_ack.text);
-    // Existing `session_pause` frame (bookkeeping only on the backend).
-    sonnetRef.current?.pause();
-    // D4 — the loss ledger's cut at the capture clock's current position.
-    // `advance(0)` reads the position without reserving any samples.
-    const ctx = sessionUplinkContextRef.current;
-    if (ctx?.lossLedger) ctx.lossLedger.setPauseCut(ctx.captureClock.advance(0).start);
-    setInterim('');
-    cancelVoicePauseReminder();
-    voicePauseReminderTimerRef.current = setInterval(() => {
-      if (!voicePausedRef.current) return;
-      speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.reminder.text);
-    }, VOICE_PAUSE_REMINDER_INTERVAL_MS);
-    clientDiagnostic('voice_pause_entered', {});
-  }, [cancelVoicePauseReminder]);
+  const enterVoicePause = React.useCallback(
+    (origin: { service: DeepgramServiceLike; start: number | null }) => {
+      voicePausedRef.current = true;
+      if (origin.start !== null) {
+        voicePauseWindowsRef.current.push({
+          service: origin.service,
+          start: origin.start,
+          end: null,
+        });
+        if (voicePauseWindowsRef.current.length > 8) voicePauseWindowsRef.current.shift();
+      }
+      setVoicePausedState(true);
+      stillPausedCueThrottleRef.current.reset();
+      // Protected mode-status cue route — never the pre-empting direct path,
+      // so an owed read-back queued or playing finishes first.
+      speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.pause_ack.text);
+      // Existing `session_pause` frame (bookkeeping only on the backend).
+      sonnetRef.current?.pause();
+      // D4 — the loss ledger's cut at the capture clock's current position.
+      // `advance(0)` reads the position without reserving any samples.
+      const ctx = sessionUplinkContextRef.current;
+      if (ctx?.lossLedger) ctx.lossLedger.setPauseCut(ctx.captureClock.advance(0).start);
+      setInterim('');
+      cancelVoicePauseReminder();
+      voicePauseReminderTimerRef.current = setInterval(() => {
+        if (!voicePausedRef.current) return;
+        speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.reminder.text);
+      }, VOICE_PAUSE_REMINDER_INTERVAL_MS);
+      clientDiagnostic('voice_pause_entered', {});
+    },
+    [cancelVoicePauseReminder]
+  );
 
   /** D3 — the voice-pause half of the ONE origin-aware exit. Returns false
    *  (and does nothing) when no voice pause holds, which is what makes a
    *  phrase and a tap landing in the same tick produce ONE tone and ONE
    *  line: the first caller clears the flag synchronously. */
   const exitVoicePause = React.useCallback(
-    (via: 'phrase' | 'tap'): boolean => {
+    (via: 'phrase' | 'tap', resumeCut: number | null): boolean => {
       if (!voicePausedRef.current) return false;
+      // F1 — close the open interval at the resume cut. Without a cut (a
+      // service with no dispatched-stream position) the interval cannot be
+      // bounded, so it is dropped rather than left open-ended.
+      const open = voicePauseWindowsRef.current.at(-1);
+      if (open && open.end === null) {
+        if (resumeCut === null) voicePauseWindowsRef.current.pop();
+        else open.end = resumeCut;
+      }
+      // F1 — on the TAP route, every block the D7 hold holds right now was
+      // captured before the tap, i.e. during the pause; replaying it after
+      // the resume would transcribe pause-era speech with a post-resume
+      // onset. Discard them (D3: audio captured during the pause is
+      // discarded, not replayed). The hold stays armed, so audio captured
+      // after the tap is held and replayed as normal. On the PHRASE route
+      // nothing is discarded: the phrase was dispatched live before its
+      // final, so anything held now was captured after it.
+      if (via === 'tap') {
+        const hold = postTtsHoldRef.current;
+        if (hold && hold.blocks.length > 0) {
+          clientDiagnostic('voice_pause_held_audio_discarded', { blocks: hold.blocks.length });
+          hold.blocks = [];
+        }
+      }
       // The tone FIRST: a local Web Audio call, not on the FIFO, so nothing
       // can pre-empt it. Call order is not an audible-order guarantee
       // (Decision 24(a)) — the tone and the line are both enqueued and
@@ -1710,29 +1778,31 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /** F1 — was this final spoken inside a CLOSED voice-pause interval of the
+   *  same service? By its confirmed onset (`speech_start`) when it has one;
+   *  otherwise by its `window_end` falling inside the interval. A final
+   *  with neither cannot be placed and is admitted. */
+  const isPauseEraFinal = React.useCallback(
+    (service: DeepgramServiceLike, fw: FinalWindowV1): boolean => {
+      for (const w of voicePauseWindowsRef.current) {
+        if (w.service !== service || w.end === null) continue;
+        if (fw.speechStart !== null) {
+          if (fw.speechStart >= w.start && fw.speechStart < w.end) return true;
+        } else if (fw.windowEnd !== null && fw.windowEnd > w.start && fw.windowEnd <= w.end) {
+          return true;
+        }
+      }
+      return false;
+    },
+    []
+  );
+
   /** D1 self-echo — the resume matcher is disarmed while a phrase-bearing
    *  cue plays and for the echo gate's cooldown after it ends. */
   const isResumeMatcherDisarmed = React.useCallback(
     () => resumePhraseEchoRef.current.playing || Date.now() < resumePhraseEchoRef.current.untilMs,
     []
   );
-
-  // D7 — web's post-TTS holding buffer (iOS parity; iOS is canon). From the
-  // lifecycle `'end'` (actual audio-end) until the existing post-playback
-  // timer releases the PCM gate, `onSamples` HOLDS each raw pre-resample
-  // block with its capture-ingress `capturedAt` instead of discarding it;
-  // the timer drains them synchronously, in capture order, through the SAME
-  // per-block ingest the live path runs. Null when no hold is armed. Not
-  // pause machinery: it behaves identically with or without a voice pause.
-  const postTtsHoldRef = React.useRef<{
-    blocks: Array<{ samples: Float32Array; capturedAt: number; sampleRate: number }>;
-  } | null>(null);
-  /** The live per-block ingest (resample → tag → ring → wall-clock observe →
-   *  send), published by `beginMicOnly` so the drain runs the identical
-   *  body. */
-  const ingestCapturedBlockRef = React.useRef<
-    ((samples: Float32Array, sampleRate: number, capturedAt: number) => void) | null
-  >(null);
 
   // Stamps the most-recent text passed to `speak()`. The TTS lifecycle
   // observer (event: 'start' | 'end') doesn't carry the spoken text,
@@ -3293,12 +3363,36 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // resumes or requests the still-paused cue — nothing else happens
           // below this line.
           const voicePauseCommand = matchVoicePauseCommand(text);
+          // F1 — this final's position in the dispatched stream: its window
+          // end, or (no window) the service's position now.
+          const finalStreamEnd =
+            finalWindow.windowEnd ?? emittingService.dispatchedStreamOffset ?? null;
           if (voicePausedRef.current) {
             if (voicePauseCommand === 'resume' && !isResumeMatcherDisarmed()) {
-              resumeWithOriginRef.current('phrase');
+              // The resume cut is the phrase's own window end, so a reading
+              // spoken right after the phrase starts after it.
+              resumeWithOriginRef.current('phrase', finalStreamEnd);
               return;
             }
             requestStillPausedCue(text);
+            return;
+          }
+          // F1 — no longer paused, but this final was SPOKEN while paused (a
+          // delayed final that arrived after a Resume tap): it is pause-era
+          // input and is dropped here, counted, with NO still-paused cue —
+          // the session is no longer paused. A resume phrase is exempt (not
+          // paused, it no-ops anyway).
+          if (voicePauseCommand !== 'resume' && isPauseEraFinal(emittingService, finalWindow)) {
+            voicePauseDropCountRef.current += 1;
+            clientDiagnostic('voice_pause_drop_count', {
+              count: voicePauseDropCountRef.current,
+              textPreview: text.slice(0, 60),
+            });
+            clientDiagnostic('voice_pause_late_final_dropped', {
+              textPreview: text.slice(0, 60),
+              speechStart: finalWindow.speechStart,
+              windowEnd: finalWindow.windowEnd,
+            });
             return;
           }
           if (voicePauseCommand === 'pause') {
@@ -3319,7 +3413,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             if (namingSlot) {
               dispatchFinal(namingSlot.text, namingSlot.confidence, namingSlot.finals);
             }
-            enterVoicePause();
+            enterVoicePause({ service: emittingService, start: finalStreamEnd });
             return;
           }
           if (voicePauseCommand === 'resume') {
@@ -3520,6 +3614,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       enterVoicePause,
       isResumeMatcherDisarmed,
       requestStillPausedCue,
+      isPauseEraFinal,
     ]
   );
 
@@ -6008,7 +6103,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // The tap is a user gesture: refresh the audio grant exactly as the
       // button-pause resume does, before anything else runs.
       primeTts();
-      exitVoicePause('tap');
+      // A02D's manual-cutoff technique: the dispatched-stream position
+      // sampled on the tap's own tick is the resume cut.
+      exitVoicePause('tap', deepgramRef.current?.dispatchedStreamOffset ?? null);
       return;
     }
     // PLAN-E-TERM — pause→resume is a declared capture discontinuity.
@@ -6136,9 +6233,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // the voice-pause branch with `via: 'phrase'`; otherwise it calls
   // `resume()`, whose not-set branch no-ops from 'active' (the phrase and a
   // tap landing in one tick give ONE tone and ONE line).
-  resumeWithOriginRef.current = (via) => {
+  resumeWithOriginRef.current = (via, resumeCut) => {
     if (via === 'phrase' && voicePausedRef.current) {
-      exitVoicePause('phrase');
+      exitVoicePause('phrase', resumeCut ?? null);
       return;
     }
     void resume();

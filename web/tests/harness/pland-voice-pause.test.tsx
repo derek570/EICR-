@@ -36,6 +36,7 @@ import {
   __resetUplinkLossDisclosureForTests,
   setConfirmationModeEnabled,
   speakPoorSignalAdvisory,
+  __ttsLifecycleObserverForTests,
 } from '@/lib/recording/tts';
 import { playVoiceResumeTone } from '@/lib/recording/tones';
 import type { MicCaptureOptions } from '@/lib/recording/mic-capture';
@@ -759,6 +760,109 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       expect(api().voicePaused).toBe(false);
       assertOneResume(harness, first);
       expect(harness.refs.sonnet!.sentTranscripts).toHaveLength(0);
+    });
+  });
+
+  // ── Fix-cycle 1, F1 — pause-era speech is never admitted after resume ──
+  describe('F1 — speech spoken while paused stays out after the resume', () => {
+    /** 80 ms Flux frames: 25 frames = 32000 samples = 2.0 s of stream. */
+    const FRAME = 1280;
+    const secondsAt = (frames: number) => (frames * FRAME) / 16000;
+
+    it('a Resume tap racing a DELAYED final: the pause-era reading is dropped, a new one is admitted', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await act(async () => {
+        dg.advanceDispatchedStream(25);
+        dg.emitEndOfTurn('CertMate, pause.', 0.9, secondsAt(25));
+      });
+      expect(api().voicePaused).toBe(true);
+      await advance(SETTLE_MS);
+      // The inspector dictates while paused: the onset is at frame 35; the
+      // final is still in flight when Resume is tapped at frame 40.
+      await act(async () => {
+        dg.advanceDispatchedStream(10);
+        dg.noteLocalSpeechOnset();
+        dg.emitSpeechStarted();
+        dg.advanceDispatchedStream(5);
+      });
+      const cues = count(played(harness), S('still_paused_cue'));
+      await act(async () => {
+        await api().resume();
+      });
+      expect(api().voicePaused).toBe(false);
+      const dispatchedBefore = dispatched(harness).length;
+      const dropsBefore = diags(harness, 'voice_pause_drop_count').length;
+      await act(async () => {
+        dg.emitEndOfTurn('Zs on circuit 1 is 0.44', 0.9, secondsAt(40));
+      });
+      await advance(600);
+      expect(dispatched(harness)).toHaveLength(dispatchedBefore);
+      expect(harness.refs.sonnet!.sentTranscripts).toHaveLength(0);
+      expect(diags(harness, 'voice_pause_drop_count').length - dropsBefore).toBe(1);
+      expect(
+        diags(harness, 'voice_pause_late_final_dropped').map((d) => d.payload.speechStart)
+      ).toEqual([35 * FRAME]);
+      // No longer paused: no still-paused cue for it.
+      expect(count(played(harness), S('still_paused_cue'))).toBe(cues);
+      // Speech that STARTS after the tap is admitted normally.
+      await act(async () => {
+        dg.advanceDispatchedStream(5);
+        dg.emitEndOfTurn('Zs on circuit 2 is 0.51', 0.9, secondsAt(45));
+      });
+      await advance(600);
+      expect(harness.refs.sonnet!.sentTranscripts.map((t) => t.text)).toEqual([
+        'Zs on circuit 2 is 0.51',
+      ]);
+    });
+
+    it('a reading spoken right after the resume PHRASE (onset exactly at its cut) is admitted', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await act(async () => {
+        dg.advanceDispatchedStream(25);
+        dg.emitEndOfTurn('CertMate, pause.', 0.9, secondsAt(25));
+      });
+      await advance(SETTLE_MS);
+      await act(async () => {
+        dg.advanceDispatchedStream(13);
+        dg.emitEndOfTurn('CertMate, carry on.', 0.9, secondsAt(38));
+      });
+      expect(api().voicePaused).toBe(false);
+      // Onset at frame 38 — the phrase's own window end, i.e. the cut.
+      await act(async () => {
+        dg.emitEndOfTurn('Zs on circuit 1 is 0.44', 0.9, secondsAt(38) + 0.8);
+      });
+      await advance(600);
+      expect(diags(harness, 'voice_pause_late_final_dropped')).toHaveLength(0);
+      expect(harness.refs.sonnet!.sentTranscripts.map((t) => t.text)).toEqual([
+        'Zs on circuit 1 is 0.44',
+      ]);
+    });
+
+    it('a Resume tap racing the D7 drain: blocks held while paused are discarded, later ones replay', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      const observer = __ttsLifecycleObserverForTests()!;
+      // A cue plays and ends: the post-TTS hold arms.
+      await act(async () => {
+        observer('start');
+        observer('end');
+      });
+      for (let i = 0; i < 3; i++) await feedVoice(); // captured while paused, held
+      const sentAtTap = dg.sentTaggedSegments.length;
+      await act(async () => {
+        await api().resume();
+      });
+      expect(api().voicePaused).toBe(false);
+      for (let i = 0; i < 2; i++) await feedVoice(); // captured after the tap, held
+      await advance(500); // the drain
+      // Only the two post-tap blocks reach Deepgram.
+      expect(dg.sentTaggedSegments.length - sentAtTap).toBe(2);
+      expect(diags(harness, 'voice_pause_held_audio_discarded').at(-1)?.payload).toEqual({
+        blocks: 3,
+      });
     });
   });
 
