@@ -73,6 +73,13 @@ import {
   resolveBoardAwareEarthing,
 } from '../impedance-clamp.js';
 import { canonicaliseNumericReadingField } from '../value-enum-validator.js';
+// PLAN-A (feedback-2026-09-17) — the dependency leaf that owns the per-slot
+// validation descriptor the handoff note carries and the advisory carrier's
+// per-field derivation. Imported from HERE and never from
+// `stage6-dispatch-validation.js`, which would evaluate `stage6-tool-schemas.js`
+// while `ALL_DIALOGUE_SCHEMA_NAMES` is still uninitialised — see the leaf's own
+// header, and the executable import-closure assertion that enforces it.
+import { advisoryForFieldValue } from '../circuit-value-descriptors.js';
 import { formatCorrectionClause } from '../confirmation-text.js';
 // NOTE: `clearValueCorrection` (lifecycle rule 2 — the slot itself was cleared)
 // is deliberately NOT imported here: the dialogue engine has no per-slot clear
@@ -1240,9 +1247,34 @@ function computeUncoveredReadback(state, schema, siteLabel) {
       opCircuit !== null && opCircuit !== currentCircuitRef ? `circuit ${opCircuit} ` : '';
     return `${circuitPrefix}${label} ${value}`;
   });
-  const text = parts.length === 1 ? `Also got ${parts[0]}.` : `Also got: ${parts.join(', ')}.`;
+  const base = parts.length === 1 ? `Also got ${parts[0]}.` : `Also got: ${parts.join(', ')}.`;
+  // PLAN-A / Decision 9 — PRODUCER 2 of 3 for the advisory carrier: the
+  // script's TERMINAL read-back (the handoff and cancel paths). Composed over
+  // exactly the operations THIS frame covers, so the three producers' sets are
+  // disjoint and no value is advised twice.
+  const text = appendAdvisories(base, uncovered);
   for (const op of uncovered) op.covered_by = siteLabel;
   return { text, uncovered };
+}
+
+/**
+ * PLAN-A / Decision 9 — the shared advisory renderer, applied to the
+ * operations a spoken frame actually covers.
+ *
+ * The per-field derivation is a pure function of an applied operation: compare
+ * `op.written_value` for `op.field` against that field's `suggestions`. `LIM`
+ * and any listed value yield null. Composition lives at the PRODUCER, never in
+ * a `schema.finishMessage` — which receives only `values` and would have to be
+ * edited per schema — so no schema file gains an advisory hook.
+ */
+function appendAdvisories(text, ops) {
+  const advisories = [];
+  for (const op of ops ?? []) {
+    const a = advisoryForFieldValue(op.field, op.written_value ?? op.dictated_value);
+    if (a) advisories.push(a);
+  }
+  if (advisories.length === 0) return text;
+  return `${text} ${advisories.join(' ')}`;
 }
 
 /**
@@ -4930,11 +4962,41 @@ function finishScript({
   // can be omitted, `baseText` can be null with `finishReadback` null too, and
   // the fallback dereferences null. Guard on what is actually about to be
   // rendered instead.
-  const baseText = allCoveredScriptOwned
+  const summaryText = allCoveredScriptOwned
     ? summarySpec
       ? segmentText
       : schema.finishMessage({ values })
     : null;
+  // PLAN-A / Decision 9 — PRODUCER 3 of 3: the script's normal COMPLETION
+  // summary. v41 named the other two and missed this, the most ordinary one —
+  // with the breaking-capacity ladder gone, "sixty six" answering the last OCPD
+  // question is written, the turn reaches `finishScript`, and the value is
+  // marked `covered_by = 'finish'` BEFORE `computeUncoveredReadback` runs, so it
+  // is not in the uncovered set and the spoken text comes from the schema's
+  // finish summary. Without a hook here the inspector hears "66 kA" with no
+  // warning at all.
+  //
+  // THE FINISH SET IS NOT `coveredOps`. v43's exclusivity proof rested on
+  // `computeUncoveredReadback`'s `covered_by`/`spoken_owner` filter, which
+  // protects the (bundler, terminal) and (finish, terminal) pairs but never
+  // runs against `coveredOps`. Two source facts break it: `findCoveringOp`
+  // filters on field, disposition and circuit only — there is NO `spoken_owner`
+  // test — and the ownership check that does exist (`allCoveredScriptOwned`) is
+  // opt-in via `schema.finishCoveredFields`, which `ocpd.js` does not declare,
+  // so on OCPD it short-circuits to true and never runs. Both entry paths stamp
+  // `spoken_owner = 'bundler'`, so a compound utterance that STARTS the walk
+  // with an off-list value, and a `record_reading` that TRIGGERS it, would each
+  // have the advisory appended a second time here. And when
+  // `allCoveredScriptOwned` is false, `coveredOps` is still populated but
+  // nothing is marked and the legacy summary is suppressed entirely — those
+  // operations flow on into `finishReadback.uncovered`, where producer 2 advises
+  // them. Hence the filter, which is the same `spoken_owner` test
+  // `computeUncoveredReadback` already applies, applied at the site that lacked
+  // it. With it, the three sets ARE disjoint.
+  const finishAdvisoryOps = allCoveredScriptOwned
+    ? coveredOps.filter((op) => op.spoken_owner !== 'bundler')
+    : [];
+  const baseText = summaryText == null ? null : appendAdvisories(summaryText, finishAdvisoryOps);
   if (baseText || finishReadback) {
     // PLAN A2 §A2.5 point 3 — ONE combined frame: the legacy verbatim text
     // (when spoken) with the uncovered read-back appended, or — when the

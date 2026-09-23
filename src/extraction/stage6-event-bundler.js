@@ -56,6 +56,11 @@ import { DEDUPE_TOKEN_FIELDS, WIRE_CLIENT_DEDUPE_TOKEN_FIELDS } from './ios-dedu
 // §A2 (field-feedback-2026-07-14) — outbound `field_corrected` wire
 // canonicalisation. field-name-corrections.js is a leaf module (no cycle).
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
+// PLAN-A / Decision 9 (feedback-2026-09-17) — the advisory carrier's per-field
+// derivation. `circuit-value-descriptors.js` is a dependency leaf whose only
+// static imports are node:module, value-enum-validator.js and
+// value-normalise.js, so this adds no cycle.
+import { advisoryForFieldValue } from './circuit-value-descriptors.js';
 // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
 // canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
 // ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
@@ -922,11 +927,24 @@ function synthesiseConfirmations(
     // A2-multiboard — pass the reading's board so a per-board designation wins
     // over the bare-ref fallback (two boards can both own a circuit 3).
     const designation = lookupDesignation(r.circuit, r.board_id ?? null);
-    const text = buildConfirmationText(r.field, r.value, r.circuit, designation, {
+    const baseText = buildConfirmationText(r.field, r.value, r.circuit, designation, {
       calculated: isCalc(r),
       correction: correctionOf(r),
     });
-    if (!text) continue;
+    if (!baseText) continue;
+    // PLAN-A / Decision 9 — PRODUCER 1 of 3 for the advisory carrier (the
+    // other two are the script's terminal read-back and its completion
+    // summary, both in the dialogue engine). Appended AFTER the base text is
+    // built, exactly as the Plan E locality tail below is: ONE utterance,
+    // exactly-once, riding the read-back's own confirmation identity.
+    // `dedupe_token` is computed from field/scope/turnId/ordinal rather than
+    // from text, so the longer string does not disturb the client dedupe key.
+    //
+    // Deliberately NOT stamped onto the two designation-free transients below:
+    // those are VALUE-matching shapes for the triple-shape merge, not spoken
+    // lines, and an advisory on them would change what they match.
+    const advisory = advisoryForFieldValue(r.field, r.value);
+    const text = advisory ? `${baseText}, ${advisory}` : baseText;
     const entry = {
       text,
       // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3). Pre-

@@ -293,6 +293,61 @@ export function describeSlotValidation(field) {
   });
 }
 
+// ── The advisory carrier (Decision 9) ───────────────────────────────────────
+//
+// PLAN-A INTRODUCES this seam; PLAN-C2 reuses it. Checked on `main` before
+// writing it: `stage6-event-bundler.js` contains zero occurrences of
+// `advisory`, so the carrier did not exist, and PLAN-A ships first.
+//
+// THE SEAM, minimal and field-agnostic so C2's reuse is a drop-in: a write may
+// carry an OPTIONAL advisory sentence, composed at the read-back producer from
+// POST-DISPATCH state and appended to that write's own read-back text. It is
+// part of the read-back TEXT, so it shares that read-back's existing
+// confirmation identity — no new dedupe token, no allowlist entry, no stored
+// field and no second spoken line. This is the same shape the Plan E locality
+// tail already uses in the bundler.
+//
+// DO NOT "helpfully" add a suggestion-bearing field to the wire/client
+// dedupe-token allowlist (`WIRE_CLIENT_DEDUPE_TOKEN_FIELDS`, in
+// `ios-dedupe-key.js` and mirrored on both clients). Measured-value fields
+// deliberately IGNORE `dedupe_token`; adding one per field would reopen the
+// id-84 correction-swallow bug fixed on 2026-07-24. The advisory needs no entry
+// there because it rides the read-back text and the key is already value-aware.
+//
+// The DERIVATION is per field and lives with the field. This plan supplies
+// breaking capacity's only.
+const ADVISORY_RENDERERS = new Map([
+  [
+    'ocpd_breaking_capacity_ka',
+    (value) => `recorded — ${value} kA isn't a standard breaking capacity`,
+  ],
+]);
+
+/**
+ * The advisory for one written value, or null.
+ *
+ * Null whenever: the field has no renderer, the field carries no `suggestions`,
+ * the value IS on the list, or the value is a recorded non-value. `LIM` never
+ * earns the advisory — it is a recorded limitation that the ranged validator
+ * already accepts, not an off-list measurement.
+ *
+ * @param {string} field
+ * @param {string|number|null|undefined} value — the WRITTEN value, post-coercion
+ * @returns {string|null}
+ */
+export function advisoryForFieldValue(field, value) {
+  const render = ADVISORY_RENDERERS.get(field);
+  if (!render) return null;
+  const spec = circuitFieldSpec(field);
+  const suggestions = Array.isArray(spec?.suggestions) ? spec.suggestions : null;
+  if (!suggestions || suggestions.length === 0) return null;
+  const v = String(value ?? '').trim();
+  if (v === '') return null;
+  if (v.toLowerCase() === 'lim') return null;
+  if (suggestions.includes(v)) return null;
+  return render(v);
+}
+
 function isFiniteNumericString(v) {
   if (typeof v === 'number') return Number.isFinite(v);
   if (typeof v !== 'string') return false;
