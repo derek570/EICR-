@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "2a3fb203158ddc3942dead5d71e37da0918bf65dca1f61cddd10d575339bc3d8",
+  "semantic_oracle_digest": "61c3530c5010faf696c0b77e78eceb6f683e13fbfbc10060ab686b54c43203c0",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "e220deed74c6bb12072db0c3e630178500c75eea7b6f5d608ecf19af9facddab"
+      "sha256": "ae37b9df5379e98d273b145a419af219f56efa9018dede9ab2bf93a05d16179d"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -581,7 +581,7 @@
     },
     {
       "path": "scripts/field-replay/lib/replay-runner-core.mjs",
-      "sha256": "e8b94c21be68f5532de29bb8fe35411ebef0f968f27e28bdf1d067cf0dab3fb6"
+      "sha256": "bd883a1ab9637fed1c9bb97f3f971c537a267e9b851b05035250b6c2335bbe34"
     },
     {
       "path": "scripts/field-replay/lib/replay-clock.mjs",
