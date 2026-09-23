@@ -848,11 +848,14 @@ speech (WAVE-CONTEXT Decision 8). Both clients implement one contract, pinned by
   `voicePaused` synchronously (so a same-tick phrase and tap produce one tone and one line), send
   `session_resume`, clear the ledger cut, cancel the 15-minute reminder, then enqueue the resume line
   "Carrying on — anything said while paused wasn't recorded." There is no reconnect and no mic reacquire.
-- **Decision 34 (tap only).** The Deepgram turn open at the tap (Flux StartOfTurn or a non-empty interim;
-  on nova-3, a non-empty interim) is marked. The next final consumes the mark and is dropped if it comes
-  from the marked socket epoch. Turn signals from a superseded socket are ignored. The M6 post-TTS holding
-  buffer's contents at the tap are discarded (`voice_pause_held_audio_discarded`). The phrase route needs
-  nothing, because finals on one socket arrive in order.
+- **Decisions 34 and 34a (tap only).** On Flux, each client tracks the highest `turn_index` that has started on
+  the current socket epoch (StartOfTurn or a non-empty Update, from the current socket only). A Resume tap records
+  that watermark, and any later final on the same epoch whose own `turn_index` is at or below it is dropped
+  (`voice_pause_late_final_dropped`, no cue). Delivery order does not matter, so a final held by iOS's 700 ms grace
+  buffer is still caught. The record clears on a new epoch and at session stop and start. On the nova-3 fallback,
+  only a turn already showing interim text at the tap is dropped; a final-only nova-3 turn is admitted (Decision
+  34a). The post-TTS hold's contents at the tap are discarded (`voice_pause_held_audio_discarded`). The phrase route
+  needs nothing, because finals on one socket arrive in order.
 - **The one speech-rule change.** While paused, `resumeDeferredTTSIfNeeded()` skips its 6-second staleness
   drop, so a direct clip deferred behind local speech is played rather than discarded.
 - **Resume tone.** A second lazily built `AVAudioPlayer` over an in-code 22.05 kHz WAV (440 Hz for 60 ms, then
