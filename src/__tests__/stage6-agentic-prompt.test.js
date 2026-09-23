@@ -505,6 +505,11 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // `address_mirror:"unclear"` tool result means the server copied nothing;
       // re-ask once with strict yes/no wording. Shared region; measured 25206
       // and cap retains ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-17 (PLAN-C3, Decision 5): the enum-rejection flow is rewritten
+      // to end at ONE ask (the `""` fallback it used to prescribe is what
+      // emptied a certificate value in silence), plus a bulk-clear edge case
+      // and the `rejection_ref` rule. Shared region; measured 25475 and cap
+      // retains ~100-token headroom (measured + ~100, P8 precedent).
       // 2026-09-23 (PLAN-A2, feedback ids 141/142): the discontinuous-continuity
       // rule moves out of VALUE NORMALISATION into the RING CONTINUITY CARRYOVER
       // block and gains the ring-vs-radial field routing plus the ask-ONCE
@@ -513,8 +518,10 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // corrected against the measurement — Codex EP review, NIT 11).
       // Shared region; measured 25351 and cap retains ~100-token headroom
       // (measured + ~100, P8 precedent).
+      // 2026-09-23 (PLAN-A2 merged with PLAN-C3): both edits together measure
+      // 25620 (25475 + A2's +145); cap retains ~100-token headroom.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(25451);
+      expect(estimate).toBeLessThanOrEqual(25720);
     });
   });
 
@@ -1407,12 +1414,18 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 2026-09-14 (feedback id 138): `address_mirror:"unclear"` re-ask bullet
       // (see the Group 1 combined-cap comment). Measured 19957; cap 20057
       // leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-17 (PLAN-C3, Decision 5): the rewritten enum-rejection flow,
+      // the bulk-clear edge case and the `rejection_ref` rule (see the Group 1
+      // combined-cap comment). Measured 20226; cap 20326 leaves ~100-token
+      // headroom (measured + ~100, P8 precedent).
       // 2026-09-23 (PLAN-A2, feedback ids 141/142): the re-authored
       // discontinuous-continuity rule (see the Group 1 combined-cap comment).
       // Measured 20102; cap 20202 leaves ~100-token headroom (measured + ~100,
       // P8 precedent).
+      // 2026-09-23 (PLAN-A2 merged with PLAN-C3): both edits together measure
+      // 20371 (20226 + A2's +145); cap 20471.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20202);
+      expect(estimate).toBeLessThanOrEqual(20471);
     });
   });
 
@@ -2511,6 +2524,78 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
         expect(rendered).toContain('Split them into separate `record_observation` calls');
         expect(rendered).toContain('Never cite SPD material (`443.x` or `534.x`)');
       }
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // Group 23 — PLAN-C3 (feedback-2026-09-17, Decision 5): no silent clear.
+  //
+  // The deleted sentence is the point. `:419` told the model, in as many
+  // words, to write `""` on a second rejection — and on 17 September it did,
+  // emptying `ocpd_bs_en` on a certificate with nothing read back. The
+  // replacement ends the exchange at ONE ask, and it is only safe because the
+  // server now speaks the outcome itself.
+  // ------------------------------------------------------------------
+  describe('Group 23 — PLAN-C3 enum-rejection flow and the blank-write rules', () => {
+    test('the `""` fallback instruction is GONE from both renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).not.toContain('write `""` and move on');
+        expect(rendered).not.toContain('On a second rejection for the same field+circuit');
+      }
+    });
+
+    test('the one-ask flow is present in BOTH renders and names every governed code', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('ask ONCE with the tool-returned options spoken');
+        expect(rendered).toContain('emit NOTHING FURTHER for that slot');
+        expect(rendered).toContain('that bulk scope');
+        expect(rendered).toContain('no guessed option, no sentinel, no second ask');
+        for (const code of [
+          '`did_you_mean`',
+          '`invalid_value`',
+          '`value_not_in_options`',
+          '`ocpd_standard_shape`',
+        ]) {
+          expect(rendered).toContain(code);
+        }
+      }
+    });
+
+    test('RESTRAINT gains the enum-rejection clause in BOTH renders', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('Never for an enum rejection');
+      }
+    });
+
+    test('the bulk-clear route is taught in BOTH renders, and the empty bulk write is forbidden', () => {
+      for (const rendered of [renderedOn, renderedOff]) {
+        expect(rendered).toContain('`clear_field_for_all_circuits`');
+        expect(rendered).toContain('NEVER `set_field_for_all_circuits` with an empty `value`');
+      }
+    });
+
+    test('the `rejection_ref` rule is taught PROACTIVELY, not only via a retry result', () => {
+      // Without the proactive bullet every ordinary unrelated answer on a turn
+      // carrying a rejection would be dropped on its first attempt and cost a
+      // retry round — a latency regression, and an unanswered inspector
+      // question if the model does not retry.
+      expect(renderedOn).toContain('rejection_ref');
+      expect(renderedOn).toContain('`rejection_ref: "unrelated"`');
+      expect(renderedOn).toContain('Never omit it');
+    });
+
+    test('the answer_user half stays inside the A1:ON block — flag-off never names the tool', () => {
+      // The flag-off render has no `answer_user` at all, and this rule must
+      // not be the thing that reintroduces it.
+      expect(renderedOff).not.toContain('answer_user');
+      expect(renderedOff).toContain('emit NOTHING FURTHER for that slot');
+    });
+
+    test('each new bullet appears exactly ONCE in the flag-on render', () => {
+      const once = (needle) => renderedOn.split(needle).length - 1;
+      expect(once('ask ONCE with the tool-returned options spoken')).toBe(1);
+      expect(once('NEVER `set_field_for_all_circuits` with an empty `value`')).toBe(1);
+      expect(once('`rejection_ref: "unrelated"`')).toBe(1);
     });
   });
 });

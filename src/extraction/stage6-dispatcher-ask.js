@@ -352,6 +352,27 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
   // staging silently no-ops, which is the pre-plan-2A behaviour exactly.
   const stagePartialFailureNotice =
     typeof opts?.stagePartialFailureNotice === 'function' ? opts.stagePartialFailureNotice : null;
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — two hooks, in the same shape
+  // and for the same reason as `stagePartialFailureNotice` above: this module
+  // has never held `perTurnWrites`, and handing it the accumulator to reach
+  // two arrays would hand it every other per-turn channel. The harness closes
+  // both over the accumulator.
+  //
+  //   recordAskRegistration — called ONCE per ask, before the blocking await.
+  //     Journals the ask for the drain's covering-ask reconciliation AND
+  //     returns the resolved rejection LINEAGE (which rejection this ask is
+  //     about, and whether that rejection was a BULK one). Lineage is
+  //     resolved at REGISTRATION, not at answer time: the ref echo and the
+  //     exact-scope match are both facts about the QUESTION, and deciding
+  //     them later means deciding them from the answer, which is untrusted.
+  //   stageEnumRejectionAfterAsk — the POST-ASK refusal. This is the
+  //     rejection Decision 5 is actually about: the inspector answered, and
+  //     the answer was rejected too. It can only happen here, which is why
+  //     "post-ask" is a property of the call site rather than a counter.
+  const recordAskRegistration =
+    typeof opts?.recordAskRegistration === 'function' ? opts.recordAskRegistration : null;
+  const stageEnumRejectionAfterAsk =
+    typeof opts?.stageEnumRejectionAfterAsk === 'function' ? opts.stageEnumRejectionAfterAsk : null;
   const addressMirrorController = opts?.addressMirrorController ?? null;
   // PLAN-2B lifecycle fence — one dispatcher instance belongs to one live
   // model generation. When the inspector abandons the server-brokered mdr-*
@@ -394,6 +415,11 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     // envelope; extending the same union to this dispatcher closes the
     // composer→ask id-threading gap that STT-05/06/07 surfaced.
     const toolCallId = call.tool_call_id ?? call.id;
+    // PLAN-C3 — the resolved rejection lineage for THIS ask, or null. Set at
+    // registration (below) and read by the post-ask rejection branch inside
+    // `buildResolvedBody`, which is how a rejected bulk ANSWER produces one
+    // scope-keyed notice instead of a per-circuit burst.
+    let askRejectionStamp = null;
 
     // Step 1: validation (STS-07). Runs in BOTH live and shadow — an invalid
     // payload is a bug regardless of whether we would block on it.
@@ -697,6 +723,24 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         // Group 3 (id 114): `pendingValueEligible` / `capturedPendingValue`
         // are hoisted above the Promise (declined-pending fingerprinting
         // needs the identity pre-registration); consumed verbatim here.
+        // PLAN-C3 — journal the ask and resolve its rejection lineage BEFORE
+        // the blocking await, so the stamp travels with the registered
+        // question into its own resolution. Best-effort: a staging failure
+        // must never break the ask.
+        try {
+          askRejectionStamp =
+            recordAskRegistration?.({
+              toolCallId,
+              rejectionRef: typeof input.rejection_ref === 'string' ? input.rejection_ref : null,
+              field: input.context_field ?? null,
+              circuit: input.context_circuit ?? null,
+              circuits: Array.isArray(input.context_circuits) ? input.context_circuits : null,
+              boardId: input.context_board_id ?? null,
+            }) ?? null;
+        } catch {
+          // swallowed — the question is the contract; the drain keeps the
+          // turn audible without the lineage.
+        }
         try {
           pendingAsks.register(toolCallId, {
             contextField: input.context_field,
@@ -1180,6 +1224,10 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       // Plan 2A channel 3 — staging callback for auto-resolved writes that
       // don't land (closed over perTurnWrites by the harness).
       stagePartialFailureNotice,
+      // PLAN-C3 — the post-ask refusal producer, and this ask's resolved
+      // rejection lineage.
+      stageEnumRejectionAfterAsk,
+      askRejectionStamp,
       // F7 Item 2 — the broker fires this on a SUCCESSFUL pvr-* send
       // (source:'pvr') so the post-loop audibility net counts brokered asks.
       onAskUserStarted,
@@ -1335,6 +1383,9 @@ async function buildResolvedBody({
   // resolves the effective board id there. Null in shadow mode / any caller
   // that doesn't supply it — staging then no-ops.
   stagePartialFailureNotice = null,
+  // PLAN-C3 (Decision 5) — see createAskDispatcher's opts block.
+  stageEnumRejectionAfterAsk = null,
+  askRejectionStamp = null,
   markMultiDescriptionMovedOn = null,
   // Group 3 (id 114) — declined-pending fingerprint recorder; threaded to
   // resolvePendingValueFlow / runPendingValueChain via the args spread.
@@ -1605,6 +1656,30 @@ async function buildResolvedBody({
       };
     }
     if (enumVerdict.kind === 'did_you_mean' || enumVerdict.kind === 'invalid_value') {
+      // PLAN-C3 (feedback-2026-09-17, Decision 5) — THE rejection this plan
+      // exists for. The model asked once, the inspector answered, and the
+      // answer is off-enum too. On September 17 what happened next was a
+      // second rejection and then `""` — the certificate value wiped, in
+      // silence. The prompt's new rule is "emit nothing further for that
+      // slot"; this notice is what makes that rule safe, because the SERVER
+      // now owns the audible outcome.
+      //
+      // A BULK stamp turns this into ONE scope-keyed line instead of a
+      // per-circuit burst, and carries the two escapes that only make sense
+      // in bulk: say them one at a time, or clear them all.
+      try {
+        stageEnumRejectionAfterAsk?.({
+          toolCallId,
+          field: contextField,
+          circuit: contextCircuit,
+          circuits: contextCircuits,
+          boardId: contextBoardId,
+          stamp: askRejectionStamp,
+        });
+      } catch {
+        // swallowed — the tool_result below is the model's contract; the A3
+        // and marker-2 nets keep the turn audible without the notice.
+      }
       if (logger?.info) {
         logger.info('stage6.ask_user_enum_rejected', {
           sessionId,
@@ -1626,6 +1701,13 @@ async function buildResolvedBody({
         circuit: contextCircuit,
         received: enumVerdict.received,
         valid_options: enumVerdict.valid_options,
+        // PLAN-C3 (Decision 5) — the model's instruction for what happens
+        // next, returned with the rejection rather than left to the prompt
+        // alone. The server has already told the inspector; a second ask or
+        // an `answer_user` here would either double-confirm or, historically,
+        // end in a blank write.
+        post_ask_rejection_policy:
+          'Do not ask again and do not narrate this slot — the server has told the inspector. Never write an empty string; use a clear tool if the value should be removed.',
         ...(enumVerdict.suggestions ? { suggestions: enumVerdict.suggestions } : {}),
       };
     }

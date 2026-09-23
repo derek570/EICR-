@@ -39,7 +39,7 @@ function mockLogger() {
 }
 
 describe('WRITE_DISPATCHERS dispatch table', () => {
-  test('has exactly sixteen keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2 + set_field_for_all_circuits + add_board + select_board + mark_distribution_circuit + clear_board_reading', () => {
+  test('has exactly seventeen keys matching REQUIREMENTS STS-01..06 + record_board_reading + start_dialogue_script + delete_circuit + calculate_zs + calculate_r1_plus_r2 + set_field_for_all_circuits + add_board + select_board + mark_distribution_circuit + clear_board_reading + clear_field_for_all_circuits', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         // Plan A1a (2026-07-27, feedback id 101) — board/supply-scope clear.
@@ -76,6 +76,10 @@ describe('WRITE_DISPATCHERS dispatch table', () => {
         // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit
         // (no forward-ref ask_user — STOP-SLICE).
         'mark_distribution_circuit',
+        // PLAN-C3 (2026-09-17, Decision 5) — the explicit bulk clear, the
+        // only supported way to empty a field across a scope now that the
+        // empty bulk write is rejected.
+        'clear_field_for_all_circuits',
       ].sort()
     );
   });

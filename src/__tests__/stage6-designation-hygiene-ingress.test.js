@@ -89,7 +89,13 @@ describe('create_circuit designation hygiene (ingress 1)', () => {
     expect(writes.partialFailureNotices[0].reason).toBe(INVALID_DESIGNATION);
   });
 
-  test("null / empty / whitespace designation keeps today's semantics (no reject)", async () => {
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — SPLIT. An OMITTED designation
+  // still keeps today's semantics exactly; an EXPLICIT blank one no longer
+  // does. The distinction is the whole rule: omitting the argument means
+  // "leave it alone", while sending `""` is the model discarding a name the
+  // inspector dictated — the same class of silent loss as writing `""` over a
+  // recorded value.
+  test("omitted designation keeps today's semantics (no reject)", async () => {
     const session = makeSession({ circuits: {} });
     const logger = mockLogger();
     const writes = createPerTurnWrites();
@@ -100,12 +106,32 @@ describe('create_circuit designation hygiene (ingress 1)', () => {
       {}
     );
     expect(r1.is_error).toBe(false);
+  });
 
-    const r2 = await d(
-      { tool_call_id: 'tu_c4', name: 'create_circuit', input: { circuit_ref: 5, designation: '' } },
-      {}
-    );
-    expect(r2.is_error).toBe(false);
+  test('EXPLICIT empty / whitespace designation is a blank write and is rejected audibly', async () => {
+    const session = makeSession({ circuits: {} });
+    const logger = mockLogger();
+    const writes = createPerTurnWrites();
+    const d = createWriteDispatcher(session, logger, 'turn-1', writes);
+
+    for (const [i, value] of ['', '   '].entries()) {
+      const res = await d(
+        {
+          tool_call_id: `tu_blank_${i}`,
+          name: 'create_circuit',
+          input: { circuit_ref: 5 + i, designation: value },
+        },
+        {}
+      );
+      expect(res.is_error).toBe(true);
+      const body = JSON.parse(res.content);
+      expect(body.error.code).toBe('empty_write_not_allowed');
+      expect(body.error.field).toBe('designation');
+      // The refusal is audible and carries a ref the model can echo.
+      expect(typeof body.rejection_ref).toBe('string');
+      expect(session.stateSnapshot.circuits[5 + i]).toBeUndefined();
+    }
+    expect(writes.mandatoryNotices.filter((n) => n.family === 'create_blocked')).toHaveLength(2);
   });
 
   describe('duplicate guard compares canonical forms — both orientations', () => {
