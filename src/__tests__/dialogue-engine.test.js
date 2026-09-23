@@ -947,11 +947,20 @@ describe('engine — insulation resistance', () => {
     });
   });
 
-  // Per-slot no-progress cap (F1AC26FB #4.3). Three consecutive
-  // unparseable answers to the same slot: hint on the 2nd, skip + Sonnet
-  // fall-through on the 3rd. Closes the IR-LIM-style infinite re-ask loop
-  // for ANY garble.
-  describe('no-progress cap', () => {
+  // PLAN-A (feedback-2026-09-17, ids 140/141) — THE FIRST MISS IS A HANDOFF.
+  //
+  // WHAT WAS HERE: a per-slot no-progress CAP (F1AC26FB #4.3). Three
+  // consecutive unparseable answers to the same slot — a canned format hint on
+  // the 2nd, skip + Sonnet fall-through on the 3rd. It bounded the IR-LIM
+  // infinite re-ask loop, but the inspector still had to miss three times,
+  // heard a canned hint in between, and the model finally received the bare
+  // utterance with NO note of the question it was answering. Ids 140 and 141
+  // are that experience.
+  //
+  // Decision 1, as amended 2026-09-19: hand off on the FIRST miss, and the
+  // handoff ENDS the script for that circuit. The counter, the hint and the
+  // miss-driven `skipped_slots` bookkeeping are gone.
+  describe('first miss hands off (replaces the no-progress cap)', () => {
     const enter = (ws, session, now) =>
       processInsulationResistanceTurn({
         ws,
@@ -969,45 +978,69 @@ describe('engine — insulation resistance', () => {
         now,
       });
 
-    test('2nd consecutive miss emits a format hint; 3rd skips + falls through', () => {
+    test('ONE unparseable answer ends the walk-through and hands the model a note', () => {
       const ws = new FakeWS();
       const session = buildSession({ 13: { circuit_designation: 'Cooker' } });
       enter(ws, session, 1000);
       expect(ws.sent.at(-1).context_field).toBe('ir_live_live_mohm');
 
-      // Miss 1 — re-ask, no hint.
-      const o1 = answer(ws, session, 'the weather is nice', 2000);
-      expect(o1).toEqual({ handled: true, fallthrough: false });
+      const out = answer(ws, session, 'the weather is nice', 2000);
+
+      // Falls through to the model, carrying the context the script had.
+      expect(out).toMatchObject({ handled: true, fallthrough: true });
+      expect(out.serverNote.kind).toBe('slot_miss');
+      expect(out.serverNote.asked_field).toBe('ir_live_live_mohm');
+      expect(out.serverNote.asked_question).toBe("What's the live-to-live?");
+      // The failed utterance travels in the SIBLING transcriptText, never in
+      // the note.
+      expect(out.transcriptText).toContain('the weather is nice');
+      expect(JSON.stringify(out.serverNote)).not.toContain('the weather is nice');
+
+      // The script is ENDED — no paused, no active.
+      expect(session.dialogueScriptState).toBeNull();
+
+      // No canned hint, and NO second ask for the same slot: that re-ask into
+      // silence is the whole defect.
       expect(ws.sent.some((m) => /no_progress_hint/.test(m.tool_call_id ?? ''))).toBe(false);
-
-      // Miss 2 — format hint emitted (then the slot is re-asked).
-      const o2 = answer(ws, session, 'the weather is nice', 3000);
-      expect(o2).toEqual({ handled: true, fallthrough: false });
-      const hint = ws.sent.find((m) => /no_progress_hint/.test(m.tool_call_id ?? ''));
-      expect(hint).toBeDefined();
-      expect(hint.question).toMatch(/LIM/);
-
-      // Miss 3 — skip the slot + fall through to Sonnet.
-      const o3 = answer(ws, session, 'the weather is nice', 4000);
-      expect(o3).toMatchObject({ handled: true, fallthrough: true });
-      expect(session.dialogueScriptState.skipped_slots.has('ir_live_live_mohm')).toBe(true);
+      const llAsks = ws.sent.filter((m) => m.context_field === 'ir_live_live_mohm');
+      expect(llAsks).toHaveLength(1);
     });
 
-    test('a successful answer resets the miss counter', () => {
+    test('an ordinary successful answer does NOT hand off — the walk carries on', () => {
+      // The guard against the naive implementation: deleting the old
+      // `writes.length > 0` term without a real asked-slot discriminator would
+      // hand off on EVERY successful answer, because the remaining suppressors
+      // are false on an ordinary mid-walk turn.
       const ws = new FakeWS();
       const session = buildSession({ 13: { circuit_designation: 'Cooker' } });
       enter(ws, session, 1000);
-      answer(ws, session, 'the weather is nice', 2000); // miss 1
-      answer(ws, session, 'the weather is nice', 3000); // miss 2 (hint)
-      // Now a real reading lands — progress resets the counter.
-      answer(ws, session, 'live to live 200', 4000);
-      expect(session.stateSnapshot.circuits[13].ir_live_live_mohm).toBe('200');
-      expect(session.dialogueScriptState.slot_no_progress).toBeNull();
 
-      // A single subsequent miss on the NEXT slot must not immediately skip.
-      const o = answer(ws, session, 'the weather is nice', 5000);
-      expect(o).toEqual({ handled: true, fallthrough: false });
-      expect(session.dialogueScriptState.skipped_slots.has('ir_live_earth_mohm')).toBe(false);
+      const out = answer(ws, session, 'live to live 200', 2000);
+
+      expect(out).toEqual({ handled: true, fallthrough: false });
+      expect(session.stateSnapshot.circuits[13].ir_live_live_mohm).toBe('200');
+      expect(session.dialogueScriptState).not.toBeNull();
+      expect(ws.sent.at(-1).context_field).toBe('ir_live_earth_mohm');
+    });
+
+    test('a COMPOUND reply that answers a DIFFERENT slot still hands off', () => {
+      // The case the old `writes.length > 0` term HID: a named match on a slot
+      // the script did not ask for made `madeProgress` true while the question
+      // it DID ask stayed unanswered, so the miss was suppressed and the same
+      // question was asked again.
+      const ws = new FakeWS();
+      const session = buildSession({ 13: { circuit_designation: 'Cooker' } });
+      enter(ws, session, 1000);
+      expect(ws.sent.at(-1).context_field).toBe('ir_live_live_mohm');
+
+      const out = answer(ws, session, 'live to earth 150', 2000);
+
+      // The DIFFERENT slot's value is kept — nothing is thrown away.
+      expect(session.stateSnapshot.circuits[13].ir_live_earth_mohm).toBe('150');
+      // …and the unanswered ask is still a first miss.
+      expect(out).toMatchObject({ handled: true, fallthrough: true });
+      expect(out.serverNote.asked_field).toBe('ir_live_live_mohm');
+      expect(session.dialogueScriptState).toBeNull();
     });
   });
 
@@ -2320,11 +2353,18 @@ describe('engine — Deepgram garble tolerance (2026-04-30)', () => {
       transcriptText: 'R1 plus R2 is 47',
       now: 4000,
     });
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       handled: true,
       fallthrough: true,
       transcriptText: 'R1 plus R2 is 47',
     });
+    // PLAN-A (feedback-2026-09-17) — a fallthrough exit that DID read something
+    // back now carries the tri-state, so the turn can recover the rendered line
+    // if its send failed. R1 and Rn were captured above, so this exit built a
+    // read-back; the socket is open, so it was emitted and nothing is lost.
+    expect(out.terminalReadbackBuilt).toBe(true);
+    expect(out.terminalReadbackEmitted).toBe(true);
+    expect(out.terminalReadbackLostText).toBeUndefined();
     // The CPC slot must NOT have been written.
     expect(session.stateSnapshot.circuits[2].ring_r2_ohm).toBeUndefined();
     expect(session.dialogueScriptState).toBeNull();

@@ -24,7 +24,15 @@
  * makes the derivation unconditional — fires on every write.
  */
 import { MUTATION_OBSERVER } from '../../plan00-semantic-capture.js';
-import { applyReadingToSnapshot } from '../../stage6-snapshot-mutators.js';
+// PLAN-A (feedback-2026-09-17) — the FLAG-AWARE writer, not the bare one. A
+// dialogue episode can be entered by a `record_reading` carrying an explicit
+// `board_id` that is not the selected board, and the bare mutator writes
+// `snapshot.circuits[circuit]` — main's bucket — whatever board the episode is
+// on. A board-B walk deriving `ocpd_type` would set MAIN's circuit 3 while the
+// handoff note and the tombstone both name board B.
+import { applyReadingFlagAware } from '../../stage6-snapshot-mutators.js';
+import { recordDerivedBaseline } from './episode-ownership.js';
+import { getCircuitBucket } from '../../stage6-multi-board-shape.js';
 import { bsCodeDigits } from '../parsers/bs-code.js';
 
 /**
@@ -86,6 +94,32 @@ export function applyDerivations({ session, schema, slot, value }) {
   const result = { pivotTo: null, mirrorWrites: [], setWrites: [] };
   if (!Array.isArray(slot.derivations)) return result;
 
+  /**
+   * What a derivation target holds RIGHT NOW, for the baseline record.
+   *
+   * `state.values` alone is not enough, and the gap is not hypothetical: an RCD
+   * episode seeds only the RCD schema's own slots, so a `61009` mirror into
+   * `ocpd_bs_en` sees `state.values.ocpd_bs_en` undefined while the circuit's
+   * snapshot bucket carries a value from the CCU photo. Recording no baseline
+   * there lets a later device-absence handoff clear a certificate value the
+   * mirror merely replaced — the failure `derived_replaced` exists to stop.
+   *
+   * The snapshot read is scoped to the EPISODE's board, the same one the write
+   * below uses, so the baseline and the value it describes can never come from
+   * different buckets.
+   */
+  const priorValueOf = (field) => {
+    const state = session.dialogueScriptState;
+    const inState = state?.values?.[field];
+    if (inState !== undefined && inState !== null && inState !== '') return inState;
+    const bucket = getCircuitBucket(
+      session.stateSnapshot,
+      state?.circuit_ref,
+      state?.effectiveBoardId ?? undefined
+    );
+    return bucket?.[field];
+  };
+
   for (const derivation of slot.derivations) {
     if (!derivationMatches(derivation, value, slot.kind)) continue;
 
@@ -105,11 +139,19 @@ export function applyDerivations({ session, schema, slot, value }) {
             meta: { schema: schema?.name ?? null, derived_field: extraField },
           });
         }
+        // PLAN-A — a `sets` target can already hold a value the inspector
+        // never dictated in this episode (circuit 5 carrying `ocpd_type: 'B'`
+        // when `BS 3036` derives `Rew`). Remember it BEFORE the overwrite: the
+        // handoff note's directive lets the model clear a derived target on a
+        // device-absence turn, and clearing this one would blank pre-existing
+        // certificate data the walk merely replaced.
+        recordDerivedBaseline(state, extraField, priorValueOf(extraField));
         try {
-          applyReadingToSnapshot(session.stateSnapshot, {
+          applyReadingFlagAware(session.stateSnapshot, {
             circuit: state?.circuit_ref ?? null,
             field: extraField,
             value: extraValue,
+            boardId: state?.effectiveBoardId ?? undefined,
           });
         } finally {
           if (setsObserver) setsObserver.clearOriginFrame();
@@ -138,11 +180,13 @@ export function applyDerivations({ session, schema, slot, value }) {
             meta: { schema: schema?.name ?? null, derived_field: mirrorField },
           });
         }
+        recordDerivedBaseline(state, mirrorField, priorValueOf(mirrorField));
         try {
-          applyReadingToSnapshot(session.stateSnapshot, {
+          applyReadingFlagAware(session.stateSnapshot, {
             circuit: state?.circuit_ref ?? null,
             field: mirrorField,
             value,
+            boardId: state?.effectiveBoardId ?? undefined,
           });
         } finally {
           if (mirrorObserver) mirrorObserver.clearOriginFrame();

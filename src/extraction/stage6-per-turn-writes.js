@@ -1041,3 +1041,105 @@ export function decodeBoardReadingKey(key) {
     boardId: rightSegment === '' ? null : rightSegment,
   };
 }
+
+// ── PLAN-A (feedback-2026-09-17) — the SURVIVING-CLEAR predicate, EXTRACTED ──
+//
+// This is the bundler's P5 clear→write collapse, lifted out verbatim so a
+// SECOND caller can reach it: the device-absence fence, which runs at the
+// answer finalizer. The collapse lives inside `bundleToolCallsIntoResult`,
+// which runs AFTER that finalizer — so the finalizer cannot see it, and
+// extraction is exactly what makes it reachable.
+//
+// The bundler now calls these in place of its own inline loop. Output is
+// byte-identical and the existing P5 tests pin that.
+//
+// WHY THE FENCE NEEDS THIS PARTICULAR PREDICATE, and not a cheaper one:
+// `perTurnWrites.cleared.length` would fence a REPLACED clear — the ordinary
+// clear-then-write correction idiom, where the clear does not survive and the
+// write's own read-back is the turn's spoken outcome. Session tombstones would
+// fence an OLDER circuit's clear. Only "a cleared entry whose slot has no
+// surviving write" is the real predicate.
+
+/**
+ * Build the "does this cleared entry have a surviving same-turn write?"
+ * predicate for one turn.
+ *
+ * Identity is the EFFECTIVE slot key stamped at dispatch time; entries lacking
+ * the Symbol (legacy / hand-built fixtures) fall back to RAW decoded Map-key
+ * identity, and that fallback applies ONLY when BOTH compared sides lack the
+ * Symbol — a one-sided pair never infers ordering.
+ *
+ * Survival is read from the JOURNAL winners rather than a raw Map scan: a
+ * board-A write shadowed under a shared raw Map key still SURVIVED the turn.
+ */
+export function buildSurvivingWritePredicate(perTurnWrites) {
+  const survivingEffectiveSlots = new Set();
+  const survivingRawSlots = new Set();
+  for (const { rawKey: mapKey, value: val } of projectReadingWinners(perTurnWrites)) {
+    const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
+    if (sym) {
+      survivingEffectiveSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+    } else {
+      const d = decodeReadingKey(mapKey);
+      survivingRawSlots.add(rawCircuitSlot(d.field, d.circuit, d.boardId));
+    }
+  }
+  return (entry) => {
+    const sym = entry?.[EFFECTIVE_CIRCUIT_SLOT];
+    if (sym) {
+      return survivingEffectiveSlots.has(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+    }
+    // Both-Symbol-less fallback: match against the RAW surviving set only.
+    return survivingRawSlots.has(
+      rawCircuitSlot(entry?.field, entry?.circuit, entry?.board_id ?? null)
+    );
+  };
+}
+
+/**
+ * The `cleared` entries whose slot has NO surviving write this turn — i.e. the
+ * clears that will actually be spoken.
+ *
+ * @param {object} perTurnWrites
+ * @returns {object[]} the surviving cleared entries, in order
+ */
+export function survivingClears(perTurnWrites) {
+  const cleared = Array.isArray(perTurnWrites?.cleared) ? perTurnWrites.cleared : [];
+  if (cleared.length === 0) return [];
+  const hasSurvivingWrite = buildSurvivingWritePredicate(perTurnWrites);
+  return cleared.filter((c) => !hasSurvivingWrite(c));
+}
+
+/**
+ * PLAN-A — the DEVICE-ABSENCE FENCE predicate.
+ *
+ * After a first-miss handoff the model owns the circuit, and "there is no RCD"
+ * makes it clear what the walk recorded — one `clear_reading` per field, each
+ * with its own `field_cleared` read-back. Those lines ARE the turn's spoken
+ * outcome, so the model's `answer_user` is suppressed rather than allowed to
+ * narrate the same clears on top of them. Audio-First exactly-once holds per
+ * VALUE, and suppression is deterministic rather than text-inspecting: no
+ * fuzziness, no word lists.
+ *
+ * Exported so the harness and its tests exercise ONE definition of the rule. A
+ * replica in a test pins nothing — it can agree with a wrong implementation.
+ *
+ * SCOPE is the load-bearing half. A surviving clear counts only when its
+ * EFFECTIVE slot identity matches the handoff's circuit AND board. Another
+ * circuit, an older handed-off circuit, or the same `circuit_ref` on another
+ * board must never fence, or the fence silences an answer the inspector needed.
+ *
+ * @param {{circuit_ref: number, boardId: string|null}|null} handoff
+ * @param {object} perTurnWrites
+ * @returns {{fenced: boolean, fields: Array<string|null>}}
+ */
+export function computeAnswerFence(handoff, perTurnWrites) {
+  if (!handoff || !perTurnWrites?.answer) return { fenced: false, fields: [] };
+  const fencing = survivingClears(perTurnWrites).filter((c) => {
+    const sym = c?.[EFFECTIVE_CIRCUIT_SLOT];
+    const circuit = sym ? sym.circuit : (c?.circuit ?? null);
+    const boardId = sym ? (sym.boardId ?? null) : (c?.board_id ?? null);
+    return circuit === handoff.circuit_ref && boardId === (handoff.boardId ?? null);
+  });
+  return { fenced: fencing.length > 0, fields: fencing.map((c) => c?.field ?? null) };
+}

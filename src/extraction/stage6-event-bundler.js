@@ -31,6 +31,8 @@ import {
   resolveDesignation,
   readEffectiveOpBoard,
   BULK_OUTCOME_CALL_ID,
+  buildSurvivingWritePredicate,
+  survivingClears,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
@@ -56,6 +58,11 @@ import { DEDUPE_TOKEN_FIELDS, WIRE_CLIENT_DEDUPE_TOKEN_FIELDS } from './ios-dedu
 // §A2 (field-feedback-2026-07-14) — outbound `field_corrected` wire
 // canonicalisation. field-name-corrections.js is a leaf module (no cycle).
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
+// PLAN-A / Decision 9 (feedback-2026-09-17) — the advisory carrier's per-field
+// derivation. `circuit-value-descriptors.js` is a dependency leaf whose only
+// static imports are node:module, value-enum-validator.js and
+// value-normalise.js, so this adds no cycle.
+import { advisoryForFieldValue } from './circuit-value-descriptors.js';
 // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
 // canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
 // ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
@@ -922,11 +929,24 @@ function synthesiseConfirmations(
     // A2-multiboard — pass the reading's board so a per-board designation wins
     // over the bare-ref fallback (two boards can both own a circuit 3).
     const designation = lookupDesignation(r.circuit, r.board_id ?? null);
-    const text = buildConfirmationText(r.field, r.value, r.circuit, designation, {
+    const baseText = buildConfirmationText(r.field, r.value, r.circuit, designation, {
       calculated: isCalc(r),
       correction: correctionOf(r),
     });
-    if (!text) continue;
+    if (!baseText) continue;
+    // PLAN-A / Decision 9 — PRODUCER 1 of 3 for the advisory carrier (the
+    // other two are the script's terminal read-back and its completion
+    // summary, both in the dialogue engine). Appended AFTER the base text is
+    // built, exactly as the Plan E locality tail below is: ONE utterance,
+    // exactly-once, riding the read-back's own confirmation identity.
+    // `dedupe_token` is computed from field/scope/turnId/ordinal rather than
+    // from text, so the longer string does not disturb the client dedupe key.
+    //
+    // Deliberately NOT stamped onto the two designation-free transients below:
+    // those are VALUE-matching shapes for the triple-shape merge, not spoken
+    // lines, and an advisory on them would change what they match.
+    const advisory = advisoryForFieldValue(r.field, r.value);
+    const text = advisory ? `${baseText}, ${advisory}` : baseText;
     const entry = {
       text,
       // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3). Pre-
@@ -1337,31 +1357,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // fallback applies ONLY when BOTH compared sides lack the Symbol; a one-sided
   // pair never infers ordering (no collapse). currentBoardId is NEVER resolved
   // here (a mid-turn select_board would skew it).
-  const survivingEffectiveSlots = new Set();
-  const survivingRawSlots = new Set();
-  // A2-multiboard — read survival from the JOURNAL winners for the same reason
-  // the projection above does: a board-A write shadowed under a shared raw Map
-  // key still SURVIVED the turn, and a raw-Map scan would have missed it, so a
-  // clear on board A would not have collapsed against its own replacement.
-  for (const { rawKey: mapKey, value: val } of readingWinners) {
-    const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
-    if (sym) {
-      survivingEffectiveSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
-    } else {
-      const d = decodeReadingKey(mapKey);
-      survivingRawSlots.add(rawCircuitSlot(d.field, d.circuit, d.boardId));
-    }
-  }
-  const clearSlotHasSurvivingWrite = (entry) => {
-    const sym = entry?.[EFFECTIVE_CIRCUIT_SLOT];
-    if (sym) {
-      return survivingEffectiveSlots.has(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
-    }
-    // Both-Symbol-less fallback: match against the RAW surviving set only.
-    return survivingRawSlots.has(
-      rawCircuitSlot(entry?.field, entry?.circuit, entry?.board_id ?? null)
-    );
-  };
+  // PLAN-A (feedback-2026-09-17) — the predicate is EXTRACTED to
+  // `stage6-per-turn-writes.js` so the device-absence fence can reach it from
+  // the answer finalizer, which runs BEFORE this function. Byte-identical
+  // output; the existing P5 tests pin that.
+  const clearSlotHasSurvivingWrite = buildSurvivingWritePredicate(perTurnWrites);
+
   // Plan A1a (2026-07-27) — mechanism B, the BOARD twin of the circuit
   // collapse above. A board correction can now emit clear_board_reading then
   // a replacement record_board_reading in one turn (the documented
@@ -1640,7 +1641,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // P5 — drop cleared entries whose slot has a surviving same-turn write
     // (clear→write). No reason predicate: every cleared entry is a clear.
     // OMITTED when all were collapsed, keeping the empty-slot byte-identity.
-    const keptCleared = perTurnWrites.cleared.filter((c) => !clearSlotHasSurvivingWrite(c));
+    const keptCleared = survivingClears(perTurnWrites);
     if (keptCleared.length > 0) {
       result.cleared_readings = keptCleared;
     }

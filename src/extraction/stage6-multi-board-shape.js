@@ -346,3 +346,26 @@ export function ensureMultiBoardShape(snapshot) {
 
   return snapshot;
 }
+
+/**
+ * Resolve the EFFECTIVE board id for a record_reading / clear_reading slot:
+ * an omitted / '' board_id denotes the current board (or the main board when
+ * none is selected), so a valid clear/write pair that mixes spellings (one
+ * omits board_id, one passes the current id explicitly) names the SAME real
+ * slot. Producer-specific per the plan — this universal formula is for
+ * record_reading + clear_reading ONLY; calculators pass their computed
+ * targetBoardId, set_field_for_all_circuits uses each iteration tuple's local
+ * boardId, and start_dialogue_script resolves its own once.
+ *
+ * EXPORTED for plan 2A channel 3 (2026-07-30): the ask dispatcher's
+ * auto-resolved writes go through THIS dispatcher, so their partial-failure
+ * notices must key their board the same way — otherwise the drain's
+ * surviving-write subtraction compares an unresolved raw id against a resolved
+ * one, misses, and speaks a FALSE "didn't save" over a value that did land.
+ * Exported rather than re-derived in the harness so there stays ONE formula.
+ */
+export function resolveEffectiveBoardId(session, rawBoardId) {
+  const snapshot = session?.stateSnapshot;
+  if (!isUnscopedBoardId(rawBoardId)) return rawBoardId;
+  return snapshot?.currentBoardId ?? getMainBoardId(snapshot);
+}

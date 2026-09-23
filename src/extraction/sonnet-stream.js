@@ -269,6 +269,9 @@ import { createFilledSlotsShadowLogger } from './stage6-filled-slots-shadow.js';
 // stamps board_id on legacy snapshots so the lookup works on jobs that
 // pre-date the multi-board sprint.
 import { ensureMultiBoardShape } from './stage6-multi-board-shape.js';
+// PLAN-A (feedback-2026-09-17) — the terminal read-back carrier's fold, in a
+// zero-import leaf so the rule has exactly one definition.
+import { foldTerminalReadbackOutcomes } from './terminal-readback-carrier.js';
 
 // Lazy-initialised OpenAI client for observation refinement (gpt-5-search-api).
 // Kept at module scope so repeat refinements reuse the same HTTPS pool.
@@ -6557,6 +6560,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       //     undefined; latching on "the call didn't throw" would set the flag
       //     after a REFUSED enter and the finally would then clear a
       //     CONCURRENT turn's scope.
+      // ── PLAN-A terminal read-back CARRIER (feedback-2026-09-17) ────────
+      //
+      // Collect each dialogue wrapper's outcome in INVOCATION order and fold
+      // them in `foldTerminalReadbackOutcomes` — a zero-import leaf holding the
+      // ONE combination rule, so the rule has exactly one definition and its
+      // test exercises this code rather than a replica.
+      const scriptOutcomes = [];
       const plan00Tier2Ctx = entry[EVALUATION_CONTEXT] ?? null;
       let plan00Tier2TurnScopeEntered = false;
       try {
@@ -6595,6 +6605,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           // for guarded schemas when true).
           suppressDestructiveEntry,
         });
+        scriptOutcomes.push(ringScriptOutcome);
         if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
           // Script handled the turn end-to-end. Return — the finally block
           // at line ~3290 clears the watchdog, flips isExtracting, and
@@ -6649,6 +6660,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           // token before the IR/PD families are evaluated.
           suppressDestructiveEntry,
         });
+        scriptOutcomes.push(irScriptOutcome);
         if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
           plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
             utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -6684,6 +6696,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           // schema in this three-schema registry).
           suppressDestructiveEntry,
         });
+        scriptOutcomes.push(pdScriptOutcome);
         if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
           plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
             utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -7327,6 +7340,18 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // observation tier. Server-context isolation.
         rawInspectorTranscript: msg.text,
         postcodeHintState: msg[POSTCODE_HINT_STATE] ?? postcodeHintState,
+        // PLAN-A — the terminal read-back carrier, combined across the three
+        // wrapper calls above. The combination rules live in the fold; see it
+        // for why `emitted` is an AND with a zero-built floor.
+        ...(() => {
+          const folded = foldTerminalReadbackOutcomes(scriptOutcomes);
+          return {
+            terminalReadbackBuilt: folded.built,
+            terminalReadbackEmitted: folded.emitted,
+            terminalReadbackLostTexts: folded.lostTexts,
+            handoff: folded.handoff,
+          };
+        })(),
       });
 
       await finalizeLegacyAddressMirrorDirect(entry, result);

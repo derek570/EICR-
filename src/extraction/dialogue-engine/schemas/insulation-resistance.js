@@ -508,6 +508,43 @@ export const insulationResistanceSchema = {
     const voltageClause = v ? `, voltage ${v}` : '';
     return `Got it. L-L ${ll}, L-E ${le}${voltageClause}.`;
   },
+  // PLAN-A / Decision 17 — see `schemas/ocpd.js` for the rule. IR is IN scope
+  // because it is the only OTHER schema in the same class, and that is a scope
+  // position with a reason rather than an inheritance: it declares no
+  // `finishCoveredFields`, its `finishMessage` interpolates values
+  // unconditionally, and it is reachable bundler-owned through the same
+  // `tryEnterScriptFromWrites` hook, which iterates ALL_DIALOGUE_SCHEMAS.
+  // Fixing OCPD alone would be this wave's most repeated defect — a rule
+  // applied at one of its anchors.
+  //
+  // A source comment that LOOKS like a counter-argument is not one:
+  // `engine.js`'s opt-out justification for "ring/IR-with-`confirmation`"
+  // rests on `transitionToConfirmation`'s pre-finish read-back having already
+  // named the values. Only `ring-continuity.js` declares `confirmation`;
+  // insulation resistance does not, so that justification never covered IR.
+  //
+  // The voltage segment returns null when the value is falsy, which reproduces
+  // today's conditional clause exactly — `finishScript` drops a null segment.
+  finishSummarySegments: {
+    prefix: 'Got it.',
+    joiner: ', ',
+    terminator: '.',
+    segments: [
+      { field: 'ir_live_live_mohm', render: (values) => `L-L ${values.ir_live_live_mohm ?? '?'}` },
+      { field: 'ir_live_earth_mohm', render: (values) => `L-E ${values.ir_live_earth_mohm ?? '?'}` },
+      {
+        field: VOLTAGE_FIELD,
+        render: (values) => (values[VOLTAGE_FIELD] ? `voltage ${values[VOLTAGE_FIELD]}` : null),
+      },
+    ],
+  },
+  // PLAN-A A4 (feedback-2026-09-17, id 143) — entering on a circuit whose IR
+  // slots are ALL already filled, with nothing in the utterance parsing as a
+  // reading, is a HANDOFF rather than an instant finish. Without this the
+  // script finished at once and read back STALE values as "Got it" — values
+  // the inspector never said this run, presented as though just confirmed.
+  // Opt-in per schema; IR is the one the field session surfaced it on.
+  handoffOnAllFilledNoParse: true,
   onWrite: (session, circuit_ref, now) => recordIrWrite(session, circuit_ref, now),
   onFinish: (session, circuit_ref) => clearIrState(session, circuit_ref),
   // M4 (2026-06-25): the engine calls this when the exclusive voltage slot is

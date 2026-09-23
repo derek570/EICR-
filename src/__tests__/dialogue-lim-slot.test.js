@@ -82,15 +82,25 @@ describe('normaliseDialogueSlotWrite — seeded pending_writes gate', () => {
     expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_rating_a', '32').ok).toBe(true);
   });
 
-  test('honours the OCPD-kA allowedValues ladder, but accepts LIM', () => {
-    // 66 kA is off-ladder → rejected.
-    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', '66').ok).toBe(
-      false
-    );
+  test('no longer gates OCPD-kA on a ladder — an off-list value passes, LIM still does', () => {
+    // PLAN-A / Decision 9 (feedback-2026-09-17): `schemas/ocpd.js` carried the
+    // only `allowedValues` declaration in the dialogue engine and it is gone,
+    // so the normaliser's ladder check is inert for every slot. 66 kA is now
+    // the seeded-write equivalent of what the voice path does — recorded, and
+    // advised once rather than dropped.
+    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', '66')).toEqual({
+      ok: true,
+      value: '66',
+      correction: null,
+    });
     expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', '6').ok).toBe(true);
     expect(
       normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', 'limitation')
     ).toEqual({ ok: true, value: 'LIM', correction: null });
+    // The RANGE is what still refuses a structurally impossible figure.
+    expect(normaliseDialogueSlotWrite(ocpdSchema, 'ocpd_breaking_capacity_ka', '500').ok).toBe(
+      false
+    );
   });
 
   test('rcd_trip_time alias validates against canonical rcd_time_ms bounds', () => {

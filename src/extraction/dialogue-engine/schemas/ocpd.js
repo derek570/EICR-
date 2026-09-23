@@ -83,30 +83,50 @@ const slots = [
     parser: parseKa,
     // P3 — numeric arm OR a field-qualified LIM anchored to a breaking-capacity
     // phrase ("breaking capacity"/"kilo amps"/"kA"), so "breaking capacity is a
-    // limitation" writes LIM to THIS slot only. "LIM" is in allowedValues.
+    // limitation" writes LIM to THIS slot only. LIM is accepted by the ranged
+    // validator itself (value-enum-validator.js), not by any slot allow-set —
+    // see the Decision 9 note below.
     namedExtractor:
       /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kilo\s*amps?|kA)\b\s*(?:(?:is|was|reads?|equals?|of)\b\s*)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
-    // 2026-05-04 (field test 07635782): the inspector said "six" for
-    // breaking capacity, the engine accepted it as the rating answer
-    // (the question hadn't moved on yet), then asked the breaking-
-    // capacity question, and Deepgram heard the next utterance as
-    // "66". The parser was OK with it (range 1..200) and 66 kA landed
-    // on the cert. No real MCB has a 66 kA breaking capacity.
+    // PLAN-A / Decision 9 (feedback-2026-09-17, taken by Derek) — the
+    // `allowedValues` ladder that lived here is REMOVED. Breaking capacity is
+    // NOT a validate-or-reject field: an EICR records what the inspector sees.
     //
-    // This list is the BS-EN 60898 / BS 88 published rating ladder:
-    //   1.5 / 3 / 4.5 / 6 / 10 — domestic MCBs (BS-EN 60898)
-    //   16 / 20 / 25 — commercial MCBs / RCBOs
-    //   36 / 50 / 80 — HRC fuses (BS 88 family) and industrial breakers
-    // Anything off this ladder is dropped + re-asked. parseKa returns
-    // canonical strings ("6" not "6.0"), so equality is direct.
+    // What stood here, and why it went. 2026-05-04 (field test 07635782) the
+    // inspector said "six" for the rating, the engine took it as the answer to
+    // the question it had already asked, then asked for breaking capacity, and
+    // Deepgram heard "66" — which landed on the certificate. The fix was a
+    // per-slot allow-set enforced at two live sites (helpers/extraction.js's
+    // named-extraction gate and the engine's step-8 bare-value gate), where an
+    // off-ladder value was logged, DROPPED and the slot re-asked.
     //
-    // Strings (not numbers) so the array can include the half-step
-    // ratings (1.5, 4.5) without float-equality risk.
-    // P3 — "LIM" (limitation) is a valid breaking-capacity answer; without it in
-    // the allow-set both the named-extraction gate (extraction.js) and the
-    // engine's bare-value gate would drop a LIM reply and re-ask forever.
-    allowedValues: ['1.5', '3', '4.5', '6', '10', '16', '20', '25', '36', '50', '80', 'LIM'],
+    // That is exactly the deterministic dead end Decision 7 removes: the
+    // inspector says a figure, hears nothing about it, and is asked the same
+    // question again. Under Decision 9 the value is WRITTEN at whatever it was
+    // heard as, read back like any other accepted reading, and carries ONE
+    // spoken advisory when it is off the researched list. Nothing is cleared,
+    // nothing is blocked, and no second ask follows.
+    //
+    // WHERE THE LIST WENT. Decision 16 replaced the published-ladder guess
+    // with ONE researched list (BEAMA's circuit-breaker standards guide and
+    // IET Wiring Matters Table 1, read directly), and it now lives as
+    // `suggestions` on `ocpd_breaking_capacity_ka` in config/field_schema.json
+    // — the same carrier Decision 6 established for `ocpd_type`. It is inert
+    // to CIRCUIT_FIELD_VALUE_ENUMS by construction (that builder admits a
+    // field only when `type === 'select'` with an `options` array), so no gate
+    // can grow back from it by accident. The advisory derivation and the
+    // handoff note's `remaining[].suggestions` are its two consumers.
+    //
+    // THE COST, recorded rather than glossed: a mistyped or misheard
+    // safety-rated figure can now reach a certificate carrying only a spoken
+    // advisory. That is the trade Decision 9 makes deliberately — the range
+    // gate (1..200, value-enum-validator.js) is unchanged and still refuses a
+    // structurally impossible value such as 500.
+    //
+    // "LIM" needs no allow-set entry any more: the ranged validator accepts
+    // canonical LIM on every ranged reading field, and the advisory never
+    // fires on it.
   },
 ];
 
@@ -157,5 +177,41 @@ export const ocpdSchema = {
     const rating = values.ocpd_rating_a ?? '?';
     const ka = values.ocpd_breaking_capacity_ka ?? '?';
     return `Got it. ${bs}, type ${type}, ${rating} amps, ${ka} kA.`;
+  },
+  // PLAN-A / Decision 17 (feedback-2026-09-17, taken by Derek) — the
+  // completion summary omits the part it has ALREADY spoken, per field.
+  //
+  // The defect: a `record_reading` that TRIGGERS this walk-through is stamped
+  // `spoken_owner = 'bundler'` (the bundler reads it back on that same turn),
+  // but `finishMessage` above is ONE template interpolating all four slot
+  // fields unconditionally, so a turn or more later the completion summary
+  // says the value a second time. Audio-First invariant 1 names the
+  // double-confirm as a bug.
+  //
+  // Why not the EXISTING gate, which is the option Derek did NOT take:
+  // opting into `finishCoveredFields` is all-or-nothing — one bundler-owned or
+  // snapshot-seeded field suppresses the whole "Got it …" line. That changes
+  // what the inspector hears on every OCPD completion, not only where a repeat
+  // occurs, and it would DELETE the first read-back of a snapshot-seeded
+  // value. Decision 17 needs the finer thing, so `finishScript` composes these
+  // SEGMENTS instead and drops only the ones already spoken.
+  //
+  // The segments carry today's expressions verbatim, `?? '?'` fallbacks
+  // included: Decision 17 changes WHICH segments render, never HOW one
+  // renders. With nothing omitted they compose byte-identically to
+  // `finishMessage` above, which is pinned as acceptance property (1).
+  finishSummarySegments: {
+    prefix: 'Got it.',
+    joiner: ', ',
+    terminator: '.',
+    segments: [
+      { field: 'ocpd_bs_en', render: (values) => `${values.ocpd_bs_en ?? '?'}` },
+      { field: 'ocpd_type', render: (values) => `type ${values.ocpd_type ?? '?'}` },
+      { field: 'ocpd_rating_a', render: (values) => `${values.ocpd_rating_a ?? '?'} amps` },
+      {
+        field: 'ocpd_breaking_capacity_ka',
+        render: (values) => `${values.ocpd_breaking_capacity_ka ?? '?'} kA`,
+      },
+    ],
   },
 };
