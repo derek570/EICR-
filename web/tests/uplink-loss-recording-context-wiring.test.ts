@@ -142,7 +142,11 @@ describe('family (2) — captureActive has exactly two writers + the constructio
 
 describe('family (1) — every-open observation via onStateChange, not onReconnected', () => {
   it("`onStateChange` → 'connected' calls the ledger's onSocketOpened; `onReconnected` does not", () => {
-    const stateChange = between('onStateChange: (state) => {', 'onInterimTranscript: (text) => {');
+    // PLAN-D added the turn-event meta argument to the interim callback.
+    const stateChange = between(
+      'onStateChange: (state) => {',
+      'onInterimTranscript: (text, _confidence, turnMeta) => {'
+    );
     expect(stateChange).toContain("state === 'connected'");
     expect(stateChange).toContain('emittingLedger?.onSocketOpened');
     const reconnected = between('onReconnected: () => {', 'onError: (err) => {');
