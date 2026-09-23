@@ -4063,17 +4063,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       if (phraseBearing) resumePhraseEchoRef.current = { playing: true, untilMs: 0 };
-      if (!voicePausedRef.current && !VOICE_PAUSE_PRODUCED_TEXTS.has(item.text)) return;
+      // Kind by the ITEM's identity, never its text: the enqueuer's tag first,
+      // then the family its dedupe key names. (Fix-cycle 2: a voice-command
+      // response whose text equals a pause cue is still a response.)
       const key = item.dedupeKey ?? '';
-      let kind: 'read_back' | 'response' | 'cue' | 'advisory' = 'read_back';
-      if (key.startsWith('mode-status:') || VOICE_PAUSE_PRODUCED_TEXTS.has(item.text)) {
-        kind = 'cue';
-      } else if (item.text === POOR_SIGNAL_ADVISORY_TEXT || key.startsWith('uplink-loss:')) {
-        kind = 'advisory';
-      } else if (
-        item.tag === VOICE_COMMAND_RESPONSE_QUEUE_TAG ||
-        key.startsWith(LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX)
+      const isModeStatusCue = key.startsWith('mode-status:');
+      // Reported while paused, and — after a resume — for the pause route's
+      // own strings (the resume line), identified as mode-status cues.
+      if (
+        !voicePausedRef.current &&
+        !(isModeStatusCue && VOICE_PAUSE_PRODUCED_TEXTS.has(item.text))
       ) {
+        return;
+      }
+      let kind: 'read_back' | 'response' | 'cue' | 'advisory' = 'read_back';
+      if (item.tag === VOICE_COMMAND_RESPONSE_QUEUE_TAG) {
+        kind = 'response';
+      } else if (isModeStatusCue) {
+        kind = 'cue';
+      } else if (key === POOR_SIGNAL_ADVISORY_TEXT || key.startsWith('uplink-loss:')) {
+        // The poor-signal advisory's dedupe key IS its fixed text.
+        kind = 'advisory';
+      } else if (key.startsWith(LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX)) {
         kind = 'response';
       }
       clientDiagnostic('voice_pause_speech_spoken', { kind, text: item.text });

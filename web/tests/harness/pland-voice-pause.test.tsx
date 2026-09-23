@@ -461,6 +461,22 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       ]);
     });
 
+    it("the enqueuer's tag wins: a response whose text IS a pause cue reports kind response", async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      const mark = diags(harness, 'voice_pause_speech_spoken').length;
+      await act(async () => {
+        harness.refs.sonnet!.emitVoiceCommandResponse({
+          understood: true,
+          spoken_response: S('still_paused_cue'),
+        });
+      });
+      const spoken = diags(harness, 'voice_pause_speech_spoken')
+        .slice(mark)
+        .map((d) => [d.payload.kind, d.payload.text]);
+      expect(spoken).toEqual([['response', S('still_paused_cue')]]);
+    });
+
     it('a response discarded before it played leaves nothing behind to mislabel a later same-text read-back', async () => {
       const { harness, api } = await mount();
       await enterPause(harness, api);
