@@ -1631,25 +1631,30 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     playing: false,
     untilMs: 0,
   });
-  /** PLAN-D D3 fix-cycle 1 (F1) — the voice-pause intervals, in the
-   *  emitting service's DISPATCHED-STREAM domain (A02D FinalWindowV1's
-   *  domain). `start` is the pause phrase final's `window_end`; `end` is
-   *  the resume cut (the resume phrase final's `window_end`, or the
-   *  service's `dispatchedStreamOffset` sampled on the Resume tap's tick —
-   *  A02D's manual-cutoff technique). After a resume, a final whose
-   *  confirmed onset lies in [start, end) was spoken while paused and is
-   *  dropped at the boundary: a delayed final must not be written or
-   *  forwarded once the flag has cleared. Offsets are per service instance,
-   *  so each interval is keyed by the service it was sampled from. Bounded;
-   *  cleared at every session boundary. */
-  const voicePauseWindowsRef = React.useRef<
-    Array<{ service: DeepgramServiceLike; start: number; end: number | null }>
-  >([]);
+  /** WAVE-CONTEXT Decision 34 — whether a Deepgram TURN is open on the
+   *  current service right now, from Deepgram's own turn signal: Flux
+   *  StartOfTurn or any non-empty interim opens it (nova-3: any non-empty
+   *  interim — "interim seen since the last final"); its final, or a turn
+   *  end with no final (Flux empty EndOfTurn / nova-3 UtteranceEnd), closes
+   *  it; so does the socket leaving 'connected' and a service replacement. */
+  const deepgramTurnRef = React.useRef<{
+    service: DeepgramServiceLike;
+    epoch: ConnectionEpoch | null;
+  } | null>(null);
+  /** Decision 34 — set by a Resume TAP out of `voicePaused` iff a turn was
+   *  open at that instant: that turn is PAUSED speech. Its final (the next
+   *  final on the same service and epoch — Deepgram closes one turn before
+   *  opening the next) is dropped at the boundary. Cleared when that final
+   *  arrives, when the turn ends without one, when the socket leaves
+   *  'connected' or the service is replaced (the final can no longer
+   *  arrive), and at session stop/start. No timeout. */
+  const tapDropTurnRef = React.useRef<{
+    service: DeepgramServiceLike;
+    epoch: ConnectionEpoch | null;
+  } | null>(null);
   /** The origin-aware exit is `resume()`; the phrase route reaches it from
    *  inside `openDeepgram`'s closures through this ref. */
-  const resumeWithOriginRef = React.useRef<
-    (via: 'phrase' | 'tap', resumeCut?: number | null) => void
-  >(() => {});
+  const resumeWithOriginRef = React.useRef<(via: 'phrase' | 'tap') => void>(() => {});
 
   const cancelVoicePauseReminder = React.useCallback(() => {
     if (voicePauseReminderTimerRef.current) {
@@ -1668,69 +1673,57 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     stillPausedCueThrottleRef.current.reset();
     voicePauseDropCountRef.current = 0;
     resumePhraseEchoRef.current = { playing: false, untilMs: 0 };
-    voicePauseWindowsRef.current = [];
+    tapDropTurnRef.current = null;
     sessionUplinkContextRef.current?.lossLedger?.clearPauseCut();
   }, [cancelVoicePauseReminder]);
 
   /** D2 entry, steps 2–6 (step 1, the pre-pause buffer flush, runs inline
    *  in `onFinalTranscript` because it needs `dispatchFinal`). */
-  const enterVoicePause = React.useCallback(
-    (origin: { service: DeepgramServiceLike; start: number | null }) => {
-      voicePausedRef.current = true;
-      if (origin.start !== null) {
-        voicePauseWindowsRef.current.push({
-          service: origin.service,
-          start: origin.start,
-          end: null,
-        });
-        if (voicePauseWindowsRef.current.length > 8) voicePauseWindowsRef.current.shift();
-      }
-      setVoicePausedState(true);
-      stillPausedCueThrottleRef.current.reset();
-      // Protected mode-status cue route — never the pre-empting direct path,
-      // so an owed read-back queued or playing finishes first.
-      speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.pause_ack.text);
-      // Existing `session_pause` frame (bookkeeping only on the backend).
-      sonnetRef.current?.pause();
-      // D4 — the loss ledger's cut at the capture clock's current position.
-      // `advance(0)` reads the position without reserving any samples.
-      const ctx = sessionUplinkContextRef.current;
-      if (ctx?.lossLedger) ctx.lossLedger.setPauseCut(ctx.captureClock.advance(0).start);
-      setInterim('');
-      cancelVoicePauseReminder();
-      voicePauseReminderTimerRef.current = setInterval(() => {
-        if (!voicePausedRef.current) return;
-        speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.reminder.text);
-      }, VOICE_PAUSE_REMINDER_INTERVAL_MS);
-      clientDiagnostic('voice_pause_entered', {});
-    },
-    [cancelVoicePauseReminder]
-  );
+  const enterVoicePause = React.useCallback(() => {
+    voicePausedRef.current = true;
+    setVoicePausedState(true);
+    stillPausedCueThrottleRef.current.reset();
+    // Protected mode-status cue route — never the pre-empting direct path,
+    // so an owed read-back queued or playing finishes first.
+    speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.pause_ack.text);
+    // Existing `session_pause` frame (bookkeeping only on the backend).
+    sonnetRef.current?.pause();
+    // D4 — the loss ledger's cut at the capture clock's current position.
+    // `advance(0)` reads the position without reserving any samples.
+    const ctx = sessionUplinkContextRef.current;
+    if (ctx?.lossLedger) ctx.lossLedger.setPauseCut(ctx.captureClock.advance(0).start);
+    setInterim('');
+    cancelVoicePauseReminder();
+    voicePauseReminderTimerRef.current = setInterval(() => {
+      if (!voicePausedRef.current) return;
+      speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.reminder.text);
+    }, VOICE_PAUSE_REMINDER_INTERVAL_MS);
+    clientDiagnostic('voice_pause_entered', {});
+  }, [cancelVoicePauseReminder]);
 
   /** D3 — the voice-pause half of the ONE origin-aware exit. Returns false
    *  (and does nothing) when no voice pause holds, which is what makes a
    *  phrase and a tap landing in the same tick produce ONE tone and ONE
    *  line: the first caller clears the flag synchronously. */
   const exitVoicePause = React.useCallback(
-    (via: 'phrase' | 'tap', resumeCut: number | null): boolean => {
+    (via: 'phrase' | 'tap'): boolean => {
       if (!voicePausedRef.current) return false;
-      // F1 — close the open interval at the resume cut. Without a cut (a
-      // service with no dispatched-stream position) the interval cannot be
-      // bounded, so it is dropped rather than left open-ended.
-      const open = voicePauseWindowsRef.current.at(-1);
-      if (open && open.end === null) {
-        if (resumeCut === null) voicePauseWindowsRef.current.pop();
-        else open.end = resumeCut;
-      }
-      // F1 — on the TAP route, every block the D7 hold holds right now was
-      // captured before the tap, i.e. during the pause; replaying it after
-      // the resume would transcribe pause-era speech with a post-resume
-      // onset. Discard them (D3: audio captured during the pause is
-      // discarded, not replayed). The hold stays armed, so audio captured
-      // after the tap is held and replayed as normal. On the PHRASE route
-      // nothing is discarded: the phrase was dispatched live before its
-      // final, so anything held now was captured after it.
       if (via === 'tap') {
+        // WAVE-CONTEXT Decision 34 — a Resume TAP races Deepgram: speech the
+        // inspector was still saying (or had just said) while paused has not
+        // come back as a final yet. The turn in flight at this instant is
+        // PAUSED speech: mark it so its final is dropped at the boundary.
+        // The phrase route needs none of this — finals on one socket arrive
+        // in order, so nothing spoken before the phrase can follow it.
+        const turn = deepgramTurnRef.current;
+        if (turn && turn.service === deepgramRef.current) {
+          tapDropTurnRef.current = { service: turn.service, epoch: turn.epoch };
+        }
+        // And the post-TTS audio held at this instant (D7) was captured
+        // while paused: discard it rather than replay it. The hold stays
+        // armed, so audio captured after the tap is held and replayed as
+        // normal (and, like any hold, cancelled — charged to the loss
+        // ledger — if a new prompt starts first).
         const hold = postTtsHoldRef.current;
         if (hold && hold.blocks.length > 0) {
           clientDiagnostic('voice_pause_held_audio_discarded', { blocks: hold.blocks.length });
@@ -1777,25 +1770,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       speakConfirmationModeStatus(VOICE_PAUSE_STRINGS.still_paused_cue.text);
     }
   }, []);
-
-  /** F1 — was this final spoken inside a CLOSED voice-pause interval of the
-   *  same service? By its confirmed onset (`speech_start`) when it has one;
-   *  otherwise by its `window_end` falling inside the interval. A final
-   *  with neither cannot be placed and is admitted. */
-  const isPauseEraFinal = React.useCallback(
-    (service: DeepgramServiceLike, fw: FinalWindowV1): boolean => {
-      for (const w of voicePauseWindowsRef.current) {
-        if (w.service !== service || w.end === null) continue;
-        if (fw.speechStart !== null) {
-          if (fw.speechStart >= w.start && fw.speechStart < w.end) return true;
-        } else if (fw.windowEnd !== null && fw.windowEnd > w.start && fw.windowEnd <= w.end) {
-          return true;
-        }
-      }
-      return false;
-    },
-    []
-  );
 
   /** D1 self-echo — the resume matcher is disarmed while a phrase-bearing
    *  cue plays and for the echo gate's cooldown after it ends. */
@@ -3046,6 +3020,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       const deepgramCallbacks: DeepgramCallbacks = {
         onStateChange: (state) => {
           setDeepgramState(state);
+          // Decision 34 — off 'connected' the open turn's final can never
+          // arrive (a reconnect is a new socket and epoch): nothing to drop.
+          if (state !== 'connected' && emittingService === deepgramRef.current) {
+            deepgramTurnRef.current = null;
+            tapDropTurnRef.current = null;
+          }
           // PLAN-E1 E3 (Codex diff-review r1 IMPORTANT fix) — reset the
           // probe the MOMENT the socket dies (enters 'reconnecting' or
           // terminal 'error'), not only after a reconnect SUCCEEDS
@@ -3100,6 +3080,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // suppressed; the speaking flag, the phantom-VAD watchdog cancel and
           // the poor-signal probe resolution all keep running.
           if (!voicePausedRef.current) setInterim(text);
+          // Decision 34 — a non-empty interim opens (or continues) a turn.
+          if (text && emittingService !== null && emittingService === deepgramRef.current) {
+            deepgramTurnRef.current = {
+              service: emittingService,
+              epoch: emittingService.liveEpoch ?? null,
+            };
+          }
           // Mirror iOS `isSpeaking` flag — interim arrival proves the
           // inspector is mid-utterance. The phantom-VAD watchdog
           // armed by `onSpeechStarted` would otherwise un-flip the
@@ -3119,6 +3106,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }
         },
         onSpeechStarted: () => {
+          // Decision 34 — Flux StartOfTurn opens a turn. nova-3's VAD
+          // SpeechStarted does not (it fires on breath); there the first
+          // interim does.
+          if (
+            activeSttModelRef.current === 'flux' &&
+            emittingService !== null &&
+            emittingService === deepgramRef.current
+          ) {
+            deepgramTurnRef.current = {
+              service: emittingService,
+              epoch: emittingService.liveEpoch ?? null,
+            };
+          }
           // Stamp the time so the post-wake monitor (#53) can tell
           // a pre-wake SpeechStarted from a post-wake one.
           lastSpeechStartedTimeRef.current = Date.now();
@@ -3143,6 +3143,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           }, SPEECH_CONFIRM_TIMEOUT_MS);
         },
         onUtteranceEnd: () => {
+          // Decision 34 — the turn ended. With a transcript Flux fires the
+          // final FIRST (which consumed any tap marker); reaching here with
+          // the marker still set means the marked turn ended with NO final,
+          // so there is nothing left to drop.
+          if (emittingService !== null && emittingService === deepgramRef.current) {
+            deepgramTurnRef.current = null;
+            if (tapDropTurnRef.current?.service === emittingService) tapDropTurnRef.current = null;
+          }
           // PLAN-E1 E3 — a reset trigger with NO interim received since
           // the last onset records a CENSORED sample (only if the armed
           // age already exceeds the arm threshold).
@@ -3243,6 +3251,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             }
           }
           freshnessStoreRef.current.recordFinal(finalWindow);
+          // Decision 34 — this final closes the current turn.
+          deepgramTurnRef.current = null;
+          const tapDrop = tapDropTurnRef.current;
+          if (tapDrop) {
+            tapDropTurnRef.current = null;
+            if (tapDrop.service === emittingService && tapDrop.epoch === admissionMeta.epoch) {
+              // The turn in flight at a Resume TAP: paused speech. Dropped
+              // here — before the echo gates, so the marker is always
+              // consumed by the turn it names — never written or forwarded,
+              // and with no still-paused cue (the session is not paused).
+              voicePauseDropCountRef.current += 1;
+              clientDiagnostic('voice_pause_drop_count', {
+                count: voicePauseDropCountRef.current,
+                textPreview: text.slice(0, 60),
+              });
+              clientDiagnostic('voice_pause_late_final_dropped', {
+                textPreview: text.slice(0, 60),
+                epoch: admissionMeta.epoch,
+              });
+              return;
+            }
+          }
           clientDiagnostic('a02d_final_window', {
             finalSequence: finalWindow.finalSequence,
             epoch: finalWindow.epoch,
@@ -3363,36 +3393,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // resumes or requests the still-paused cue — nothing else happens
           // below this line.
           const voicePauseCommand = matchVoicePauseCommand(text);
-          // F1 — this final's position in the dispatched stream: its window
-          // end, or (no window) the service's position now.
-          const finalStreamEnd =
-            finalWindow.windowEnd ?? emittingService.dispatchedStreamOffset ?? null;
           if (voicePausedRef.current) {
             if (voicePauseCommand === 'resume' && !isResumeMatcherDisarmed()) {
-              // The resume cut is the phrase's own window end, so a reading
-              // spoken right after the phrase starts after it.
-              resumeWithOriginRef.current('phrase', finalStreamEnd);
+              resumeWithOriginRef.current('phrase');
               return;
             }
             requestStillPausedCue(text);
-            return;
-          }
-          // F1 — no longer paused, but this final was SPOKEN while paused (a
-          // delayed final that arrived after a Resume tap): it is pause-era
-          // input and is dropped here, counted, with NO still-paused cue —
-          // the session is no longer paused. A resume phrase is exempt (not
-          // paused, it no-ops anyway).
-          if (voicePauseCommand !== 'resume' && isPauseEraFinal(emittingService, finalWindow)) {
-            voicePauseDropCountRef.current += 1;
-            clientDiagnostic('voice_pause_drop_count', {
-              count: voicePauseDropCountRef.current,
-              textPreview: text.slice(0, 60),
-            });
-            clientDiagnostic('voice_pause_late_final_dropped', {
-              textPreview: text.slice(0, 60),
-              speechStart: finalWindow.speechStart,
-              windowEnd: finalWindow.windowEnd,
-            });
             return;
           }
           if (voicePauseCommand === 'pause') {
@@ -3413,7 +3419,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             if (namingSlot) {
               dispatchFinal(namingSlot.text, namingSlot.confidence, namingSlot.finals);
             }
-            enterVoicePause({ service: emittingService, start: finalStreamEnd });
+            enterVoicePause();
             return;
           }
           if (voicePauseCommand === 'resume') {
@@ -3590,6 +3596,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // stop()/teardownDeepgram can call service.disconnect() and abort
       // the in-flight key fetch via `shouldReconnect=false`.
       deepgramRef.current = service;
+      // Decision 34 — a replaced service carries no open turn, and a turn
+      // marked on the old one can never deliver its final here.
+      deepgramTurnRef.current = null;
+      tapDropTurnRef.current = null;
       service.connect(async () => {
         // Per-attempt guard: if stop() rotated the session while we were
         // waiting for backoff + key fetch, bail so the service aborts
@@ -3614,7 +3624,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       enterVoicePause,
       isResumeMatcherDisarmed,
       requestStillPausedCue,
-      isPauseEraFinal,
     ]
   );
 
@@ -6103,9 +6112,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       // The tap is a user gesture: refresh the audio grant exactly as the
       // button-pause resume does, before anything else runs.
       primeTts();
-      // A02D's manual-cutoff technique: the dispatched-stream position
-      // sampled on the tap's own tick is the resume cut.
-      exitVoicePause('tap', deepgramRef.current?.dispatchedStreamOffset ?? null);
+      exitVoicePause('tap');
       return;
     }
     // PLAN-E-TERM — pause→resume is a declared capture discontinuity.
@@ -6233,9 +6240,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   // the voice-pause branch with `via: 'phrase'`; otherwise it calls
   // `resume()`, whose not-set branch no-ops from 'active' (the phrase and a
   // tap landing in one tick give ONE tone and ONE line).
-  resumeWithOriginRef.current = (via, resumeCut) => {
+  resumeWithOriginRef.current = (via) => {
     if (via === 'phrase' && voicePausedRef.current) {
-      exitVoicePause('phrase', resumeCut ?? null);
+      exitVoicePause('phrase');
       return;
     }
     void resume();

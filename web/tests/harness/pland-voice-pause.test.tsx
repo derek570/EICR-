@@ -763,84 +763,117 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
     });
   });
 
-  // ── Fix-cycle 1, F1 — pause-era speech is never admitted after resume ──
-  describe('F1 — speech spoken while paused stays out after the resume', () => {
-    /** 80 ms Flux frames: 25 frames = 32000 samples = 2.0 s of stream. */
-    const FRAME = 1280;
-    const secondsAt = (frames: number) => (frames * FRAME) / 16000;
+  // ── WAVE-CONTEXT Decision 34 — a Resume TAP drops the turn in flight ──
+  describe('Decision 34 — the Deepgram turn in flight at a Resume tap is paused speech', () => {
+    const sent = (h: Bundle) => h.refs.sonnet!.sentTranscripts.map((t) => t.text);
+    const lateDrops = (h: Bundle) => diags(h, 'voice_pause_late_final_dropped');
 
-    it('a Resume tap racing a DELAYED final: the pause-era reading is dropped, a new one is admitted', async () => {
+    it("a tap while a Flux turn is open drops that turn's final (no cue); the next turn is admitted", async () => {
       const { harness, api } = await mount();
       const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      // The inspector dictates while paused; Deepgram's turn is open (StartOfTurn,
+      // an interim) and its final has not arrived when Resume is tapped.
       await act(async () => {
-        dg.advanceDispatchedStream(25);
-        dg.emitEndOfTurn('CertMate, pause.', 0.9, secondsAt(25));
-      });
-      expect(api().voicePaused).toBe(true);
-      await advance(SETTLE_MS);
-      // The inspector dictates while paused: the onset is at frame 35; the
-      // final is still in flight when Resume is tapped at frame 40.
-      await act(async () => {
-        dg.advanceDispatchedStream(10);
-        dg.noteLocalSpeechOnset();
         dg.emitSpeechStarted();
-        dg.advanceDispatchedStream(5);
+        dg.emitInterim('Zs on circuit 1 is');
       });
       const cues = count(played(harness), S('still_paused_cue'));
+      const drops = diags(harness, 'voice_pause_drop_count').length;
       await act(async () => {
         await api().resume();
       });
       expect(api().voicePaused).toBe(false);
-      const dispatchedBefore = dispatched(harness).length;
-      const dropsBefore = diags(harness, 'voice_pause_drop_count').length;
-      await act(async () => {
-        dg.emitEndOfTurn('Zs on circuit 1 is 0.44', 0.9, secondsAt(40));
-      });
+      await final(harness, 'Zs on circuit 1 is 0.44');
       await advance(600);
-      expect(dispatched(harness)).toHaveLength(dispatchedBefore);
-      expect(harness.refs.sonnet!.sentTranscripts).toHaveLength(0);
-      expect(diags(harness, 'voice_pause_drop_count').length - dropsBefore).toBe(1);
-      expect(
-        diags(harness, 'voice_pause_late_final_dropped').map((d) => d.payload.speechStart)
-      ).toEqual([35 * FRAME]);
-      // No longer paused: no still-paused cue for it.
+      expect(sent(harness)).toEqual([]);
+      expect(dispatched(harness)).toEqual([]);
+      expect(lateDrops(harness)).toHaveLength(1);
+      expect(diags(harness, 'voice_pause_drop_count').length - drops).toBe(1);
       expect(count(played(harness), S('still_paused_cue'))).toBe(cues);
-      // Speech that STARTS after the tap is admitted normally.
-      await act(async () => {
-        dg.advanceDispatchedStream(5);
-        dg.emitEndOfTurn('Zs on circuit 2 is 0.51', 0.9, secondsAt(45));
-      });
+      // Every later turn is admitted.
+      await final(harness, 'Zs on circuit 2 is 0.51');
       await advance(600);
-      expect(harness.refs.sonnet!.sentTranscripts.map((t) => t.text)).toEqual([
-        'Zs on circuit 2 is 0.51',
-      ]);
+      expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
+      expect(lateDrops(harness)).toHaveLength(1);
     });
 
-    it('a reading spoken right after the resume PHRASE (onset exactly at its cut) is admitted', async () => {
+    it('a tap with NO open turn drops nothing', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      // A turn opened and closed while paused (its final took the cue path).
+      await act(async () => {
+        harness.refs.deepgram!.emitSpeechStarted();
+      });
+      await final(harness, 'hello there');
+      await act(async () => {
+        await api().resume();
+      });
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 1 is 0.44']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    it('a marked turn that ends with no final (empty EndOfTurn) clears the marker', async () => {
       const { harness, api } = await mount();
       const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
       await act(async () => {
-        dg.advanceDispatchedStream(25);
-        dg.emitEndOfTurn('CertMate, pause.', 0.9, secondsAt(25));
+        dg.emitSpeechStarted();
       });
-      await advance(SETTLE_MS);
       await act(async () => {
-        dg.advanceDispatchedStream(13);
-        dg.emitEndOfTurn('CertMate, carry on.', 0.9, secondsAt(38));
+        await api().resume();
       });
-      expect(api().voicePaused).toBe(false);
-      // Onset at frame 38 — the phrase's own window end, i.e. the cut.
       await act(async () => {
-        dg.emitEndOfTurn('Zs on circuit 1 is 0.44', 0.9, secondsAt(38) + 0.8);
+        dg.emitEmptyEndOfTurn();
       });
+      await final(harness, 'Zs on circuit 1 is 0.44');
       await advance(600);
-      expect(diags(harness, 'voice_pause_late_final_dropped')).toHaveLength(0);
-      expect(harness.refs.sonnet!.sentTranscripts.map((t) => t.text)).toEqual([
-        'Zs on circuit 1 is 0.44',
-      ]);
+      expect(sent(harness)).toEqual(['Zs on circuit 1 is 0.44']);
+      expect(lateDrops(harness)).toHaveLength(0);
     });
 
-    it('a Resume tap racing the D7 drain: blocks held while paused are discarded, later ones replay', async () => {
+    it("a socket replacement clears the marker: the old turn's final cannot arrive, the new socket's is admitted", async () => {
+      const { harness, api } = await mount({ deepgram: 'reconnectable' });
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitInterim('Zs on circuit 1 is');
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      await act(async () => {
+        dg.emitUnownedClose();
+      });
+      await advance(30_000);
+      expect(dg.sockets.length).toBeGreaterThan(1);
+      expect(dg.connectionState).toBe('connected');
+      await final(harness, 'Zs on circuit 2 is 0.51');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    it('the phrase route is untouched: a reading right after "carry on" is admitted, nothing is marked', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitInterim('CertMate carry');
+      });
+      await final(harness, 'CertMate, carry on.');
+      expect(api().voicePaused).toBe(false);
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 1 is 0.44']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    it('a tap while D7 holds paused audio discards it; audio captured after the tap replays', async () => {
       const { harness, api } = await mount();
       const dg = harness.refs.deepgram!;
       await enterPause(harness, api);
@@ -862,6 +895,60 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       expect(dg.sentTaggedSegments.length - sentAtTap).toBe(2);
       expect(diags(harness, 'voice_pause_held_audio_discarded').at(-1)?.payload).toEqual({
         blocks: 3,
+      });
+    });
+
+    describe('nova-3 — "interim seen since the last final" is the open turn', () => {
+      const nova = (dg: Bundle['refs']['deepgram'], transcript: string, isFinal: boolean) =>
+        dg!.emitFrame({
+          type: 'Results',
+          is_final: isFinal,
+          speech_final: isFinal,
+          channel: { alternatives: [{ transcript, confidence: 0.9, words: [] }] },
+        });
+
+      it.each([
+        ['an interim was seen: the final is dropped', true, 0],
+        ['only a VAD SpeechStarted, no interim: the final is admitted', false, 1],
+      ] as const)('%s', async (_label, withInterim, admitted) => {
+        const harness = buildHarnessServices();
+        harness.services.resolveSttModel = () => Promise.resolve('nova3');
+        harness.services.micCaptureFactory = async () => ({ sampleRate: 16000, stop: () => {} });
+        __setRecordingTestServices(harness.services);
+        setDiagnosticTap(harness.services.diagnosticTap!);
+        const apiRef: { current: RecordingApi | null } = { current: null };
+        await act(async () => {
+          root.render(
+            <JobProvider initial={makeJob()}>
+              <RecordingProvider>
+                <Probe apiRef={apiRef} />
+              </RecordingProvider>
+            </JobProvider>
+          );
+        });
+        await act(async () => {
+          await apiRef.current!.start();
+        });
+        const dg = harness.refs.deepgram!;
+        expect(dg.model).toBe('nova3');
+        await act(async () => {
+          nova(dg, 'CertMate pause', true);
+        });
+        expect(apiRef.current!.voicePaused).toBe(true);
+        await advance(SETTLE_MS);
+        await act(async () => {
+          dg.emitFrame({ type: 'SpeechStarted' });
+          if (withInterim) nova(dg, 'Zs on circuit', false);
+        });
+        await act(async () => {
+          await apiRef.current!.resume();
+        });
+        await act(async () => {
+          nova(dg, 'Zs on circuit 1 is 0.44', true);
+        });
+        await advance(1500);
+        expect(harness.refs.sonnet!.sentTranscripts.length).toBe(admitted);
+        expect(diags(harness, 'voice_pause_late_final_dropped')).toHaveLength(1 - admitted);
       });
     });
   });
