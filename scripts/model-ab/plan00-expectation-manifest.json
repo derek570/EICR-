@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "f5daf288249b5897cf40684292036f974f7c81a00f35db87a408eb1e9dfcfae6",
+  "semantic_oracle_digest": "aa44c4b7973ddc8599229c9c969269a9ad48a67e59f07acd00ee62433175abfa",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -581,7 +581,7 @@
     },
     {
       "path": "scripts/field-replay/lib/replay-runner-core.mjs",
-      "sha256": "345aedc2dc70507e28455b7b3b03bb97a9591d21ee4c87d17867b9e5e129a226"
+      "sha256": "2fbe2a502a67583f519346acc7563254cd02a0795ab6d79d2d1462973ba4a9c7"
     },
     {
       "path": "scripts/field-replay/lib/replay-clock.mjs",
