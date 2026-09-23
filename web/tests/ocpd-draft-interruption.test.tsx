@@ -16,11 +16,18 @@
  * than re-deriving, because the next person to add an autosave to this control
  * is the one who would break it.
  *
- * The honest divergence is recorded on parity-ledger row
- * `circuits/ocpd-bs-en-free-text-client`: iOS RESTORES an interrupted draft
- * when the job reopens (persisted to a local-only table); web's draft is React
- * state and does not survive a page reload. Nothing wrong reaches a certificate
- * either way — web loses the typing where iOS keeps it.
+ * That web LOSES the typing on a reload is a decision, not an oversight:
+ * WAVE-CONTEXT.md § Decision 28a (TAKEN 2026-09-23, Derek). Web draft
+ * persistence was already built in this repo and withdrawn — PLAN-B2's
+ * `use-designation-draft.ts` grew a localStorage journal over review cycles
+ * 1-8 and removed it in cycle 9, because its recovery path could not clear
+ * what it recovered and a recovered draft could overwrite a NEWER value.
+ * Rebuilding it would reintroduce a worse failure than the one it solves.
+ *
+ * So the assertions below pin exactly what Decision 28a says: web never
+ * commits at an interruption. They do NOT claim that losing the typing is
+ * ideal — iOS restores it, from a local-only table, and the divergence is
+ * dated on parity-ledger row `circuits/ocpd-bs-en-free-text-client`.
  *
  * Mount strategy mirrors `ocpd-standard-field.test.tsx` — inline `createRoot`.
  * `@testing-library/react` resolves through the monorepo root and brings a
