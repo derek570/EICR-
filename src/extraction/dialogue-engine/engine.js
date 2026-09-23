@@ -96,6 +96,7 @@ import {
   setHandoff,
   deleteHandoff,
   isHandedOff,
+  hasAnyHandoffForSchema,
 } from '../dialogue-handoff-tombstone.js';
 import { formatCorrectionClause, speakSentinelValue } from '../confirmation-text.js';
 // NOTE: `clearValueCorrection` (lifecycle rule 2 — the slot itself was cleared)
@@ -1535,22 +1536,6 @@ const HANDOFF_DIRECTIVE_ALL_FILLED =
   'instruction: a correction is an ordinary write, read back by the system. ' +
   'Do not call `start_dialogue_script` for this circuit.';
 
-// PLAN-A2 EP (2026-09-23, Codex cycle-3 BLOCKER) — the DEFERRED re-entry.
-// `start_dialogue_script` with `circuit: null` cannot be fenced when it is
-// called, because the circuit is not yet known; it is fenced when the circuit
-// resolves (see `runActivePath`). By then the model's turn is over and it
-// believes the script is holding the `pending_writes` it queued, so the note
-// carries those under `unapplied` — a structurally complete dictated reading
-// is never silently dropped (Audio-First invariant #2) — and the model writes
-// them through the ordinary tool, so the bundler reads each back exactly once.
-const HANDOFF_DIRECTIVE_DEFERRED_ENTRY =
-  'The walk-through you started did not run: the circuit the inspector just named was already ' +
-  'handed to you, so you own these fields. Record each entry under `unapplied` with the ' +
-  'ordinary write tool; each write is read back by the system, so do not narrate it yourself. ' +
-  'Never clear or re-record anything under `existing_values`. Then ask ONE question in your ' +
-  'own words for the next remaining field. ' +
-  'Do not call `start_dialogue_script` for this circuit.';
-
 // ── PLAN-A — the HANDOFF NOTE ───────────────────────────────────────────────
 //
 // Shape (canonical): `schema`, `circuit_ref`, `asked_field`, the question text
@@ -1675,11 +1660,7 @@ function buildHandoffNote({ session, state, schema, askedField, askedQuestion, k
   return {
     kind,
     directive:
-      kind === 'all_filled_entry'
-        ? HANDOFF_DIRECTIVE_ALL_FILLED
-        : kind === 'deferred_entry'
-          ? HANDOFF_DIRECTIVE_DEFERRED_ENTRY
-          : HANDOFF_DIRECTIVE_SLOT_MISS,
+      kind === 'all_filled_entry' ? HANDOFF_DIRECTIVE_ALL_FILLED : HANDOFF_DIRECTIVE_SLOT_MISS,
     derived_replaced,
     schema: schema.name,
     circuit_ref,
@@ -1746,7 +1727,6 @@ function terminateWithHandoff({
   askedField,
   askedQuestion,
   textPreview = null,
-  unapplied = null,
 }) {
   const effectiveBoardId =
     state?.effectiveBoardId ?? resolveEffectiveBoardId(session, null) ?? null;
@@ -1760,9 +1740,6 @@ function terminateWithHandoff({
     askedQuestion,
     kind,
   });
-  // Present only on the deferred re-entry, and only when non-empty, so every
-  // other handoff note keeps its canonical shape byte-for-byte.
-  if (Array.isArray(unapplied) && unapplied.length > 0) serverNote.unapplied = unapplied;
 
   // Step 1 — read back once, before the state is cleared.
   const terminal = renderTerminalReadback({
@@ -3938,71 +3915,6 @@ function runActivePath({
         });
       }
     }
-    // PLAN-A2 EP (2026-09-23, Codex cycle-3 BLOCKER) — PLAN-A's tombstone on
-    // the DEFERRED start path. `enterScriptByName` fences a known circuit at
-    // call time, but `circuit: null` is allowed ("engine asks"), and nothing
-    // checked the tombstone when the answer resolved it. So a model restarting
-    // a handed-off circuit that way walked the script to completion — its own
-    // triple read-back on top of any same-turn bundler line, and exactly the
-    // re-entry the tombstone exists to stop.
-    //
-    // Scoped to MODEL-started episodes. An inspector's named trigger that
-    // resolves its circuit here is an explicit request to run the walk, which
-    // PLAN-A lets override a handoff, so it is left alone.
-    if (ref !== null && state.deferred_model_entry === true) {
-      const fenceBoardId = state.effectiveBoardId ?? resolveEffectiveBoardId(session, null);
-      if (isHandedOff(session, fenceBoardId, schema.name, ref)) {
-        logger?.info?.('stage6.script_reentered_after_handoff', {
-          sessionId,
-          schema: schema.name,
-          circuit_ref: ref,
-          board_id: fenceBoardId,
-          path: 'start_dialogue_script_deferred',
-        });
-        state.circuit_ref = ref;
-        state.pending_designation_candidates = null;
-        const slotFields = schema.slots.map((s) => s.field);
-        const existing = readExistingValues(session, ref, slotFields, state.effectiveBoardId);
-        for (const [f, v] of Object.entries(existing)) {
-          if (slotFields.includes(f) && v !== '' && v !== null && v !== undefined) {
-            state.values[f] = v;
-          }
-        }
-        // The queued values never write here — the model owns the circuit.
-        // Each queued operation is abandoned (never read back by the script),
-        // and every value not already on the certificate goes back to the
-        // model under `unapplied`. A value that IS already there, canonically
-        // equal, was written by a same-turn ordinary write and read back by
-        // the bundler; listing it would invite a second write and a second
-        // read-back, so it stays in `existing_values` only.
-        const unapplied = [];
-        for (const w of Array.isArray(state.pending_writes) ? state.pending_writes : []) {
-          markAbandoned(w[OPERATION_REF] ?? null);
-          const slot = schema.slots.find((s) => s.field === w.field);
-          const have = existing[w.field];
-          const onCertificate = have !== undefined && have !== null && have !== '';
-          if (onCertificate && valuesCanonicallyEqual(slot, have, w.value)) continue;
-          unapplied.push({ field: w.field, value: w.value });
-        }
-        state.pending_writes = [];
-        return terminateWithHandoff({
-          ws,
-          session,
-          sessionId,
-          schema,
-          state,
-          logger,
-          now,
-          responseEpoch,
-          transcriptText,
-          kind: 'deferred_entry',
-          askedField: null,
-          askedQuestion: null,
-          textPreview: text.slice(0, 80),
-          unapplied,
-        });
-      }
-    }
     if (ref !== null) {
       state.circuit_ref = ref;
       circuitResolvedThisTurn = true;
@@ -5960,6 +5872,22 @@ function matchesAny(text, patterns) {
 }
 
 /**
+ * PLAN-A2 EP — the schemas a script can pivot into, read from its slots'
+ * declared derivations (`{ value: '61009', pivot: 'rcbo' }`). Static: a pivot
+ * is decided by a value the inspector may dictate LATER in the walk, not only by
+ * what the model seeded, so the fence must not depend on the pending writes.
+ */
+function pivotTargetsOf(schema) {
+  const targets = new Set();
+  for (const slot of schema?.slots ?? []) {
+    for (const d of Array.isArray(slot.derivations) ? slot.derivations : []) {
+      if (typeof d?.pivot === 'string') targets.add(d.pivot);
+    }
+  }
+  return [...targets];
+}
+
+/**
  * Server-driven script entry — the back door for the Sonnet
  * `start_dialogue_script` tool (Plan: Silvertown follow-up 2026-04-30).
  *
@@ -6199,6 +6127,53 @@ export function enterScriptByName({
     };
   }
 
+  // PLAN-A2 EP (2026-09-23, Codex cycle 3/4) — the circuit-less start after a
+  // handoff. `circuit: null` is allowed above ("engine asks"), and the check just
+  // above cannot match it. Left alone, the engine asks "Which circuit?", queues
+  // the model's values, and — if the inspector names a handed-off circuit —
+  // walks it anyway: its own read-back on top of any ordinary write the model
+  // made that turn, which is the double read-back the tombstone exists to stop.
+  //
+  // Fencing when the circuit later RESOLVES was tried and is wrong in two ways:
+  // the model's turn is over, so whether a same-turn ordinary write already
+  // spoke a queued value cannot be known, and one pending `BS EN 61009` can pivot
+  // into a different schema's walk. So the start is refused HERE, in the same
+  // turn, while the model still holds its values: nothing is queued, seeded or
+  // asked, and nothing is dropped. It names the circuit and calls again — the
+  // known-circuit path above then applies — or writes the values itself.
+  //
+  // Scope: a handoff for THIS schema, or for any schema one of its slots can
+  // pivot into (OCPD and RCD pivot to RCBO), anywhere on the current board. It
+  // over-fences a start meant for a different circuit, deliberately: the cost is
+  // one question the model asks itself, and the alternative is a guess.
+  if (resolvedCircuitRef === null) {
+    const guarded = [schema.name, ...pivotTargetsOf(schema)];
+    const fencedBy = guarded.find((name) =>
+      hasAnyHandoffForSchema(session, entryEffectiveBoardId, name)
+    );
+    if (fencedBy) {
+      logger?.info?.('stage6.script_reentered_after_handoff', {
+        sessionId,
+        schema: schema.name,
+        fenced_by_schema: fencedBy,
+        circuit_ref: null,
+        board_id: entryEffectiveBoardId,
+        path: 'start_dialogue_script_no_circuit',
+      });
+      return {
+        ok: true,
+        status: 'circuit_required',
+        schema: schema.name,
+        circuit_ref: null,
+        remaining: [],
+        hint:
+          'A walk-through for this device was already handed to you on this board, so the ' +
+          'server will not ask for the circuit. Nothing was recorded or queued. Name the ' +
+          'circuit and call again, or record the values yourself with the ordinary write tool.',
+      };
+    }
+  }
+
   // Validate Sonnet-supplied volunteered values against the schema's
   // slot fields. Drop any entry with an unknown field — Sonnet should
   // not be hallucinating field names (the agentic prompt enumerates
@@ -6267,11 +6242,6 @@ export function enterScriptByName({
   // partial fill is honoured (mirrors runEntry's skip-already-filled).
   initScriptState(session, schema, resolvedCircuitRef, now);
   const state = session.dialogueScriptState;
-  // PLAN-A2 EP — a model-started episode with no circuit yet. The tombstone
-  // cannot be checked until the circuit resolves; `runActivePath` checks it
-  // then, and this flag is how it tells a model start from an inspector's
-  // named trigger (which may legitimately override a handoff).
-  if (resolvedCircuitRef === null) state.deferred_model_entry = true;
   // Codex diff-review r2 — record the ledger's `rejected` disposition for
   // every KNOWN-field write the normaliser refused (invalid/out-of-range/
   // off-ladder), now that `state.operations` exists to hold it.

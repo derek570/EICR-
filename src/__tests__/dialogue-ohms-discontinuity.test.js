@@ -32,6 +32,8 @@ import {
   ALL_DIALOGUE_SCHEMAS,
 } from '../extraction/dialogue-engine/index.js';
 import { isHandedOff } from '../extraction/dialogue-handoff-tombstone.js';
+import { dispatchStartDialogueScript } from '../extraction/stage6-dispatchers-script.js';
+import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
 import { parseMegaohms } from '../extraction/dialogue-engine/parsers/megaohms.js';
 import {
   RING_VALUE_GROUP,
@@ -621,15 +623,15 @@ describe('PLAN-A2 acceptance 3 — combined with PLAN-A’s handoff tombstone', 
   });
 });
 
-describe('PLAN-A2 acceptance 3 — the DEFERRED start path is fenced too (Codex EP cycle 3, blocker)', () => {
+describe('PLAN-A2 acceptance 3 — a circuit-less start after a handoff is refused (Codex EP cycles 3-4)', () => {
   // `start_dialogue_script` may be called with `circuit: null` — "engine asks".
-  // PLAN-A fenced the call when the circuit is known, but nothing checked the
-  // tombstone when the answer resolved it, so a handed-off ring circuit walked
-  // to its own "R2 infinity. All correct?" — on top of the bundler's line when
-  // the model had also written the value the ordinary way. Two audible
-  // "infinity"s for one dictated reading, and script involvement after a
-  // handoff: both halves of acceptance 3.
-  const SESSION_ID = 'sess_a2_deferred';
+  // PLAN-A fenced the call only when the circuit is known, so after a handoff on
+  // circuit 1 the engine asked "Which circuit?", queued the model's `∞`, and when
+  // the inspector said "circuit 1" walked the handed-off circuit to its own
+  // "R2 infinity. All correct?" — on top of any ordinary write the model made
+  // that turn. The start is now refused in the SAME turn, before anything is
+  // queued, so the model keeps its values and nothing is spoken by the script.
+  const SESSION_ID = 'sess_a2_no_circuit';
 
   class FakeWS {
     constructor() {
@@ -642,12 +644,12 @@ describe('PLAN-A2 acceptance 3 — the DEFERRED start path is fenced too (Codex 
     }
   }
 
-  function setup() {
+  function setup(circuits = { 1: { circuit_designation: 'Ring Main' }, 2: {} }) {
     const ws = new FakeWS();
     const session = {
       sessionId: SESSION_ID,
       stateSnapshot: {
-        circuits: { 1: { circuit_designation: 'Ring Main' } },
+        circuits,
         boards: [{ id: 'main', board_type: 'main' }],
         currentBoardId: 'main',
       },
@@ -665,95 +667,110 @@ describe('PLAN-A2 acceptance 3 — the DEFERRED start path is fenced too (Codex 
     return { ws, session, turn };
   }
 
-  function handOff(turn) {
+  function handOffRing(turn) {
     turn('Ring continuity on circuit 1.', 1000);
     turn('there is no way to get at the other end', 2000);
   }
 
-  function modelStartsWithNoCircuit(session, ws, now = 3000) {
-    return enterScriptByName({
+  const start = (session, ws, schemaName, pending_writes) =>
+    enterScriptByName({
       session,
       ws,
       sessionId: SESSION_ID,
       schemas: ALL_DIALOGUE_SCHEMAS,
-      schemaName: 'ring_continuity',
+      schemaName,
       circuit_ref: null,
-      pending_writes: [{ field: 'ring_r2_ohm', value: INFINITY_SENTINEL }],
+      pending_writes,
       logger: null,
-      now,
+      now: 3000,
     });
-  }
 
-  const spokenTexts = (frames) =>
-    frames.map((f) => f.question ?? f.text).filter((s) => typeof s === 'string');
-
-  test('same-turn ordinary write + deferred start: the bundler line is the ONLY "infinity"', () => {
+  test('the refusal: nothing queued, nothing asked, no script, tombstone intact', () => {
     const { ws, session, turn } = setup();
-    handOff(turn);
-    // The model's ordinary write this turn — bundler-spoken as
-    // "Circuit 1, ring r2 infinity" (asserted in the block above).
-    session.stateSnapshot.circuits[1].ring_r2_ohm = INFINITY_SENTINEL;
-    expect(modelStartsWithNoCircuit(session, ws).status).toBe('entered');
+    handOffRing(turn);
     const before = ws.sent.length;
 
-    const out = turn('circuit 1', 4000);
-
-    // The script hands straight back to the model rather than walking.
-    expect(out.fallthrough).toBe(true);
-    expect(out.serverNote.kind).toBe('deferred_entry');
-    expect(session.dialogueScriptState).toBeNull();
-    expect(isHandedOff(session, 'main', 'ring_continuity', 1)).toBe(true);
-    // Already on the certificate and already read back, so NOT returned for
-    // re-writing — that would be the second read-back.
-    expect(out.serverNote.unapplied).toBeUndefined();
-    expect(out.serverNote.existing_values).toMatchObject({ ring_r2_ohm: INFINITY_SENTINEL });
-    // Nothing further from the script: no ask, no triple, no "infinity".
-    const after = spokenTexts(ws.sent.slice(before));
-    expect(after.filter((s) => /infinity/.test(s))).toHaveLength(0);
-    expect(ws.sent.filter((f) => f.reason === 'confirm_ring_continuity')).toHaveLength(0);
-    // Follow the walk the old code took; the script must stay silent.
-    turn('0.43', 5000);
-    turn('0.44', 6000);
-    expect(ws.sent.filter((f) => f.reason === 'confirm_ring_continuity')).toHaveLength(0);
-  });
-
-  test('deferred start ALONE: the value goes back to the model, never silently dropped', () => {
-    const { ws, session, turn } = setup();
-    handOff(turn);
-    modelStartsWithNoCircuit(session, ws);
-    const out = turn('circuit 1', 4000);
-
-    expect(out.fallthrough).toBe(true);
-    expect(out.serverNote.unapplied).toEqual([
+    const r = start(session, ws, 'ring_continuity', [
       { field: 'ring_r2_ohm', value: INFINITY_SENTINEL },
     ]);
-    // The script wrote nothing — the model owns the write, and the bundler
-    // will read it back once.
+
+    expect(r).toMatchObject({ ok: true, status: 'circuit_required', circuit_ref: null });
+    expect(r.hint).toMatch(/Nothing was recorded or queued/);
+    expect(session.dialogueScriptState).toBeNull();
+    expect(ws.sent.length).toBe(before);
+    expect(isHandedOff(session, 'main', 'ring_continuity', 1)).toBe(true);
+
+    // The inspector naming the circuit afterwards reaches no script at all —
+    // there is none to answer — so the old walk to "R2 infinity" cannot happen.
+    turn('circuit 1', 4000);
+    expect(ws.sent.filter((f) => f.reason === 'confirm_ring_continuity')).toHaveLength(0);
     expect(session.stateSnapshot.circuits[1].ring_r2_ohm).toBeUndefined();
-    // And the model actually READS it: the note is prepended to the utterance.
-    expect(out.transcriptText).toMatch(/^\[Server note: The walk-through you started did not run/);
-    expect(out.transcriptText).toContain('"unapplied":[{"field":"ring_r2_ohm","value":"∞"}]');
-    expect(out.transcriptText.endsWith('circuit 1')).toBe(true);
   });
 
-  test('scope: a deferred MODEL start on a circuit that was never handed off still walks', () => {
+  test('through the REAL dispatcher: the model is told, in the same turn, and nothing is backfilled', async () => {
     const { ws, session, turn } = setup();
-    modelStartsWithNoCircuit(session, ws);
-    const out = turn('circuit 1', 4000);
-    expect(out.fallthrough).toBe(false);
-    expect(session.dialogueScriptState?.active).toBe(true);
-    expect(session.dialogueScriptState.circuit_ref).toBe(1);
-    expect(session.stateSnapshot.circuits[1].ring_r2_ohm).toBe(INFINITY_SENTINEL);
+    handOffRing(turn);
+    session.activeWs = ws;
+    const perTurnWrites = createPerTurnWrites();
+
+    const out = await dispatchStartDialogueScript(
+      {
+        tool_call_id: 'tu_a2_nc',
+        name: 'start_dialogue_script',
+        input: {
+          schema: 'ring_continuity',
+          circuit: null,
+          source_turn_id: 't1',
+          reason: 'inspector said the CPC is open',
+          pending_writes: [{ field: 'ring_r2_ohm', value: INFINITY_SENTINEL }],
+        },
+      },
+      { session, logger: { info() {}, warn() {} }, turnId: 'turn-1', round: 1, perTurnWrites }
+    );
+
+    expect(out.is_error).toBe(false);
+    const body = JSON.parse(out.content);
+    expect(body.status).toBe('circuit_required');
+    expect(body.hint).toMatch(/Name the circuit and call again/);
+    expect(body.seeded_writes).toEqual([]);
+    expect(body.queued_writes).toEqual([]);
+    // The script wrote nothing, so the bundler has nothing from it to speak.
+    expect(perTurnWrites.readings.size).toBe(0);
   });
 
-  test('scope: an INSPECTOR trigger with no circuit is not fenced — PLAN-A lets it override', () => {
-    const { session, turn } = setup();
-    handOff(turn);
-    turn('Ring continuity.', 3000);
-    expect(session.dialogueScriptState?.deferred_model_entry).toBeUndefined();
-    const out = turn('circuit 1', 4000);
-    expect(out.fallthrough).toBe(false);
-    expect(session.dialogueScriptState?.active).toBe(true);
-    expect(session.dialogueScriptState.circuit_ref).toBe(1);
+  test('a handoff for a PIVOT target fences too: OCPD and RCD can walk into RCBO', () => {
+    const { ws, session } = setup({ 3: {} });
+    // Stamp an RCBO handoff exactly as PLAN-A's first-miss handoff would.
+    session.dialogueScriptHandoffs = new Map([['main::rcbo::3', { at: 1 }]]);
+    for (const schemaName of ['ocpd', 'rcd']) {
+      const r = start(session, ws, schemaName, [
+        { field: schemaName === 'ocpd' ? 'ocpd_bs_en' : 'rcd_bs_en', value: 'BS EN 61009' },
+      ]);
+      expect(r.status).toBe('circuit_required');
+      // Never initialised at all — not even an inactive shell.
+      expect(session.dialogueScriptState ?? null).toBeNull();
+    }
+    expect(ws.sent).toHaveLength(0);
+  });
+
+  test('control: with no handoff on the board, a circuit-less start still enters and asks', () => {
+    const { ws, session } = setup();
+    const r = start(session, ws, 'ring_continuity', [
+      { field: 'ring_r2_ohm', value: INFINITY_SENTINEL },
+    ]);
+    expect(r.status).toBe('entered');
+    expect(ws.sent.map((f) => f.question)).toContain('Which circuit is the ring continuity for?');
+  });
+
+  test('control: a handoff for an UNRELATED schema does not fence', () => {
+    const { ws, session } = setup();
+    session.dialogueScriptHandoffs = new Map([['main::insulation_resistance::1', { at: 1 }]]);
+    expect(start(session, ws, 'ring_continuity', []).status).toBe('entered');
+  });
+
+  test('control: a handoff on ANOTHER board does not fence the current one', () => {
+    const { ws, session } = setup();
+    session.dialogueScriptHandoffs = new Map([['board-b::ring_continuity::1', { at: 1 }]]);
+    expect(start(session, ws, 'ring_continuity', []).status).toBe('entered');
   });
 });

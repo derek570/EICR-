@@ -130,3 +130,24 @@ export function migrateHandoffsForRename(session, effectiveBoardId, fromRef, toR
 export function isHandedOff(session, effectiveBoardId, schemaName, circuit_ref) {
   return getHandoff(session, effectiveBoardId, schemaName, circuit_ref) !== null;
 }
+
+/**
+ * PLAN-A2 EP (2026-09-23) — does ANY circuit on this board hold a handoff for
+ * this schema?
+ *
+ * The one reader that cannot name a circuit: `start_dialogue_script` with
+ * `circuit: null` ("engine asks"). Checking a tombstone once the inspector's
+ * answer resolves the circuit is too late — by then the model's turn is over, so
+ * the values it queued have no owner that can speak them exactly once. The
+ * engine refuses such a start up front instead, while the model can still act
+ * in the same turn. Same board-normalisation rule as every other reader.
+ */
+export function hasAnyHandoffForSchema(session, effectiveBoardId, schemaName) {
+  const map = session?.dialogueScriptHandoffs;
+  if (!(map instanceof Map) || map.size === 0) return false;
+  const prefix = `${effectiveBoardId ?? 'main'}::${schemaName}::`;
+  for (const key of map.keys()) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
