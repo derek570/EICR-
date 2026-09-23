@@ -207,7 +207,9 @@ describe('ocpdMaxZsStatus and the pinned marker copy', () => {
   });
 
   it('ok for an auto row', () => {
-    expect(ocpdMaxZsStatus(row({ ocpd_max_zs_ohm: '1.44', ocpd_max_zs_source: 'auto' }))).toBe('ok');
+    expect(ocpdMaxZsStatus(row({ ocpd_max_zs_ohm: '1.44', ocpd_max_zs_source: 'auto' }))).toBe(
+      'ok'
+    );
   });
 
   it('ok for a manual row that matches the lookup', () => {
@@ -234,9 +236,7 @@ describe('ocpdMaxZsStatus and the pinned marker copy', () => {
   it('renders the pinned copy, byte for byte', () => {
     expect(
       ocpdMaxZsWarningText('3', row({ ocpd_max_zs_ohm: '0.99', ocpd_max_zs_source: 'manual' }))
-    ).toBe(
-      'Circuit 3: max Zs 0.99 was entered by hand and does not match BS EN 60898 B 32 A'
-    );
+    ).toBe('Circuit 3: max Zs 0.99 was entered by hand and does not match BS EN 60898 B 32 A');
     expect(ocpdMaxZsWarningText('4', row({ ocpd_max_zs_ohm: '1.44' }))).toBe(
       'Circuit 4: max Zs 1.44 has no recorded source — confirm or recompute'
     );

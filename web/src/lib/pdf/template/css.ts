@@ -118,6 +118,15 @@ export function cssStyles(): string {
             text-align: center; vertical-align: middle;
             white-space: nowrap;
         }
+        /* PLAN-CC (feedback-2026-09-17) — the OCPD BS(EN) column is FREE TEXT
+           now, so it has to wrap. Its 34px column fits "BS EN 60898"; a
+           perfectly ordinary "BS EN 60947-4-1" is longer, and the table's
+           default white-space:nowrap would clip it — printing a truncated
+           device standard on a certificate rather than an ugly one. Column 9
+           of the schedule; the iOS template carries the identical rule. */
+        .circuit-table td:nth-child(9) {
+            white-space: normal; word-break: break-word; overflow-wrap: break-word;
+        }
         .circuit-table td:nth-child(2) {
             white-space: normal; word-wrap: break-word; overflow-wrap: break-word;
             text-align: left;

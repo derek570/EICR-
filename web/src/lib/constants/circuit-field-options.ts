@@ -9,6 +9,8 @@
  * stay aligned with the picker UI.
  */
 
+import { OCPD_BS_TIER1, OCPD_BS_TIER2 } from '@/lib/recording/ocpd-bs-suggestions.generated';
+
 export type CircuitFieldKey =
   | 'wiring_type'
   | 'ref_method'
@@ -23,16 +25,13 @@ export type CircuitFieldKey =
 export const CIRCUIT_FIELD_OPTIONS: Record<CircuitFieldKey, readonly string[]> = {
   wiring_type: ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'O'],
   ref_method: ['A', 'B', 'C', 'D', 'E', 'F', 'G', '100', '101', '102', '103'],
-  ocpd_bs_en: [
-    'BS EN 60898',
-    'BS EN 61009',
-    'BS EN 60947-2',
-    'BS EN 60947-3',
-    'BS EN 60269-2',
-    'BS 3036',
-    'BS 1361',
-    'N/A',
-  ],
+  // PLAN-CC (feedback-2026-09-17) — `ocpd_bs_en` is NOT a closed list any more.
+  // These are the picker's SUGGESTIONS, generated from
+  // `config/ocpd-bs-suggestions.json`, and any grammar-valid standard is
+  // accepted whether or not it appears here. The per-cell editor is a free-text
+  // combo (`OcpdStandardField`); this entry drives the desktop column bulk-fill
+  // popover, which offers both tiers rather than the old eight.
+  ocpd_bs_en: [...OCPD_BS_TIER1, ...OCPD_BS_TIER2],
   ocpd_type: ['B', 'C', 'D', 'gG', 'gM', 'aM', 'HRC', 'Rew', 'N/A'],
   rcd_bs_en: ['BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A'],
   rcd_type: ['AC', 'A', 'F', 'B', 'S', 'N/A'],

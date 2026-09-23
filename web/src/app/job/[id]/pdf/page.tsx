@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import { ocpdMaxZsWarningText } from '@certmate/shared-utils';
 import { useParams } from 'next/navigation';
 import {
   AlertTriangle,
@@ -638,6 +639,19 @@ function computeWarnings(data: PdfJobShape, isEIC: boolean): string[] {
   const circuits = data.circuits ?? [];
   if (!Array.isArray(circuits) || circuits.length === 0) {
     w.push('No circuits added (Circuits tab)');
+  }
+
+  // PLAN-CC — one line per circuit whose max Zs the app cannot vouch for.
+  // NON-BLOCKING by design: generation proceeds either way. A hand-entered
+  // value that no longer fits its OCPD tuple and a value with no recorded
+  // origin are both things the inspector should see before issuing, and
+  // neither is a reason to refuse to produce the certificate.
+  if (Array.isArray(circuits)) {
+    for (const circuit of circuits as Array<Record<string, unknown>>) {
+      const ref = typeof circuit.circuit_ref === 'string' ? circuit.circuit_ref : '';
+      const line = ocpdMaxZsWarningText(ref, circuit);
+      if (line) w.push(line);
+    }
   }
 
   if (isEIC) {

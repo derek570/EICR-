@@ -30,6 +30,8 @@
  */
 
 import * as React from 'react';
+import { MaxZsMarker } from '@/components/job/max-zs-marker';
+import { useOcpdStandardDraft } from '@/components/job/ocpd-standard-field';
 import { Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
 import { orderCircuitFocusFields } from './circuit-focus-fields';
@@ -343,13 +345,26 @@ function Row({
           className="border-b border-[var(--color-border-subtle)] px-2 py-1"
           style={{ width: col.width, minWidth: col.width }}
         >
-          <CellField
-            id={circuit.id}
-            column={col}
-            value={v(col.key)}
-            onPatch={onPatch}
-            circuitRef={ref}
-          />
+          {col.key === 'ocpd_max_zs_ohm' ? (
+            <div className="flex items-center gap-1">
+              <MaxZsMarker circuitRef={ref} row={circuit as unknown as Record<string, unknown>} />
+              <CellField
+                id={circuit.id}
+                column={col}
+                value={v(col.key)}
+                onPatch={onPatch}
+                circuitRef={ref}
+              />
+            </div>
+          ) : (
+            <CellField
+              id={circuit.id}
+              column={col}
+              value={v(col.key)}
+              onPatch={onPatch}
+              circuitRef={ref}
+            />
+          )}
         </td>
       ))}
       <td
@@ -382,6 +397,13 @@ function CellField({
   circuitRef: string;
 }) {
   const ariaLabel = `Circuit ${circuitRef} ${column.label}`;
+  // PLAN-CC — the OCPD standard is free text with a cap and a
+  // canonicalise-on-commit rule, so it cannot use the plain per-keystroke cell
+  // input. The suggestion tiers do not fit a 140px column; the COMMIT CONTRACT
+  // is identical, which is the part that must not drift between surfaces.
+  if (column.key === 'ocpd_bs_en') {
+    return <OcpdStandardCell id={id} value={value} onPatch={onPatch} ariaLabel={ariaLabel} />;
+  }
   if (column.kind === 'select') {
     return (
       <select
@@ -406,6 +428,42 @@ function CellField({
       onPatch={onPatch}
       inputMode={column.inputMode}
       ariaLabel={ariaLabel}
+    />
+  );
+}
+
+function OcpdStandardCell({
+  id,
+  value,
+  onPatch,
+  ariaLabel,
+}: {
+  id: string;
+  value: Cell;
+  onPatch: (id: string, patch: Record<string, string>) => void;
+  ariaLabel: string;
+}) {
+  const accessory = React.useContext(StickyAccessoryContext);
+  const handlers = accessory?.inputHandlers(id, 'ocpd_bs_en');
+  const field = useOcpdStandardDraft(String(value ?? ''), (next) =>
+    onPatch(id, { ocpd_bs_en: next })
+  );
+  return (
+    <input
+      type="text"
+      inputMode="text"
+      maxLength={field.cap}
+      ref={(el) => accessory?.registerRef(id, 'ocpd_bs_en', el)}
+      value={field.draft}
+      onChange={field.onChange}
+      onFocus={handlers?.onFocus}
+      onBlur={(e) => {
+        field.onBlur(e);
+        handlers?.onBlur?.();
+      }}
+      onKeyDown={field.onKeyDown}
+      aria-label={ariaLabel}
+      className="w-full rounded-[var(--radius-sm)] border border-transparent bg-transparent px-1 py-0.5 text-[12px] focus:border-[var(--color-brand-blue)] focus:outline-none"
     />
   );
 }
