@@ -290,6 +290,61 @@ describe('acceptance 3b — clear_field_for_all_circuits', () => {
     ]);
   });
 
+  test("a board_id:'*' sweep clearing ONE same-named circuit per board names each board", async () => {
+    // Codex review cycle 3: one-member buckets are not grouped, so the
+    // per-circuit line had no board clause and both boards spoke the
+    // identical "Circuit 1, reference method cleared".
+    const session = {
+      sessionId: 's-bulk-2b-single',
+      stateSnapshot: {
+        circuits: {
+          0: {},
+          1: { circuit_designation: 'Lights', ref_method: 'C' },
+          'garage::1': {
+            circuit: 1,
+            board_id: 'garage',
+            circuit_designation: 'Lights',
+            ref_method: 'C',
+          },
+        },
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'garage', board_type: 'sub_distribution' },
+        ],
+        currentBoardId: 'main',
+      },
+      extractedObservations: [],
+    };
+    const writes = createPerTurnWrites();
+    await dispatch(session, writes, bulkClear({ board_id: '*' }));
+    const result = bundleToolCallsIntoResult(writes, null, {
+      turnId: 'turn-1',
+      session,
+      snapshot: session.stateSnapshot,
+      stateSnapshot: session.stateSnapshot,
+      confirmationsEnabled: true,
+    });
+    const spoken = (result.confirmations ?? []).filter((c) => c.field === 'field_cleared');
+    expect(spoken).toHaveLength(2);
+    expect(new Set(spoken.map((c) => c.text)).size).toBe(2);
+    // The prefix is whatever the designation lookup yields (this direct
+    // bundler call passes no designation map, so "Circuit 1"); the property
+    // under test is the board suffix, which is what makes the two distinct.
+    const texts = spoken.map((c) => c.text).sort();
+    expect(texts[0]).toMatch(/reference method cleared on board 1$/);
+    expect(texts[1]).toMatch(/reference method cleared on board 2$/);
+  });
+
+  test('a SINGLE-board per-circuit clear line is unchanged — no board clause', async () => {
+    const session = build14();
+    for (let n = 2; n <= 14; n += 1) session.stateSnapshot.circuits[n].ref_method = '';
+    const writes = createPerTurnWrites();
+    await dispatch(session, writes, bulkClear());
+    const spoken = confirmations(writes, session).filter((c) => c.field === 'field_cleared');
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0].text).not.toContain('on board');
+  });
+
   test('an UNKNOWN board_id is rejected, never reported as a successful empty sweep', async () => {
     // Codex review cycle 1: it used to return {ok:true, cleared:[]} while the
     // value the inspector asked to remove stayed put.

@@ -28,6 +28,12 @@ import {
 import { normaliseDialogueSlotWrite } from '../extraction/dialogue-engine/helpers/dialogue-slot-normalise.js';
 import { ALL_DIALOGUE_SCHEMAS } from '../extraction/dialogue-engine/index.js';
 import { dispatchStartDialogueScript } from '../extraction/stage6-dispatchers-script.js';
+import { BOARD_FIELD_ENUM } from '../extraction/stage6-tool-schemas.js';
+import { boardNoticeSlot, boardFieldLabel } from '../extraction/stage6-blank-write-notices.js';
+import {
+  STRUCTURAL_READING_FIELDS,
+  UNROUTABLE_READING_FIELDS,
+} from '../extraction/client-routable-reading-fields.js';
 
 function mockLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
@@ -253,6 +259,63 @@ describe('acceptance 2 — record_board_reading', () => {
     expect(JSON.parse(res.content).error.code).toBe('client_route_unavailable');
     expect(notices(writes, 'empty_write_blocked')).toHaveLength(0);
     expect(notices(writes, 'unroutable_board_reading')).toHaveLength(1);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+describe('board refusal labels are distinct across every reachable board field', () => {
+  // A board refusal's rendered bytes are the field label plus, for a
+  // board-scoped field only, the board ordinal. Two DISTINCT slots that
+  // shared a label would render identical bytes into the clients' 30 s text
+  // dedupe, and the second refusal would be silent. Codex review cycle 3
+  // raised `main_earth_conductor_csa` / `earthing_conductor_csa`, which share
+  // "main earth"; the first is not in `BOARD_FIELD_ENUM`, so
+  // `record_board_reading` refuses it as off-schema before the blank check
+  // and the pair is unreachable. This enumerates EVERY reachable field rather
+  // than arguing from one pair, so a schema change that creates a real
+  // collision fails here.
+  function labelCollisions(fields) {
+    const byLabel = new Map();
+    for (const f of fields) {
+      if (STRUCTURAL_READING_FIELDS.has(f) || UNROUTABLE_READING_FIELDS.has(f)) continue;
+      const slot = boardNoticeSlot(f, 'main');
+      const label = boardFieldLabel(f);
+      if (!byLabel.has(label)) byLabel.set(label, new Set());
+      byLabel.get(label).add(`${slot.field}|${slot.boardId}`);
+    }
+    return [...byLabel.entries()].filter(([, slots]) => slots.size > 1).map(([l]) => l);
+  }
+
+  test('no two distinct reachable board slots share a spoken label', () => {
+    expect(labelCollisions(BOARD_FIELD_ENUM)).toEqual([]);
+  });
+
+  test('KNOWN-BAD: admitting the legacy alias to the enum WOULD collide', () => {
+    // Same function, same input shape, one injected field — proves the empty
+    // result above is a finding and not an instrument that cannot fail.
+    expect(labelCollisions([...BOARD_FIELD_ENUM, 'main_earth_conductor_csa'])).toEqual([
+      'main earth',
+    ]);
+  });
+
+  test('the legacy alias is refused as off-schema before the blank check', async () => {
+    const session = makeSession({
+      boards: [{ id: 'main', board_type: 'main' }],
+      currentBoardId: 'main',
+    });
+    const writes = createPerTurnWrites();
+    const res = await run(session, writes, {
+      tool_call_id: 'tu_alias',
+      name: 'record_board_reading',
+      input: {
+        field: 'main_earth_conductor_csa',
+        value: '',
+        confidence: 0.9,
+        source_turn_id: 't1',
+      },
+    });
+    expect(JSON.parse(res.content).error.code).not.toBe('empty_write_not_allowed');
+    expect(notices(writes, 'empty_write_blocked')).toHaveLength(0);
   });
 });
 

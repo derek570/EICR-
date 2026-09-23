@@ -507,6 +507,10 @@ function synthesiseObservationAndClearedConfirmations(
   // announced as cleared while its new value is read back beside it.
   const c3BulkClearGroups = new Map();
   const c3GroupedIndices = new Set();
+  // callId -> the set of boards that call cleared on. Hoisted so BOTH the
+  // grouped lines and the ungrouped per-circuit lines can tell whether a sweep
+  // spanned more than one board.
+  const boardsPerCall = new Map();
   if (Array.isArray(fieldCorrections)) {
     for (let i = 0; i < fieldCorrections.length; i += 1) {
       const c = fieldCorrections[i];
@@ -540,7 +544,6 @@ function synthesiseObservationAndClearedConfirmations(
     // and 2 both render "Circuits 1, 2, reference method cleared". So a call
     // spanning several boards names the board in its text and its token. A
     // single-board call is unchanged, keeping the plan's `p4ack_<turn>_<call>`.
-    const boardsPerCall = new Map();
     for (const bucket of c3BulkClearGroups.values()) {
       const key = String(bucket.callId);
       if (!boardsPerCall.has(key)) boardsPerCall.set(key, new Set());
@@ -627,6 +630,16 @@ function synthesiseObservationAndClearedConfirmations(
         const prefix =
           typeof desig === 'string' && desig.trim() ? desig.trim().slice(0, 40) : `Circuit ${circ}`;
         text = `${prefix}, ${friendly} cleared`;
+        // PLAN-C3 — a one-circuit member of a sweep that spanned several
+        // boards is not grouped, but it still needs its board: two boards each
+        // clearing one same-named circuit 1 otherwise speak the identical line
+        // twice and the inspector cannot tell which board each belongs to.
+        const sweepCallId = c[BULK_OUTCOME_CALL_ID];
+        if (sweepCallId != null && (boardsPerCall.get(String(sweepCallId))?.size ?? 0) > 1) {
+          const sweepBoard = c?.[EFFECTIVE_CIRCUIT_SLOT]?.boardId ?? null;
+          const ordinal = spokenBoardOrdinal(snapshot, sweepBoard);
+          text = `${text} on board ${ordinal ?? String(sweepBoard ?? '')}`;
+        }
       }
       out.push({
         text,
