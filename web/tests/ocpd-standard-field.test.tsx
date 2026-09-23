@@ -299,4 +299,34 @@ describe('OcpdStandardComboCell — the grid form', () => {
     spy.mockRestore();
     Object.defineProperty(window, 'innerHeight', { value: originalHeight, configurable: true });
   });
+
+  it('never places the list off the top of a SHORT viewport', async () => {
+    // Forcing the preferred minimum height put the top at a negative
+    // coordinate, and a fixed list cannot be scrolled back into view — the
+    // options were unreachable in exactly the case the flip exists to rescue.
+    const { OcpdStandardComboCell } = await import('@/components/job/ocpd-standard-field');
+    const originalHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { value: 180, configurable: true });
+    const cramped = { left: 10, top: 90, bottom: 130, width: 140 };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue(cramped as DOMRect);
+    mount(
+      <OcpdStandardComboCell
+        value=""
+        onCommit={() => {}}
+        ariaLabel="Circuit 1 OCPD BS/EN"
+        isOpen
+        onOpen={() => {}}
+        onClose={() => {}}
+      />
+    );
+    const list = document.querySelector('ul[role="listbox"]') as HTMLElement;
+    const top = parseFloat(list.style.top);
+    const maxHeight = parseFloat(list.style.maxHeight);
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(top + maxHeight).toBeLessThanOrEqual(window.innerHeight);
+    spy.mockRestore();
+    Object.defineProperty(window, 'innerHeight', { value: originalHeight, configurable: true });
+  });
 });

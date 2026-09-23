@@ -188,8 +188,11 @@ export function OcpdStandardField({
  * click, and the cap and canonicalise-on-commit timing come from
  * `useOcpdStandardDraft`, shared with the card too.
  */
-/** Enough room for the clear row plus a few suggestions; below this the list
- *  flips above the cell rather than being clipped by the viewport edge. */
+/** Enough room for the clear row plus a few suggestions. Below this the list
+ *  PREFERS to flip above the cell — but it is a preference, not a floor: when
+ *  neither side has this much room the list takes what the chosen side has and
+ *  scrolls internally, because a list taller than its space is a list with
+ *  options off the screen. */
 const MIN_LIST_HEIGHT = 120;
 
 export function OcpdStandardComboCell({
@@ -255,7 +258,13 @@ export function OcpdStandardComboCell({
       const below = window.innerHeight - box.bottom - GAP;
       const above = box.top - GAP;
       const flip = below < MIN_LIST_HEIGHT && above > below;
-      const maxHeight = Math.max(MIN_LIST_HEIGHT, Math.min(256, flip ? above : below));
+      // Cap to the room the CHOSEN side actually has, which may be less than
+      // the preferred minimum. Forcing the minimum in a short viewport pushed
+      // the list's top off the top of the screen, and a fixed list cannot be
+      // scrolled back into view — the options were unreachable in exactly the
+      // case the flip was added to rescue.
+      const room = Math.max(0, flip ? above : below);
+      const maxHeight = Math.min(256, room);
       setAnchor({
         left: box.left,
         top: flip ? box.top - GAP - maxHeight : box.bottom + GAP,
