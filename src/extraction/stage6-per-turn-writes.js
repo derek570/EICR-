@@ -733,6 +733,34 @@ export function createPerTurnWrites() {
     //     outcomes: [{tool, code, reason?}], emptyRetryUsed: boolean,
     //     featureTouched: boolean }
     answer: createTurnAnswerState(),
+    // PLAN-C3 (feedback-2026-09-17, Decision 5) — the per-turn REJECTION
+    // journal. One entry per rejected model-controlled mutation, minted by
+    // the rejecting dispatcher:
+    //   { ref, field, scopeSet, boardId, toolCallId, bulkInput }
+    // `ref` is `<turnId>:<toolCallId>` and is echoed back to the model on the
+    // tool result. A later `ask_user` / `answer_user` may carry it, and THAT
+    // is how the server ties the two together — never by inferring lineage
+    // from `context_circuits`, which a plural ask and a bulk ask can share.
+    // `scopeSet` is the RESOLVED circuit list (for a bulk call the final
+    // eligible candidates); `bulkInput` is the immutable raw bulk request, so
+    // an answer-resolution site can rebuild a byte-equal bulk write.
+    rejections: [],
+    // PLAN-C3 — the per-turn ANSWER journal. `answer_user` decides NOTHING
+    // about ownership at dispatch time: `runToolLoop` dispatches a response's
+    // records in stream order and `createSortRecordsAsksLast` moves only
+    // `ask_user` to the end, so an `answer_user` can be dispatched BEFORE the
+    // write whose rejection stages the notice. The dispatcher therefore
+    // journals `{ toolCallId, rejectionRef, text, meta }` and stages no
+    // speech; ONE reconciliation, immediately before the answer finalizer,
+    // decides what is spoken — and its outcome is identical whichever order
+    // the two records arrived in.
+    answers: [],
+    // PLAN-C3 — asks registered this turn, for the drain's covering-ask
+    // reconciliation: `{ toolCallId, rejectionRef, field, circuits, boardId }`.
+    // A staged refusal is retired by the QUESTION that covers it, because the
+    // question is the audible outcome and two lines about one slot is the
+    // double-confirm bug.
+    askRegistrations: [],
     // PLAN-F item 1 (2026-08-12, feedback id 115) — bulk-outcome ledger for
     // the audible-skip disclosure. dispatchSetFieldForAllCircuits does NOT
     // compose confirmations itself (the tool envelope never reaches
@@ -891,6 +919,14 @@ export function createTurnAnswerState() {
     outcomes: [],
     emptyRetryUsed: false,
     featureTouched: false,
+    // PLAN-A (feedback-2026-09-17) — set by the device-absence fence when the
+    // turn's spoken outcome is its surviving `field_cleared` lines.
+    fencedByClears: false,
+    // PLAN-C3 (feedback-2026-09-17, Decision 5) — set when a VALID journaled
+    // answer was deliberately dropped because a refusal notice is staged. The
+    // finalizer treats either flag as "no ANSWER_FALLBACK_TEXT"; each rule
+    // sets only its own, so neither can mask the other's behaviour.
+    fallbackSuppressedByNotice: false,
   };
 }
 

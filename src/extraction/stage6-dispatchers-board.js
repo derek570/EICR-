@@ -54,6 +54,7 @@ import {
   setCurrentBoardInSnapshot,
   markDistributionCircuitInSnapshot,
   isGlobalIdentityField,
+  boardFieldAliasSet,
 } from './stage6-snapshot-mutators.js';
 import {
   encodeBoardReadingKey,
@@ -93,6 +94,17 @@ import {
 } from './stage6-multi-board-shape.js';
 import { validateBoardHierarchy } from './board-hierarchy-validator.js';
 import { validateBoardScope, BOARD_FIELD_VALUE_ENUMS } from './stage6-dispatch-validation.js';
+// PLAN-C3 (Decision 5) — same blank predicate as every other boundary.
+import {
+  isBlankWrite,
+  EMPTY_WRITE_REJECTION_CODE,
+  BLANK_WRITE_ALLOWED_FIELDS,
+} from './blank-write-policy.js';
+import {
+  mintRejectionRef,
+  recordRejection,
+  stageBlankBoardWriteNotice,
+} from './stage6-blank-write-notices.js';
 import { coerceRecordBoardReadingValue } from './record-reading-coercion.js';
 import { isWithinRange, BOARD_FIELD_NUMERIC_RANGES } from './value-enum-validator.js';
 import {
@@ -305,6 +317,64 @@ export async function dispatchRecordBoardReading(call, ctx) {
       input_summary: { field: input.field },
     });
     return envelope(call.tool_call_id, { ok: false, error: dispositionErr }, true);
+  }
+
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — the board blank predicate.
+  // Placed AFTER the structural/unroutable disposition refusal (which owns
+  // those fields and already speaks truthfully about them) and BEFORE any
+  // coercion, clamp or enum gate: a blank is not a value question.
+  //
+  // `BLANK_WRITE_ALLOWED_FIELDS` is the escape for a field whose blank IS a
+  // legitimate written value and which `classifyBoardClear` cannot clear —
+  // rejecting one of those would make it permanently unclearable by voice.
+  // The set is empty today and a test keeps it honest against the live
+  // schema; see blank-write-policy.js.
+  if (isBlankWrite(input.value) && !BLANK_WRITE_ALLOWED_FIELDS.has(input.field)) {
+    const blankErr = {
+      code: EMPTY_WRITE_REJECTION_CODE,
+      field: 'value',
+      clear_tool: 'clear_board_reading',
+      hint: 'A blank is not a value. To remove a recorded board value use clear_board_reading; never write an empty string.',
+    };
+    const boardId = resolveEffectiveBoardIdForClear(session, input.board_id) ?? null;
+    const heldValue = readBoardFieldValue(session.stateSnapshot, input.field, input.board_id);
+    const staged = stageBlankBoardWriteNotice(perTurnWrites, session, {
+      field: input.field,
+      boardId,
+      turnId,
+      toolCallId: call.tool_call_id,
+      heldValue,
+    });
+    let rejectionRef = null;
+    if (staged) {
+      rejectionRef = mintRejectionRef(turnId, call.tool_call_id);
+      recordRejection(perTurnWrites, {
+        ref: rejectionRef,
+        field: input.field,
+        scopeSet: null,
+        boardId,
+        toolCallId: call.tool_call_id,
+        bulkInput: null,
+      });
+    }
+    logToolCall(logger, {
+      sessionId: session.sessionId,
+      turnId,
+      tool_use_id: call.tool_call_id,
+      tool: 'record_board_reading',
+      round,
+      is_error: true,
+      outcome: 'rejected',
+      validation_error: blankErr,
+      input_summary: { field: input.field },
+    });
+    return envelope(
+      call.tool_call_id,
+      rejectionRef
+        ? { ok: false, error: blankErr, rejection_ref: rejectionRef }
+        : { ok: false, error: blankErr },
+      true
+    );
   }
 
   // Fix B 2026-06-02 (handoff §B) — value coercion + per-field VALUE
@@ -1260,6 +1330,33 @@ export const BOARD_CLEAR_SCOPE_MAP = Object.freeze({
 // and the byte-parity pins live against these names. The shared module is
 // dependency-downstream-only (imports nothing from dispatchers/harness).
 export { BOARD_CLEAR_NOTICE_FAMILIES, selectMandatoryNoticeText } from './refusal-notices.js';
+
+/**
+ * PLAN-C3 (Decision 5) — read what a board field CURRENTLY holds, so a
+ * refusal can say "still 0.35" instead of just "not written".
+ *
+ * Alias-aware and scope-aware in the same two places the write path is: the
+ * resolved board record, then the legacy `circuits[0]` supply record that
+ * global fields (Ze, PFC, client name) still live on. Read-only; returns null
+ * when nothing is recorded, which the caller renders as "still blank".
+ */
+function readBoardFieldValue(snapshot, field, boardId) {
+  const aliases = boardFieldAliasSet(field);
+  const records = [];
+  const resolved = boardId ?? snapshot?.currentBoardId ?? null;
+  if (Array.isArray(snapshot?.boards)) {
+    const board = snapshot.boards.find((b) => b && b.id === resolved);
+    if (board) records.push(board);
+  }
+  if (snapshot?.circuits?.[0]) records.push(snapshot.circuits[0]);
+  for (const record of records) {
+    for (const alias of aliases) {
+      const v = record?.[alias];
+      if (v != null && String(v).trim() !== '') return v;
+    }
+  }
+  return null;
+}
 
 /** Spoken name for a board field: friendly-table entry or snake→spaces. */
 function boardFieldSpokenName(field) {

@@ -47,6 +47,7 @@ import {
   buildConfirmationText,
   buildFanoutGroupKey,
   buildGroupedConfirmationText,
+  buildGroupedClearText,
   deriveFriendlyName,
 } from './confirmation-text.js';
 // §A1a (field-feedback-2026-07-14) — the ios_send_attempt telemetry loop
@@ -372,6 +373,47 @@ function synthesiseStateChangeConfirmations(
  *   circuit-level readings with the spoken circuit name when known.
  * @returns {Array<{text, expanded_text, field, circuit}>}
  */
+/**
+ * PLAN-C3 — the #31 same-slot suppression, extracted so the grouped bulk-clear
+ * pre-pass and the per-correction loop apply the IDENTICAL rule. Two copies
+ * would let a circuit be excluded from one and named by the other, which is
+ * the double-confirm bug in a new place.
+ *
+ * #31 (2026-06-19, session AD0AE9FA): when the SAME turn also WRITES this
+ * slot — a value *replacement*, e.g. "customer name is Charles Henry" models
+ * as clear_reading{client_name} + record_board_reading{client_name} — the new
+ * value's read-back IS the confirmation. Speaking a standalone "<field>
+ * cleared" on top of it double-confirms, violating the audio-first invariant
+ * "every dictated reading read back exactly once".
+ *
+ * Membership is by EFFECTIVE slot on both the circuit and the board side.
+ * `field|circuit` is board-AMBIGUOUS (record_reading / clear_reading both omit
+ * `board_id` in the common case), so a write on ONE board once ate the
+ * read-back of a surviving clear on ANOTHER — the clear landed server-side and
+ * on the client and was never spoken (Audio-First #1, written-but-not-spoken).
+ * Symbol-less (legacy-fixture) entries fall back to the stable null-board
+ * sentinel key, which keeps their existing behaviour byte-identical.
+ */
+function isClearSupersededByWrite(c, field, writtenSlots) {
+  if (!writtenSlots) return false;
+  const circ = c.circuit;
+  if (Number.isInteger(circ) && circ > 0) {
+    const csym = c[EFFECTIVE_CIRCUIT_SLOT];
+    const clearSlot = csym
+      ? rawCircuitSlot(csym.field, csym.circuit, csym.boardId)
+      : rawCircuitSlot(field, circ, null);
+    return writtenSlots.circuitSlots instanceof Set && writtenSlots.circuitSlots.has(clearSlot);
+  }
+  if (writtenSlots.boardFields instanceof Set) {
+    const bsym = c[EFFECTIVE_BOARD_SLOT];
+    const clearSlot = bsym
+      ? boardSlotKey(bsym.field, bsym.boardId)
+      : boardSlotKey(FIELD_CORRECTIONS[field] ?? field, null);
+    return writtenSlots.boardFields.has(clearSlot);
+  }
+  return false;
+}
+
 function synthesiseObservationAndClearedConfirmations(
   observations,
   deletedObservations,
@@ -442,10 +484,89 @@ function synthesiseObservationAndClearedConfirmations(
     }
   }
 
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — GROUPED bulk-clear speech.
+  //
+  // `clear_field_for_all_circuits` produces one `field_corrected` per cleared
+  // circuit on the wire (unchanged — both clients clear per circuit), but
+  // fourteen spoken "Circuit N, reference method cleared" lines is not a
+  // read-back, it is a wall an inspector cannot follow. One line per CALL.
+  //
+  // Grouping is keyed on the dispatcher's `BULK_OUTCOME_CALL_ID` stamp plus
+  // the field and the EFFECTIVE board: two bulk clears in one turn, or one
+  // sweep across two boards, stay separate lines because they are separate
+  // statements about separate scopes.
+  //
+  // Members are decided AFTER the #31 same-slot suppression below, not
+  // before: a circuit whose clear was superseded by a same-turn write must
+  // not be named in the grouped line either, or the inspector hears a circuit
+  // announced as cleared while its new value is read back beside it.
+  const c3BulkClearGroups = new Map();
+  const c3GroupedIndices = new Set();
+  if (Array.isArray(fieldCorrections)) {
+    for (let i = 0; i < fieldCorrections.length; i += 1) {
+      const c = fieldCorrections[i];
+      if (!c || c.reason !== 'clear_reading') continue;
+      const callId = c[BULK_OUTCOME_CALL_ID];
+      if (callId == null) continue;
+      const field = c.field;
+      if (typeof field !== 'string' || field.length === 0) continue;
+      if (!Number.isInteger(c.circuit) || c.circuit <= 0) continue;
+      if (isClearSupersededByWrite(c, field, writtenSlots)) continue;
+      const boardId = c?.[EFFECTIVE_CIRCUIT_SLOT]?.boardId ?? null;
+      const key = `${String(callId)}\u0000${field}\u0000${boardId ?? ''}`;
+      const bucket = c3BulkClearGroups.get(key);
+      if (bucket) {
+        bucket.circuits.push(c.circuit);
+        bucket.indices.push(i);
+      } else {
+        c3BulkClearGroups.set(key, {
+          callId,
+          field,
+          boardId,
+          board_id: c.board_id ?? null,
+          circuits: [c.circuit],
+          indices: [i],
+        });
+      }
+    }
+    for (const bucket of c3BulkClearGroups.values()) {
+      // A single-member sweep is NOT grouped: "Circuits 4, reference method
+      // cleared" is worse English than the per-circuit line, and the
+      // per-circuit line already carries the designation.
+      if (bucket.circuits.length < 2) continue;
+      const text = buildGroupedClearText(bucket.field, bucket.circuits);
+      // Null means the roll-up would have been malformed (a suppressed field,
+      // an `_id`, fewer than two usable refs). Fall through to the
+      // per-circuit lines rather than speak a broken one — the members stay
+      // un-consumed because nothing was added to `c3GroupedIndices` yet.
+      if (!text) continue;
+      for (const i of bucket.indices) c3GroupedIndices.add(i);
+      const entry = {
+        text,
+        expanded_text: expandForTTS(text),
+        field: 'field_cleared',
+        // Circuit-bag, not one row — same contract the grouped READING
+        // confirmation uses, so iOS's anti-stale highlight logic treats it
+        // the same way.
+        circuit: null,
+        circuits: [...bucket.circuits],
+        // Replay-stable: derived from the turn and the CALL, never from an
+        // array index, so a reconnect replay of this one operation carries
+        // the identical token and the client dedupe recognises it.
+        dedupe_token: `p4ack_${turnId ?? 'legacy'}_${String(bucket.callId)}`,
+        expects_ios_ack: false,
+      };
+      if (bucket.board_id != null) entry.board_id = bucket.board_id;
+      out.push(entry);
+    }
+  }
+
   if (Array.isArray(fieldCorrections)) {
     for (let corrIdx = 0; corrIdx < fieldCorrections.length; corrIdx += 1) {
       const c = fieldCorrections[corrIdx];
       if (!c) continue;
+      // PLAN-C3 — already spoken as part of a grouped bulk-clear line.
+      if (c3GroupedIndices.has(corrIdx)) continue;
       // Only speak explicit clears; field_corrected with a non-clear
       // reason is a side-effect of a regular record_reading that the
       // main confirmation path already covers.
@@ -462,55 +583,7 @@ function synthesiseObservationAndClearedConfirmations(
       // this turn. Keyed by same-turn same-slot (circuit ref for circuit
       // readings, field-level for board/installation readings), NOT by tool
       // adjacency — tool results aren't reliably ordered/adjacent.
-      if (writtenSlots) {
-        const circ = c.circuit;
-        if (Number.isInteger(circ) && circ > 0) {
-          // A2-multiboard (2026-07-28) — membership is by EFFECTIVE CIRCUIT
-          // SLOT, the exact circuit-side twin of the board fix plan A1a made
-          // below for the same reason. `field|circuit` is board-AMBIGUOUS
-          // (record_reading / clear_reading both omit `board_id` in the common
-          // case), so a write on ONE board ate the read-back of a surviving
-          // clear on ANOTHER: write Zs c1 on main, select_board garage, clear
-          // Zs c1 on garage — the two effective slots differ so P5's collapse
-          // correctly keeps BOTH operations, then the bare `measured_zs_ohm|1`
-          // string from main's write suppressed garage's "Zs cleared". The
-          // clear lands server-side and on the client and is never spoken:
-          // Audio-First #1, written-but-not-spoken.
-          //
-          // The clear carries its dispatch-time EFFECTIVE_CIRCUIT_SLOT stamp
-          // (dispatchClearReading attaches it to every fieldCorrections entry),
-          // so this is a pure server-side suppression decision — no wire field
-          // is read or written and the frame bytes are untouched. Symbol-less
-          // (legacy-fixture) clears fall back to the stable null-board sentinel
-          // key, which is what keeps their existing behaviour byte-identical.
-          const csym = c[EFFECTIVE_CIRCUIT_SLOT];
-          const clearSlot = csym
-            ? rawCircuitSlot(csym.field, csym.circuit, csym.boardId)
-            : rawCircuitSlot(field, circ, null);
-          if (
-            writtenSlots.circuitSlots instanceof Set &&
-            writtenSlots.circuitSlots.has(clearSlot)
-          ) {
-            continue;
-          }
-        } else if (writtenSlots.boardFields instanceof Set) {
-          // Board/installation-level clear (circuit 0/null) with a same-SLOT
-          // board write this turn — a replacement; let the write speak.
-          // Plan A1a: membership is by EFFECTIVE BOARD SLOT (canonical field
-          // + scope-conditioned board id), never the bare field — a bare-
-          // field test wrongly silenced a cross-board clear on a board-
-          // scoped field. A stamp-less correction (no dispatcher-pushed
-          // board clear carries none; defensive for hand-built fixtures)
-          // keeps today's bare-field behaviour via the null-board sentinel.
-          const bsym = c[EFFECTIVE_BOARD_SLOT];
-          const clearSlot = bsym
-            ? boardSlotKey(bsym.field, bsym.boardId)
-            : boardSlotKey(FIELD_CORRECTIONS[field] ?? field, null);
-          if (writtenSlots.boardFields.has(clearSlot)) {
-            continue;
-          }
-        }
-      }
+      if (isClearSupersededByWrite(c, field, writtenSlots)) continue;
       // Skip suppressed fields + *_id (mirrors buildConfirmationText
       // gating so we don't speak internal IDs being cleared).
       // Match by re-importing the predicate would tighten the dep

@@ -96,14 +96,20 @@ const EXPECTED_TOOL_NAMES = [
   // PLAN-3: silent same-chain terminal for deliberate AFDD no-write rows.
   // Appended after clear_board_reading so every prior index stays stable.
   'resolve_observation_clarification',
+  // PLAN-C3 (2026-09-17, Decision 5): clear_field_for_all_circuits — the
+  // EXPLICIT replacement for the empty bulk write, which emptied a field
+  // across a whole board with nothing read back. Appended LAST so every prior
+  // index stays stable. Advertised unconditionally: it is now the only
+  // supported route to empty a field in bulk.
+  'clear_field_for_all_circuits',
 ];
 
 const byName = (name) => TOOL_SCHEMAS.find((t) => t.name === name);
 
 describe('stage6-tool-schemas', () => {
-  test('exports exactly 20 tools with the expected names', () => {
+  test('exports exactly 21 tools with the expected names', () => {
     expect(Array.isArray(TOOL_SCHEMAS)).toBe(true);
-    expect(TOOL_SCHEMAS).toHaveLength(20);
+    expect(TOOL_SCHEMAS).toHaveLength(21);
     const names = TOOL_SCHEMAS.map((t) => t.name).sort();
     expect(names).toEqual([...EXPECTED_TOOL_NAMES].sort());
   });

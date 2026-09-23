@@ -78,26 +78,42 @@ describe('validateRecordReading — value_not_in_options gate (circuit fields)',
     ).toMatchObject({ code: 'value_not_in_options' });
   });
 
-  test('empty string "" rejected on wiring_type (no "" in its enum)', () => {
-    // wiring_type options = ["A", ..., "O"] — no "". Empty-string-as-clear
-    // belongs to the clear_reading tool, not record_reading.
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — INVERTED. Both of these used
+  // to describe the per-field option list as the arbiter of a blank write:
+  // `wiring_type` rejected it because its enum lacks "", `rcd_type` ACCEPTED
+  // it because its enum lists "". That split is exactly how a certificate
+  // value got emptied in silence on September 17 — the model, twice rejected,
+  // wrote "" to a field whose enum happened to allow it.
+  //
+  // A blank is now rejected on BOTH, ahead of the enum gate, under the one
+  // `empty_write_not_allowed` code, and the rejection names the clear tool.
+  // The option lists are untouched: "" still means "unwritten" as STORED
+  // state, it is just no longer something a WRITE tool may set.
+  test('empty string "" rejected on wiring_type under the blank predicate', () => {
     expect(
       validateRecordReading(
         { field: 'wiring_type', circuit: 3, value: '', confidence: 1 },
         snapshotOneCircuit
       )
-    ).toMatchObject({ code: 'value_not_in_options' });
+    ).toMatchObject({ code: 'empty_write_not_allowed', clear_tool: 'clear_reading' });
   });
 
-  test('empty string "" accepted on rcd_type (its enum explicitly lists "")', () => {
-    // rcd_type options DO include "" (the "unwritten" representation).
-    // Strict membership wins per-field — no universal empty-string escape.
+  test('empty string "" rejected on rcd_type too, even though its enum lists ""', () => {
     expect(
       validateRecordReading(
         { field: 'rcd_type', circuit: 3, value: '', confidence: 1 },
         snapshotOneCircuit
       )
-    ).toBeNull();
+    ).toMatchObject({ code: 'empty_write_not_allowed', clear_tool: 'clear_reading' });
+  });
+
+  test('whitespace-only "  " is a blank write on any field', () => {
+    expect(
+      validateRecordReading(
+        { field: 'rcd_type', circuit: 3, value: '  ', confidence: 1 },
+        snapshotOneCircuit
+      )
+    ).toMatchObject({ code: 'empty_write_not_allowed' });
   });
 
   test('off-enum "twin and earth" on wiring_type rejected (audit-observed overwrite bug)', () => {

@@ -379,6 +379,13 @@ describe('Plan 00A A3 — production results survive the Responses continuation 
         circuit: 1,
         received: userText,
         valid_options: ['', 'BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A'],
+        // PLAN-C3 (2026-09-17, Decision 5) — the post-ask rejection now
+        // carries the model's instruction for what happens next, returned
+        // WITH the rejection rather than left to the prompt alone. This body
+        // is the exact string that crosses the Responses continuation, so it
+        // is pinned here rather than asserted loosely.
+        post_ask_rejection_policy:
+          'Do not ask again and do not narrate this slot — the server has told the inspector. Never write an empty string; use a clear tool if the value should be removed.',
         ...(suggestions ? { suggestions } : {}),
       });
       expect(functionOutput(payloads[1], correctionId)?.output).toBe(captured.results[0].content);

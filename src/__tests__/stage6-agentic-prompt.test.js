@@ -505,8 +505,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // `address_mirror:"unclear"` tool result means the server copied nothing;
       // re-ask once with strict yes/no wording. Shared region; measured 25206
       // and cap retains ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-17 (PLAN-C3, Decision 5): the enum-rejection flow is rewritten
+      // to end at ONE ask (the `""` fallback it used to prescribe is what
+      // emptied a certificate value in silence), plus a bulk-clear edge case
+      // and the `rejection_ref` rule. Shared region; measured 25475 and cap
+      // retains ~100-token headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(25306);
+      expect(estimate).toBeLessThanOrEqual(25575);
     });
   });
 
@@ -1275,8 +1280,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 2026-09-14 (feedback id 138): `address_mirror:"unclear"` re-ask bullet
       // (see the Group 1 combined-cap comment). Measured 19957; cap 20057
       // leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-17 (PLAN-C3, Decision 5): the rewritten enum-rejection flow,
+      // the bulk-clear edge case and the `rejection_ref` rule (see the Group 1
+      // combined-cap comment). Measured 20226; cap 20326 leaves ~100-token
+      // headroom (measured + ~100, P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20057);
+      expect(estimate).toBeLessThanOrEqual(20326);
     });
   });
 

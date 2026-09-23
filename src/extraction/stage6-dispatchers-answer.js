@@ -38,6 +38,7 @@
  */
 
 import { logToolCall } from './stage6-dispatcher-logger.js';
+import { UNRELATED_REJECTION_REF } from './stage6-blank-write-notices.js';
 import { isGlobalIdentityField } from './stage6-snapshot-mutators.js';
 import { checkForPromptLeak } from './stage6-prompt-leak-filter.js';
 import {
@@ -151,9 +152,13 @@ export function createAnswerDispatcher(session, logger, turnId, perTurnWrites) {
       return envelope(call, body, isError);
     };
 
-    // At-most-once: latched ONLY on successful staging, so a rejected first
-    // attempt leaves the model free to correct itself within the turn.
-    if (state.stagedText != null) {
+    // At-most-once. PLAN-C3 (Decision 5) moved STAGING to the one
+    // pre-finalizer reconciliation, so the latch now reads the JOURNAL: a
+    // second `answer_user` in the same turn is still a noop, and a rejected
+    // first attempt still leaves the model free to correct itself. The
+    // `stagedText` half is kept because a non-C3 producer (the address-mirror
+    // recovery path) can stage directly.
+    if (state.stagedText != null || perTurnWrites.answers?.length > 0) {
       return emit('noop', { ok: false, code: 'answer_already_given' }, false);
     }
 
@@ -179,13 +184,45 @@ export function createAnswerDispatcher(session, logger, turnId, perTurnWrites) {
       });
     }
 
-    state.stagedText = normalised.text;
-    state.stagedMeta = { truncated: normalised.truncated, chars: normalised.text.length };
-    state.outcomes.push({ tool: 'answer_user', code: 'ok' });
-    return emit('ok', { ok: true }, false, {
-      chars: normalised.text.length,
-      truncated: normalised.truncated,
+    // PLAN-C3 (feedback-2026-09-17, Decision 5) — JOURNAL, DO NOT STAGE.
+    //
+    // The dispatcher decides nothing about ownership. A `rejection_ref` on an
+    // answer proves ASSOCIATION with a rejection, never the TRUTH of the
+    // answer's words: `answer_user {rejection_ref, answer_text: "Done,
+    // that's recorded"}` after a blank write was blocked would retire the
+    // only truthful line about an untouched certificate value. So the server
+    // notice is AUTHORITATIVE whenever one is staged, and the single
+    // pre-finalizer reconciliation applies that rule over the FINAL sets —
+    // which is what makes the outcome independent of whether this record was
+    // dispatched before or after the rejecting write.
+    //
+    // The raw ref is journaled unvalidated on purpose: "malformed" and
+    // "absent" are the same outcome (dropped beside a notice), and the
+    // reconciliation is the one place that decides it.
+    if (!Array.isArray(perTurnWrites.answers)) perTurnWrites.answers = [];
+    perTurnWrites.answers.push({
+      toolCallId: call.tool_call_id,
+      rejectionRef: typeof call.input?.rejection_ref === 'string' ? call.input.rejection_ref : null,
+      text: normalised.text,
+      meta: { truncated: normalised.truncated, chars: normalised.text.length },
     });
+    state.outcomes.push({ tool: 'answer_user', code: 'ok' });
+    // The tool result restates the rule, because it is returned at DISPATCH
+    // time — before the decision exists — and the model's next move depends
+    // on knowing it.
+    return emit(
+      'ok',
+      {
+        ok: true,
+        note: `If this answer is about a rejected write, carry that rejection's rejection_ref and expect NOT to be spoken — the server has already told the inspector. If it is about something else, carry rejection_ref: "${UNRELATED_REJECTION_REF}". An answer with neither is not spoken when a rejection is pending this turn.`,
+      },
+      false,
+      {
+        chars: normalised.text.length,
+        truncated: normalised.truncated,
+        has_rejection_ref: typeof call.input?.rejection_ref === 'string',
+      }
+    );
   };
 }
 

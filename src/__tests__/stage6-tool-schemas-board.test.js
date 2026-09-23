@@ -89,7 +89,7 @@ describe('record_board_reading schema', () => {
     // (A1 agentic-voice); clear_board_reading (18) appended 2026-07-27
     // (plan A1a); resolve_observation_clarification (19) appended by PLAN-3 —
     // indices 0-18 stay stable per the append-at-end convention.
-    expect(TOOL_SCHEMAS).toHaveLength(20);
+    expect(TOOL_SCHEMAS).toHaveLength(21);
     expect(TOOL_SCHEMAS[18].name).toBe('clear_board_reading');
     expect(TOOL_SCHEMAS[19].name).toBe('resolve_observation_clarification');
     expect(TOOL_SCHEMAS[7]).toBeDefined();

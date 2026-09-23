@@ -57,6 +57,7 @@ import {
   BOARD_FIELD_ENUM,
   CIRCUIT_FIELD_ENUM,
   CLEAR_READING_FIELD_ENUM,
+  CLEAR_READING_EXCLUDED_FIELDS,
 } from './stage6-tool-schemas.js';
 import {
   circuitExistsInSnapshot,
@@ -71,6 +72,12 @@ import {
   CIRCUIT_FIELD_VALUE_ENUMS,
   BOARD_FIELD_VALUE_ENUMS,
 } from './circuit-value-descriptors.js';
+import { STRUCTURAL_READING_FIELDS } from './client-routable-reading-fields.js';
+import {
+  isBlankWrite,
+  EMPTY_WRITE_REJECTION_CODE,
+  BLANK_WRITE_ALLOWED_FIELDS,
+} from './blank-write-policy.js';
 
 // PLAN-A (feedback-2026-09-17) — the two value-enum maps MOVED to the
 // dependency leaf `circuit-value-descriptors.js` and RE-EXPORTED here, so the
@@ -98,6 +105,59 @@ const RECORD_BOARD_READING_FIELDS = new Set(BOARD_FIELD_ENUM);
 // clear row identity or silently break the board hierarchy. Same source of
 // truth as the schema (CLEAR_READING_FIELD_ENUM), enforced here at runtime.
 const CLEAR_READING_FIELDS = new Set(CLEAR_READING_FIELD_ENUM);
+
+/**
+ * PLAN-C3 (Decision 5) — the fields on which the blank predicate does NOT
+ * fire on the `record_reading` / `set_field_for_all_circuits` paths.
+ *
+ * WHY AN EXEMPTION EXISTS AT ALL, and why it is exactly this union.
+ * `validateRecordReading` runs BEFORE `stageStructuralReadingRefusal` in
+ * `dispatchRecordReading` (and `validateSetFieldForAllCircuits` before the
+ * bulk one). A structural field like `is_distribution_circuit` already has a
+ * truthful, shipped refusal that names `mark_distribution_circuit` — the
+ * route that actually works. If the blank predicate fired first it would
+ * replace that guidance with "say clear", which is wrong twice over:
+ * `clear_reading` EXCLUDES those fields, so the hint names a tool that
+ * cannot clear them.
+ *
+ * So the exemption is the union of the two manifests that own those fields:
+ * `STRUCTURAL_READING_FIELDS` (structural metadata) and the `clear_reading`
+ * exclusions (`circuit_ref`, `is_distribution_circuit`, `feeds_board_id`). It
+ * is IMPORTED from both, never retyped — a retyped copy is how the "say
+ * clear" hint ends up pointing at a field the clear tool refuses.
+ *
+ * `BLANK_WRITE_ALLOWED_FIELDS` is the separate, test-derived escape for a
+ * field whose blank is a legitimate WRITTEN value and which nothing can
+ * clear; it is empty today. See `blank-write-policy.js`.
+ */
+export const BLANK_WRITE_EXEMPT_READING_FIELDS = Object.freeze(
+  new Set([...STRUCTURAL_READING_FIELDS, ...CLEAR_READING_EXCLUDED_FIELDS])
+);
+
+/**
+ * PLAN-C3 — does the blank predicate apply to this circuit field?
+ * Exported so the direct and the bulk dispatcher apply the SAME exemption
+ * (round 4's Codex #1: the bulk path had its own ordering and would have
+ * rendered a `clear_field_for_all_circuits` hint for a structural field).
+ *
+ * @param {string} field
+ * @returns {boolean}
+ */
+export function blankWriteAppliesToReadingField(field) {
+  return !BLANK_WRITE_EXEMPT_READING_FIELDS.has(field) && !BLANK_WRITE_ALLOWED_FIELDS.has(field);
+}
+
+/**
+ * PLAN-C3 — the rejection codes that make a write a DIRECT enum/shape
+ * rejection, i.e. the ones that stage a PROVISIONAL `enum_rejected` notice.
+ * `ocpd_standard_shape` is PLAN-CS's code and is listed so that plan's
+ * landing needs no edit here; it is inert until CS ships its parser.
+ *
+ * @type {ReadonlySet<string>}
+ */
+export const ENUM_REJECTION_CODES = Object.freeze(
+  new Set(['value_not_in_options', 'invalid_value', 'did_you_mean', 'ocpd_standard_shape'])
+);
 
 /**
  * record_reading: circuit must exist; confidence (when present) must be a
@@ -144,6 +204,24 @@ export function validateRecordReading(input, snapshot) {
   // universal escape would silently accept blank writes on every field
   // that doesn't list it. Strict membership wins; "clear this field"
   // semantics belong to the clear_reading tool, not record_reading.
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — the blank predicate. Placed
+  // HERE, after circuit existence and confidence and before every value gate,
+  // because a blank is not a value question: whatever the field's enum or
+  // range says, an explicit `""` is the model discarding a certificate value
+  // rather than writing one. The exemption set keeps the structural fields on
+  // their own truthful refusal (see BLANK_WRITE_EXEMPT_READING_FIELDS).
+  //
+  // The rejection names the CLEAR tool so the model's next move is the
+  // supported one. `clear_reading` is only named for a field it can actually
+  // clear — the exemption set is exactly the fields it cannot.
+  if (isBlankWrite(input.value) && blankWriteAppliesToReadingField(input.field)) {
+    return {
+      code: EMPTY_WRITE_REJECTION_CODE,
+      field: 'value',
+      clear_tool: 'clear_reading',
+      hint: 'A blank is not a value. To remove a recorded value use clear_reading; never write an empty string.',
+    };
+  }
   const allowed = CIRCUIT_FIELD_VALUE_ENUMS.get(input.field);
   if (allowed) {
     if (typeof input.value !== 'string') {
@@ -245,6 +323,29 @@ export function validateCreateCircuit(input, snapshot) {
       };
     }
   }
+  // PLAN-C3 (Decision 5) — an EXPLICIT blank `designation` or `phase` is a
+  // blank write and is rejected; an OMITTED or `null` one is not, and keeps
+  // today's meaning exactly (create defaults it, rename leaves it unchanged).
+  // Checked BEFORE the numeric-meta type gates so the inspector hears about
+  // the name or the phase, which is what they actually said, rather than
+  // about a rating they never mentioned. `field` selects the spoken sub-pool
+  // at the dispatcher: "say what it feeds" is the WRONG line for a blank
+  // phase, and a create that already carries a good designation must not be
+  // told to supply one.
+  if (isBlankWrite(input.designation)) {
+    return {
+      code: EMPTY_WRITE_REJECTION_CODE,
+      field: 'designation',
+      hint: 'A circuit designation cannot be empty. Say what the circuit feeds, or omit the field to leave it unchanged.',
+    };
+  }
+  if (isBlankWrite(input.phase)) {
+    return {
+      code: EMPTY_WRITE_REJECTION_CODE,
+      field: 'phase',
+      hint: 'A phase cannot be empty. Give the phase, or omit the field to leave it unchanged.',
+    };
+  }
   if (input.rating_amps != null && typeof input.rating_amps !== 'number') {
     return { code: 'invalid_type', field: 'rating_amps' };
   }
@@ -288,6 +389,29 @@ export function validateRenameCircuit(input, snapshot) {
     circuitExistsInSnapshot(snapshot, input.circuit_ref, input.board_id)
   ) {
     return { code: 'target_exists', field: 'circuit_ref' };
+  }
+  // PLAN-C3 (Decision 5) — an EXPLICIT blank `designation` or `phase` is a
+  // blank write and is rejected; an OMITTED or `null` one is not, and keeps
+  // today's meaning exactly (create defaults it, rename leaves it unchanged).
+  // Checked BEFORE the numeric-meta type gates so the inspector hears about
+  // the name or the phase, which is what they actually said, rather than
+  // about a rating they never mentioned. `field` selects the spoken sub-pool
+  // at the dispatcher: "say what it feeds" is the WRONG line for a blank
+  // phase, and a create that already carries a good designation must not be
+  // told to supply one.
+  if (isBlankWrite(input.designation)) {
+    return {
+      code: EMPTY_WRITE_REJECTION_CODE,
+      field: 'designation',
+      hint: 'A circuit designation cannot be empty. Say what the circuit feeds, or omit the field to leave it unchanged.',
+    };
+  }
+  if (isBlankWrite(input.phase)) {
+    return {
+      code: EMPTY_WRITE_REJECTION_CODE,
+      field: 'phase',
+      hint: 'A phase cannot be empty. Give the phase, or omit the field to leave it unchanged.',
+    };
   }
   if (input.rating_amps != null && typeof input.rating_amps !== 'number') {
     return { code: 'invalid_type', field: 'rating_amps' };
