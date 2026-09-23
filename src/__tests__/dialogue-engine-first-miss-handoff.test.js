@@ -1444,3 +1444,128 @@ describe('a derivation reads its baseline from the snapshot when the schema does
     expect(baselines.ocpd_bs_en).toBe('BS EN 60898');
   });
 });
+
+// ── Fix round 5 ────────────────────────────────────────────────────────────
+
+describe('per-reading board attribution on a two-board turn', () => {
+  // The only turn where a reading's board is ambiguous is one writing the SAME
+  // field and ref on two boards. A resolver matching on field+ref alone hands
+  // both readings whichever marker it meets first, so the eligible
+  // selected-board reading gets attributed to the other board and the
+  // selected-board check skips it — the walk-through that should have started
+  // never does.
+  test('the reading’s own board_id decides, so the selected-board one still enters', () => {
+    const session = {
+      sessionId: SESSION_ID,
+      stateSnapshot: {
+        circuits: { 3: {}, 'board-b::3': {} },
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'board-b', board_type: 'sub' },
+        ],
+        currentBoardId: 'board-b',
+      },
+    };
+    const ws = new FakeWS();
+    // Main's write comes FIRST — the order that mis-attributes.
+    const readings = [
+      { field: 'rcd_type', circuit: 3, value: 'A', board_id: 'main' },
+      { field: 'rcd_type', circuit: 3, value: 'A', board_id: 'board-b' },
+    ];
+    // The resolver stands in for the harness's: it can only disambiguate if it
+    // is GIVEN the reading. Without it, it does what the field+ref scan did —
+    // returns whichever board it met first, for both readings alike.
+    const seenArgs = [];
+    const resolver = (field, circuitRef, reading) => {
+      seenArgs.push({ field, circuitRef, reading });
+      if (reading && typeof reading.board_id === 'string') return reading.board_id;
+      return readings[0].board_id; // the first marker — the old behaviour
+    };
+
+    const out = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings,
+      logger: silentLog,
+      now: 1000,
+      effectiveBoardIdForReading: resolver,
+    });
+
+    // The engine passes the reading through — without it the resolver cannot
+    // tell the two apart and the eligible one is skipped as another board's.
+    expect(seenArgs.length).toBeGreaterThan(0);
+    expect(seenArgs[0].reading).toBeDefined();
+    expect(seenArgs.some((a) => a.reading?.board_id === 'board-b')).toBe(true);
+
+    expect(out.entered).toBe(true);
+    expect(session.dialogueScriptState.effectiveBoardId).toBe('board-b');
+    expect(session.dialogueScriptState.circuit_ref).toBe(3);
+  });
+});
+
+describe('a board-drift exit purges a dangling confirmation prompt', () => {
+  // The hard-timeout and broadcast-abort exits purge the schema's queued TTS
+  // before clearing. Without the same step here, a ring "All correct?" prompt
+  // queued before the switch plays AFTER it — asking about a circuit on the
+  // board the inspector has left, possibly over the terminal read-back.
+  test('cancel_pending_tts is sent, and before any replacement speech', () => {
+    const rows = [];
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'Sockets' } });
+    session.stateSnapshot.boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'board-b', board_type: 'sub' },
+    ];
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Ring continuity on circuit 3.',
+      logger: capturingLog(rows),
+      now: 1000,
+    });
+    // Drive it to the confirmation prompt.
+    for (const [t, at] of [
+      ['ends are 0.52', 2000],
+      ['0.48', 3000],
+      ['0.50', 4000],
+    ]) {
+      processRingContinuityTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: t,
+        logger: capturingLog(rows),
+        now: at,
+      });
+    }
+    const state = session.dialogueScriptState;
+    if (!state?.awaiting_confirmation) {
+      // The walk did not reach the confirmation on this phrasing; force the
+      // flag rather than assert nothing, and keep the schema real.
+      session.dialogueScriptState.awaiting_confirmation = true;
+    }
+
+    const before = ws.sent.length;
+    session.stateSnapshot.currentBoardId = 'board-b';
+    processRingContinuityTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'ends are 0.52',
+      logger: capturingLog(rows),
+      now: 5000,
+    });
+
+    const after = ws.sent.slice(before);
+    const purgeAt = after.findIndex((f) => f.type === 'cancel_pending_tts');
+    expect(purgeAt).toBeGreaterThanOrEqual(0);
+    // Nothing spoken before the purge.
+    const spokenBeforePurge = after
+      .slice(0, purgeAt)
+      .filter((f) => typeof f.text === 'string' || typeof f.question === 'string');
+    expect(spokenBeforePurge).toEqual([]);
+    expect(session.dialogueScriptState).toBeNull();
+  });
+});

@@ -1902,6 +1902,16 @@ function endEpisodeOnBoardDrift({ session, ws, schemas, logger, sessionId, now, 
     circuit_ref: state.circuit_ref,
     was_paused: state.paused === true,
   });
+  // Audio-First purge contract (P1), same as the hard-timeout and
+  // broadcast-abort exits beside this one: an episode ending with a
+  // confirmation prompt outstanding leaves that prompt QUEUED, and it would
+  // otherwise play after the board switch — asking about a circuit on the board
+  // the inspector has just left, possibly over the terminal read-back. Scoped
+  // to schemas with a confirmation block (ring only today), exactly as the
+  // timeout path scopes it.
+  if (schema.confirmation?.buildMessage) {
+    sendScriptPurge(ws, schema, sessionId);
+  }
   if (Array.isArray(state.pending_writes)) {
     for (const w of state.pending_writes) {
       const op = w[OPERATION_REF];
@@ -6984,9 +6994,16 @@ export function tryEnterScriptFromWrites({
       // a fresh script asking the next missing slot on the very circuit just
       // handed off, which is the loop this plan exists to end. The write itself
       // is untouched and stays an ordinary bundler read-back.
+      // The READING is passed too, not just its field and ref. On a turn that
+      // writes the same field and ref on TWO boards — the only turn where the
+      // board is ambiguous — the projected readings carry their own `board_id`,
+      // and a resolver matching on field+ref alone returns whichever marker it
+      // meets first for BOTH of them. That mis-attributes one of the two, and
+      // with the selected-board check below it would skip an eligible reading
+      // as though it belonged to another board.
       const effectiveBoardId =
         (typeof effectiveBoardIdForReading === 'function'
-          ? effectiveBoardIdForReading(field, circuitRef)
+          ? effectiveBoardIdForReading(field, circuitRef, reading)
           : null) ?? resolveEffectiveBoardId(session, null);
       if (isHandedOff(session, effectiveBoardId, schema.name, circuitRef)) {
         logger?.info?.('stage6.script_reentered_after_handoff', {

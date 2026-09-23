@@ -3239,13 +3239,34 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // where the resolver cannot, and a reader that keys the tombstone
           // differently from its writer would MISS it and restart a script the
           // model already owns.
-          effectiveBoardIdForReading: (field, circuitRef) => {
+          effectiveBoardIdForReading: (field, circuitRef, reading) => {
+            // The projected reading's OWN `board_id` wins when present. It is
+            // omitted on ordinary single-effective-board turns — which is why
+            // the marker scan exists — but it is emitted precisely when a turn
+            // spans two boards, and that is the only turn on which matching by
+            // field+ref alone is ambiguous: both readings would take whichever
+            // marker came first, mis-attributing one of them.
+            const declared = reading?.board_id;
+            if (typeof declared === 'string' && declared.length > 0) {
+              return resolveEffectiveBoardId(session, declared);
+            }
+            // Disambiguate the marker scan the same way where we can: prefer a
+            // marker whose board matches nothing else, but never guess — an
+            // unmatched scan still falls back to the selected board upstream.
+            let sole = null;
+            let seen = 0;
             for (const { value } of projectReadingWinners(perTurnWrites)) {
               const sym = value?.[EFFECTIVE_CIRCUIT_SLOT];
               if (sym && sym.field === field && sym.circuit === circuitRef) {
-                return sym.boardId ?? null;
+                seen += 1;
+                if (sole === null) sole = sym.boardId ?? null;
+                else if (sole !== (sym.boardId ?? null)) sole = undefined;
               }
             }
+            // Exactly one candidate, or several that agree: trust it. Several
+            // that DISAGREE with no `board_id` to separate them is genuinely
+            // ambiguous, so resolve to the selected board rather than pick one.
+            if (seen > 0 && sole !== undefined) return sole;
             return null;
           },
           // A3 — a model write in a turn where the model ALSO asked or answered

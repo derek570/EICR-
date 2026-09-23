@@ -383,3 +383,43 @@ reason.
 verified one. The circuit-breaker rule says question the premise; it does not say the first premise
 you form is right. A premise argument needs the same enumerate-don't-sample discipline as an audit —
 and mine should have started by listing every tool that can stamp a board, which is a five-minute grep.
+
+### Round 5 — the binding holds; three IMPORTANTs, one of them not this plan's
+
+Zero BLOCKERs. The lane confirmed the selected-board invariant for an active episode and showed its
+enumeration: every `currentBoardId` writer (`ensureMultiBoardShape` seeding, session-start
+hydration, `add_board`, `select_board`, the iOS frame — no board rename or delete dispatcher exists)
+and every episode-creation path (regex `runEntry`, `enterScriptByName`, the post-dispatch entry hook,
+`runPivot`, paused resume). That is the enumeration I should have produced myself two rounds ago.
+
+| # | Severity | Finding | Disposition |
+|---|---|---|---|
+| 18 | IMPORTANT | A PAUSED episode can be replaced by another wrapper's entry before its owning wrapper or the resume fence runs, losing its applied operation with no read-back. | NOT THIS PLAN — evidenced below, follow-up queued |
+| 19 | IMPORTANT | `effectiveBoardIdForReading` matched on field+ref only, so a turn writing the same field and ref on two boards attributed BOTH readings to whichever marker came first — and with the new selected-board check, the eligible reading was skipped as another board's. | FIXED |
+| 20 | IMPORTANT | The board-drift exit never purged a dangling confirmation prompt, unlike the hard-timeout and broadcast-abort exits beside it, so a queued ring "All correct?" could play after the switch. | FIXED |
+
+**Finding 18 is real and it is not a PLAN-A regression.** I checked rather than argued this time. Driving
+a paused IR episode carrying one applied operation, then entering a ring walk through the production
+wrapper, loses the IR state and its operation — **identically with and without board drift**:
+
+```
+NO DRIFT (same board) -> schema=ring_continuity ops=0  (IR paused state lost? true)
+WITH DRIFT            -> schema=ring_continuity ops=0  (IR paused state lost? true)
+```
+
+The loss is in the paused-episode lifecycle and predates this plan; the board binding neither causes
+it nor worsens it. Closing it properly means settling a paused episode through its OWNING schema at
+every entry path, which needs schema resolution across wrappers — a structural change, not a
+delivery-round patch. Queued with this evidence.
+
+**Finding 19 was mine**, in the resolver lambda I wrote. The projected readings carry their own
+`board_id` exactly when a turn spans two boards — the only turn where the board is ambiguous — so the
+reading is now passed to the resolver and its declared board wins, with the marker scan kept for the
+ordinary case and made to refuse rather than guess when markers disagree.
+
+**Finding 20 was mine too**, and the giveaway was sitting next to the code: the hard-timeout exit
+purges under `schema.confirmation?.buildMessage` and I wrote a new terminal exit without it.
+
+Both fixes red-proofed. The first attempt at finding 19's test passed with the fix reverted — it
+supplied its own resolver, so it proved nothing about the engine. It now asserts the engine PASSES
+the reading and fails without it.
