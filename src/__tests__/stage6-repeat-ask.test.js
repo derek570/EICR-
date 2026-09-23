@@ -24,7 +24,11 @@ import {
   renderRepeatAskNote,
   REPEAT_ASK_NOTE_THRESHOLD,
 } from '../extraction/stage6-repeat-ask.js';
-import { createPerTurnWrites } from '../extraction/stage6-per-turn-writes.js';
+import {
+  createPerTurnWrites,
+  EFFECTIVE_CIRCUIT_SLOT,
+  EFFECTIVE_BOARD_SLOT,
+} from '../extraction/stage6-per-turn-writes.js';
 import { runToolLoop } from '../extraction/stage6-tool-loop.js';
 import { runShadowHarness } from '../extraction/stage6-shadow-harness.js';
 import { QUESTION_GATE_DELAY_MS } from '../extraction/question-gate.js';
@@ -179,6 +183,67 @@ describe('classifyAskReply — the plan classifier table', () => {
     ptw.readings.set('measured_zs_ohm::3', { field: 'measured_zs_ohm', circuit: 3, value: '0.4' });
     const verdict = classifyAskReply({
       input,
+      result: envelope({
+        answered: true,
+        untrusted_user_text: 'erm',
+        match_status: 'value_escalated',
+        parsed_hint: 'no_numeric_in_reply',
+      }),
+      perTurnWrites: ptw,
+    });
+    expect(verdict.kind).toBe('usable');
+  });
+
+  test('a write to the same field and circuit on ANOTHER board does not make the reply usable (B-review #2)', () => {
+    const ptw = createPerTurnWrites();
+    const d = { field: 'measured_zs_ohm', circuit: 3, value: '0.4' };
+    Object.defineProperty(d, EFFECTIVE_CIRCUIT_SLOT, {
+      value: { field: 'measured_zs_ohm', circuit: 3, boardId: 'main' },
+      enumerable: false,
+    });
+    ptw.readings.set('measured_zs_ohm::3::main', d);
+    const verdict = classifyAskReply({
+      input: { ...input, context_board_id: 'sub-1' },
+      result: envelope({
+        answered: true,
+        untrusted_user_text: 'erm',
+        match_status: 'value_escalated',
+        parsed_hint: 'no_numeric_in_reply',
+      }),
+      perTurnWrites: ptw,
+      currentBoardId: 'main',
+    });
+    expect(verdict.kind).toBe('unusable');
+    // …while the same board makes it usable.
+    const same = classifyAskReply({
+      input: { ...input, context_board_id: 'main' },
+      result: envelope({
+        answered: true,
+        untrusted_user_text: 'erm',
+        match_status: 'value_escalated',
+        parsed_hint: 'no_numeric_in_reply',
+      }),
+      perTurnWrites: ptw,
+      currentBoardId: 'main',
+    });
+    expect(same.kind).toBe('usable');
+  });
+
+  test('a board-level ask checks the board-reading winners', () => {
+    const ptw = createPerTurnWrites();
+    const v = { field: 'ze', value: '0.3' };
+    Object.defineProperty(v, EFFECTIVE_BOARD_SLOT, {
+      value: { field: 'ze', boardId: null },
+      enumerable: false,
+    });
+    ptw.boardReadings.set('ze', v);
+    const verdict = classifyAskReply({
+      input: {
+        question: 'Ze?',
+        context_field: 'ze',
+        context_circuit: null,
+        expected_answer_shape: 'number',
+      },
       result: envelope({
         answered: true,
         untrusted_user_text: 'erm',
@@ -521,6 +586,44 @@ describe('acceptance 4 — the live composition site debounces with no budget ob
   });
 });
 
+describe('the carried note is consumed only once a provider round receives it (B-review #1)', () => {
+  const SESSION_ID = 'sess-plan-b-carry-consume';
+  const note = '[Server note: repeat_ask. x] {"field":"measured_zs_ohm"}';
+  beforeEach(() => {
+    activeSessions.set(SESSION_ID, {
+      session: { sessionId: SESSION_ID },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+      broadcastIntentByTurn: new Map(),
+      voiceLatency: { flags: { loadedBarrel: false } },
+    });
+  });
+  afterEach(() => activeSessions.delete(SESSION_ID));
+
+  async function turnWith(client) {
+    const session = makeLiveSession({ sessionId: SESSION_ID, client, pendingRepeatAskNote: note });
+    const { transcriptText } = attachCarriedRepeatAskNote(session, 'hang on');
+    await runShadowHarness(session, transcriptText, [], { logger: makeLogger() });
+    return session;
+  }
+
+  test('a completed round consumes it', async () => {
+    const session = await turnWith(mockClient([endTurnRound('')]));
+    expect(session.pendingRepeatAskNote).toBeNull();
+  });
+
+  test('a generation that fails before its first round keeps it for the next turn', async () => {
+    const session = await turnWith({
+      messages: {
+        stream() {
+          throw new Error('connection reset');
+        },
+      },
+    });
+    expect(session.pendingRepeatAskNote).toBe(note);
+  });
+});
+
 describe('attachCarriedRepeatAskNote — ingress precedence', () => {
   const note = '[Server note: repeat_ask. x] {}';
 
@@ -532,13 +635,14 @@ describe('attachCarriedRepeatAskNote — ingress precedence', () => {
     });
   });
 
-  test('prepended and consumed when no other server note is attached', () => {
+  test('prepended when no other server note is attached — but NOT consumed until a round receives it', () => {
     const session = { pendingRepeatAskNote: note };
     expect(attachCarriedRepeatAskNote(session, 'Zs 0.4')).toEqual({
       transcriptText: `${note} Zs 0.4`,
       outcome: 'carried',
     });
-    expect(session.pendingRepeatAskNote).toBeNull();
+    // Consumption belongs to runLiveMode, after a provider round (below).
+    expect(session.pendingRepeatAskNote).toBe(note);
   });
 
   test('deferred (kept for the next turn) when a handoff or expiry note is already attached', () => {

@@ -131,11 +131,29 @@ export function makeTurnClient({
   // empty": the helper resolves `outcome: 'empty'` and the net speaks its
   // canned line, exactly as the fixture recorded. Helper calls never count
   // against strict round consumption; they are tallied separately.
+  //
+  // A request is a helper call only when BOTH hold: its sole tool is
+  // `net_response` (never in the production tool schema) and its last user
+  // message carries the helper's own `[Server note: retry.` marker. Anything
+  // else stays under strict consumption. A turn has at most two net sites that
+  // can ask (orphan/no-op or catch-all, plus one dropped-value line), so a
+  // third helper request in one turn is a violation, not a free round.
+  const MAX_NET_HELPER_REQUESTS_PER_TURN = 2;
   let netHelperRequests = 0;
+  const lastUserText = (args) => {
+    const msgs = Array.isArray(args?.messages) ? args.messages : [];
+    const last = msgs[msgs.length - 1];
+    if (!last || last.role !== 'user') return '';
+    if (typeof last.content === 'string') return last.content;
+    return (Array.isArray(last.content) ? last.content : [])
+      .map((b) => (typeof b?.text === 'string' ? b.text : ''))
+      .join('\n');
+  };
   const isNetHelperRequest = (args) =>
     Array.isArray(args?.tools) &&
-    args.tools.length > 0 &&
-    args.tools.every((t) => t?.name === 'net_response');
+    args.tools.length === 1 &&
+    args.tools[0]?.name === 'net_response' &&
+    lastUserText(args).includes('[Server note: retry.');
 
   const maybeExtendWithBranch = () => {
     if (cursor < rounds.length || !branches || branches.length === 0 || branchTaken) return;
@@ -170,6 +188,13 @@ export function makeTurnClient({
       stream(args) {
         if (isNetHelperRequest(args)) {
           netHelperRequests += 1;
+          if (netHelperRequests > MAX_NET_HELPER_REQUESTS_PER_TURN) {
+            const err = new Error(
+              `net helper over-request: turn ${turnIndex} of ${corpusId} made ${netHelperRequests} net_response requests (max ${MAX_NET_HELPER_REQUESTS_PER_TURN})`,
+            );
+            violations.push(err.message);
+            throw err;
+          }
           return mockStream(endTurnRound(''));
         }
         maybeExtendWithBranch();

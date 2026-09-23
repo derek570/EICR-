@@ -587,6 +587,26 @@ describe('acceptance 16 — handoff gating on the terminal read-back carrier', (
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// Never silent: a helper that throws (not a provider error) still leaves the
+// canned line (execution-log S1).
+// ───────────────────────────────────────────────────────────────────────────
+describe('the helper is total — a throw inside it never silences a net', () => {
+  test('an unserialisable handoff makes the helper throw; the canned string still speaks', async () => {
+    const { result, logger, client } = await runTurn({
+      transcript: 'what did I say',
+      rounds: [endTurnRound(''), helperRound({ outcome_code: 'chat' })],
+      options: { handoff: { remaining: [1n] } },
+    });
+    const texts = spoken(result).map((c) => c.text);
+    expect(texts).toHaveLength(1);
+    expect(NOOP_AUDIBILITY_PROMPTS).toContain(texts[0]);
+    expect(client.requests).toHaveLength(1);
+    expect(logRows(logger, 'stage6.noop_retry_round')).toHaveLength(0);
+    expect(logger.warn.mock.calls.some(([n]) => n === 'stage6.noop_retry_round_error')).toBe(true);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
 // Acceptance 14 — ownership vs PLAN-C3
 // ───────────────────────────────────────────────────────────────────────────
 describe('acceptance 14 — a surviving PLAN-C3 post-ask enum notice owns the turn', () => {

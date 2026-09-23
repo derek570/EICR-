@@ -27,7 +27,13 @@
  */
 
 import { deriveAskKey } from './stage6-ask-gate-wrapper.js';
-import { EFFECTIVE_CIRCUIT_SLOT, projectReadingWinners } from './stage6-per-turn-writes.js';
+import {
+  boardReadingSlotKeyOf,
+  boardSlotKey,
+  projectBoardReadingWinners,
+  projectReadingWinners,
+  readingSlotPartsOf,
+} from './stage6-per-turn-writes.js';
 
 /** The count at which the note is appended. */
 export const REPEAT_ASK_NOTE_THRESHOLD = 2;
@@ -50,14 +56,37 @@ function isUnusableValueHint(parsedHint) {
   );
 }
 
-function askedSlotWrittenThisTurn(input, perTurnWrites) {
+/**
+ * Did THIS turn already write the slot the ask was about? Same identity the
+ * write path stamps: field, circuit AND effective board. An ask without a
+ * `context_board_id` is about the current board, and so is an unstamped
+ * legacy write. A board-level ask (no circuit, or circuit 0) is checked
+ * against the board-reading winners.
+ */
+function askedSlotWrittenThisTurn(input, perTurnWrites, currentBoardId = null) {
   const field = input?.context_field;
+  if (typeof field !== 'string' || !field) return false;
+  const rawBoard = input?.context_board_id;
+  const askBoard =
+    rawBoard != null && rawBoard !== '' ? String(rawBoard) : (currentBoardId ?? null);
+  const sameBoard = (b) => String(b ?? currentBoardId ?? null) === String(askBoard);
   const circuit = input?.context_circuit;
-  if (typeof field !== 'string' || !field || circuit == null) return false;
-  for (const winner of projectReadingWinners(perTurnWrites)) {
-    const value = winner?.value;
-    const slot = value?.[EFFECTIVE_CIRCUIT_SLOT] ?? value;
-    if (slot?.field === field && String(slot?.circuit) === String(circuit)) return true;
+  if (circuit != null && Number(circuit) !== 0) {
+    for (const winner of projectReadingWinners(perTurnWrites)) {
+      const slot = readingSlotPartsOf(winner?.rawKey, winner?.value);
+      if (
+        slot.field === field &&
+        String(slot.circuit) === String(circuit) &&
+        sameBoard(slot.boardId)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+  const wanted = new Set([boardSlotKey(field, askBoard), boardSlotKey(field, null)]);
+  for (const winner of projectBoardReadingWinners(perTurnWrites)) {
+    if (wanted.has(boardReadingSlotKeyOf(winner?.rawKey, winner?.value))) return true;
   }
   return false;
 }
@@ -70,7 +99,7 @@ function askedSlotWrittenThisTurn(input, perTurnWrites) {
  *   suppression, an enum rejection, or an unparseable body) and leaves the
  *   counter untouched.
  */
-export function classifyAskReply({ input, result, perTurnWrites }) {
+export function classifyAskReply({ input, result, perTurnWrites, currentBoardId = null }) {
   const body = parseBody(result);
   if (!body) return { kind: 'ignored' };
   if (body.answered !== true) {
@@ -83,7 +112,7 @@ export function classifyAskReply({ input, result, perTurnWrites }) {
     return { kind: 'ignored' };
   }
   if (body.match_status === 'value_escalated' && isUnusableValueHint(body.parsed_hint)) {
-    if (askedSlotWrittenThisTurn(input, perTurnWrites)) return { kind: 'usable' };
+    if (askedSlotWrittenThisTurn(input, perTurnWrites, currentBoardId)) return { kind: 'usable' };
     return {
       kind: 'unusable',
       reply: {
@@ -121,9 +150,9 @@ export function renderRepeatAskNote({ input, replies }) {
 export function createRepeatAskTracker() {
   const byKey = new Map();
   return {
-    observe({ input, result, perTurnWrites }) {
+    observe({ input, result, perTurnWrites, currentBoardId = null }) {
       const key = deriveAskKey(input ?? {});
-      const verdict = classifyAskReply({ input, result, perTurnWrites });
+      const verdict = classifyAskReply({ input, result, perTurnWrites, currentBoardId });
       if (verdict.kind === 'usable') {
         byKey.delete(key);
         return { key, count: 0, note: null };
@@ -155,7 +184,9 @@ export function createRepeatAskTracker() {
  * failed generation leaves it on `session.pendingRepeatAskNote`. It is the
  * LOWEST-precedence prepended note — PLAN-A's handoff note and the ring / IR /
  * voltage expiry notes come first — so when any server note is already
- * attached to this turn it waits for the next one.
+ * attached to this turn it waits for the next one. The note stays on the
+ * session until `runLiveMode` sees a completed provider round for the
+ * transcript that carried it.
  *
  * @returns {{ transcriptText: string, outcome: 'none'|'carried'|'deferred' }}
  */
@@ -165,6 +196,8 @@ export function attachCarriedRepeatAskNote(session, transcriptText) {
     return { transcriptText, outcome: 'none' };
   }
   if (transcriptText.includes('[Server note:')) return { transcriptText, outcome: 'deferred' };
-  session.pendingRepeatAskNote = null;
+  // NOT cleared here: the harness clears it once a provider round has
+  // received this transcript, so a generation that fails before its first
+  // round carries it again on the next turn.
   return { transcriptText: `${note} ${transcriptText}`, outcome: 'carried' };
 }

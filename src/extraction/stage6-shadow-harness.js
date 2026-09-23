@@ -2560,6 +2560,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         input: call.input,
         result: res,
         perTurnWrites,
+        currentBoardId: session.stateSnapshot?.currentBoardId ?? null,
       });
       if (observed.count >= REPEAT_ASK_NOTE_THRESHOLD) {
         log.info?.('stage6.repeat_ask', {
@@ -2753,7 +2754,23 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       repeatAsk: repeatAskNoteThisTurn,
       handoff: options.handoff ?? null,
     });
+    // TOTAL by construction: every net wraps its body in a try/catch that only
+    // logs, so a throw here would skip the canned push and leave a chimed turn
+    // silent. Any failure resolves to `null` and the canned line speaks.
     const askModelForNetLine = async (netKind) => {
+      try {
+        return await askModelForNetLineUnsafe(netKind);
+      } catch (helperErr) {
+        log.warn?.('stage6.noop_retry_round_error', {
+          sessionId: session.sessionId,
+          turnId,
+          netKind,
+          error: helperErr?.message ?? String(helperErr),
+        });
+        return null;
+      }
+    };
+    const askModelForNetLineUnsafe = async (netKind) => {
       if (cancelled) return null;
       if (options.terminalReadbackBuilt === true) return null;
       if (!Array.isArray(toolLoopOut?.messages_final)) return null;
@@ -2795,6 +2812,22 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // round). Only a cancelled or failed generation ends the loop before that
     // round, so only then is the note carried to the NEXT turn's transcript,
     // where sonnet-stream prepends it when no other server note is attached.
+    // A note carried INTO this turn (prepended to the transcript by
+    // sonnet-stream) is consumed only once a provider round has actually
+    // received it; a generation that failed before any round leaves it
+    // pending for the next turn.
+    const primaryRoundsCompleted = Array.isArray(toolLoopOut?.round_usage)
+      ? toolLoopOut.round_usage.length
+      : Array.isArray(failedBillableUsage?.round_usage)
+        ? failedBillableUsage.round_usage.length
+        : 0;
+    if (
+      typeof session.pendingRepeatAskNote === 'string' &&
+      primaryRoundsCompleted > 0 &&
+      String(transcriptText || '').includes(session.pendingRepeatAskNote)
+    ) {
+      session.pendingRepeatAskNote = null;
+    }
     if (cancelled && repeatAskNoteThisTurn) {
       session.pendingRepeatAskNote = repeatAskNoteThisTurn;
     }
