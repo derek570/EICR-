@@ -219,6 +219,10 @@ export interface SpeakOptions {
    *  un-record it via `onDiscarded` if the confirmation is discarded before
    *  it ever plays (overflow / preempt / purge / reset). */
   dedupeKey?: string;
+  /** PLAN-D D5 — an opaque label `speakConfirmation` attaches to the queued
+   *  item and the FIFO reports to its per-head playback observer (e.g.
+   *  `'response'` for a voice-command response). Never read by the queue. */
+  queueTag?: string;
   /** Fired when real audio begins (ElevenLabs `playing` / native
    *  `utterance.onstart`). Load-bearing for the FIFO's `startedPlayback` flag
    *  and the direct-audio-owner tracking. */
@@ -1114,6 +1118,7 @@ export function speakConfirmation(
   return enqueueConfirmation({
     text: trimmed,
     dedupeKey: options?.dedupeKey,
+    tag: options?.queueTag,
     play: harnessPlayer
       ? (t, controls) => {
           registerTtsFingerprint(t);

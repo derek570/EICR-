@@ -428,6 +428,73 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       ).toHaveLength(0);
     });
 
+    it('kind is attributed per queued item: an identical-text read-back and response keep their own kinds', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      harness.tts.manual = true;
+      const mark = diags(harness, 'voice_pause_speech_spoken').length;
+      await act(async () => {
+        harness.refs.sonnet!.emitExtraction({
+          readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.44' }],
+          confirmations: [{ field: 'measured_zs_ohm', circuit: 1, text: 'Okay.' }],
+        });
+      });
+      await act(async () => {
+        harness.refs.sonnet!.emitVoiceCommandResponse({
+          understood: true,
+          spoken_response: 'Okay.',
+        });
+      });
+      // Both are queued before either plays; release them in order.
+      for (let i = 0; i < 3; i++) {
+        await act(async () => {
+          harness.tts.releaseAll();
+        });
+      }
+      const spoken = diags(harness, 'voice_pause_speech_spoken')
+        .slice(mark)
+        .map((d) => [d.payload.kind, d.payload.text]);
+      expect(spoken).toEqual([
+        ['read_back', 'Okay.'],
+        ['response', 'Okay.'],
+      ]);
+    });
+
+    it('a response discarded before it played leaves nothing behind to mislabel a later same-text read-back', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      harness.tts.manual = true;
+      await act(async () => {
+        harness.refs.sonnet!.emitVoiceCommandResponse({
+          understood: true,
+          spoken_response: 'Okay.',
+        });
+      });
+      // An ask pre-empts the never-started response (a plain FIFO item: gone).
+      await act(async () => {
+        harness.refs.sonnet!.emitQuestion({
+          question: 'Which board?',
+          question_type: 'orphaned',
+          tool_call_id: 'toolu_pland_kind',
+        });
+      });
+      await act(async () => {
+        harness.tts.releaseAll();
+      });
+      harness.tts.manual = false;
+      const mark = diags(harness, 'voice_pause_speech_spoken').length;
+      await act(async () => {
+        harness.refs.sonnet!.emitExtraction({
+          readings: [{ circuit: 2, field: 'measured_zs_ohm', value: '0.51' }],
+          confirmations: [{ field: 'measured_zs_ohm', circuit: 2, text: 'Okay.' }],
+        });
+      });
+      const spoken = diags(harness, 'voice_pause_speech_spoken')
+        .slice(mark)
+        .map((d) => [d.payload.kind, d.payload.text]);
+      expect(spoken).toEqual([['read_back', 'Okay.']]);
+    });
+
     it('an ask pre-empts an owed read-back identically paused and not paused (pre-existing limit)', async () => {
       const discardedFor = async (paused: boolean): Promise<number[]> => {
         const { harness, api } = await mount();

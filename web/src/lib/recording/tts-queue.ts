@@ -118,6 +118,11 @@ export interface ConfirmationQueueItem {
    *  is protected, the queue is allowed to exceed `MAX_QUEUE_DEPTH` by one
    *  rather than silently drop one. */
   protected?: boolean;
+  /** PLAN-D D5 — an opaque caller label carried WITH the item and reported
+   *  to the per-head playback observer. The queue never reads it. It lets
+   *  the caller attribute a head at playback start by item identity rather
+   *  than by matching its text. */
+  tag?: string;
   play: ConfirmationPlayFn;
   /** Optional per-item NATURAL-completion hook. Fires ONLY when the head
    *  ended without failure; never after a post-start failure (see
@@ -192,12 +197,16 @@ let onStartedHeadTornDown: ((dedupeKey: string, reason: DiscardReason) => void) 
  * lifecycle as the other hooks: null until registered, cleared by `reset()`.
  */
 export type HeadPlaybackEvent = 'start' | 'end';
-let headPlaybackObserver:
-  | ((event: HeadPlaybackEvent, item: { text: string; dedupeKey?: string }) => void)
-  | null = null;
+export interface HeadPlaybackItem {
+  text: string;
+  dedupeKey?: string;
+  tag?: string;
+}
+let headPlaybackObserver: ((event: HeadPlaybackEvent, item: HeadPlaybackItem) => void) | null =
+  null;
 
 export function setHeadPlaybackObserver(
-  fn: ((event: HeadPlaybackEvent, item: { text: string; dedupeKey?: string }) => void) | null
+  fn: ((event: HeadPlaybackEvent, item: HeadPlaybackItem) => void) | null
 ): void {
   headPlaybackObserver = fn;
 }
@@ -205,7 +214,7 @@ export function setHeadPlaybackObserver(
 function notifyHeadPlayback(event: HeadPlaybackEvent, item: QueueHead | null): void {
   if (!item || !headPlaybackObserver) return;
   try {
-    headPlaybackObserver(event, { text: item.text, dedupeKey: item.dedupeKey });
+    headPlaybackObserver(event, { text: item.text, dedupeKey: item.dedupeKey, tag: item.tag });
   } catch {
     /* swallow — an observer must never wedge the queue */
   }

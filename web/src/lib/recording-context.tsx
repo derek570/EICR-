@@ -467,6 +467,9 @@ const TTS_PCM_GATE_RESUME_DELAY_MS = 500;
  *  at audio-end is held and replayed by D7, and its final arrives after
  *  Deepgram's own latency, well beyond this window. */
 const VOICE_PAUSE_SELF_ECHO_WINDOW_MS = 300;
+/** PLAN-D D5 — the FIFO item tag a voice-command response carries, so its
+ *  playback start reports `kind: 'response'` by item identity. */
+const VOICE_COMMAND_RESPONSE_QUEUE_TAG = 'voice_command_response';
 
 function isTrailingCircuitNamingPattern(text: string): boolean {
   return TRAILING_CIRCUIT_NAMING_PATTERN.test(text);
@@ -1611,9 +1614,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     playing: false,
     untilMs: 0,
   });
-  /** Voice-command response texts enqueued on the FIFO, so their playback
-   *  start is reported with `kind: 'response'` (D5). Bounded. */
-  const pendingResponseTextsRef = React.useRef<string[]>([]);
   /** The origin-aware exit is `resume()`; the phrase route reaches it from
    *  inside `openDeepgram`'s closures through this ref. */
   const resumeWithOriginRef = React.useRef<(via: 'phrase' | 'tap') => void>(() => {});
@@ -1635,7 +1635,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     stillPausedCueThrottleRef.current.reset();
     voicePauseDropCountRef.current = 0;
     resumePhraseEchoRef.current = { playing: false, untilMs: 0 };
-    pendingResponseTextsRef.current = [];
     sessionUplinkContextRef.current?.lossLedger?.clearPauseCut();
   }, [cancelVoicePauseReminder]);
 
@@ -3960,9 +3959,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       if (phraseBearing) resumePhraseEchoRef.current = { playing: true, untilMs: 0 };
-      // Retire a tagged response text at its playback start, paused or not.
-      const responseIndex = pendingResponseTextsRef.current.indexOf(item.text);
-      if (responseIndex !== -1) pendingResponseTextsRef.current.splice(responseIndex, 1);
       if (!voicePausedRef.current && !VOICE_PAUSE_PRODUCED_TEXTS.has(item.text)) return;
       const key = item.dedupeKey ?? '';
       let kind: 'read_back' | 'response' | 'cue' | 'advisory' = 'read_back';
@@ -3970,7 +3966,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         kind = 'cue';
       } else if (item.text === POOR_SIGNAL_ADVISORY_TEXT || key.startsWith('uplink-loss:')) {
         kind = 'advisory';
-      } else if (responseIndex !== -1 || key.startsWith(LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX)) {
+      } else if (
+        item.tag === VOICE_COMMAND_RESPONSE_QUEUE_TAG ||
+        key.startsWith(LOCAL_COMMAND_OUTCOME_DEDUPE_PREFIX)
+      ) {
         kind = 'response';
       }
       clientDiagnostic('voice_pause_speech_spoken', { kind, text: item.text });
@@ -4685,10 +4684,6 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         }
         const spokenText = localSpokenOverride ?? response.spoken_response;
         if (spokenText) {
-          // PLAN-D D5 — tag the text so its playback start reports
-          // `kind: 'response'`. Bounded so an unplayed text cannot grow it.
-          pendingResponseTextsRef.current.push(spokenText);
-          if (pendingResponseTextsRef.current.length > 20) pendingResponseTextsRef.current.shift();
           // Voice-command responses are always audible on both clients. They
           // remain on the existing FIFO behind any earlier read-backs.
           if (deliveryToken) {
@@ -4700,6 +4695,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             const queued = speakConfirmation(spokenText, {
               force: true,
               dedupeKey,
+              queueTag: VOICE_COMMAND_RESPONSE_QUEUE_TAG,
             });
             if (!queued.enqueued) {
               discardConfirmationReservation(dedupeKey, 'not_queued');
@@ -4714,7 +4710,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               dedupeKey: queued.dedupeKey,
             });
           } else {
-            speakConfirmation(spokenText, { force: true });
+            speakConfirmation(spokenText, {
+              force: true,
+              queueTag: VOICE_COMMAND_RESPONSE_QUEUE_TAG,
+            });
           }
         } else if (deliveryToken) {
           // A delivery token without an audible terminal is malformed. Release
