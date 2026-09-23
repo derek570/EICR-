@@ -16,7 +16,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runFixture, runCorpus } from '../../../scripts/field-replay/lib/replay-runner-core.mjs';
+import yaml from 'js-yaml';
+import {
+  runFixture,
+  runCorpus,
+  loadNetHelperExpectations,
+} from '../../../scripts/field-replay/lib/replay-runner-core.mjs';
 import { evaluateGateState } from '../../../scripts/field-replay/lib/replay-assertions.mjs';
 
 import { EICRExtractionSession } from '../../extraction/eicr-extraction-session.js';
@@ -360,5 +365,49 @@ describe('runCorpus orchestration', () => {
     expect(summary.failed).toBe(1);
     expect(summary.exitCode).toBe(1);
     expect(summary.results[0].detail).toMatch(/postcode_hint_forbidden/);
+  });
+});
+
+describe('runCorpus applies the declared net-helper expectations (PLAN-B, Codex cycle 4)', () => {
+  // Keystone ① — the chimed no-op turn whose orphan/no-op net gives the model
+  // one retry (answered empty by the recorded client) before its canned line.
+  const KEYSTONE_1 = 'frc_c55c996fa1014e088455af77216220d1';
+  let tmp;
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'frc-helper-decl-'));
+    const src = path.join(process.cwd(), 'tests/fixtures/field-replay-corpus', KEYSTONE_1);
+    fs.cpSync(src, path.join(tmp, KEYSTONE_1), { recursive: true });
+  });
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+  const loadYaml = (p) => yaml.load(fs.readFileSync(p, 'utf8'));
+  const run = (netHelperExpectations) =>
+    runCorpus({
+      corpusRoot: tmp,
+      modules,
+      loadFixture: loadYaml,
+      wallClockNowMs: Date.now(),
+      netHelperExpectations,
+    });
+
+  test('the checked-in declaration passes the keystone', async () => {
+    const summary = await run(loadNetHelperExpectations());
+    expect(summary.results[0].netHelperCalls).toEqual([{ turn: 1, nets: ['noop'] }]);
+    expect(summary.results[0].verdict).toBe('pass');
+    expect(summary.exitCode).toBe(0);
+  });
+
+  test('an undeclared helper call fails the fixture although nothing audible changed', async () => {
+    const summary = await run({});
+    expect(summary.results[0].verdict).toBe('fail');
+    expect(summary.results[0].detail).toMatch(/turn 1: expected \[\], observed \["noop"\]/);
+    expect(summary.exitCode).toBe(1);
+  });
+
+  test('a declared call that does not happen fails the fixture', async () => {
+    const summary = await run({ [KEYSTONE_1]: { 1: ['noop'], 2: ['catchall'] } });
+    expect(summary.results[0].verdict).toBe('fail');
+    expect(summary.results[0].detail).toMatch(/turn 2: expected \["catchall"\], observed \[\]/);
   });
 });
