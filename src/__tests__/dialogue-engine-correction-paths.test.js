@@ -179,14 +179,27 @@ describe('group A — ring awaiting_confirmation accepts value-first amends (ids
     }
   });
 
-  test('sentinel words parse to null and remain MODEL-bound (documented pre-existing limitation)', () => {
+  test('sentinel words AMEND through the value-first path (PLAN-A2, feedback id 141)', () => {
+    // This test used to pin the opposite — "sentinel words parse to null and
+    // remain MODEL-bound (documented pre-existing limitation)". PLAN-A2 closed
+    // that limitation: the value-first grammar always CAPTURED "infinite", and
+    // parseOhms now WRITES it as "∞" instead of returning null, so a
+    // during-confirmation amend lands like any other corrected reading rather
+    // than being consumed silently. Field session CC9E0915, 11:39:34.
     const ws = new FakeWS();
     const session = buildSession({ 13: {} });
     enterRingConfirmation(ws, session);
     const out = ringTurn(ws, session, 'infinite on the lives', 2000);
-    // No ring write — the sentinel never parses on the live path.
-    expect(extractionFrames(ws)).toHaveLength(0);
     expect(out.handled).toBe(true);
+    const frames = extractionFrames(ws);
+    expect(frames).toHaveLength(1);
+    expect(frames[0].result.readings).toEqual([
+      expect.objectContaining({ circuit: 13, field: 'ring_continuity_r1', value: '∞' }),
+    ]);
+    // And the re-confirmation speaks the word, never the character.
+    const reconfirm = askFrames(ws).find((f) => (f.question ?? '').includes('All correct?'));
+    expect(reconfirm.question).toContain('R1 infinity');
+    expect(reconfirm.question).not.toContain('∞');
   });
 
   describe('adversarial cross-slot pins (the gap rule is length-driven, field-first ties)', () => {

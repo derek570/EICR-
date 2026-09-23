@@ -285,6 +285,40 @@ export function formatCorrectionClause(correction) {
 }
 
 /**
+ * PLAN-A2 (2026-09-23, feedback id 141) — the ONE canonical discontinuity
+ * sentinel, and the ONE place that decides how it is SPOKEN.
+ *
+ * "∞" (U+221E) is what gets STORED for an open conductor — the agentic prompt's
+ * contract, `VALID_SENTINELS` in value-normalise.js, the legacy ring script's
+ * `parseValue`, the answer-resolver's discontinuous branch and (since PLAN-A2)
+ * `parseOhms` all agree on the character. Nothing about that changes here:
+ * stored values keep the character, and the PDF/UI render it.
+ *
+ * What changes is the SPOKEN form. Every TTS voice reads a bare "∞" as silence
+ * or as a glyph name, so a hands-free inspector who dictated *"Open circuit"*
+ * heard "R2" followed by nothing and could not tell an accepted reading from a
+ * dropped one — the exact failure Audio-First invariant #1 exists to prevent.
+ * The spoken form is the English word "infinity".
+ *
+ * Both spoken producers call this so they can never drift: the dispatcher
+ * read-backs via `buildValueSpokenTail` below, and the ring triple read-back
+ * ("R1 x, Rn y, R2 z. All correct?") in
+ * dialogue-engine/schemas/ring-continuity.js, whose sentence shape is fixed by
+ * its schema and so can only substitute the leg value in place. Drift between
+ * those two is what id-100(b) had to fix for the correction clause; this helper
+ * is that lesson applied up front.
+ *
+ * Non-strings and every other value pass through untouched, so callers can
+ * apply it unconditionally.
+ */
+export const INFINITY_SENTINEL = '\u221e';
+
+export function speakSentinelValue(valueStr) {
+  if (typeof valueStr === 'string' && valueStr.trim() === INFINITY_SENTINEL) return 'infinity';
+  return valueStr;
+}
+
+/**
  * P3 (2026-07-23, feedback id 86) — the ONE shared spoken-tail builder for the
  * VALUE portion of a confirmation. buildConfirmationText,
  * buildGroupedConfirmationText, AND the Loaded Barrel speculator must produce
@@ -326,6 +360,17 @@ export function buildValueSpokenTail(field, valueStr, friendly, options = {}) {
   if (typeof valueStr === 'string' && valueStr.trim().toLowerCase() === 'lim') {
     return `${friendly} recorded as LIM — limitation`;
   }
+  // PLAN-A2 — the discontinuity sentinel speaks as a word, never as the bare
+  // character. Placed here, immediately after the LIM branch and BEFORE the
+  // correction clause, for the same reason LIM is checked first: a sentinel is
+  // a sentinel whatever the field's normal phrasing, and a sentinel is never
+  // numerically clamped, so if both were somehow present the sentinel is the
+  // safer read. The tail keeps the ordinary "<field> <value>" shape — the
+  // inspector hears "ring R2 infinity" — rather than LIM's enhanced wording,
+  // because "infinity" is the measured RESULT, not a reason the test was
+  // skipped.
+  const spokenValue = speakSentinelValue(valueStr);
+  if (spokenValue !== valueStr) return `${friendly} ${spokenValue}`;
   const correctionClause = formatCorrectionClause(options.correction);
   if (correctionClause !== null) {
     return `${friendly} recorded as ${valueStr} — ${correctionClause}`;

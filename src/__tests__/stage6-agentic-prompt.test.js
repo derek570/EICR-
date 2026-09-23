@@ -505,8 +505,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // `address_mirror:"unclear"` tool result means the server copied nothing;
       // re-ask once with strict yes/no wording. Shared region; measured 25206
       // and cap retains ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-23 (PLAN-A2, feedback ids 141/142): the discontinuous-continuity
+      // rule moves out of VALUE NORMALISATION into the RING CONTINUITY CARRYOVER
+      // block and gains the ring-vs-radial field routing plus the ask-ONCE
+      // branches — one line deleted, one longer line added, net +45 tokens.
+      // Shared region; measured 25351 and cap retains ~100-token headroom
+      // (measured + ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(25306);
+      expect(estimate).toBeLessThanOrEqual(25451);
     });
   });
 
@@ -847,10 +853,19 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     });
 
     test('every backticked field name on the EDGE CASES discontinuous-continuity line is a record_reading enum member', () => {
-      // Locate the EDGE CASES discontinuous-continuity line. The prompt
-      // line shape (post-fix) is: "Discontinuous continuity: emit the
-      // LITERAL character "∞" (U+221E) as the `value` for `FIELD1`,
-      // `FIELD2`, ... and call `record_observation`...".
+      // Locate the discontinuous-continuity line. PLAN-A2 (2026-09-23,
+      // feedback ids 141/142) moved it out of VALUE NORMALISATION and made it
+      // the LAST bullet of the RING CONTINUITY CARRYOVER block, and it no
+      // longer lists the five fields in one flat enumeration — it routes them:
+      // "…as the `value`. On a RING final circuit — … — a CPC result writes
+      // `ring_r2_ohm` and a live or neutral leg writes `ring_r1_ohm` /
+      // `ring_rn_ohm`; … On a radial circuit, "CPC" or "R2" alone writes
+      // `r2_ohm`; "R1 plus R2" writes `r1_r2_ohm`; …".
+      //
+      // This test is unchanged in INTENT: whatever field names the line claims,
+      // every one must be a real record_reading enum member. Routing them to
+      // the wrong slot is what id 142 was (a ring CPC result written to
+      // `r2_ohm`), and a typo here would be the same class of corruption.
       //
       // We extract all backtick-quoted tokens on the line and filter
       // out tool names / pseudocode keywords (value, record_observation,
@@ -887,6 +902,74 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
 
       const invalid = fieldClaims.filter((id) => !validFields.has(id));
       expect(invalid).toEqual([]);
+    });
+
+    // PLAN-A2 acceptance 4(i)/(ii) (2026-09-23, feedback ids 141/142).
+    //
+    // Both cases assert by EXACT SUBSTRING on the composed prompt rather than by
+    // regex over the block. A regex that merely proves the words exist somewhere
+    // in the bullet cannot tell "write the value AND record the observation" from
+    // "write the value, and on the ask branch do NOT record the observation" —
+    // and the two ask branches were added precisely because an earlier draft
+    // could not distinguish them. Substring + ORDER is the only cheap assertion
+    // that does.
+    const DISCONT_ANCHOR = 'Discontinuous continuity: emit the LITERAL character';
+    const RING_ASK_CLAUSE =
+      'if the utterance names no leg, ask ONCE and do NOT call `record_observation` this turn';
+    const RADIAL_ASK_CLAUSE =
+      'if the utterance does not say which, ask ONCE and do NOT call `record_observation` this turn';
+    const LEG_ANSWERED_CLAUSE =
+      'once the leg is answered, write the value and record the observation together';
+    const WRITE_CASE_CLAUSE =
+      'Otherwise call `record_observation` (usually C2) in the same response.';
+
+    test('discontinuous-continuity rule: the write-case record_observation clause is NOT gated on utterance shape (PLAN-A2 acceptance 4(i))', () => {
+      const lines = prompt.split(/\r?\n/);
+      const line = lines.find((l) => l.includes(DISCONT_ANCHOR));
+      expect(line).toBeDefined();
+
+      // The trailing clause is "Otherwise call `record_observation` …" — where
+      // "otherwise" means "on any branch that was not one of the two named ask
+      // branches", NOT "only when the inspector phrased it as an observation".
+      // The live routing splits these utterances across two models: an
+      // observation-shaped phrase goes to the observation tier, a plain reading
+      // stays an ordinary turn (routeToObservationTier /
+      // OBSERVATION_PATTERN). A discontinuous conductor is a codeable defect
+      // however the inspector phrased it, so the SAME rule has to reach both —
+      // which it only does if this clause carries no shape condition.
+      expect(line).toEqual(expect.stringContaining(WRITE_CASE_CLAUSE));
+
+      // Lock the absence of a shape gate on that clause: nothing between the
+      // leg-answered clause and the end of the line may make recording
+      // conditional on how the inspector spoke.
+      const tail = line.slice(line.indexOf(WRITE_CASE_CLAUSE));
+      expect(tail.toLowerCase()).not.toMatch(/\bif\b|\bwhen\b|\bonly\b|observation-shaped/);
+    });
+
+    test('discontinuous-continuity rule: BOTH missing-leg branches defer record_observation, and the write instruction follows the leg answer (PLAN-A2 acceptance 4(ii))', () => {
+      const lines = prompt.split(/\r?\n/);
+      const line = lines.find((l) => l.includes(DISCONT_ANCHOR));
+      expect(line).toBeDefined();
+
+      // (a) BOTH branches — ring (no leg named) and radial (R2 vs R1+R2 not
+      //     said) — must carry the deferral verbatim. An ask that also recorded
+      //     a C2 would put an observation on the certificate for a reading the
+      //     inspector has not yet confirmed exists.
+      expect(line).toEqual(expect.stringContaining(RING_ASK_CLAUSE));
+      expect(line).toEqual(expect.stringContaining(RADIAL_ASK_CLAUSE));
+
+      // (b) The value+observation instruction is the RESOLUTION of those asks,
+      //     so it must come after both of them; otherwise a model reading top
+      //     to bottom meets "write the value and record the observation" before
+      //     it is told to hold off, which is the ordering that produced the
+      //     repeated-ask loop in id 141.
+      const ringIdx = line.indexOf(RING_ASK_CLAUSE);
+      const radialIdx = line.indexOf(RADIAL_ASK_CLAUSE);
+      const answeredIdx = line.indexOf(LEG_ANSWERED_CLAUSE);
+      const writeCaseIdx = line.indexOf(WRITE_CASE_CLAUSE);
+      expect(answeredIdx).toBeGreaterThan(ringIdx);
+      expect(answeredIdx).toBeGreaterThan(radialIdx);
+      expect(writeCaseIdx).toBeGreaterThan(answeredIdx);
     });
 
     test('prompt does NOT contain the broken `r1_plus_r2` alias (Codex MAJOR #1 direct regression lock)', () => {
@@ -1275,8 +1358,12 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 2026-09-14 (feedback id 138): `address_mirror:"unclear"` re-ask bullet
       // (see the Group 1 combined-cap comment). Measured 19957; cap 20057
       // leaves ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-23 (PLAN-A2, feedback ids 141/142): the re-authored
+      // discontinuous-continuity rule (see the Group 1 combined-cap comment).
+      // Measured 20102; cap 20202 leaves ~100-token headroom (measured + ~100,
+      // P8 precedent).
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20057);
+      expect(estimate).toBeLessThanOrEqual(20202);
     });
   });
 
@@ -1330,7 +1417,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // CONTINUITY CARRYOVER below") and slice from the actual section.
       const idx = prompt.search(/RING CONTINUITY CARRYOVER\s*\(/);
       expect(idx).toBeGreaterThanOrEqual(0);
-      const window = prompt.slice(idx, idx + 900);
+      // PLAN-A2 (2026-09-23) — the block gained the discontinuous-continuity
+      // bullet and outgrew the old fixed 900-char window. Slice to the block's
+      // real end (the next blank line) instead of guessing a length: a fixed
+      // window silently stops covering the tail every time the block grows,
+      // and the tail is where the newest rule lands.
+      const blockEnd = prompt.indexOf('\n\n', idx);
+      expect(blockEnd).toBeGreaterThan(idx);
+      const window = prompt.slice(idx, blockEnd);
       // The carryover rule MUST name all three ring continuity fields
       // by their canonical record_reading enum values; a typo here
       // would route the wrong values into the wrong slots.
@@ -1341,6 +1435,23 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // Sonnet to delegate timing to the server (not track it itself).
       expect(window).toMatch(/60\s*s|60-second|sixty\s+second/i);
       expect(window.toLowerCase()).toMatch(/server\s+(enforces|emits)/);
+      // PLAN-A2 — the discontinuous-continuity rule lives in THIS block, as its
+      // LAST bullet, not in VALUE NORMALISATION where it used to sit. Placement
+      // is the point: the rule is about which ring/radial slot an open-conductor
+      // result lands in, so it has to be read next to the carryover mappings
+      // that decide the same thing for numeric values.
+      const bullets = window.split('\n').filter((l) => l.startsWith('- '));
+      expect(bullets.length).toBeGreaterThan(0);
+      expect(bullets[bullets.length - 1]).toEqual(
+        expect.stringContaining('Discontinuous continuity: emit the LITERAL character')
+      );
+      // …and it is GONE from VALUE NORMALISATION, so there is exactly one
+      // discontinuity rule in the prompt and no stale flat enumeration to
+      // contradict the routing one.
+      const discontLines = prompt
+        .split(/\r?\n/)
+        .filter((l) => l.includes('LITERAL character') && l.includes('∞'));
+      expect(discontLines).toHaveLength(1);
     });
 
     test('Example 6 — designation announcement worked example exists', () => {
