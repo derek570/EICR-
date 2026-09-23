@@ -240,4 +240,63 @@ describe('OcpdStandardComboCell — the grid form', () => {
     // No manual removal: React owns the portal node and the afterEach unmount
     // takes it with the tree. Removing it here raced that teardown.
   });
+
+  it("keeps a press on the list INSIDE the host's click-outside boundary", async () => {
+    // The portal sits outside the grid's container, so a host mousedown
+    // handler saw a press on a suggestion as an outside click and closed the
+    // list before the button's click fired: the desktop schedule's tiers
+    // looked selectable and never selected.
+    const { OcpdStandardComboCell } = await import('@/components/job/ocpd-standard-field');
+    const outside = vi.fn();
+    document.addEventListener('mousedown', outside);
+    mount(
+      <OcpdStandardComboCell
+        value=""
+        onCommit={() => {}}
+        ariaLabel="Circuit 1 OCPD BS/EN"
+        isOpen
+        onOpen={() => {}}
+        onClose={() => {}}
+      />
+    );
+    const list = document.querySelector('ul[role="listbox"]') as HTMLElement;
+    const option = Array.from(list.querySelectorAll('button')).find(
+      (b) => b.textContent === 'BS EN 60898'
+    ) as HTMLButtonElement;
+    act(() => {
+      option.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+    expect(outside).not.toHaveBeenCalled();
+    document.removeEventListener('mousedown', outside);
+  });
+
+  it('flips the list ABOVE the cell when there is no room below it', async () => {
+    // A fixed list does not extend the page's scroll area, so one placed below
+    // a row near the bottom of the viewport falls off it and its options
+    // cannot be reached at all.
+    const { OcpdStandardComboCell } = await import('@/components/job/ocpd-standard-field');
+    const originalHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { value: 600, configurable: true });
+    const near = { left: 10, top: 560, bottom: 590, width: 140 };
+    const spy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue(near as DOMRect);
+    mount(
+      <OcpdStandardComboCell
+        value=""
+        onCommit={() => {}}
+        ariaLabel="Circuit 1 OCPD BS/EN"
+        isOpen
+        onOpen={() => {}}
+        onClose={() => {}}
+      />
+    );
+    const list = document.querySelector('ul[role="listbox"]') as HTMLElement;
+    // 600 - 590 - 4 = 6px below, 556px above — so it must render above the
+    // cell's top rather than below its bottom.
+    expect(parseFloat(list.style.top)).toBeLessThan(near.top);
+    expect(parseFloat(list.style.maxHeight)).toBeGreaterThan(0);
+    spy.mockRestore();
+    Object.defineProperty(window, 'innerHeight', { value: originalHeight, configurable: true });
+  });
 });

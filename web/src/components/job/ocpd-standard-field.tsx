@@ -188,6 +188,10 @@ export function OcpdStandardField({
  * click, and the cap and canonicalise-on-commit timing come from
  * `useOcpdStandardDraft`, shared with the card too.
  */
+/** Enough room for the clear row plus a few suggestions; below this the list
+ *  flips above the cell rather than being clipped by the viewport edge. */
+const MIN_LIST_HEIGHT = 120;
+
 export function OcpdStandardComboCell({
   value,
   onCommit,
@@ -228,9 +232,12 @@ export function OcpdStandardComboCell({
   // one code path rather than leaving the next narrow-column surface to
   // rediscover this.
   const anchorRef = React.useRef<HTMLDivElement | null>(null);
-  const [anchor, setAnchor] = React.useState<{ left: number; top: number; width: number } | null>(
-    null
-  );
+  const [anchor, setAnchor] = React.useState<{
+    left: number;
+    top: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
 
   React.useEffect(() => {
     if (!isOpen) {
@@ -239,7 +246,22 @@ export function OcpdStandardComboCell({
     }
     const measure = () => {
       const box = anchorRef.current?.getBoundingClientRect();
-      if (box) setAnchor({ left: box.left, top: box.bottom, width: box.width });
+      if (!box) return;
+      // A FIXED list does not extend the page's scroll area, so one placed
+      // below a row near the bottom of the viewport simply falls off it and
+      // its options cannot be reached. Flip above the cell when there is more
+      // room there, and cap the height to whatever room the chosen side has.
+      const GAP = 4;
+      const below = window.innerHeight - box.bottom - GAP;
+      const above = box.top - GAP;
+      const flip = below < MIN_LIST_HEIGHT && above > below;
+      const maxHeight = Math.max(MIN_LIST_HEIGHT, Math.min(256, flip ? above : below));
+      setAnchor({
+        left: box.left,
+        top: flip ? box.top - GAP - maxHeight : box.bottom + GAP,
+        width: box.width,
+        maxHeight,
+      });
     };
     measure();
     // The anchor moves when either the table or the page scrolls; `true`
@@ -302,13 +324,21 @@ export function OcpdStandardComboCell({
               role="listbox"
               aria-label={ariaLabel}
               onClick={(e) => e.stopPropagation()}
+              // The portal is OUTSIDE the grid's container, so a host's
+              // click-outside handler would see a press on this list as an
+              // outside click and close it before the button's click fired —
+              // the suggestions would look selectable and never select.
+              // Stopping mousedown here keeps that boundary correct without
+              // every host having to know the list is portalled.
+              onMouseDown={(e) => e.stopPropagation()}
               style={{
                 position: 'fixed',
                 left: anchor.left,
-                top: anchor.top + 4,
+                top: anchor.top,
                 minWidth: Math.max(anchor.width, 160),
+                maxHeight: anchor.maxHeight,
               }}
-              className="cm-popover-in z-50 max-h-64 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]"
+              className="cm-popover-in z-50 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]"
             >
               <li>
                 <button
