@@ -279,13 +279,14 @@ Key facts (each one has bitten someone):
   prefixes `srv-rcd`, `srv-rcbo`, `srv-ocpd`, `srv-irs` (insulation
   resistance), `srv-rcs` (ring continuity).
 - **`context_board_id` is backend-internal**: it exists on the ask_user tool
-  schema, the auto-resolve write sites, and the ask-budget key — but neither
+  schema, the auto-resolve write sites, and the ask debounce key — but neither
   client decodes it (reclassified WS3, 2026-07-02). Do not "add" client
   decode without a plan.
-- Server-side ask throttles: per-(field,circuit) **ask budget cap = 2** (3rd
-  ask short-circuits `ask_budget_exhausted`), gate debounce, restrained-mode
-  **stubbed always-inactive** (kept as a stub because the gate wrapper only
-  composes when the key is truthy — deleting it would bypass the budget too).
+- Server-side ask gates: the 1500 ms debounce and the AFDD chain guard
+  (`afdd_flow_violation`), composed unconditionally. The per-key ask budget
+  and restrained mode were retired by PLAN-B (2026-09-23, Decision 3): a
+  third ask dispatches, and the second unusable reply appends a
+  `[Server note: repeat_ask. …]` to the ask's tool result instead.
 - All pending asks are rejected on any socket rebind.
 
 ### Observations — dual-path `observation_update`
