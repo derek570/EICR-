@@ -979,11 +979,20 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // which it only does if this clause carries no shape condition.
       expect(line).toEqual(expect.stringContaining(WRITE_CASE_CLAUSE));
 
-      // Lock the absence of a shape gate on that clause: nothing between the
-      // leg-answered clause and the end of the line may make recording
-      // conditional on how the inspector spoke.
-      const tail = line.slice(line.indexOf(WRITE_CASE_CLAUSE));
-      expect(tail.toLowerCase()).not.toMatch(/\bif\b|\bwhen\b|\bonly\b|observation-shaped/);
+      // Lock the ABSENCE of a shape gate. The first version of this slice
+      // started at `indexOf(WRITE_CASE_CLAUSE)`, which made it useless against
+      // the mutation it was written for: inserting "Only for
+      // observation-shaped utterances, " immediately BEFORE the clause leaves
+      // the clause byte-intact, so the slice started after the inserted text
+      // and saw nothing. Verified — that mutation passed 88/88. Slice from the
+      // END of the leg-answered clause instead, so everything between the two
+      // is inspected and a qualifier inserted anywhere in the gap fails.
+      const answeredEnd = line.indexOf(LEG_ANSWERED_CLAUSE) + LEG_ANSWERED_CLAUSE.length;
+      const tail = line.slice(answeredEnd);
+      expect(tail).toEqual(expect.stringContaining(WRITE_CASE_CLAUSE));
+      expect(tail.toLowerCase()).not.toMatch(
+        /\bif\b|\bwhen\b|\bonly\b|\bunless\b|observation-shaped|observation shaped/
+      );
     });
 
     test('discontinuous-continuity rule: BOTH missing-leg branches defer record_observation, and the write instruction follows the leg answer (PLAN-A2 acceptance 4(ii))', () => {
