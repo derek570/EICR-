@@ -1363,7 +1363,7 @@ const addBoard = makeTool({
 const answerUser = makeTool({
   name: 'answer_user',
   description:
-    'Speak a short answer to a question the inspector asked about this session or certificate (e.g. "what\'s missing on circuit 4?", "did you get that?"). At most 2 sentences; terse and factual. NEVER use it to acknowledge, confirm, or narrate a write (read-backs are server-owned), and NEVER in place of ask_user when you need information FROM the inspector. At most one answer per turn.',
+    'Speak a short answer to a question the inspector asked about this session or certificate (e.g. "what\'s missing on circuit 4?", "did you get that?"). On a turn with no write and no ask, also the ONE short line that fits what was heard — a one-line redirect for an off-topic question, or a neutral acknowledgment of speech not addressed to you ("Okay — carry on when you\'re ready"); never an invented reading, never a generic apology. At most 2 sentences; terse and factual. NEVER use it to acknowledge, confirm, or narrate a write (read-backs are server-owned), and NEVER in place of ask_user when you need information FROM the inspector. At most one answer per turn.',
   properties: {
     answer_text: {
       type: 'string',
