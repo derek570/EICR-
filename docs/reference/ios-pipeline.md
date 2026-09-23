@@ -823,6 +823,55 @@ Pinned on both clients: Stop mid-playback leaves the record open with
 the row; PDF success during an active episode leaves that row; account purge
 deliberately breaks the equation and the harness re-scopes to pre-purge state.
 
+## Hands-free voice pause (PLAN-D, 2026-09-23)
+
+"CertMate pause" stops INPUT; "CertMate carry on" resumes it. Pausing never holds, mutes, defers or drops
+speech (WAVE-CONTEXT Decision 8). Both clients implement one contract, pinned by
+`config/voice-pause-vectors.json` (iOS byte copy under `Tests/CertMateUnifiedTests/Fixtures/`, guarded by
+`scripts/check-voice-pause-fixture-sync.sh` before TestFlight).
+
+- **Grammar.** Whole utterance, case-insensitive, punctuation stripped, an optional `hey|okay|ok` prefix, and
+  the brand word required. There is no fuzzy matching. The fixture carries the normalisation steps, the pattern
+  and the accept and near-miss vectors. Every spoken string is also a must-not-command vector.
+- **State.** `voicePaused` is a client-only flag. It is NOT `isPaused` (iOS) or `status === 'sleeping'`
+  (web), because those tear down capture, and a torn-down microphone cannot hear the resume phrase. The mic and
+  the Deepgram socket stay live; the existing `session_pause` / `session_resume` frames are sent.
+- **Entry.** Flush the pre-pause input buffers first (iOS: the naming buffer, through the same re-entrant
+  `handleFinalTranscript(…, bypassNamingBuffer: true, …)` call its timer makes; web: burst then naming,
+  detached before dispatch). Then set the flag, speak the pause line on the protected mode-status route,
+  send `session_pause`, set the loss-ledger pause cut and clear the interim line.
+- **The boundary.** Inside `handleFinalTranscript`, after the duplicate drop, `recordFinal` and both echo
+  gates, and before the naming buffer. While paused, a non-command final counts `voice_pause_drop_count`,
+  requests the still-paused cue (at most once per 30 s, stamped at admission) and returns. Interim handling
+  keeps running; only the on-screen interim line is suppressed.
+- **Exit.** One origin-aware function for the phrase and the **Resume** tap: play the resume tone, clear
+  `voicePaused` synchronously (so a same-tick phrase and tap produce one tone and one line), send
+  `session_resume`, clear the ledger cut, cancel the 15-minute reminder, then enqueue the resume line
+  "Carrying on — anything said while paused wasn't recorded." There is no reconnect and no mic reacquire.
+- **Decision 34 (tap only).** The Deepgram turn open at the tap (Flux StartOfTurn or a non-empty interim;
+  on nova-3, a non-empty interim) is marked. The next final consumes the mark and is dropped if it comes
+  from the marked socket epoch. Turn signals from a superseded socket are ignored. The M6 post-TTS holding
+  buffer's contents at the tap are discarded (`voice_pause_held_audio_discarded`). The phrase route needs
+  nothing, because finals on one socket arrive in order.
+- **The one speech-rule change.** While paused, `resumeDeferredTTSIfNeeded()` skips its 6-second staleness
+  drop, so a direct clip deferred behind local speech is played rather than discarded.
+- **Resume tone.** A second lazily built `AVAudioPlayer` over an in-code 22.05 kHz WAV (440 Hz for 60 ms, then
+  660 Hz for 90 ms; 10 ms linear attack; exponential decay), `volume` 0.7. It is not the processing chime,
+  and it never calls `markTTSStarted()`, so it neither pauses the uplink nor arms the holding buffer.
+- **Local fallback for the mode-status cues.** `AlertManagerProtocol.prerenderModeStatusClips()` runs once
+  per recording session, immediately after `resetFastPathSessionState()` in `performStartRecording`. A
+  detached task renders each fixture string with its own `AVSpeechSynthesizer` on the best en-GB voice
+  (`SpeechClipWAV.renderBuffers`), converts the buffers with `SpeechClipWAV.makeWAVData`, and stores the WAV
+  keyed by the string. The store clears with the other session stores, and a stale-generation render writes
+  nothing. The mode-status fetch is bounded at 12 s. On failure, the catch branch hands the stored clip to the
+  unchanged `playOrDeferQueueHead`, or abandons as `synth_fetch_failed` when there is no clip. The phone probe
+  (`VoicePauseClipProbeTests`, opt-in; or Settings → tap the version badge seven times → **Voice-pause clip
+  probe**) is the merge gate that proves the render plays on a real device.
+- **Diagnostics.** `voice_pause_entered`, `voice_pause_resumed { via }`, `voice_pause_resume_tone { via }`,
+  `voice_pause_drop_count`, `voice_pause_trailing_content_cue`, `voice_pause_late_final_dropped`,
+  `voice_pause_held_audio_discarded { blocks }`, and `voice_pause_speech_spoken { kind }`. The last is
+  emitted at PLAYBACK START on the queue-head and alert paths, never at enqueue.
+
 ## Realtime iOS Log Streaming (PLAN-backend-final.md Phase 1.3)
 
 On-device `DebugLogger` JSONL output streams to the backend in near-real-time via batched `client_log_batch` envelopes over the existing Sonnet WebSocket. Replaces the multipart `/api/session/:id/analytics` upload that has been broken since Mar 2026 — that path used a one-shot end-of-session POST that lost the batch on crash and required the iPad to be plugged in for diagnosis. The streaming path:
