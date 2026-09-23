@@ -1,0 +1,125 @@
+{
+  "$comment": "PLAN-D (feedback wave 2026-09-17, Derek's decision 2) — hands-free pause and resume by voice. The ONE shared contract for both clients: the command grammar, the acceptance and near-miss vectors, the five spoken strings and the resume tone's parameters. Canonical copy lives here; iOS carries byte-identical copies (app bundle + test fixtures), pinned by scripts/check-voice-pause-fixture-sync.sh as a CertMateUnified/deploy-testflight.sh preflight. Tests assert against the keys in this file, never against literals.",
+  "schema_version": 1,
+  "grammar": {
+    "$comment": "Whole-utterance match, case-insensitive, punctuation-stripped, anchored after an optional prefix, with nothing else in the utterance. The brand word is required. No fuzzy matching (the 2026-06-24 hard rule). Normalisation runs in the order listed; the pattern is then matched against the normalised text.",
+    "normalisation": [
+      "lowercase",
+      "delete apostrophes (U+0027 and U+2019)",
+      "replace every character outside [a-z0-9] with a space",
+      "collapse runs of whitespace to one space and trim"
+    ],
+    "optional_prefixes": ["hey", "okay", "ok"],
+    "brand_forms": ["certmate", "cert mate", "sert mate", "cert-mate"],
+    "brand_forms_normalised": ["certmate", "cert mate", "sert mate"],
+    "pause_commands": ["pause", "pause listening", "hold on"],
+    "resume_commands": ["carry on", "resume", "im back", "listen"],
+    "pattern": "^(?:(?:hey|okay|ok) )?(?:certmate|cert mate|sert mate) (?<command>pause|pause listening|hold on|carry on|resume|im back|listen)$"
+  },
+  "vectors": {
+    "accept_pause": [
+      "certmate pause",
+      "CertMate pause",
+      "CertMate, pause.",
+      "Cert mate, pause.",
+      "Sert mate pause",
+      "cert-mate pause",
+      "Hey CertMate, pause.",
+      "Okay, CertMate, pause.",
+      "OK CertMate pause",
+      "CertMate, pause listening.",
+      "certmate hold on",
+      "CertMate, hold on."
+    ],
+    "accept_resume": [
+      "certmate carry on",
+      "CertMate, carry on.",
+      "Cert mate, carry on.",
+      "Sert mate carry on",
+      "cert-mate carry on",
+      "Hey CertMate, carry on.",
+      "Okay CertMate, carry on!",
+      "CertMate, resume.",
+      "CertMate, I'm back.",
+      "CertMate, I’m back.",
+      "certmate listen",
+      "CertMate, listen."
+    ],
+    "near_miss": [
+      { "text": "pause the RCD test", "kind": "unbranded" },
+      { "text": "carry on to circuit 4", "kind": "unbranded" },
+      { "text": "carry on", "kind": "unbranded" },
+      { "text": "pause", "kind": "unbranded" },
+      { "text": "hold on a second", "kind": "unbranded" },
+      { "text": "certmate carry on, circuit two now", "kind": "branded_trailing" },
+      { "text": "certmate pause the RCD test", "kind": "branded_trailing" },
+      { "text": "CertMate, carry on with the ring test.", "kind": "branded_trailing" },
+      { "text": "CertMate, what's paused?", "kind": "question" },
+      { "text": "CertMate", "kind": "brand_only" },
+      { "text": "Hey CertMate", "kind": "brand_only" },
+      { "text": "Zs on circuit 3 is 0.42", "kind": "dictated_reading" }
+    ]
+  },
+  "strings": {
+    "$comment": "Decision 10 (TAKEN 2026-09-20) pins the first four; Decision 24(c) (TAKEN 2026-09-21) approves resume_line and retires resume_ack FOR THE VOICE-PAUSE ROUTE ONLY (a per-entry flag, not a deletion, so its bytes stay pinned). A test that enumerates what the voice-pause route PRODUCES reads each entry's status and finds four. Every string is also a must-not-command vector.",
+    "pause_ack": {
+      "text": "Paused. Say 'CertMate, carry on' when you're ready.",
+      "status": "active",
+      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 1"
+    },
+    "resume_ack": {
+      "text": "Carrying on.",
+      "status": "retired",
+      "retired_for": "voice_pause_resume",
+      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 2; retired for the voice-pause route by Decision 24(c) (TAKEN 2026-09-21)"
+    },
+    "reminder": {
+      "text": "Still paused. Say 'CertMate, carry on' to resume.",
+      "status": "active",
+      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 3"
+    },
+    "still_paused_cue": {
+      "text": "Still paused — say 'CertMate, carry on' on its own to resume.",
+      "status": "active",
+      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 4"
+    },
+    "resume_line": {
+      "text": "Carrying on — anything said while paused wasn't recorded.",
+      "status": "approved",
+      "decision": "WAVE-CONTEXT.md Decision 24(c) (TAKEN 2026-09-21), the fifth string"
+    }
+  },
+  "timing": {
+    "still_paused_cue_throttle_ms": 30000,
+    "reminder_interval_ms": 900000
+  },
+  "resume_tone": {
+    "$comment": "Pinned by PARAMETERS, not bytes: web synthesises from oscillators at the AudioContext rate and iOS renders 22.05 kHz PCM into a WAV, so the two cannot be byte-identical and no test may claim they are. Each client asserts its own constants against this object. Envelope per note: linear attack from 0 to peak_amplitude over attack_ms, then exponential decay from peak_amplitude to decay_floor_gain at the note's end.",
+    "notes": [
+      {
+        "frequency_hz": 440,
+        "duration_ms": 60,
+        "attack_ms": 10,
+        "attack_curve": "linear",
+        "decay_curve": "exponential",
+        "decay_floor_gain": 0.0001,
+        "peak_amplitude": 0.2,
+        "waveform": "sine"
+      },
+      {
+        "frequency_hz": 660,
+        "duration_ms": 90,
+        "attack_ms": 10,
+        "attack_curve": "linear",
+        "decay_curve": "exponential",
+        "decay_floor_gain": 0.0001,
+        "peak_amplitude": 0.22,
+        "waveform": "sine"
+      }
+    ],
+    "attack_ms": 10,
+    "attack_curve": "linear",
+    "ios_sample_rate_hz": 22050,
+    "ios_volume": 0.7
+  }
+}
